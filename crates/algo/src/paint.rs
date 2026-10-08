@@ -183,10 +183,22 @@ pub fn bucket_fill_src(
     let img = crate::selection::rgba8_image(s, area);
     let Some(region) = crate::selection::wand_region(&img, area, seed, tolerance, contiguous, anti_alias) else { return false };
     drop(img);
+    bucket_fill_region_src(s, &region, opacity, selection, src);
+    true
+}
+
+/// Paints a bucket region sampled before the edit, so its boundary can come from the visible
+/// composite while only `s` receives the colour or pattern. Selection coverage still clips it.
+pub fn bucket_fill_region_src(
+    s: &mut Surface,
+    region: &crate::selection::Region,
+    opacity: f32,
+    selection: Option<&Surface>,
+    src: impl Fn(i32, i32) -> [f32; 4] + Sync,
+) {
     // Composite only over the filled region's box.
     let b = region.bbox;
     composite_area(s, b, BlendMode::Normal, |x, y| region.at(x, y) * opacity * selection.map_or(1.0, |m| m.sample_channel(x, y, 0)), src, false);
-    true
 }
 
 #[cfg(test)]
@@ -239,5 +251,18 @@ mod tests {
         assert_eq!(s.pixel(2, 2), vec![1.0, 0.0, 0.0, 1.0]);
         assert_eq!(s.pixel(8, 2), vec![1.0, 1.0, 1.0, 1.0]);
         assert!(!bucket_fill(&mut s, a, (50, 1), 10.0, true, false, [1.0, 0.0, 0.0, 1.0], 1.0, None));
+    }
+
+    #[test]
+    fn bucket_region_uses_document_coordinates_and_multiplies_coverage() {
+        let mut s = Surface::new(PixelFormat::RGBA8);
+        let region = crate::selection::Region { bbox: Rect::new(-3, 4, 0, 5), mask: vec![255, 128, 255] };
+        let mut selection = Surface::new(PixelFormat::GRAY8);
+        selection.fill_rect(Rect::new(-3, 4, -1, 5), &[0.5]);
+        bucket_fill_region_src(&mut s, &region, 0.5, Some(&selection), |_, _| [1.0, 0.0, 0.0, 1.0]);
+        assert!((s.rgba(-3, 4)[3] - 0.25).abs() < 0.005);
+        assert!((s.rgba(-2, 4)[3] - 0.125).abs() < 0.005);
+        assert_eq!(s.rgba(-1, 4), [0.0; 4], "outside the selection");
+        assert_eq!(s.rgba(-4, 4), [0.0; 4], "outside the region");
     }
 }
