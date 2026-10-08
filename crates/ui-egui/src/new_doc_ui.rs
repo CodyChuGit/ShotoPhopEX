@@ -165,6 +165,15 @@ fn small_label(ui: &mut egui::Ui, s: &str) {
     ui.label(RichText::new(s).size(11.5).color(t.text_dim));
 }
 
+/// Lay out a preset card's title centred in `width`: wrapped onto at most two lines, the rest
+/// elided, so long translations stay inside the card.
+fn card_title(painter: &egui::Painter, title: &str, width: f32, color: egui::Color32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(title.to_owned(), egui::FontId::proportional(12.0), color, width);
+    job.wrap.max_rows = 2;
+    job.halign = egui::Align::Center;
+    painter.layout_job(job)
+}
+
 /// Paint a page thumbnail with the preset's aspect ratio.
 fn page_icon(ui: &egui::Ui, r: Rect, w: u32, h: u32, t: &Tokens) {
     let s = 30.0 / (w.max(h) as f32);
@@ -224,7 +233,9 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                             ui.painter().rect_stroke(r, t.radius, Stroke::new(1.5, t.accent), StrokeKind::Inside);
                         }
                         page_icon(ui, Rect::from_center_size(pos2(r.center().x, r.top() + 34.0), vec2(40.0, 40.0)), p.1, p.2, &t);
-                        ui.painter().text(pos2(r.center().x, r.top() + 72.0), Align2::CENTER_CENTER, tl!(p.0), egui::FontId::proportional(12.0), t.text);
+                        let title = card_title(ui.painter(), tl!(p.0), card.x - 12.0, t.text);
+                        let elided = title.elided;
+                        ui.painter().galley(pos2(r.center().x, r.top() + 70.0 - title.size().y / 2.0), title, t.text);
                         let unit = if p.3 >= 300.0 { "in" } else { "px" };
                         let size = if unit == "in" {
                             format!(
@@ -236,7 +247,8 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                         } else {
                             format!("{} x {} px @ {} ppi", p.1, p.2, p.3)
                         };
-                        ui.painter().text(pos2(r.center().x, r.top() + 90.0), Align2::CENTER_CENTER, size, egui::FontId::proportional(10.5), t.text_faint);
+                        ui.painter().text(pos2(r.center().x, r.top() + 97.0), Align2::CENTER_CENTER, size, egui::FontId::proportional(10.5), t.text_faint);
+                        let resp = if elided { resp.on_hover_text(tl!(p.0)) } else { resp };
                         if resp.clicked() {
                             apply_preset(f, p);
                         }
@@ -370,6 +382,21 @@ mod tests {
         set_resolution(&mut f, 150.0);
         let p = command_params(&f);
         assert_eq!((p["width"].clone(), p["height"].clone(), p["resolution"].clone()), (json!(2480), json!(3508), json!(150.0)));
+    }
+
+    #[test]
+    fn preset_card_titles_fit_the_card_in_every_language() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for lang in crate::i18n::Lang::all() {
+                for p in CATEGORIES.iter().flat_map(|c| c.1.iter()) {
+                    let title = crate::i18n::tr(lang, p.0);
+                    let g = card_title(ui.painter(), title, 152.0, egui::Color32::WHITE);
+                    assert!(g.size().x <= 152.0 && g.rows.len() <= 2 && !g.elided, "{}: {title}", lang.code());
+                }
+            }
+        });
+        out.textures_delta.clear();
     }
 
     #[test]
