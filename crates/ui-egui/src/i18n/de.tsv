@@ -2181,3 +2181,6 @@
 	Lines +/−	Zeilen +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PRs, {commits} Commits, +{added} / −{deleted} Zeilen (Δ {delta}), +{binAdded} / −{binDeleted} Binärdateien, {first} – {last}
 	Apply At Canvas Bounds	Effekt an Arbeitsflächenbegrenzungen anwenden
+	Selection Preview:	Auswahlvorschau:
+	Black Matte	Schwarzer Hintergrund
+	White Matte	Weißer Hintergrund

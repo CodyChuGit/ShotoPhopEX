@@ -2125,3 +2125,6 @@ cameraRaw	Color	カラー
 	Lines +/−	行数 +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: PR {prs} 件、コミット {commits} 件、行 +{added} / −{deleted} (Δ {delta})、バイナリ +{binAdded} / −{binDeleted}、{first} – {last}
 	Apply At Canvas Bounds	カンバスの境界に効果を適用
+	Selection Preview:	選択範囲のプレビュー:
+	Black Matte	黒の背景
+	White Matte	白の背景

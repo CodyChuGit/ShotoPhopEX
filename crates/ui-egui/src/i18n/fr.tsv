@@ -2573,3 +2573,6 @@ cameraRaw	Blending	Fusion
 	Lines +/−	Lignes +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login} : {prs} PR, {commits} commits, +{added} / −{deleted} lignes (Δ {delta}), +{binAdded} / −{binDeleted} fichiers binaires, {first} – {last}
 	Apply At Canvas Bounds	Appliquer l’effet aux limites de la zone de travail
+	Selection Preview:	Aperçu de la sélection :
+	Black Matte	Fond noir
+	White Matte	Fond blanc

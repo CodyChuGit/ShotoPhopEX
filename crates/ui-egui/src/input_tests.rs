@@ -131,6 +131,21 @@ fn color_range_eyedropper_picks_on_the_canvas() {
     // ⇧-click adds another sample; the dialog never closes.
     click(&mut h, screen([60.5, 40.5]), Modifiers::SHIFT);
     assert_eq!(points(&h).0, 2);
+    click(&mut h, screen([60.5, 40.5]), Modifiers::ALT);
+    assert_eq!(h.state().ui.dialogs.last().unwrap().fields["subtractPoints"].as_array().unwrap().len(), 1);
+    // A stationary held button must not subtract again on every redraw.
+    let p = screen([60.5, 40.5]);
+    h.event_modifiers(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::ALT }, Modifiers::ALT);
+    h.run_steps(4);
+    assert_eq!(h.state().ui.dialogs.last().unwrap().fields["subtractPoints"].as_array().unwrap().len(), 2);
+    h.event_modifiers(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::ALT }, Modifiers::ALT);
+    h.run_steps(2);
+    // The modal eyedropper overrides a previously selected Hand tool.
+    h.state_mut().ui.tool = crate::state::Tool::Hand;
+    let center = h.state().ui.views[0].center;
+    click(&mut h, screen([30.5, 40.5]), Modifiers::NONE);
+    assert_eq!(points(&h).0, 1);
+    assert_eq!(h.state().ui.views[0].center, center);
     assert_eq!(h.state().ui.dialogs.len(), 1);
     // The document is untouched until OK.
     assert!(h.state().session.active().unwrap().doc.selection.is_none());

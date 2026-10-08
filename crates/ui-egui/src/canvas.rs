@@ -1823,6 +1823,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         let uv = if flip { Rect::from_min_max(pos2(1.0, 0.0), pos2(0.0, 1.0)) } else { Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)) };
         painter.image(tex, img_rect, uv, Color32::WHITE);
     }
+    crate::color_range_ui::paint_selection_preview(app, &ctx, &painter, doc.id, img_rect, flip);
     // Artboards: pasteboard between the boards, outlines and names (artboard_ui.rs).
     if doc.has_artboards() {
         let t = crate::theme::Tokens::get(&ctx);
@@ -1977,7 +1978,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // With the Color Picker on top the image is its eyedropper, whatever the tool; Space and
         // the middle button still pan (`color_picker_ui::sample_at`).
         let picking = primary && crate::color_picker_ui::top(app).is_some();
-        let hand = app.ui.tool == Tool::Hand && !picking;
+        let range_picking =
+            primary && app.ui.dialogs.last().is_some_and(|d| crate::color_range_ui::owns(&d.fields) && crate::color_range_ui::controls(&d.fields).sampling);
+        let hand = app.ui.tool == Tool::Hand && !picking && !range_picking;
         if let Some(d) = crate::dialogs::pan_delta(&ctx, rect, hand) {
             view.center[0] -= d.x / view.zoom * if flip { -1.0 } else { 1.0 };
             view.center[1] -= d.y / view.zoom;
@@ -1996,10 +1999,12 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             }
         } else if primary
             && !middle
-            && let Some(p) = crate::dialogs::free_pointer_over(&ctx, rect)
+            && let Some(p) = crate::dialogs::free_pointer_over(&ctx, rect).filter(|p| img_rect.contains(*p))
         {
             // Color Range samples colours with its eyedropper on the image itself.
-            let press = crate::dialogs::free_press(&ctx, rect).map(|q| xf.to_doc(q));
+            let press = crate::dialogs::free_press(&ctx, rect)
+                .filter(|p| img_rect.contains(*p) && ctx.input(|i| i.pointer.primary_pressed() || i.pointer.delta() != egui::Vec2::ZERO))
+                .map(|q| xf.to_doc(q));
             crate::color_range_ui::canvas_eyedropper(app, &ctx, p, press);
         }
     }

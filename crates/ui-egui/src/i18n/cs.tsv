@@ -2142,3 +2142,6 @@ cameraRaw	Color	Barvy
 	Lines +/−	Řádky +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: PR: {prs}, commity: {commits}, řádky +{added} / −{deleted} (Δ {delta}), binární soubory +{binAdded} / −{binDeleted}, {first} – {last}
 	Apply At Canvas Bounds	Použít efekt na hranicích plátna
+	Selection Preview:	Náhled výběru:
+	Black Matte	Černý podklad
+	White Matte	Bílý podklad

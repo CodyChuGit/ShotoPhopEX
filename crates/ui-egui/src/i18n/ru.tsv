@@ -2416,3 +2416,7 @@ cameraRaw	Roughness	Неровность
 	Lines +/−	Строки +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: PR: {prs}, коммиты: {commits}, строки +{added} / −{deleted} (Δ {delta}), двоичные файлы +{binAdded} / −{binDeleted}, {first} – {last}
 	Apply At Canvas Bounds	Применить эффект на границах холста
+	Selection Preview:	Просмотр выделения:
+	Black Matte	На чёрном фоне
+	White Matte	На белом фоне
+	Quick Mask	Быстрая маска

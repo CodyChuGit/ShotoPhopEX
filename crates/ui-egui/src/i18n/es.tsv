@@ -2213,3 +2213,6 @@ cameraRaw	Amount	Cantidad
 	Lines +/−	Líneas +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commits, +{added} / −{deleted} líneas (Δ {delta}), +{binAdded} / −{binDeleted} archivos binarios, {first} – {last}
 	Apply At Canvas Bounds	Aplicar efecto en los límites del lienzo
+	Selection Preview:	Previsualización de selección:
+	Black Matte	Fondo negro
+	White Matte	Fondo blanco

@@ -2119,3 +2119,6 @@ cameraRaw	Blending	混合
 	Lines +/−	行數 +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}：{prs} 個 PR，{commits} 次提交，行 +{added} / −{deleted}（Δ {delta}），二進位檔 +{binAdded} / −{binDeleted}，{first} – {last}
 	Apply At Canvas Bounds	套用效果至版面邊界
+	Selection Preview:	選取範圍預視：
+	Black Matte	黑色背景
+	White Matte	白色背景

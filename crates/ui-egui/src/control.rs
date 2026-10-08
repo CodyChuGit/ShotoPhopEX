@@ -448,6 +448,20 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
                     }
                     continue;
                 }
+                // The dialog owns all pointer events, including Up: no underlying brush stroke
+                // or context menu may leak through while inspecting a Color Range preview.
+                if app.ui.dialogs.last().is_some_and(|d| crate::color_range_ui::owns(&d.fields)) {
+                    let down = matches!(ev, ToolEvent::Down { .. });
+                    let up = matches!(ev, ToolEvent::Up { .. });
+                    let held = app.ui.dialogs.last().and_then(|d| d.fields.get("__pointerDown")).and_then(Value::as_bool).unwrap_or(false);
+                    if let Some(d) = app.ui.dialogs.last_mut() {
+                        d.fields.insert("__pointerDown".into(), json!(!up && (down || held)));
+                    }
+                    if !up && (down || held) && !space && !matches!(s("button"), Some("secondary" | "right" | "middle")) {
+                        crate::color_range_ui::pick_top(app, [x, y], mods);
+                    }
+                    continue;
+                }
                 if matches!(s("button"), Some("secondary" | "right")) {
                     let down = matches!(ev, ToolEvent::Down { .. });
                     // Right-click with the Move tool, or ⌘/Ctrl+right-click: list the layers there.

@@ -2560,3 +2560,6 @@ cameraRaw	Blending	Pembauran
 	Lines +/−	Baris +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commit, +{added} / −{deleted} baris (Δ {delta}), +{binAdded} / −{binDeleted} berkas biner, {first} – {last}
 	Apply At Canvas Bounds	Terapkan efek di batas kanvas
+	Selection Preview:	Pratinjau Seleksi:
+	Black Matte	Latar Hitam
+	White Matte	Latar Putih
