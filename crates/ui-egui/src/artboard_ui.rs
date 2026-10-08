@@ -116,7 +116,18 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
         let mut bg = a.background.name().to_string();
         let opts = [("white".to_string(), tl!("White")), ("black".to_string(), tl!("Black")), ("transparent".to_string(), tl!("Transparent")), ("custom".to_string(), tl!("Other…"))];
         if crate::widgets::dropdown(ui, &key("bg"), &mut bg, &opts, 120.0) {
-            edit = Some(json!({"layer": layer.id.0, "background": bg}));
+            let mut params = json!({"layer": layer.id.0, "background": bg});
+            if bg == "custom" {
+                let hex = match a.background {
+                    ArtboardBackground::Custom(c) => {
+                        let [r8, g8, b8, _] = c.to_rgba8();
+                        format!("#{:02x}{:02x}{:02x}", r8, g8, b8)
+                    }
+                    _ => "#ffffff".to_string(),
+                };
+                params["color"] = json!(hex);
+            }
+            edit = Some(params);
         }
         if let ArtboardBackground::Custom(c) = a.background {
             let [r8, g8, b8, _] = c.to_rgba8();

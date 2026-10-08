@@ -109,6 +109,15 @@ fn prepare_pattern(b: &BrushSettings) -> Option<Arc<PatternImage>> {
     Some(Arc::new(img))
 }
 
+/// The pixel rectangle `reach` (plus 1 px of anti-aliasing slack) around a dab's centre. The casts
+/// saturate and the arithmetic saturates, so a far or non-finite centre or reach from a direct
+/// caller gives a (possibly empty) rectangle instead of an `i32` overflow (#977).
+pub(crate) fn rect_around(d: &Dab, reach: f32) -> Rect {
+    let rr = (reach.ceil() as i32).saturating_add(1);
+    let (cx, cy) = (d.center.x.floor() as i32, d.center.y.floor() as i32);
+    Rect::new(cx.saturating_sub(rr), cy.saturating_sub(rr), cx.saturating_add(rr).saturating_add(1), cy.saturating_add(rr).saturating_add(1))
+}
+
 impl BrushContext {
     pub fn new(brush: &BrushSettings) -> Self {
         let brush = brush.bounded_for_render();
@@ -145,9 +154,7 @@ impl BrushContext {
     pub fn dab_rect(&self, d: &Dab, dual: bool) -> Rect {
         let sampled = if dual { self.dual_tip.is_some() } else { self.tip.is_some() };
         let reach = if sampled { d.radius * std::f32::consts::SQRT_2 } else { d.radius };
-        let rr = reach.ceil() as i32 + 1;
-        let (cx, cy) = (d.center.x.floor() as i32, d.center.y.floor() as i32);
-        Rect::new(cx - rr, cy - rr, cx + rr + 1, cy + rr + 1)
+        rect_around(d, reach)
     }
 
     /// Rasterise a dab over `rect` into `out` (tip shape × noise × per-tip texture × wet edges × flow).

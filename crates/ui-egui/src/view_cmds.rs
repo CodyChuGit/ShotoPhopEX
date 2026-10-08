@@ -134,6 +134,10 @@ impl ViewOptions {
     pub fn hides_tabs(&self) -> bool {
         self.screen_mode != "standard"
     }
+    /// Photoshop's full screen modes show no scroll bars.
+    pub fn shows_scrollbars(&self) -> bool {
+        self.screen_mode == "standard"
+    }
 }
 
 const SCREEN_MODES: [&str; 3] = ["standard", "fullScreenWithMenuBar", "fullScreen"];

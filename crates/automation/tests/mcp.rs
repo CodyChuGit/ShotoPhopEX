@@ -239,6 +239,25 @@ async fn preview_budget_failure_preserves_the_mcp_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn bridge_doc_save_rejects_headless_only_options_instead_of_saving_with_defaults() {
+    // Bridge mode forwards only the path to the running app: quality/format/tiffLayers/index
+    // must be refused up front (no bridge connection needed for that) rather than silently
+    // saving with the app's current settings.
+    let server = PhotocraftMcp::bridge("127.0.0.1:1", &"a".repeat(64)).unwrap();
+    let client = connect(server).await;
+    for params in [
+        json!({"path": "out.jpg", "quality": 50}),
+        json!({"path": "out.png", "format": "png"}),
+        json!({"path": "out.tif", "tiffLayers": true}),
+        json!({"path": "out.pcraft", "index": 0}),
+    ] {
+        let r = call(&client, "doc_save", params.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{params}: {:?}", text(&r));
+        assert!(text(&r).contains("headless"), "{params}: {}", text(&r));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bridge_response_budget_drops_connection_without_retrying_the_operation() {
     use photocraft_automation::{BridgeClient, budgets::MAX_RESPONSE_BYTES};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

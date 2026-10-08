@@ -169,9 +169,9 @@ note = "4-5 GB PSB fixtures: psd example big_psb writes them (raw and RLE, plane
 [[item]]
 id = "FILE-216-3"
 target = "TIFF, RAW and EXR corpora read by tests; per-camera RAW coverage reported"
-status = "missing"
+status = "partial"
 issue = 216
-note = "corpus/tiff, raw and exr only listed by xtask corpus; no test reads them"
+note = "EXR: corpus/exr (the OpenEXR deep test images, pinned) is read by codecs tests/deep_exr.rs in the CI corpus job, against the ID manifests of the upstream sidecars. corpus/tiff and corpus/raw are still copied in by hand and no test reads them; no per-camera RAW report"
 
 [[item]]
 id = "FILE-216-4"

@@ -123,6 +123,55 @@ fn adjustment_layers_change_composite() {
 }
 
 #[test]
+fn new_adjustment_and_fill_layers_are_masked_by_the_selection() {
+    // #1250: as in Photoshop, a new adjustment or fill layer made while a selection is active
+    // gets the selection as its layer mask, so it acts on the selected area only.
+    for depth in [8, 16, 32] {
+        // (command, params, whether it turns the white canvas black inside the selection)
+        for (id, params, blackens) in [
+            ("layer.newAdjustmentLayer.invert", json!({}), true),
+            ("layer.newAdjustmentLayer.hueSaturation", json!({"hue": 40, "saturation": 20}), false),
+            ("layer.newFillLayer.solidColor", json!({"color": "#000000"}), true),
+            ("layer.newFillLayer.gradient", json!({"from": "#000000", "to": "#000000"}), true),
+            ("layer.newFillLayer.pattern", json!({"pattern": "Checkerboard"}), false),
+        ] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 64, "height": 48, "depth": depth})).unwrap();
+            s.execute("select.rect", json!({"x": 8, "y": 8, "width": 16, "height": 16})).unwrap();
+            let layer = LayerId(s.execute(id, params).unwrap()["layer"].as_u64().unwrap());
+            let d = s.active().unwrap();
+            let mask = d.doc.layer(layer).unwrap().mask.as_ref().unwrap_or_else(|| panic!("{id} at {depth}-bit: no layer mask"));
+            assert_eq!(mask.value(10, 10), 1.0, "{id} at {depth}-bit: the mask hides the selected area");
+            assert_eq!(mask.value(2, 2), 0.0, "{id} at {depth}-bit: the mask reveals outside the selection");
+            assert!(mask.linked && mask.enabled, "{id}");
+            // The selection stays, as after Layer › Layer Mask › Reveal Selection.
+            assert!(d.doc.selection.is_some(), "{id} dropped the selection");
+            // The white canvas is untouched outside the selection.
+            assert_eq!(px(&mut s, 2, 2), vec![1.0, 1.0, 1.0, 1.0], "{id} at {depth}-bit changed pixels outside the selection");
+            if blackens {
+                assert_eq!(px(&mut s, 10, 10)[..3], [0.0, 0.0, 0.0][..], "{id} at {depth}-bit: no effect inside the selection");
+            }
+            s.execute("edit.undo", json!({})).unwrap();
+            assert!(s.active().unwrap().doc.layer(layer).is_none(), "{id}: undo keeps the layer");
+        }
+    }
+}
+
+#[test]
+fn new_adjustment_and_fill_layers_have_no_mask_without_a_selection() {
+    let mut s = session_with_doc();
+    for (id, params) in [
+        ("layer.newAdjustmentLayer.invert", json!({})),
+        ("layer.newFillLayer.solidColor", json!({"color": "#000000"})),
+        ("layer.newFillLayer.gradient", json!({})),
+        ("layer.newFillLayer.pattern", json!({"pattern": "Checkerboard"})),
+    ] {
+        let layer = LayerId(s.execute(id, params).unwrap()["layer"].as_u64().unwrap());
+        assert!(s.active().unwrap().doc.layer(layer).unwrap().mask.is_none(), "{id} got a mask with no selection");
+    }
+}
+
+#[test]
 fn every_adjustment_command_runs() {
     let mut s = session_with_doc();
     let ids: Vec<&str> =
@@ -368,6 +417,96 @@ fn fill_layers_and_colors() {
     let l = px(&mut s, 0, 10)[0];
     let r = px(&mut s, 63, 10)[0];
     assert!(l < r);
+}
+
+#[test]
+fn fill_layer_pixel_rewrites_refresh_the_effect_maps() {
+    // A pixel-only rewrite of a fill layer's cache (what Image › Transform and friends do)
+    // leaves the Fill spec alone; the CPU effect maps must follow the cache surface, or the
+    // composite keeps the pre-rewrite drop shadow. Warm render vs. purged render must agree.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
+    s.execute("layer.newFillLayer.gradient", json!({"from": "#000000", "to": "#ffffff", "angle": 0})).unwrap();
+    s.edit("shadow", |doc, active| {
+        doc.layer_mut(active.unwrap()).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    let render = |s: &Session| {
+        let d = &s.active().unwrap().doc;
+        photocraft_compose::render(d, d.bounds()).px
+    };
+    // Give the layer the cached-pixels state a PSD import produces (the cache is what Image
+    // › Transform & friends rewrite in place, without touching the Fill spec).
+    s.edit("cache", |doc, active| {
+        let fmt = doc.pixel_format();
+        let l = doc.layer_mut(active.unwrap()).unwrap();
+        let photocraft_doc::LayerContent::Fill(f) = &l.content else { return Err(EngineError::Other("not a fill layer".into())) };
+        let fill = f.clone();
+        let mut surface = photocraft_raster::Surface::new(fmt);
+        surface.fill_rect(photocraft_geom::Rect::new(8, 8, 30, 40), &[0.0, 0.0, 1.0, 1.0]);
+        l.fill_cache = Some(photocraft_doc::FillCache { fill, surface });
+        Ok(())
+    })
+    .unwrap();
+    let warm = render(&s); // populate the effect-map cache
+    let warm2 = render(&s);
+    assert_eq!(warm, warm2, "a warm cache does not change the composite");
+    // Rewrite the cached pixels in place, without touching the Fill spec.
+    s.edit("shift", |doc, active| {
+        let l = doc.layer_mut(active.unwrap()).unwrap();
+        let fc = l.fill_cache.as_mut().unwrap();
+        let moved = photocraft_algo::resample::translate_surface(&fc.surface, 12, 0);
+        fc.surface = moved;
+        Ok(())
+    })
+    .unwrap();
+    let after = render(&s);
+    assert_ne!(after, warm, "the rewritten cache changes the composite");
+    photocraft_compose::purge_effect_cache();
+    let fresh = render(&s);
+    assert_eq!(after, fresh, "the effect maps track the cache surface, not the Fill spec alone");
+}
+
+#[test]
+fn group_effect_maps_follow_child_visibility_and_opacity() {
+    // A styled group's maps come from its children's composite: hiding a child or changing its
+    // opacity must refresh the group's shadow. Warm render vs. purged render must agree.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 48, "background": "transparent"})).unwrap();
+    let a = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("paint.pencil", json!({"points": [[20, 24]], "size": 12, "color": "#ff0000"})).unwrap();
+    let b = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("paint.pencil", json!({"points": [[44, 24]], "size": 12, "color": "#0000ff"})).unwrap();
+    let g = s.execute("layer.new.group", json!({})).unwrap()["layer"].as_u64().unwrap();
+    for l in [a, b] {
+        s.execute("layer.moveTo", json!({"layer": l, "target": g, "position": "into"})).unwrap();
+    }
+    s.edit("shadow", |doc, _| {
+        doc.layer_mut(LayerId(g)).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    let render = |s: &Session| {
+        let d = &s.active().unwrap().doc;
+        photocraft_compose::render(d, d.bounds()).px
+    };
+    let mut prev = render(&s); // populate the effect-map cache
+    type Edit = (&'static str, fn(&mut photocraft_doc::Layer));
+    let edits: [Edit; 2] = [("hide", |l| l.visible = false), ("opacity", |l| l.opacity = 0.3)];
+    for ((name, edit), child) in edits.into_iter().zip([a, b]) {
+        let child = LayerId(child);
+        s.edit(name, |doc, _| {
+            edit(doc.layer_mut(child).unwrap());
+            Ok(())
+        })
+        .unwrap();
+        let warm = render(&s);
+        assert_ne!(warm, prev, "{name}: the composite changes");
+        photocraft_compose::purge_effect_cache();
+        assert_eq!(warm, render(&s), "{name}: the group's maps follow its children");
+        prev = warm;
+    }
 }
 
 #[test]

@@ -1340,6 +1340,7 @@
 	Set background color	Imposta colore sfondo
 	Set foreground color	Imposta colore primo piano
 	Set painting symmetry options	Imposta opzioni simmetria pittura
+	Symmetry Off	Simmetria disattivata
 	Set shape fill type	Imposta tipo riempimento forma
 	Set shape stroke type	Imposta tipo traccia forma
 	Set the text color	Imposta colore testo
@@ -1841,6 +1842,7 @@
 	Show slice numbers	Mostra numeri sezioni
 	Show tooltips	Mostra tooltip
 	Show bounding box when dragging layer	Mostra riquadro selezione al trascinamento livello
+	System title bar	Barra del titolo di sistema
 	Show transformation values	Mostra valori trasformazione
 	Slice color	Colore sezioni
 	Smart guide color	Colore guide intelligenti

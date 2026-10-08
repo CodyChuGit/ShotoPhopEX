@@ -12,6 +12,22 @@ fn d(s: &Session) -> Arc<Document> {
 }
 
 #[test]
+fn record_measurements_refuses_an_area_too_large_to_measure() {
+    // #933: with no selection the whole document is measured, and `width * height` overflowed
+    // u32 on a legal 65536×65536 document, panicking inside `run`.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 65536, "height": 65536, "background": "transparent"})).unwrap();
+    let err = s.execute("image.analysis.recordMeasurements", json!({"source": "selection"})).unwrap_err();
+    assert!(err.to_string().contains("too large to measure"), "{err}");
+    assert!(s.analysis.log.is_empty());
+    // A failed measurement does not use up a label: the next one is still "Measurement 1".
+    s.execute("file.new", json!({"width": 20, "height": 20, "background": "white"})).unwrap();
+    let r = s.execute("image.analysis.recordMeasurements", json!({"source": "selection"})).unwrap();
+    assert_eq!(r["rows"][0]["values"]["label"], "Measurement 1");
+    assert_eq!(r["rows"][0]["values"]["area"], 400.0);
+}
+
+#[test]
 fn measurement_scale_set_query_default_and_undo() {
     let mut s = session(50, 40, 8);
     let r = s.execute("image.analysis.setMeasurementScale", json!({})).unwrap();

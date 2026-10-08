@@ -1637,6 +1637,7 @@
 	Measure	Измерить
 	Heal	Восстановление
 	Off	Выкл
+	Symmetry Off	Без симметрии
 	Heal Off	Восстановление выкл
 	Heal On	Восстановление вкл
 	Heal Auto	Автовосстановление
@@ -2246,6 +2247,7 @@
 	Show slice numbers	Показывать номера фрагментов
 	Show tooltips	Показывать подсказки
 	Show bounding box when dragging layer	Показывать рамку при перетаскивании слоя
+	System title bar	Системная строка заголовка
 	Show transformation values	Показывать значения трансформации
 	Slice color	Цвет фрагмента
 	Smart guide color	Цвет умных направляющих

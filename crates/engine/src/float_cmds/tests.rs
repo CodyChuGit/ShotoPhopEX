@@ -98,3 +98,14 @@ fn float_drag_bench() {
     }
     eprintln!("6000×4000 layer, 500×400 piece: cut {cut:?}, then {:?} per pointer move", t.elapsed() / 20);
 }
+
+#[test]
+fn copy_floats_a_duplicate_and_leaves_the_original() {
+    let (mut s, id) = session();
+    s.execute("select.float", json!({"dx": 30, "dy": 0, "copy": true})).unwrap();
+    let shown = displayed(s.active().unwrap(), (0, 0)).unwrap();
+    assert!(alpha(&shown, id, 12, 12) == 1.0 && alpha(&shown, id, 42, 12) == 1.0, "original kept, copy shown");
+    s.execute("select.drop", json!({})).unwrap();
+    let doc = &s.active().unwrap().doc;
+    assert!(alpha(doc, id, 12, 12) == 1.0 && alpha(doc, id, 42, 12) == 1.0, "dropped: both");
+}

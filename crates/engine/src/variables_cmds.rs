@@ -310,29 +310,27 @@ fn split_csv(line: &str, delim: u8) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut in_q = false;
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
+    let delim = char::from(delim);
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
         if in_q {
-            if c == b'"' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
                     cur.push('"');
-                    i += 1;
+                    let _ = chars.next();
                 } else {
                     in_q = false;
                 }
             } else {
-                cur.push(c as char);
+                cur.push(c);
             }
-        } else if c == b'"' {
+        } else if c == '"' {
             in_q = true;
         } else if c == delim {
             out.push(std::mem::take(&mut cur));
         } else {
-            cur.push(c as char);
+            cur.push(c);
         }
-        i += 1;
     }
     out.push(cur);
     out

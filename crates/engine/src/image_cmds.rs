@@ -599,6 +599,33 @@ mod tests {
         assert_eq!(doc(&s).resolution_dpi, 300.0);
     }
 
+    /// #1114: nearest neighbor reduction keeps source values without averaging.
+    #[test]
+    fn nearest_neighbor_reduction_keeps_source_values() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        s.execute("tools.setColors", json!({"foreground": "#000000", "background": "#ffffff"})).unwrap();
+        for y in 0..8 {
+            for x in 0..8 {
+                if (x + y) % 2 == 0 {
+                    s.execute("select.rect", json!({"x": x, "y": y, "width": 1, "height": 1})).unwrap();
+                    s.execute("edit.fill", json!({"contents": "foreground"})).unwrap();
+                }
+            }
+        }
+        s.execute("select.deselect", json!({})).unwrap();
+        let st = s.active().unwrap();
+        let before = st.doc.layers[0].surface().unwrap().rgba(0, 0);
+        assert!(before[0] < 0.01, "setup: (0,0) should be black, got {before:?}");
+        s.execute("image.imageSize", json!({"width": 4, "height": 4, "resample": "nearest"})).unwrap();
+        let st = s.active().unwrap();
+        let surf = st.doc.layers[0].surface().unwrap();
+        for (x, y) in [(0, 0), (1, 1), (2, 3)] {
+            let v = surf.rgba(x, y)[0];
+            assert!(v < 0.01 || v > 0.99, "nearest produced an averaged value {v} at ({x},{y})");
+        }
+    }
+
     #[test]
     fn canvas_size_anchors_and_extends_background() {
         let mut s = session();

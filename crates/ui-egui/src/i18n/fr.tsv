@@ -1329,6 +1329,7 @@
 	Set background color	Définir la couleur d'arrière-plan
 	Set foreground color	Définir la couleur de premier plan
 	Set painting symmetry options	Définir les options de symétrie de peinture
+	Symmetry Off	Symétrie désactivée
 	Set shape fill type	Définir le type de remplissage de la forme
 	Set shape stroke type	Définir le type de contour de la forme
 	Set the text color	Définir la couleur du texte
@@ -2462,6 +2463,7 @@
 	Invalid {mode} profile	Profil {mode} non valide
 	Unnamed {mode} profile	Profil {mode} sans nom
 	Show bounding box when dragging layer	Afficher le cadre de sélection lors du déplacement du calque
+	System title bar	Barre de titre du système
 	Freeze Lasso: drag to freeze an area, Alt-drag to thaw it (L)	Lasso de figeage : faites glisser pour figer une zone, Alt+glisser pour la libérer (L)
 	Rendering Mode	Mode de rendu
 	Automatic (recommended)	Automatique (recommandé)

@@ -41,6 +41,7 @@ pub mod fx_view_cmds;
 pub mod gallery_cmds;
 pub mod gradient_fill_cmds;
 pub mod group_view_cmds;
+pub mod hidden_target;
 pub mod image_cmds;
 pub mod inspect;
 pub mod jobs;

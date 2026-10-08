@@ -315,6 +315,9 @@ pub struct Panels {
     /// Window › Character / Paragraph: the Character | Paragraph dock group (#150).
     #[serde(default)]
     pub character: bool,
+    /// The toolbar's header chevron: two columns even when one fits (#1197).
+    #[serde(default)]
+    pub toolbar_double: bool,
 }
 
 impl Default for Panels {
@@ -330,6 +333,7 @@ impl Default for Panels {
             status_bar: true,
             brush_settings: false,
             character: false,
+            toolbar_double: false,
         }
     }
 }

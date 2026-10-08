@@ -35,6 +35,7 @@ mod mac_window;
 // Pure logic is tested on every platform; only Linux runs the check.
 #[cfg(any(target_os = "linux", test))]
 mod linux_libs;
+mod logging;
 mod monitor_profile;
 mod services;
 // Windows gets pen pressure from winit (WM_POINTER); the web runner has its own listener.
@@ -53,11 +54,20 @@ const APP_ID: &str = "ai.storyteller.photocraft";
 /// keeps its traffic lights over the integrated title strip.
 const CUSTOM_TITLEBAR: bool = !cfg!(target_os = "macos");
 
+/// Whether this start draws its own title bar: Windows and Linux do, unless Preferences ›
+/// Interface › System Title Bar asks for the system's (#1271, #1316). Read from the saved
+/// preferences before the window opens; a missing or unreadable file keeps the default.
+fn custom_titlebar(prefs_file: Option<&std::path::Path>) -> bool {
+    let prefs: photocraft_engine::prefs::Preferences =
+        prefs_file.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    CUSTOM_TITLEBAR && !prefs.interface.system_title_bar
+}
+
 /// The main window: 1440 × 900 (shrunk to fit the monitor, and maximized on the first frame
 /// when it still doesn't fit, `work_area::fit_window`), centred on the main monitor. Without
 /// `centered`, Windows cascades each new window from the top-left corner, so it opened at a
 /// different offset every launch (#419). Wayland compositors place windows themselves.
-fn native_options() -> eframe::NativeOptions {
+fn native_options(custom_titlebar: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(app_icon::window_icon())
@@ -66,7 +76,7 @@ fn native_options() -> eframe::NativeOptions {
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([760.0, 480.0])
             .with_drag_and_drop(true)
-            .with_decorations(!CUSTOM_TITLEBAR)
+            .with_decorations(!custom_titlebar)
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
             .with_title_shown(false),
@@ -121,6 +131,8 @@ mod control_port_tests {
 }
 
 fn main() -> eframe::Result {
+    // First, so the panic hook and every start-up warning are recorded (`logging`).
+    let logger = logging::install();
     crash_guard::install_hook();
     let mut control_port: Option<u16> = None;
     let mut control_arg_errors: Vec<String> = Vec::new();
@@ -171,6 +183,16 @@ fn main() -> eframe::Result {
             eprintln!("photocraft: {error}");
         }
         std::process::exit(code);
+    }
+
+    // The log file lives under the settings directory; opened after the arguments, so `--version`
+    // and usage errors leave no file behind. Records logged until now are written to it first.
+    if let (Some(logger), Some(dir)) = (logger, services::config_dir()) {
+        match logger.attach_dir(&dir.join("logs")) {
+            Ok(path) => log::info!("PhotoCraft {}, log file {}", photocraft_engine::build_info::long_version(), path.display()),
+            // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
+            Err(e) => log::warn!("no log file: {e}"),
+        }
     }
 
     // winit and wgpu dlopen the windowing and GPU libraries, and some of those crates panic when
@@ -227,7 +249,8 @@ fn main() -> eframe::Result {
     let monitor = monitor_profile::detect_async();
     // Brush presets load in the background; the app attaches them when they arrive.
     let presets = services::presets_dir().map(photocraft_engine::preset_store::open_dir_async);
-    let mut options = native_options();
+    let custom_titlebar = custom_titlebar(services::prefs_file().as_deref());
+    let mut options = native_options(custom_titlebar);
     // eframe restores the saved window layout before our code runs; drop values that would crash it.
     ui_state::sanitize(options.persistence_path.as_deref());
     // Crash-safe GPU startup (#4): pick the backend (a marker left by a start that died in the
@@ -280,7 +303,7 @@ fn main() -> eframe::Result {
             }
             let mut app = PhotocraftApp::new(Session::new(), services);
             app.integrated_titlebar = cfg!(target_os = "macos");
-            app.custom_titlebar = CUSTOM_TITLEBAR;
+            app.custom_titlebar = custom_titlebar;
             // Only the title bar's free gap drags the window, never the menus (mac_window.rs).
             #[cfg(target_os = "macos")]
             mac_window::disable_native_title_drag();
@@ -390,12 +413,22 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     );
-    // Closed before the first frames rendered: not a driver crash. (A start that failed to
-    // create its device keeps the marker, so the next one tries a safer backend.)
-    if result.is_ok()
-        && let Some(s) = sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    // Closed or failed outside graphics initialization: not a driver crash. A renderer
+    // error keeps the marker, so the next start tries a safer backend.
+    if !gpu_startup::keep_marker_after_run(&result)
+        && let Some(mut s) = sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     {
-        s.finish();
+        if result.is_err()
+            && let Some(marker) = previous.crashed()
+        {
+            // This failure supplies no new graphics-crash evidence: retain the previous
+            // marker, rather than recording this attempt's fallback backend.
+            if let Err(error) = s.write(marker.clone()) {
+                log::warn!("couldn't restore previous GPU startup marker: {error}");
+            }
+        } else {
+            s.finish();
+        }
     }
     // Retry in a fresh process: winit event loops cannot be recreated reliably in-process.
     // Only renderer initialization failures qualify; never restart after editing has begun.
@@ -424,7 +457,7 @@ fn main() -> eframe::Result {
 mod tests {
     #[test]
     fn window_and_panel_geometry_survive_a_restart() {
-        let options = super::native_options();
+        let options = super::native_options(super::CUSTOM_TITLEBAR);
         assert!(options.persist_window);
         assert_eq!(options.persistence_path, super::services::config_dir().map(|dir| dir.join("ui.ron")));
 
@@ -462,10 +495,31 @@ mod tests {
 
     #[test]
     fn the_window_opens_centred_at_its_default_size() {
-        let o = super::native_options();
+        let o = super::native_options(super::CUSTOM_TITLEBAR);
         assert!(o.centered, "#419: centred, not cascaded from the top-left corner");
         assert_eq!(o.viewport.inner_size, Some(egui::vec2(1440.0, 900.0)));
         // eframe shrinks the start size to the monitor, so the centred position is on-screen.
         assert_ne!(o.viewport.clamp_size_to_monitor_size, Some(false));
+    }
+
+    #[test]
+    fn the_system_title_bar_preference_keeps_the_window_decorations() {
+        // #1271, #1316: Preferences › Interface › System Title Bar gives the window back its
+        // system decorations on Windows and Linux; macOS always has them.
+        let dir = std::env::temp_dir().join(format!("pc-titlebar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("prefs.json");
+        assert_eq!(super::custom_titlebar(None), super::CUSTOM_TITLEBAR, "no preferences file: the default");
+        std::fs::write(&file, "not json").unwrap();
+        assert_eq!(super::custom_titlebar(Some(&file)), super::CUSTOM_TITLEBAR, "an unreadable file: the default");
+        std::fs::write(&file, r#"{"interface":{"systemTitleBar":true}}"#).unwrap();
+        assert!(!super::custom_titlebar(Some(&file)));
+        assert_eq!(super::native_options(false).viewport.decorations, Some(true));
+        std::fs::write(&file, r#"{"interface":{"systemTitleBar":false}}"#).unwrap();
+        assert_eq!(super::custom_titlebar(Some(&file)), super::CUSTOM_TITLEBAR);
+        if super::CUSTOM_TITLEBAR {
+            assert_eq!(super::native_options(true).viewport.decorations, Some(false));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

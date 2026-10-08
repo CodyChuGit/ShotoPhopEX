@@ -1234,17 +1234,33 @@ fn layer_identity(layer: &Layer, h: &mut std::collections::hash_map::DefaultHash
         h.finish()
     }
     layer.id.0.hash(h);
-    layer.visible.hash(h);
-    layer.opacity.to_bits().hash(h);
+    // What the maps depend on: `fill_opacity` shades them; layer `opacity` is applied when the
+    // maps are composited and `visible` only skips the lookup entirely, so neither belongs in
+    // the key (an opacity drag must not rebuild shadows over the whole layer; the GPU's
+    // `fx::shape_key` keeps them out for the same reason).
     layer.fill_opacity.to_bits().hash(h);
     match &layer.content {
         LayerContent::Group(g) => {
             for c in &g.children {
+                // A styled group's maps come from its children's composite, so how each child
+                // composites (unlike the group's own visibility and opacity) shapes them.
+                (c.visible, c.opacity.to_bits(), c.clipped).hash(h);
+                format!("{:?}", c.blend).hash(h);
                 layer_identity(c, h);
             }
             format!("{:?}", g.artboard).hash(h);
         }
-        LayerContent::Fill(f) => format!("{f:?}").hash(h),
+        LayerContent::Fill(f) => {
+            format!("{f:?}").hash(h);
+            // The cached pixels are what shapes the maps while they match the fill: a
+            // pixel-only rewrite of the cache (Image › Transform, crop) leaves `f` alone, and
+            // the stale maps would keep shadowing the pre-rewrite shape.
+            if let Some(c) = &layer.fill_cache
+                && c.fill == *f
+            {
+                surface_fp(&c.surface).hash(h);
+            }
+        }
         LayerContent::Adjustment(a) => format!("{a:?}").hash(h),
         _ => layer.surface().map_or(0, surface_fp).hash(h),
     }

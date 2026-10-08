@@ -512,6 +512,46 @@ impl Surface {
         out
     }
 
+    /// The surface moved by whole pixels: its encoded samples copied tile to tile (no float
+    /// round trip, no intermediate buffer); moves by whole tiles share the tiles themselves.
+    /// `content` must hold every pixel that isn't the default one (`content_bounds`, say): only
+    /// tiles it reaches are kept.
+    pub fn translated(&self, dx: i32, dy: i32, content: Rect) -> Surface {
+        let mut out = Surface { format: self.format, default_pixel: self.default_pixel.clone(), tiles: BTreeMap::new() };
+        let sources = || self.tiles.iter().filter(move |(c, _)| !c.rect().intersect(&content).is_empty());
+        if dx % TILE_SIZE == 0 && dy % TILE_SIZE == 0 {
+            let (tx, ty) = (dx / TILE_SIZE, dy / TILE_SIZE);
+            out.tiles = sources().map(|(c, t)| (TileCoord::new(c.tx.saturating_add(tx), c.ty.saturating_add(ty)), t.clone())).collect();
+            return out;
+        }
+        let bpp = self.format.bytes_per_pixel();
+        let moved = content.translate(dx, dy);
+        let targets: std::collections::BTreeSet<TileCoord> = sources().flat_map(|(c, _)| c.rect().translate(dx, dy).intersect(&moved).tiles()).collect();
+        for dc in targets {
+            let mut tile = Tile::filled(&self.format, &self.default_pixel);
+            let dr = dc.rect();
+            let sr = dr.translate(dx.saturating_neg(), dy.saturating_neg());
+            for sc in sr.intersect(&content).tiles() {
+                let Some(st) = self.tiles.get(&sc) else { continue };
+                let part = sc.rect().intersect(&sr);
+                let span = part.width() as usize * bpp;
+                // Offsets inside the tiles (the target's computed wide: an offset near the i32
+                // limits saturates `translate`, and such rows are skipped rather than misplaced).
+                let at = |x: i64, y: i64| usize::try_from(y * i64::from(TILE_SIZE) + x).ok().map(|i| i * bpp);
+                for y in part.y0..part.y1 {
+                    let src = at(i64::from(part.x0 - sc.tx * TILE_SIZE), i64::from(y - sc.ty * TILE_SIZE));
+                    let dst = at(i64::from(part.x0) + i64::from(dx) - i64::from(dr.x0), i64::from(y) + i64::from(dy) - i64::from(dr.y0));
+                    let (Some(src), Some(dst)) = (src, dst) else { continue };
+                    if let (Some(d), Some(s)) = (tile.data.get_mut(dst..dst + span), st.data.get(src..src + span)) {
+                        d.copy_from_slice(s);
+                    }
+                }
+            }
+            out.tiles.insert(dc, Arc::new(tile));
+        }
+        out
+    }
+
     /// Convert to another pixel format (depth and/or model; colour models via [`convert_pixel`]).
     pub fn convert(&self, to: PixelFormat) -> Surface {
         let mut out = Surface::with_default(to, &convert_pixel(&self.format, &to, &self.default_pixel()));
@@ -797,6 +837,37 @@ mod tests {
         g.write_pixel(0, 0, &[0.5, 1.0]);
         let v = g.rgba(0, 0);
         assert!((v[0] - v[2]).abs() < 1e-6 && (v[3] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn translated_matches_reading_the_moved_pixels() {
+        // Any offset (whole tiles, negative, across tile edges), every depth, a non-zero default.
+        for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F, PixelFormat::GRAY8] {
+            let mut s = Surface::with_default(fmt, &vec![0.25; fmt.channels()]);
+            let r = Rect::new(-37, 200, 530, 300);
+            let v: Vec<f32> = (0..r.width() * r.height() * fmt.channels() as u32).map(|i| (i % 251) as f32 / 250.0).collect();
+            s.write_region(r, &v);
+            for (dx, dy) in [(0, 0), (256, -512), (1, 0), (-3, 7), (300, -257), (-1000, 999)] {
+                let t = s.translated(dx, dy, s.content_bounds());
+                let moved = r.translate(dx, dy).inflate(3);
+                assert_eq!(t.read_region(moved), s.read_region(moved.translate(-dx, -dy)), "{fmt:?} by ({dx}, {dy})");
+                assert_eq!(t.default_pixel(), s.default_pixel());
+                assert_eq!(t.to_interleaved(r.translate(dx, dy)), s.to_interleaved(r), "{fmt:?} by ({dx}, {dy}): not an exact copy");
+            }
+            // Whole tiles: the tiles are shared, not copied.
+            let t = s.translated(512, -256, s.content_bounds());
+            assert!(s.tiles().zip(t.tiles()).all(|((_, a), (_, b))| Arc::ptr_eq(a, b)));
+            // Tiles without content (allocated, default pixels) are left behind.
+            let mut padded = s.clone();
+            padded.fill_rect(Rect::new(2000, 2000, 2100, 2100), &s.default_pixel());
+            assert_eq!(padded.translated(5, 5, s.content_bounds()).tile_count(), s.translated(5, 5, s.content_bounds()).tile_count());
+        }
+        // Offsets at the limits don't panic.
+        let mut s = Surface::new(PixelFormat::GRAY8);
+        s.write_pixel(5, 5, &[1.0]);
+        let all = Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX);
+        let _ = s.translated(i32::MAX, i32::MIN, all);
+        let _ = s.translated(i32::MIN + 1, 3, all);
     }
 
     proptest! {

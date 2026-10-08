@@ -1016,7 +1016,7 @@ fn path_stroke(s: &mut Session, p: &Value) -> Result<Value> {
         "brush" | "eraser" => {}
         o => return Err(bad("path.stroke", format!("unknown tool `{o}` (brush|pencil|eraser)"))),
     }
-    crate::brush_cmds::validate_brush_size(&brush, "path.stroke")?;
+    crate::brush_cmds::validate_brush(&brush, "path.stroke")?;
     let lines = vector::flatten_path(&path, 0.1);
     let id = layer_id(s, p)?;
     let bg = s.tools.background;

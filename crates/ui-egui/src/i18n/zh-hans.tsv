@@ -1352,6 +1352,7 @@
 	Set background color	设置背景色
 	Set foreground color	设置前景色
 	Set painting symmetry options	设置绘画对称选项
+	Symmetry Off	关闭对称
 	Set shape fill type	设置形状填充类型
 	Set shape stroke type	设置形状描边类型
 	Set the text color	设置文字颜色
@@ -1851,6 +1852,7 @@
 	Show slice numbers	显示切片编号
 	Show tooltips	显示工具提示
 	Show bounding box when dragging layer	拖动图层时显示边界框
+	System title bar	系统标题栏
 	Show transformation values	显示变换值
 	Slice color	切片颜色
 	Smart guide color	智能参考线颜色

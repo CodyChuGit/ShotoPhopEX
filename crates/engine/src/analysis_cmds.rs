@@ -510,9 +510,12 @@ fn summary(feats: &[Feature], all_values_median: f64) -> Feature {
     }
 }
 
-/// Selection mask (coverage ≥ 0.5) over `r`, or every pixel when there is no selection.
-fn selection_mask(d: &Document, r: Rect) -> Vec<bool> {
-    let n = (r.width() * r.height()) as usize;
+/// Largest area Record Measurements handles in one pass: the gray render alone is 16 bytes per
+/// pixel, and the label buffer and mask come on top (#933).
+pub const MAX_MEASURE_PIXELS: u64 = 400_000_000;
+
+/// Selection mask (coverage ≥ 0.5) over `r` (`n` pixels), or every pixel when there is no selection.
+fn selection_mask(d: &Document, r: Rect, n: usize) -> Vec<bool> {
     match &d.selection {
         None => vec![true; n],
         Some(sel) => {
@@ -536,8 +539,19 @@ fn selection_rows(d: &Document) -> Result<(Feature, Vec<Feature>)> {
     if r.is_empty() {
         return Err(EngineError::Other("the selection is empty".into()));
     }
+    // A legal 65536×65536 document is 2^32 pixels: size everything from a checked count,
+    // and refuse what cannot be measured in one pass instead of overflowing (#933).
+    let n = u64::from(r.width()) * u64::from(r.height());
+    let Some(n) = (n <= MAX_MEASURE_PIXELS).then(|| usize::try_from(n).ok()).flatten() else {
+        return Err(EngineError::Other(format!(
+            "the area is too large to measure ({}×{} px; max {} megapixels): select a smaller region",
+            r.width(),
+            r.height(),
+            MAX_MEASURE_PIXELS / 1_000_000
+        )));
+    };
     let (w, h) = (r.width() as usize, r.height() as usize);
-    let mask = selection_mask(d, r);
+    let mask = selection_mask(d, r, n);
     let gray = gray_image(d, r);
     let range = gray_range(d.depth);
     let feats = measure_features(&mask, &gray, w, h, (r.x0, r.y0), range);
@@ -906,8 +920,8 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
         x @ ("selection" | "ruler" | "count") => x,
         other => return Err(bad(CMD, format!("unknown source `{other}` (auto|selection|ruler|count)"))),
     };
-    s.analysis.next_measurement += 1;
-    let label = format!("Measurement {}", s.analysis.next_measurement);
+    // Numbered only once the rows exist, so a failed measurement does not use up a label.
+    let label = format!("Measurement {}", s.analysis.next_measurement + 1);
     let now = p.get("dateTime").and_then(Value::as_str).map(str::to_string).unwrap_or_else(now_iso);
     let factor = d.measurement.scale.factor();
     let mut rows: Vec<Map<String, Value>> = Vec::new();
@@ -939,6 +953,7 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
             rows.push(m);
         }
     }
+    s.analysis.next_measurement += 1;
     let keep = s.analysis.data_points.of(source).to_vec();
     let mut ids = Vec::new();
     for mut m in rows {

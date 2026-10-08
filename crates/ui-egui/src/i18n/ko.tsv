@@ -1324,6 +1324,7 @@
 	Set background color	배경색 설정
 	Set foreground color	전경색 설정
 	Set painting symmetry options	페인팅 대칭 옵션 설정
+	Symmetry Off	대칭 끔
 	Set shape fill type	모양 채우기 유형 설정
 	Set shape stroke type	모양 획 유형 설정
 	Set the text color	텍스트 색상 설정
@@ -1991,6 +1992,7 @@
 	Invalid {mode} profile	유효하지 않은 {mode} 프로파일
 	Unnamed {mode} profile	이름 없는 {mode} 프로파일
 	Show bounding box when dragging layer	레이어를 드래그할 때 테두리 상자 표시
+	System title bar	시스템 제목 표시줄
 	Mixer Brush Tool	혼합 브러시 도구
 	Rendering Mode	렌더링 모드
 	Automatic (recommended)	자동(권장)

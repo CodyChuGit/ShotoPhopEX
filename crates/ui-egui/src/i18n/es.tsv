@@ -1342,6 +1342,7 @@
 	Set background color	Establecer el color de fondo
 	Set foreground color	Establecer el color frontal
 	Set painting symmetry options	Establecer opciones de simetría de pintura
+	Symmetry Off	Simetría desactivada
 	Set shape fill type	Establecer el tipo de relleno de la forma
 	Set shape stroke type	Establecer el tipo de trazo de la forma
 	Set the text color	Establecer el color del texto
@@ -1844,6 +1845,7 @@
 	Show slice numbers	Mostrar los números de sección
 	Show tooltips	Mostrar las descripciones emergentes
 	Show bounding box when dragging layer	Mostrar el cuadro delimitador al arrastrar la capa
+	System title bar	Barra de título del sistema
 	Show transformation values	Mostrar los valores de transformación
 	Slice color	Color de las secciones
 	Smart guide color	Color de las guías inteligentes

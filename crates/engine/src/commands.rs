@@ -179,11 +179,19 @@ pub fn blend_from_str(s: &str) -> Option<BlendMode> {
     std::iter::once(BlendMode::PassThrough).chain(BlendMode::LAYER_MODES).find(|m| norm(m.label()) == want || norm(&format!("{m:?}")) == want)
 }
 
+/// The active selection as the mask of a layer being created, or None without a selection.
+/// Photoshop masks a new adjustment or fill layer with the selection, so the adjustment acts on
+/// the selected area only (#1250); the selection itself stays, as Reveal Selection leaves it.
+pub(crate) fn selection_mask(doc: &Document) -> Option<LayerMask> {
+    doc.selection.as_ref().map(|sel| LayerMask { surface: sel.clone(), ..LayerMask::reveal_all() })
+}
+
 fn new_adjustment(s: &mut Session, adj: Adjustment) -> Result<Value> {
     let label = format!("New {} Layer", adj.label());
     let name = adj.label().to_string();
     let id = s.edit(&label, |doc, active| {
-        let l = Layer::new(doc.next_layer_name(&name), LayerContent::Adjustment(adj));
+        let mut l = Layer::new(doc.next_layer_name(&name), LayerContent::Adjustment(adj));
+        l.mask = selection_mask(doc);
         let id = doc.insert_above(*active, l);
         *active = Some(id);
         Ok(id)
@@ -629,6 +637,7 @@ fn build() -> Vec<CommandSpec> {
                 let fmt = doc.pixel_format();
                 let mut bg = Layer::raster("Background", fmt);
                 bg.locks.transparency = true;
+                bg.locks.position = true;
                 *crate::pixels_mut(&mut bg)? = photocraft_compose::flatten_to_surface(doc, fmt, Some([1.0, 1.0, 1.0]));
                 *active = Some(bg.id);
                 doc.layers = vec![bg];
@@ -639,7 +648,8 @@ fn build() -> Vec<CommandSpec> {
         cmd!("layer.newFillLayer.solidColor", "Solid Color…", ["Layer", "New Fill Layer"], None, r##"{"color":"#rrggbb"=foreground}"##, has_doc, |s, p| {
             let c = color_param(p, "color", s.tools.foreground);
             let id = s.edit("New Color Fill Layer", |doc, active| {
-                let l = Layer::new(doc.next_layer_name("Color Fill"), LayerContent::Fill(Fill::Solid(Color::rgba(c[0], c[1], c[2], c[3]))));
+                let mut l = Layer::new(doc.next_layer_name("Color Fill"), LayerContent::Fill(Fill::Solid(Color::rgba(c[0], c[1], c[2], c[3]))));
+                l.mask = selection_mask(doc);
                 let id = doc.insert_above(*active, l);
                 *active = Some(id);
                 Ok(id)
@@ -667,7 +677,9 @@ fn build() -> Vec<CommandSpec> {
                         style,
                         reverse,
                     );
-                    let id = doc.insert_above(*active, Layer::new(doc.next_layer_name("Gradient Fill"), LayerContent::Fill(fill)));
+                    let mut l = Layer::new(doc.next_layer_name("Gradient Fill"), LayerContent::Fill(fill));
+                    l.mask = selection_mask(doc);
+                    let id = doc.insert_above(*active, l);
                     *active = Some(id);
                     Ok(id)
                 })?;

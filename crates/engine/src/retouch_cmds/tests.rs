@@ -874,3 +874,31 @@ fn content_aware_move_fails_gracefully() {
     }
     assert!(s.execute("paint.contentAwareMove", json!({"offset": [10, 0], "structure": 7.0, "color": null})).is_ok());
 }
+
+#[test]
+fn clone_and_heal_with_a_far_source_are_plain_errors() {
+    // Issue #1111: a translation whose offset saturates `Rect::translate` used to sample a
+    // narrower window, relabel it full-size and index past the buffer (a panic the dispatch
+    // guard turned into an internal error). It is a bad-params error, and the layer is untouched.
+    for cmd in ["paint.cloneStamp", "paint.healingBrush"] {
+        let mut s = session(40, 30, 8, "rgb");
+        paint_layer(&mut s, texture);
+        let before = rgba(&s, 10, 10);
+        let steps = s.active().unwrap().history.past_len();
+        for p in [
+            json!({"points": [[10, 10]], "source": [3e9, 0]}),
+            json!({"points": [[10, 10]], "source": [0, -3e9]}),
+            json!({"points": [[10, 10]], "offset": [2147483647, 0]}),
+            json!({"points": [[10, 10], [30, 10]], "source": [2147483640, 0]}),
+        ] {
+            let err = s.execute(cmd, p.clone()).expect_err(&format!("{cmd} {p}"));
+            assert!(matches!(err, EngineError::BadParams { .. }), "{cmd} {p}: {err:?}");
+        }
+        assert_eq!(rgba(&s, 10, 10), before, "{cmd}: a refused stroke changed the layer");
+        assert_eq!(s.active().unwrap().history.past_len(), steps, "{cmd}: a refused stroke recorded a history step");
+        // A source far outside the canvas but inside the coordinate range is still fine: it clones
+        // transparency.
+        s.execute(cmd, json!({"points": [[10, 10]], "source": [1e6, 1e6]})).unwrap();
+        s.execute(cmd, json!({"points": [[10, 10], [30, 10]], "source": [2147483000, 0]})).unwrap();
+    }
+}

@@ -225,3 +225,33 @@ fn out_of_range_comp_ids_are_rejected_not_wrapped() {
     assert!(r.is_err());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn unreachable_comp_positions_leave_the_layer_in_place() {
+    // #1017: a recorded position whose distance from the layer's current one leaves i32 range
+    // (e.g. from a file) panicked on apply. The move is skipped; visibility still applies.
+    for target in [(i32::MIN, 4), (4, i32::MIN)] {
+        let (mut s, a, b) = session(8);
+        let comp = LayerComp {
+            id: 1,
+            name: "Far".into(),
+            comment: String::new(),
+            apply_visibility: true,
+            apply_position: true,
+            apply_appearance: false,
+            states: vec![
+                CompLayerState { layer: a, visible: Some(false), position: Some(target), appearance: None },
+                // Control: an ordinary position on another layer still moves it.
+                CompLayerState { layer: b, visible: None, position: Some((31, 22)), appearance: None },
+            ],
+        };
+        s.edit("far", |d, _| {
+            apply_comp(d, &comp, false);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(pos(&s, a), Some((4, 4)), "{target:?}");
+        assert!(!doc(&s).layer(a).unwrap().visible);
+        assert_eq!(pos(&s, b), Some((31, 22)));
+    }
+}

@@ -26,6 +26,7 @@ enum P {
     Blend,
     Choice(&'static [(&'static str, &'static str)]),
     Check,
+    Angle,
     /// A pattern from the dialog's `patternList` field (`[[id, name], …]`).
     Pattern,
 }
@@ -93,7 +94,7 @@ fn spec(kind: &str) -> &'static [(&'static str, &'static str, P)] {
             ("blend", "Blend Mode", P::Blend),
             ("color", "Color", P::Color),
             ("opacity", "Opacity", P::Slider(0.0, 100.0, "%")),
-            ("angle", "Angle", P::Slider(-180.0, 180.0, "°")),
+            ("angle", "Angle", P::Angle),
             ("useGlobalLight", "Use Global Light", P::Check),
             ("distance", "Distance", P::Slider(0.0, 300.0, "px")),
             ("spread", "Spread", P::Slider(0.0, 100.0, "%")),
@@ -106,7 +107,7 @@ fn spec(kind: &str) -> &'static [(&'static str, &'static str, P)] {
             ("blend", "Blend Mode", P::Blend),
             ("color", "Color", P::Color),
             ("opacity", "Opacity", P::Slider(0.0, 100.0, "%")),
-            ("angle", "Angle", P::Slider(-180.0, 180.0, "°")),
+            ("angle", "Angle", P::Angle),
             ("useGlobalLight", "Use Global Light", P::Check),
             ("distance", "Distance", P::Slider(0.0, 300.0, "px")),
             ("choke", "Choke", P::Slider(0.0, 100.0, "%")),
@@ -149,14 +150,14 @@ fn spec(kind: &str) -> &'static [(&'static str, &'static str, P)] {
             ("to", "To", P::Color),
             ("reverse", "Reverse", P::Check),
             ("style", "Style", P::Choice(GSTYLE)),
-            ("angle", "Angle", P::Slider(-180.0, 180.0, "°")),
+            ("angle", "Angle", P::Angle),
             ("scale", "Scale", P::Slider(10.0, 150.0, "%")),
         ],
         "patternOverlay" => &[
             ("blend", "Blend Mode", P::Blend),
             ("opacity", "Opacity", P::Slider(0.0, 100.0, "%")),
             ("pattern", "Pattern", P::Pattern),
-            ("angle", "Angle", P::Slider(-180.0, 180.0, "°")),
+            ("angle", "Angle", P::Angle),
             ("scale", "Scale", P::Slider(1.0, 1000.0, "%")),
             ("link", "Link with Layer", P::Check),
         ],
@@ -166,7 +167,7 @@ fn spec(kind: &str) -> &'static [(&'static str, &'static str, P)] {
             ("direction", "Direction", P::Choice(DIR)),
             ("size", "Size", P::Slider(0.0, 250.0, "px")),
             ("soften", "Soften", P::Slider(0.0, 16.0, "px")),
-            ("angle", "Angle", P::Slider(-180.0, 180.0, "°")),
+            ("angle", "Angle", P::Angle),
             ("useGlobalLight", "Use Global Light", P::Check),
             ("altitude", "Altitude", P::Slider(0.0, 90.0, "°")),
         ],
@@ -174,7 +175,7 @@ fn spec(kind: &str) -> &'static [(&'static str, &'static str, P)] {
             ("blend", "Blend Mode", P::Blend),
             ("color", "Color", P::Color),
             ("opacity", "Opacity", P::Slider(0.0, 100.0, "%")),
-            ("angle", "Angle", P::Slider(-180.0, 180.0, "°")),
+            ("angle", "Angle", P::Angle),
             ("distance", "Distance", P::Slider(0.0, 250.0, "px")),
             ("size", "Size", P::Slider(0.0, 250.0, "px")),
             ("invert", "Invert", P::Check),
@@ -366,10 +367,29 @@ fn set_param(f: &mut Map<String, Value>, id: &str, key: &str, value: Value) {
         }
         return;
     }
+    // All globally lit instances share one angle, including disabled instances.
+    // Keep the opening angle intact for automation's changed-value fallback in apply().
+    let shared = entry(f, id).and_then(|e| e.get("params")).is_some_and(|p| {
+        (key == "angle" && p.get("useGlobalLight").and_then(Value::as_bool) == Some(true)) || (key == "useGlobalLight" && value.as_bool() == Some(true))
+    });
+    let shared_angle =
+        if shared { if key == "angle" { Some(value.clone()) } else { f.get("pendingGlobalLight").or_else(|| f.get("globalLight")).cloned() } } else { None };
     if let Some(e) = entry_mut(f, id)
         && let Some(o) = e.get_mut("params").and_then(Value::as_object_mut)
     {
         o.insert(key.into(), value);
+    }
+    if let Some(angle) = shared_angle {
+        f.insert("pendingGlobalLight".into(), angle.clone());
+        if let Some(effects) = f.get_mut("effects").and_then(Value::as_array_mut) {
+            for e in effects {
+                if let Some(p) = e.get_mut("params").and_then(Value::as_object_mut)
+                    && p.get("useGlobalLight").and_then(Value::as_bool) == Some(true)
+                {
+                    p.insert("angle".into(), angle.clone());
+                }
+            }
+        }
     }
 }
 
@@ -388,7 +408,7 @@ fn next_id(f: &Map<String, Value>) -> String {
 /// Adds an instance of `kind`, right after the last one of its kind (the list,
 /// and so the rendered stack, keeps the layer's effect order), and selects it.
 fn add_instance(f: &mut Map<String, Value>, kind: &str) {
-    let light = f.get("globalLight").and_then(Value::as_f64).unwrap_or(120.0) as f32;
+    let light = f.get("pendingGlobalLight").or_else(|| f.get("globalLight")).and_then(Value::as_f64).unwrap_or(120.0) as f32;
     let id = next_id(f);
     let new = json!({"id": id, "kind": kind, "on": true, "params": fresh_params(kind, light)});
     if let Some(a) = f.get_mut("effects").and_then(Value::as_array_mut) {
@@ -573,7 +593,7 @@ fn apply(f: &Map<String, Value>, mut run: impl FnMut(&str, Value) -> Result<Valu
             light_angle = Some(angle);
         }
     }
-    if let Some(angle) = light_angle {
+    if let Some(angle) = f.get("pendingGlobalLight").and_then(Value::as_f64).or(light_angle) {
         run("layer.layerStyle.globalLight", json!({"angle": angle}))?;
     }
     Ok(Value::Null)
@@ -582,7 +602,7 @@ fn apply(f: &Map<String, Value>, mut run: impl FnMut(&str, Value) -> Result<Valu
 /// Hash of the fields that change the rendered style (not the selected page).
 pub fn preview_hash(f: &Map<String, Value>) -> u64 {
     f.iter()
-        .filter(|(k, _)| k.as_str() == "layer" || k.as_str() == "effects" || k.as_str() == "p:blendingOptions")
+        .filter(|(k, _)| matches!(k.as_str(), "layer" | "effects" | "p:blendingOptions" | "pendingGlobalLight"))
         .flat_map(|(k, v)| k.bytes().chain(v.to_string().into_bytes()))
         .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
@@ -604,7 +624,7 @@ pub fn preview_document(
 /// Clicking Cancel leaves the document untouched; clicking OK commits.
 fn apply_style_preset(app: &PhotocraftApp, f: &mut Map<String, Value>, name: &str) {
     let Ok(style) = photocraft_engine::presets::styles::find_style(&app.session, &json!({"preset": name}), "apply_style_preset") else { return };
-    let light = f.get("globalLight").and_then(Value::as_f64).unwrap_or(120.0) as f32;
+    let light = f.get("pendingGlobalLight").or_else(|| f.get("globalLight")).and_then(Value::as_f64).unwrap_or(120.0) as f32;
     let mut effects = Vec::new();
     for (i, e) in style.effects.iter().enumerate() {
         effects.push(json!({
@@ -847,6 +867,14 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
             }
             for &(key, label, kind_p) in spec(&sel_kind) {
                 match kind_p {
+                    P::Angle => {
+                        let mut v = disp.get(key).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                        if angle_row(ui, label, &mut v).changed() {
+                            let value = json!(v);
+                            disp[key] = value.clone();
+                            set_param(f, &selected, key, value);
+                        }
+                    }
                     P::Slider(min, max, unit) => {
                         let mut v = disp.get(key).and_then(Value::as_f64).unwrap_or(min as f64) as f32;
                         if widgets::slider_row(ui, label, &mut v, min..=max, unit, None).changed() {
@@ -955,6 +983,50 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
     if new_style {
         save_new_style(app, f);
     }
+}
+
+/// Light direction uses document angles: counter-clockwise from three o'clock.
+fn angle_row(ui: &mut egui::Ui, label: &str, angle: &mut f32) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tl!(label)).color(t.text_dim));
+        let (rect, mut dial) = ui.allocate_exact_size(vec2(42.0, 42.0), Sense::click_and_drag());
+        dial.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, ui.is_enabled(), tl!(label)));
+        if (dial.clicked() || dial.dragged())
+            && let Some(pos) = dial.interact_pointer_pos()
+        {
+            let delta = pos - rect.center();
+            if delta.length_sq() > 1.0 {
+                *angle = (-delta.y).atan2(delta.x).to_degrees().round();
+                dial.mark_changed();
+            }
+        }
+        let painter = ui.painter();
+        let radius = rect.width() / 2.0 - 2.0;
+        painter.circle(rect.center(), radius, t.field, Stroke::new(1.0, t.field_border));
+        let radians = angle.to_radians();
+        let tip = rect.center() + vec2(radians.cos(), -radians.sin()) * (radius - 4.0);
+        painter.line_segment([rect.center(), tip], Stroke::new(2.0, t.accent));
+        painter.circle_filled(rect.center(), 2.0, t.text_dim);
+        if dial.has_focus() {
+            painter.circle_stroke(rect.center(), radius + 2.0, Stroke::new(1.0, t.accent));
+            let step = ui.input(|i| {
+                i.num_presses(egui::Key::ArrowRight) as f32 + i.num_presses(egui::Key::ArrowUp) as f32
+                    - i.num_presses(egui::Key::ArrowLeft) as f32
+                    - i.num_presses(egui::Key::ArrowDown) as f32
+            });
+            if step != 0.0 {
+                *angle = (*angle + step + 180.0).rem_euclid(360.0) - 180.0;
+                dial.mark_changed();
+            }
+        }
+        let field = ui.add(egui::DragValue::new(angle).range(-180.0..=180.0).speed(1.0).suffix("°"));
+        if field.changed() {
+            dial.mark_changed();
+        }
+        dial | field
+    })
+    .inner
 }
 
 fn parse_hex(s: &str) -> Color32 {
@@ -1255,8 +1327,8 @@ mod tests {
         // Use Global Light on: the Angle slider drives the document's shared light angle.
         let st = s.active().unwrap();
         let mut f = initial_fields(st.doc.layer(id).unwrap(), Some("dropShadow"), st.doc.global_light.angle);
-        set_param(&mut f, "fx1", "angle", json!(30.0));
         set_param(&mut f, "fx1", "useGlobalLight", json!(true));
+        set_param(&mut f, "fx1", "angle", json!(30.0));
         apply(&f, |cmd, p| s.execute(cmd, p).map_err(|e| e.to_string())).unwrap();
         assert_eq!(s.active().unwrap().doc.global_light.angle, 30.0, "the Angle slider moves the shared light");
         assert!(shadow(&s).unwrap().use_global_light);
@@ -1298,6 +1370,94 @@ mod tests {
         })
         .unwrap();
         assert!(!commands.iter().any(|cmd| cmd == "layer.layerStyle.globalLight"));
+    }
+
+    #[test]
+    fn last_angle_edit_wins_across_global_light_instances_and_preview() {
+        let mut s = session();
+        let st = s.active().unwrap();
+        let id = st.active_layer.unwrap();
+        let original = st.doc.clone();
+        let mut f = initial_fields(st.doc.layer(id).unwrap(), Some("dropShadow"), st.doc.global_light.angle);
+        add_instance(&mut f, "innerShadow");
+        add_instance(&mut f, "bevelEmboss");
+        set_param(&mut f, "fx2", "angle", json!(30.0));
+        set_param(&mut f, "fx1", "angle", json!(-90.0));
+        let preview = preview_document(&original, &s.patterns, &f).unwrap();
+        assert_eq!(preview.global_light.angle, -90.0, "a later instance must not override the edited shadow");
+        for e in effects_of(&f) {
+            assert_eq!(e["params"]["angle"], json!(-90.0));
+        }
+        assert_eq!(s.active().unwrap().doc.global_light.angle, original.global_light.angle, "preview does not mutate the document");
+        // Adding an effect and disabling the edited effect must preserve the pending light.
+        add_instance(&mut f, "dropShadow");
+        assert_eq!(effects_of(&f)[3]["params"]["angle"], json!(-90.0));
+        entry_mut(&mut f, "fx1").unwrap()["on"] = json!(false);
+        apply(&f, |cmd, p| s.execute(cmd, p).map_err(|e| e.to_string())).unwrap();
+        assert_eq!(s.active().unwrap().doc.global_light.angle, -90.0);
+        // Moving back to the opening angle also refreshes the preview.
+        let before = preview_hash(&f);
+        set_param(&mut f, "fx2", "angle", json!(original.global_light.angle));
+        assert_ne!(preview_hash(&f), before);
+        assert_eq!(preview_document(&original, &s.patterns, &f).unwrap().global_light.angle, original.global_light.angle);
+    }
+
+    #[test]
+    fn local_angles_stay_independent_and_enabling_global_light_uses_shared_angle() {
+        let layer = Layer::raster("x", photocraft_doc::PixelFormat::RGBA8);
+        let mut f = initial_fields(&layer, Some("dropShadow"), 120.0);
+        add_instance(&mut f, "innerShadow");
+        set_param(&mut f, "fx2", "useGlobalLight", json!(false));
+        set_param(&mut f, "fx2", "angle", json!(45.0));
+        set_param(&mut f, "fx1", "angle", json!(60.0));
+        assert_eq!(entry(&f, "fx2").unwrap()["params"]["angle"], json!(45.0));
+        set_param(&mut f, "fx2", "useGlobalLight", json!(true));
+        assert_eq!(entry(&f, "fx2").unwrap()["params"]["angle"], json!(60.0));
+    }
+
+    #[test]
+    fn preview_moves_shadow_pixels_when_shared_angle_changes() {
+        let mut s = session();
+        s.execute("select.rect", json!({"x": 20, "y": 20, "width": 16, "height": 16})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        let st = s.active().unwrap();
+        let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
+        let mut f = initial_fields(layer, Some("dropShadow"), st.doc.global_light.angle);
+        set_param(&mut f, "fx1", "distance", json!(8.0));
+        set_param(&mut f, "fx1", "size", json!(0.0));
+        set_param(&mut f, "fx1", "opacity", json!(100.0));
+        let pixel = |f: &Map<String, Value>, x, y| {
+            let preview = preview_document(&st.doc, &s.patterns, f).unwrap();
+            photocraft_compose::flatten(&preview).get(x, y)
+        };
+        set_param(&mut f, "fx1", "angle", json!(0.0));
+        assert!(pixel(&f, 14, 28)[0] < 0.01, "light from right casts shadow left");
+        set_param(&mut f, "fx1", "angle", json!(90.0));
+        assert!(pixel(&f, 14, 28)[0] > 0.99, "the old shadow disappears");
+        assert!(pixel(&f, 28, 40)[0] < 0.01, "light from above casts shadow below");
+    }
+
+    #[test]
+    fn angle_dial_clicks_follow_light_direction() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(300.0, 100.0)).build_ui_state(
+            |ui, angle| {
+                angle_row(ui, "Angle", angle);
+            },
+            120.0_f32,
+        );
+        h.run();
+        let dial = h.query_all_by_label("Angle").last().unwrap();
+        let rect = dial.rect();
+        for (delta, expected) in [(vec2(15.0, 0.0), 0.0), (vec2(0.0, -15.0), 90.0), (vec2(0.0, 15.0), -90.0)] {
+            let pos = rect.center() + delta;
+            h.event(egui::Event::PointerMoved(pos));
+            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+            h.step();
+            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.run();
+            assert_eq!(*h.state(), expected);
+        }
     }
 
     #[test]
