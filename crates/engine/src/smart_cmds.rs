@@ -591,7 +591,7 @@ fn via_copy(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit("New Smart Object via Copy", |doc, active| {
         let src = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
         let mut copy = src.duplicate();
-        copy.name = format!("{} copy", src.name);
+        copy.name = doc.copy_name(&src.name);
         if let LayerContent::Smart(sm) = &mut copy.content {
             // Independent contents: resolve to embedded bytes and drop the shared PSD uuid.
             if let Some((file_name, bytes)) = source_bytes(&doc.metadata, &sm.source) {
@@ -646,6 +646,12 @@ fn edit_contents(s: &mut Session, p: &Value) -> Result<Value> {
     let id = layer_param(s, p)?;
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let parent = st.doc.id;
+    // Already open for editing: switch to that document rather than opening another copy.
+    if let Some(index) = s.smart_links.iter().find(|l| l.parent == parent && l.layer == id).and_then(|l| s.documents().iter().position(|d| d.doc.id == l.child))
+    {
+        s.set_active(index);
+        return Ok(json!({"document": index, "parentLayer": id.0}));
+    }
     let (name, bytes) = source_bytes(&st.doc.metadata, &smart(&st.doc, id)?.source).ok_or_else(|| other("the smart object's contents are unavailable"))?;
     let mut child = decode_source(&name, &bytes)?;
     // Bundles keep their document id; each open copy needs its own.

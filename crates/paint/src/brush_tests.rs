@@ -801,9 +801,11 @@ fn spacing_off_spaces_dabs_by_pointer_speed() {
     assert_eq!((slow, fast), (51, 6));
     // Never denser than half a pixel, however slow.
     assert!(dabs_of(&b, &timed(1.0e9)).len() <= 201);
-    // No timestamps: one dab per input point.
-    let pts: Vec<StrokePoint> = (0..7).map(|i| StrokePoint::new(f64::from(i) * 15.0, 10.0, 1.0)).collect();
-    assert_eq!(dabs_of(&b, &pts).len(), 7);
+    // No timestamps (a ⇧-click line): spaced by distance like Spacing on, not a dab per point.
+    let pts = [StrokePoint::new(0.0, 10.0, 1.0), StrokePoint::new(90.0, 10.0, 1.0), StrokePoint::new(100.0, 10.0, 1.0)];
+    let checked = BrushSettings { spacing_enabled: true, ..b.clone() };
+    assert_eq!(dabs_of(&b, &pts).len(), dabs_of(&checked, &pts).len());
+    assert!(dabs_of(&b, &pts).len() > 3);
     // Checked: fixed spacing (25 % of 20 px = 5 px) whatever the speed.
     b.spacing_enabled = true;
     assert_eq!(dabs_of(&b, &timed(400.0)).len(), dabs_of(&b, &timed(40.0)).len());
@@ -877,4 +879,81 @@ fn transfer_wetness_and_mix_vary_per_dab() {
     let old: BrushSettings = serde_json::from_str(r#"{"size": 12, "shapeDynamics": {"enabled": true}, "transfer": {"enabled": true}}"#).unwrap();
     assert!(old.spacing_enabled && !old.shape_dynamics.brush_projection && old.shape_dynamics.tilt_scale == 0.0 && old.locks == SectionLocks::default());
     assert_eq!(old.mixer, crate::mixer::MixerSettings::default());
+}
+
+/// Primary and Dual Brush dabs of a stroke (the generator, as the renderer drives it).
+fn all_dabs(b: &BrushSettings, pts: &[StrokePoint]) -> (Vec<Dab>, Vec<Dab>) {
+    let mut g = crate::dynamics::DabGenerator::new(b, 1.0);
+    let (mut dabs, mut duals) = (Vec::new(), Vec::new());
+    g.push(pts, &mut dabs, &mut duals);
+    g.finish(&mut dabs, &mut duals);
+    (dabs, duals)
+}
+
+/// A Scatter amount far beyond the 1000 % maximum (or non-finite), on the primary tip or the
+/// Dual Brush, used to push dab centres to infinity and overflow the dab rectangle (#977). The
+/// renderer caps it at the maximum, so dabs stay finite and within reach, and painting works at
+/// every bit depth.
+#[test]
+fn huge_scatter_is_capped_and_renders_at_every_depth() {
+    let pts = line(10.0, 40.0, 10.0);
+    let with = |j: f32| BrushSettings {
+        size: 20.0,
+        scattering: Scattering { enabled: true, scatter: Dynamic::jitter(j), both_axes: true, count: 4, ..Default::default() },
+        dual_brush: DualBrush { enabled: true, size: 6.0, scatter: j, both_axes: true, ..Default::default() },
+        ..brush()
+    };
+    let capped = all_dabs(&with(MAX_SCATTER), &pts);
+    // Primary reach: MAX_SCATTER radii of 10 px; dual reach: MAX_SCATTER radii of 3 px.
+    let near = |ds: &[Dab], r: f64| ds.iter().all(|d| (d.center.x - 25.0).abs() <= 15.0 + r && (d.center.y - 10.0).abs() <= r);
+    assert!(near(&capped.0, f64::from(MAX_SCATTER) * 10.0) && near(&capped.1, f64::from(MAX_SCATTER) * 3.0));
+    for j in [MAX_SCATTER + 0.01, 1e6, 1e38, f32::MAX, f32::INFINITY] {
+        let b = with(j);
+        assert_eq!(all_dabs(&b, &pts), capped, "scatter {j} paints like the maximum");
+        let ctx = BrushContext::new(&b);
+        for d in &capped.0 {
+            let r = ctx.dab_rect(d, false);
+            assert!(!r.is_empty() && r.width() <= 24 && r.height() <= 24, "{r:?}");
+        }
+        for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let mut s = Surface::new(PixelFormat::new(ColorMode::Rgb, sample, true));
+            let damage = render_stroke(&mut s, &b, &pts, None, false, 1.0);
+            assert!(!damage.is_empty() && damage.x0 > -200 && damage.x1 < 250, "scatter {j} at {sample:?}: {damage:?}");
+        }
+    }
+    // A NaN amount scatters nothing, as a zero amount does.
+    let none = all_dabs(&with(0.0), &pts);
+    assert_eq!(all_dabs(&with(f32::NAN), &pts), none);
+    assert!(none.0.iter().all(|d| d.center.y == 10.0));
+}
+
+/// Control: an ordinary Scatter amount above 100 % still scatters, unchanged by the cap (#977).
+#[test]
+fn ordinary_scatter_is_unchanged_by_the_cap() {
+    let b = BrushSettings {
+        size: 20.0,
+        scattering: Scattering { enabled: true, scatter: Dynamic::jitter(2.0), both_axes: true, count: 3, ..Default::default() },
+        dual_brush: DualBrush { enabled: true, size: 6.0, scatter: 1.5, both_axes: true, ..Default::default() },
+        ..brush()
+    };
+    assert_eq!(b.bounded_for_render(), b);
+    let (dabs, duals) = all_dabs(&b, &line(10.0, 200.0, 50.0));
+    assert!(dabs.iter().any(|d| (d.center.y - 50.0).abs() > 10.0) && dabs.iter().all(|d| (d.center.y - 50.0).abs() <= 20.0));
+    assert!(duals.iter().any(|d| (d.center.y - 50.0).abs() > 1.0) && duals.iter().all(|d| (d.center.y - 50.0).abs() <= 4.5));
+}
+
+/// The dab rectangle of a hostile centre (non-finite or beyond `i32`), from a direct caller of the
+/// public API, saturates instead of overflowing (#977).
+#[test]
+fn dab_rect_of_a_far_or_non_finite_centre_does_not_overflow() {
+    let ctx = BrushContext::new(&brush());
+    for c in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 1e300, -1e300, f64::from(i32::MAX), f64::from(i32::MIN)] {
+        let d = Dab::round(Point::new(c, c), 10.0, 1.0);
+        for r in [ctx.dab_rect(&d, false), ctx.dab_rect(&d, true), crate::retouch::dab_rect(&d)] {
+            assert!(r.x0 <= r.x1 && r.y0 <= r.y1, "centre {c}: {r:?}");
+        }
+    }
+    let huge = Dab::round(Point::new(5.0, 5.0), f32::INFINITY, 1.0);
+    let r = crate::retouch::dab_rect(&huge);
+    assert!(r.x0 <= r.x1 && r.y0 <= r.y1, "{r:?}");
 }

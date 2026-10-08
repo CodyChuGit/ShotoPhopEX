@@ -161,6 +161,13 @@ fn read_rgba(src: &Surface, area: Rect) -> Vec<[f32; 4]> {
     px
 }
 
+/// `src` over `surf` across `area` (Normal, 100 %), each pixel weighted by `limit` when given:
+/// a paste into a layer mask or channel, which keeps the pasted pixels' luminosity (#1035).
+pub(crate) fn composite_over(surf: &mut Surface, src: &Surface, area: Rect, limit: Option<&Surface>) {
+    let source = Source::Pixels(area, read_rgba(src, area));
+    blend_into(surf, area, &source, limit, Blend { mode: BlendMode::Normal, opacity: 1.0, keep_alpha: false, restore: false });
+}
+
 /// The selection filled from its surroundings (`photocraft_algo::content_aware`), as straight
 /// RGBA over the sampling window. Only the selected pixels are used.
 fn content_aware(surf: &Surface, sel: &Surface, canvas: Rect, color_adaptation: bool, seed: u64) -> Result<Source> {

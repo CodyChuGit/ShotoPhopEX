@@ -605,10 +605,9 @@ pub fn write(adj: &Adjustment) -> Vec<([u8; 4], Vec<u8>)> {
             // A lookup without a usable table (none chosen yet, or a bad size) renders as the
             // identity, so it is written as a 2³ identity cube rather than dropped.
             let n = *size as usize;
-            let (file, dither) = match lut {
-                Some(table) if (2..=256).contains(&n) && table.len() >= n * n * n * 3 => {
-                    (photocraft_cms::lutfile::LutFile { title: String::new(), size: n, data: table[..n * n * n * 3].to_vec() }, *dither)
-                }
+            let cube = lut.as_deref().zip(photocraft_doc::adjust::lut3d_len(*size)).and_then(|(table, len)| table.get(..len)).filter(|_| n <= 256);
+            let (file, dither) = match cube {
+                Some(cube) => (photocraft_cms::lutfile::LutFile { title: String::new(), size: n, data: cube.to_vec() }, *dither),
                 _ => (photocraft_cms::lutfile::LutFile { title: String::new(), ..photocraft_cms::lutfile::LutFile::identity(2) }, false),
             };
             let en =

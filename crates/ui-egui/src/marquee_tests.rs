@@ -290,3 +290,16 @@ fn mouse_drag_inside_the_selection_moves_it() {
     release_at(&mut h, 170.0, 130.0, Modifiers::NONE);
     assert_eq!(selection(&h), Rect::new(120, 90, 220, 170), "moved by (20, 10)");
 }
+
+/// ⌘⌥-drag copies the selected pixels instead of cutting them: the original stays.
+#[test]
+fn cmd_alt_drag_floats_a_copy() {
+    let (mut app, layer) = painted();
+    let alpha = |d: &photocraft_doc::Document, x, y| d.layer(layer).unwrap().surface().unwrap().rgba(x, y)[3];
+    let cmd_alt = Modifiers { alt: true, ..Modifiers::COMMAND };
+    drag(&mut app, [20.0, 20.0], [45.0, 20.0], cmd_alt);
+    app.run("select.drop", json!({})).unwrap();
+    let d = app.session.active().unwrap().doc.clone();
+    assert!(alpha(&d, 12, 20) == 1.0, "the original stays");
+    assert!(alpha(&d, 50, 20) == 1.0, "the copy dropped 25 px right");
+}

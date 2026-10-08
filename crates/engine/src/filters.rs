@@ -351,9 +351,15 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-/// The most recent filter command in the session journal.
+/// The most recent filter command in the session journal, retargeted at the active layer: dialogs
+/// such as the Filter Gallery record the layer they ran on, and Last Filter applies to the
+/// current layer, as in Photoshop (#1270).
 fn last_filter(s: &Session) -> Option<(String, Value)> {
-    s.journal.iter().rev().find(|(id, _)| params_for(id, &Value::Null).is_some() && id.starts_with("filter.")).cloned()
+    let (id, mut params) = s.journal.iter().rev().find(|(id, _)| params_for(id, &Value::Null).is_some() && id.starts_with("filter.")).cloned()?;
+    if let Value::Object(m) = &mut params {
+        m.remove("layer");
+    }
+    Some((id, params))
 }
 
 #[cfg(test)]
@@ -526,6 +532,24 @@ mod tests {
         paint_pattern(&mut s2);
         s2.execute("filter.other.offset", json!({"horizontal": 6})).unwrap();
         assert_eq!(active_pixels(&s2), twice);
+    }
+
+    #[test]
+    fn last_filter_applies_to_the_active_layer() {
+        let mut s = session();
+        paint_pattern(&mut s);
+        let first = s.active().unwrap().active_layer.unwrap();
+        // Dialogs (Filter Gallery, Camera Raw…) record the layer they ran on.
+        s.execute("filter.other.offset", json!({"horizontal": 3, "layer": first.0})).unwrap();
+        let first_once = active_pixels(&s);
+        s.execute("layer.new.layer", json!({})).unwrap();
+        paint_pattern(&mut s);
+        let before = active_pixels(&s);
+        s.execute("filter.lastFilter", json!({})).unwrap();
+        assert_ne!(active_pixels(&s), before, "the active layer is filtered");
+        let d = s.active().unwrap();
+        let l = d.doc.layer(first).unwrap();
+        assert_eq!(l.surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 48, 32)), first_once, "the first layer is left alone");
     }
 
     #[test]

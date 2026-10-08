@@ -522,15 +522,18 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             b.pressure_opacity = !b.pressure_opacity;
                         }
                         percent_field(ui, tl!("Flow"), &mut b.flow, 1.0..=100.0, 62.0);
-                        let _ = icons::button(ui, "sparkles", 24.0, false, tl!("Enable airbrush-style build-up effects"));
+                        let airbrush = icons::button(ui, "sparkles", 24.0, b.build_up, tl!("Enable airbrush-style build-up effects"));
+                        if crate::brush_picker::named(airbrush, tl!("Enable airbrush-style build-up effects")).clicked() {
+                            b.build_up = !b.build_up;
+                        }
                         opt_label(ui, tl!("Smoothing"));
                         smoothing_field(ui, b, 58.0);
-                        let _ = icons::button(ui, "settings", 24.0, false, tl!("Set additional smoothing options"));
+                        smoothing_options(ui, b);
                         widgets::vline(ui, 22.0);
                         if icons::button(ui, "circle-dot", 24.0, b.pressure_size, tl!("Always use pressure for size")).clicked() {
                             b.pressure_size = !b.pressure_size;
                         }
-                        let _ = icons::button(ui, "arrow-left-right", 24.0, false, tl!("Set painting symmetry options"));
+                        symmetry_menu(app, ui);
                     }
                     // Pencil: Photoshop's options (no hardness or flow: the pencil is always hard).
                     Tool::Pencil => {
@@ -841,7 +844,11 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             crate::shortcuts::pretty("Shift+Alt")
                         ),
                     ),
-                    Tool::Move => hint(ui, tl!("Drag to move the active layer")),
+                    Tool::Move => {
+                        // The Studio themes keep Photoshop's Auto-Select toggle too (#1275).
+                        widgets::checkbox(ui, &mut app.ui.tool_options.move_auto_select, tl!("Auto-Select:"));
+                        hint(ui, tl!("Drag to move the active layer"));
+                    }
                     Tool::Eyedropper => hint(
                         ui,
                         &crate::i18n::fmt(
@@ -1331,12 +1338,15 @@ fn color_picker(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         crate::type_tool::foreground_changed(app);
     }
     let [r, g, b, _] = hsva.to_srgba_unmultiplied();
-    let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         let (sw, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
         ui.painter().rect_filled(sw, 6.0, Color32::from_rgb(r, g, b));
-        ui.label(RichText::new(format!("#{r:02X}{g:02X}{b:02X}")).font(theme::mono(12.5)).color(t.text));
-        ui.label(RichText::new(format!("RGB {r} {g} {b}")).font(theme::mono(11.5)).color(t.text_faint));
+        let mut c = app.session.tools.foreground;
+        if color_readout(ui, ui.id().with("color-panel"), &mut c) {
+            app.session.tools.foreground = c;
+            ui.data_mut(|d| d.insert_temp(key, srgb_hsva(c)));
+            crate::type_tool::foreground_changed(app);
+        }
     });
 }
 
@@ -1415,9 +1425,12 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let opacity_label = if t.pro { tl!("Opacity:") } else { tl!("Opacity") };
                 let right = (body_text_width(ui, opacity_label) + 66.0 + 2.0 * ui.spacing().item_spacing.x + 16.0).max(150.0);
                 let w = ui.available_width() - right;
-                if widgets::dropdown(ui, "blend", &mut m, &blend_options(l.is_group()), w.max(100.0)) {
+                let (chosen, hovered) = widgets::dropdown_hovered(ui, "blend", &mut m, &blend_options(l.is_group()), w.max(100.0));
+                if chosen {
                     actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "blend": m.label()})));
                 }
+                // Hovering a mode previews it on the canvas (#970).
+                crate::blend_preview::hover(app, l.id, hovered.filter(|_| !chosen));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut o = l.opacity * 100.0;
                     if widgets::value_field(ui, &mut o, 0.0..=100.0, "%", 66.0).changed() {
@@ -1518,6 +1531,8 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 }
                 crate::smart_ui::filter_rows(app, ui, l, depth, &mut actions);
             }
+            // ⌥-click the line between two layers: clip / release the upper one (#967).
+            crate::clip_line_ui::show(ui, &doc, &mut actions);
             // A rename whose row is gone (deleted, filtered out, inside a closed group) ends,
             // committed: nothing else could commit or cancel it.
             if let Some(layer) = crate::layer_row_ui::renaming(ui.ctx())
@@ -2413,11 +2428,22 @@ fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             ui.data_mut(|d| d.insert_temp(key, hsva.h));
         }
     });
-    let [r, g, b, _] = hsva.to_srgba_unmultiplied();
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("#{r:02X}{g:02X}{b:02X}")).font(theme::mono(12.0)).color(t.text));
-        ui.label(RichText::new(format!("R {r}  G {g}  B {b}")).font(theme::mono(11.0)).color(t.text_faint));
+        let mut c = if bg_active { app.session.tools.background } else { app.session.tools.foreground };
+        if color_readout(ui, ui.id().with(("color-field", bg_active)), &mut c) {
+            if bg_active {
+                app.session.tools.background = c;
+            } else {
+                app.session.tools.foreground = c;
+                crate::type_tool::foreground_changed(app);
+            }
+            // Keep the hue for greys, so the field marker doesn't jump to red.
+            let h = srgb_hsva(c);
+            if h.s >= 0.01 && h.v >= 0.01 {
+                ui.data_mut(|d| d.insert_temp(key, h.h));
+            }
+        }
     });
 }
 
@@ -2435,6 +2461,65 @@ fn srgb_hsva(c: [f32; 4]) -> egui::ecolor::Hsva {
 fn hsva_srgb(h: egui::ecolor::Hsva) -> [f32; 4] {
     let [r, g, b] = h.to_srgb();
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
+}
+
+/// The Color panel's editable colour readout: a hex field and R, G, B fields, all drawn like the
+/// dock's [`widgets::value_field`] so they sit in the theme. Editing any of them sets `color`
+/// (sRGB-encoded floats) and returns `true`.
+fn color_readout(ui: &mut egui::Ui, id: egui::Id, color: &mut [f32; 4]) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let mut changed = false;
+    // Wrapped so the fields fold onto a second line in a narrow dock instead of being clipped.
+    ui.horizontal_wrapped(|ui| {
+        // Docks zero the item spacing; keep the fields apart.
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(RichText::new("#").font(theme::mono(12.0)).color(t.text_faint));
+        changed = hex_edit(ui, id.with("hex"), color);
+        let [mut r, mut g, mut b] = srgb_bytes(*color).map(f32::from);
+        let mut rgb = false;
+        for (label, v) in [("R", &mut r), ("G", &mut g), ("B", &mut b)] {
+            ui.label(RichText::new(label).font(theme::mono(11.0)).color(t.text_faint));
+            rgb |= widgets::value_field(ui, v, 0.0..=255.0, "", 38.0).changed();
+        }
+        if rgb {
+            *color = [r / 255.0, g / 255.0, b / 255.0, 1.0];
+            changed = true;
+        }
+    });
+    changed
+}
+
+/// The hex field of [`color_readout`]: type a colour with or without the leading `#`. Valid input
+/// sets `color` and returns `true`. While it has focus it shows exactly what is typed, so partial
+/// or invalid input isn't overwritten by the colour; an invalid entry snaps back when focus leaves.
+fn hex_edit(ui: &mut egui::Ui, id: egui::Id, color: &mut [f32; 4]) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let (rect, _) = ui.allocate_exact_size(vec2(64.0, 24.0), Sense::hover());
+    widgets::surface(ui, rect, t.field, false);
+    if !t.bevel {
+        ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    }
+    let [r, g, b] = srgb_bytes(*color);
+    let typing = if ui.memory(|m| m.has_focus(id)) { ui.data(|d| d.get_temp::<String>(id)) } else { None };
+    let mut text = typing.unwrap_or_else(|| format!("{r:02X}{g:02X}{b:02X}"));
+    let field = rect.shrink2(vec2(5.0, 2.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    // Room for a pasted "#rrggbb"; the parse trims it, and the field shows plain digits otherwise.
+    // `Frame::NONE`: the themed surface above is this field's frame.
+    let resp =
+        child.add(egui::TextEdit::singleline(&mut text).id(id).char_limit(7).desired_width(field.width()).frame(egui::Frame::NONE).font(theme::mono(12.0)));
+    if resp.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, text.clone()));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
+    if resp.changed()
+        && let Some(c) = crate::color_picker_ui::parse_hex(&text)
+    {
+        *color = [c[0], c[1], c[2], 1.0];
+        return true;
+    }
+    false
 }
 
 /// Photoshop's brush preset picker chip: a soft/hard round tip preview with the size underneath.
@@ -2456,6 +2541,68 @@ fn smoothing_field(ui: &mut egui::Ui, b: &mut photocraft_engine::BrushSettings, 
     if widgets::value_field(ui, &mut sm, 0.0..=100.0, "%", width).changed() {
         b.smoothing.amount = (sm / 100.0).clamp(0.0, 1.0);
     }
+}
+
+/// Options-bar gear beside Smoothing: Photoshop's smoothing options popup, edited on the brush
+/// like the Smoothing % (so they stay per tool and reach the live stroke and the commit).
+fn smoothing_options(ui: &mut egui::Ui, b: &mut photocraft_engine::BrushSettings) {
+    let resp = icons::button(ui, "settings", 24.0, false, tl!("Set additional smoothing options"));
+    let resp = crate::brush_picker::named(resp, tl!("Set additional smoothing options"));
+    egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        let s = &mut b.smoothing;
+        widgets::checkbox(ui, &mut s.pulled_string, tl!("Pulled String Mode"));
+        widgets::checkbox(ui, &mut s.catch_up, tl!("Stroke Catch-up"));
+        widgets::checkbox(ui, &mut s.catch_up_on_end, tl!("Catch-up on Stroke End"));
+        widgets::checkbox(ui, &mut s.adjust_for_zoom, tl!("Adjust for Zoom"));
+    });
+}
+
+/// The symmetry menu's rows: `paint.symmetryFromPath` name and label for each path the Paths
+/// panel lists (saved paths, the Work Path, the selected layer's shape path or vector mask).
+fn symmetry_choices(app: &PhotocraftApp) -> Vec<(String, String)> {
+    use crate::vector_ui::PathRow;
+    let Some(st) = app.session.active() else { return Vec::new() };
+    crate::vector_ui::path_rows(&st.doc, st.active_layer)
+        .into_iter()
+        .map(|row| match row.kind {
+            PathRow::Saved => (row.name.clone(), row.name),
+            PathRow::Work => ("work".to_string(), tl!("Work Path").to_string()),
+            PathRow::Layer => ("layer".to_string(), row.name),
+        })
+        .collect()
+}
+
+/// Options-bar painting symmetry: Symmetry Off, or mirror Brush and Eraser strokes across one of
+/// the document's paths (`paint.symmetryFromPath`). The button is lit while symmetry is on.
+fn symmetry_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let current = app.session.active().and_then(|st| st.symmetry_path.as_ref()).map(|axis| axis.source.clone());
+    let choices = symmetry_choices(app);
+    let resp = icons::button(ui, "arrow-left-right", 24.0, current.is_some(), tl!("Set painting symmetry options"));
+    let resp = crate::brush_picker::named(resp, tl!("Set painting symmetry options"));
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(200.0);
+        let mut run = None;
+        if ui.add(egui::Button::selectable(current.is_none(), tl!("Symmetry Off"))).clicked() {
+            run = current.is_some().then(|| ("paint.symmetryDisable", json!({})));
+            ui.close();
+        }
+        ui.separator();
+        if choices.is_empty() {
+            ui.label(RichText::new(tl!("Draw with the Pen tool (P) or make a work path from a selection.")).color(t.text_faint));
+        }
+        for (name, label) in &choices {
+            if ui.add(egui::Button::selectable(current.as_ref() == Some(name), label)).clicked() {
+                run = Some(("paint.symmetryFromPath", json!({ "name": name })));
+                ui.close();
+            }
+        }
+        if let Some((id, params)) = run
+            && let Err(e) = app.run(id, params)
+        {
+            app.ui.status = e;
+        }
+    });
 }
 
 /// Options-bar brush chip; opens Photoshop's Brush Preset picker (size, hardness, the preset
@@ -2621,6 +2768,103 @@ mod color_tests {
                 assert!((back[i] - c[i]).abs() <= 1.0 / 255.0, "{c:?} -> {back:?}");
             }
         }
+    }
+
+    /// Click the hex field, select its text and type `text` one key per frame.
+    fn type_hex(h: &mut egui_kittest::Harness<'static, PhotocraftApp>, text: &str) {
+        use egui_kittest::kittest::Queryable;
+        h.get_by_role(egui::accesskit::Role::TextInput).click();
+        h.run_steps(1);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        for ch in text.chars() {
+            h.event(egui::Event::Text(ch.to_string()));
+            h.run_steps(1);
+        }
+    }
+
+    /// The Color panel's hex readout is editable, with or without the leading `#`.
+    #[test]
+    fn color_panel_hex_field_takes_a_typed_hex() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.tools.foreground = [1.0, 1.0, 1.0, 1.0];
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(300.0, 300.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    color_picker(app, ui);
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
+        h.run_steps(2);
+        type_hex(&mut h, "003300");
+        assert_eq!(srgb_bytes(h.state().session.tools.foreground), [0x00, 0x33, 0x00]);
+        // A leading '#' is accepted too.
+        type_hex(&mut h, "#ff8000");
+        assert_eq!(srgb_bytes(h.state().session.tools.foreground), [0xff, 0x80, 0x00]);
+    }
+
+    /// An incomplete entry never changes the colour and the field snaps back when focus leaves.
+    #[test]
+    fn color_panel_hex_field_ignores_partial_input() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.tools.foreground = [0.2, 0.4, 0.6, 1.0];
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(300.0, 300.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    color_picker(app, ui);
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
+        h.run_steps(2);
+        let fg = h.state().session.tools.foreground;
+        h.get_by_role(egui::accesskit::Role::TextInput).click();
+        h.run_steps(1);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        for ch in "12zz".chars() {
+            h.event(egui::Event::Text(ch.to_string()));
+            h.run_steps(1);
+        }
+        assert_eq!(h.state().session.tools.foreground, fg, "invalid input changes nothing");
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        assert_eq!(h.get_by_role(egui::accesskit::Role::TextInput).value().as_deref(), Some("336699"), "snaps back to the colour");
+    }
+
+    /// The R, G and B fields next to the hex are editable, like the hex field.
+    #[test]
+    fn color_readout_rgb_fields_take_values() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.tools.foreground = [0.0, 0.0, 0.0, 1.0];
+        let mut h = field_harness(app);
+        // The only spin buttons are R, G and B, in that order.
+        h.query_all_by_role(egui::accesskit::Role::SpinButton).nth(1).unwrap().click();
+        h.run_steps(1);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        for ch in "128".chars() {
+            h.event(egui::Event::Text(ch.to_string()));
+            h.run_steps(1);
+        }
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        assert_eq!(srgb_bytes(h.state().session.tools.foreground), [0x00, 0x80, 0x00]);
+    }
+
+    /// The pro Color panel's hex readout edits the foreground too.
+    #[test]
+    fn color_field_hex_field_takes_a_typed_hex() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.tools.foreground = [1.0, 1.0, 1.0, 1.0];
+        let mut h = field_harness(app);
+        type_hex(&mut h, "003300");
+        assert_eq!(srgb_bytes(h.state().session.tools.foreground), [0x00, 0x33, 0x00]);
     }
 
     #[test]

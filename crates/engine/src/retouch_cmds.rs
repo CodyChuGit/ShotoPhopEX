@@ -91,7 +91,7 @@ fn parse_brush(s: &Session, p: &Value, cmd: &str) -> Result<(Stroke, Option<Laye
         erase: false,
         ..base
     };
-    crate::brush_cmds::validate_brush_size(&brush, cmd)?;
+    crate::brush_cmds::validate_brush(&brush, cmd)?;
     if crate::channel_cmds::is_channel_target(p) {
         return Ok((Stroke { brush, points: pts }, None));
     }
@@ -195,15 +195,29 @@ fn clone_mapping(s: &mut Session, p: &Value, stroke: &Stroke, cmd: &str) -> Resu
 
 /// Source pixels for destination `rect`: a translated read, or a bilinear resample when the
 /// clone source is scaled, rotated or flipped.
-fn clone_sample(pre: &Document, id: Option<LayerId>, surf: &Surface, which: SampleLayers, rect: Rect, map: &crate::presets::clone_source::Mapping) -> Region {
+fn clone_sample(
+    pre: &Document,
+    id: Option<LayerId>,
+    surf: &Surface,
+    which: SampleLayers,
+    rect: Rect,
+    map: &crate::presets::clone_source::Mapping,
+    cmd: &str,
+) -> Result<Region> {
     if map.is_translation() {
         let off = map.offset();
-        let mut r = sample(pre, id, surf, which, rect.translate(off.0, off.1));
+        let src = rect.translate(off.0, off.1);
+        // `translate` saturates at the i32 edges, so a far source (issue #1111) yields a window
+        // smaller than `rect`; relabelling that as `rect` would index past the sampled pixels.
+        if src.width() != rect.width() || src.height() != rect.height() {
+            return Err(bad(cmd, format!("source offset [{}, {}] is too far: the sample window leaves the coordinate range", off.0, off.1)));
+        }
+        let mut r = sample(pre, id, surf, which, src);
         r.rect = rect;
-        return r;
+        return Ok(r);
     }
     let src = sample(pre, id, surf, which, map.source_rect(rect));
-    crate::presets::clone_source::resample(&src, rect, map, alpha_index(&surf.format()))
+    Ok(crate::presets::clone_source::resample(&src, rect, map, alpha_index(&surf.format())))
 }
 
 /// Result JSON shared by Clone Stamp and Healing Brush: the offset used and where the next stroke
@@ -251,7 +265,7 @@ fn clone_stamp(s: &mut Session, p: &Value) -> Result<Value> {
     let dmg = run_stroke(s, "Clone Stamp", id, p, |pre, surf, sel, lock| {
         let (bounds, cov) = stroke_coverage(&stroke);
         // Samples come from the pre-stroke state, so pixels painted earlier in the stroke are never re-cloned.
-        let paint = clone_sample(pre, id, surf, which, bounds, &map);
+        let paint = clone_sample(pre, id, surf, which, bounds, &map, CMD)?;
         Ok(apply_coverage(surf, bounds, &cov, stroke.brush.opacity, sel, lock, &paint, mode))
     })?;
     Ok(clone_result(dmg, off, aligned, p, &stroke))
@@ -307,7 +321,7 @@ fn healing_brush(s: &mut Session, p: &Value) -> Result<Value> {
         let (bounds, cov) = stroke_coverage(&stroke);
         let (g, cov) = pad_coverage(bounds, &cov, 2);
         let fmt = surf.format();
-        let src = clone_sample(pre, id, surf, which, g, &map);
+        let src = clone_sample(pre, id, surf, which, g, &map, CMD)?;
         // The destination the texture is fitted to: the layer itself, or what the user sees when
         // sampling several layers (so healing onto an empty layer matches the composite).
         let dst = if which == SampleLayers::Current { Region::read(surf, g) } else { composite_region(pre, id, which, g, fmt) };

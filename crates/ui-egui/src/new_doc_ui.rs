@@ -101,6 +101,26 @@ pub fn px_value(px: f32) -> Value {
     json!(if px.is_finite() { px.round().clamp(1.0, 300_000.0) as u32 } else { 1 })
 }
 
+/// Name of the preset that takes the clipboard image's size.
+pub const CLIPBOARD: &str = "Clipboard";
+
+/// Offer the Clipboard preset (`w` × `h` px, at 72 ppi) first under the Recent presets, and
+/// select it.
+pub fn set_clipboard(f: &mut Map<String, Value>, w: u32, h: u32) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    f.insert("__clipboard".into(), json!([w, h]));
+    apply_preset(f, &(CLIPBOARD, w, h, 72.0));
+}
+
+/// The clipboard image's size, when the dialog offers the Clipboard preset.
+fn clipboard_preset(f: &Map<String, Value>) -> Option<Preset> {
+    let size = f.get("__clipboard")?.as_array()?;
+    let dim = |i: usize| size.get(i)?.as_u64().and_then(|v| u32::try_from(v).ok()).filter(|v| *v > 0);
+    Some((CLIPBOARD, dim(0)?, dim(1)?, 72.0))
+}
+
 /// Apply a preset to the dialog fields.
 pub fn apply_preset(f: &mut Map<String, Value>, p: &Preset) {
     f.insert("width".into(), json!(p.1));
@@ -173,6 +193,8 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     widgets::hairline(ui);
     ui.add_space(8.0);
     let presets = CATEGORIES.iter().find(|c| c.0 == cat).map_or(CATEGORIES[0].1, |c| c.1);
+    // The clipboard image's size comes first among the Recent presets.
+    let presets: Vec<Preset> = clipboard_preset(f).filter(|_| cat == CATEGORIES[0].0).into_iter().chain(presets.iter().copied()).collect();
     let chosen = get_s(f, "__preset", "");
     ui.horizontal_top(|ui| {
         // Left: preset grid.
@@ -361,6 +383,25 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_preset_comes_first_and_is_selected() {
+        // Nothing on the clipboard: the dialog opens as before.
+        let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let f = app.new_document_fields();
+        assert_eq!(f, crate::state::UiState::new_document_fields());
+        assert!(clipboard_preset(&f).is_none());
+        // Pixels copied in the app: the Clipboard preset takes their size, at 72 ppi, selected.
+        app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
+        app.run("select.rect", json!({"x": 10, "y": 20, "width": 123, "height": 45})).unwrap();
+        app.run("edit.copy", json!({})).unwrap();
+        let f = app.new_document_fields();
+        assert_eq!(clipboard_preset(&f), Some((CLIPBOARD, 123, 45, 72.0)));
+        assert_eq!((f["width"].as_u64(), f["height"].as_u64(), f["__preset"].as_str()), (Some(123), Some(45), Some(CLIPBOARD)));
+        let p = command_params(&f);
+        assert!(p.get("__clipboard").is_none(), "file.new never sees the dialog's keys");
+        assert_eq!((p["width"].as_u64(), p["height"].as_u64(), p["resolution"].as_f64()), (Some(123), Some(45), Some(72.0)));
+    }
+
+    #[test]
     fn preset_sets_size_resolution_and_create_params_drop_ui_keys() {
         let mut f = crate::state::UiState::new_document_fields();
         let a4 = CATEGORIES.iter().find(|c| c.0 == "Print").unwrap().1.iter().find(|p| p.0 == "A4").unwrap();
@@ -470,6 +511,24 @@ mod tests {
             assert!(fields(&h).get("__preset").is_none(), "typing deselects the preset");
             enter(&mut h);
             assert_eq!(created(&h), (512, 512, 72.0));
+        }
+
+        #[test]
+        fn the_clipboard_card_is_first_and_creates_the_clipboard_size() {
+            let mut h = harness();
+            let mut f = fields(&h);
+            super::super::set_clipboard(&mut f, 640, 360);
+            set_fields(&mut h, f);
+            // Recent lists the Clipboard card first: three presets instead of two.
+            assert!(h.query_by_label_contains("BLANK DOCUMENT PRESETS (3)").is_some());
+            let heading = h.get_by_label_contains("BLANK DOCUMENT PRESETS").rect();
+            // Pick the second card, then the first (Clipboard) again.
+            click_at(&mut h, heading.left_bottom() + egui::vec2(80.0 + 172.0, 60.0));
+            assert_eq!(fields(&h).get("__preset").and_then(|v| v.as_str()), Some("Default Photoshop Size"));
+            click_at(&mut h, heading.left_bottom() + egui::vec2(80.0, 60.0));
+            assert_eq!(fields(&h).get("__preset").and_then(|v| v.as_str()), Some(super::super::CLIPBOARD));
+            enter(&mut h);
+            assert_eq!(created(&h), (640, 360, 72.0));
         }
 
         #[test]

@@ -510,17 +510,26 @@ pub fn hue_stops() -> Vec<Color32> {
 
 /// A compact labelled dropdown in the studio style.
 pub fn dropdown<T: PartialEq + Clone>(ui: &mut Ui, id: &str, current: &mut T, options: &[(T, &str)], width: f32) -> bool {
+    dropdown_hovered(ui, id, current, options, width).0
+}
+
+/// [`dropdown`], also returning the option under the pointer in its open list (live previews).
+pub fn dropdown_hovered<T: PartialEq + Clone>(ui: &mut Ui, id: &str, current: &mut T, options: &[(T, &str)], width: f32) -> (bool, Option<T>) {
     let label = options.iter().find(|(v, _)| v == current).map(|(_, l)| tl!(l)).unwrap_or("—");
-    let mut changed = false;
+    let (mut changed, mut hovered) = (false, None);
     egui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).show_ui(ui, |ui| {
         for (v, l) in options {
-            if ui.selectable_label(v == current, tl!(l)).clicked() {
+            let item = ui.selectable_label(v == current, tl!(l));
+            if item.hovered() {
+                hovered = Some(v.clone());
+            }
+            if item.clicked() {
                 *current = v.clone();
                 changed = true;
             }
         }
     });
-    changed
+    (changed, hovered)
 }
 
 /// The body of a right-click menu: as tall as its items up to the part of the window that can be

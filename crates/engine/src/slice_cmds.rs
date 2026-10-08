@@ -88,7 +88,7 @@ fn layer_slice_rect(doc: &Document, s: &Slice) -> Option<Rect> {
     let l = doc.layer(s.layer?)?;
     let b = layer_bounds(l);
     let [t, le, bo, r] = s.outsets;
-    Some(if b.is_empty() { b } else { Rect::new(b.x0 - le, b.y0 - t, b.x1 + r, b.y1 + bo) })
+    Some(if b.is_empty() { b } else { Rect::new(b.x0.saturating_sub(le), b.y0.saturating_sub(t), b.x1.saturating_add(r), b.y1.saturating_add(bo)) })
 }
 
 /// Re-fits layer-based slices of the active document to their layers; drops slices whose layer
@@ -390,7 +390,7 @@ fn divide(s: &mut Session, p: &Value) -> Result<Value> {
         Target::Auto(r) => r,
         Target::Stored(id) => s.active().and_then(|d| d.doc.slices.get(id)).map(|sl| sl.rect).ok_or_else(|| bad(cmd, "no such slice"))?,
     };
-    if (r.width() as i32) < across || (r.height() as i32) < down {
+    if r.width() < across as u32 || r.height() < down as u32 {
         return Err(bad(cmd, "the slice is too small to divide that many times"));
     }
     let n = (down * across) as usize;
@@ -405,10 +405,11 @@ fn divide(s: &mut Session, p: &Value) -> Result<Value> {
         let mut next_id = doc.slices.next_id();
         for j in 0..down {
             for i in 0..across {
-                let x0 = r.x0 + (r.width() as i32 * i) / across;
-                let x1 = r.x0 + (r.width() as i32 * (i + 1)) / across;
-                let y0 = r.y0 + (r.height() as i32 * j) / down;
-                let y1 = r.y0 + (r.height() as i32 * (j + 1)) / down;
+                // Products can exceed i32 even when every interpolated edge fits the rect.
+                let x = |k: i32| (i64::from(r.x0) + i64::from(r.width()) * i64::from(k) / i64::from(across)) as i32;
+                let y = |k: i32| (i64::from(r.y0) + i64::from(r.height()) * i64::from(k) / i64::from(down)) as i32;
+                let (x0, x1) = (x(i), x(i + 1));
+                let (y0, y1) = (y(j), y(j + 1));
                 let nid = if ids.is_empty() {
                     id
                 } else {

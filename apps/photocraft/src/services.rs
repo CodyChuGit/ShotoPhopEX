@@ -34,13 +34,17 @@ const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("OpenEXR", &["exr"]),
 ];
 
-/// [`SAVE_FILTERS`] with the one for `suggested`'s extension first.
-fn save_filters(suggested: &str) -> Vec<(&'static str, &'static [&'static str])> {
+/// Lists the save dialog's file types with the `suggested` type first (added if unlisted), so the dialog keeps that extension instead of .psd.
+fn save_filters(suggested: &str) -> Vec<(String, Vec<String>)> {
     let ext = Path::new(suggested).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    let mut v = SAVE_FILTERS.to_vec();
-    if let Some(i) = v.iter().position(|(_, exts)| exts.contains(&ext.as_str())) {
-        let f = v.remove(i);
-        v.insert(0, f);
+    let mut v: Vec<(String, Vec<String>)> = SAVE_FILTERS.iter().map(|(name, exts)| (name.to_string(), exts.iter().map(|e| e.to_string()).collect())).collect();
+    match v.iter().position(|(_, exts)| exts.contains(&ext)) {
+        Some(i) => {
+            let f = v.remove(i);
+            v.insert(0, f);
+        }
+        None if !ext.is_empty() => v.insert(0, (ext.to_ascii_uppercase(), vec![ext])),
+        None => {}
     }
     v
 }
@@ -66,7 +70,7 @@ fn show_file_dialog(request: FileDialogRequest, parent: Option<&eframe::Frame>, 
         }
         FileDialogRequest::Save { suggested } => {
             for (name, exts) in save_filters(&suggested) {
-                dialog = dialog.add_filter(name, exts);
+                dialog = dialog.add_filter(name, &exts);
             }
             if let Some(name) = Path::new(&suggested).file_name() {
                 dialog = dialog.set_file_name(name.to_string_lossy());
@@ -349,9 +353,10 @@ mod tests {
     use photocraft_engine::Session;
     use photocraft_format::list_recovery;
     use photocraft_ui_egui::{PhotocraftApp, prefs_ui};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    /// "Export As" formats must lead with their own filter, or the save panel appends the first one's extension (`photo.webp.psd`).
+    /// Tests every native save dialog and records the suggested file name. Each name's file type must come first
+    /// in the save panel, or the panel appends the first type's extension (`photo.webp.psd`, `photo.gif.psd`).
     #[test]
     fn block_on_waits_for_a_wake_from_another_thread() {
         let (tx, rx) = std::sync::mpsc::channel::<std::task::Waker>();
@@ -370,10 +375,79 @@ mod tests {
     }
 
     #[test]
-    fn save_filters_lead_with_every_export_format() {
-        for ext in ["png", "jpg", "webp", "tif", "tga"] {
-            assert!(save_filters(&format!("photo.{ext}"))[0].1.contains(&ext), "{ext}");
+    fn every_save_dialog_leads_with_its_own_extension() {
+        let asked: Rc<RefCell<Vec<String>>> = Rc::default();
+        let log = asked.clone();
+        let services = Services {
+            // Cancel every save dialog, recording what it suggested.
+            file_dialog: Some(Box::new(move |request, _parent, reply| {
+                if let photocraft_ui_egui::FileDialogRequest::Save { suggested } = request {
+                    log.borrow_mut().push(suggested);
+                }
+                reply.send(None);
+            })),
+            ..Default::default()
+        };
+        let mut app = PhotocraftApp::new(Session::new(), services);
+        let ctx = egui::Context::default();
+        // Dialogs are asynchronous: each is shown (and cancelled) when the frame ends.
+        let invoke = |app: &mut PhotocraftApp, id: &str| {
+            let r = photocraft_ui_egui::menus::invoke(app, &ctx, id, json!({}));
+            app.poll_file_dialog(&ctx, None);
+            r
+        };
+        let dialog = |app: &mut PhotocraftApp, id: &str, fields: Value| {
+            let d = invoke(app, id).unwrap()["dialog"].as_u64().unwrap();
+            for (k, v) in fields.as_object().unwrap() {
+                app.ui.dialog_mut(d).unwrap().fields.insert(k.clone(), v.clone());
+            }
+            let _ = photocraft_ui_egui::dialogs::confirm(app, d);
+            app.poll_file_dialog(&ctx, None);
+        };
+        new_doc(&mut app, "#ff0000");
+        // Save As, Save a Copy.
+        // Files in a format Save As can't write, like .dng, should suggest .psd instead.
+        let _ = invoke(&mut app, "file.saveAs");
+        for name in ["cat.pcraft", "cat.jpeg", "cat.gif", "cat.bmp", "cat.dng"] {
+            app.session.active_mut().unwrap().path = Some(name.into());
+            let _ = invoke(&mut app, "file.saveAs");
         }
+        let _ = invoke(&mut app, "file.saveACopy");
+        // Export As, Quick Export, Save for Web (with and without slices).
+        for format in ["png", "jpg", "webp", "tif", "tga"] {
+            dialog(&mut app, "file.export.exportAs", json!({"format": format}));
+        }
+        for format in ["png", "jpg", "gif", "webp"] {
+            app.run("prefs.set", json!({"path": "export.quickExportFormat", "value": format})).unwrap();
+            let _ = invoke(&mut app, "file.export.quickExportAsPng");
+        }
+        for format in ["gif", "png8", "png24", "jpeg", "wbmp"] {
+            dialog(&mut app, "file.export.saveForWebLegacy", json!({"format": format}));
+        }
+        app.run("slice.new", json!({"x": 0, "y": 0, "width": 2, "height": 2})).unwrap();
+        dialog(&mut app, "file.export.saveForWebLegacy", json!({"html": true}));
+        // Measurement Log, Export/Import Presets.
+        app.run("image.analysis.recordMeasurements", json!({})).unwrap();
+        let _ = invoke(&mut app, "measurementLog.export");
+        dialog(&mut app, "edit.presets.exportImportPresets", json!({"action": "export"}));
+        let asked = asked.borrow();
+        let exts: Vec<&str> = asked.iter().filter_map(|s| s.rsplit_once('.').map(|(_, e)| e)).collect();
+        // The extension each save above should suggest, in order.
+        let want = [
+            "psd",                       // Save As untitled
+            "pcraft jpeg gif bmp psd",   // Save As opened .pcraft .jpeg .gif .bmp .dng
+            "psd",                       // Save a Copy
+            "png jpg webp tif tga",      // Export As
+            "png jpg gif webp",          // Quick Export
+            "gif png png jpg wbmp html", // Save for Web: gif png8 png24 jpeg wbmp, then with slices
+            "csv pcpresets",             // Measurement Log, Export Presets
+        ]
+        .join(" ");
+        assert_eq!(exts, want.split(' ').collect::<Vec<_>>());
+        for (name, ext) in asked.iter().zip(exts) {
+            assert!(save_filters(name)[0].1.iter().any(|e| e == ext), "{name}: {:?}", save_filters(name)[0]);
+        }
+        assert_eq!(save_filters("Untitled")[0].0, "Photoshop", "no extension keeps the default");
     }
 
     const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];

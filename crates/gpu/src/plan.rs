@@ -15,7 +15,7 @@
 use photocraft_color::BlendMode;
 use photocraft_compose::adjust::{self, Transfer};
 use photocraft_compose::effects::has_effects;
-use photocraft_doc::adjust::ToneSpace;
+use photocraft_doc::adjust::{ToneSpace, lut3d_len};
 use photocraft_doc::{Adjustment, Document, Effect, Fill, FxPaint, GlobalLight, Glow, Gradient, Layer, LayerContent, LayerId, Pattern, StrokePosition};
 use photocraft_geom::Rect;
 use photocraft_raster::Surface;
@@ -1537,11 +1537,12 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
             }
             (15, p, Some(vec![row]))
         }
-        Adjustment::ColorLookup { lut: Some(table), size, tetrahedral, dither, .. } if *size >= 2 && table.len() >= (*size as usize).pow(3) * 3 => {
+        Adjustment::ColorLookup { lut: Some(table), size, tetrahedral, dither, .. } if lut3d_len(*size).is_some_and(|len| table.len() >= len) => {
             // The flattened table (n³ RGB triplets) spans as many 4096-wide rows as it needs.
             let n = *size as usize;
-            let len = n * n * n * 3;
-            let rows = table[..len]
+            let rows = lut3d_len(*size)
+                .and_then(|len| table.get(..len))
+                .unwrap_or_default()
                 .chunks(4096)
                 .map(|c| {
                     let mut row = [0.0f32; 4096];
@@ -1608,6 +1609,15 @@ mod tests {
     use super::*;
     use photocraft_color::{Color, ColorMode, SampleType};
     use photocraft_geom::Size;
+
+    #[test]
+    fn color_lookup_with_an_overflowing_stored_size_uploads_no_table() {
+        for size in [1 << 22, u32::MAX] {
+            let a = Adjustment::ColorLookup { name: "x".into(), lut: Some(std::sync::Arc::new(vec![0.5; 24])), size, tetrahedral: false, dither: false };
+            let (kind, _, rows) = adjustment_program(&a, Transfer::Srgb, SampleType::U8);
+            assert_eq!((kind, rows.is_none()), (0, true), "size {size}");
+        }
+    }
 
     #[test]
     fn slots_are_recycled() {

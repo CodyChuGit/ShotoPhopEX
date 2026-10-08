@@ -1,6 +1,6 @@
 # Roadmap
 
-Status legend: ✅ done · 🟡 in progress · ⬜ not started. Updated 2026-10-07.
+Status legend: ✅ done · 🟡 in progress · ⬜ not started. Updated 2026-10-08.
 
 **Parity metrics.** `cargo xtask parity` measures how much of Photoshop's menu tree is *wired to a
 command* and writes [`parity.md`](parity.md). It does **not** measure whether those commands behave
@@ -70,7 +70,7 @@ Confidence: moderate — the next users of 0.2.x will move these numbers either 
 | Smart filters / text / effect shapes in PSDs | Measured on our Photoshop-authored set (https://github.com/storytold/photocraft-corpus, `corpus/photoshop`, 258 files): see the per-group floors in `crates/io/tests/corpus.rs` and `crates/engine/tests/photoshop_oracles.rs`. Smart objects and smart filters now survive PSD save and open (41 corpus files, 206 smart objects, round trip strict; Photoshop opens our exports with live filters); re-rendering Photoshop's smart filters with ours matches 5/30 (was 1/30) | low–medium | Remaining re-render gaps are filter maths (Gaussian/Motion Blur, Unsharp Mask, Emboss, Add Noise RNG) and bicubic placement. |
 | Core editing (layers, masks, selections, adjustments, filters, transforms) | Broad engine coverage; many interaction bugs fixed after 0.2.0 (adjustment dialogs, Curves, crop, Move/Transform modifiers, gesture origin) | medium | Fixes not yet user-validated. |
 | UI / UX polish | Shortcut audit 214 → 0 failures; dock, Layers rows and menus reworked; first visual-QA sweep found 14 defects (#147–#157). 2026-10-07: the keyboard-only shortcuts with no menu item (⌥[ ⌥] ⌥, ⌥. layer navigation, ⇧⌥[ ⇧⌥] to extend the selection, 1–0 for opacity and ⇧ for flow or fill, ⇧[ ⇧] hardness, ⌥⌘T to transform a copy and ⌥⇧⌘T to step and repeat), ⌥-click colour sampling with painting tools, double-click a Layers row for Layer Style, File › New from Clipboard, a centred main window and remembered Liquify settings (#352, #417, #350, #368, #419, #418) | low–medium | Needs recurring visual QA with realistic documents. |
-| Tools | ~20 Photoshop tools missing: Pencil, Mixer Brush (tool), Patch, Content-Aware Move, Red Eye, Pattern Stamp, Art History Brush, Freeform/Curvature Pen, Add/Delete Anchor Point tools, single row/column marquee, Color Sampler, Perspective Crop, Rotate View, the Vertical Type tool (vertical layout itself landed, #199: toggle via Type › Orientation) and type masks, Frame | low–medium | Magic/Background Eraser added; live gradients in progress (#180). Magnetic Lasso added 2026-10-08 (live-wire edge tracing, Width/Contrast/Frequency, `select.magneticLasso`). |
+| Tools | 2026-10-08: Pencil, Mixer Brush, Patch, Content-Aware Move and Vertical Type are toolbar tools. Remaining missing tools include Red Eye, Pattern Stamp, Art History Brush, Freeform/Curvature Pen, Add/Delete Anchor Point tools, single row/column marquee, Color Sampler, Perspective Crop, Rotate View, type masks and Frame | low–medium | Patch has a live healing preview. Content-Aware Move is partial: Move/Extend, Structure/Color and Sample All Layers exist; Transform On Drop and a live result preview remain missing (`TOOL-213-4` in the scorecard). Magic/Background Eraser added; live gradients in progress (#180). Magnetic Lasso added 2026-10-08 (live-wire edge tracing, Width/Contrast/Frequency, `select.magneticLasso`). |
 | Painting | Brush model and Brush Settings panel near Photoshop; .abr/.grd import; persistent presets; pen pressure/tilt on Windows, web, macOS and X11 | medium | Wayland pen input open (#79); macOS/X11 pressure not yet verified on tablet hardware. |
 | Text / typography | Engine works; caret placement and size editing fixed; OpenType features, text-on-path editing, composer parity partial | medium-low | Measure with the Photoshop-authored set. |
 | Colour management | Colour-managed canvas (document → monitor), embedded CMYK profiles, linear EXR/HDR, 16-bit float canvas | medium-high | Monitor profile follows only at launch. |
@@ -81,6 +81,15 @@ Confidence: moderate — the next users of 0.2.x will move these numbers either 
 | Ecosystem | Sandboxed WebAssembly plug-ins instead of .8BF; no ExtendScript/UXP/.atn; no Adobe Fonts/Libraries/cloud docs | low | By design for 8BF; scripting compatibility open. |
 | Platforms | macOS (notarized), Windows, Linux (AppImage/deb/rpm/Flatpak bundle), web | medium-high | Flathub later (#173); Windows signing material pending. |
 | Localisation | 2026-10-07: 10 UI languages; menu, `tl!`, blend mode, preference and brush-section coverage enforced by tests; live switching and scoped Preferences previews | medium | Engine errors/status messages still partly English; CJK web fonts, browser-locale detection, and RTL remain open. |
+
+2026-10-08: the tools update above is checked against the current toolbar groups in
+[`panels.rs`](../crates/ui-egui/src/panels.rs), the Pencil and tool-cycle tests in
+[`pencil_tests.rs`](../crates/ui-egui/src/pencil_tests.rs), Patch's live-preview test in
+[`patch_preview.rs`](../crates/ui-egui/src/patch_preview.rs), and Vertical Type's point/paragraph
+creation and undo test in [`type_tool_tests.rs`](../crates/ui-egui/src/type_tool_tests.rs).
+These implementations remove the tools from the missing list; they do not establish Photoshop
+behavioural parity. The historical estimates and corpus measurements in this assessment are
+unchanged; current measured floors remain in the scorecard.
 
 2026-10-07: Camera Raw PSD mapping covers relative custom white balance, Light/Presence,
 parametric and four point curves, HSL, Color Grading, sharpening/noise detail, grain and numeric
@@ -102,8 +111,9 @@ unchanged.
    effects, composite with masks and adjustment layers, CMYK print prep…) scripted end to end and
    checked against Photoshop's output on every build. Their pass rate becomes the headline parity
    number.
-4. **Missing tools,** starting with the Pen variants (Direct Selection landed, #790), Patch / Content-Aware
-   Move, Pencil, Rotate View, Perspective Crop.
+4. **Tool coverage and workflow depth:** Pen variants (Direct Selection landed, #790), Rotate View
+   and Perspective Crop; finish Content-Aware Move's Transform On Drop and live result preview.
+   Pencil, Mixer Brush, Patch and Vertical Type are already available on the toolbar.
 5. **Complex-document performance** (#125/#128) and GPU tiling beyond the texture limit (#49).
 6. **Recurring visual QA** (`cargo run -p photocraft-engine --example designer_psd`) and fast
    turnaround on user reports (OS, document size, layer count, screenshot).

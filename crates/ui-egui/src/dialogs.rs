@@ -324,7 +324,11 @@ pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
             app.filter_preview = None;
             let cmd = d.fields.get("__command").and_then(|v| v.as_str().map(str::to_string)).ok_or("dialog has no command")?;
             let (cmd, params) = crate::smart_ui::confirm_command(&d.fields, cmd, crate::filter_dialog::params_of(&d.fields));
-            app.run(&cmd, params)
+            let result = app.run(&cmd, params.clone());
+            if result.is_ok() && cmd == "view.newGuideLayout" {
+                app.ui.view.guide_layout = params;
+            }
+            result
         }
         DialogKind::LayerStyle => crate::layer_style::confirm(app, &d.fields),
         DialogKind::About | DialogKind::Error => Ok(Value::Null),

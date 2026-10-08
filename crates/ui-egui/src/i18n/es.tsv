@@ -99,6 +99,7 @@
 	Fill…	Rellenar…
 	Stroke…	Contornear…
 	Content-Aware Fill…	Relleno de contenido…
+	Delete and Fill Selection	Eliminar y rellenar selección
 	Content-Aware Scale	Escalado de contenido
 	Puppet Warp	Deformación de clavos
 	Perspective Warp	Deformación en perspectiva
@@ -1341,6 +1342,7 @@
 	Set background color	Establecer el color de fondo
 	Set foreground color	Establecer el color frontal
 	Set painting symmetry options	Establecer opciones de simetría de pintura
+	Symmetry Off	Simetría desactivada
 	Set shape fill type	Establecer el tipo de relleno de la forma
 	Set shape stroke type	Establecer el tipo de trazo de la forma
 	Set the text color	Establecer el color del texto
@@ -2204,3 +2206,4 @@ cameraRaw	Amount	Cantidad
 	% of all commits	% de todos los commits
 	Lines +/−	Líneas +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commits, +{added} / −{deleted} líneas (Δ {delta}), +{binAdded} / −{binDeleted} archivos binarios, {first} – {last}
+	Apply At Canvas Bounds	Aplicar efecto en los límites del lienzo

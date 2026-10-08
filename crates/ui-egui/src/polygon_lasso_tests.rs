@@ -240,3 +240,48 @@ fn lasso_tools_apply_the_options_bar_feather() {
     drag(&mut app, Tool::Patch);
     assert_eq!((coverage(&app, 37), coverage(&app, 41)), (0.0, 1.0), "patch: a hard edge");
 }
+
+fn polygon_app() -> PhotocraftApp {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 400, "height": 300, "background": "transparent"})).unwrap();
+    app.sync_views();
+    app.ui.extras.snap = false;
+    app.ui.tool = Tool::PolygonLasso;
+    app
+}
+
+fn ev(app: &mut PhotocraftApp, kind: &str, x: f64, y: f64, m: Modifiers) {
+    use crate::canvas::{ToolEvent, tool_event};
+    let e = match kind {
+        "down" => ToolEvent::Down { x, y, pressure: 1.0 },
+        "up" => ToolEvent::Up { x, y },
+        _ => ToolEvent::Move { x, y, pressure: 1.0 },
+    };
+    tool_event(app, e, m);
+}
+
+/// ⌘-drag inside a selection with the Polygonal Lasso cuts and floats the pixels, as with the
+/// marquee; a plain press there still places a point.
+#[test]
+fn cmd_drag_inside_the_selection_floats_it_with_the_polygonal_lasso() {
+    let mut app = polygon_app();
+    let layer = app.session.active().unwrap().active_layer.unwrap();
+    app.session
+        .edit("paint", |doc, _| {
+            doc.layer_mut(layer).unwrap().surface_mut().unwrap().fill_rect(Rect::new(10, 10, 30, 30), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    app.run("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
+    ev(&mut app, "down", 20.0, 20.0, Modifiers::COMMAND);
+    ev(&mut app, "move", 40.0, 20.0, Modifiers::COMMAND);
+    ev(&mut app, "up", 40.0, 20.0, Modifiers::COMMAND);
+    let f = photocraft_engine::float_cmds::floating(app.session.active().unwrap()).map(|f| f.offset);
+    assert_eq!(f, Some((20, 0)));
+    assert!(app.ui.polygon.is_empty(), "no polygon point was placed");
+    app.run("select.drop", json!({})).unwrap();
+    // A plain press inside the selection starts a polygon.
+    ev(&mut app, "down", 35.0, 20.0, Modifiers::NONE);
+    ev(&mut app, "up", 35.0, 20.0, Modifiers::NONE);
+    assert_eq!(app.ui.polygon.len(), 1);
+}

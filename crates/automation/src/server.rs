@@ -656,6 +656,21 @@ impl PhotocraftMcp {
             let Some(path) = p.path else {
                 return Ok(fail("bridge mode needs `path`"));
             };
+            // The bridge forwards to the running app's `app.save`, which takes a path only:
+            // the extra options are headless-only. Saying so beats saving with defaults
+            // while the caller believes their quality or format was applied.
+            let unsupported: Vec<&str> = [
+                p.format.is_some().then_some("format"),
+                p.quality.is_some().then_some("quality"),
+                p.tiff_layers.then_some("tiffLayers"),
+                p.index.is_some().then_some("index"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            if !unsupported.is_empty() {
+                return Ok(fail(format!("bridge mode saves with the app's current settings; `{}` need headless mode", unsupported.join("`, `"))));
+            }
             return to_result(b.call("app.save", json!({"path": path})).await);
         }
         let Some(r) = self

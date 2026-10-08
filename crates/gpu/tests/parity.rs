@@ -990,6 +990,31 @@ fn layer_effects_update_incrementally() {
 }
 
 #[test]
+fn layer_effects_move_with_a_layer_overhanging_the_canvas() {
+    // A layer the size of the canvas with a drop shadow and a stroke, dragged with the Move tool
+    // (#761): its pixels overhang the edge, yet each move reuses the maps instead of rebuilding
+    // them, and the result still matches the CPU.
+    let Some(mut g) = gpu() else { return };
+    let mut d = fx_doc(160, 120, SampleType::U8);
+    let mut l = noise_layer("full", PixelFormat::RGBA8, Rect::new(-6, -4, 166, 124), 3, 0.6);
+    l.surface_mut().unwrap().fill_rect(Rect::new(40, 30, 90, 70), &[0.0, 0.0, 0.0, 0.0]);
+    l.effects.items = vec![
+        Effect::DropShadow(shadow(BlendMode::Multiply, 0.8, 120.0, 6.0, 5.0, 0.0)),
+        Effect::Stroke(stroke(3.0, StrokePosition::Outside, FxPaint::Color(Color::rgb(1.0, 1.0, 1.0)))),
+    ];
+    d.layers.push(l);
+    let first = fx_check(&mut g, &d, "initial");
+    assert!(first.fx_programs > 0);
+    for (dx, dy) in [(3, 2), (5, -4), (-9, 7)] {
+        let s = d.layers[1].surface().unwrap();
+        let moved = s.translated(dx, dy, s.content_bounds());
+        *d.layers[1].surface_mut().unwrap() = moved;
+        let s = fx_check(&mut g, &d, &format!("moved by ({dx}, {dy})"));
+        assert_eq!(s.fx_programs, 0, "moved by ({dx}, {dy}): {s:?}");
+    }
+}
+
+#[test]
 fn layer_effects_on_shape_layers() {
     let Some(mut g) = gpu() else { return };
     use photocraft_doc::vector::{Path, ShapeLayer, Subpath};

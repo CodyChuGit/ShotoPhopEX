@@ -124,7 +124,9 @@ pub fn draw_guides(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform,
 
 /// Existing guide under a document point (within 4 screen px).
 pub fn guide_at(app: &PhotocraftApp, x: f64, y: f64) -> Option<(bool, usize)> {
-    if !app.ui.extras.guides || app.ui.extras.lock_guides {
+    // Hidden canvas guides are not interactive: the Move tool must reach the layer below.
+    // Keep hit testing consistent with the visibility gate in canvas::draw.
+    if !app.ui.extras.guides || !app.ui.view.shows(app.ui.view.show.canvas_guides) || app.ui.extras.lock_guides {
         return None;
     }
     let doc = &app.session.active()?.doc;
@@ -267,6 +269,45 @@ mod tests {
         assert_eq!(tick_step(4.0), 20.0);
         assert_eq!(tick_step(64.0), 1.0);
         assert_eq!(tick_step(0.25), 500.0);
+    }
+
+    #[test]
+    fn hidden_guides_are_not_hit_tested() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 200, "height": 100})).unwrap();
+        app.sync_views();
+        app.session.execute("view.newGuide", json!({"orientation": "vertical", "position": 50})).unwrap();
+        app.session.execute("view.newGuide", json!({"orientation": "horizontal", "position": 25})).unwrap();
+        let positions = app.session.active().unwrap().doc.guides.clone();
+
+        // Visible, unlocked guides remain interactive in either orientation.
+        assert_eq!(guide_at(&app, 50.0, 10.0), Some((true, 0)));
+        assert_eq!(guide_at(&app, 10.0, 25.0), Some((false, 0)));
+
+        // All ways to hide the canvas guides must also disable hit testing.
+        app.ui.extras.guides = false;
+        assert_eq!(guide_at(&app, 50.0, 10.0), None);
+        assert_eq!(guide_at(&app, 10.0, 25.0), None);
+        app.ui.extras.guides = true;
+
+        app.ui.view.show.canvas_guides = false;
+        assert_eq!(guide_at(&app, 50.0, 10.0), None);
+        assert_eq!(guide_at(&app, 10.0, 25.0), None);
+        app.ui.view.show.canvas_guides = true;
+
+        app.ui.view.extras = false;
+        assert_eq!(guide_at(&app, 50.0, 10.0), None);
+        assert_eq!(guide_at(&app, 10.0, 25.0), None);
+        app.ui.view.extras = true;
+
+        // Hiding/showing must not change the stored guide positions.
+        assert_eq!(app.session.active().unwrap().doc.guides, positions);
+        assert_eq!(guide_at(&app, 50.0, 10.0), Some((true, 0)));
+        assert_eq!(guide_at(&app, 10.0, 25.0), Some((false, 0)));
+
+        app.ui.extras.lock_guides = true;
+        assert_eq!(guide_at(&app, 50.0, 10.0), None);
+        assert_eq!(guide_at(&app, 10.0, 25.0), None);
     }
 
     #[test]

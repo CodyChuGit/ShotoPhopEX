@@ -20,6 +20,29 @@ pub fn active(app: &PhotocraftApp) -> bool {
     app.drag.as_ref().is_some_and(|d| d.tool == Tool::Lasso && d.lasso.is_some())
 }
 
+/// Between polygonal clicks, Backspace/right-click retracts the last fixed vertex.
+/// Do not affect a freehand stroke whose primary button is still held.
+pub fn waiting_for_vertex(app: &PhotocraftApp) -> bool {
+    app.ui.tool == Tool::Lasso
+        && app
+            .drag
+            .as_ref()
+            .is_some_and(|d| d.tool == Tool::Lasso && d.lasso.as_ref().is_some_and(|l| !l.down && l.document == app.session.active().map(|st| st.doc.id)))
+}
+
+pub fn undo_last_vertex(app: &mut PhotocraftApp) -> bool {
+    cancel_stale(app);
+    if !waiting_for_vertex(app) {
+        return false;
+    }
+    if app.drag.as_ref().is_some_and(|d| d.points.len() <= 1) {
+        app.drag = None;
+    } else if let Some(d) = app.drag.as_mut() {
+        d.points.pop();
+    }
+    true
+}
+
 /// A lasso drag that moves the selection (started inside it, `canvas::selection_drag_kind`):
 /// the canvas's own selection-move path handles it, this module only feeds it the events.
 fn moving_selection(app: &PhotocraftApp) -> bool {

@@ -254,10 +254,19 @@ fn alt_scroll_zooms_gently_around_the_pointer() {
     assert_eq!(zoom(&h), z2, "a plain scroll never zooms");
     assert!(h.state().ui.views[0].center[1] > c2[1], "a plain scroll pans");
 
-    // ⌘/Ctrl + scroll is still the faster gesture zoom.
-    wheel(&h, 1.0, Modifiers::COMMAND);
-    h.run_steps(40);
-    assert!(zoom(&h) / z2 > 1.05, "⌘-scroll zooms in bigger steps: {z2} -> {}", zoom(&h));
+    // ⌘/Ctrl + scroll pans sideways (#635), on Windows (Ctrl) and macOS (⌘) alike.
+    for m in [Modifiers { ctrl: true, command: true, ..Modifiers::NONE }, Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE }] {
+        let c = h.state().ui.views[0].center;
+        wheel(&h, -1.0, m);
+        h.run_steps(40);
+        let c1 = h.state().ui.views[0].center;
+        assert_eq!(zoom(&h), z2, "⌘/Ctrl-scroll never zooms");
+        assert!(c1[0] > c[0] && c1[1] == c[1], "⌘/Ctrl-scroll pans sideways: {c:?} -> {c1:?}");
+    }
+    // A pinch zooms around the pointer.
+    h.event(egui::Event::Zoom(1.25));
+    h.run_steps(2);
+    assert!((zoom(&h) / z2 - 1.25).abs() < 1e-3, "pinch zooms: {z2} -> {}", zoom(&h));
 }
 
 #[test]
@@ -356,4 +365,27 @@ fn kerning_field_values() {
     for s in ["", "tight", "1e9", "-5000", "NaN", "inf"] {
         assert_eq!(crate::type_tool::parse_kerning(s), None, "{s}");
     }
+}
+
+/// Sampling shows a pipette instead of the crosshair: the Eyedropper tool, and a painting tool
+/// with ⌥ held. Preferences › Cursors › Other Cursors = Precise keeps the crosshair.
+#[test]
+fn eyedropper_and_alt_sampling_show_a_pipette() {
+    let mut h = harness();
+    let p = h.state().last_canvas_rect.center();
+    let cursor = |h: &mut Harness<'static, PhotocraftApp>| {
+        h.hover_at(p);
+        h.run_steps(2);
+        h.output().platform_output.cursor_icon
+    };
+    h.state_mut().ui.tool = crate::state::Tool::Eyedropper;
+    assert_eq!(cursor(&mut h), egui::CursorIcon::None, "the pipette replaces the pointer");
+    h.state_mut().ui.tool = crate::state::Tool::Brush;
+    h.event(egui::Event::ModifiersChanged(Modifiers::ALT));
+    assert_eq!(cursor(&mut h), egui::CursorIcon::None, "⌥ samples with a pipette");
+    h.state_mut().run("prefs.set", json!({"values": {"cursors.other": "precise"}})).unwrap();
+    assert_eq!(cursor(&mut h), egui::CursorIcon::Crosshair, "Precise keeps the crosshair");
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.state_mut().ui.tool = crate::state::Tool::Eyedropper;
+    assert_eq!(cursor(&mut h), egui::CursorIcon::Crosshair);
 }

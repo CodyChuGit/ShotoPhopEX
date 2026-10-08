@@ -95,6 +95,7 @@
 	Fill…	채우기…
 	Stroke…	획…
 	Content-Aware Fill…	내용 인식 채우기…
+	Delete and Fill Selection	선택 영역 삭제 및 채우기
 	Content-Aware Scale	내용 인식 비율
 	Puppet Warp	퍼펫 뒤틀기
 	Perspective Warp	원근 뒤틀기
@@ -1323,6 +1324,7 @@
 	Set background color	배경색 설정
 	Set foreground color	전경색 설정
 	Set painting symmetry options	페인팅 대칭 옵션 설정
+	Symmetry Off	대칭 끔
 	Set shape fill type	모양 채우기 유형 설정
 	Set shape stroke type	모양 획 유형 설정
 	Set the text color	텍스트 색상 설정
@@ -2717,3 +2719,4 @@ cameraRaw	Color	색상
 	% of all commits	전체 커밋 대비 %
 	Lines +/−	줄 +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: PR {prs}개, 커밋 {commits}개, 줄 +{added} / −{deleted} (Δ {delta}), 바이너리 +{binAdded} / −{binDeleted}, {first} – {last}
+	Apply At Canvas Bounds	캔버스 경계에 효과 적용

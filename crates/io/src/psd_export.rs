@@ -244,7 +244,11 @@ impl Ex {
 
     fn encode(&self, id: i16, plane: &[u8], w: usize, h: usize) -> ChannelData {
         let depth = psd_depth(self.fmt.sample);
-        ChannelData::encode(id, self.compression(), plane, w, h, depth, self.version)
+        // Photoshop writes empty layer/mask channels as just the raw compression code.
+        // A ZIP stream for a zero-sized channel makes readers try to decompress an
+        // invalid image extent (notably psd-tools for 32-bit adjustment layers).
+        let compression = if w == 0 || h == 0 { Compression::Raw } else { self.compression() };
+        ChannelData::encode(id, compression, plane, w, h, depth, self.version)
             .or_else(|_| ChannelData::encode(id, Compression::Raw, plane, w, h, depth, self.version))
             .unwrap_or(ChannelData { id, compression: Some(Compression::Raw), data: plane.to_vec() })
     }

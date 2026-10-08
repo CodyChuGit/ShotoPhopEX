@@ -35,6 +35,7 @@ mod mac_window;
 // Pure logic is tested on every platform; only Linux runs the check.
 #[cfg(any(target_os = "linux", test))]
 mod linux_libs;
+mod logging;
 mod monitor_profile;
 mod services;
 // Windows gets pen pressure from winit (WM_POINTER); the web runner has its own listener.
@@ -121,6 +122,8 @@ mod control_port_tests {
 }
 
 fn main() -> eframe::Result {
+    // First, so the panic hook and every start-up warning are recorded (`logging`).
+    let logger = logging::install();
     crash_guard::install_hook();
     let mut control_port: Option<u16> = None;
     let mut control_arg_errors: Vec<String> = Vec::new();
@@ -171,6 +174,16 @@ fn main() -> eframe::Result {
             eprintln!("photocraft: {error}");
         }
         std::process::exit(code);
+    }
+
+    // The log file lives under the settings directory; opened after the arguments, so `--version`
+    // and usage errors leave no file behind. Records logged until now are written to it first.
+    if let (Some(logger), Some(dir)) = (logger, services::config_dir()) {
+        match logger.attach_dir(&dir.join("logs")) {
+            Ok(path) => log::info!("PhotoCraft {}, log file {}", photocraft_engine::build_info::long_version(), path.display()),
+            // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
+            Err(e) => log::warn!("no log file: {e}"),
+        }
     }
 
     // winit and wgpu dlopen the windowing and GPU libraries, and some of those crates panic when
@@ -390,12 +403,22 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     );
-    // Closed before the first frames rendered: not a driver crash. (A start that failed to
-    // create its device keeps the marker, so the next one tries a safer backend.)
-    if result.is_ok()
-        && let Some(s) = sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    // Closed or failed outside graphics initialization: not a driver crash. A renderer
+    // error keeps the marker, so the next start tries a safer backend.
+    if !gpu_startup::keep_marker_after_run(&result)
+        && let Some(mut s) = sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     {
-        s.finish();
+        if result.is_err()
+            && let Some(marker) = previous.crashed()
+        {
+            // This failure supplies no new graphics-crash evidence: retain the previous
+            // marker, rather than recording this attempt's fallback backend.
+            if let Err(error) = s.write(marker.clone()) {
+                log::warn!("couldn't restore previous GPU startup marker: {error}");
+            }
+        } else {
+            s.finish();
+        }
     }
     // Retry in a fresh process: winit event loops cannot be recreated reliably in-process.
     // Only renderer initialization failures qualify; never restart after editing has begun.

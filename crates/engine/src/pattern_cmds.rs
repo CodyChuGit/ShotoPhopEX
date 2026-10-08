@@ -307,7 +307,8 @@ fn new_fill_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = s.edit("New Pattern Fill Layer", |doc, active| {
         ensure_in_doc(doc, &pat);
         let fill = Fill::Pattern { name: pat.name.clone(), scale, id: pat.id.clone(), angle, link, phase };
-        let l = Layer::new(doc.next_layer_name("Pattern Fill"), LayerContent::Fill(fill));
+        let mut l = Layer::new(doc.next_layer_name("Pattern Fill"), LayerContent::Fill(fill));
+        l.mask = crate::commands::selection_mask(doc);
         let id = doc.insert_above(*active, l);
         *active = Some(id);
         Ok(id)

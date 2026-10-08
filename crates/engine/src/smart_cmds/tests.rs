@@ -320,6 +320,10 @@ fn edit_contents_updates_the_parent() {
     s.undo();
     assert_eq!(flat(&s), before, "the update is one undoable step in the parent");
     s.redo();
+    // Editing the same smart object again switches to the open document, no second copy.
+    let open = s.documents().len();
+    let again = s.execute("layer.smartObjects.editContents", json!({})).unwrap();
+    assert_eq!((again["document"].as_u64(), s.active_index(), s.documents().len()), (Some(child as u64), Some(child), open));
     // Closing an edited contents document also commits it.
     s.set_active(child);
     s.edit("paint2", |doc, _| {

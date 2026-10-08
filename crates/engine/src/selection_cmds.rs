@@ -235,15 +235,33 @@ fn modify(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         return Err(EngineError::BadParams { cmd: format!("select.modify.{op}"), msg: format!("radius must be a number in 0..{max}") });
     }
     let r = r.max(0.0);
+    // Photoshop's "Apply effect at canvas bounds": when on, the canvas edge is a selection edge
+    // (Select All then Contract shrinks from the edges); when off, the selection is taken to
+    // continue past the canvas. Border has no such option: its band always follows the canvas edge,
+    // or a Select All would border to nothing.
+    let at_bounds = op == "border" || b(p, "applyAtCanvasBounds", false);
     let (area, m) = current_mask(&s.active().ok_or(EngineError::NoDocument)?.doc);
     let (w, h) = (area.width() as usize, area.height() as usize);
-    let out = match op {
-        "expand" => sel::expand(&m, w, h, r),
-        "contract" => sel::contract(&m, w, h, r),
-        "border" => sel::border(&m, w, h, r),
-        "smooth" => sel::smooth(&m, w, h, r),
-        _ => sel::feather(&m, w, h, r),
+    // Feather reaches 3σ = 1.5 r; the others reach r. A margin past that keeps the canvas edge out of
+    // reach. A selection clear of the canvas edge needs none: both readings agree there.
+    let reach = if op == "feather" { r * 1.5 } else { r };
+    let pad = if touches_edge(&m, w, h) { reach.ceil() as usize + 2 } else { 0 };
+    let grown = |n: usize| pad.checked_mul(2).and_then(|p| n.checked_add(p));
+    let (Some(pw), Some(ph)) = (grown(w), grown(h)) else {
+        return Err(EngineError::BadParams { cmd: format!("select.modify.{op}"), msg: "the selection is too large to modify".into() });
     };
+    if pw.checked_mul(ph).is_none_or(|n| n > MAX_MODIFY_PIXELS) {
+        return Err(EngineError::BadParams { cmd: format!("select.modify.{op}"), msg: "the selection is too large to modify".into() });
+    }
+    let padded = pad_mask(&m, w, h, pad, at_bounds);
+    let out = match op {
+        "expand" => sel::expand(&padded, pw, ph, r),
+        "contract" => sel::contract(&padded, pw, ph, r),
+        "border" => sel::border(&padded, pw, ph, r),
+        "smooth" => sel::smooth(&padded, pw, ph, r),
+        _ => sel::feather(&padded, pw, ph, r),
+    };
+    let out = crop_mask(&out, pw, pad, w, h);
     let label = match op {
         "expand" => "Expand Selection",
         "contract" => "Contract Selection",
@@ -252,6 +270,47 @@ fn modify(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         _ => "Feather Selection",
     };
     set_selection(s, label, area, out, SelectionMode::Replace)
+}
+
+/// The largest padded mask Modify works on (a 300000 × 300000 canvas is 9e10 pixels; this caps a
+/// padded copy at ~4 GB of f32, beyond which the edit is refused rather than aborting on allocation).
+const MAX_MODIFY_PIXELS: usize = 1 << 30;
+
+/// Whether any pixel on the outermost rows or columns of `m` (`w`×`h`) is selected.
+fn touches_edge(m: &[f32], w: usize, h: usize) -> bool {
+    let sel = |x: usize, y: usize| m.get(y * w + x).is_some_and(|v| *v > 0.0);
+    (0..w).any(|x| sel(x, 0) || sel(x, h.saturating_sub(1))) || (0..h).any(|y| sel(0, y) || sel(w.saturating_sub(1), y))
+}
+
+/// `m` (`w`×`h`) with a `pad`-pixel margin: unselected when `outside_empty`, else the nearest
+/// edge pixel repeated (the selection continues past the canvas).
+fn pad_mask(m: &[f32], w: usize, h: usize, pad: usize, outside_empty: bool) -> Vec<f32> {
+    let pw = w + 2 * pad;
+    let mut out = vec![0.0f32; pw * (h + 2 * pad)];
+    if w == 0 || h == 0 {
+        return out;
+    }
+    for (py, row) in out.chunks_exact_mut(pw).enumerate() {
+        let inside_y = (pad..pad + h).contains(&py);
+        if outside_empty && !inside_y {
+            continue;
+        }
+        let y = py.saturating_sub(pad).min(h - 1);
+        for (px, v) in row.iter_mut().enumerate() {
+            let inside_x = (pad..pad + w).contains(&px);
+            if outside_empty && !inside_x {
+                continue;
+            }
+            let x = px.saturating_sub(pad).min(w - 1);
+            *v = m.get(y * w + x).copied().unwrap_or(0.0);
+        }
+    }
+    out
+}
+
+/// The `w`×`h` centre of a mask padded by `pad_mask`.
+fn crop_mask(m: &[f32], pw: usize, pad: usize, w: usize, h: usize) -> Vec<f32> {
+    m.chunks_exact(pw).skip(pad).take(h).flat_map(|row| row.iter().skip(pad).take(w).copied()).collect()
 }
 
 /// Grow (contiguous) / Similar (anywhere): pixels whose colour lies within
@@ -351,10 +410,28 @@ pub fn specs() -> Vec<CommandSpec> {
             color_range
         ),
         spec!("select.modify.border", "Border…", ["Select", "Modify"], r##"{"radius":1..200=1}"##, has_selection, |s, p| modify(s, p, "border")),
-        spec!("select.modify.smooth", "Smooth…", ["Select", "Modify"], r##"{"radius":1..500=1}"##, has_selection, |s, p| modify(s, p, "smooth")),
-        spec!("select.modify.expand", "Expand…", ["Select", "Modify"], r##"{"radius":1..500=1}"##, has_selection, |s, p| modify(s, p, "expand")),
-        spec!("select.modify.contract", "Contract…", ["Select", "Modify"], r##"{"radius":1..500=1}"##, has_selection, |s, p| modify(s, p, "contract")),
-        spec!("select.modify.feather", "Feather…", ["Select", "Modify"], r##"{"radius":0.1..1000=1}"##, has_selection, |s, p| modify(s, p, "feather")),
+        spec!("select.modify.smooth", "Smooth…", ["Select", "Modify"], r##"{"radius":1..500=1,"applyAtCanvasBounds":bool=false}"##, has_selection, |s, p| {
+            modify(s, p, "smooth")
+        }),
+        spec!("select.modify.expand", "Expand…", ["Select", "Modify"], r##"{"radius":1..500=1,"applyAtCanvasBounds":bool=false}"##, has_selection, |s, p| {
+            modify(s, p, "expand")
+        }),
+        spec!(
+            "select.modify.contract",
+            "Contract…",
+            ["Select", "Modify"],
+            r##"{"radius":1..500=1,"applyAtCanvasBounds":bool=false}"##,
+            has_selection,
+            |s, p| modify(s, p, "contract")
+        ),
+        spec!(
+            "select.modify.feather",
+            "Feather…",
+            ["Select", "Modify"],
+            r##"{"radius":0.1..1000=1,"applyAtCanvasBounds":bool=false}"##,
+            has_selection,
+            |s, p| modify(s, p, "feather")
+        ),
         spec!("select.grow", "Grow", ["Select"], r##"{"tolerance":0..255=32,"sampleAllLayers":bool=false}"##, has_selection, |s, p| grow_similar(s, p, true)),
         spec!("select.similar", "Similar", ["Select"], r##"{"tolerance":0..255=32,"sampleAllLayers":bool=false}"##, has_selection, |s, p| grow_similar(
             s, p, false
@@ -539,6 +616,53 @@ mod tests {
             }
         }
         assert!(s.active().unwrap().doc.selection.is_some());
+    }
+
+    #[test]
+    fn modify_select_all_honours_canvas_bounds() {
+        let all = || {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 40, "height": 30})).unwrap();
+            s.execute("select.all", json!({})).unwrap();
+            s
+        };
+        // Off (Photoshop's default): the selection continues past the canvas, so the edges stay.
+        for op in ["contract", "smooth", "expand", "feather"] {
+            let mut s = all();
+            s.execute(&format!("select.modify.{op}"), json!({"radius": 4})).unwrap();
+            assert_eq!(coverage(&s, 0, 15), 1.0, "{op}");
+            assert_eq!(coverage(&s, 20, 0), 1.0, "{op}");
+        }
+        // On: the canvas edge is a selection edge (#1277).
+        let mut s = all();
+        s.execute("select.modify.contract", json!({"radius": 4, "applyAtCanvasBounds": true})).unwrap();
+        assert_eq!(coverage(&s, 2, 15), 0.0);
+        assert_eq!(coverage(&s, 20, 28), 0.0);
+        assert_eq!(coverage(&s, 20, 15), 1.0);
+        let mut s = all();
+        s.execute("select.modify.feather", json!({"radius": 4, "applyAtCanvasBounds": true})).unwrap();
+        let e = coverage(&s, 0, 15);
+        assert!(e > 0.2 && e < 0.8, "{e}");
+        assert_eq!(coverage(&s, 20, 15), 1.0);
+        let mut s = all();
+        s.execute("select.modify.smooth", json!({"radius": 4, "applyAtCanvasBounds": true})).unwrap();
+        assert!(coverage(&s, 0, 0) < 1.0);
+        // Border always follows the canvas edge: a band inside it, not an empty selection.
+        let mut s = all();
+        s.execute("select.modify.border", json!({"radius": 4})).unwrap();
+        assert!(coverage(&s, 0, 15) > 0.0);
+        assert_eq!(coverage(&s, 20, 15), 0.0);
+    }
+
+    #[test]
+    fn modify_away_from_the_canvas_edge_ignores_canvas_bounds() {
+        for at in [false, true] {
+            let mut s = session();
+            s.execute("select.rect", json!({"x": 10, "y": 10, "width": 10, "height": 10})).unwrap();
+            s.execute("select.modify.contract", json!({"radius": 4, "applyAtCanvasBounds": at})).unwrap();
+            assert_eq!(coverage(&s, 11, 15), 0.0);
+            assert_eq!(coverage(&s, 15, 15), 1.0);
+        }
     }
 
     #[test]

@@ -97,9 +97,7 @@ impl Footprint {
 
 /// Bounding rectangle of a dab (1 px of anti-aliasing slack included).
 pub fn dab_rect(d: &Dab) -> Rect {
-    let rr = d.radius.ceil() as i32 + 1;
-    let (cx, cy) = (d.center.x.floor() as i32, d.center.y.floor() as i32);
-    Rect::new(cx - rr, cy - rr, cx + rr + 1, cy + rr + 1)
+    crate::render::rect_around(d, d.radius)
 }
 
 /// Rasterize one dab's coverage.

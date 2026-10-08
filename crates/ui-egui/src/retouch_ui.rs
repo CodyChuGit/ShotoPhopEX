@@ -10,6 +10,17 @@ use crate::canvas::ViewXform;
 use crate::state::Tool;
 use crate::theme::Tokens;
 
+/// The tool a stroke uses with ⌥ held: Dodge and Burn swap, as do Blur and Sharpen.
+pub(crate) fn alt_flipped(tool: Tool, alt: bool) -> Tool {
+    match (tool, alt) {
+        (Tool::Dodge, true) => Tool::Burn,
+        (Tool::Burn, true) => Tool::Dodge,
+        (Tool::Blur, true) => Tool::Sharpen,
+        (Tool::Sharpen, true) => Tool::Blur,
+        _ => tool,
+    }
+}
+
 /// Finish a stroke with a retouching tool. Returns false if `tool` isn't one.
 pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], mods: egui::Modifiers) -> bool {
     let o = app.ui.tool_options.clone();
@@ -335,6 +346,32 @@ mod tests {
     fn stripes(app: &mut PhotocraftApp, step: usize, target: &str) {
         for x in (0..100).step_by(step) {
             app.run("paint.pencil", json!({"points": [[x, 0], [x, 60]], "size": 2, "color": "#606060", "target": target})).unwrap();
+        }
+    }
+
+    #[test]
+    fn alt_flips_dodge_burn_and_blur_sharpen() {
+        for (tool, flipped) in [(Tool::Dodge, Tool::Burn), (Tool::Burn, Tool::Dodge), (Tool::Blur, Tool::Sharpen), (Tool::Sharpen, Tool::Blur)] {
+            assert_eq!(alt_flipped(tool, true), flipped);
+            assert_eq!(alt_flipped(tool, false), tool);
+        }
+        for tool in [Tool::Sponge, Tool::Smudge, Tool::Brush] {
+            assert_eq!(alt_flipped(tool, true), tool, "{tool:?} has no ⌥ counterpart");
+        }
+    }
+
+    #[test]
+    fn alt_stroke_runs_the_opposite_tool() {
+        // ⌥ held as the stroke starts: Dodge burns, Burn dodges, Blur sharpens, Sharpen blurs.
+        for (tool, cmd) in [(Tool::Dodge, "paint.burn"), (Tool::Burn, "paint.dodge"), (Tool::Blur, "paint.sharpen"), (Tool::Sharpen, "paint.blur")] {
+            let mut app = app();
+            app.ui.tool = tool;
+            let m = egui::Modifiers::ALT;
+            tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 30.0, pressure: 1.0 }, m);
+            tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 30.0, pressure: 1.0 }, m);
+            tool_event(&mut app, ToolEvent::Up { x: 50.0, y: 30.0 }, m);
+            assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some(cmd), "{tool:?} with ⌥");
+            assert_eq!(app.ui.tool, tool, "the selected tool stays {tool:?}");
         }
     }
 

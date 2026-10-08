@@ -341,6 +341,12 @@ pub struct Sentinel {
 /// The sentinel, shared with eframe's adapter hook and the app's started hook.
 pub type SharedSentinel = Arc<Mutex<Option<Sentinel>>>;
 
+/// Only renderer errors should affect the next launch's graphics backend. Windowing errors
+/// (such as a missing Linux display) and app setup errors never indicate a driver failure.
+pub fn keep_marker_after_run(result: &eframe::Result) -> bool {
+    matches!(result, Err(eframe::Error::Wgpu(_)))
+}
+
 impl Sentinel {
     /// Open (creating) the marker in `dir` and lock it. Returns what a previous start left and,
     /// unless another instance holds the lock or the directory isn't writable, this start's
@@ -597,6 +603,33 @@ mod tests {
         let (prev, _s) = Sentinel::begin(&dir);
         assert_eq!(prev, Previous::Clean);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn returned_non_graphics_errors_do_not_trigger_backend_recovery() {
+        let cases = [
+            ("success", Ok(()), false),
+            ("app-error", Err(eframe::Error::AppCreation(Box::new(std::io::Error::other("app setup failed")))), false),
+            ("gpu-error", Err(eframe::Error::Wgpu(egui_wgpu::WgpuError::CustomNativeAdapterSelectionError("no adapter".into()))), true),
+        ];
+        for (name, result, keep) in cases {
+            let dir = temp_dir(name);
+            let (_, s) = Sentinel::begin(&dir);
+            let mut s = s.expect("sentinel");
+            s.write(Marker { backend: "vulkan".into(), ..Default::default() }).unwrap();
+            if keep_marker_after_run(&result) {
+                drop(s);
+            } else {
+                s.finish();
+            }
+            let (previous, s) = Sentinel::begin(&dir);
+            assert_eq!(previous.crashed().is_some(), keep, "{name}: {result:?}");
+            if !keep {
+                assert_eq!(plan(Vulkan, previous.crashed(), None, false, Os::Other).backend, Vulkan);
+            }
+            s.expect("sentinel").finish();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

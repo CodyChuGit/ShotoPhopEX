@@ -830,6 +830,28 @@ impl Document {
         self.layer_at_mut(&path)
     }
 
+    /// A [`Layer::link_group`] id no layer uses yet: one above the highest stored id, or, when a
+    /// loaded file already holds `u64::MAX` (#961), the smallest free id from 1. Never wraps, so a
+    /// new link can't join an unrelated group. `None` only if every id is taken.
+    pub fn unused_link_group(&self) -> Option<u64> {
+        let mut used: Vec<u64> = self.walk().iter().filter_map(|(_, _, l)| l.link_group).collect();
+        used.sort_unstable();
+        used.dedup();
+        if let Some(next) = used.last().map_or(Some(1), |g| g.checked_add(1)) {
+            return Some(next);
+        }
+        let mut free = 1u64;
+        for g in used {
+            if g > free {
+                break;
+            }
+            if g == free {
+                free = free.checked_add(1)?;
+            }
+        }
+        Some(free)
+    }
+
     pub fn layer_at(&self, path: &[usize]) -> Option<&Layer> {
         let (first, rest) = path.split_first()?;
         let mut cur = self.layers.get(*first)?;
@@ -894,6 +916,23 @@ impl Document {
         (1..=names.len() + 1).map(|n| format!("{base} {n}")).find(|n| !names.contains(n.as_str())).unwrap_or_else(|| base.to_string())
     }
 
+    /// Name for a copy of a layer named `name`, unique in the document: "Layer 1 copy", then
+    /// "Layer 1 copy 2", "Layer 1 copy 3"… A name that already ends in "copy" (or "copy N") is
+    /// numbered from its root rather than growing another "copy".
+    pub fn copy_name(&self, name: &str) -> String {
+        let root = match name.rsplit_once(" copy") {
+            Some((root, rest)) if rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) => root,
+            _ => name,
+        };
+        let names: std::collections::HashSet<&str> = self.walk().into_iter().map(|(_, _, l)| l.name.as_str()).collect();
+        let first = format!("{root} copy");
+        if !names.contains(first.as_str()) {
+            return first;
+        }
+        // At most `names.len() + 1` candidates are needed, so the search always succeeds.
+        (2..=names.len() + 2).map(|n| format!("{root} copy {n}")).find(|n| !names.contains(n.as_str())).unwrap_or(first)
+    }
+
     /// Top-most layer id, useful as the default active layer.
     pub fn top_layer(&self) -> Option<LayerId> {
         self.layers.last().map(|l| l.id)
@@ -906,6 +945,29 @@ mod tests {
 
     fn doc() -> Document {
         Document::with_background("t", Size::new(100, 50), ColorMode::Rgb, SampleType::U8, Color::WHITE)
+    }
+
+    #[test]
+    fn unused_link_group_never_wraps() {
+        let mut d = doc();
+        assert_eq!(d.unused_link_group(), Some(1));
+        let with = |d: &mut Document, groups: &[u64]| {
+            d.layers.truncate(1);
+            for g in groups {
+                let mut l = Layer::raster("l", PixelFormat::RGBA8);
+                l.link_group = Some(*g);
+                d.layers.push(l);
+            }
+        };
+        with(&mut d, &[3, 7]);
+        assert_eq!(d.unused_link_group(), Some(8));
+        with(&mut d, &[u64::MAX - 1]);
+        assert_eq!(d.unused_link_group(), Some(u64::MAX));
+        // A stored maximal id would wrap to 0 (#961): take the smallest free id instead.
+        with(&mut d, &[u64::MAX]);
+        assert_eq!(d.unused_link_group(), Some(1));
+        with(&mut d, &[0, 1, 2, 4, u64::MAX]);
+        assert_eq!(d.unused_link_group(), Some(3));
     }
 
     #[test]

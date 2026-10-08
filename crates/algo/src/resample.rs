@@ -85,7 +85,7 @@ fn taps(dst0: i32, dst1: i32, scale: f64, filter: Resample, edge: Option<(i32, i
     (dst0..dst1)
         .map(|o| {
             let u = (o as f64 + 0.5) / scale - 0.5;
-            if filter == Resample::Nearest && scale >= 1.0 {
+            if filter == Resample::Nearest {
                 let i = clamp((u + 0.5).floor() as i32);
                 return if (content.0..=content.1).contains(&i) {
                     Taps { start: i, weights: vec![1.0], outside: 0.0 }
@@ -287,12 +287,7 @@ fn resize_with_budget(s: &Surface, sx: f64, sy: f64, filter: Resample, edge: Opt
 
 /// Moves a surface by whole pixels (default pixel kept).
 pub fn translate_surface(s: &Surface, dx: i32, dy: i32) -> Surface {
-    let mut out = Surface::with_default(s.format(), &s.default_pixel());
-    let r = s.content_bounds();
-    if !r.is_empty() {
-        out.write_interleaved(r.translate(dx, dy), &s.to_interleaved(r));
-    }
-    out
+    s.translated(dx, dy, s.content_bounds())
 }
 
 /// Keeps only the pixels inside `keep` (others become the default pixel).
@@ -483,5 +478,25 @@ mod tests {
         assert_eq!(t.pixel(15, 7), s.pixel(10, 10));
         let c = crop_surface(&s, Rect::new(0, 0, 10, 10));
         assert_eq!(c.content_bounds(), Rect::new(0, 0, 10, 10));
+    }
+
+    /// #1114: nearest neighbor reduction must sample single source pixels, never average.
+    #[test]
+    fn nearest_neighbor_reduction_does_not_average() {
+        let mut s = Surface::new(PixelFormat::GRAY8);
+        for y in 0..8 {
+            for x in 0..8 {
+                if (x + y) % 2 == 0 {
+                    s.fill_rect(Rect::new(x, y, x + 1, y + 1), &[1.0]);
+                }
+            }
+        }
+        let reduced = resize_surface(&s, 0.5, 0.5, Resample::Nearest);
+        for y in 0..4 {
+            for x in 0..4 {
+                let p = reduced.pixel(x, y)[0];
+                assert!(p == 0.0 || p == 1.0, "nearest produced an averaged value {p} at ({x}, {y})");
+            }
+        }
     }
 }

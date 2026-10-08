@@ -298,30 +298,39 @@ fn can_reselect(s: &Session) -> std::result::Result<(), String> {
 fn paste_into(s: &mut Session, p: &Value, outside: bool) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let selection = d.doc.selection.clone().ok_or(EngineError::Other("Paste Into needs a selection".into()))?;
+    let canvas = d.doc.bounds();
     let b = selection.content_bounds();
-    let key = step_key(s, "pasteInto");
-    let mut params = json!({"center": [(b.x0 + b.x1) as f64 / 2.0, (b.y0 + b.y1) as f64 / 2.0], "coalesce": key});
+    // Where the paste shows: the selection, or everything but it (default reveal, the
+    // selection's area inverted).
+    let limit = if outside {
+        let area = b.intersect(&canvas);
+        let inv: Vec<f32> = sel::mask_from_surface(Some(&selection), area).iter().map(|v| 1.0 - v).collect();
+        let mut m = photocraft_raster::Surface::with_default(photocraft_color::PixelFormat::GRAY8, &[1.0]);
+        m.write_region(area, &inv);
+        m
+    } else {
+        selection
+    };
+    let label = if outside { "Paste Outside" } else { "Paste Into" };
+    let mut params = json!({"center": [(b.x0 + b.x1) as f64 / 2.0, (b.y0 + b.y1) as f64 / 2.0]});
     if let Some(c) = p.get("center") {
         params["center"] = c.clone();
     }
+    if crate::channel_cmds::target_of(p) != crate::channel_cmds::Target::Pixels {
+        // A targeted mask or channel (#1035): the paste goes into it, only where `limit` allows.
+        params["target"] = p.get("target").cloned().unwrap_or_default();
+        return crate::edit_cmds::paste_to_target(s, &params, false, Some(&limit), label);
+    }
+    let key = step_key(s, "pasteInto");
+    params["coalesce"] = json!(key);
+    params["target"] = json!("pixels");
     let r = s.execute("edit.paste", params)?;
     let id = layer_param(s, &Value::Null)?;
     s.execute("layer.layerMask.revealAll", json!({"layer": id.0, "coalesce": key}))?;
     s.coalesce_request = Some(key);
-    let r2 = s.edit(if outside { "Paste Outside" } else { "Paste Into" }, |doc, _| {
-        let canvas = doc.bounds();
+    let r2 = s.edit(label, |doc, _| {
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-        let surface = if outside {
-            // Everything but the selection: default reveal, the selection's area inverted.
-            let area = b.intersect(&canvas);
-            let inv: Vec<f32> = sel::mask_from_surface(Some(&selection), area).iter().map(|v| 1.0 - v).collect();
-            let mut m = photocraft_raster::Surface::with_default(photocraft_color::PixelFormat::GRAY8, &[1.0]);
-            m.write_region(area, &inv);
-            m
-        } else {
-            selection
-        };
-        l.mask = Some(LayerMask { surface, linked: false, ..LayerMask::reveal_all() });
+        l.mask = Some(LayerMask { surface: limit, linked: false, ..LayerMask::reveal_all() });
         Ok(())
     });
     s.coalesce_request = None;
@@ -619,13 +628,19 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste Into",
             &["Edit", "Paste Special"],
             Some("Cmd+Alt+Shift+V"),
-            r##"{"center":[x,y]?}"##,
+            concat!(r#"{"center":[x,y]?,"#, crate::edit_cmds::paste_target!(), "}"),
             has_clip_and_selection,
             |s, p| paste_into(s, p, false)
         ),
-        spec!("edit.pasteSpecial.pasteOutside", "Paste Outside", &["Edit", "Paste Special"], None, r##"{"center":[x,y]?}"##, has_clip_and_selection, |s, p| {
-            paste_into(s, p, true)
-        }),
+        spec!(
+            "edit.pasteSpecial.pasteOutside",
+            "Paste Outside",
+            &["Edit", "Paste Special"],
+            None,
+            concat!(r#"{"center":[x,y]?,"#, crate::edit_cmds::paste_target!(), "}"),
+            has_clip_and_selection,
+            |s, p| paste_into(s, p, true)
+        ),
         spec!("select.reselect", "Reselect", &["Select"], Some("Cmd+Shift+D"), "{}", can_reselect, |s, _| {
             let m = reselect_target(s).ok_or(EngineError::Other("there is no selection to restore".into()))?;
             s.edit("Reselect", |doc, _| {

@@ -1240,6 +1240,61 @@ fn small_gradient_fill_matches_photoshop_at_all_depths() {
     }
 }
 
+/// A shape layer's gradient fill must render the same pixels as the compositor's gradient
+/// fill layers, for every non-default gradient field (midpoints, opacity stops, centre offset,
+/// dither, unsorted stops) and all five styles, in both frames: "Align with layer" on lays the
+/// gradient out over the shape's bounds, off over the canvas. `photocraft-vector` cannot
+/// depend on this crate, so it carries a copy of this ramp and geometry — this test is what
+/// keeps the two in step (only interior pixels, where the shape's coverage is exactly 1).
+#[test]
+fn shape_layer_gradients_match_fill_layers() {
+    use photocraft_doc::GradientStyle;
+    let canvas = Rect::new(0, 0, 64, 48);
+    // rect(x, y, w, h): the shape spans (16, 8)–(64, 48), so its whole-pixel bounds sit strictly
+    // inside the canvas — "Align with layer" then picks a different frame than the canvas.
+    let path = photocraft_vector::shapes::rect(16.0, 8.0, 48.0, 40.0);
+    let layer_frame = Rect::new(16, 8, 64, 48);
+    let grad = |style: GradientStyle, midpoints: Vec<f32>, opacity_stops: Vec<(f32, f32)>, offset: (f32, f32), dither: bool, unsorted: bool, align: bool| {
+        let mut stops = vec![(0.0, Color::BLACK), (0.5, Color::rgb(1.0, 0.25, 0.5)), (1.0, Color::WHITE)];
+        if unsorted {
+            stops.reverse();
+        }
+        Fill::Gradient { stops, angle: 30.0, scale: 1.7, style, reverse: false, opacity_stops, midpoints, offset, dither, align }
+    };
+    let styles = [GradientStyle::Linear, GradientStyle::Radial, GradientStyle::Angle, GradientStyle::Reflected, GradientStyle::Diamond];
+    // (name, midpoints, opacity stops, centre offset, dither, unsorted stops) per case.
+    type Case = (&'static str, Vec<f32>, Vec<(f32, f32)>, (f32, f32), bool, bool);
+    let cases: Vec<Case> = vec![
+        ("plain", vec![], vec![], (0.0, 0.0), false, false),
+        ("midpoints", vec![0.25, 0.9], vec![], (0.0, 0.0), false, false),
+        ("opacity stops", vec![], vec![(0.0, 1.0), (0.5, 0.2), (1.0, 0.9)], (0.0, 0.0), false, false),
+        ("offset", vec![], vec![], (0.3, -0.2), false, false),
+        ("dither", vec![], vec![], (0.0, 0.0), true, false),
+        ("all of them", vec![0.75], vec![(0.0, 1.0), (1.0, 0.4)], (0.1, 0.1), true, true),
+    ];
+    for style in styles {
+        for (name, mids, opac, offset, dither, unsorted) in &cases {
+            for align in [true, false] {
+                let f = grad(style, mids.clone(), opac.clone(), *offset, *dither, *unsorted, align);
+                let frame = if align { layer_frame } else { canvas };
+                let want = gradient_fill::render(&f, canvas, frame);
+                let sh = photocraft_doc::vector::ShapeLayer { path: path.clone(), fill: Some(f), ..Default::default() };
+                let s = photocraft_vector::render_shape(&sh, PixelFormat::RGBA8, canvas);
+                let mut worst = 0.0f32;
+                for y in 9..47 {
+                    for x in 17..63 {
+                        let p = want[(y as usize) * canvas.width() as usize + x as usize];
+                        for (got, want_ch) in (0..4usize).map(|ch| (s.sample_channel(x, y, ch), p[ch])) {
+                            worst = worst.max((got - want_ch).abs());
+                        }
+                    }
+                }
+                assert!(worst <= 1.5 / 255.0, "{style:?} {name} align={align}: worst delta {worst}");
+            }
+        }
+    }
+}
+
 /// A tall document with soft content, a translucent region and an adjustment.
 fn tall_doc(w: u32, h: u32) -> Document {
     let mut d = doc_white(w, h);

@@ -105,6 +105,7 @@
 	Fill…	Remplir…
 	Stroke…	Contourner…
 	Content-Aware Fill…	Remplissage d'après le contenu…
+	Delete and Fill Selection	Supprimer et remplir la sélection
 	Content-Aware Scale	Mise à l'échelle d'après le contenu
 	Puppet Warp	Déformation par épingles
 	Perspective Warp	Déformation de la perspective
@@ -1328,6 +1329,7 @@
 	Set background color	Définir la couleur d'arrière-plan
 	Set foreground color	Définir la couleur de premier plan
 	Set painting symmetry options	Définir les options de symétrie de peinture
+	Symmetry Off	Symétrie désactivée
 	Set shape fill type	Définir le type de remplissage de la forme
 	Set shape stroke type	Définir le type de contour de la forme
 	Set the text color	Définir la couleur du texte
@@ -2564,3 +2566,4 @@ cameraRaw	Blending	Fusion
 	% of all commits	% de tous les commits
 	Lines +/−	Lignes +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login} : {prs} PR, {commits} commits, +{added} / −{deleted} lignes (Δ {delta}), +{binAdded} / −{binDeleted} fichiers binaires, {first} – {last}
+	Apply At Canvas Bounds	Appliquer l’effet aux limites de la zone de travail

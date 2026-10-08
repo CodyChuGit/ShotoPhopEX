@@ -594,6 +594,8 @@ pub(crate) fn style_sheet_data(s: &CharStyle, font: usize, k: f32) -> E {
         ("Strikethrough".into(), E::Bool(s.strikethrough)),
         ("Ligatures".into(), E::Bool(s.ligatures)),
         ("DLigatures".into(), E::Bool(s.discretionary_ligatures)),
+        // Photopea lays out edited text without painting it unless its fill is enabled.
+        ("FillFlag".into(), E::Bool(true)),
         ("FillColor".into(), E::Dict(vec![("Type".into(), E::Int(color_type)), ("Values".into(), E::Array(values))])),
     ];
     dict.append(&mut opentype);

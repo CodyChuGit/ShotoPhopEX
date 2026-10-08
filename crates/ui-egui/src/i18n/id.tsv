@@ -98,6 +98,7 @@
 	Fill…	Isi…
 	Stroke…	Stroke…
 	Content-Aware Fill…	Isi Content-Aware…
+	Delete and Fill Selection	Hapus dan Isi Seleksi
 	Content-Aware Scale	Skala Content-Aware
 	Puppet Warp	Puppet Warp
 	Perspective Warp	Perspective Warp
@@ -1322,6 +1323,7 @@
 	Set background color	Atur warna background
 	Set foreground color	Atur warna foreground
 	Set painting symmetry options	Atur opsi simetri lukisan
+	Symmetry Off	Simetri Mati
 	Set shape fill type	Atur jenis isian bentuk
 	Set shape stroke type	Atur jenis stroke bentuk
 	Set the text color	Atur warna teks
@@ -2551,3 +2553,4 @@ cameraRaw	Blending	Pembauran
 	% of all commits	% dari semua commit
 	Lines +/−	Baris +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commit, +{added} / −{deleted} baris (Δ {delta}), +{binAdded} / −{binDeleted} berkas biner, {first} – {last}
+	Apply At Canvas Bounds	Terapkan efek di batas kanvas

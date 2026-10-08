@@ -133,6 +133,12 @@ impl Ctx<'_> {
         if ids.zip(&planes).any(|(id, p)| p.is_none() && rec.channel(id).is_some()) {
             return Surface::new(self.fmt);
         }
+        // Only decoded channel data justifies a buffer: the decoders bound their output by the
+        // bytes in the file, but a bare rectangle can declare 300000² pixels in a few bytes (#755).
+        if planes.iter().all(Option::is_none) {
+            self.warn(format!("layer \"{name}\": no channel data for its {w}x{h} bounds; treated as empty"));
+            return Surface::new(self.fmt);
+        }
         let refs: Vec<Option<&[u8]>> = planes.iter().map(|p| p.as_deref()).collect();
         let mut fill: Vec<Vec<u8>> = vec![zero_sample(s); self.cc];
         fill.push(max_sample(s));
@@ -768,7 +774,10 @@ pub fn psd_to_document_with(file: &PsdFile, ctl: &photocraft_raster::Interrupt) 
 
     // Layer comps (resource 1065 + per-layer `cmls`); the raw data stays for verbatim export.
     let raw_comps = doc.metadata.psd_resources.iter().find(|(id, _, _)| *id == crate::comps_map::LAYER_COMPS).map(|(_, _, d)| d.clone());
-    (doc.layer_comps, doc.last_applied_comp, doc.last_document_state) = crate::comps_map::comps_from_psd(raw_comps.as_deref().map(Vec::as_slice), &doc);
+    let comp_warnings;
+    (doc.layer_comps, doc.last_applied_comp, doc.last_document_state, comp_warnings) =
+        crate::comps_map::decode_comps(raw_comps.as_deref().map(Vec::as_slice), &doc);
+    cx.warnings.extend(comp_warnings);
     // Slices (resource 1050), after layer ids are known; the raw data stays for verbatim export.
     crate::slices_map::import(&mut doc);
     // Character and paragraph styles from the type layers' engine data.
