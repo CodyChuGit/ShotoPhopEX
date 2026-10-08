@@ -99,6 +99,7 @@
 	Fill…	Rellenar…
 	Stroke…	Contornear…
 	Content-Aware Fill…	Relleno de contenido…
+	Delete and Fill Selection	Eliminar y rellenar selección
 	Content-Aware Scale	Escalado de contenido
 	Puppet Warp	Deformación de clavos
 	Perspective Warp	Deformación en perspectiva
@@ -2204,6 +2205,7 @@ cameraRaw	Amount	Cantidad
 	% of all commits	% de todos los commits
 	Lines +/−	Líneas +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commits, +{added} / −{deleted} líneas (Δ {delta}), +{binAdded} / −{binDeleted} archivos binarios, {first} – {last}
+	Apply At Canvas Bounds	Aplicar efecto en los límites del lienzo
 	Selection Preview:	Previsualización de selección:
 	Black Matte	Fondo negro
 	White Matte	Fondo blanco

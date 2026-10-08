@@ -203,7 +203,7 @@ fn layer_via(s: &mut Session, cut: bool) -> Result<Value> {
         let nid = s.edit("Layer Via Copy", |doc, active| {
             let src = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
             let mut dup = src.duplicate();
-            dup.name = format!("{} copy", src.name);
+            dup.name = doc.copy_name(&src.name);
             dup.locks = Default::default();
             let nid = doc.insert_above(Some(id), dup);
             *active = Some(nid);

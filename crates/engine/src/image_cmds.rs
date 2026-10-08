@@ -155,10 +155,29 @@ fn image_size(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "width": nw, "height": nh }))
 }
 
+fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
+    EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
+}
+
 /// Moves every surface, channel, selection and guide by `(dx, dy)`.
-fn translate_doc(doc: &mut Document, dx: i32, dy: i32) {
+///
+/// Fails, before moving anything, when some pixels would land outside the i32 coordinate
+/// range: the surface copy saturates its target rectangle there, which no longer matches
+/// the pixel data and panics (#959).
+fn translate_doc(doc: &mut Document, cmd: &str, dx: i32, dy: i32) -> Result<()> {
     if dx == 0 && dy == 0 {
-        return;
+        return Ok(());
+    }
+    let fits = |r: Rect| {
+        r.is_empty() || (r.x0.checked_add(dx).is_some() && r.x1.checked_add(dx).is_some() && r.y0.checked_add(dy).is_some() && r.y1.checked_add(dy).is_some())
+    };
+    let mut ok = true;
+    for_each_surface(&mut doc.layers, true, &mut |surf, _| ok = ok && fits(surf.content_bounds()));
+    ok = ok
+        && doc.channels.iter().chain(doc.quick_mask.as_ref()).all(|ch| fits(ch.surface.content_bounds()))
+        && doc.selection.as_ref().is_none_or(|sel| fits(sel.content_bounds()));
+    if !ok {
+        return Err(bad(cmd, format!("moving the document by ({dx}, {dy}) would push its pixels outside the 32-bit coordinate range")));
     }
     for_each_surface(&mut doc.layers, true, &mut |surf, _| *surf = translate_surface(surf, dx, dy));
     for ch in doc.channels.iter_mut().chain(doc.quick_mask.as_mut()) {
@@ -170,16 +189,22 @@ fn translate_doc(doc: &mut Document, dx: i32, dy: i32) {
     // Type, shapes, smart objects, vector masks, paths, guides, slices, notes… (caches above
     // are already translated exactly, so nothing needs re-rendering for the move itself).
     crate::canvas_geom::transform_geometry(doc, &photocraft_geom::Affine::translate(f64::from(dx), f64::from(dy)));
+    Ok(())
 }
 
 /// Crops the document to `r` (in current document coordinates).
-fn crop_doc(doc: &mut Document, r: Rect, delete_pixels: bool) {
+fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool) -> Result<()> {
+    // The origin moves to (0, 0); `-i32::MIN` has no i32 value (#959).
+    let (Some(dx), Some(dy)) = (r.x0.checked_neg(), r.y0.checked_neg()) else {
+        return Err(bad(cmd, format!("the crop origin ({}, {}) can't be moved to (0, 0) within the 32-bit coordinate range", r.x0, r.y0)));
+    };
     if delete_pixels {
         for_each_surface(&mut doc.layers, false, &mut |surf, _| *surf = crop_surface(surf, r));
     }
-    translate_doc(doc, -r.x0, -r.y0);
+    translate_doc(doc, cmd, dx, dy)?;
     doc.size = Size::new(r.width(), r.height());
     crate::canvas_geom::refresh(doc, crate::canvas_geom::Refresh::Shapes);
+    Ok(())
 }
 
 fn anchor_factors(a: &str) -> (f64, f64) {
@@ -229,7 +254,7 @@ fn canvas_size(s: &mut Session, p: &Value) -> Result<Value> {
     let dy = ((nh as f64 - oh) * ay).round() as i32;
     let ext = extension_color(s, p);
     s.edit("Canvas Size", |doc, _| {
-        translate_doc(doc, dx, dy);
+        translate_doc(doc, "image.canvasSize", dx, dy)?;
         doc.size = Size::new(nw, nh);
         crate::canvas_geom::refresh(doc, crate::canvas_geom::Refresh::Shapes);
         let canvas = doc.bounds();
@@ -266,7 +291,14 @@ fn crop(s: &mut Session, p: &Value) -> Result<Value> {
         crate::commands::int_i32("image.crop", p, "width")?,
         crate::commands::int_i32("image.crop", p, "height")?,
     ) {
-        (Some(x), Some(y), Some(w), Some(h)) if w > 0 && h > 0 => Some(Rect::new(x, y, x.saturating_add(w), y.saturating_add(h))),
+        (Some(x), Some(y), Some(w), Some(h)) if w > 0 && h > 0 => {
+            // A far edge past i32::MAX used to saturate, silently cropping less than asked (#959).
+            let end = |o: i32, len: i32, ko: &str, kl: &str| {
+                o.checked_add(len)
+                    .ok_or_else(|| bad("image.crop", format!("`{ko}` + `{kl}` = {} is outside the 32-bit coordinate range", i64::from(o) + i64::from(len))))
+            };
+            Some(Rect::new(x, y, end(x, w, "x", "width")?, end(y, h, "y", "height")?))
+        }
         _ => None,
     };
     // An explicit rectangle (the Crop tool) may extend past the canvas; a selection crop is clamped.
@@ -277,7 +309,7 @@ fn crop(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("nothing to crop: pass x/y/width/height or make a selection".into()));
     }
     s.edit("Crop", |doc, _| {
-        crop_doc(doc, r, delete);
+        crop_doc(doc, "image.crop", r, delete)?;
         doc.selection = None;
         Ok(())
     })?;
@@ -317,10 +349,7 @@ fn trim(s: &mut Session, p: &Value) -> Result<Value> {
         if side("right") { b.x1 } else { canvas.x1 },
         if side("bottom") { b.y1 } else { canvas.y1 },
     );
-    s.edit("Trim", |doc, _| {
-        crop_doc(doc, r, true);
-        Ok(())
-    })?;
+    s.edit("Trim", |doc, _| crop_doc(doc, "image.trim", r, true))?;
     Ok(json!({ "x": r.x0, "y": r.y0, "width": r.width(), "height": r.height() }))
 }
 
@@ -455,6 +484,48 @@ mod tests {
         assert!(err.to_string().contains("32-bit"), "{err}");
         // In-range rectangles past the canvas still work (clamped by the crop itself).
         s.execute("image.crop", json!({"x": -10, "y": -10, "width": 1000, "height": 1000})).unwrap();
+    }
+
+    /// A crop whose translation to the origin can't be represented in i32 is rejected before
+    /// anything changes (#959): `-i32::MIN` overflowed the negation in `crop_doc`, `x + width`
+    /// past i32::MAX silently shortened the crop, and an origin one past i32::MIN moved the
+    /// layer pixels beyond i32::MAX (a length-mismatch panic while translating surfaces).
+    #[test]
+    fn crop_rejects_origins_that_cannot_move_to_zero() {
+        const MIN: i64 = i32::MIN as i64;
+        const MAX: i64 = i32::MAX as i64;
+        let cases = [
+            json!({"x": MIN, "y": 0, "width": 1, "height": 1}),
+            json!({"x": 0, "y": MIN, "width": 1, "height": 1}),
+            json!({"x": MIN, "y": MIN, "width": 1, "height": 1}),
+            json!({"x": MIN, "y": 0, "width": 1, "height": 1, "deleteCroppedPixels": false}),
+            json!({"x": MAX - 5, "y": 0, "width": 10, "height": 1}),
+            json!({"x": 0, "y": MAX - 5, "width": 1, "height": 10}),
+            json!({"x": MIN + 1, "y": 0, "width": 1, "height": 1, "deleteCroppedPixels": false}),
+            json!({"x": 0, "y": MIN + 1, "width": 1, "height": 1, "deleteCroppedPixels": false}),
+        ];
+        for p in cases {
+            let mut s = session();
+            let before = s.active().unwrap().doc.clone();
+            let (rev, steps) = (s.active().unwrap().revision, s.active().unwrap().history.entries().len());
+            let err = s.execute("image.crop", p.clone()).unwrap_err();
+            assert!(matches!(err, EngineError::BadParams { .. }), "{p}: {err}");
+            assert!(err.to_string().contains("32-bit"), "{p}: {err}");
+            let st = s.active().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&st.doc, &before), "{p}: document changed");
+            assert_eq!(st.doc.size, Size::new(40, 20), "{p}");
+            assert_eq!(st.doc.layers[1].surface().unwrap().content_bounds(), Rect::new(10, 5, 20, 15), "{p}");
+            assert_eq!((st.revision, st.history.entries().len()), (rev, steps), "{p}: history step recorded");
+        }
+        // Control: a legal negative origin past the canvas still crops (and extends) the canvas.
+        let mut s = session();
+        s.execute("image.crop", json!({"x": -10, "y": -5, "width": 60, "height": 30})).unwrap();
+        assert_eq!(doc(&s).size, Size::new(60, 30));
+        assert_eq!(doc(&s).layers[1].surface().unwrap().pixel(20, 10), vec![1.0, 0.0, 0.0, 1.0]);
+        // A far-off crop that deletes the (non-overlapping) pixels has nothing left to move.
+        let mut s = session();
+        s.execute("image.crop", json!({"x": MIN + 1, "y": 0, "width": 1, "height": 1})).unwrap();
+        assert_eq!(doc(&s).size, Size::new(1, 1));
     }
 
     fn session() -> Session {

@@ -85,6 +85,50 @@ fn promote_auto_slice_and_divide() {
 }
 
 #[test]
+fn divide_wide_slice_preserves_exact_edges_and_history() {
+    for depth in [8, 16, 32] {
+        for rect in
+            [Rect::new(-2_000_000_000, -1_000_000_000, 2_000_000_000, 1_000_000_000), Rect::new(-1_000_000_000, -1_000_000_000, 1_000_000_000, 1_000_000_000)]
+        {
+            let mut s = session(depth);
+            s.edit("loaded wide slice", |doc, _| {
+                doc.slices.list.push(Slice { id: 1, rect, name: "wide".into(), ..Default::default() });
+                Ok(())
+            })
+            .unwrap();
+            let before = doc(&s).slices.clone();
+            let past = s.active().unwrap().history.past_len();
+            let result = s.execute("slice.divide", json!({"slice": 1, "horizontal": 3, "vertical": 3})).unwrap();
+            assert_eq!(result["count"], 9);
+            assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+            let parts = &doc(&s).slices.list;
+            assert_eq!(parts.len(), 9);
+            assert_eq!(parts[0].name, "wide");
+            for row in parts.as_chunks::<3>().0 {
+                assert_eq!(row[0].rect.x0, rect.x0);
+                assert_eq!(row[2].rect.x1, rect.x1);
+                assert_eq!(row.iter().map(|s| u64::from(s.rect.width())).sum::<u64>(), u64::from(rect.width()));
+                for pair in row.windows(2) {
+                    assert_eq!(pair[0].rect.x1, pair[1].rect.x0);
+                    assert_eq!(pair[0].rect.y0, pair[1].rect.y0);
+                    assert_eq!(pair[0].rect.y1, pair[1].rect.y1);
+                }
+            }
+            assert_eq!(parts[0].rect.y0, rect.y0);
+            assert_eq!(parts[8].rect.y1, rect.y1);
+            for i in 0..6 {
+                assert_eq!(parts[i].rect.y1, parts[i + 3].rect.y0);
+            }
+            let divided = doc(&s).slices.clone();
+            assert!(s.undo());
+            assert_eq!(doc(&s).slices, before);
+            assert!(s.redo());
+            assert_eq!(doc(&s).slices, divided);
+        }
+    }
+}
+
+#[test]
 fn slices_from_guides_and_clear() {
     let mut s = session(8);
     s.edit("guides", |d, _| {
@@ -149,6 +193,29 @@ fn layer_based_slice_follows_the_layer_and_its_effects() {
         // Deleting the layer deletes its slice.
         s.execute("layer.delete", json!({"layer": id.0})).unwrap();
         assert!(doc(&s).slices.get(sid).is_none());
+    }
+}
+
+#[test]
+fn layer_slice_outsets_saturate_when_a_layer_moves_near_coordinate_limits() {
+    for offset in [i32::MIN + 100, i32::MAX - 100] {
+        let mut s = session(8);
+        let layer = add_square(&mut s, Rect::new(10, 10, 30, 20));
+        let slice = s.execute("layer.newLayerBasedSlice", json!({})).unwrap()["slice"].as_u64().unwrap() as u32;
+        s.execute("slice.set", json!({"slice": slice, "outsets": [10_000, 10_000, 10_000, 10_000]})).unwrap();
+        let before = doc(&s).slices.clone();
+        s.execute("layer.translate", json!({"layer": layer.0, "dx": offset, "dy": offset})).unwrap();
+        let moved = doc(&s).slices.get(slice).unwrap().rect;
+        let content = layer_bounds(doc(&s).layer(layer).unwrap());
+        assert_eq!(moved, content.inflate(10_000));
+        assert!(moved.contains_rect(&content));
+        s.execute("slice.list", json!({})).unwrap();
+        assert_eq!(doc(&s).slices.get(slice).unwrap().rect, moved);
+        assert!(s.undo());
+        assert_eq!(doc(&s).slices, before);
+        assert!(s.redo());
+        s.execute("slice.list", json!({})).unwrap();
+        assert_eq!(doc(&s).slices.get(slice).unwrap().rect, moved);
     }
 }
 

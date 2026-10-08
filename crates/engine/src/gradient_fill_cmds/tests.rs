@@ -297,3 +297,29 @@ fn commands_fail_gracefully() {
     let g = s.execute(SET, json!({"scale": 1})).unwrap();
     assert!((g["scale"].as_f64().unwrap() - 10.0).abs() < 1e-3, "{g}");
 }
+
+/// Dragging one handle past the scale range stops it; the other handle stays put (#1243).
+#[test]
+fn a_clamped_handle_drag_leaves_the_other_handle_alone() {
+    let pt = |g: &Value, k: &str| [g[k][0].as_f64().unwrap(), g[k][1].as_f64().unwrap()];
+    let close = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-2 && (a[1] - b[1]).abs() < 1e-2;
+    for style in STYLES {
+        for (from, to, short, short_start) in [([14.0, 16.0], [34.0, 16.0], [15.0, 16.0], [33.0, 16.0]), ([24.0, 6.0], [24.0, 26.0], [24.0, 7.0], [24.0, 25.0])]
+        {
+            let mut s = session(8, "white");
+            s.execute(CREATE, json!({"from": from, "to": to, "style": style})).unwrap();
+            // End dragged almost onto the start: far below 10 %.
+            let g = s.execute(SET, json!({"to": short})).unwrap();
+            assert!((g["scale"].as_f64().unwrap() - 10.0).abs() < 1e-3, "{style}: {g}");
+            assert!(close(pt(&g, "from"), from), "{style}: start moved to {:?}", pt(&g, "from"));
+            // The end stops on the line towards the pointer.
+            let e = pt(&g, "to");
+            assert!((e[0] - from[0]) * (short[0] - from[0]) >= 0.0 && (e[1] - from[1]) * (short[1] - from[1]) >= 0.0, "{style}: {e:?}");
+            // And the same for the start handle.
+            let mut s = session(8, "white");
+            s.execute(CREATE, json!({"from": from, "to": to, "style": style})).unwrap();
+            let g = s.execute(SET, json!({"from": short_start})).unwrap();
+            assert!(close(pt(&g, "to"), to), "{style}: end moved: {g}");
+        }
+    }
+}

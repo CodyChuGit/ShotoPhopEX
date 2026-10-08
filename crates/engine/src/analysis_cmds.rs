@@ -1021,6 +1021,9 @@ fn nice_length(d: &Document) -> f64 {
     [5.0, 2.0, 1.0].into_iter().map(|m| m * e).find(|v| *v <= target).unwrap_or(e)
 }
 
+/// The shortest image a scale bar fits: four times its 2 px minimum height (#932).
+const MIN_SCALE_MARKER_HEIGHT: f64 = 8.0;
+
 fn place_scale_marker(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "image.analysis.placeScaleMarker";
     let d = doc(s)?;
@@ -1033,6 +1036,11 @@ fn place_scale_marker(s: &mut Session, p: &Value) -> Result<Value> {
     let (w, h) = (f64::from(d.size.width), f64::from(d.size.height));
     if px < 1.0 || px > w {
         return Err(bad(CMD, format!("a {length} {} bar is {px:.1} px; it must fit the {w} px wide image", sc.units)));
+    }
+    // The bar is at least 2 px tall and at most a quarter of the image, so a shorter image has no
+    // room for it (and would invert the height clamp below, which panics) (#932).
+    if h < MIN_SCALE_MARKER_HEIGHT {
+        return Err(bad(CMD, format!("the image is {h} px tall; a scale marker needs at least {MIN_SCALE_MARKER_HEIGHT} px")));
     }
     let font_size = p.get("fontSize").and_then(Value::as_f64).unwrap_or(12.0).clamp(1.0, 1000.0);
     let font = p.get("font").and_then(Value::as_str).map(str::to_string);
@@ -1051,8 +1059,11 @@ fn place_scale_marker(s: &mut Session, p: &Value) -> Result<Value> {
     let margin = (w.min(h) * 0.03).round().max(2.0);
     let bar_h = (font_size / 4.0).round().clamp(2.0, h / 4.0);
     let text_h = if show_text { font_size * 1.25 } else { 0.0 };
-    let bar_y = if text_top { h - margin - bar_h } else { h - margin - bar_h - text_h };
-    let bar = Rect::new(margin as i32, bar_y.round() as i32, (margin + px).round() as i32, (bar_y + bar_h).round() as i32);
+    // Keep the bar on the canvas when the text under it doesn't fit; the label is clipped instead (#932).
+    let bar_y = if text_top { h - margin - bar_h } else { h - margin - bar_h - text_h }.max(0.0);
+    // Likewise pull a bar nearly as wide as the image in from the right edge (#932).
+    let bar_x = margin.min(w - px);
+    let bar = Rect::new(bar_x.round() as i32, bar_y.round() as i32, (bar_x + px).round() as i32, (bar_y + bar_h).round() as i32);
     let label = format!("{} {}", trim_num(length), sc.units);
     compound(s, "Place Scale Marker", |s| {
         let fmt = doc(s)?.pixel_format();

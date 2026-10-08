@@ -457,7 +457,7 @@ fn build() -> Vec<CommandSpec> {
                 // A copy of the Background layer is an ordinary, unlocked layer (Photoshop).
                 let from_background = src.name == "Background" && src.locks.transparency && doc.layers.first().is_some_and(|b| b.id == id);
                 let mut dup = src.duplicate();
-                dup.name = format!("{} copy", dup.name);
+                dup.name = doc.copy_name(&dup.name);
                 if from_background {
                     dup.locks = Default::default();
                 }

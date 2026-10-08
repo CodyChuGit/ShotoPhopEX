@@ -19,8 +19,8 @@ pub fn open(app: &mut PhotocraftApp) -> Result<u64, String> {
     f.insert("__export".into(), json!(true));
     f.insert("__label".into(), json!("Export As"));
     f.insert("format".into(), json!("png"));
-    f.insert("quality".into(), json!(85));
-    f.insert("lossless".into(), json!(false));
+    f.insert("quality".into(), json!(app.session.prefs().export.jpeg_quality));
+    f.insert("lossless".into(), json!(app.session.prefs().export.webp_lossless));
     f.insert("transparency".into(), json!(true));
     f.insert("scale".into(), json!(100));
     f.insert("metadata".into(), json!("none"));
@@ -92,6 +92,22 @@ fn export_document(doc: &Document, f: &Map<String, Value>, max_side: Option<u32>
     s.active().map(|d| (*d.doc).clone()).ok_or_else(|| "export failed".into())
 }
 
+/// Export As already supports lossy WebP; reuse the Quick Export defaults when
+/// choosing that format so both flows expose the same quality and lossless options.
+fn set_format_defaults(f: &mut Map<String, Value>, fmt: &str, prefs: &photocraft_engine::prefs::Export) {
+    f.insert("format".into(), json!(fmt));
+    match fmt {
+        "jpg" => {
+            f.insert("quality".into(), json!(prefs.jpeg_quality));
+        }
+        "webp" => {
+            f.insert("quality".into(), json!(prefs.webp_quality));
+            f.insert("lossless".into(), json!(prefs.webp_lossless));
+        }
+        _ => {}
+    }
+}
+
 fn s_fmt(f: &Map<String, Value>) -> String {
     let v = s(f, "format");
     if v.is_empty() { "png".into() } else { v }
@@ -137,7 +153,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                 let mut fmt = s_fmt(f);
                 let opts: Vec<(String, &str)> = FORMATS.iter().map(|(k, l)| (k.to_string(), *l)).collect();
                 if crate::widgets::dropdown(ui, "export-format", &mut fmt, &opts, 130.0) {
-                    f.insert("format".into(), json!(fmt));
+                    set_format_defaults(f, &fmt, &app.session.prefs().export);
                 }
             });
             let fmt = s_fmt(f);
@@ -285,6 +301,28 @@ mod tests {
         let proxy = export_document(&doc, &f, Some(40)).unwrap();
         assert_eq!(proxy.size.width, 40);
         assert_eq!(settings(&f).jpeg_quality, Some(85));
+    }
+
+    #[test]
+    fn switching_export_formats_uses_independent_quality_preferences() {
+        let prefs = photocraft_engine::prefs::Export { jpeg_quality: 43, webp_quality: 72, webp_lossless: false, ..Default::default() };
+        let mut fields = Map::new();
+        set_format_defaults(&mut fields, "webp", &prefs);
+        assert_eq!(fields["quality"], 72);
+        assert_eq!(fields["lossless"], false);
+        let s = settings(&fields);
+        assert!(!s.webp_lossless);
+        assert_eq!(s.webp_quality, Some(72));
+        assert_eq!(s.jpeg_quality, None);
+
+        set_format_defaults(&mut fields, "jpg", &prefs);
+        assert_eq!(fields["quality"], 43);
+        assert_eq!(settings(&fields).jpeg_quality, Some(43));
+        assert_eq!(settings(&fields).webp_quality, None);
+
+        set_format_defaults(&mut fields, "webp", &photocraft_engine::prefs::Export::default());
+        assert!(settings(&fields).webp_lossless, "default WebP Quick Export mode is lossless");
+        assert_eq!(settings(&fields).webp_quality, None);
     }
 
     #[test]

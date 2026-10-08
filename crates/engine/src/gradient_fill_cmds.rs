@@ -222,8 +222,25 @@ pub fn apply_set(layer: &Layer, f: &Fill, canvas: Rect, p: &Value, fg: [f32; 4],
     }
     if from.is_some() || to.is_some() || (style_changed && !explicit_geometry) {
         let cur = if from.is_some() || to.is_some() { gf::handles(*style, *angle, *scale, *offset, frame) } else { old_handles };
-        let (a, s, o) = gf::from_handles(*style, from.unwrap_or(cur.0), to.unwrap_or(cur.1), frame, *angle);
+        let (f0, t0) = (from.unwrap_or(cur.0), to.unwrap_or(cur.1));
+        let (a, s, o) = gf::from_handles(*style, f0, t0, frame, *angle);
         (*angle, *scale, *offset) = (a, clamp_scale(s), o);
+        // Past the scale range the dragged handle stops; the other one stays where it is (#1243).
+        // (Linear centres on the midpoint, so a clamped scale would otherwise move both ends.)
+        let anchor = match (from, to) {
+            (Some(_), None) => Some((t0, false)),
+            (None, Some(_)) => Some((f0, true)),
+            _ => None,
+        };
+        if let Some((pin, is_start)) = anchor
+            && *scale != s
+        {
+            let (f1, t1) = gf::handles(*style, *angle, *scale, *offset, frame);
+            let at = if is_start { f1 } else { t1 };
+            let (dx, dy) = (pin[0] - at[0], pin[1] - at[1]);
+            let (w, h) = (frame.width().max(1) as f32, frame.height().max(1) as f32);
+            *offset = (offset.0 + dx / w, offset.1 + dy / h);
+        }
     }
     if let Some(v) = p.get("stops") {
         let arr = v.as_array().ok_or_else(|| bad(CMD, "`stops` is [[location, colour], …]"))?;

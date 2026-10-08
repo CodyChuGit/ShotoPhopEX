@@ -164,13 +164,16 @@ fn apply_to_doc(doc: &mut Document, vars: &Variables, set: &DataSet) -> Result<(
                 }
             }
             (VarKind::TextReplacement, VarValue::Text(text)) => {
+                let snapshot = doc.clone();
                 if let Some(l) = doc.layer_mut(def.layer)
                     && let LayerContent::Text(t) = &mut l.content
                 {
                     t.text = text.clone();
-                    t.cache = None; // force re-render
                     t.runs.clear(); // re-flow as one run from the summary style
                     t.paragraphs.clear();
+                    // The compositor draws a type layer from its cache: clearing it left the
+                    // layer blank until some other edit re-rendered it (#990).
+                    crate::type_cmds::refresh(&snapshot, t);
                 }
             }
             (VarKind::PixelReplacement { method, align, clip }, VarValue::Pixels(path)) => {

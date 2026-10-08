@@ -322,8 +322,17 @@ fn rect_param(p: &Value, key: &str, cmd: &str) -> Result<Rect> {
 }
 
 fn content_aware_fill(s: &mut Session, p: &Value) -> Result<Value> {
+    content_aware_fill_as(s, p, "edit.contentAwareFill", "Content-Aware Fill")
+}
+
+/// Delete and Fill Selection (#1286): Photoshop's one-click removal from the selection-tool
+/// context menu. Content-Aware Fill with its default settings into the layer, no dialog.
+fn delete_and_fill(s: &mut Session, _: &Value) -> Result<Value> {
+    content_aware_fill_as(s, &json!({}), "edit.deleteAndFillSelection", "Delete and Fill Selection")
+}
+
+fn content_aware_fill_as(s: &mut Session, p: &Value, cmd: &'static str, label: &'static str) -> Result<Value> {
     use photocraft_algo::content_aware::{FillOptions, color_level, fill_with, rotation_level};
-    let cmd = "edit.contentAwareFill";
     let id = pixel_layer(s).map_err(EngineError::Other)?;
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let doc = st.doc.clone();
@@ -365,7 +374,6 @@ fn content_aware_fill(s: &mut Session, p: &Value) -> Result<Value> {
     let fmt = surf.format();
     let n = fmt.channels();
     let (w, h) = (window.width() as usize, window.height() as usize);
-    let label = "Content-Aware Fill";
     // A background job when started with `Session::start` (#210): reading the window and the
     // PatchMatch fill run on a worker against the document snapshot, cancellable per row band.
     crate::jobs::run(
@@ -449,7 +457,7 @@ fn apply_content_aware_fill(
             }
             "duplicate" => {
                 let mut dup = doc.layer(id).ok_or(EngineError::NoLayer(id))?.duplicate();
-                dup.name = format!("{} copy", dup.name);
+                dup.name = doc.copy_name(&dup.name);
                 let nid = doc.insert_above(Some(id), dup);
                 *active = Some(nid);
                 nid
@@ -957,6 +965,7 @@ pub fn specs() -> Vec<CommandSpec> {
             can_caf,
             content_aware_fill
         ),
+        spec!("edit.deleteAndFillSelection", "Delete and Fill Selection", [], None, "{}", can_caf, delete_and_fill),
         spec!(
             "edit.contentAwareScale",
             "Content-Aware Scale",

@@ -894,6 +894,23 @@ impl Document {
         (1..=names.len() + 1).map(|n| format!("{base} {n}")).find(|n| !names.contains(n.as_str())).unwrap_or_else(|| base.to_string())
     }
 
+    /// Name for a copy of a layer named `name`, unique in the document: "Layer 1 copy", then
+    /// "Layer 1 copy 2", "Layer 1 copy 3"… A name that already ends in "copy" (or "copy N") is
+    /// numbered from its root rather than growing another "copy".
+    pub fn copy_name(&self, name: &str) -> String {
+        let root = match name.rsplit_once(" copy") {
+            Some((root, rest)) if rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) => root,
+            _ => name,
+        };
+        let names: std::collections::HashSet<&str> = self.walk().into_iter().map(|(_, _, l)| l.name.as_str()).collect();
+        let first = format!("{root} copy");
+        if !names.contains(first.as_str()) {
+            return first;
+        }
+        // At most `names.len() + 1` candidates are needed, so the search always succeeds.
+        (2..=names.len() + 2).map(|n| format!("{root} copy {n}")).find(|n| !names.contains(n.as_str())).unwrap_or(first)
+    }
+
     /// Top-most layer id, useful as the default active layer.
     pub fn top_layer(&self) -> Option<LayerId> {
         self.layers.last().map(|l| l.id)

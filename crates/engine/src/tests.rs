@@ -23,6 +23,17 @@ fn document_pixel_at_the_coordinate_limits() {
 }
 
 #[test]
+fn file_new_at_the_size_limit_does_not_fill_every_tile() {
+    // A 300000² white background used to fill ~360 GB of tiles before returning (#705).
+    for background in ["white", "black", "backgroundColor", "#336699"] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 300_000, "height": 300_000, "background": background})).unwrap();
+        assert_eq!(px(&mut s, 299_999, 299_999)[3], 1.0, "{background}");
+        assert_eq!(px(&mut s, 0, 0)[3], 1.0, "{background}");
+    }
+}
+
+#[test]
 fn command_ids_are_unique_and_documented() {
     let mut seen = std::collections::HashSet::new();
     for c in command_specs() {

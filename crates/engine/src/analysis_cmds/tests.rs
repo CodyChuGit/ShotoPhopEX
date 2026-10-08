@@ -277,6 +277,44 @@ fn place_scale_marker_builds_one_group_in_one_step() {
 }
 
 #[test]
+fn place_scale_marker_on_a_short_document_errors_without_panicking() {
+    // A document under 8 px tall inverted the bar-height clamp and panicked (#932). Call `run`
+    // directly too: dispatch would catch the panic and hide it behind a generic error.
+    for (w, h, p) in [
+        (100, 4, json!({})),
+        (100, 1, json!({})),
+        (100, 7, json!({"displayText": false, "textPosition": "top"})),
+        (300_000, 3, json!({"fontSize": 1000})),
+        (2, 7, json!({"length": 1})),
+        (7, 7, json!({"length": 7, "fontSize": 1})),
+    ] {
+        for h in [h, 1, 2, 3, 5, 6] {
+            let mut s = session(w, h, 8);
+            let before = s.active().unwrap().history.past_len();
+            let e = place_scale_marker(&mut s, &p).unwrap_err().to_string();
+            assert!(e.contains("tall"), "{w}x{h}: {e}");
+            let e = s.execute("image.analysis.placeScaleMarker", p.clone()).unwrap_err().to_string();
+            assert!(!e.contains("internal error"), "{w}x{h}: {e}");
+            assert_eq!(s.active().unwrap().history.past_len(), before, "{w}x{h}: nothing added");
+            assert!(d(&s).layers.iter().all(|l| l.name != "Measurement Scale Marker"));
+        }
+    }
+    // Control: 8 px is the shortest that fits, and tall, narrow or roomy documents still get a
+    // marker that lies on the canvas.
+    for (w, h, p) in [(100, 8, json!({})), (100, 100, json!({})), (20, 4000, json!({})), (2, 8, json!({"length": 2}))] {
+        let mut s = session(w, h, 8);
+        let r = place_scale_marker(&mut s, &p).unwrap();
+        let b: Vec<i64> = r["barRect"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+        assert!(0 <= b[0] && b[0] < b[2] && b[2] <= i64::from(w), "{w}x{h}: bar on the canvas: {r}");
+        assert!(0 <= b[1] && b[1] < b[3] && b[3] <= i64::from(h), "{w}x{h}: bar on the canvas: {r}");
+        assert_eq!(s.active().unwrap().history.past_len(), 1);
+        let doc = d(&s);
+        let bar = doc.layers.last().unwrap().children().unwrap().iter().find(|l| l.name == "Scale Bar").unwrap();
+        assert_eq!(f64::from(bar.surface().unwrap().content_bounds().width()), r["pixels"].as_f64().unwrap(), "{w}x{h}");
+    }
+}
+
+#[test]
 fn analysis_info_and_cmyk_document() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 30, "height": 20, "mode": "cmyk", "background": "white"})).unwrap();

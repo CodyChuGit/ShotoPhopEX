@@ -535,8 +535,12 @@ fn link_layers(s: &mut Session) -> Result<Value> {
     let linked = s.edit("Link Layers", |doc, _| {
         let groups: Vec<Option<u64>> = sel.iter().map(|id| doc.layer(*id).and_then(|l| l.link_group)).collect();
         // Already one link group (or a single linked layer): unlink, like Photoshop's toggle.
-        let unlink = groups[0].is_some() && groups.iter().all(|g| *g == groups[0]);
-        let next = doc.walk().iter().filter_map(|(_, _, l)| l.link_group).max().unwrap_or(0) + 1;
+        let first = groups.first().copied().flatten();
+        let unlink = first.is_some() && groups.iter().all(|g| *g == first);
+        // A fresh id: one past the largest, or (a stored document already uses u64::MAX) the
+        // smallest unused one, never an existing group that would join unrelated layers.
+        let used: std::collections::HashSet<u64> = doc.walk().iter().filter_map(|(_, _, l)| l.link_group).collect();
+        let next = used.iter().max().map_or(Some(1), |m| m.checked_add(1)).or_else(|| (1..=u64::MAX).find(|g| !used.contains(g))).unwrap_or(1);
         for id in &sel {
             let l = doc.layer_mut(*id).ok_or(EngineError::NoLayer(*id))?;
             l.link_group = if unlink { None } else { Some(next) };
@@ -721,7 +725,7 @@ pub fn duplicate_selected(s: &mut Session) -> Result<Value> {
         let mut new_active = None;
         for id in top_level(doc, &sel) {
             let mut dup = doc.layer(id).ok_or(EngineError::NoLayer(id))?.duplicate();
-            dup.name = format!("{} copy", dup.name);
+            dup.name = doc.copy_name(&dup.name);
             let nid = doc.insert_above(Some(id), dup);
             if Some(id) == old_active {
                 new_active = Some(nid);
@@ -828,6 +832,29 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicates_are_numbered_not_stacked() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 20, "height": 20})).unwrap();
+        s.execute("layer.new.layer", json!({"name": "Layer 1"})).unwrap();
+        let name = |s: &Session| {
+            let st = s.active().unwrap();
+            st.doc.layer(st.active_layer.unwrap()).unwrap().name.clone()
+        };
+        s.execute("layer.duplicate", json!({})).unwrap();
+        assert_eq!(name(&s), "Layer 1 copy");
+        // Duplicating the copy (the active layer) numbers it rather than adding "copy" again.
+        s.execute("layer.duplicate", json!({})).unwrap();
+        assert_eq!(name(&s), "Layer 1 copy 2");
+        s.execute("layer.duplicate", json!({})).unwrap();
+        assert_eq!(name(&s), "Layer 1 copy 3");
+        let doc = &s.active().unwrap().doc;
+        assert_eq!(doc.copy_name("Layer 1"), "Layer 1 copy 4");
+        // Names that merely contain "copy" keep it.
+        assert_eq!(doc.copy_name("Copywriting"), "Copywriting copy");
+        assert_eq!(doc.copy_name("A copyedit"), "A copyedit copy");
+    }
 
     fn session(depth: u32) -> Session {
         let mut s = Session::new();
@@ -1288,6 +1315,28 @@ mod tests {
         assert_eq!(bounds(&s, a), Rect::new(0, 0, 5, 5), "the layer never moved");
         // Large in-range offsets still work.
         s.execute("layer.translate", json!({"dx": -200_000, "dy": 200_000})).unwrap();
+    }
+
+    #[test]
+    fn link_layers_never_reuses_a_group_when_the_largest_id_is_u64_max() {
+        let mut s = session(8);
+        let a = rect_layer(&mut s, Rect::new(0, 0, 10, 10));
+        let b = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+        let c = rect_layer(&mut s, Rect::new(50, 50, 60, 60));
+        let d = rect_layer(&mut s, Rect::new(70, 70, 80, 80));
+        // A stored document can carry any id; `max + 1` once overflowed here.
+        let st = s.active_mut().unwrap();
+        for id in [c, d] {
+            std::sync::Arc::make_mut(&mut st.doc).layer_mut(id).unwrap().link_group = Some(u64::MAX);
+        }
+        select_all(&mut s, &[a, b]);
+        assert_eq!(s.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+        let g = doc(&s).layer(a).unwrap().link_group;
+        assert_eq!(g, Some(1));
+        assert_eq!(doc(&s).layer(b).unwrap().link_group, g);
+        for id in [c, d] {
+            assert_eq!(doc(&s).layer(id).unwrap().link_group, Some(u64::MAX), "the existing group is untouched");
+        }
     }
 
     #[test]

@@ -154,6 +154,54 @@ fn export_preferences_drive_quick_export() {
 }
 
 #[test]
+fn webp_export_preferences_select_lossless_or_lossy_output() {
+    let dir = tmp("quick_webp_quality");
+    let mut s = session(8);
+    let defaults = s.prefs().export.clone();
+    assert!(defaults.webp_lossless, "existing Quick Export defaults to lossless WebP");
+    assert_eq!(defaults.webp_quality, 85);
+
+    // Simulate an older stored preference section without the newly added WebP keys.
+    let mut old = s.prefs().to_json();
+    old["export"].as_object_mut().unwrap().remove("webpLossless");
+    old["export"].as_object_mut().unwrap().remove("webpQuality");
+    let restored: crate::prefs::Preferences = serde_json::from_value(old).unwrap();
+    assert!(restored.export.webp_lossless);
+    assert_eq!(restored.export.webp_quality, 85);
+
+    let r = s.execute("file.export.exportPreferences", json!({"quickExportFormat": "webp", "webpLossless": true, "webpQuality": 40})).unwrap();
+    assert_eq!(r["values"]["webpLossless"], true);
+    assert_eq!(r["values"]["webpQuality"], 40);
+    let lossless_path = format!("{dir}/lossless.webp");
+    s.execute("file.export.quickExport", json!({"path": lossless_path})).unwrap();
+    let lossless = std::fs::read(&lossless_path).unwrap();
+    assert!(lossless.starts_with(b"RIFF") && &lossless[8..12] == b"WEBP");
+    assert!(lossless.windows(4).any(|w| w == b"VP8L"), "lossless WebP should use VP8L");
+    assert_eq!(decode(&lossless_path).dimensions(), (64, 48));
+
+    s.execute("file.export.exportPreferences", json!({"webpLossless": false})).unwrap();
+    let low_path = format!("{dir}/lossy40.webp");
+    s.execute("file.export.quickExport", json!({"path": low_path})).unwrap();
+    let low = std::fs::read(&low_path).unwrap();
+    assert!(low.windows(4).any(|w| w == b"VP8 "), "lossy WebP should contain a VP8 frame");
+    assert_eq!(decode(&low_path).dimensions(), (64, 48));
+
+    s.execute("file.export.exportPreferences", json!({"webpQuality": 90})).unwrap();
+    let high_path = format!("{dir}/lossy90.webp");
+    s.execute("file.export.quickExport", json!({"path": high_path})).unwrap();
+    let high = std::fs::read(&high_path).unwrap();
+    assert!(high.windows(4).any(|w| w == b"VP8 "));
+    assert_eq!(decode(&high_path).dimensions(), (64, 48));
+    assert_ne!(low, high, "changing WebP quality should change the encoded image");
+
+    let before = s.prefs().export.webp_quality;
+    for quality in [0, 101] {
+        assert!(s.execute("file.export.exportPreferences", json!({"webpQuality": quality})).is_err());
+        assert_eq!(s.prefs().export.webp_quality, before);
+    }
+}
+
+#[test]
 fn generator_naming_grammar() {
     let a = parse_asset_name("200% foo@2x.png, 48x48 icons/bar.png8 + photo.jpg8", 72.0);
     assert_eq!(a.len(), 3);

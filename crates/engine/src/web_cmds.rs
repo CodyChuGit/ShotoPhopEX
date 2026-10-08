@@ -840,6 +840,8 @@ fn export_preferences(s: &mut Session, p: &Value) -> Result<Value> {
         ("quickExportFormat", "export.quickExportFormat"),
         ("quickExportLocation", "export.quickExportLocation"),
         ("jpegQuality", "export.jpegQuality"),
+        ("webpLossless", "export.webpLossless"),
+        ("webpQuality", "export.webpQuality"),
         ("metadata", "export.metadata"),
         ("convertToSrgb", "export.convertToSrgb"),
     ] {
@@ -897,9 +899,12 @@ fn quick_export(s: &mut Session, p: &Value) -> Result<Value> {
             o.insert("format".into(), json!("gif"));
         }
         "webp" => {
-            // WebP has no legacy Save for Web optimiser: write it through the regular exporter.
+            // WebP uses the regular exporter. Its optional quality is in the Photoshop-style
+            // 0–12 save scale: invert that mapping so the codec receives the chosen 1–100.
+            // Keeping quality absent preserves the historical lossless Quick Export behavior.
             let (wdoc, _, _) = web_document(&doc, &json!({}), &WebSettings { convert_to_srgb: prefs.convert_to_srgb, ..Default::default() })?;
-            let warnings = crate::file_cmds::save_doc(&wdoc, &path, None)?;
+            let quality = if prefs.webp_lossless { None } else { Some((f64::from(prefs.webp_quality.clamp(1, 100)) - 1.0) * 12.0 / 99.0) };
+            let warnings = crate::file_cmds::save_doc(&wdoc, &path, quality)?;
             crate::automate_cmds::fire_event(s, "export");
             return Ok(json!({"path": path, "format": fmt, "warnings": warnings}));
         }
@@ -1211,7 +1216,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Preferences…",
             &["File", "Export"],
             None,
-            r##"{"quickExportFormat":"png|jpg|gif|webp"?,"quickExportLocation":"ask|sameFolder"?,"jpegQuality":1..100?,"metadata":"none|copyright|all"?,"convertToSrgb":bool?} → {values}"##,
+            r##"{"quickExportFormat":"png|jpg|gif|webp"?,"quickExportLocation":"ask|sameFolder"?,"jpegQuality":1..100?,"webpLossless":bool?,"webpQuality":1..100?,"metadata":"none|copyright|all"?,"convertToSrgb":bool?} → {values}"##,
             |_| Ok(()),
             export_preferences
         ),

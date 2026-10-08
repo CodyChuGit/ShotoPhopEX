@@ -136,6 +136,30 @@ fn content_aware_fill_removes_object_at_all_depths() {
 }
 
 #[test]
+fn delete_and_fill_selection_removes_the_object_in_one_step() {
+    // #1286: Content-Aware Fill's defaults, no dialog, one history step named for the command.
+    for depth in [8, 16, 32] {
+        let mut s = blob_session(depth);
+        let base = s.active().unwrap().active_layer.unwrap();
+        assert!(s.is_enabled("edit.deleteAndFillSelection"));
+        let r = s.execute("edit.deleteAndFillSelection", json!({})).unwrap();
+        assert_eq!(r["layer"].as_u64(), Some(base.0), "fills the layer itself");
+        assert!(r["filled"].as_u64().unwrap() > 100);
+        let v = px(&s, 30, 20);
+        assert!(!(v[0] > 0.9 && v[1] < 0.1), "depth {depth}: red left: {v:?}");
+        assert_eq!(s.active().unwrap().history.undo_label(), Some("Delete and Fill Selection"));
+        s.undo();
+        assert_eq!(px(&s, 30, 20)[1], 0.0, "undo restores the blob");
+    }
+    // Parameters are ignored, never a crash; nothing selected greys it out and refuses.
+    let mut s = blob_session(8);
+    assert!(s.execute("edit.deleteAndFillSelection", json!({"output": 7, "sampling": [1]})).is_ok());
+    s.execute("select.deselect", json!({})).unwrap();
+    assert!(!s.is_enabled("edit.deleteAndFillSelection"));
+    assert!(s.execute("edit.deleteAndFillSelection", json!({})).is_err());
+}
+
+#[test]
 fn content_aware_fill_outputs_and_sampling() {
     let mut s = blob_session(8);
     let base = s.active().unwrap().active_layer.unwrap();

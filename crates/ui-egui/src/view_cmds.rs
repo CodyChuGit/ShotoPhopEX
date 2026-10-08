@@ -94,6 +94,12 @@ pub struct ViewOptions {
     /// and the Middle Eastern & South Asian composer.
     pub language_features: String,
     pub middle_eastern_composer: bool,
+    /// Parameters from the last successfully applied New Guide Layout dialog.
+    pub guide_layout: Value,
+}
+
+fn default_guide_layout() -> Value {
+    json!({"columns": 8, "gutter": 20, "rows": 0, "rowGutter": 0, "margin": 0, "centerColumns": false, "clearExisting": false})
 }
 
 impl Default for ViewOptions {
@@ -112,6 +118,7 @@ impl Default for ViewOptions {
             font_preview_size: "medium".into(),
             language_features: "defaultFeatures".into(),
             middle_eastern_composer: false,
+            guide_layout: default_guide_layout(),
         }
     }
 }
@@ -846,7 +853,8 @@ fn front(app: &mut PhotocraftApp, id: &str, params: &Value) -> Option<Result<Val
             json!({"from": ["any", "rgb", "grayscale", "cmyk", "lab", "indexed", "bitmap", "duotone", "multichannel"], "to": ["rgb", "grayscale", "cmyk", "lab"]}),
         ),
         "view.newGuideLayout" => {
-            dialog(app, json!({"columns": 8, "gutter": 20, "rows": 0, "rowGutter": 0, "margin": 0, "centerColumns": false, "clearExisting": false}), json!({}))
+            let fields = app.ui.view.guide_layout.clone();
+            dialog(app, fields, json!({}))
         }
         "type.warpText" => {
             let styles: Vec<&str> = std::iter::once("none").chain(photocraft_text::warp::STYLES.iter().map(|(_, s)| *s)).collect();

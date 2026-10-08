@@ -190,3 +190,25 @@ fn pixel_replacement_changes_the_layer() {
         assert!(b > r, "replacement is blue-ish: {rgba:?}");
     }
 }
+
+#[test]
+fn applied_text_is_rendered_in_the_document_and_in_exports() {
+    // Applying a text value cleared the type layer's render cache and nothing rebuilt it, so the
+    // text vanished from the canvas and from every exported file (#990).
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 60, "background": "white"})).unwrap();
+    let id = s.execute("type.create", json!({"x": 4, "y": 40, "text": "HELLO", "size": 32, "color": "#000000"})).unwrap()["layer"].clone();
+    let dark = |d: &Document| photocraft_compose::render(d, d.bounds()).px.iter().filter(|p| p[0] < 0.5).count();
+    assert!(dark(doc(&s)) > 0);
+    s.execute("image.variables.define", json!({"defs": [{"name": "headline", "layer": id, "type": "textReplacement"}]})).unwrap();
+    s.execute("image.variables.dataSets", json!({"dataSets": [{"name": "row1", "values": [{"variable": "headline", "kind": "text", "value": "BYE"}]}]}))
+        .unwrap();
+    let dir = tmp("text-export");
+    let out = s.execute("file.export.dataSetsAsFiles", json!({"dir": dir, "format": "png"})).unwrap();
+    let path = out["files"][0].as_str().unwrap();
+    let exported = photocraft_io::import(path, &std::fs::read(path).unwrap()).unwrap().document;
+    assert!(dark(&exported) > 0, "the exported row keeps its text");
+    s.execute("image.applyDataSet", json!({"name": "row1"})).unwrap();
+    assert!(dark(doc(&s)) > 0, "the applied text is drawn");
+    let _ = std::fs::remove_dir_all(&dir);
+}

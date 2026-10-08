@@ -199,3 +199,54 @@ fn a_drag_inside_the_selection_moves_it() {
     assert!(h.state().drag.is_none());
     assert_eq!(bounds(h.state()), Some(photocraft_geom::Rect::new(110, 105, 160, 145)));
 }
+
+#[test]
+fn retracting_polygonal_vertices_keeps_the_document_unchanged() {
+    let mut app = app();
+    begin(&mut app, Modifiers::NONE);
+    event(&mut app, "up", 120.0, 50.0, Modifiers::ALT);
+    assert!(waiting_for_vertex(&app));
+    let layer = app.session.active().unwrap().active_layer.unwrap();
+    assert_eq!(app.drag.as_ref().unwrap().points.len(), 3);
+    assert!(undo_last_vertex(&mut app));
+    assert_eq!(app.drag.as_ref().unwrap().points.len(), 2);
+    assert!(undo_last_vertex(&mut app));
+    assert_eq!(app.drag.as_ref().unwrap().points.len(), 1);
+    assert!(undo_last_vertex(&mut app));
+    assert!(!active(&app));
+    assert!(!undo_last_vertex(&mut app));
+    let st = app.session.active().unwrap();
+    assert!(st.doc.layer(layer).is_some());
+    assert!(st.doc.selection.is_none());
+}
+
+#[test]
+fn real_canvas_backspace_and_right_click_retract_polygonal_points() {
+    let mut h = harness();
+    mouse(&mut h, "down", 50.0, 50.0, Modifiers::NONE);
+    mouse(&mut h, "move", 120.0, 50.0, Modifiers::NONE);
+    mouse(&mut h, "up", 120.0, 50.0, Modifiers::ALT);
+    mouse(&mut h, "down", 180.0, 100.0, Modifiers::ALT);
+    mouse(&mut h, "up", 180.0, 100.0, Modifiers::ALT);
+    assert_eq!(h.state().drag.as_ref().unwrap().points.len(), 3);
+    let layer = h.state().session.active().unwrap().active_layer.unwrap();
+
+    h.event(Event::Key { key: egui::Key::Backspace, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::ALT });
+    h.run_steps(2);
+    assert_eq!(h.state().drag.as_ref().unwrap().points.len(), 2);
+    assert!(h.state().session.active().unwrap().doc.layer(layer).is_some());
+
+    let state = h.state();
+    let view = &state.ui.views[0];
+    let xf = ViewXform { rect: crate::rulers::content_rect(state, state.last_canvas_rect), zoom: view.zoom, center: view.center, flip: false };
+    let pos = xf.to_screen(155.0, 100.0);
+    h.event(Event::PointerMoved(pos));
+    h.event(Event::PointerButton { pos, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::ALT });
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::ALT });
+    h.run_steps(2);
+    assert_eq!(h.state().drag.as_ref().unwrap().points.len(), 1);
+    assert!(h.state().ui.canvas_tool_menu.is_none());
+    assert!(h.state().session.active().unwrap().doc.layer(layer).is_some());
+    assert!(h.state().session.active().unwrap().doc.selection.is_none());
+}
