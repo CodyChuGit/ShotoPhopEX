@@ -264,7 +264,11 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                             ui.painter().rect_stroke(r, t.radius, Stroke::new(1.5, t.accent), StrokeKind::Inside);
                         }
                         page_icon(ui, Rect::from_center_size(pos2(r.center().x, r.top() + 34.0), vec2(40.0, 40.0)), p.1, p.2, &t);
-                        ui.painter().text(pos2(r.center().x, r.top() + 72.0), Align2::CENTER_CENTER, tl!(p.0), egui::FontId::proportional(12.0), t.text);
+                        // Long translations would spill past the card: cut them with '…' and show the full name on hover.
+                        let name = crate::tab_strip::elided(ui, tl!(p.0), egui::FontId::proportional(12.0), t.text, r.width() - 12.0);
+                        let elided = name.elided;
+                        ui.painter().galley(Align2::CENTER_CENTER.anchor_size(pos2(r.center().x, r.top() + 72.0), name.size()).min, name, t.text);
+                        let resp = if elided { resp.on_hover_text(tl!(p.0)) } else { resp };
                         let unit = if p.3 >= 300.0 { "in" } else { "px" };
                         let size = if unit == "in" {
                             format!(
@@ -666,6 +670,29 @@ mod tests {
             click_at(&mut h, egui::pos2(label.right() + gap + 12.0, label.center().y));
             enter(&mut h);
             assert_eq!(created(&h), (256, 512, 72.0));
+        }
+
+        /// Long preset names are cut to the card instead of spilling past its edges.
+        #[test]
+        fn long_translated_preset_names_stay_inside_their_card() {
+            let es = crate::i18n::Lang::from_code("es").expect("es");
+            let full = crate::i18n::tr(es, "Default Photoshop Size");
+            crate::i18n::with_language(es, || {
+                let h = harness();
+                let mut names = Vec::new();
+                for shape in &h.output().shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.job.text == full
+                    {
+                        names.push((text.galley.size().x, text.galley.elided));
+                    }
+                }
+                assert!(!names.is_empty(), "the preset card draws its name");
+                for (width, elided) in names {
+                    assert!(width <= 164.0 - 12.0, "{full} is {width}px wide");
+                    assert!(elided, "{full} is cut with '…'");
+                }
+            });
         }
     }
 }
