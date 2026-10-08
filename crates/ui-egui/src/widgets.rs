@@ -144,7 +144,7 @@ pub fn pill_tab(ui: &mut Ui, label: &str, selected: bool) -> Response {
 /// Monospace numeric field with a dimmed unit suffix, Photoshop style. Drag to scrub.
 pub fn value_field(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
+    let (rect, slot) = ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
     surface(ui, rect, t.field, false);
     if !t.bevel {
         ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
@@ -153,9 +153,11 @@ pub fn value_field(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive
     let field = Rect::from_min_max(rect.min + vec2(4.0, 2.0), rect.max - vec2(4.0 + suffix_w, 2.0));
     // Small ranges (gamma 0.01–9.99, 0–1 centres) need two decimals and a finer drag, like Photoshop.
     let fine = range.end() - range.start() <= 10.0;
+    let (lo, hi) = (*range.start(), *range.end());
+    let (step, grid) = arrow_step(ui, slot.id, if fine { 0.01 } else { 1.0 });
     // new_child (not scope_builder): a scope would move the parent cursor back to the child rect.
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
-    let resp = {
+    let mut resp = {
         let ui = &mut child;
         {
             ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
@@ -171,8 +173,19 @@ pub fn value_field(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive
             .inner
         }
     };
+    ui.data_mut(|d| d.insert_temp(slot.id, resp.id));
     if !suffix.is_empty() {
         ui.painter().text(pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, suffix, theme::mono(11.0), t.text_faint);
+    }
+    if step != 0.0 {
+        // Round to the step before adding it, so whole-number fields drop decimals (55.4 + 1 = 56).
+        let v = (*value / grid).round() * grid + step;
+        // Round to 4 decimal places, so repeated 0.1 steps don't leave float errors.
+        let v = (v * 1e4).round() / 1e4;
+        // `f32::clamp` panics on a reversed or NaN range, which `DragValue::range` accepts.
+        *value = if lo <= hi { v.clamp(lo, hi) } else { v };
+        ui.memory_mut(|m| m.request_focus(resp.id));
+        resp.mark_changed();
     }
     resp
 }
@@ -205,6 +218,33 @@ fn number_edit(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32
     );
     resp.flags.set(egui::response::Flags::CHANGED, *value != before);
     resp
+}
+
+/// Increments a numerical field with the up/down arrow keys. Increments by 1 by default, 10 with shift, and 0.1 with ctrl/cmd.
+/// Returns the amount to add, and what to round the value to first.
+fn arrow_step(ui: &mut Ui, slot: egui::Id, step: f32) -> (f32, f32) {
+    use egui::{Key, Modifiers};
+    // The field's id is only known once it's drawn, so `value_field` saves it under `slot` for the next frame.
+    let Some(id) = ui.data(|d| d.get_temp::<egui::Id>(slot)).filter(|id| ui.memory(|m| m.has_focus(*id))) else {
+        return (0.0, step);
+    };
+    let (n, grid) = ui.input_mut(|i| {
+        let (mut n, mut grid) = (0.0, step);
+        // egui ignores an extra shift when matching, so shift is checked before the plain arrows to get its larger step.
+        for (mods, k) in [(Modifiers::COMMAND, (step / 10.0).max(0.01)), (Modifiers::SHIFT, 10.0 * step), (Modifiers::NONE, step)] {
+            let presses = i.count_and_consume_key(mods, Key::ArrowUp) as f32 - i.count_and_consume_key(mods, Key::ArrowDown) as f32;
+            if presses != 0.0 && mods == Modifiers::COMMAND {
+                grid = k;
+            }
+            n += k * presses;
+        }
+        (n, grid)
+    });
+    // If a sum like 5+5 has been typed, unfocus the field so it calculates it (as Enter would) before we step.
+    if n != 0.0 && ui.data(|d| d.get_temp(id.with("arithmetic"))).unwrap_or(false) {
+        ui.memory_mut(|m| m.surrender_focus(id));
+    }
+    (n, grid)
 }
 
 /// Thin-track slider with a round knob. `gradient` paints the track (e.g. hue spectrum).
@@ -706,6 +746,94 @@ fn product(s: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use egui::{Key, Modifiers};
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    /// Sets up a test with one value field. Its state is its value and how many times it changed.
+    fn field(value: f32, range: std::ops::RangeInclusive<f32>) -> Harness<'static, (f32, u32)> {
+        let mut h = Harness::new_ui_state(
+            move |ui, s: &mut (f32, u32)| {
+                if super::value_field(ui, &mut s.0, range.clone(), "px", 80.0).changed() {
+                    s.1 += 1;
+                }
+            },
+            (value, 0),
+        );
+        h.run();
+        h
+    }
+
+    fn press(h: &mut Harness<'static, (f32, u32)>, mods: Modifiers, key: Key) -> f32 {
+        h.key_press_modifiers(mods, key);
+        h.run();
+        h.state().0
+    }
+
+    fn focused(value: f32, range: std::ops::RangeInclusive<f32>) -> Harness<'static, (f32, u32)> {
+        let mut h = field(value, range);
+        h.get_by_role(egui::accesskit::Role::SpinButton).click();
+        h.run();
+        h
+    }
+
+    #[test]
+    fn arrow_keys_step_a_focused_field_by_one_and_shift_by_ten() {
+        let mut h = focused(100.0, 0.0..=1000.0);
+        assert_eq!(press(&mut h, Modifiers::NONE, Key::ArrowUp), 101.0);
+        assert_eq!(press(&mut h, Modifiers::SHIFT, Key::ArrowUp), 111.0);
+        assert_eq!(press(&mut h, Modifiers::NONE, Key::ArrowDown), 110.0);
+        assert_eq!(press(&mut h, Modifiers::SHIFT, Key::ArrowDown), 100.0);
+        assert_eq!(press(&mut h, Modifiers::COMMAND, Key::ArrowUp), 100.1);
+        assert_eq!(press(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::ArrowDown), 100.0);
+        assert_eq!(h.state().1, 6, "every step reports a change, so callers apply it");
+    }
+
+    #[test]
+    fn arrow_keys_on_a_field_with_a_reversed_range_do_not_panic() {
+        let mut h = focused(5.0, 10.0..=0.0);
+        let _ = press(&mut h, Modifiers::NONE, Key::ArrowUp);
+        let mut h = focused(5.0, f32::NAN..=10.0);
+        let _ = press(&mut h, Modifiers::NONE, Key::ArrowDown);
+    }
+
+    #[test]
+    fn arrow_keys_round_decimals_step_fine_fields_and_clamp() {
+        for (start, mods, key, want) in [
+            (55.4, Modifiers::NONE, Key::ArrowUp, 56.0),
+            (55.6, Modifiers::NONE, Key::ArrowUp, 57.0),
+            (55.4, Modifiers::NONE, Key::ArrowDown, 54.0),
+            (55.5, Modifiers::NONE, Key::ArrowUp, 57.0),
+            (55.5, Modifiers::NONE, Key::ArrowDown, 55.0),
+            (55.4, Modifiers::SHIFT, Key::ArrowUp, 65.0),
+            (55.47, Modifiers::COMMAND, Key::ArrowUp, 55.6),
+        ] {
+            assert_eq!(press(&mut focused(start, 0.0..=1000.0), mods, key), want, "{start} {mods:?} {key:?}");
+        }
+        let mut h = focused(0.5, 0.0..=1.0);
+        assert_eq!(press(&mut h, Modifiers::NONE, Key::ArrowUp), 0.51);
+        assert_eq!(press(&mut h, Modifiers::SHIFT, Key::ArrowUp), 0.61);
+        assert_eq!(press(&mut h, Modifiers::COMMAND, Key::ArrowUp), 0.62);
+        let mut h = focused(995.0, 0.0..=1000.0);
+        assert_eq!(press(&mut h, Modifiers::SHIFT, Key::ArrowUp), 1000.0);
+    }
+
+    #[test]
+    fn arrow_keys_work_out_a_typed_sum_then_step_it() {
+        let mut h = focused(100.0, 0.0..=1000.0);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.event(egui::Event::Text("5+5".into()));
+        h.run();
+        assert_eq!(press(&mut h, Modifiers::NONE, Key::ArrowUp), 11.0);
+        assert_eq!(press(&mut h, Modifiers::NONE, Key::ArrowDown), 10.0, "the field keeps focus");
+    }
+
+    #[test]
+    fn arrow_keys_leave_an_unfocused_field_alone() {
+        let mut h = field(100.0, 0.0..=1000.0);
+        assert_eq!(press(&mut h, Modifiers::NONE, Key::ArrowUp), 100.0);
+        assert_eq!(h.state().1, 0);
+    }
+
     /// A right-aligned OK / Cancel / Apply row as `os` draws it: labels left to right, and the
     /// row's right edge with the window's.
     fn button_row(os: egui::os::OperatingSystem) -> (Vec<String>, f32, f32) {
