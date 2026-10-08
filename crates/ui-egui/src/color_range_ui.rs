@@ -10,6 +10,7 @@
 //! full resolution (one history step). Reduced previews approximate fine detail and effects.
 //! Cancel never touches the document, so the previous selection stays as it was.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -184,8 +185,21 @@ fn hash(text: &str) -> u64 {
 }
 
 fn query_key(app: &PhotocraftApp, params: &Value) -> u64 {
-    let proof = app.session.active().map(|st| app.session.color.proof(st.doc.id));
-    hash(&format!("{params}:{:?}:{proof:?}", app.session.tools.foreground)).max(1)
+    let mut key = std::collections::hash_map::DefaultHasher::new();
+    params.to_string().hash(&mut key);
+    let foreground = app.session.tools.foreground;
+    foreground.map(f32::to_bits).hash(&mut key);
+    // This runs several times per frame, including mere pointer motion. Debug-formatting a
+    // ProofView serializes the whole ICC profile/LUT; proof() also clones the default profile.
+    // Borrow the state and use the profile's memoized content hash instead.
+    let proof = app.session.active().and_then(|st| app.session.color.proof_ref(st.doc.id));
+    proof.is_some().hash(&mut key);
+    if let Some(proof) = proof {
+        let setup = &proof.setup;
+        (setup.profile.content_hash(), setup.intent, setup.bpc, setup.simulate_paper, setup.kind).hash(&mut key);
+        (proof.enabled, proof.gamut_warning, proof.gamut_threshold.to_bits()).hash(&mut key);
+    }
+    key.finish().max(1)
 }
 
 /// The selection mask `params` would make, on the proxy: the engine command run on a scratch
@@ -761,6 +775,99 @@ mod tests {
 
     fn disabled(h: &Harness<'static, PhotocraftApp>, label: &str) -> bool {
         h.get_by_label(label).accesskit_node().is_disabled()
+    }
+
+    #[test]
+    fn preview_cache_refreshes_after_foreground_and_proof_changes() {
+        let mut app = app_with_doc();
+        let p = json!({"select": "outOfGamut"});
+        let mut previous = query_key(&app, &p);
+        app.session.tools.foreground = [0.2, 0.3, 0.4, 1.0];
+        let key = query_key(&app, &p);
+        assert_ne!(key, previous);
+        previous = key;
+        for setup in [
+            json!({"profile": "srgb"}),
+            json!({"profile": "linear-srgb"}),
+            json!({"profile": "linear-srgb", "intent": "perceptual"}),
+            json!({"profile": "linear-srgb", "intent": "perceptual", "bpc": false}),
+            json!({"profile": "linear-srgb", "intent": "perceptual", "bpc": false, "simulatePaper": true}),
+        ] {
+            app.run("view.proofSetup", setup).unwrap();
+            let key = query_key(&app, &p);
+            assert_ne!(key, previous, "changed proof settings must invalidate the preview");
+            assert_eq!(key, query_key(&app, &p), "an unchanged ICC profile must keep its cache key");
+            previous = key;
+        }
+        app.run("view.gamutWarning", json!({"on": true, "threshold": 8})).unwrap();
+        assert_ne!(previous, query_key(&app, &p));
+        previous = query_key(&app, &p);
+        app.run("view.gamutWarning", json!({"on": true, "threshold": 16})).unwrap();
+        assert_ne!(previous, query_key(&app, &p));
+        assert_ne!(query_key(&app, &p), query_key(&app, &json!({"select": "outOfGamut", "invert": true})));
+    }
+
+    #[test]
+    fn eyedropper_hover_reuses_preview_textures_without_sampling() {
+        let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_eframe(|cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+            app_with_doc()
+        });
+        h.state_mut().ui.views[0].zoom = 20.0;
+        h.state_mut().ui.views[0].center = [20.0, 15.0];
+        h.state_mut().ui.views[0].fit_pending = false;
+        h.run_steps(3);
+        let id = open(h.state_mut());
+        set(&mut h, "__selectionPreview", json!("quickMask"));
+        let fields = h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields.clone();
+        let cached = |app: &PhotocraftApp| {
+            let p = app.color_range.as_ref().unwrap();
+            (p.mask_key, p.overlay_key, p.mask.as_ref().unwrap().id(), p.overlay.as_ref().unwrap().id(), Arc::as_ptr(&p.proxy))
+        };
+        let before = cached(h.state());
+        let st = h.state().session.active().unwrap();
+        let document = (st.revision, st.history.past_len());
+        for i in 0..12 {
+            let at = crate::canvas::ViewXform::active(h.state()).unwrap().to_screen(4.0 + i as f32 * 0.5, 15.0);
+            h.hover_at(at);
+            h.run_steps(1);
+            assert_eq!(cached(h.state()), before, "hover must reuse the mask, overlay and proxy");
+        }
+        assert_eq!(h.state_mut().ui.dialog_mut(id).unwrap().fields, fields, "hover must not pick a colour");
+        let st = h.state().session.active().unwrap();
+        assert_eq!((st.revision, st.history.past_len()), document);
+    }
+
+    #[test]
+    #[ignore = "24 MP before/after cache-key benchmark; run with --release --ignored --nocapture"]
+    fn color_range_hover_key_timings() {
+        let mut doc = Document::with_background("24 MP hover", Size::new(6000, 4000), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        doc.layers[0].surface_mut().unwrap().fill_rect(GRect::new(0, 0, 3000, 4000), &[0.8, 0.25, 0.1, 1.0]);
+        let mut session = photocraft_engine::Session::new();
+        session.add_document(doc, None);
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        let p = json!({"select": "sampledColors", "points": [[1000, 1000]], "fuzziness": 40});
+        for explicit in [false, true] {
+            if explicit {
+                app.run("view.proofSetup", json!({"profile": "coated-cmyk"})).unwrap();
+            }
+            std::hint::black_box(query_key(&app, &p));
+            for legacy in [true, false] {
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    for _ in 0..3 {
+                        let key = if legacy {
+                            let proof = app.session.active().map(|st| app.session.color.proof(st.doc.id));
+                            hash(&format!("{p}:{:?}:{proof:?}", app.session.tools.foreground)).max(1)
+                        } else {
+                            query_key(&app, &p)
+                        };
+                        std::hint::black_box(key);
+                    }
+                }
+                eprintln!("24 MP, explicit proof={explicit}, legacy={legacy}: {:.3} ms/frame (3 key checks)", start.elapsed().as_secs_f64() * 1000.0 / 30.0);
+            }
+        }
     }
 
     #[test]
