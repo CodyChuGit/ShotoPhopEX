@@ -101,6 +101,42 @@ fn pnm_bomb_header_rejected() {
 }
 
 #[test]
+fn pnm_header_alone_reserves_nothing_without_limits() {
+    // #1110: ASCII PGM/PPM reserved four bytes per declared sample before reading any. A
+    // 2³¹ × 2³¹ header asked for more than isize::MAX ("capacity overflow"), and PBM reserved
+    // 2⁶² bytes before finding the raster missing (an abort).
+    let none = opts(Limits::none());
+    let side = 1u32 << 31;
+    for f in [format!("P1\n{side} {side}\n"), format!("P2\n{side} {side}\n255\n"), format!("P3\n{side} {side}\n255\n"), format!("P4\n{side} {side}\n")] {
+        assert!(decode_with(f.as_bytes(), &none).is_err(), "{f:?}");
+    }
+}
+
+#[test]
+fn pnm_header_sizes_that_overflow_usize_are_errors_without_limits() {
+    let m = u32::MAX;
+    let none = opts(Limits::none());
+    for f in [
+        format!("P3\n{m} {m}\n255\n"),
+        format!("P6\n{m} {m}\n255\n"),
+        format!("P5\n{m} {m}\n65535\n"),
+        format!("PF\n{m} {m}\n-1.0\n"),
+        format!("P7\nWIDTH {m}\nHEIGHT {m}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n"),
+    ] {
+        assert!(decode_with(f.as_bytes(), &none).is_err(), "{f:?}");
+    }
+}
+
+#[test]
+fn ascii_pnm_with_the_tightest_layout_still_decodes() {
+    // The capacity bound for #1110 must not cut off files with no slack: PBM digits need no
+    // separator, and the last ASCII sample needs no trailing whitespace.
+    assert_eq!(decode(b"P1\n3 1\n010").unwrap().data(), &[255, 0, 255]);
+    assert_eq!(decode(b"P2\n3 1\n255\n1 2 3").unwrap().data(), &[1, 2, 3]);
+    assert_eq!(decode(b"P3\n1 1\n255\n9 8 7").unwrap().data(), &[9, 8, 7]);
+}
+
+#[test]
 fn jpeg_bomb_header_rejected() {
     // SOI + SOF0 claiming 65535x65535x3 with no scan data.
     let b = [0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 8, 0xFF, 0xFF, 0xFF, 0xFF, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xFF, 0xD9];
