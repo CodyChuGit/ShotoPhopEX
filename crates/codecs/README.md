@@ -35,7 +35,7 @@ let out = encode(&img, Format::Tiff, &EncodeOptions::default())?;
 | PNG | yes | yes | U8, U16 | Gray, GrayA, RGB, RGBA | yes | yes (iCCP) | yes (eXIf) | yes (iTXt `XML:com.adobe.xmp`) | yes (pHYs) | yes (tEXt/zTXt/iTXt) | no | `png` |
 | JPEG | yes | yes | U8 | Gray, RGB, CMYK | no | yes (multi-segment APP2) | yes (APP1) | yes (APP1) | yes (JFIF) | no | yes | `zune-jpeg` / `jpeg-encoder` |
 | TIFF | yes | yes | U8, U16, F32 | all six (CMYK, CMYK+A included) | yes | yes (tag 34675) | no | yes (tag 700) | yes | yes (Description, Make, Model, Software, DateTime, Artist, Copyright) | no | `tiff` |
-| WebP | yes | yes (lossless only) | U8 | RGB, RGBA | yes | yes | yes | yes | no | no | no | `image-webp` |
+| WebP | yes | yes | U8 | RGB, RGBA | yes | yes | yes | yes | no | no | yes (VP8, when `webp_lossless` is off) | `image-webp` / built-in VP8 |
 | GIF | yes | yes | U8 | RGBA | 1-bit | no | no | no | no | no | yes (256-colour palette) | `image` |
 | BMP | yes | yes | U8 | RGB, RGBA | yes | no | no | no | no | no | no | `image` |
 | TGA | yes | yes | U8 | Gray, GrayA, RGB, RGBA | yes | no | no | no | no | no | no | `image` |
@@ -80,9 +80,12 @@ the same.
   needs `dav1d`, which is C. AVIF is therefore read-unsupported, and write support is gated
   behind the non-default `avif` feature. In a default build it is neither readable nor writable,
   so the symmetric guarantee holds. It is listed in `ASYMMETRIC_EXCEPTIONS`.
-* **Lossy WebP.** There is no pure-Rust lossy WebP encoder. We always write lossless WebP, and
-  `webp_lossless: false` returns `CodecError::Unsupported`. We can read both lossy and lossless
-  files.
+* **Lossy WebP.** Lossless (VP8L, via `image-webp`) is the default. `webp_lossless: false`
+  writes a lossy file with our own clean-room VP8 key-frame encoder (`codecs::vp8`, from
+  RFC 6386; `webp_quality` 0–100 on libwebp's scale sets the quantizer). Alpha travels losslessly
+  in an `ALPH` chunk and ICC/EXIF/XMP in their own chunks of the extended (`VP8X`) container. The
+  encoder makes no rate-distortion decisions yet, and a side longer than 16383 px (the VP8 frame
+  header's limit) is refused with `CodecError::Encode`. We read both lossy and lossless files.
 * **Animation and multi-page files** (APNG, animated GIF/WebP, multi-page TIFF): only the first
   frame or page is decoded, and a single frame is written. `FormatCaps::animation` marks
   containers that can hold more frames. The decoded image then carries a
