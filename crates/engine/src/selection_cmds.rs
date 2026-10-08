@@ -161,26 +161,40 @@ fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
             let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true))?;
             let w = area.width() as usize;
             // The dialog's eyedroppers: colours picked on the image, at their positions.
-            let mut samples = eyedropper_samples(p, "points", area, &px, &bad)?;
+            let plus = eyedropper_samples(p, "points", area, &px, &bad)?;
             let minus = eyedropper_samples(p, "subtractPoints", area, &px, &bad)?;
+            // The order the eyedropper clicks came in ("+" a point, "-" a subtracted point):
+            // Photoshop applies them one after another. Without it, all additions come first.
+            let order: Vec<bool> = match p.get("order") {
+                None => std::iter::repeat_n(true, plus.len()).chain(std::iter::repeat_n(false, minus.len())).collect(),
+                Some(o) => {
+                    let o = o.as_array().ok_or_else(|| bad("`order` must be a list of \"+\" and \"-\"".into()))?;
+                    let order = o
+                        .iter()
+                        .map(|v| match v.as_str() {
+                            Some("+") => Ok(true),
+                            Some("-") => Ok(false),
+                            _ => Err(bad(format!("bad entry {v} in `order` (want \"+\" or \"-\")"))),
+                        })
+                        .collect::<Result<Vec<bool>>>()?;
+                    if order.iter().filter(|x| **x).count() != plus.len() || order.iter().filter(|x| !**x).count() != minus.len() {
+                        return Err(bad("`order` must list each of `points` (\"+\") and `subtractPoints` (\"-\") once".into()));
+                    }
+                    order
+                }
+            };
+            let mut fixed: Vec<[f32; 3]> = Vec::new();
             if let Some(cs) = p.get("colors") {
                 let cs = cs.as_array().ok_or_else(|| bad("`colors` must be a list of colours".into()))?;
-                for c in cs {
-                    samples.push(sel::RangeSample { color: parse_color(&json!({ "color": c })), at: None });
-                }
+                fixed.extend(cs.iter().map(|c| parse_color(&json!({ "color": c }))));
             }
-            if p.get("color").is_some() || samples.is_empty() {
-                let color = if p.get("color").is_some() {
-                    parse_color(p)
-                } else {
-                    let [r, g, b, _] = s.tools.foreground;
-                    [r, g, b]
-                };
-                samples.push(sel::RangeSample { color, at: None });
+            if p.get("color").is_some() {
+                fixed.push(parse_color(p));
             }
             // Localized Color Clusters: Range is a percentage of the canvas's longer side.
+            let plus_at: Vec<(f32, f32)> = plus.iter().filter_map(|x| x.at).collect();
             let localized = if b(p, "localized", false) {
-                if !samples.iter().chain(&minus).any(|x| x.at.is_some()) {
+                if plus_at.is_empty() {
                     return Err(bad("localized clusters need eyedropper `points`".into()));
                 }
                 Some(f(p, "range", 100.0).clamp(0.0, 100.0) / 100.0 * area.width().max(area.height()) as f32)
@@ -188,26 +202,39 @@ fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
                 None
             };
             // Photoshop compares colours in Lab, through the document's profile
-            // (sel::lab_range_coverage); the samples span one Lab box.
+            // (sel::lab_range_coverage). The samples span one Lab box; "Add to Sample" grows it,
+            // "Subtract from Sample" reshapes it (sel::LabRange::subtract).
             let to_lab = lab_transform(s)?;
-            let lab = pixels_to_lab(&to_lab, &px);
-            let plus: Vec<[f32; 3]> = samples.iter().map(|x| colour_to_lab(&to_lab, x.color)).collect();
-            let Some(range) = sel::LabRange::spanning(&plus) else {
-                return Err(bad("no colour to select".into()));
-            };
-            let plus_at: Vec<(f32, f32)> = samples.iter().filter_map(|x| x.at).collect();
-            let mut mask = sel::color_range_lab(&lab, w, &range, fuzz(40.0), localized.map(|r| (r, plus_at.as_slice())));
-            // The minus eyedropper: colours matching a subtracted sample (same Fuzziness) drop out.
-            for m in &minus {
-                let at: Vec<(f32, f32)> = m.at.into_iter().collect();
-                let point = sel::LabRange::point(colour_to_lab(&to_lab, m.color));
-                let cut = sel::color_range_lab(&lab, w, &point, fuzz(40.0), localized.map(|r| (r, at.as_slice())));
-                for ((k, c), q) in mask.iter_mut().zip(&cut).zip(&lab) {
-                    // The subtracted colour itself always goes, despite the sub-unit centring.
-                    let exact = *c > 0.0 && sel::lab_range_coverage([q[0], q[1], q[2]], &point, 0.0) >= 1.0;
-                    *k *= if exact { 0.0 } else { 1.0 - c };
+            // 8-bit documents are compared on the 8-bit Lab grid, samples and pixels alike.
+            let grid = s.active().is_some_and(|d| d.doc.depth == photocraft_doc::SampleType::U8);
+            let q = |c: [f32; 3]| if grid { sel::quantize_lab8(c) } else { c };
+            let mut lab = pixels_to_lab(&to_lab, &px);
+            if grid {
+                for p in &mut lab {
+                    let [l, a, b] = sel::quantize_lab8([p[0], p[1], p[2]]);
+                    *p = [l, a, b, p[3]];
                 }
             }
+            let colour_to_lab = |t: &photocraft_cms::Transform, c: [f32; 3]| q(colour_to_lab(t, c));
+            let foreground = || {
+                let [r, g, b, _] = s.tools.foreground;
+                sel::LabRange::point(colour_to_lab(&to_lab, [r, g, b]))
+            };
+            let fixed_lab: Vec<[f32; 3]> = fixed.iter().map(|c| colour_to_lab(&to_lab, *c)).collect();
+            let mut range = sel::LabRange::spanning(&fixed_lab);
+            let (mut pi, mut mi) = (plus.iter(), minus.iter());
+            for add in order {
+                if add {
+                    if let Some(x) = pi.next() {
+                        let c = colour_to_lab(&to_lab, x.color);
+                        range = Some(range.map_or(sel::LabRange::point(c), |r| r.grow(&c)));
+                    }
+                } else if let Some(x) = mi.next() {
+                    range = Some(range.unwrap_or_else(foreground).subtract(&colour_to_lab(&to_lab, x.color), fuzz(40.0)));
+                }
+            }
+            let range = range.unwrap_or_else(foreground);
+            let mask = sel::color_range_lab(&lab, w, &range, fuzz(40.0), grid, localized.map(|r| (r, plus_at.as_slice())));
             (area, mask)
         }
         "reds" | "yellows" | "greens" | "cyans" | "blues" | "magentas" => {
@@ -390,7 +417,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "select.colorRange",
             "Color Range…",
             ["Select"],
-            r##"{"select":"sampledColors|reds|yellows|greens|cyans|blues|magentas|highlights|midtones|shadows|outOfGamut"="sampledColors","color":"#rrggbb"=foreground,"colors":["#rrggbb",…]?,"points":[[x,y],…]? (eyedropper samples),"subtractPoints":[[x,y],…]? (minus eyedropper),"fuzziness":0..200=40 (tones: 0..100 %=20),"localized":bool=false,"range":0..100=100 (% of the longer side),"tonalRange":level|[lo,hi] (shadows 65, highlights 190, midtones [105,150]),"invert":bool=false,"sampleAllLayers":bool=true,"mode":"replace|add|subtract|intersect"="replace"}"##,
+            r##"{"select":"sampledColors|reds|yellows|greens|cyans|blues|magentas|highlights|midtones|shadows|outOfGamut"="sampledColors","color":"#rrggbb"=foreground,"colors":["#rrggbb",…]?,"points":[[x,y],…]? (eyedropper samples),"subtractPoints":[[x,y],…]? (minus eyedropper),"order":["+"|"-",…]? (click order of points and subtractPoints; default all points first),"fuzziness":0..200=40 (tones: 0..100 %=20),"localized":bool=false,"range":0..100=100 (% of the longer side),"tonalRange":level|[lo,hi] (shadows 65, highlights 190, midtones [105,150]),"invert":bool=false,"sampleAllLayers":bool=true,"mode":"replace|add|subtract|intersect"="replace"}"##,
             has_doc,
             color_range
         ),
@@ -453,9 +480,8 @@ mod tests {
     fn color_range_selects_by_colour() {
         let mut s = session();
         s.execute("select.colorRange", json!({"color": "#ff0000", "fuzziness": 40})).unwrap();
-        // Like Photoshop, a saturated sample is not quite fully selected at low fuzziness
-        // (Photoshop: 252 of 255 for red at 40); it is from about 80 on.
-        assert!(coverage(&s, 10, 10) > 0.98);
+        // The sampled colour itself is fully selected (as with Photoshop's eyedropper).
+        assert_eq!(coverage(&s, 10, 10), 1.0);
         assert_eq!(coverage(&s, 20, 20), 0.0);
         s.execute("select.colorRange", json!({"color": "#ff0000", "fuzziness": 100})).unwrap();
         assert_eq!(coverage(&s, 10, 10), 1.0);
@@ -518,6 +544,41 @@ mod tests {
         // One undo step per call.
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(coverage(&s, 2, 2), 1.0);
+    }
+
+    #[test]
+    fn color_range_subtract_follows_photoshop_and_the_click_order() {
+        // Grey strips from dark to light; samples at both ends span the whole run.
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 50, "height": 10})).unwrap();
+        s.edit("paint", |doc, _| {
+            let bg = doc.layers[0].surface_mut().unwrap();
+            for (i, v) in [0.30f32, 0.40, 0.50, 0.60, 0.70].iter().enumerate() {
+                bg.fill_rect(Rect::new(i as i32 * 10, 0, i as i32 * 10 + 10, 10), &[*v, *v, *v, 1.0]);
+            }
+            Ok(())
+        })
+        .unwrap();
+        let run = |s: &mut Session, extra: Value| {
+            let mut p = json!({"points": [[5, 5], [45, 5]], "fuzziness": 10});
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            s.execute("select.colorRange", p).unwrap();
+            (0..5).map(|i| coverage(s, i * 10 + 5, 5)).collect::<Vec<f32>>()
+        };
+        assert!(run(&mut s, json!({})).iter().all(|v| *v > 0.99), "both samples span every strip");
+        // Subtracting a colour inside the range moves the nearer edge onto it: the strips beyond
+        // it drop out, the subtracted grey itself stays selected (Photoshop does the same).
+        let cut = run(&mut s, json!({"subtractPoints": [[15, 5]]}));
+        assert!(cut[0] < 0.5 && cut[1] > 0.99 && cut[4] > 0.99, "{cut:?}");
+        // Order matters: adding the dark strip back after the subtraction restores it.
+        let readd = run(&mut s, json!({"points": [[5, 5], [45, 5], [5, 5]], "subtractPoints": [[15, 5]], "order": ["+", "+", "-", "+"]}));
+        assert!(readd[0] > 0.99, "{readd:?}");
+        let sub_last = run(&mut s, json!({"points": [[5, 5], [45, 5], [5, 5]], "subtractPoints": [[15, 5]], "order": ["+", "+", "+", "-"]}));
+        assert!(sub_last[0] < 0.5, "{sub_last:?}");
+        // A malformed or inconsistent order is an error, never a panic.
+        for bad in [json!(["+"]), json!(["+", "+", "x"]), json!("+-"), json!(["-", "-", "+"])] {
+            assert!(s.execute("select.colorRange", json!({"points": [[5, 5], [45, 5]], "subtractPoints": [[15, 5]], "order": bad})).is_err(), "{bad}");
+        }
     }
 
     #[test]

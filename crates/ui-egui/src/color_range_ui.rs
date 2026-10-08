@@ -98,6 +98,7 @@ pub fn open(app: &mut PhotocraftApp) -> u64 {
     f.insert("invert".into(), json!(false));
     f.insert("points".into(), json!([]));
     f.insert("subtractPoints".into(), json!([]));
+    f.insert("__order".into(), json!([]));
     f.insert("__tool".into(), json!("sample"));
     f.insert("__view".into(), json!("selection"));
     app.color_range = None;
@@ -124,6 +125,9 @@ pub fn params(f: &Map<String, Value>) -> Value {
         }
         if !sub.is_empty() {
             p.insert("subtractPoints".into(), json!(sub));
+            if let Some(o) = order(f, add.len(), sub.len()) {
+                p.insert("order".into(), o);
+            }
         }
         // Localized clusters need a picked position; until then it is the plain colour range.
         if c.range && picked {
@@ -434,6 +438,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                 if add + sub > 0 && widgets::secondary_button(ui, tl!("Clear Samples"), 0.0).clicked() {
                     set_points(f, "points", &[]);
                     set_points(f, "subtractPoints", &[]);
+                    f.insert("__order".into(), json!([]));
                 }
             });
             ui.add_space(8.0);
@@ -532,22 +537,36 @@ pub fn pick(app: &PhotocraftApp, f: &mut Map<String, Value>, at: [f64; 2], mods:
     } else {
         s(f, "__tool", "sample")
     };
+    // The click order matters: Photoshop applies additions and subtractions one after another.
+    let mut order: Vec<Value> = f.get("__order").and_then(Value::as_array).cloned().unwrap_or_default();
     match tool {
         "add" => {
             let mut p = points(f, "points");
             p.push(at);
             set_points(f, "points", &p);
+            order.push(json!("+"));
         }
         "subtract" => {
             let mut p = points(f, "subtractPoints");
             p.push(at);
             set_points(f, "subtractPoints", &p);
+            order.push(json!("-"));
         }
         _ => {
             set_points(f, "points", &[at]);
             set_points(f, "subtractPoints", &[]);
+            order = vec![json!("+")];
         }
     }
+    f.insert("__order".into(), Value::Array(order));
+}
+
+/// The click order for the command (`order`), when it is consistent with the point lists.
+fn order(f: &Map<String, Value>, add: usize, sub: usize) -> Option<Value> {
+    let o = f.get("__order").and_then(Value::as_array)?;
+    let plus = o.iter().filter(|v| v.as_str() == Some("+")).count();
+    let minus = o.iter().filter(|v| v.as_str() == Some("-")).count();
+    (plus == add && minus == sub && plus + minus == o.len()).then(|| Value::Array(o.clone()))
 }
 
 #[cfg(test)]
@@ -773,12 +792,18 @@ mod tests {
         assert_eq!(points(&f(&h), "subtractPoints"), vec![[35.0, 10.0]]);
         let p = params(&f(&h));
         assert_eq!(p["select"], "sampledColors");
+        assert_eq!(p["order"], json!(["+", "+", "-"]));
         ok(&mut h);
         h.run_steps(2);
         let app = h.state();
-        // The sampled red is (as in Photoshop) not quite fully selected at fuzziness 40.
-        assert!(coverage(app, 5, 5) > 0.98);
-        assert_eq!((coverage(app, 30, 5), coverage(app, 5, 22)), (0.0, 0.0));
+        // The sampled red stays fully selected.
+        assert_eq!(coverage(app, 5, 5), 1.0);
+        // Like Photoshop, subtracting a colour on the edge of the samples' range only trims that
+        // edge by a fifth of the falloff: the blue stays mostly selected (Photoshop: 232 of 255
+        // for the same case), black never was.
+        let blue = coverage(app, 30, 5);
+        assert!(blue > 0.85 && blue < 0.95, "{blue}");
+        assert_eq!(coverage(app, 5, 22), 0.0);
     }
 
     #[test]
@@ -795,7 +820,7 @@ mod tests {
         pick(&app, &mut f, [1.0, 1.0], egui::Modifiers::ALT);
         assert_eq!(
             params(&f),
-            json!({"select": "sampledColors", "invert": false, "fuzziness": 40.0, "points": [[3.0, 4.0], [39.0, 0.0]], "subtractPoints": [[1.0, 1.0]], "localized": true, "range": 100.0})
+            json!({"select": "sampledColors", "invert": false, "fuzziness": 40.0, "points": [[3.0, 4.0], [39.0, 0.0]], "subtractPoints": [[1.0, 1.0]], "order": ["+", "+", "-"], "localized": true, "range": 100.0})
         );
         f.insert("select".into(), json!("midtones"));
         f.insert("midtonesLow".into(), json!(160.0));
