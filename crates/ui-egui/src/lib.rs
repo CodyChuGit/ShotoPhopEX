@@ -296,6 +296,10 @@ pub struct Services {
     pub native_menu: Option<native_menu::NativeMenu>,
 }
 
+/// A document histogram being computed off the UI thread: (document, revision, receiver of
+/// (document, compute ms, histograms)).
+pub(crate) type HistJob = (DocId, u64, std::sync::mpsc::Receiver<(DocId, f64, std::sync::Arc<tone::Histograms>)>);
+
 pub struct PhotocraftApp {
     pub session: Session,
     pub ui: UiState,
@@ -395,6 +399,8 @@ pub struct PhotocraftApp {
     pub(crate) tone_hist: Option<(DocId, photocraft_doc::LayerId, u64, std::sync::Arc<tone::Histograms>)>,
     /// Histogram panel cache: (document, revision, computed at ms, histograms).
     pub(crate) doc_hist: Option<(DocId, u64, f64, std::sync::Arc<tone::Histograms>)>,
+    /// The document histogram being computed on a worker thread: (document, revision, receiver).
+    pub(crate) hist_job: Option<HistJob>,
     /// Free Transform preview (document without the moving pixels + their texture).
     pub(crate) transform_preview: Option<transform_tool::TransformPreview>,
     /// Move-tool ⇧/⌥ drag state (move_mods).
@@ -531,6 +537,7 @@ impl PhotocraftApp {
             wide_angle: None,
             tone_hist: None,
             doc_hist: None,
+            hist_job: None,
             gpu: None,
             started: None,
             perf: Default::default(),

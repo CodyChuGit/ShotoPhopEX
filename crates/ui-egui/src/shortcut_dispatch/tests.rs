@@ -426,3 +426,62 @@ fn a_shortcut_opening_a_dialog_takes_the_frames_later_keys() {
     assert_eq!(layer_count(&h), 5, "⌘Z didn't undo behind the dialog");
     assert_eq!(logged(&h), ["image.adjustments.levels"]);
 }
+
+fn names(h: &Harness<'_, PhotocraftApp>) -> Vec<String> {
+    h.state().session.active().unwrap().doc.walk().into_iter().map(|(_, _, l)| l.name.clone()).collect()
+}
+
+/// #1077: with nothing selected, Delete (and Backspace) deletes the selected layer whatever its
+/// kind, from the canvas or the Layers panel, in one undo step; it used to say Clear needs a
+/// pixel layer on an adjustment layer.
+#[test]
+fn delete_without_a_selection_deletes_the_selected_layer() {
+    for place in [Place::Canvas, Place::LayersRow] {
+        for key in ["Delete", "Backspace"] {
+            let mut h = harness();
+            put_focus(&mut h, place);
+            let s = &mut h.state_mut().session;
+            s.execute("select.deselect", json!({})).unwrap();
+            let adj = photocraft_doc::LayerId(s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap()["layer"].as_u64().unwrap());
+            h.run_steps(2);
+            let before = names(&h);
+            press(&mut h, key);
+            assert_eq!(logged(&h), ["layer.delete"], "{place:?} {key}");
+            assert!(h.state().session.active().unwrap().doc.layer(adj).is_none(), "{place:?} {key}: the adjustment layer is gone");
+            assert_eq!(names(&h).len(), before.len() - 1, "{place:?} {key}: only it");
+            press(&mut h, "Cmd+Z");
+            assert_eq!(names(&h), before, "{place:?} {key}: one undo brings it back");
+        }
+    }
+}
+
+/// Every selected layer goes, pixel layers too (Photoshop deletes, it doesn't clear the layer).
+#[test]
+fn delete_without_a_selection_deletes_every_selected_layer() {
+    let mut h = harness();
+    put_focus(&mut h, Place::Canvas);
+    let s = &mut h.state_mut().session;
+    s.execute("select.deselect", json!({})).unwrap();
+    let paint = s.active().unwrap().active_layer.unwrap();
+    let adj = photocraft_doc::LayerId(s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.execute("layer.select", json!({"layer": paint.0})).unwrap();
+    s.execute("layer.select", json!({"layer": adj.0, "mode": "add"})).unwrap();
+    h.run_steps(2);
+    let n = names(&h).len();
+    press(&mut h, "Delete");
+    let doc = &h.state().session.active().unwrap().doc;
+    assert!(doc.layer(paint).is_none() && doc.layer(adj).is_none(), "both selected layers are gone");
+    assert_eq!(names(&h).len(), n - 2);
+}
+
+/// A selection keeps Edit › Clear: the selected pixels go, the layer stays.
+#[test]
+fn delete_with_a_selection_clears_it() {
+    let mut h = harness();
+    put_focus(&mut h, Place::Canvas);
+    let before = names(&h);
+    assert!(h.state().session.active().unwrap().doc.selection.is_some());
+    press(&mut h, "Delete");
+    assert_eq!(logged(&h), ["edit.clear"]);
+    assert_eq!(names(&h), before, "no layer was deleted");
+}

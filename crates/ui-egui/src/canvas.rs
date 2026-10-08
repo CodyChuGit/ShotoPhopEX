@@ -394,6 +394,18 @@ pub fn fit_view(view: &mut View, doc: &Document, area: Vec2) {
     view.zoom = zoom;
     view.center = [w / 2.0, h / 2.0];
     view.fit_pending = false;
+    view.fill_pending = false;
+}
+
+/// Centre the document and zoom until it fills the canvas. One axis can extend beyond the
+/// viewport, matching the Hand tool's Fill Screen action.
+pub fn fill_view(view: &mut View, doc: &Document, area: Vec2) {
+    let (w, h) = (doc.size.width as f32, doc.size.height as f32);
+    let zoom = (area.x / w).max(area.y / h).clamp(0.01, 32.0);
+    view.zoom = zoom;
+    view.center = [w / 2.0, h / 2.0];
+    view.fit_pending = false;
+    view.fill_pending = false;
 }
 
 /// Zoom steps like Photoshop's (⌘+ / ⌘−).
@@ -1544,6 +1556,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     }
     if view.fit_pending && rect.width() > 50.0 {
         fit_view(&mut view, &doc, rect.size());
+    }
+    if view.fill_pending && rect.width() > 50.0 {
+        fill_view(&mut view, &doc, rect.size());
     }
     // Preferences › Tools › Overscroll off: clamp before anything is drawn (scrollbars.rs).
     if !app.session.prefs().tools.overscroll && crate::scrollbars::clamp_view(&mut view, rect.size()) {
@@ -3537,6 +3552,20 @@ mod tests {
         assert_eq!(zoom_step(1.0, -1), 0.6667);
         assert_eq!(zoom_step(0.4, 1), 0.5);
         assert_eq!(zoom_step(32.0, 1), 32.0);
+    }
+
+    #[test]
+    fn fill_view_covers_the_canvas_and_centres_the_document() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 400, "height": 200})).unwrap();
+        let doc = app.session.active().unwrap().doc.clone();
+        let mut view = View { fill_pending: true, ..View::default() };
+
+        fill_view(&mut view, &doc, vec2(600.0, 600.0));
+
+        assert_eq!(view.zoom, 3.0, "the short edge fills the available height");
+        assert_eq!(view.center, [200.0, 100.0]);
+        assert!(!view.fill_pending);
     }
 
     #[test]

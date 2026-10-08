@@ -546,6 +546,15 @@ impl FilterParams {
         }
     }
 
+    /// [`Self::halo`] using the document/selection bounds so filters whose reach
+    /// depends on size (Relight's shading blur) request the neighbourhood they actually read.
+    pub fn halo_for(&self, bounds: Rect) -> Halo {
+        match self {
+            FilterParams::Relight { intensity, softness, .. } if *intensity != 0.0 => Halo::Radius(relight::halo_radius(*softness, bounds)),
+            _ => self.halo(),
+        }
+    }
+
     /// Whether the filter moves pixels around the reference bounds (its
     /// output area is the bounds, not the layer's content grown by the halo).
     pub fn is_global(&self) -> bool {
@@ -642,7 +651,7 @@ fn halo_ext(p: &FilterParams) -> Halo {
         FilterParams::Fibers { .. } | FilterParams::LensFlare { .. } => Halo::Radius(0),
         FilterParams::LightingEffects { .. } => r(1.0),
         FilterParams::Relight { intensity, .. } if *intensity == 0.0 => Halo::Radius(0),
-        FilterParams::Relight { .. } => Halo::Radius(relight::HALO_RADIUS),
+        FilterParams::Relight { .. } => Halo::Radius(relight::halo_radius_max()),
         FilterParams::ReduceNoise { .. } => r(denoise::reach()),
         FilterParams::SmartBlur { radius, .. } => r(*radius),
         FilterParams::LensBlur { radius, .. } => r(*radius),
@@ -855,7 +864,7 @@ pub const TILE: i32 = 256;
 /// the halo (blurs spread into transparent areas). Clipped to the
 /// selection's bounds when there is one.
 pub fn output_area(params: &FilterParams, content: Rect, bounds: Rect, selection_bounds: Option<Rect>) -> Rect {
-    let mut area = match params.halo() {
+    let mut area = match params.halo_for(bounds) {
         Halo::Bounds => bounds,
         Halo::Radius(r) => {
             if content.is_empty() {
@@ -874,14 +883,14 @@ pub fn output_area(params: &FilterParams, content: Rect, bounds: Rect, selection
 /// Applies a filter to `area` of `surface`, mixing with the original by the
 /// selection coverage (channel 0 of `selection`). Returns the new surface.
 pub fn apply(surface: &Surface, params: &FilterParams, area: Rect, bounds: Rect, selection: Option<&Surface>) -> Surface {
-    apply_tiled(surface, params, area, bounds, selection, auto_tile(params), None)
+    apply_tiled(surface, params, area, bounds, selection, auto_tile(params, bounds), None)
 }
 
 /// [`apply`] for a layer in a document: neighbourhood filters repeat the edge pixels of `extent`
 /// (the canvas plus any off-canvas pixels the layer has) instead of reading transparency beyond
 /// it, and the output is clipped to `extent`, as Photoshop does at the canvas edge.
 pub fn apply_in(surface: &Surface, params: &FilterParams, area: Rect, bounds: Rect, selection: Option<&Surface>, extent: Rect) -> Surface {
-    apply_tiled(surface, params, area.intersect(&extent), bounds, selection, auto_tile(params), Some(extent))
+    apply_tiled(surface, params, area.intersect(&extent), bounds, selection, auto_tile(params, bounds), Some(extent))
 }
 
 /// [`apply_in`] that can be cancelled (checked before each tile) and reports progress per tile
@@ -895,13 +904,13 @@ pub fn apply_in_with(
     extent: Rect,
     ctl: &photocraft_raster::Interrupt,
 ) -> Option<Surface> {
-    apply_tiled_with(surface, params, area.intersect(&extent), bounds, selection, auto_tile(params), Some(extent), ctl)
+    apply_tiled_with(surface, params, area.intersect(&extent), bounds, selection, auto_tile(params, bounds), Some(extent), ctl)
 }
 
 /// Results do not depend on the tiling, so wide-halo filters use bigger tiles to keep the
 /// re-read margin (and its cost) below ~2× the tile area.
-fn auto_tile(params: &FilterParams) -> i32 {
-    match params.halo() {
+fn auto_tile(params: &FilterParams, bounds: Rect) -> i32 {
+    match params.halo_for(bounds) {
         Halo::Radius(r) => TILE.max((2 * r + 63) / 64 * 64).min(2048),
         Halo::Bounds => TILE,
     }
@@ -943,7 +952,7 @@ pub fn apply_tiled_with(
     }
     let fmt = surface.format();
     let ctx = Ctx { bounds, mode: fmt.mode, alpha: fmt.alpha };
-    let halo = params.halo();
+    let halo = params.halo_for(bounds);
     let shared = (halo == Halo::Bounds).then(|| Image::read(surface, bounds.union(&area)));
     let mut tiles = Vec::new();
     let mut y = area.y0;

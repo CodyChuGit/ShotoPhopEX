@@ -883,7 +883,28 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             app.ui.views[i].zoom = 1.0;
                         }
                     }
-                    Tool::Hand => hint(ui, tl!("Drag to pan  ·  hold Space with any tool")),
+                    Tool::Hand => {
+                        hint(ui, tl!("Drag to pan  ·  hold Space with any tool"));
+                        if widgets::secondary_button(ui, "100%", 0.0).clicked()
+                            && let Some(i) = app.session.active_index()
+                        {
+                            app.ui.views[i].zoom = 1.0;
+                            app.ui.views[i].fit_pending = false;
+                            app.ui.views[i].fill_pending = false;
+                        }
+                        if widgets::secondary_button(ui, tl!("Fit Screen"), 0.0).clicked()
+                            && let Some(i) = app.session.active_index()
+                        {
+                            app.ui.views[i].fit_pending = true;
+                            app.ui.views[i].fill_pending = false;
+                        }
+                        if widgets::secondary_button(ui, tl!("Fill Screen"), 0.0).clicked()
+                            && let Some(i) = app.session.active_index()
+                        {
+                            app.ui.views[i].fill_pending = true;
+                            app.ui.views[i].fit_pending = false;
+                        }
+                    }
                     Tool::Lasso | Tool::PolygonLasso => hint(
                         ui,
                         &crate::i18n::fmt(

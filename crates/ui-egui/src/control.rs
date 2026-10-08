@@ -295,15 +295,18 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
                 if let Some(z) = p.get("zoom").and_then(Value::as_f64) {
                     app.ui.views[i].zoom = (z as f32).clamp(0.01, 64.0);
                     app.ui.views[i].fit_pending = false;
+                    app.ui.views[i].fill_pending = false;
                 }
                 if let Some(c) = p.get("center").and_then(Value::as_array)
                     && c.len() == 2
                 {
                     app.ui.views[i].center = [c[0].as_f64().unwrap_or(0.0) as f32, c[1].as_f64().unwrap_or(0.0) as f32];
                     app.ui.views[i].fit_pending = false;
+                    app.ui.views[i].fill_pending = false;
                 }
                 if p.get("fit").and_then(Value::as_bool) == Some(true) {
                     app.ui.views[i].fit_pending = true;
+                    app.ui.views[i].fill_pending = false;
                 }
             }
             if let Some(name) = s("theme") {

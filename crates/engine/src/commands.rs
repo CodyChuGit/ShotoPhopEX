@@ -418,6 +418,8 @@ fn build() -> Vec<CommandSpec> {
                         ("add", Some(o)) => combine(&o, &shape, area, |a, b| a.max(b)),
                         ("subtract", Some(o)) => combine(&o, &shape, area, |a, b| a * (1.0 - b)),
                         ("intersect", Some(o)) => combine(&o, &shape, area, |a, b| a.min(b)),
+                        // With no existing selection, neither operation can select new pixels.
+                        ("subtract" | "intersect", None) => Surface::new(photocraft_color::PixelFormat::GRAY8),
                         _ => shape,
                     };
                     // Nothing selected on the canvas (e.g. dragged entirely outside it) deselects.

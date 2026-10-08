@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(clamp_axis(600.0, 1000.0, 500.0, 1.0), 600.0);
         // Smaller than the view: centred.
         assert_eq!(clamp_axis(-90.0, 1000.0, 500.0, 0.2), 500.0);
-        let mut v = View { zoom: 1.0, center: [-500.0, 20.0], fit_pending: false, doc_size: [1000, 800] };
+        let mut v = View { zoom: 1.0, center: [-500.0, 20.0], fit_pending: false, fill_pending: false, doc_size: [1000, 800] };
         assert!(clamp_view(&mut v, vec2(500.0, 400.0)));
         assert_eq!(v.center, [250.0, 200.0]);
         assert!(!clamp_view(&mut v, vec2(500.0, 400.0)), "stable: no repaint loop");
@@ -299,7 +299,7 @@ mod tests {
         let (at, len) = s.thumb((0.0, 1000.0), 0.0);
         assert!(at.is_finite() && len.is_finite());
         assert_eq!(s.doc_per_point((0.0, 1000.0), 0.0), 0.0);
-        let mut v = View { zoom: 1.0, center: [0.0, 0.0], fit_pending: false, doc_size: [0, 0] };
+        let mut v = View { zoom: 1.0, center: [0.0, 0.0], fit_pending: false, fill_pending: false, doc_size: [0, 0] };
         assert!(!clamp_view(&mut v, vec2(500.0, 400.0)));
     }
 

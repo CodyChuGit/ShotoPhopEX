@@ -388,6 +388,34 @@ fn files_dropped_onto_the_canvas_are_placed_in_free_transform_one_by_one() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #1099: switching tabs after an actual canvas drop cancels the place in its source document.
+#[test]
+fn switching_documents_after_a_canvas_drop_undoes_only_the_place() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    let original = app.session.active().unwrap().doc.clone();
+    let steps = history_steps(&app);
+    app.open_dropped(&ctx, vec![dropped("dot.png", Ok(png_bytes(2, 2)))], Some(egui::pos2(400.0, 300.0)));
+    app.place_next_dropped(&ctx);
+    assert_eq!(app.ui.transform.as_ref().unwrap().made, Some(crate::state::MadeLayer::Place));
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert!(app.session.undo());
+    let st = app.session.active().unwrap();
+    let (other, history, redo, revision) = (st.doc.clone(), st.history.entries(), st.history.redo_labels().map(str::to_owned).collect::<Vec<_>>(), st.revision);
+    crate::transform_tool::end_if_left(&mut app);
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+    let st = app.session.active().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&st.doc, &other));
+    assert_eq!((st.history.entries(), st.revision), (history, revision));
+    assert_eq!(st.history.redo_labels().collect::<Vec<_>>(), redo);
+    let origin = &app.session.documents()[0];
+    assert!(std::sync::Arc::ptr_eq(&origin.doc, &original));
+    assert_eq!(origin.history.past_len(), steps);
+    assert!(!origin.history.can_redo());
+}
+
 /// Moving a placed file in its Free Transform and committing makes one Place Embedded step.
 #[test]
 fn a_transformed_place_is_one_history_step() {

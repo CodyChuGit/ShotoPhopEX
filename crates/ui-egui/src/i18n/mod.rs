@@ -82,8 +82,21 @@ fn plural_pt(n: u64) -> usize {
     usize::from(n > 1)
 }
 
+/// Polish: 1 → one; 2–4, except 12–14 → few; everything else → many.
+fn plural_polish(n: u64) -> usize {
+    let last = n % 10;
+    let last_two = n % 100;
+    if n == 1 {
+        0
+    } else if (2..=4).contains(&last) && !(12..=14).contains(&last_two) {
+        1
+    } else {
+        2
+    }
+}
+
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 13] = [
+pub static LANGUAGES: [LangInfo; 14] = [
     LangInfo { code: "en", name: "English", source: "", plural: plural_one_other, complete_menus: false, catalog: OnceLock::new() },
     LangInfo { code: "ja", name: "日本語", source: include_str!("ja.tsv"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
     LangInfo {
@@ -100,6 +113,7 @@ pub static LANGUAGES: [LangInfo; 13] = [
     LangInfo { code: "fr", name: "Français", source: include_str!("fr.tsv"), plural: plural_fr, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "id", name: "Bahasa Indonesia", source: include_str!("id.tsv"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "ko", name: "한국어", source: include_str!("ko.tsv"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
+    LangInfo { code: "pl", name: "Polski", source: include_str!("pl.tsv"), plural: plural_polish, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "de", name: "Deutsch", source: include_str!("de.tsv"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
     // Brazilian Portuguese; `pt`, `pt-BR` and `pt-PT` locales all resolve here (see `candidates`).
     LangInfo {
@@ -520,6 +534,12 @@ mod tests {
         assert_eq!(trn(fr, 0, "{n} item", "{n} items"), "0 élément");
         assert_eq!(trn(fr, 1, "{n} item", "{n} items"), "1 élément");
         assert_eq!(trn(fr, 3, "{n} item", "{n} items"), "3 éléments");
+    }
+
+    #[test]
+    fn polish_plural_rule() {
+        let forms: Vec<usize> = [0, 1, 2, 4, 5, 12, 14, 21, 22, 25, 112, 122].into_iter().map(plural_polish).collect();
+        assert_eq!(forms, [2, 0, 1, 1, 2, 2, 2, 2, 1, 2, 2, 1]);
     }
 
     #[test]

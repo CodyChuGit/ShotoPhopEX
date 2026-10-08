@@ -964,8 +964,12 @@ fn path_fill(s: &mut Session, p: &Value) -> Result<Value> {
         if feather > 0.0 {
             cov = sel::feather(&cov, area.width() as usize, area.height() as usize, feather);
         }
-        let lock = doc.effective_locks(id).transparency;
+        let locks = doc.effective_locks(id);
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+        if locks.pixels || locks.all {
+            return Err(EngineError::Other(format!("Could not complete your request because the layer \"{}\" is locked", l.name)));
+        }
+        let lock = locks.transparency;
         let surf = l.surface_mut().ok_or_else(|| EngineError::Other("Fill Path needs a pixel layer".into()))?;
         paint_coverage(surf, area, &cov, src, opacity, mode, lock);
         Ok(())

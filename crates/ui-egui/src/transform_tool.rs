@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use egui::{Color32, CursorIcon, Pos2, Stroke, pos2, vec2};
 use photocraft_algo::transform::Homography;
-use photocraft_doc::{Document, LayerContent, LayerId};
+use photocraft_doc::{DocId, Document, LayerContent, LayerId};
 use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
 use serde_json::json;
 
@@ -202,8 +202,11 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
 pub fn begin_copy(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
     let selection = app.session.active().is_some_and(|d| d.doc.selection.is_some());
     app.run(if selection { "layer.new.layerViaCopy" } else { "layer.duplicate" }, json!({}))?;
+    let made = app.session.active().and_then(|st| st.active_layer.map(|layer| (st.doc.id, layer)));
     if let Err(e) = begin(app, ctx) {
-        take_back_made(app);
+        if let Some((document, layer)) = made {
+            take_back_made(app, document, layer);
+        }
         return Err(e);
     }
     if let Some(t) = app.ui.transform.as_mut() {
@@ -224,10 +227,25 @@ pub fn begin_placed(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), 
 
 /// Undoes the layer a cancelled or failed session made (⌥⌘T's copy, a placed file), leaving
 /// nothing to redo.
-fn take_back_made(app: &mut PhotocraftApp) {
-    app.session.undo();
-    if let Some(st) = app.session.active_mut() {
+fn take_back_made(app: &mut PhotocraftApp, document: DocId, layer: LayerId) {
+    // Tabs can move or close while transforming. Only undo the creation in its own document,
+    // and only while it is still the latest step (it may already have been undone).
+    let Some(index) = app.session.documents().iter().position(|st| {
+        st.doc.id == document
+            && st.doc.layer(layer).is_some()
+            && st.history.past_len().checked_sub(1).and_then(|i| st.history.state(i)).is_some_and(|before| before.layer(layer).is_none())
+    }) else {
+        return;
+    };
+    let active = app.session.active_index();
+    app.session.set_active(index);
+    if app.session.undo()
+        && let Some(st) = app.session.active_mut()
+    {
         st.history.clear_redo();
+    }
+    if let Some(active) = active {
+        app.session.set_active(active);
     }
     app.sync_views();
 }
@@ -487,6 +505,11 @@ fn contains(l: &photocraft_doc::Layer, id: LayerId) -> bool {
 }
 
 pub fn commit(app: &mut PhotocraftApp) {
+    let document = app.transform_preview.as_ref().map(|pv| pv.doc.id);
+    if document.is_some_and(|id| app.session.active().is_none_or(|st| st.doc.id != id)) {
+        cancel(app);
+        return;
+    }
     let Some(t) = app.ui.transform.take() else { return };
     app.transform_preview = None;
     if t.selection {
@@ -525,8 +548,10 @@ pub fn commit(app: &mut PhotocraftApp) {
             }
         }
         Err(e) => {
-            if made.is_some() {
-                take_back_made(app);
+            if made.is_some()
+                && let Some(document) = document
+            {
+                take_back_made(app, document, LayerId(t.layer));
             }
             app.ui.status = e;
         }
@@ -538,7 +563,8 @@ pub fn commit(app: &mut PhotocraftApp) {
 /// just before it (`ui.pointer`'s `tool`) goes to that tool.
 pub fn end_if_left(app: &mut PhotocraftApp) {
     let Some(t) = &app.ui.transform else { return };
-    if app.session.active().and_then(|s| s.doc.layer(LayerId(t.layer))).is_none() {
+    if app.session.active().is_none_or(|st| app.transform_preview.as_ref().is_some_and(|pv| pv.doc.id != st.doc.id) || st.doc.layer(LayerId(t.layer)).is_none())
+    {
         cancel(app);
     } else if app.transform_preview.as_ref().is_some_and(|pv| pv.tool != app.ui.tool) {
         commit(app);
@@ -546,10 +572,12 @@ pub fn end_if_left(app: &mut PhotocraftApp) {
 }
 
 pub fn cancel(app: &mut PhotocraftApp) {
-    let made = app.ui.transform.take().is_some_and(|t| t.made.is_some());
-    app.transform_preview = None;
-    if made {
-        take_back_made(app);
+    let transform = app.ui.transform.take();
+    let preview = app.transform_preview.take();
+    if let (Some(t), Some(pv)) = (transform, preview)
+        && t.made.is_some()
+    {
+        take_back_made(app, pv.doc.id, LayerId(t.layer));
     }
 }
 
@@ -1936,6 +1964,87 @@ mod tests {
         assert_eq!(app.ui.transform.as_ref().unwrap().rect, [8.0, 8.0, 16.0, 24.0]);
         cancel(&mut app);
         assert_eq!(app.session.active().unwrap().doc.layers.len(), layers);
+    }
+
+    /// #1099: cancel, frame cleanup and a commit before the next frame all belong to the
+    /// original document, including after tab reordering and with shared layer IDs.
+    #[test]
+    fn cancelling_a_copy_after_switching_documents_preserves_the_active_document() {
+        for reorder in [false, true] {
+            for finish in [cancel, end_if_left, commit] {
+                let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+                let original = app.session.active().unwrap().doc.clone();
+                let steps = app.session.active().unwrap().history.past_len();
+                begin_copy(&mut app, &egui::Context::default()).unwrap();
+                app.ui.transform.as_mut().unwrap().quad = corners([12.0, 8.0, 28.0, 24.0]);
+                // Cloning a document deliberately shares layer IDs, but gets a fresh document ID.
+                let other = app.session.active().unwrap().doc.as_ref().clone();
+                app.session.add_document(other, None);
+                app.run("layer.new.layer", json!({})).unwrap();
+                app.run("layer.new.layer", json!({})).unwrap();
+                assert!(app.session.undo());
+                let st = app.session.active().unwrap();
+                let (doc, history, redo, revision, layer) =
+                    (st.doc.clone(), st.history.entries(), st.history.redo_labels().map(str::to_owned).collect::<Vec<_>>(), st.revision, st.active_layer);
+                if reorder {
+                    app.session.move_document(0, 1);
+                }
+                finish(&mut app);
+                assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+                let st = app.session.active().unwrap();
+                assert!(Arc::ptr_eq(&st.doc, &doc), "the selected document's pixels are unchanged");
+                assert_eq!((st.history.entries(), st.revision, st.active_layer), (history, revision, layer));
+                assert_eq!(st.history.redo_labels().collect::<Vec<_>>(), redo);
+                let origin = app.session.documents().iter().find(|st| st.doc.id == original.id).unwrap();
+                assert!(Arc::ptr_eq(&origin.doc, &original), "only the originating copy is undone");
+                assert_eq!(origin.history.past_len(), steps);
+                assert!(!origin.history.can_redo());
+            }
+        }
+    }
+
+    #[test]
+    fn cancelling_a_copy_after_its_document_closes_does_not_undo_another_document() {
+        let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+        begin_copy(&mut app, &egui::Context::default()).unwrap();
+        app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        let doc = app.session.active().unwrap().doc.clone();
+        let steps = app.session.active().unwrap().history.past_len();
+        app.session.close(0);
+        end_if_left(&mut app);
+        let st = app.session.active().unwrap();
+        assert!(Arc::ptr_eq(&st.doc, &doc));
+        assert_eq!(st.history.past_len(), steps);
+        assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+    }
+
+    #[test]
+    fn cancelling_an_already_undone_copy_preserves_history_and_redo() {
+        let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+        begin_copy(&mut app, &egui::Context::default()).unwrap();
+        assert!(app.session.undo());
+        let st = app.session.active().unwrap();
+        let (doc, history, redo) = (st.doc.clone(), st.history.entries(), st.history.redo_labels().map(str::to_owned).collect::<Vec<_>>());
+        end_if_left(&mut app);
+        let st = app.session.active().unwrap();
+        assert!(Arc::ptr_eq(&st.doc, &doc));
+        assert_eq!(st.history.entries(), history);
+        assert_eq!(st.history.redo_labels().collect::<Vec<_>>(), redo);
+        assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+    }
+
+    #[test]
+    fn cancelling_a_copy_does_not_undo_a_later_edit() {
+        let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+        begin_copy(&mut app, &egui::Context::default()).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        let st = app.session.active().unwrap();
+        let (doc, history) = (st.doc.clone(), st.history.entries());
+        cancel(&mut app);
+        let st = app.session.active().unwrap();
+        assert!(Arc::ptr_eq(&st.doc, &doc));
+        assert_eq!(st.history.entries(), history);
     }
 
     /// #670: picking another tool applies the open transform, as one history step.

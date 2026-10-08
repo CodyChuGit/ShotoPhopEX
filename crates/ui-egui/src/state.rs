@@ -367,6 +367,9 @@ pub struct View {
     pub center: [f32; 2],
     /// Recompute fit-to-screen on next frame.
     pub fit_pending: bool,
+    /// Recompute fill-screen on next frame. Unlike fit, this may crop an edge of the document.
+    #[serde(default)]
+    pub fill_pending: bool,
     /// Document size this view last showed; a change (Image/Canvas Size, crop) re-centres it.
     #[serde(default)]
     pub doc_size: [u32; 2],
@@ -374,7 +377,7 @@ pub struct View {
 
 impl Default for View {
     fn default() -> Self {
-        Self { zoom: 1.0, center: [0.0, 0.0], fit_pending: true, doc_size: [0, 0] }
+        Self { zoom: 1.0, center: [0.0, 0.0], fit_pending: true, fill_pending: false, doc_size: [0, 0] }
     }
 }
 

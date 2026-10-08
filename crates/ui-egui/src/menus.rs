@@ -268,6 +268,12 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
                 "view.fitOnScreen" => v.fit_pending = true,
                 _ => v.zoom = 1.0,
             }
+            if id == "view.fitOnScreen" {
+                v.fill_pending = false;
+            } else {
+                v.fit_pending = false;
+                v.fill_pending = false;
+            }
             Ok(Value::Null)
         }
         "window.newWindowForDocument" => {
@@ -834,7 +840,15 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
                 // The release ending the press that opened this menu is a click "outside" the
                 // popup: it must not close it again.
                 let opening = title.clicked() && ui.ctx().data(|d| d.get_temp::<bool>(press_gesture_id())).unwrap_or(false);
-                let close = if opening { egui::PopupCloseBehavior::IgnoreClicks } else { config.close_behavior };
+                let close = if opening {
+                    egui::PopupCloseBehavior::IgnoreClicks
+                } else if top == "Help" {
+                    // Menus close on any click, inside them too; a click in Help's search field
+                    // must keep it open. Its items close it themselves when chosen.
+                    egui::PopupCloseBehavior::CloseOnClickOutside
+                } else {
+                    config.close_behavior
+                };
                 egui::Popup::menu(&title)
                     .open_memory(open)
                     .close_behavior(close)

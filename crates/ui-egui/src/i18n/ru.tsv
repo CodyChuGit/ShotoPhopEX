@@ -1521,6 +1521,7 @@
 	{mode} Color · {bits} bit	{mode}, {bits} бит
 	Drag to move the layer	Перетащите, чтобы переместить слой
 	Fit Screen	По размеру экрана
+	Fill Screen	Заполнить экран
 	Scrubby Zoom	Масштаб перетаскиванием
 	Auto Erase	Автостирание
 	Color Adaptation	Адаптация цвета
