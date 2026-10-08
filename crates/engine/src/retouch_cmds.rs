@@ -220,6 +220,33 @@ fn clone_sample(
     Ok(crate::presets::clone_source::resample(&src, rect, map, alpha_index(&surf.format())))
 }
 
+/// Read-only clone overlay. Shares the stroke sampler without anchoring a source or editing history.
+/// Both destination and transformed source allocations are bounded for interactive use.
+pub fn clone_preview(s: &Session, rect: Rect, map: &crate::presets::clone_source::Mapping, sample_layer: &str) -> Result<photocraft_compose::Buffer> {
+    if ![map.source.0, map.source.1, map.anchor.0, map.anchor.1].into_iter().chain(map.m).all(|v| v.is_finite() && v.abs() < 1_000_000.0) {
+        return Err(bad("clone.preview", "invalid preview mapping"));
+    }
+    if ![rect.x0, rect.y0, rect.x1, rect.y1].into_iter().all(|v| v.abs_diff(0) < 1_000_000)
+        || ![(rect.x0, rect.y0), (rect.x1, rect.y1), (rect.x0, rect.y1), (rect.x1, rect.y0)].into_iter().all(|(x, y)| {
+            let (x, y) = map.map(f64::from(x), f64::from(y));
+            x.is_finite() && y.is_finite() && x.abs() < 1_000_000.0 && y.abs() < 1_000_000.0
+        })
+    {
+        return Err(bad("clone.preview", "preview coordinates exceed their budget"));
+    }
+    let bounded = |r: Rect| r.width() > 0 && r.height() > 0 && r.width() <= 1024 && r.height() <= 1024;
+    if !bounded(rect) || !bounded(map.source_rect(rect)) {
+        return Err(bad("clone.preview", "preview region exceeds its budget"));
+    }
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let id = d.active_layer.ok_or_else(|| bad("clone.preview", "no active layer"))?;
+    let surf = d.doc.layer(id).and_then(|l| l.surface()).ok_or_else(|| bad("clone.preview", "no pixel surface"))?;
+    let which = sample_layers(&json!({"sampleLayer": sample_layer}), "clone.preview")?;
+    let region = clone_sample(&d.doc, Some(id), surf, which, rect, map, "clone.preview")?;
+    let px = region.data.chunks_exact(surf.format().channels()).map(|p| to_rgba(&surf.format(), p)).collect();
+    Ok(photocraft_compose::Buffer { rect, px })
+}
+
 /// Result JSON shared by Clone Stamp and Healing Brush: the offset used and where the next stroke
 /// should sample from if the UI keeps Photoshop's "Aligned" semantics.
 fn clone_result(dmg: Rect, off: (i32, i32), aligned: bool, p: &Value, stroke: &Stroke) -> Value {

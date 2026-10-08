@@ -59,7 +59,7 @@ id = "TOOL-213-8"
 target = "Clone Source: W/H link, drawn overlay (opacity/blend/clip/auto-hide), Alt target cursor"
 status = "partial"
 issue = 213
-note = "Panel W/H + overlay settings (preset_panels.rs:946-1015); no link, overlay never drawn"
+note = "Clone Source overlay drawn with opacity, inversion, circular clipping and auto-hide; W/H link, custom-tip clipping and overlay blend modes remain missing"
 
 [[item]]
 id = "TOOL-213-9"

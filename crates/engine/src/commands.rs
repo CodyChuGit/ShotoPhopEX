@@ -63,16 +63,25 @@ pub(crate) fn has_paintable(s: &Session) -> std::result::Result<(), String> {
 
 /// Surface a paint command writes to: the layer's pixels, or its mask with `"target":"mask"`.
 pub(crate) fn paint_surface<'a>(doc: &'a mut Document, id: LayerId, p: &Value) -> Result<&'a mut photocraft_raster::Surface> {
-    let locks = doc.effective_locks(id);
-    let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-    if !is_mask_target(p) && (locks.pixels || locks.all) {
-        return Err(EngineError::Other(format!("Could not complete your request because the layer \"{}\" is locked", l.name)));
+    if !is_mask_target(p) {
+        check_pixels_unlocked(doc, id)?;
     }
+    let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     if is_mask_target(p) {
         l.mask.as_mut().map(|m| &mut m.surface).ok_or_else(|| EngineError::Other("layer has no mask".into()))
     } else {
         l.surface_mut().ok_or_else(|| EngineError::Other("not a pixel layer".into()))
     }
+}
+
+/// Refuse a layer whose pixels are locked (directly or through a group), with Photoshop's message.
+pub(crate) fn check_pixels_unlocked(doc: &Document, id: LayerId) -> Result<()> {
+    let locks = doc.effective_locks(id);
+    let l = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    if locks.pixels || locks.all {
+        return Err(EngineError::Other(format!("Could not complete your request because the layer \"{}\" is locked", l.name)));
+    }
+    Ok(())
 }
 
 pub(crate) fn is_mask_target(p: &Value) -> bool {
@@ -226,8 +235,7 @@ fn destructive_adjust(s: &mut Session, label: &str, adj: Adjustment, p: &Value) 
     s.edit(label, |doc, _| {
         let sel = doc.selection.clone();
         let mode = doc.mode;
-        let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-        let surf = l.surface_mut().ok_or_else(|| EngineError::Other("not a pixel layer".into()))?;
+        let surf = paint_surface(doc, id, &Value::Null)?;
         pixels::adjust_surface(surf, &adj, sel.as_ref(), mode);
         Ok(())
     })?;
@@ -484,6 +492,9 @@ fn build() -> Vec<CommandSpec> {
             let id = layer_param(s, p)?;
             s.edit("Delete Layer", |doc, active| {
                 doc.remove(id).ok_or(EngineError::NoLayer(id))?;
+                if doc.layers.is_empty() {
+                    return Err(EngineError::Other("a document must keep at least one layer".into()));
+                }
                 if *active == Some(id) {
                     *active = doc.top_layer();
                 }

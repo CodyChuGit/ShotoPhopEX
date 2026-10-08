@@ -138,9 +138,8 @@ fn clear_selected(doc: &mut Document, id: LayerId, background: [f32; 4]) -> Resu
 /// Cut / Clear on a layer: makes the selected pixels transparent. The Background can't hold
 /// transparency, so there the area is filled with the background colour instead (Photoshop).
 pub(crate) fn clear_area(doc: &mut Document, id: LayerId, area: Rect, sel: Option<&Surface>, background: [f32; 4]) -> Result<()> {
-    let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-    let bg = crate::extra_cmds::is_background(l);
-    let surf = l.surface_mut().ok_or(EngineError::Other("the active layer has no pixels".into()))?;
+    let bg = crate::extra_cmds::is_background(doc.layer(id).ok_or(EngineError::NoLayer(id))?);
+    let surf = crate::commands::paint_surface(doc, id, &Value::Null)?;
     if bg {
         crate::pixels::fill_surface(surf, area, background, sel, true);
     } else {
@@ -412,7 +411,7 @@ fn auto_adjust(s: &mut Session, kind: &str) -> Result<Value> {
     s.edit(label, |doc, _| {
         let sel = doc.selection.clone();
         let mode = doc.mode;
-        let surf = doc.layer_mut(id).and_then(|l| l.surface_mut()).ok_or(EngineError::NoLayer(id))?;
+        let surf = crate::commands::paint_surface(doc, id, &Value::Null)?;
         crate::pixels::adjust_surface(surf, &adj, sel.as_ref(), mode);
         Ok(())
     })?;
@@ -537,8 +536,10 @@ pub fn specs() -> Vec<CommandSpec> {
     }
     vec![
         spec!("edit.cut", "Cut", &["Edit"], Some("Cmd+X"), "{}", has_pixels, |s, _| {
-            let r = copy(s, false)?;
+            // Refuse a locked layer before copying, so a refused Cut leaves the clipboard alone.
             let id = active_id(s)?;
+            crate::commands::check_pixels_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
+            let r = copy(s, false)?;
             let bg = s.tools.background;
             s.edit("Cut Pixels", |doc, _| clear_selected(doc, id, bg))?;
             Ok(r)

@@ -124,6 +124,7 @@ pub fn paint_gradient(
     blend_mode: BlendMode,
     dither: bool,
     selection: Option<&Surface>,
+    lock_transparency: bool,
 ) {
     composite_area(
         s,
@@ -142,7 +143,7 @@ pub fn paint_gradient(
             }
             c
         },
-        false,
+        lock_transparency,
     );
 }
 
@@ -159,8 +160,9 @@ pub fn bucket_fill(
     color: [f32; 4],
     opacity: f32,
     selection: Option<&Surface>,
+    lock_transparency: bool,
 ) -> bool {
-    bucket_fill_src(s, area, seed, tolerance, contiguous, anti_alias, opacity, selection, |_, _| color)
+    bucket_fill_src(s, area, seed, tolerance, contiguous, anti_alias, opacity, selection, lock_transparency, |_, _| color)
 }
 
 /// Like [`bucket_fill`] but the fill colour comes from `src(x, y)` — e.g. a pattern sampled at the
@@ -175,6 +177,7 @@ pub fn bucket_fill_src(
     anti_alias: bool,
     opacity: f32,
     selection: Option<&Surface>,
+    lock_transparency: bool,
     src: impl Fn(i32, i32) -> [f32; 4] + Sync,
 ) -> bool {
     if !area.contains(seed.0, seed.1) {
@@ -185,7 +188,7 @@ pub fn bucket_fill_src(
     drop(img);
     // Composite only over the filled region's box.
     let b = region.bbox;
-    composite_area(s, b, BlendMode::Normal, |x, y| region.at(x, y) * opacity * selection.map_or(1.0, |m| m.sample_channel(x, y, 0)), src, false);
+    composite_area(s, b, BlendMode::Normal, |x, y| region.at(x, y) * opacity * selection.map_or(1.0, |m| m.sample_channel(x, y, 0)), src, lock_transparency);
     true
 }
 
@@ -223,6 +226,7 @@ mod tests {
             BlendMode::Normal,
             false,
             Some(&sel),
+            false,
         );
         assert!(s.pixel(0, 0)[0] < 0.01 && s.pixel(10, 0)[0] > 0.99);
         assert!((s.pixel(5, 0)[0] - 0.5).abs() < 0.01);
@@ -235,9 +239,9 @@ mod tests {
         let a = Rect::new(0, 0, 10, 10);
         s.fill_rect(a, &[1.0, 1.0, 1.0, 1.0]);
         s.fill_rect(Rect::new(5, 0, 6, 10), &[0.0, 0.0, 0.0, 1.0]);
-        assert!(bucket_fill(&mut s, a, (1, 1), 10.0, true, false, [1.0, 0.0, 0.0, 1.0], 1.0, None));
+        assert!(bucket_fill(&mut s, a, (1, 1), 10.0, true, false, [1.0, 0.0, 0.0, 1.0], 1.0, None, false));
         assert_eq!(s.pixel(2, 2), vec![1.0, 0.0, 0.0, 1.0]);
         assert_eq!(s.pixel(8, 2), vec![1.0, 1.0, 1.0, 1.0]);
-        assert!(!bucket_fill(&mut s, a, (50, 1), 10.0, true, false, [1.0, 0.0, 0.0, 1.0], 1.0, None));
+        assert!(!bucket_fill(&mut s, a, (50, 1), 10.0, true, false, [1.0, 0.0, 0.0, 1.0], 1.0, None, false));
     }
 }

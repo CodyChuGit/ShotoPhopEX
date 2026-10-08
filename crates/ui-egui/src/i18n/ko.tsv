@@ -1782,6 +1782,7 @@
 	Never	안 함
 	Normal tip	표준 브러시 끝
 	Open as smart object	스마트 오브젝트로 열기
+	Open in camera raw	Camera Raw에서 열기
 	Open documents as tabs	문서를 탭으로 열기
 	Overscroll	캔버스 밖으로 스크롤
 	Performance	성능
@@ -1897,6 +1898,7 @@
 	System Info…	시스템 정보…
 	System Info	시스템 정보
 	More panels	추가 패널
+	More documents	추가 문서
 	These settings aren't available in PhotoCraft yet.	이 설정은 아직 PhotoCraft에서 사용할 수 없습니다.
 	Graphics	그래픽
 	Reset GPU Backend	GPU 백엔드 초기화
@@ -1972,6 +1974,7 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	선택 영역으로 만들 패스가 없습니다: 펜 도구로 그리거나 패스 패널에서 선택하세요.
 	Cancel opening	열기 취소
 	Cancelled opening {name}	{name} 열기를 취소했습니다
+	Developing {name}	{name} 현상 중
 	Cancelled {label}	{label} 작업을 취소했습니다
 	Esc to cancel	Esc 키로 취소
 	Opening {name}	{name} 여는 중
@@ -2020,6 +2023,7 @@
 	Show Selected Region	선택한 영역 표시
 cameraRaw	Light	밝게
 	Camera Raw Filter ({layer})	Camera Raw 필터 ({layer})
+	Camera Raw ({name})	Camera Raw ({name})
 cameraRaw	Lights	밝은 중간 영역
 cameraRaw	Blending	혼합
 cameraRaw	Blacks	검정 계열

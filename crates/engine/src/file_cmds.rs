@@ -117,7 +117,7 @@ pub(crate) fn list_images(dir: &str) -> Result<Vec<String>> {
 /// Extensions the batch commands pick up from a folder.
 const OPENABLE: &[&str] = &[
     "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm", "heic", "heif",
-    "hif", "dng", "cr2", "nef", "nrw", "arw", "pef",
+    "hif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz",
 ];
 
 pub(crate) fn file_name(path: &str) -> String {
@@ -365,6 +365,7 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let (cw, ch) = (d.doc.size.width as f64, d.doc.size.height as f64);
     let fmt = d.doc.pixel_format();
+    let vector = photocraft_io::svg::is_svg(&bytes);
     let src = import(name, &bytes)?;
     let (w, h) = (src.size.width as f64, src.size.height as f64);
     let scale = match f64_param(p, "scale") {
@@ -386,7 +387,11 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
         Some(path) => SmartSource::Linked { path },
         None => SmartSource::Embedded { file_name: file_name(name), bytes: Arc::new(bytes) },
     };
-    let so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
+    let mut so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
+    // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
+    if vector && let Some(sharp) = crate::smart_cmds::render(&d.doc, &so)? {
+        so.cache = Some(sharp);
+    }
     let layer_name = stem(name);
     let label = if matches!(so.source, SmartSource::Linked { .. }) { "Place Linked" } else { PLACE_EMBEDDED };
     let id = s.edit(label, |doc, active| {

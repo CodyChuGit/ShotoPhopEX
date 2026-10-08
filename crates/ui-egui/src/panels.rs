@@ -729,12 +729,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         if widgets::dropdown(ui, "gradient-mode", &mut classic, &[(false, "Gradient"), (true, "Classic gradient")], 118.0) {
                             app.ui.tool_options.gradient_classic = classic;
                         }
-                        let (fg, bg) = (app.session.tools.foreground, app.session.tools.background);
-                        if classic {
-                            gradient_swatch(ui, fg, bg);
-                        } else {
-                            crate::gradient_ui::preset_swatch(ui, &app.session.presets.gradient.resolve(fg, bg));
-                        }
+                        crate::gradient_ui::preset_swatch(app, ui);
                         widgets::vline(ui, 22.0);
                         ui.spacing_mut().item_spacing.x = 2.0;
                         let before = app.ui.tool_options.clone();
@@ -2766,22 +2761,6 @@ fn selection_mode_buttons(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
     }
     ui.spacing_mut().item_spacing.x = 8.0;
-}
-
-/// Gradient picker swatch (foreground → background), Photoshop options-bar style.
-fn gradient_swatch(ui: &mut egui::Ui, a: [f32; 4], b: [f32; 4]) {
-    let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(96.0, 20.0), Sense::click());
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(r.left_top(), c32(a));
-    mesh.colored_vertex(r.right_top(), c32(b));
-    mesh.colored_vertex(r.right_bottom(), c32(b));
-    mesh.colored_vertex(r.left_bottom(), c32(a));
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    ui.painter().add(mesh);
-    ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
-    let _ = resp.on_hover_text(tl!("Click to edit the gradient"));
 }
 
 #[cfg(test)]

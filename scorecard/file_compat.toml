@@ -64,9 +64,9 @@ note = "codecs tiff_ifd.rs (bounds-checked IFD chain + SubIFD walk, classic and 
 [[item]]
 id = "FILE-215-9"
 target = "SVG opens and places as shape layers or a vector Smart Object"
-status = "missing"
+status = "done"
 issue = 215
-note = "No SVG codec or import"
+note = "io svg.rs: paths, groups, text outlines as shape layers (gradients approximated; clip/mask/filter/pattern/image subtrees rasterised); smart_cmds.rs renders an SVG source at its placement scale"
 
 [[item]]
 id = "FILE-215-10"

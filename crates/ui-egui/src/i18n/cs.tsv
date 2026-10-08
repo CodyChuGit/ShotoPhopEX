@@ -1823,6 +1823,7 @@
 	Never	Nikdy
 	Normal tip	Normální hrot
 	Open as smart object	Otevřít jako chytrý objekt
+	Open in camera raw	Otevírat v Camera Raw
 	Open documents as tabs	Otevírat dokumenty jako záložky
 	Overscroll	Posouvání za okraj
 	Performance	Výkon
@@ -1944,6 +1945,7 @@
 	System Info…	Informace o systému…
 	System Info	Informace o systému
 	More panels	Další panely
+	More documents	Další dokumenty
 	These settings aren't available in PhotoCraft yet.	Tato nastavení zatím v aplikaci PhotoCraft nejsou k dispozici.
 	Graphics	Grafika
 	Reset GPU Backend	Obnovit grafický backend
@@ -2021,6 +2023,7 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Není k dispozici žádná cesta, ze které by šlo vytvořit výběr: nakreslete ji nástrojem Pero nebo ji vyberte na panelu Cesty.
 	Cancel opening	Zrušit otevírání
 	Cancelled opening {name}	Otevírání {name} zrušeno
+	Developing {name}	Vyvolávání {name}
 	Cancelled {label}	Zrušeno: {label}
 	Esc to cancel	Esc pro zrušení
 	Opening {name}	Otevírání {name}
@@ -2059,6 +2062,7 @@
 cameraRaw	Light	Světlo
 # Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Filtr Camera Raw ({layer})
+	Camera Raw ({name})	Camera Raw ({name})
 cameraRaw	Red	Červené
 cameraRaw	Orange	Oranžové
 cameraRaw	Yellow	Žluté

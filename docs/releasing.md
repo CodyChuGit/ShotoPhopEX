@@ -116,10 +116,22 @@ The static C runtime means neither the MSI nor the portable zip needs the Visual
 redistributable, which matters for a standalone installer and costs only about 100 KB. The flag
 goes in `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, so host build scripts aren't affected.
 
-- `apps/photocraft/build.rs` embeds the icon (`assets/app-icon/photocraft.ico`) and
-  VERSIONINFO with the `winresource` crate. It only does this when targeting Windows. Elsewhere
-  it's a no-op, and the web build doesn't touch that crate.
+- `apps/photocraft/build.rs` and `apps/photocraft-cli/build.rs` embed the icon
+  (`assets/app-icon/photocraft.ico`) and VERSIONINFO with the `winresource` crate
+  (build dependency `0.1`). They only do this when targeting Windows. Elsewhere each
+  script is a no-op, even if `PHOTOCRAFT_REQUIRE_WINRES` is set, and the web build
+  doesn't touch that crate. Both set ProductName to PhotoCraft, CompanyName to
+  Learning Machines LLC and the same copyright line. The GUI description is
+  "PhotoCraft image editor" (`photocraft.exe`). The CLI description is
+  "PhotoCraft command-line interface", with OriginalFilename `photocraft-cli.exe`
+  and InternalName `photocraft-cli`. Version strings are the Cargo package version,
+  so a pre-release tag is kept; the numeric file and product versions are
+  winresource's `major.minor.patch.0`. A missing resource compiler warns, so an
+  optional cross-compile still links. `package.ps1` sets `PHOTOCRAFT_REQUIRE_WINRES=1`.
+  The CLI build script then returns an error naming `rc.exe` or `windres` and does
+  not panic.
 - Release builds use the GUI subsystem, so Start Menu launches don't open a console window.
+  The CLI stays console subsystem 3 so its output reaches the terminal.
 - `photocraft.wxs` (WiX v5) is a per-machine install into Program Files with an advertised
   Start Menu shortcut. PhotoCraft becomes the default app for `.pcraft` and is listed under
   "Open with" for PSD/PSB and image files. It also registers App Paths (Win+R `photocraft`).

@@ -1368,6 +1368,7 @@
 	Keyboard Shortcuts and Menus	Комбинации клавиш и меню
 	Menus	Меню
 	More panels	Ещё панели
+	More documents	Ещё документы
 	Collapse All Groups	Свернуть все группы
 	Expand All Groups	Развернуть все группы
 	Collapse	Свернуть
@@ -2207,6 +2208,7 @@
 	Never	Никогда
 	Normal tip	Контур кисти (50%)
 	Open as smart object	Открывать как смарт-объект
+	Open in camera raw	Открывать в Camera Raw
 	Open documents as tabs	Открывать документы во вкладках
 	OpenGL	OpenGL
 	Orange	Оранжевая
@@ -2288,6 +2290,7 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Нет контура для создания выделения: нарисуйте его инструментом «Перо» или выберите на панели «Контуры».
 	Cancel opening	Отменить открытие
 	Cancelled opening {name}	Открытие {name} отменено
+	Developing {name}	Обработка {name}
 	Cancelled {label}	{label}: отменено
 	Esc to cancel	Esc — отмена
 	Opening {name}	Открытие {name}
@@ -2326,6 +2329,7 @@
 cameraRaw	Light	Свет
 # Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Фильтр Camera Raw ({layer})
+	Camera Raw ({name})	Camera Raw ({name})
 	Aqua	Голубой
 cameraRaw	Amount	Интенсивность
 cameraRaw	Blacks	Чёрные

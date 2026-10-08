@@ -127,6 +127,7 @@ impl GpuCanvas {
         let health = photocraft_gpu::DeviceHealth::watch(&rs.device);
         let mut res = Resources::new(&rs.device, &rs.queue, rs.target_format, high != HighPolicy::Off);
         res.health = health.clone();
+        res.separate_mip_targets = rs.adapter.get_info().backend == wgpu::Backend::Dx12;
         rs.renderer.write().callback_resources.insert(res);
         log::info!("gpu canvas: target {:?}, max texture {max}, tile {tile}, 16F canvas {high:?}", rs.target_format);
         Self { rs: rs.clone(), tile, high, health }
@@ -1101,6 +1102,9 @@ struct Resources {
     docs: HashMap<u64, DocTextures>,
     views: HashMap<u64, ViewGpu>,
     out_linear: bool,
+    /// Build each mip level in a scratch texture and copy it back instead of rendering into
+    /// the level directly (DX12 only: works around reduced-preview corruption on Intel drivers).
+    separate_mip_targets: bool,
     /// The wgpu layer compositor (created on first use).
     compositor: Option<photocraft_gpu::Compositor>,
     /// Why the wgpu compositor couldn't be created (then the CPU compositor is used).
@@ -1369,6 +1373,7 @@ impl Resources {
             docs: HashMap::new(),
             views: HashMap::new(),
             out_linear: target.is_srgb(),
+            separate_mip_targets: false,
             compositor: None,
             compositor_failed: None,
             health: photocraft_gpu::DeviceHealth::new(),
@@ -1497,13 +1502,36 @@ impl DocTextures {
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&res.mip_sampler) },
                     ],
                 });
+                // Keep the sampled source and render attachment in separate resources on DX12
+                // (`Resources::separate_mip_targets`): some Intel DX12 drivers corrupt reduced
+                // previews when both are mip levels of the same texture, even though the
+                // subresources do not overlap. Elsewhere render straight into the level, which
+                // spares a scratch texture and a copy per level on every edit.
+                let scratch = res.separate_mip_targets.then(|| {
+                    let scratch = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("pc_mip_scratch"),
+                        size: wgpu::Extent3d { width: lw, height: lh, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: self.format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[],
+                    });
+                    let view = scratch.create_view(&Default::default());
+                    (scratch, view)
+                });
+                let (target, load) = match &scratch {
+                    Some((_, view)) => (view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)),
+                    None => (&t.levels[level], wgpu::LoadOp::Load),
+                };
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("pc_mip"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &t.levels[level],
+                        view: target,
                         resolve_target: None,
                         depth_slice: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -1514,6 +1542,15 @@ impl DocTextures {
                 pass.set_bind_group(0, &bg, &[]);
                 pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
                 pass.draw(0..3, 0..1);
+                drop(pass);
+                if let Some((scratch, _)) = &scratch {
+                    let origin = wgpu::Origin3d { x: x0, y: y0, z: 0 };
+                    encoder.copy_texture_to_texture(
+                        wgpu::TexelCopyTextureInfo { texture: scratch, mip_level: 0, origin, aspect: wgpu::TextureAspect::All },
+                        wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: level as u32, origin, aspect: wgpu::TextureAspect::All },
+                        wgpu::Extent3d { width: x1 - x0, height: y1 - y0, depth_or_array_layers: 1 },
+                    );
+                }
             }
         }
         queue.submit([encoder.finish()]);
@@ -1877,6 +1914,10 @@ fn fs(in: V) -> @location(0) vec4<f32> {
     return textureSampleLevel(src, samp, in.uv, 0.0);
 }
 "#;
+
+#[cfg(test)]
+#[path = "gpu_canvas_mip_tests.rs"]
+mod mip_tests;
 
 #[cfg(test)]
 mod tests {

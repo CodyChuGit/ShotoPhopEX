@@ -1814,6 +1814,7 @@
 	Never	しない
 	Normal tip	通常の先端
 	Open as smart object	スマートオブジェクトとして開く
+	Open in camera raw	Camera Raw で開く
 	Open documents as tabs	ドキュメントをタブで開く
 	Overscroll	オーバースクロール
 	Performance	パフォーマンス
@@ -1935,6 +1936,7 @@
 	System Info…	システム情報…
 	System Info	システム情報
 	More panels	その他のパネル
+	More documents	その他のドキュメント
 	These settings aren't available in PhotoCraft yet.	これらの設定は PhotoCraft ではまだ使用できません。
 	Graphics	グラフィックス
 	Reset GPU Backend	GPU バックエンドをリセット
@@ -2011,6 +2013,7 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	選択範囲を作成するパスがありません。ペンツールで描くか、パスパネルでパスを選択してください。
 	Cancel opening	開くのをキャンセル
 	Cancelled opening {name}	{name} を開くのをキャンセルしました
+	Developing {name}	{name} を現像中
 	Cancelled {label}	{label} をキャンセルしました
 	Esc to cancel	Esc キーでキャンセル
 	Opening {name}	{name} を開いています
@@ -2049,6 +2052,7 @@
 cameraRaw	Light	ライト
 # Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Camera Raw フィルター ({layer})
+	Camera Raw ({name})	Camera Raw ({name})
 cameraRaw	Lights	明部
 cameraRaw	Blending	ブレンド
 cameraRaw	Blacks	黒レベル

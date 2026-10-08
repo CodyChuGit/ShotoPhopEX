@@ -1816,6 +1816,7 @@
 	Never	从不
 	Normal tip	正常笔尖
 	Open as smart object	作为智能对象打开
+	Open in camera raw	在 Camera Raw 中打开
 	Open documents as tabs	以标签页打开文档
 	Overscroll	过度滚动
 	Performance	性能
@@ -1946,6 +1947,7 @@
 cameraRaw	Light	光线
 # Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Camera Raw 滤镜（{layer}）
+	Camera Raw ({name})	Camera Raw（{name}）
 cameraRaw	Lights	亮调
 cameraRaw	Darks	暗调
 cameraRaw	Blacks	黑色色阶
@@ -1985,6 +1987,7 @@ cameraRaw	Blending	混合
 	System Info…	系统信息…
 	System Info	系统信息
 	More panels	更多面板
+	More documents	更多文档
 	These settings aren't available in PhotoCraft yet.	PhotoCraft 暂不支持这些设置。
 	Graphics	图形
 	Reset GPU Backend	重置 GPU 后端
@@ -2061,6 +2064,7 @@ cameraRaw	Blending	混合
 # Layer navigation, copy transforms and cancellable opening (labels added on main since this catalog).
 	Cancel opening	取消打开
 	Cancelled opening {name}	已取消打开 {name}
+	Developing {name}	正在处理 {name}
 	Cancelled {label}	已取消 {label}
 	Esc to cancel	按 Esc 取消
 	Opening {name}	正在打开 {name}

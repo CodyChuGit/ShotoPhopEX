@@ -1809,6 +1809,7 @@
 	Never	永不
 	Normal tip	一般筆尖
 	Open as smart object	以智慧型物件開啟
+	Open in camera raw	在 Camera Raw 中開啟
 	Open documents as tabs	以索引標籤開啟文件
 	Overscroll	超出捲動
 	Performance	效能
@@ -1926,6 +1927,7 @@
 	System Info…	系統資訊…
 	System Info	系統資訊
 	More panels	更多面板
+	More documents	更多文件
 	These settings aren't available in PhotoCraft yet.	這些設定在 PhotoCraft 中尚未提供。
 	Graphics	圖形
 	Reset GPU Backend	重設 GPU 後端
@@ -2003,6 +2005,7 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	沒有可用來建立選取範圍的路徑：請使用鋼筆工具繪製，或在路徑面板中選取一個路徑。
 	Cancel opening	取消開啟
 	Cancelled opening {name}	已取消開啟 {name}
+	Developing {name}	正在處理 {name}
 	Cancelled {label}	已取消 {label}
 	Esc to cancel	按 Esc 取消
 	Opening {name}	正在開啟 {name}
@@ -2041,6 +2044,7 @@
 cameraRaw	Light	光線
 # Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Camera Raw 濾鏡（{layer}）
+	Camera Raw ({name})	Camera Raw（{name}）
 cameraRaw	Lights	亮調
 cameraRaw	Darks	暗調
 cameraRaw	Blacks	黑色色階

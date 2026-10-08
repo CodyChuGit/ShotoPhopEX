@@ -1800,6 +1800,7 @@
 	Never	Nie
 	Normal tip	Normale Spitze
 	Open as smart object	Als Smart-Objekt öffnen
+	Open in camera raw	In Camera Raw öffnen
 	Open documents as tabs	Dokumente als Registerkarten öffnen
 	Overscroll	Überscrollen
 	Performance	Leistung
@@ -1917,6 +1918,7 @@
 	System Info…	Systeminformationen…
 	System Info	Systeminformationen
 	More panels	Weitere Bedienfelder
+	More documents	Weitere Dokumente
 	These settings aren't available in PhotoCraft yet.	Diese Einstellungen gibt es in PhotoCraft noch nicht.
 	Graphics	Grafik
 	Reset GPU Backend	GPU-Backend zurücksetzen
@@ -1994,6 +1996,7 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Kein Pfad für eine Auswahl vorhanden: zeichne einen mit dem Stift-Werkzeug oder wähle einen im Pfade-Bedienfeld.
 	Cancel opening	Öffnen abbrechen
 	Cancelled opening {name}	Öffnen von {name} abgebrochen
+	Developing {name}	{name} wird entwickelt
 	Cancelled {label}	{label} abgebrochen
 	Esc to cancel	Esc zum Abbrechen
 	Opening {name}	Öffne {name}
@@ -2104,6 +2107,7 @@
 	4 x 4	4 x 4
 	5 x 5	5 x 5
 	Camera Raw Filter ({layer})	Camera-Raw-Filter ({layer})
+	Camera Raw ({name})	Camera Raw ({name})
 	Edit Type	Text bearbeiten
 	Grid:	Raster:
 	Highlight Clipping Warning (O)	Lichter-Abschneidewarnung (O)

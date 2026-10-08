@@ -1787,6 +1787,7 @@
 	Never	Jamais
 	Normal tip	Pointe normale
 	Open as smart object	Ouvrir en tant qu'objet intelligent
+	Open in camera raw	Ouvrir dans Camera Raw
 	Open documents as tabs	Ouvrir les documents dans des onglets
 	Overscroll	Défilement au-delà des bords
 	Performance	Performances
@@ -1902,6 +1903,7 @@
 	System Info…	Informations système…
 	System Info	Informations système
 	More panels	Autres panneaux
+	More documents	Autres documents
 	These settings aren't available in PhotoCraft yet.	Ces paramètres ne sont pas encore disponibles dans PhotoCraft.
 	Graphics	Graphismes
 	Reset GPU Backend	Réinitialiser le moteur GPU
@@ -1978,6 +1980,7 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Aucun tracé à partir duquel créer une sélection : dessinez-en un avec l'outil Plume ou sélectionnez-en un dans le panneau Tracés.
 	Cancel opening	Annuler l'ouverture
 	Cancelled opening {name}	Ouverture de {name} annulée
+	Developing {name}	Développement de {name}
 	Cancelled {label}	{label} : annulé
 	Esc to cancel	Échap pour annuler
 	Opening {name}	Ouverture de {name}
@@ -2491,6 +2494,7 @@
 	Show Selected Region	Afficher la zone sélectionnée
 cameraRaw	Light	Lumière
 	Camera Raw Filter ({layer})	Filtre Camera Raw ({layer})
+	Camera Raw ({name})	Camera Raw ({name})
 cameraRaw	Lights	Tons clairs
 cameraRaw	Darks	Tons sombres
 cameraRaw	Blacks	Noirs
