@@ -150,6 +150,147 @@ fn pixels_to_lab(t: &photocraft_cms::Transform, px: &[[f32; 4]]) -> Vec<[f32; 4]
     out
 }
 
+/// Prepared Sampled Colors query shared by the command and its interactive preview.
+/// Samples always come from the original document; reducing an image must not change them.
+pub struct ColorRangeSamples {
+    to_lab: std::sync::Arc<photocraft_cms::Transform>,
+    range: sel::LabRange,
+    grid: bool,
+    fuzziness: f32,
+    localized: Option<f32>,
+    plus_at: Vec<(f32, f32)>,
+}
+
+impl ColorRangeSamples {
+    /// Prepare the query without allocating a full-resolution composite. Point samples use
+    /// exactly the same compositor/profile as the final selection.
+    pub fn new(s: &Session, p: &Value) -> Result<Self> {
+        let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+        let area = doc.bounds();
+        let bad = |msg: String| EngineError::BadParams { cmd: "select.colorRange".into(), msg };
+        let sample = |key: &str| -> Result<Vec<sel::RangeSample>> {
+            let Some(pts) = p.get(key) else { return Ok(Vec::new()) };
+            let pts = pts.as_array().ok_or_else(|| bad(format!("`{key}` must be [[x, y], …]")))?;
+            let mut samples = Vec::new();
+            for point in pts {
+                let q = point.as_array().and_then(|v| match v.as_slice() {
+                    [x, y] => Some((x.as_f64()?, y.as_f64()?)),
+                    _ => None,
+                });
+                let Some((x, y)) = q.filter(|(x, y)| x.is_finite() && y.is_finite()) else {
+                    return Err(bad(format!("bad point {point} in `{key}` (want [x, y])")));
+                };
+                let (x, y) = (x.floor() as i32, y.floor() as i32);
+                if !area.contains(x, y) {
+                    return Err(bad(format!("point [{x}, {y}] in `{key}` is outside the canvas")));
+                }
+                let r = Rect::from_xywh(x, y, 1, 1);
+                let pixel = if !b(p, "sampleAllLayers", true) {
+                    s.active().and_then(|d| d.active_layer.and_then(|id| d.doc.layer(id))).and_then(|l| l.surface()).map(|surf| {
+                        let mut px = [[0.0; 4]];
+                        surf.read_rgba_into(r, &mut px);
+                        px[0]
+                    })
+                } else {
+                    None
+                };
+                let px = match pixel {
+                    Some(px) => px,
+                    None => photocraft_compose::render(doc, r).px.first().copied().unwrap_or([0.0; 4]),
+                };
+                samples.push(sel::RangeSample { color: [px[0], px[1], px[2]], at: Some(((x - area.x0) as f32, (y - area.y0) as f32)) });
+            }
+            Ok(samples)
+        };
+        Self::with_samples(s, p, area, &sample("points")?, &sample("subtractPoints")?)
+    }
+
+    fn with_samples(s: &Session, p: &Value, area: Rect, plus: &[sel::RangeSample], minus: &[sel::RangeSample]) -> Result<Self> {
+        let bad = |msg: String| EngineError::BadParams { cmd: "select.colorRange".into(), msg };
+        let fuzz = |d: f32| f(p, "fuzziness", d).max(0.0);
+        // The order the eyedropper clicks came in ("+" a point, "-" a subtracted point):
+        // Photoshop applies them one after another. Without it, all additions come first.
+        let order: Vec<bool> = match p.get("order") {
+            None => std::iter::repeat_n(true, plus.len()).chain(std::iter::repeat_n(false, minus.len())).collect(),
+            Some(o) => {
+                let o = o.as_array().ok_or_else(|| bad("`order` must be a list of \"+\" and \"-\"".into()))?;
+                let order = o
+                    .iter()
+                    .map(|v| match v.as_str() {
+                        Some("+") => Ok(true),
+                        Some("-") => Ok(false),
+                        _ => Err(bad(format!("bad entry {v} in `order` (want \"+\" or \"-\")"))),
+                    })
+                    .collect::<Result<Vec<bool>>>()?;
+                if order.iter().filter(|x| **x).count() != plus.len() || order.iter().filter(|x| !**x).count() != minus.len() {
+                    return Err(bad("`order` must list each of `points` (\"+\") and `subtractPoints` (\"-\") once".into()));
+                }
+                order
+            }
+        };
+        let mut fixed: Vec<[f32; 3]> = Vec::new();
+        if let Some(cs) = p.get("colors") {
+            let cs = cs.as_array().ok_or_else(|| bad("`colors` must be a list of colours".into()))?;
+            fixed.extend(cs.iter().map(|c| parse_color(&json!({ "color": c }))));
+        }
+        if p.get("color").is_some() {
+            fixed.push(parse_color(p));
+        }
+        // Localized Color Clusters: Range is a percentage of the canvas's longer side.
+        let plus_at: Vec<(f32, f32)> = plus.iter().filter_map(|x| x.at).collect();
+        let localized = if b(p, "localized", false) {
+            if plus_at.is_empty() {
+                return Err(bad("localized clusters need eyedropper `points`".into()));
+            }
+            Some(f(p, "range", 100.0).clamp(0.0, 100.0) / 100.0 * area.width().max(area.height()) as f32)
+        } else {
+            None
+        };
+        // Photoshop compares colours in Lab, through the document's profile
+        // (sel::lab_range_coverage). The samples span one Lab box; "Add to Sample" grows it,
+        // "Subtract from Sample" reshapes it (sel::LabRange::subtract).
+        let to_lab = lab_transform(s)?;
+        // 8-bit documents are compared on the 8-bit Lab grid, samples and pixels alike.
+        let grid = s.active().is_some_and(|d| d.doc.depth == photocraft_doc::SampleType::U8);
+        let q = |c: [f32; 3]| if grid { sel::quantize_lab8(c) } else { c };
+        let colour_to_lab = |t: &photocraft_cms::Transform, c: [f32; 3]| q(colour_to_lab(t, c));
+        let foreground = || {
+            let [r, g, b, _] = s.tools.foreground;
+            sel::LabRange::point(colour_to_lab(&to_lab, [r, g, b]))
+        };
+        let fixed_lab: Vec<[f32; 3]> = fixed.iter().map(|c| colour_to_lab(&to_lab, *c)).collect();
+        let mut range = sel::LabRange::spanning(&fixed_lab);
+        let (mut pi, mut mi) = (plus.iter(), minus.iter());
+        for add in order {
+            if add {
+                if let Some(x) = pi.next() {
+                    let c = colour_to_lab(&to_lab, x.color);
+                    range = Some(range.map_or(sel::LabRange::point(c), |r| r.grow(&c)));
+                }
+            } else if let Some(x) = mi.next() {
+                range = Some(range.unwrap_or_else(foreground).subtract(&colour_to_lab(&to_lab, x.color), fuzz(40.0)));
+            }
+        }
+        let range = range.unwrap_or_else(foreground);
+        Ok(Self { to_lab, range, grid, fuzziness: fuzz(40.0), localized, plus_at })
+    }
+
+    /// Coverage of a composite rectangle. `scale` is the original document pixels represented
+    /// by one input pixel; `origin` is in original document pixels (for a visible canvas crop).
+    pub fn coverage(&self, px: &[[f32; 4]], width: usize, scale: f32, origin: [f32; 2]) -> Vec<f32> {
+        let mut lab = pixels_to_lab(&self.to_lab, px);
+        if self.grid {
+            for p in &mut lab {
+                let [l, a, b] = sel::quantize_lab8([p[0], p[1], p[2]]);
+                *p = [l, a, b, p[3]];
+            }
+        }
+        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        let points: Vec<_> = self.plus_at.iter().map(|(x, y)| ((x - origin[0]) / scale, (y - origin[1]) / scale)).collect();
+        sel::color_range_lab(&lab, width, &self.range, self.fuzziness, self.grid, self.localized.map(|r| (r / scale, points.as_slice())))
+    }
+}
+
 fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "select.colorRange";
     let bad = |msg: String| EngineError::BadParams { cmd: CMD.into(), msg };
@@ -163,78 +304,8 @@ fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
             // The dialog's eyedroppers: colours picked on the image, at their positions.
             let plus = eyedropper_samples(p, "points", area, &px, &bad)?;
             let minus = eyedropper_samples(p, "subtractPoints", area, &px, &bad)?;
-            // The order the eyedropper clicks came in ("+" a point, "-" a subtracted point):
-            // Photoshop applies them one after another. Without it, all additions come first.
-            let order: Vec<bool> = match p.get("order") {
-                None => std::iter::repeat_n(true, plus.len()).chain(std::iter::repeat_n(false, minus.len())).collect(),
-                Some(o) => {
-                    let o = o.as_array().ok_or_else(|| bad("`order` must be a list of \"+\" and \"-\"".into()))?;
-                    let order = o
-                        .iter()
-                        .map(|v| match v.as_str() {
-                            Some("+") => Ok(true),
-                            Some("-") => Ok(false),
-                            _ => Err(bad(format!("bad entry {v} in `order` (want \"+\" or \"-\")"))),
-                        })
-                        .collect::<Result<Vec<bool>>>()?;
-                    if order.iter().filter(|x| **x).count() != plus.len() || order.iter().filter(|x| !**x).count() != minus.len() {
-                        return Err(bad("`order` must list each of `points` (\"+\") and `subtractPoints` (\"-\") once".into()));
-                    }
-                    order
-                }
-            };
-            let mut fixed: Vec<[f32; 3]> = Vec::new();
-            if let Some(cs) = p.get("colors") {
-                let cs = cs.as_array().ok_or_else(|| bad("`colors` must be a list of colours".into()))?;
-                fixed.extend(cs.iter().map(|c| parse_color(&json!({ "color": c }))));
-            }
-            if p.get("color").is_some() {
-                fixed.push(parse_color(p));
-            }
-            // Localized Color Clusters: Range is a percentage of the canvas's longer side.
-            let plus_at: Vec<(f32, f32)> = plus.iter().filter_map(|x| x.at).collect();
-            let localized = if b(p, "localized", false) {
-                if plus_at.is_empty() {
-                    return Err(bad("localized clusters need eyedropper `points`".into()));
-                }
-                Some(f(p, "range", 100.0).clamp(0.0, 100.0) / 100.0 * area.width().max(area.height()) as f32)
-            } else {
-                None
-            };
-            // Photoshop compares colours in Lab, through the document's profile
-            // (sel::lab_range_coverage). The samples span one Lab box; "Add to Sample" grows it,
-            // "Subtract from Sample" reshapes it (sel::LabRange::subtract).
-            let to_lab = lab_transform(s)?;
-            // 8-bit documents are compared on the 8-bit Lab grid, samples and pixels alike.
-            let grid = s.active().is_some_and(|d| d.doc.depth == photocraft_doc::SampleType::U8);
-            let q = |c: [f32; 3]| if grid { sel::quantize_lab8(c) } else { c };
-            let mut lab = pixels_to_lab(&to_lab, &px);
-            if grid {
-                for p in &mut lab {
-                    let [l, a, b] = sel::quantize_lab8([p[0], p[1], p[2]]);
-                    *p = [l, a, b, p[3]];
-                }
-            }
-            let colour_to_lab = |t: &photocraft_cms::Transform, c: [f32; 3]| q(colour_to_lab(t, c));
-            let foreground = || {
-                let [r, g, b, _] = s.tools.foreground;
-                sel::LabRange::point(colour_to_lab(&to_lab, [r, g, b]))
-            };
-            let fixed_lab: Vec<[f32; 3]> = fixed.iter().map(|c| colour_to_lab(&to_lab, *c)).collect();
-            let mut range = sel::LabRange::spanning(&fixed_lab);
-            let (mut pi, mut mi) = (plus.iter(), minus.iter());
-            for add in order {
-                if add {
-                    if let Some(x) = pi.next() {
-                        let c = colour_to_lab(&to_lab, x.color);
-                        range = Some(range.map_or(sel::LabRange::point(c), |r| r.grow(&c)));
-                    }
-                } else if let Some(x) = mi.next() {
-                    range = Some(range.unwrap_or_else(foreground).subtract(&colour_to_lab(&to_lab, x.color), fuzz(40.0)));
-                }
-            }
-            let range = range.unwrap_or_else(foreground);
-            let mask = sel::color_range_lab(&lab, w, &range, fuzz(40.0), grid, localized.map(|r| (r, plus_at.as_slice())));
+            let query = ColorRangeSamples::with_samples(s, p, area, &plus, &minus)?;
+            let mask = query.coverage(&px, w, 1.0, [0.0, 0.0]);
             (area, mask)
         }
         "reds" | "yellows" | "greens" | "cyans" | "blues" | "magentas" => {
@@ -474,6 +545,68 @@ mod tests {
         assert_eq!(coverage(&s, 10, 10), 0.0);
         s.execute("select.magicWand", json!({"x": 7, "y": 7, "contiguous": false, "antiAlias": false})).unwrap();
         assert_eq!(coverage(&s, 30, 10), 1.0);
+    }
+
+    #[test]
+    fn color_range_prepared_query_matches_the_command_at_all_depths() {
+        use photocraft_doc::{Color, ColorMode, SampleType, Size};
+        for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            for profile in [None, Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes())] {
+                let mut doc = Document::with_background("samples", Size::new(24, 12), ColorMode::Rgb, depth, Color::WHITE);
+                doc.icc_profile = profile;
+                let layer = doc.layers[0].surface_mut().unwrap();
+                layer.fill_rect(Rect::new(0, 0, 8, 12), &[0.65, 0.3, 0.2, 1.0]);
+                layer.fill_rect(Rect::new(8, 0, 16, 12), &[0.2, 0.3, 0.65, 1.0]);
+                let mut s = Session::new();
+                s.add_document(doc, None);
+                for p in [
+                    json!({"points": [[2, 3]], "fuzziness": 0}),
+                    json!({"points": [[2, 3], [10, 3]], "subtractPoints": [[10, 3]], "order": ["+", "+", "-"], "fuzziness": 40}),
+                    json!({"points": [[2, 3]], "localized": true, "range": 50, "fuzziness": 80}),
+                ] {
+                    let q = ColorRangeSamples::new(&s, &p).unwrap();
+                    let doc = s.active().unwrap().doc.clone();
+                    let pixels = photocraft_compose::render(&doc, doc.bounds());
+                    let preview = q.coverage(&pixels.px, 24, 1.0, [0.0, 0.0]);
+                    s.execute("select.colorRange", p).unwrap();
+                    let actual = current_mask(&s.active().unwrap().doc).1;
+                    for (shown, selected) in preview.iter().zip(actual) {
+                        let rounded = (shown.clamp(0.0, 1.0) * 255.0 + 0.5).floor() / 255.0;
+                        assert_eq!(rounded, selected, "{depth:?}: original-pixel preview and OK differ");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn color_range_prepared_query_samples_visible_layers_not_the_active_layer() {
+        use photocraft_doc::{Layer, LayerContent};
+        let mut s = session_colours();
+        let doc = s.active().unwrap().doc.clone();
+        let mut top = Layer::new("blue foreground", LayerContent::Raster(doc.layers[0].surface().unwrap().clone()));
+        top.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 40, 30), &[0.0, 0.0, 1.0, 1.0]);
+        let mut hidden = Layer::new("hidden green", LayerContent::Raster(top.surface().unwrap().clone()));
+        hidden.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 40, 30), &[0.0, 1.0, 0.0, 1.0]);
+        hidden.visible = false;
+        s.edit("layers", |doc, _| {
+            doc.layers.push(top);
+            doc.layers.push(hidden);
+            Ok(())
+        })
+        .unwrap();
+        for all_layers in [false, true] {
+            let p = json!({"points": [[7, 7]], "sampleAllLayers": all_layers, "fuzziness": 0});
+            let query = ColorRangeSamples::new(&s, &p).unwrap();
+            let (area, px) = sample_pixels(&s, all_layers).unwrap();
+            let shown = query.coverage(&px, area.width() as usize, 1.0, [0.0, 0.0]);
+            s.execute("select.colorRange", p).unwrap();
+            assert_eq!(shown[7 * 40 + 7], coverage(&s, 7, 7));
+            assert_eq!(shown[24 * 40 + 10], coverage(&s, 10, 24));
+        }
+        for p in [json!({"points": [[-1, 0]]}), json!({"points": [[40, 1]]}), json!({"points": "wrong"}), json!({"points": [[null, 0]]})] {
+            assert!(ColorRangeSamples::new(&s, &p).is_err(), "{p}");
+        }
     }
 
     #[test]

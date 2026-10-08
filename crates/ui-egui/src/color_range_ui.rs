@@ -2,11 +2,12 @@
 //! families, Highlights / Midtones / Shadows, Out Of Gamut), Fuzziness, Localized Color Clusters
 //! with Range, the tonal range of Highlights / Midtones / Shadows, the three eyedroppers (sample,
 //! add, subtract; they pick on the preview, Shift adds and Alt subtracts), a Selection / Image
-//! preview and Invert. Controls a mode doesn't use are disabled, like Photoshop's.
+//! preview, canvas Selection Preview modes and Invert. Controls a mode doesn't use are disabled, like Photoshop's.
 //!
 //! Everything lives in the dialog fields (`ui.dialog.set` drives it). The preview and OK run the
 //! same engine command, `select.colorRange`, so the GUI, MCP and scripts select identically; the
-//! preview runs it on a small proxy of the document, OK on the document itself (one history step).
+//! preview compares a small proxy against samples from the original document; OK selects at
+//! full resolution (one history step). Reduced previews approximate fine detail and effects.
 //! Cancel never touches the document, so the previous selection stays as it was.
 
 use std::sync::Arc;
@@ -41,6 +42,10 @@ pub const SELECTS: &[(&str, &str)] = &[
 
 /// Longest side of the preview thumbnail, in points.
 const PREVIEW: u32 = 200;
+/// Canvas overlays are view state; keep their allocation bounded on very large documents.
+const CANVAS_PREVIEW: u32 = 1024;
+const PREVIEWS: &[(&str, &str)] =
+    &[("none", "None"), ("grayscale", "Grayscale"), ("blackMatte", "Black Matte"), ("whiteMatte", "White Matte"), ("quickMask", "Quick Mask")];
 
 /// Which controls the current Select mode uses (the rest are disabled or hidden).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,6 +106,7 @@ pub fn open(app: &mut PhotocraftApp) -> u64 {
     f.insert("__order".into(), json!([]));
     f.insert("__tool".into(), json!("sample"));
     f.insert("__view".into(), json!("selection"));
+    f.insert("__selectionPreview".into(), json!("none"));
     app.color_range = None;
     app.ui.open_dialog(DialogKind::Command, f)
 }
@@ -168,16 +174,40 @@ pub struct Preview {
     mask: Option<egui::TextureHandle>,
     /// Why the preview couldn't be drawn (shown in the dialog and logged, never silent: #145).
     error: Option<String>,
+    canvas_proxy: Option<(u32, Arc<Document>)>,
+    overlay: Option<egui::TextureHandle>,
+    overlay_key: u64,
 }
 
 fn hash(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
 
+fn query_key(app: &PhotocraftApp, params: &Value) -> u64 {
+    let proof = app.session.active().map(|st| app.session.color.proof(st.doc.id));
+    hash(&format!("{params}:{:?}:{proof:?}", app.session.tools.foreground)).max(1)
+}
+
 /// The selection mask `params` would make, on the proxy: the engine command run on a scratch
 /// session (Out Of Gamut uses the document's own proof setup).
 fn proxy_mask(app: &PhotocraftApp, proxy: &Document, k: u32, params: &Value) -> Result<Vec<f32>, String> {
     let area = proxy.bounds();
+    if params.get("select").and_then(Value::as_str).unwrap_or("sampledColors") == "sampledColors" {
+        // Pick on the original document, not the thumbnail's nearest retained pixel. The
+        // prepared Lab query is the same one the command uses at full resolution.
+        let query = photocraft_engine::selection_cmds::ColorRangeSamples::new(&app.session, params).map_err(|e| e.to_string())?;
+        let pixels = photocraft_compose::render(proxy, area);
+        let invert = params.get("invert").and_then(Value::as_bool).unwrap_or(false);
+        return Ok(query
+            .coverage(&pixels.px, area.width() as usize, k as f32, [0.0, 0.0])
+            .into_iter()
+            .map(|v| {
+                let v = if invert { 1.0 - v } else { v };
+                // Match the command's GRAY8 mask rounding, before display interpolation.
+                (v.clamp(0.0, 1.0) * 255.0 + 0.5).floor() / 255.0
+            })
+            .collect());
+    }
     if params.get("select").and_then(Value::as_str) == Some("outOfGamut") {
         let pv = app.session.color.proof(proxy.id);
         let (m, _) = photocraft_engine::color_cmds::gamut_mask(proxy, &pv.setup, pv.gamut_threshold).map_err(|e| e.to_string())?;
@@ -236,11 +266,23 @@ fn preview(app: &mut PhotocraftApp, ctx: &egui::Context, f: &Map<String, Value>)
         let side = doc.size.width.max(doc.size.height).max(1);
         let k = side.div_ceil(PREVIEW).max(1);
         let proxy = Arc::new(crate::proxy::proxy_document(&doc, k));
-        app.color_range = Some(Preview { doc: doc_id, revision, k, proxy, image: None, mask_key: 0, mask: None, error: None });
+        app.color_range = Some(Preview {
+            doc: doc_id,
+            revision,
+            k,
+            proxy,
+            image: None,
+            mask_key: 0,
+            mask: None,
+            error: None,
+            canvas_proxy: None,
+            overlay: None,
+            overlay_key: 0,
+        });
     }
-    let image_view = s(f, "__view", "selection") == "image";
+    let image_view = (s(f, "__view", "selection") == "image") ^ ctx.input(|i| i.modifiers.command || (!cfg!(target_os = "macos") && i.modifiers.ctrl));
     let params = params(f);
-    let key = hash(&params.to_string()).max(1);
+    let key = query_key(app, &params);
     let (proxy, k) = {
         let p = app.color_range.as_ref()?;
         (p.proxy.clone(), p.k)
@@ -248,7 +290,14 @@ fn preview(app: &mut PhotocraftApp, ctx: &egui::Context, f: &Map<String, Value>)
     let (w, h) = (proxy.size.width as usize, proxy.size.height as usize);
     if image_view {
         if app.color_range.as_ref().is_some_and(|p| p.image.is_none()) {
-            let thumb = photocraft_compose::thumbnail(&proxy, proxy.size.width.max(proxy.size.height));
+            let buf = photocraft_compose::thumbnail_buffer(&proxy, proxy.size.width.max(proxy.size.height));
+            let thumb = match app.session.color.canvas_display(&proxy) {
+                Ok(display) => display.to_rgba8(&buf),
+                Err(e) => {
+                    report(app, Some(e.to_string()));
+                    return None;
+                }
+            };
             let size = [thumb.width as usize, thumb.height as usize];
             if size != [w, h] || thumb.pixels.len() != w * h * 4 {
                 report(app, Some(format!("the image thumbnail is {}×{}, expected {w}×{h}", thumb.width, thumb.height)));
@@ -380,7 +429,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
     ui.horizontal_top(|ui| {
         // Preview: the selection as a grayscale mask, or the image to pick colours from.
         let box_size = vec2(PREVIEW as f32, PREVIEW as f32);
-        let (frame, resp) = ui.allocate_exact_size(box_size, Sense::click());
+        let (frame, resp) = ui.allocate_exact_size(box_size, Sense::click_and_drag());
         ui.painter().rect_filled(frame, 0.0, t.canvas);
         let shown = preview(app, ui.ctx(), f);
         if let Some((tex, [w, h], k)) = shown {
@@ -388,7 +437,13 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
             let img_rect = Rect::from_center_size(frame.center(), vec2(w as f32 * scale, h as f32 * scale));
             ui.painter().image(tex, img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             // Eyedropper on the preview (Photoshop also samples in the preview area).
-            if let Some(p) = resp.interact_pointer_pos().filter(|p| resp.clicked() && c.sampling && img_rect.contains(*p)) {
+            // Response::clicked may consume accessibility input (a write lock): query it
+            // before reading PointerState, never from inside Ui::input's read lock.
+            let clicked = resp.clicked();
+            let held = resp.is_pointer_button_down_on();
+            let sample =
+                ui.input(|i| (clicked && i.pointer.primary_pressed()) || (held && (i.pointer.primary_pressed() || i.pointer.delta() != egui::Vec2::ZERO)));
+            if let Some(p) = resp.interact_pointer_pos().filter(|p| c.sampling && sample && img_rect.contains(*p)) {
                 let at = [
                     ((p.x - img_rect.left()) / scale).floor().max(0.0) as f64 * f64::from(k) + f64::from(k / 2),
                     ((p.y - img_rect.top()) / scale).floor().max(0.0) as f64 * f64::from(k) + f64::from(k / 2),
@@ -459,8 +514,77 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
             f.insert("__view".into(), json!("image"));
         }
     });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tl!("Selection Preview:")).color(t.text_dim));
+        let mode = s(f, "__selectionPreview", "none").to_string();
+        let mut chosen = mode.as_str();
+        if widgets::dropdown(ui, "color-range-selection-preview", &mut chosen, PREVIEWS, 170.0) {
+            f.insert("__selectionPreview".into(), json!(chosen));
+        }
+    });
     if app.session.active().is_none() {
         ui.label(egui::RichText::new(tl!("Open a document to select a colour range.")).color(t.text_faint));
+    }
+}
+
+/// A selection view is an overlay only: eyedroppers always sample the original image below it.
+/// White = selected, black = unselected, gray = partial; matte/Quick Mask cover unselected pixels.
+fn overlay_pixel(mode: &str, coverage: f32) -> Color32 {
+    let coverage = coverage.clamp(0.0, 1.0);
+    let q = |v: f32| (v * 255.0 + 0.5) as u8;
+    match mode {
+        "grayscale" => Color32::from_gray(q(coverage)),
+        "blackMatte" => Color32::from_black_alpha(q(1.0 - coverage)),
+        "whiteMatte" => Color32::from_rgba_unmultiplied(255, 255, 255, q(1.0 - coverage)),
+        "quickMask" => Color32::from_rgba_unmultiplied(255, 0, 0, q(0.5 * (1.0 - coverage))),
+        _ => Color32::TRANSPARENT,
+    }
+}
+
+/// Photoshop's Selection Preview on the image, shared by CPU/GPU canvases and all platforms.
+/// This never edits the real selection, image, channels or history; closing the dialog removes it.
+pub(crate) fn paint_selection_preview(app: &mut PhotocraftApp, ctx: &egui::Context, painter: &egui::Painter, doc: DocId, image: Rect, flip: bool) {
+    let Some(fields) = app.ui.dialogs.last().filter(|d| owns(&d.fields)).map(|d| d.fields.clone()) else { return };
+    let mode = s(&fields, "__selectionPreview", "none");
+    if mode == "none" || !app.session.active().is_some_and(|st| st.doc.id == doc) {
+        return;
+    }
+    // Refresh the document/revision cache before borrowing its canvas proxy.
+    let _ = preview(app, ctx, &fields);
+    if app.color_range.as_ref().is_some_and(|p| p.canvas_proxy.is_none()) {
+        let Some(original) = app.session.active().map(|st| st.doc.clone()) else { return };
+        let k = original.size.width.max(original.size.height).max(1).div_ceil(CANVAS_PREVIEW);
+        let proxy = Arc::new(crate::proxy::proxy_document(&original, k));
+        if let Some(p) = app.color_range.as_mut() {
+            p.canvas_proxy = Some((k, proxy));
+        }
+    }
+    let params = params(&fields);
+    let key = (query_key(app, &params) ^ hash(mode)).max(1);
+    if app.color_range.as_ref().is_some_and(|p| p.overlay_key != key || p.overlay.is_none()) {
+        let Some((k, proxy)) = app.color_range.as_ref().and_then(|p| p.canvas_proxy.clone()) else { return };
+        let mask = match proxy_mask(app, &proxy, k, &params) {
+            Ok(mask) => mask,
+            Err(e) => {
+                report(app, Some(e));
+                return;
+            }
+        };
+        let size = [proxy.size.width as usize, proxy.size.height as usize];
+        let pixels = mask.into_iter().map(|v| overlay_pixel(mode, v)).collect();
+        let img = egui::ColorImage::new(size, pixels);
+        if let Some(p) = app.color_range.as_mut() {
+            match &mut p.overlay {
+                Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                None => p.overlay = Some(ctx.load_texture("color-range-canvas-preview", img, egui::TextureOptions::LINEAR)),
+            }
+            p.overlay_key = key;
+        }
+    }
+    if let Some(tex) = app.color_range.as_ref().and_then(|p| p.overlay.as_ref()) {
+        let uv = if flip { Rect::from_min_max(pos2(1.0, 0.0), pos2(0.0, 1.0)) } else { Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)) };
+        painter.image(tex.id(), image, uv, Color32::WHITE);
     }
 }
 
@@ -474,6 +598,10 @@ fn sampling_top(app: &PhotocraftApp) -> Option<Map<String, Value>> {
 /// on the image does in Photoshop. Returns whether it picked.
 pub fn pick_top(app: &mut PhotocraftApp, at: [f64; 2], mods: egui::Modifiers) -> bool {
     let Some(mut f) = sampling_top(app) else { return false };
+    let Some(doc) = app.session.active().map(|st| &st.doc) else { return false };
+    if !at[0].is_finite() || !at[1].is_finite() || at[0] < 0.0 || at[1] < 0.0 || at[0] >= f64::from(doc.size.width) || at[1] >= f64::from(doc.size.height) {
+        return false;
+    }
     pick(app, &mut f, at, mods);
     match app.ui.dialogs.last_mut() {
         Some(d) => {
@@ -529,7 +657,7 @@ pub fn pick(app: &PhotocraftApp, f: &mut Map<String, Value>, at: [f64; 2], mods:
     let Some(st) = app.session.active() else { return };
     let (w, h) = (f64::from(st.doc.size.width.max(1)), f64::from(st.doc.size.height.max(1)));
     let [x, y] = at;
-    let at = [x.clamp(0.0, w - 1.0), y.clamp(0.0, h - 1.0)];
+    let at = [x.floor().clamp(0.0, w - 1.0), y.floor().clamp(0.0, h - 1.0)];
     let tool = if mods.shift {
         "add"
     } else if mods.alt {
@@ -804,6 +932,185 @@ mod tests {
         let blue = coverage(app, 30, 5);
         assert!(blue > 0.85 && blue < 0.95, "{blue}");
         assert_eq!(coverage(app, 5, 22), 0.0);
+    }
+
+    #[test]
+    fn selection_preview_modes_cover_only_unselected_pixels() {
+        assert_eq!(overlay_pixel("grayscale", 1.0), Color32::WHITE);
+        assert_eq!(overlay_pixel("grayscale", 0.0), Color32::BLACK);
+        assert_eq!(overlay_pixel("grayscale", 0.5), Color32::from_gray(128));
+        for mode in ["blackMatte", "whiteMatte", "quickMask"] {
+            assert_eq!(overlay_pixel(mode, 1.0).a(), 0, "{mode}: selected pixels stay visible");
+        }
+        assert_eq!(overlay_pixel("blackMatte", 0.0), Color32::BLACK);
+        assert_eq!(overlay_pixel("whiteMatte", 0.0), Color32::WHITE);
+        assert_eq!(overlay_pixel("quickMask", 0.0).a(), 128);
+        assert_eq!(overlay_pixel("quickMask", 0.5).a(), 64);
+        assert_eq!(overlay_pixel("none", 0.0), Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn preview_mode_is_view_state_and_cancel_preserves_selection() {
+        let mut h = harness(app_with_doc());
+        h.state_mut().run("select.rect", json!({"x": 0, "y": 20, "width": 5, "height": 5})).unwrap();
+        let original = h.state().session.active().unwrap();
+        let past = original.history.past_len();
+        let revision = original.revision;
+        let id = open(h.state_mut());
+        h.run_steps(3);
+        for (mode, _) in PREVIEWS {
+            set(&mut h, "__selectionPreview", json!(mode));
+            let f = &h.state().ui.dialogs.last().unwrap().fields;
+            assert!(params(f).get("__selectionPreview").is_none());
+            let painter = h.ctx.layer_painter(egui::LayerId::background());
+            let doc = h.state().session.active().unwrap().doc.id;
+            let ctx = h.ctx.clone();
+            paint_selection_preview(h.state_mut(), &ctx, &painter, doc, Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0)), false);
+            let st = h.state().session.active().unwrap();
+            assert_eq!((st.revision, st.history.past_len()), (revision, past));
+            assert_eq!(coverage(h.state(), 2, 22), 1.0);
+        }
+        h.state_mut().ui.close_dialog(id);
+        let painter = h.ctx.layer_painter(egui::LayerId::background());
+        let ctx = h.ctx.clone();
+        let doc = h.state().session.active().unwrap().doc.id;
+        paint_selection_preview(h.state_mut(), &ctx, &painter, doc, Rect::EVERYTHING, false);
+        assert_eq!(coverage(h.state(), 2, 22), 1.0);
+    }
+
+    #[test]
+    fn repeated_subtraction_clicks_are_not_discarded() {
+        let mut app = app_with_doc();
+        let id = open(&mut app);
+        let mut f = app.ui.dialog_mut(id).unwrap().fields.clone();
+        pick(&app, &mut f, [2.0, 2.0], egui::Modifiers::NONE);
+        pick(&app, &mut f, [30.0, 2.0], egui::Modifiers::SHIFT);
+        pick(&app, &mut f, [30.0, 2.0], egui::Modifiers::ALT);
+        pick(&app, &mut f, [30.0, 2.0], egui::Modifiers::ALT);
+        assert_eq!(params(&f)["order"], json!(["+", "+", "-", "-"]));
+    }
+
+    #[test]
+    fn control_pointer_drag_samples_and_never_paints_under_the_dialog() {
+        let mut h = harness(app_with_doc());
+        let app = h.state_mut();
+        open(app);
+        let doc = app.session.active().unwrap();
+        let before = doc.revision;
+        let history = doc.history.past_len();
+        let ctx = h.ctx.clone();
+        for (events, shift) in [
+            (json!([{"kind":"down","x":2,"y":2},{"kind":"move","x":3,"y":2},{"kind":"up","x":3,"y":2}]), false),
+            (json!([{"kind":"down","x":30,"y":2},{"kind":"move","x":31,"y":2},{"kind":"up","x":31,"y":2}]), true),
+        ] {
+            let (req, _) = crate::control::ControlRequest::new("ui.pointer", json!({"events":events,"shift":shift}));
+            let _ = crate::control::handle(h.state_mut(), &ctx, &req);
+        }
+        let fields = &h.state().ui.dialogs.last().unwrap().fields;
+        assert_eq!(points(fields, "points"), [[3.0, 2.0], [30.0, 2.0], [31.0, 2.0]]);
+        let doc = h.state().session.active().unwrap();
+        assert_eq!((doc.revision, doc.history.past_len()), (before, history));
+        assert!(h.state().drag.is_none());
+        assert!(!pick_top(h.state_mut(), [-1.0, 0.0], egui::Modifiers::NONE));
+    }
+
+    /// Local visual evidence and timings, using only a synthetic test document.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "offscreen visual/performance check; requires COLOR_RANGE_EVIDENCE_DIR"]
+    fn color_range_phase1_visual_evidence_and_timings() {
+        let out = std::path::PathBuf::from(std::env::var_os("COLOR_RANGE_EVIDENCE_DIR").expect("evidence directory"));
+        std::fs::create_dir_all(&out).unwrap();
+        let mut h = Harness::builder().with_size(vec2(1366.0, 768.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+            app_with_doc()
+        });
+        h.run_steps(5);
+        let view = &mut h.state_mut().ui.views[0];
+        view.zoom = 20.0;
+        view.center = [20.0, 15.0];
+        view.fit_pending = false;
+        let id = open(h.state_mut());
+        {
+            let app = h.state_mut();
+            let mut f = app.ui.dialog_mut(id).unwrap().fields.clone();
+            pick(app, &mut f, [5.0, 5.0], egui::Modifiers::NONE);
+            f.insert("fuzziness".into(), json!(40.0));
+            app.ui.dialog_mut(id).unwrap().fields = f;
+        }
+        for (mode, _) in PREVIEWS {
+            h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("__selectionPreview".into(), json!(mode));
+            h.run_steps(6);
+            h.render().unwrap().save(out.join(format!("color-range-{mode}.png"))).unwrap();
+        }
+        h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("__view".into(), json!("image"));
+        h.run_steps(6);
+        h.render().unwrap().save(out.join("color-range-image.png")).unwrap();
+        // 24 MP has actual stored pixels, rather than only a sparse default background.
+        let mut doc = Document::with_background("24 MP", Size::new(6000, 4000), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        doc.layers[0].surface_mut().unwrap().fill_rect(GRect::new(0, 0, 3000, 4000), &[0.8, 0.25, 0.1, 1.0]);
+        let mut session = photocraft_engine::Session::new();
+        session.add_document(doc, None);
+        let app = PhotocraftApp::new(session, crate::Services::default());
+        let doc = &app.session.active().unwrap().doc;
+        let params = json!({"points": [[1000, 1000]], "fuzziness": 40});
+        let start = std::time::Instant::now();
+        let proxy = crate::proxy::proxy_document(doc, 30);
+        let mask = proxy_mask(&app, &proxy, 30, &params).unwrap();
+        eprintln!("24 MP: thumbnail build + original-pixel sampling = {:.1} ms, {} preview pixels", start.elapsed().as_secs_f64() * 1000.0, mask.len());
+        let start = std::time::Instant::now();
+        let proxy = crate::proxy::proxy_document(doc, 6);
+        let mask = proxy_mask(&app, &proxy, 6, &params).unwrap();
+        eprintln!("24 MP: canvas preview build + original-pixel sampling = {:.1} ms, {} preview pixels", start.elapsed().as_secs_f64() * 1000.0, mask.len());
+    }
+
+    #[test]
+    fn modifier_temporarily_swaps_image_and_selection_thumbnail() {
+        let mut h = harness(app_with_doc());
+        let id = open(h.state_mut());
+        h.run_steps(3);
+        let f = h.state().ui.dialogs.last().unwrap().fields.clone();
+        let ctx = h.ctx.clone();
+        let selection = preview(h.state_mut(), &ctx, &f).unwrap().0;
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+        h.run_steps(2);
+        let image = preview(h.state_mut(), &ctx, &f).unwrap().0;
+        assert_ne!(image, selection);
+        assert_eq!(h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields["__view"], "selection");
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        h.run_steps(2);
+        assert_eq!(preview(h.state_mut(), &ctx, &f).unwrap().0, selection);
+    }
+
+    /// A sample between thumbnail pixels must use the original pixel, not its neighbour.
+    #[test]
+    fn reduced_preview_matches_the_original_eyedropper_sample() {
+        let mut doc = Document::with_background("fine detail", Size::new(400, 4), ColorMode::Rgb, SampleType::U8, Color::rgb(1.0, 0.0, 0.0));
+        let surface = doc.layers[0].surface_mut().unwrap();
+        surface.fill_rect(GRect::new(200, 0, 400, 4), &[0.0, 0.0, 1.0, 1.0]);
+        surface.fill_rect(GRect::new(101, 0, 102, 4), &[0.0, 0.0, 1.0, 1.0]);
+        let mut session = photocraft_engine::Session::new();
+        session.add_document(doc, None);
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        let id = open(&mut app);
+        let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+        pick(&app, &mut fields, [101.0, 1.0], egui::Modifiers::NONE);
+        fields.insert("fuzziness".into(), json!(0.0));
+        let original = app.session.active().unwrap().doc.clone();
+        let proxy = crate::proxy::proxy_document(&original, 2);
+        let mut old = photocraft_engine::Session::new();
+        old.add_document(proxy.clone(), None);
+        old.execute(COMMAND, json!({"points": [[50, 0]], "fuzziness": 0})).unwrap();
+        assert_eq!(
+            old.active().unwrap().doc.selection.as_ref().unwrap().sample_channel(150, 0, 0),
+            0.0,
+            "sampling the thumbnail instead selects the red neighbour"
+        );
+        let shown = proxy_mask(&app, &proxy, 2, &params(&fields)).unwrap();
+        confirm(&mut app, &fields).unwrap();
+        assert_eq!(coverage(&app, 300, 0), 1.0);
+        assert_eq!(shown[150], coverage(&app, 300, 0), "preview must show the same blue pixels as OK");
+        assert_eq!(shown[0], coverage(&app, 0, 0), "preview must leave the red background unselected");
     }
 
     #[test]
