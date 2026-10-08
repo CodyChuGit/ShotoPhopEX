@@ -181,7 +181,9 @@ pub fn value_field(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive
         // Round to the step before adding it, so whole-number fields drop decimals (55.4 + 1 = 56).
         let v = (*value / grid).round() * grid + step;
         // Round to 4 decimal places, so repeated 0.1 steps don't leave float errors.
-        *value = ((v * 1e4).round() / 1e4).clamp(lo, hi);
+        let v = (v * 1e4).round() / 1e4;
+        // `f32::clamp` panics on a reversed or NaN range, which `DragValue::range` accepts.
+        *value = if lo <= hi { v.clamp(lo, hi) } else { v };
         ui.memory_mut(|m| m.request_focus(resp.id));
         resp.mark_changed();
     }
@@ -784,6 +786,14 @@ mod tests {
         assert_eq!(press(&mut h, Modifiers::COMMAND, Key::ArrowUp), 100.1);
         assert_eq!(press(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::ArrowDown), 100.0);
         assert_eq!(h.state().1, 6, "every step reports a change, so callers apply it");
+    }
+
+    #[test]
+    fn arrow_keys_on_a_field_with_a_reversed_range_do_not_panic() {
+        let mut h = focused(5.0, 10.0..=0.0);
+        let _ = press(&mut h, Modifiers::NONE, Key::ArrowUp);
+        let mut h = focused(5.0, f32::NAN..=10.0);
+        let _ = press(&mut h, Modifiers::NONE, Key::ArrowDown);
     }
 
     #[test]
