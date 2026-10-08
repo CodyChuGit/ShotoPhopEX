@@ -51,12 +51,38 @@ fn slot_tool(ui: &egui::Ui, current: Tool, slot: &[Tool], key: egui::Id) -> Tool
     ui.data(|d| d.get_temp::<Tool>(key)).filter(|t| slot.contains(t)).unwrap_or(slot[0])
 }
 
+/// [`TOOL_SECTIONS`] without the tools hidden in Edit › Toolbar (`hidden` holds tool names: the
+/// dialog writes `Tool` debug names, `edit.toolbar` takes any name `Tool::from_name` reads). A
+/// slot keeps only its visible tools, so its flyout lists just those; a slot with none left is
+/// dropped, and so is a section with no slots. Each slot carries its index in `TOOL_SECTIONS`,
+/// so its remembered tool and flyout stay put when other slots are hidden.
+fn visible_sections(hidden: &[String]) -> Vec<Vec<(usize, Vec<Tool>)>> {
+    let hidden: Vec<Tool> = hidden.iter().map(String::as_str).filter_map(Tool::from_name).collect();
+    let mut index = 0usize;
+    let mut sections = Vec::new();
+    for section in TOOL_SECTIONS {
+        let mut slots = Vec::new();
+        for slot in section.iter() {
+            let tools: Vec<Tool> = slot.iter().copied().filter(|tool| !hidden.contains(tool)).collect();
+            if !tools.is_empty() {
+                slots.push((index, tools));
+            }
+            index += 1;
+        }
+        if !slots.is_empty() {
+            sections.push(slots);
+        }
+    }
+    sections
+}
+
 pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let (w1, bx, m) = if t.pro { (40.0, 30.0, 5i8) } else { (50.0, 36.0, 7i8) };
+    let sections = visible_sections(&app.session.prefs().toolbar.hidden);
     // Photoshop switches to a double-column toolbar only when one column doesn't fit.
-    let slots: usize = TOOL_SECTIONS.iter().map(|g| g.len()).sum();
-    let double = toolbar_needs_double(slots, TOOL_SECTIONS.len(), bx, t.pro, ui.available_rect_before_wrap().height());
+    let slots: usize = sections.iter().map(Vec::len).sum();
+    let double = toolbar_needs_double(slots, sections.len(), bx, t.pro, ui.available_rect_before_wrap().height());
     let w = if double { w1 + bx + 2.0 } else { w1 };
     egui::Panel::left("toolbar").resizable(false).exact_size(w).frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(m, 8))).show(
         ui,
@@ -90,8 +116,7 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if ui.input(|i| i.pointer.any_pressed()) {
                 ui.data_mut(|d| d.remove::<egui::Id>(held_id));
             }
-            let mut slot_index = 0usize;
-            for (si, section) in TOOL_SECTIONS.iter().enumerate() {
+            for (si, section) in sections.iter().enumerate() {
                 // Photoshop 2026 draws one uninterrupted column (no group dividers).
                 if si > 0 && !t.pro {
                     ui.add_space(4.0);
@@ -99,12 +124,11 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     ui.painter().line_segment([r.left_center() + vec2(8.0, 0.0), r.right_center() - vec2(8.0, 0.0)], Stroke::new(1.0, t.separator));
                     ui.add_space(4.0);
                 }
-                let rows: Vec<&[&[Tool]]> = if double { section.chunks(2).collect() } else { section.chunks(1).collect() };
+                let rows: Vec<&[(usize, Vec<Tool>)]> = if double { section.chunks(2).collect() } else { section.chunks(1).collect() };
                 for row in rows {
                     ui.horizontal(|ui| {
-                        for slot in row.iter() {
-                            let key = egui::Id::new(("tool-slot", slot_index));
-                            slot_index += 1;
+                        for (slot_index, slot) in row.iter() {
+                            let key = egui::Id::new(("tool-slot", *slot_index));
                             let tool = slot_tool(ui, app.ui.tool, slot, key);
                             let sel = slot.contains(&app.ui.tool);
                             let tip = if tool.key() == '\0' { tl!(tool.label()).to_string() } else { format!("{}  ({})", tl!(tool.label()), tool.key()) };
@@ -3177,6 +3201,57 @@ mod type_flyout_tests {
         frame(&mut app, &ctx, 2.05, vec![pointer(row, false)]);
         assert_eq!(app.ui.tool, Tool::VerticalType);
         assert!(ctx.data(|d| d.get_temp::<(egui::Id, Rect)>(egui::Id::new("tool-flyout"))).is_none());
+    }
+}
+
+#[cfg(test)]
+mod toolbar_hidden_tests {
+    use super::*;
+
+    /// Clickable tool-sized buttons the toolbar drew in its last pass.
+    fn tool_buttons(app: &mut PhotocraftApp) -> usize {
+        let ctx = egui::Context::default();
+        PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::ALL[0]);
+        for time in [0.0, 0.1] {
+            let mut out = ctx.run_ui(
+                egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1200.0, 1800.0))), ..Default::default() },
+                |ui| toolbar(app, ui),
+            );
+            out.textures_delta.clear();
+        }
+        let size = Vec2::splat(if Tokens::get(&ctx).pro { 30.0 } else { 36.0 });
+        ctx.viewport(|v| v.prev_pass.widgets.layers().flat_map(|(_, w)| w.iter()).filter(|w| w.rect.size() == size && w.sense.senses_click()).count())
+    }
+
+    fn hide(app: &mut PhotocraftApp, tools: &[Tool]) {
+        let names: Vec<String> = tools.iter().map(|tool| format!("{tool:?}")).collect();
+        app.session.edit_prefs(|p| p.toolbar.hidden = names);
+    }
+
+    #[test]
+    fn hidden_tools_leave_the_toolbar() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let all = tool_buttons(&mut app);
+        let slots: usize = TOOL_SECTIONS.iter().map(|section| section.len()).sum();
+        hide(&mut app, &Tool::ALL);
+        assert_eq!(tool_buttons(&mut app), all - slots, "every tool slot is gone when every tool is hidden");
+        hide(&mut app, &[Tool::Brush, Tool::Pencil, Tool::MixerBrush]);
+        assert_eq!(tool_buttons(&mut app), all - 1, "a slot whose tools are all hidden is gone");
+        hide(&mut app, &[Tool::Sponge]);
+        assert_eq!(tool_buttons(&mut app), all, "a slot with a visible tool stays");
+    }
+
+    #[test]
+    fn a_slot_keeps_only_its_visible_tools_and_its_index() {
+        let sections = visible_sections(&["Sponge".to_string(), "Move".to_string()]);
+        assert_eq!(sections.len(), TOOL_SECTIONS.len() - 1, "the Move section has no tools left");
+        let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&Tool::Sponge)).unwrap();
+        let slot = sections.iter().flatten().find(|(i, _)| *i == index).map(|(_, tools)| tools.clone());
+        assert_eq!(slot, Some(vec![Tool::Dodge, Tool::Burn]));
+        assert!(sections.iter().flatten().all(|(_, tools)| !tools.contains(&Tool::Move) && !tools.contains(&Tool::Sponge)));
+        assert_eq!(visible_sections(&[]).iter().map(Vec::len).sum::<usize>(), TOOL_SECTIONS.iter().map(|section| section.len()).sum::<usize>());
+        let by_command = visible_sections(&["sponge".to_string(), "move".to_string()]);
+        assert_eq!(by_command, sections, "edit.toolbar names are read like `ui.set {{tool}}` names");
     }
 }
 
