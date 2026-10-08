@@ -225,16 +225,15 @@ fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn modify(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     // The dialogs' ranges (Photoshop's limits); anything else is refused, never clamped silently.
-    let max = match op {
-        "border" => 200.0,
-        "feather" => 1000.0,
-        _ => 500.0,
+    let (min, max): (f32, f32) = match op {
+        "border" => (1.0, 200.0),
+        "feather" => (0.1, 1000.0),
+        _ => (1.0, 500.0),
     };
     let r = f(p, "radius", 1.0);
-    if !r.is_finite() || r > max {
-        return Err(EngineError::BadParams { cmd: format!("select.modify.{op}"), msg: format!("radius must be a number in 0..{max}") });
+    if !(min..=max).contains(&r) {
+        return Err(EngineError::BadParams { cmd: format!("select.modify.{op}"), msg: format!("radius must be a number in {min}..{max}") });
     }
-    let r = r.max(0.0);
     // Photoshop's "Apply effect at canvas bounds": when on, the canvas edge is a selection edge
     // (Select All then Contract shrinks from the edges); when off, the selection is taken to
     // continue past the canvas. Border has no such option: its band always follows the canvas edge,
@@ -663,6 +662,37 @@ mod tests {
             assert_eq!(coverage(&s, 11, 15), 0.0);
             assert_eq!(coverage(&s, 15, 15), 1.0);
         }
+    }
+
+    #[test]
+    fn modify_refuses_radii_below_the_minimum() {
+        let mut s = session();
+        s.execute("select.rect", json!({"x": 10, "y": 10, "width": 10, "height": 10})).unwrap();
+        // Below each dialog's minimum (1 px, Feather 0.1 px) is refused, not clamped to 0: a
+        // negative Border radius used to clear the selection and report success (#993).
+        let below = [
+            ("border", -5.0),
+            ("border", 0.5),
+            ("smooth", -5.0),
+            ("smooth", 0.0),
+            ("expand", -5.0),
+            ("expand", 0.0),
+            ("contract", -5.0),
+            ("contract", 0.9),
+            ("feather", -5.0),
+            ("feather", 0.0),
+            ("feather", 0.05),
+        ];
+        let before = current_mask(&s.active().unwrap().doc).1;
+        for (op, r) in below {
+            let err = s.execute(&format!("select.modify.{op}"), json!({"radius": r})).unwrap_err();
+            assert!(matches!(err, EngineError::BadParams { .. }), "{op} {r}: {err}");
+            assert!(current_mask(&s.active().unwrap().doc).1 == before, "{op} {r}: the selection changed");
+        }
+        // The minimum itself is still accepted.
+        s.execute("select.modify.feather", json!({"radius": 0.1})).unwrap();
+        s.execute("select.modify.expand", json!({"radius": 1})).unwrap();
+        assert_eq!(coverage(&s, 9, 15), 1.0);
     }
 
     #[test]
