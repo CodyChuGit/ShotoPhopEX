@@ -459,6 +459,65 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
     }
 }
 
+/// The top dialog's fields when it is Color Range in a mode that takes eyedropper samples.
+fn sampling_top(app: &PhotocraftApp) -> Option<Map<String, Value>> {
+    app.ui.dialogs.last().map(|d| &d.fields).filter(|f| owns(f) && controls(f).sampling).cloned()
+}
+
+/// The dialog's eyedropper on the canvas: with Color Range › Sampled Colors as the top dialog,
+/// picks the colour at document point `at` (Shift adds to the sample, Alt subtracts), as a click
+/// on the image does in Photoshop. Returns whether it picked.
+pub fn pick_top(app: &mut PhotocraftApp, at: [f64; 2], mods: egui::Modifiers) -> bool {
+    let Some(mut f) = sampling_top(app) else { return false };
+    pick(app, &mut f, at, mods);
+    match app.ui.dialogs.last_mut() {
+        Some(d) => {
+            d.fields = f;
+            true
+        }
+        None => false,
+    }
+}
+
+/// The canvas under an open Color Range dialog is its eyedropper (Photoshop): the pointer `over`
+/// shows the dialog's eyedropper (+ / − while Shift / Alt add or subtract), and a press at document
+/// point `press` takes a sample. False when Color Range isn't the top dialog.
+pub fn canvas_eyedropper(app: &mut PhotocraftApp, ctx: &egui::Context, over: egui::Pos2, press: Option<[f64; 2]>) -> bool {
+    let Some(f) = sampling_top(app) else { return false };
+    let mods = ctx.input(|i| i.modifiers);
+    let tool = if mods.shift {
+        "add"
+    } else if mods.alt {
+        "subtract"
+    } else {
+        s(&f, "__tool", "sample")
+    };
+    if app.session.prefs().cursors.other == photocraft_engine::prefs::OtherCursor::Precise {
+        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+    } else {
+        // The tip of the icon's pipette is at (2, 22) of its 24-unit box (as the Color Picker's).
+        crate::icons::cursor(ctx, "pipette", over, vec2(2.0, 22.0) / 24.0, 20.0);
+        ctx.set_cursor_icon(egui::CursorIcon::None);
+    }
+    let badge = match tool {
+        "add" => "+",
+        "subtract" => "−",
+        _ => "",
+    };
+    if !badge.is_empty() {
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("pc-color-range-badge")));
+        let at = over + vec2(20.0, -4.0);
+        p.text(at + vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, badge, crate::theme::semibold(13.0), Color32::from_black_alpha(200));
+        p.text(at, egui::Align2::CENTER_CENTER, badge, crate::theme::semibold(13.0), Color32::WHITE);
+    }
+    if let Some(at) = press
+        && pick_top(app, at, mods)
+    {
+        ctx.request_repaint();
+    }
+    true
+}
+
 /// An eyedropper click at document pixel `at`: the plain eyedropper replaces the samples, the
 /// + one (or Shift) adds one, the − one (or Alt) subtracts one.
 pub fn pick(app: &PhotocraftApp, f: &mut Map<String, Value>, at: [f64; 2], mods: egui::Modifiers) {
@@ -717,7 +776,9 @@ mod tests {
         ok(&mut h);
         h.run_steps(2);
         let app = h.state();
-        assert_eq!((coverage(app, 5, 5), coverage(app, 30, 5), coverage(app, 5, 22)), (1.0, 0.0, 0.0));
+        // The sampled red is (as in Photoshop) not quite fully selected at fuzziness 40.
+        assert!(coverage(app, 5, 5) > 0.98);
+        assert_eq!((coverage(app, 30, 5), coverage(app, 5, 22)), (0.0, 0.0));
     }
 
     #[test]

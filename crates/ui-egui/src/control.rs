@@ -473,6 +473,10 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
                 if let Some(d) = app.drag.as_mut().filter(|d| crate::hold_keys::repositions(d.tool)) {
                     d.reposition = space;
                 }
+                // Color Range › Sampled Colors on top: a press is its eyedropper on the image.
+                if matches!(ev, ToolEvent::Down { .. }) && crate::color_range_ui::pick_top(app, [x, y], mods) {
+                    continue;
+                }
                 tool_event(app, ev, mods);
             }
             app.stylus.feed.set(None);

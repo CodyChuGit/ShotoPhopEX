@@ -119,6 +119,37 @@ fn eyedropper_samples(p: &Value, key: &str, area: Rect, px: &[[f32; 4]], bad: &i
     Ok(out)
 }
 
+/// Composite RGB (the compositor's output profile for the document) → CIE Lab D50.
+fn lab_transform(s: &Session) -> Result<std::sync::Arc<photocraft_cms::Transform>> {
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let src = crate::color_cmds::composite_profile(&d.doc);
+    photocraft_cms::cached(&src, photocraft_cms::Builtin::LabD50.profile(), photocraft_cms::TransformOptions::default())
+        .map_err(|e| EngineError::Other(format!("colour management: {e}")))
+}
+
+/// The Lab profile's normalised encoding (ICC v4) → L 0–100, a and b −128–127.
+fn decode_lab(v: [f32; 3]) -> [f32; 3] {
+    [v[0] * 100.0, v[1] * 255.0 - 128.0, v[2] * 255.0 - 128.0]
+}
+
+fn colour_to_lab(t: &photocraft_cms::Transform, rgb: [f32; 3]) -> [f32; 3] {
+    let mut out = [0.0f32; 3];
+    t.eval(&rgb.map(|v| v.clamp(0.0, 1.0)), &mut out);
+    decode_lab(out)
+}
+
+/// RGBA pixels → Lab + alpha (L, a, b, alpha).
+fn pixels_to_lab(t: &photocraft_cms::Transform, px: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    let src: Vec<[f32; 4]> = px.iter().map(|p| [p[0].clamp(0.0, 1.0), p[1].clamp(0.0, 1.0), p[2].clamp(0.0, 1.0), p[3]]).collect();
+    let mut out = vec![[0.0f32; 4]; px.len()];
+    t.convert_f32(src.as_flattened(), 4, out.as_flattened_mut(), 4, true);
+    for p in &mut out {
+        let [l, a, b] = decode_lab([p[0], p[1], p[2]]);
+        *p = [l, a, b, p[3]];
+    }
+    out
+}
+
 fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "select.colorRange";
     let bad = |msg: String| EngineError::BadParams { cmd: CMD.into(), msg };
@@ -156,12 +187,25 @@ fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
             } else {
                 None
             };
-            let mut mask = sel::color_range_samples(&px, w, &samples, fuzz(40.0), localized);
+            // Photoshop compares colours in Lab, through the document's profile
+            // (sel::lab_range_coverage); the samples span one Lab box.
+            let to_lab = lab_transform(s)?;
+            let lab = pixels_to_lab(&to_lab, &px);
+            let plus: Vec<[f32; 3]> = samples.iter().map(|x| colour_to_lab(&to_lab, x.color)).collect();
+            let Some(range) = sel::LabRange::spanning(&plus) else {
+                return Err(bad("no colour to select".into()));
+            };
+            let plus_at: Vec<(f32, f32)> = samples.iter().filter_map(|x| x.at).collect();
+            let mut mask = sel::color_range_lab(&lab, w, &range, fuzz(40.0), localized.map(|r| (r, plus_at.as_slice())));
             // The minus eyedropper: colours matching a subtracted sample (same Fuzziness) drop out.
-            if !minus.is_empty() {
-                let cut = sel::color_range_samples(&px, w, &minus, fuzz(40.0), localized);
-                for (m, c) in mask.iter_mut().zip(&cut) {
-                    *m *= 1.0 - c;
+            for m in &minus {
+                let at: Vec<(f32, f32)> = m.at.into_iter().collect();
+                let point = sel::LabRange::point(colour_to_lab(&to_lab, m.color));
+                let cut = sel::color_range_lab(&lab, w, &point, fuzz(40.0), localized.map(|r| (r, at.as_slice())));
+                for ((k, c), q) in mask.iter_mut().zip(&cut).zip(&lab) {
+                    // The subtracted colour itself always goes, despite the sub-unit centring.
+                    let exact = *c > 0.0 && sel::lab_range_coverage([q[0], q[1], q[2]], &point, 0.0) >= 1.0;
+                    *k *= if exact { 0.0 } else { 1.0 - c };
                 }
             }
             (area, mask)
@@ -408,9 +452,37 @@ mod tests {
     #[test]
     fn color_range_selects_by_colour() {
         let mut s = session();
-        s.execute("select.colorRange", json!({"color": "#ff0000", "fuzziness": 10})).unwrap();
+        s.execute("select.colorRange", json!({"color": "#ff0000", "fuzziness": 40})).unwrap();
+        // Like Photoshop, a saturated sample is not quite fully selected at low fuzziness
+        // (Photoshop: 252 of 255 for red at 40); it is from about 80 on.
+        assert!(coverage(&s, 10, 10) > 0.98);
+        assert_eq!(coverage(&s, 20, 20), 0.0);
+        s.execute("select.colorRange", json!({"color": "#ff0000", "fuzziness": 100})).unwrap();
         assert_eq!(coverage(&s, 10, 10), 1.0);
         assert_eq!(coverage(&s, 20, 20), 0.0);
+    }
+
+    #[test]
+    fn color_range_compares_in_lab_like_photoshop() {
+        // Photoshop weighs hue (Lab a/b) three times as much as lightness; a per-channel RGB
+        // distance can't tell a lighter shade from a redder one.
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 30, "height": 10})).unwrap();
+        s.edit("paint", |doc, _| {
+            let bg = doc.layers[0].surface_mut().unwrap();
+            let v = |c: u8| f32::from(c) / 255.0;
+            bg.fill_rect(Rect::new(0, 0, 10, 10), &[v(200), v(140), v(120), 1.0]); // skin
+            bg.fill_rect(Rect::new(10, 0, 20, 10), &[v(220), v(160), v(140), 1.0]); // lighter skin
+            bg.fill_rect(Rect::new(20, 0, 30, 10), &[v(220), v(140), v(120), 1.0]); // redder skin
+            Ok(())
+        })
+        .unwrap();
+        s.execute("select.colorRange", json!({"points": [[5, 5]], "fuzziness": 40})).unwrap();
+        assert!(coverage(&s, 5, 5) > 0.98);
+        // Both differ from the sample by 20 levels in one RGB channel, yet the lighter one is
+        // kept clearly more (about 0.55 vs 0.31).
+        let (lighter, redder) = (coverage(&s, 15, 5), coverage(&s, 25, 5));
+        assert!(lighter > redder + 0.15 && redder > 0.0, "lighter {lighter}, redder {redder}");
     }
 
     /// Red squares (from `session`), a blue square, a black and a mid-grey strip on white.
@@ -430,14 +502,16 @@ mod tests {
     #[test]
     fn color_range_several_samples_points_and_invert() {
         let mut s = session_colours();
-        s.execute("select.colorRange", json!({"colors": ["#ff0000", "#0000ff"], "fuzziness": 10})).unwrap();
+        // Several samples span one Lab box (Photoshop's Minimum/Maximum): red and blue take
+        // both squares, black, grey and white stay out.
+        s.execute("select.colorRange", json!({"colors": ["#ff0000", "#0000ff"], "fuzziness": 100})).unwrap();
         assert_eq!((coverage(&s, 10, 10), coverage(&s, 30, 10), coverage(&s, 10, 24)), (1.0, 1.0, 1.0));
-        assert_eq!(coverage(&s, 2, 2), 0.0);
+        assert_eq!((coverage(&s, 2, 2), coverage(&s, 22, 24), coverage(&s, 32, 24)), (0.0, 0.0, 0.0));
         // Eyedropper point on the blue square; `invert` flips the result.
-        s.execute("select.colorRange", json!({"points": [[7, 22]], "fuzziness": 10, "invert": true})).unwrap();
+        s.execute("select.colorRange", json!({"points": [[7, 22]], "fuzziness": 100, "invert": true})).unwrap();
         assert_eq!((coverage(&s, 10, 24), coverage(&s, 10, 10), coverage(&s, 2, 2)), (0.0, 1.0, 1.0));
         // Localized clusters: picked on the left red square, a 25% range (10 px) leaves the right one.
-        s.execute("select.colorRange", json!({"points": [[10, 10]], "fuzziness": 10, "localized": true, "range": 25})).unwrap();
+        s.execute("select.colorRange", json!({"points": [[10, 10]], "fuzziness": 100, "localized": true, "range": 25})).unwrap();
         assert_eq!(coverage(&s, 10, 10), 1.0);
         assert!(coverage(&s, 13, 10) > 0.5);
         assert_eq!(coverage(&s, 30, 10), 0.0);

@@ -1796,6 +1796,13 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                 let d = xf.to_doc(p);
                 crate::color_picker_ui::sample_at(app, d[0], d[1]);
             }
+        } else if primary
+            && !middle
+            && let Some(p) = crate::dialogs::free_pointer_over(&ctx, rect)
+        {
+            // Color Range samples colours with its eyedropper on the image itself.
+            let press = crate::dialogs::free_press(&ctx, rect).map(|q| xf.to_doc(q));
+            crate::color_range_ui::canvas_eyedropper(app, &ctx, p, press);
         }
     }
     if tool == Tool::Hand && response.dragged() {
