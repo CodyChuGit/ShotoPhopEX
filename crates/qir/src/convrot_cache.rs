@@ -282,7 +282,8 @@ pub fn write_atomic(out: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Resu
     let tmp = dir.join(tmp_name);
     let res = (|| -> Result<()> {
         write(&tmp)?;
-        std::fs::File::open(&tmp)?.sync_all()?;
+        // A write handle: on Windows a read-only one cannot be flushed ("Access is denied").
+        std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
         std::fs::rename(&tmp, out)
             .with_context(|| format!("renaming {} -> {}", tmp.display(), out.display()))?;
         // Persist the rename itself (directory entry).

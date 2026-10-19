@@ -1,9 +1,28 @@
 genai-native
 Copyright (c) 2026 Cody Chu
 
-Licensed under either of the MIT licence or the Apache License, Version 2.0, at your option.
+Licensed under either of the MIT licence or the Apache License, Version 2.0, at your option,
+for the code written here: crates/gn-engine, gn-harness, gn-perception, gn-weights and tools/.
 
 Ported or vendored code keeps its origin here (file, upstream repository, commit, licence):
 
-- (none yet; the first entries will be the kernels and the parity method taken from
-  umag/qwen-image-rs, Apache-2.0, and block references from huggingface/diffusers, Apache-2.0)
+- crates/qir: umag/qwen-image-rs (Sergey "umag", Copyright 2026), imported at commit 60d100c
+  with its history, Apache License 2.0 (crates/qir/LICENSE, crates/qir/NOTICE). It is the
+  Phase 2 bring-up of the native engine; its kernels and blocks move into gn-kernels, gn-blocks
+  and gn-models over time and keep this attribution. It contains no model weights. Within it:
+  - SageAttention (thu-ml), Apache License 2.0, vendored under crates/qir/kernels/sage/vendor/
+    (torch bindings stripped, one marked LOCAL PATCH); its sub-headers carry FlashInfer, vLLM and
+    NVIDIA Apache-2.0 notices.
+  - crates/qir/kernels/convrot/convrot_int8_gemm.cu: SGLang's ConvRot kernel, Apache License 2.0,
+    kept as a reference, not compiled.
+  - NVIDIA CUTLASS (BSD-3-Clause) is used at build time, not vendored (`CUTLASS_DIR`).
+  - cuDNN, the CUDA runtime and driver libraries are NVIDIA's, loaded at run time; their licence
+    texts belong in THIRD_PARTY/ of any package that redistributes them.
+  - candle (Hugging Face), MIT OR Apache-2.0, the tensor spine.
+  - The ConvRot W8A8 scheme follows pytorch/ao's group-wise Regular Hadamard rotation.
+
+- crates/gn-perception runs ONNX Runtime (Microsoft, MIT), loaded at run time from a directory
+  the user names; not vendored. The SAM 3.1 graphs it runs are exported on the user's machine
+  from the user's checkpoint (Meta's SAM License) and are never shipped.
+
+Model weights are never part of this repository.
