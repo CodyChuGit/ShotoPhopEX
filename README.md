@@ -17,7 +17,7 @@ safetensors, ComfyUI's repacks, GGUF.
 | `gn-kernels` | the GPU: a `Kernels` trait, CUDA first (sm_120, then sm_89) | planned |
 | `gn-blocks` | attention, MMDiT streams, AdaLN, RoPE, flow-match schedulers, VAE and encoder families, LoRA | planned |
 | `gn-models` | thin definitions: Krea 2, Qwen-Image-2.1, … | planned |
-| `gn-weights` | the BYOM loader: safetensors, ComfyUI repack names, GGUF, key maps | planned |
+| `gn-weights` | the BYOM loader: hardened safetensors and GGUF readers (headers only on open, ranges on demand), ComfyUI's repack conventions (`comfy_quant`: fp8-scaled, INT8 convrot, NVFP4), a folder index that identifies families from the tensors; the `gn-inspect` tool | Phase 0: readers and the index identify all 16 files of the owner's install ([`docs/MODELS-ON-DISK.md`](docs/MODELS-ON-DISK.md)); key maps and dequantisation come with the first model definition |
 | `gn-perception` | SAM 3.1 through ONNX Runtime | planned |
 | `gn-engine` | the worker process the editor talks to | planned |
 
