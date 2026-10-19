@@ -1,4 +1,5 @@
-//! SAM 3 through ONNX Runtime: four graphs in one model directory.
+//! SAM 3 as the Hugging Face `transformers` export lays it out: four graphs in one directory.
+//! (The ComfyUI-faithful SAM 3.1 layout, with the tracker's point and box path, is `sam31`.)
 //!
 //! ```text
 //! <dir>/vision-encoder.onnx     images [1,3,1008,1008] → fpn_feat_0..2, fpn_pos_2
@@ -9,18 +10,21 @@
 //! ```
 //!
 //! The vision encoder runs once per picture; prompts re-run only the small graphs. Scoring and
-//! mask post-processing follow ComfyUI's `SAM3_Detect` node (the reference PhotoshopEX runs
-//! today): `sigmoid(pred_logits) > threshold`, the best `max_instances` kept, masks stretched to
-//! the picture with bilinear interpolation and cut at logit 0.
+//! mask post-processing follow ComfyUI's `SAM3_Detect` node: `sigmoid(pred_logits) > threshold`,
+//! the best `max_instances` kept, masks stretched to the picture with bilinear interpolation
+//! and cut at logit 0. This layout has no point path: points become small boxes through the
+//! geometry encoder, which is an approximation.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use ort::session::Session;
 use ort::value::{Tensor, TensorRef};
 
+pub use crate::graph::{Error as Sam3Error, Instance};
+use crate::graph::{Feat, Result, dim, sigmoid, take_bool, take_f32};
 use crate::resample::{bilinear, rgba_to_planes};
-use crate::runtime::{Runtime, RuntimeError};
+use crate::runtime::Runtime;
 use crate::tokenizer::ClipTokenizer;
 
 /// The side of the square window every picture is squashed into.
@@ -30,6 +34,9 @@ pub const INPUT: usize = 1008;
 pub const IMAGENET: ([f32; 3], [f32; 3]) = ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]);
 
 pub const FILES: [&str; 5] = ["vision-encoder.onnx", "text-encoder.onnx", "geometry-encoder.onnx", "decoder.onnx", "tokenizer.json"];
+
+/// Prompt features with their validity mask.
+type PromptPart = (Feat, Vec<bool>);
 
 pub struct Sam3 {
     vision: Session,
@@ -61,8 +68,7 @@ pub struct Prompt {
     pub text: String,
     /// Positive boxes, in picture pixels (x0, y0, x1, y1).
     pub boxes: Vec<[f32; 4]>,
-    /// Positive points, in picture pixels. Through the detector they become small positive boxes;
-    /// the tracker's own point path comes with the ComfyUI export.
+    /// Positive points, in picture pixels (small positive boxes through the detector).
     pub points: Vec<[f32; 2]>,
     /// Negative points, in picture pixels (small negative boxes).
     pub negatives: Vec<[f32; 2]>,
@@ -85,19 +91,6 @@ impl Default for Scoring {
     }
 }
 
-/// One found object, at picture resolution.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Instance {
-    pub score: f32,
-    /// x0, y0, x1, y1 in picture pixels.
-    pub bbox: [f32; 4],
-    /// Row-major `width × height` coverage, 0 or 1.
-    pub mask: Vec<f32>,
-    /// Pixel bounds of the mask as x0, y0, width, height, and the pixel count (both 0 when empty).
-    pub bounds: [u32; 4],
-    pub pixels: u64,
-}
-
 /// Timings of one prompt.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Timing {
@@ -107,93 +100,8 @@ pub struct Timing {
     pub post_ms: u64,
 }
 
-/// A missing file or a graph that is not what this module expects.
-#[derive(Debug)]
-pub enum Sam3Error {
-    Missing(PathBuf),
-    Runtime(RuntimeError),
-    /// A graph output did not have the shape or type this module relies on.
-    Shape(String),
-    Tokenizer(String),
-}
-
-impl std::fmt::Display for Sam3Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Sam3Error::Missing(p) => write!(f, "SAM 3 model file missing: {}", p.display()),
-            Sam3Error::Runtime(e) => write!(f, "{e}"),
-            Sam3Error::Shape(s) => write!(f, "unexpected graph output: {s}"),
-            Sam3Error::Tokenizer(s) => write!(f, "tokenizer: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for Sam3Error {}
-
-impl From<RuntimeError> for Sam3Error {
-    fn from(e: RuntimeError) -> Self {
-        Sam3Error::Runtime(e)
-    }
-}
-
-impl From<ort::Error> for Sam3Error {
-    fn from(e: ort::Error) -> Self {
-        Sam3Error::Runtime(RuntimeError::Ort(e.to_string()))
-    }
-}
-
-type Result<T> = std::result::Result<T, Sam3Error>;
-/// A tensor copied out of a run: its shape and its data.
-type Feat = (Vec<i64>, Vec<f32>);
-/// Prompt features with their validity mask.
-type PromptPart = (Feat, Vec<bool>);
-
-fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
-}
-
-/// Copy a named `f32` output out of a run.
-fn take_f32(outputs: &ort::session::SessionOutputs<'_>, name: &str) -> Result<Feat> {
-    let v = outputs.get(name).ok_or_else(|| Sam3Error::Shape(format!("no output `{name}`")))?;
-    let (shape, data) = v.try_extract_tensor::<f32>().map_err(|e| Sam3Error::Shape(format!("`{name}`: {e}")))?;
-    Ok((shape.to_vec(), data.to_vec()))
-}
-
-fn take_bool(outputs: &ort::session::SessionOutputs<'_>, name: &str) -> Result<(Vec<i64>, Vec<bool>)> {
-    let v = outputs.get(name).ok_or_else(|| Sam3Error::Shape(format!("no output `{name}`")))?;
-    let (shape, data) = v.try_extract_tensor::<bool>().map_err(|e| Sam3Error::Shape(format!("`{name}`: {e}")))?;
-    Ok((shape.to_vec(), data.to_vec()))
-}
-
-fn dim(shape: &[i64], i: usize, what: &str) -> Result<usize> {
-    shape.get(i).and_then(|d| usize::try_from(*d).ok()).ok_or_else(|| Sam3Error::Shape(format!("{what}: shape {shape:?} has no dimension {i}")))
-}
-
-/// Pixel bounds (x0, y0, w, h) and count of a coverage plane.
-pub fn coverage_bounds(mask: &[f32], width: usize, height: usize) -> ([u32; 4], u64) {
-    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
-    let mut n = 0u64;
-    for y in 0..height {
-        for x in 0..width {
-            if mask.get(y * width + x).is_some_and(|v| *v > 0.5) {
-                n += 1;
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x);
-                y1 = y1.max(y);
-            }
-        }
-    }
-    if n == 0 {
-        return ([0; 4], 0);
-    }
-    ([x0 as u32, y0 as u32, (x1 - x0 + 1) as u32, (y1 - y0 + 1) as u32], n)
-}
-
 impl Sam3 {
-    /// Open the four graphs and the tokenizer from `dir`. The vision encoder and decoder run on
-    /// the runtime's device; the text and geometry encoders too (they are small, but their
-    /// inputs and outputs already live beside the decoder's).
+    /// Open the four graphs and the tokenizer from `dir`.
     pub fn open(rt: &Runtime, dir: &Path) -> Result<Self> {
         for f in FILES {
             let p = dir.join(f);
@@ -337,32 +245,10 @@ impl Sam3 {
             let low = masks.get(i * mh * mw..(i + 1) * mh * mw).ok_or_else(|| Sam3Error::Shape("pred_masks shorter than its shape".into()))?;
             let full = bilinear(low, mw, mh, emb.width, emb.height);
             let mask: Vec<f32> = full.iter().map(|v| if *v > 0.0 { 1.0 } else { 0.0 }).collect();
-            let (bounds, pixels) = coverage_bounds(&mask, emb.width, emb.height);
             let b = bboxes.get(i * 4..i * 4 + 4).unwrap_or(&[0.0; 4]);
-            out.push(Instance { score, bbox: [b[0] * w, b[1] * h, b[2] * w, b[3] * h], mask, bounds, pixels });
+            out.push(Instance::from_mask(mask, emb.width, emb.height, score, [b[0] * w, b[1] * h, b[2] * w, b[3] * h]));
         }
         timing.post_ms = t.elapsed().as_millis() as u64;
         Ok((out, timing))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounds_of_a_block() {
-        let mut m = vec![0.0; 16];
-        m[5] = 1.0;
-        m[6] = 1.0;
-        m[10] = 1.0;
-        assert_eq!(coverage_bounds(&m, 4, 4), ([1, 1, 2, 2], 3));
-        assert_eq!(coverage_bounds(&[0.0; 4], 2, 2), ([0; 4], 0));
-    }
-
-    #[test]
-    fn sigmoid_is_sane() {
-        assert!((sigmoid(0.0) - 0.5).abs() < 1e-6);
-        assert!(sigmoid(10.0) > 0.99 && sigmoid(-10.0) < 0.01);
     }
 }

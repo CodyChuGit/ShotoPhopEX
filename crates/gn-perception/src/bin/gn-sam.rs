@@ -4,8 +4,12 @@
 //! gn-sam inspect --ort <dir> <model.onnx>...
 //! gn-sam run --ort <dir> [--lib <dir>]... [--cpu] --models <dir> --image <png>
 //!            (--text "fox" | --point x,y | --box x0,y0,x1,y1)... [--negative x,y]...
-//!            [--threshold 0.5] [--max 1] [--presence] [--no-normalize] [--out mask.png] [--id name]
+//!            [--threshold 0.5] [--max 1] [--refine 2] [--presence] [--no-normalize] [--out mask.png] [--id name]
 //! ```
+//!
+//! The model directory's layout picks the path: ComfyUI's export (`vision.onnx` … `heads.onnx`,
+//! the node's own text, point and box routes) or the Hugging Face export (`vision-encoder.onnx`
+//! …, detector only).
 //!
 //! `run` prints timings to stderr and one JSON line to stdout in the shape PhotoshopEX's
 //! `select.*` commands answer with (`selected`, `count`, `instances[{index, bounds, pixels}]`,
@@ -14,8 +18,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use gn_perception::graph::Instance;
 use gn_perception::runtime::{Device, Runtime, RuntimeConfig, ports};
 use gn_perception::sam3::{Prompt, Sam3, Scoring};
+use gn_perception::sam31::{Options, Sam31};
 use serde_json::json;
 
 struct Args {
@@ -118,22 +124,8 @@ fn inspect(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-fn run(args: &Args) -> Result<(), String> {
-    let t_all = Instant::now();
-    let rt = runtime(args)?;
-    let models = PathBuf::from(args.need("models")?);
-    let t0 = Instant::now();
-    let mut sam = Sam3::open(&rt, &models).map_err(|e| e.to_string())?;
-    if args.flag("no-normalize") {
-        sam.normalize = None;
-    }
-    eprintln!("gn-sam: sessions open in {:.1} s ({:?})", t0.elapsed().as_secs_f64(), rt.config().device);
-
-    let image = PathBuf::from(args.need("image")?);
-    let (rgba, w, h) = read_png(&image)?;
-    let emb = sam.embed(&rgba, w, h).map_err(|e| e.to_string())?;
-    eprintln!("gn-sam: vision encoder {} ms for {w}×{h}", emb.ms);
-
+/// What the command line asked for, in picture pixels.
+fn prompt_of(args: &Args) -> Result<Prompt, String> {
     let mut prompt = Prompt { text: args.one("text").unwrap_or("").to_string(), boxes: vec![], points: vec![], negatives: vec![] };
     for p in args.all("point") {
         let v = numbers(p, 2)?;
@@ -150,15 +142,77 @@ fn run(args: &Args) -> Result<(), String> {
     if prompt.text.is_empty() && prompt.boxes.is_empty() && prompt.points.is_empty() {
         return Err("give --text, --point or --box".into());
     }
+    Ok(prompt)
+}
+
+/// The ComfyUI layout (`vision.onnx` … `heads.onnx`): the node's own routes.
+fn run_comfy(rt: &Runtime, models: &Path, args: &Args, rgba: &[u8], w: usize, h: usize, prompt: &Prompt) -> Result<(Vec<Instance>, u64, u64), String> {
+    let t0 = Instant::now();
+    let mut sam = Sam31::open(rt, models).map_err(|e| e.to_string())?;
+    eprintln!("gn-sam: sessions open in {:.1} s ({:?}, ComfyUI layout)", t0.elapsed().as_secs_f64(), rt.config().device);
+    let emb = sam.embed(rgba, w, h).map_err(|e| e.to_string())?;
+    eprintln!("gn-sam: vision {} ms for {w}×{h}", emb.ms);
+    let opts = Options {
+        threshold: args.one("threshold").and_then(|t| t.parse().ok()).unwrap_or(0.5),
+        max_detections: args.one("max").and_then(|t| t.parse().ok()).unwrap_or(1),
+        refine_iterations: args.one("refine").and_then(|t| t.parse().ok()).unwrap_or(2),
+    };
+    let t1 = Instant::now();
+    let mut instances = Vec::new();
+    // The node's order: points, then boxes (without text), then text detections.
+    if !prompt.points.is_empty() || !prompt.negatives.is_empty() {
+        let (inst, t) = sam.segment_points(&emb, &prompt.points, &prompt.negatives, opts).map_err(|e| e.to_string())?;
+        eprintln!("gn-sam: points: heads {} ms, post {} ms", t.heads_ms, t.post_ms);
+        instances.push(inst);
+    }
+    if prompt.text.is_empty() {
+        for b in &prompt.boxes {
+            let (inst, t) = sam.segment_box(&emb, *b, opts).map_err(|e| e.to_string())?;
+            eprintln!("gn-sam: box: heads {} ms, post {} ms", t.heads_ms, t.post_ms);
+            instances.push(inst);
+        }
+    } else {
+        let (found, t) = sam.detect_text(&emb, &prompt.text, &prompt.boxes, opts).map_err(|e| e.to_string())?;
+        eprintln!("gn-sam: text: text {} + decoder {} + crops {} + heads {} + post {} ms; {} detection(s)", t.text_ms, t.decoder_ms, t.crop_ms, t.heads_ms, t.post_ms, found.len());
+        instances.extend(found);
+    }
+    Ok((instances, emb.ms, t1.elapsed().as_millis() as u64))
+}
+
+/// The Hugging Face layout (`vision-encoder.onnx` …): detector only.
+fn run_hf(rt: &Runtime, models: &Path, args: &Args, rgba: &[u8], w: usize, h: usize, prompt: &Prompt) -> Result<(Vec<Instance>, u64, u64), String> {
+    let t0 = Instant::now();
+    let mut sam = Sam3::open(rt, models).map_err(|e| e.to_string())?;
+    if args.flag("no-normalize") {
+        sam.normalize = None;
+    }
+    eprintln!("gn-sam: sessions open in {:.1} s ({:?}, Hugging Face layout)", t0.elapsed().as_secs_f64(), rt.config().device);
+    let emb = sam.embed(rgba, w, h).map_err(|e| e.to_string())?;
+    eprintln!("gn-sam: vision encoder {} ms for {w}×{h}", emb.ms);
     let scoring = Scoring {
         threshold: args.one("threshold").and_then(|t| t.parse().ok()).unwrap_or(0.5),
         max_instances: args.one("max").and_then(|t| t.parse().ok()).unwrap_or(1),
         presence: args.flag("presence"),
     };
     let t1 = Instant::now();
-    let (instances, timing) = sam.segment(&emb, &prompt, scoring).map_err(|e| e.to_string())?;
+    let (instances, timing) = sam.segment(&emb, prompt, scoring).map_err(|e| e.to_string())?;
     let prompt_ms = t1.elapsed().as_millis() as u64;
     eprintln!("gn-sam: prompt {prompt_ms} ms (text {} + geometry {} + decoder {} + post {}); {} instance(s)", timing.text_ms, timing.geometry_ms, timing.decoder_ms, timing.post_ms, instances.len());
+    Ok((instances, emb.ms, prompt_ms))
+}
+
+fn run(args: &Args) -> Result<(), String> {
+    let t_all = Instant::now();
+    let rt = runtime(args)?;
+    let models = PathBuf::from(args.need("models")?);
+    let image = PathBuf::from(args.need("image")?);
+    let (rgba, w, h) = read_png(&image)?;
+    let prompt = prompt_of(args)?;
+    let (instances, embed_ms, prompt_ms) = if Sam31::is_layout(&models) {
+        run_comfy(&rt, &models, args, &rgba, w, h, &prompt)?
+    } else {
+        run_hf(&rt, &models, args, &rgba, w, h, &prompt)?
+    };
     for (i, inst) in instances.iter().enumerate() {
         eprintln!("  {}: score {:.3} bounds {:?} pixels {} bbox {:?}", i + 1, inst.score, inst.bounds, inst.pixels, inst.bbox.map(|v| v.round()));
     }
@@ -181,8 +235,8 @@ fn run(args: &Args) -> Result<(), String> {
             "selected": !instances.is_empty(),
             "count": instances.len(),
             "instances": list,
-            "ms": emb.ms + prompt_ms,
-            "embedMs": emb.ms,
+            "ms": embed_ms + prompt_ms,
+            "embedMs": embed_ms,
             "promptMs": prompt_ms,
             "totalMs": t_all.elapsed().as_millis() as u64,
         }
