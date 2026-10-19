@@ -156,7 +156,7 @@ fn a_worker_whose_client_vanishes_exits_by_itself() {
     }
     if exited.is_none() {
         let _ = child.kill();
-        let _ = child.wait();
     }
+    let _ = child.wait();
     assert!(exited.is_some(), "the worker should exit once its greeted client left");
 }
