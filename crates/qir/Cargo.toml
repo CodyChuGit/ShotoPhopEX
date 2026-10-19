@@ -1,17 +1,24 @@
+# Imported from umag/qwen-image-rs @ 60d100c (Apache-2.0; see NOTICE at the repository root):
+# the Phase 2 bring-up crate of genai-native. Its kernels move into gn-kernels, its blocks into
+# gn-blocks and gn-models piece by piece; this crate stays buildable at every step. It does not
+# opt into the workspace lints (upstream's code, upstream's rules) and carries its own licence.
 [package]
 name = "qwen-image-rs"
 version = "0.0.0"
 edition = "2021"
 rust-version = "1.98"
-license = "MIT OR Apache-2.0"
-description = "Rust CUDA inference for Qwen-Image-2.1 (candle spine, 4090-tuned)"
-repository = "local"
+license = "Apache-2.0"
+description = "Rust CUDA inference for Qwen-Image-2.1 (candle spine; imported into genai-native)"
+repository = "https://github.com/CodyChuGit/genai-native"
+publish = false
 
 [dependencies]
 candle-core = "0.11"
 candle-nn = "0.11"
 candle-transformers = "0.11"
-tokenizers = "0.21"
+# Without `esaxx_fast`: esaxx-rs compiles its C++ with the static CRT whatever the target, which
+# cannot link beside the dynamic-CRT CUDA objects on Windows (only Unigram training uses it).
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 safetensors = "0.8"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -48,8 +55,3 @@ sage = ["cuda", "dep:cc", "dep:half"]
 sage2 = ["sage"]
 # Fused LayerNorm+AdaLN kernel: compiles kernels/fusednorm/*.cu.
 fusednorm = ["cuda", "dep:cc", "dep:half"]
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 1
