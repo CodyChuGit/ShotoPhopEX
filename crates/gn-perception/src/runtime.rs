@@ -22,6 +22,9 @@ pub struct RuntimeConfig {
     pub library_dirs: Vec<PathBuf>,
     /// Which device to run on.
     pub device: Device,
+    /// Write ONNX Runtime's per-node profile of every session into this directory (one JSON
+    /// trace per session, closed when the session drops). Diagnostics only.
+    pub profile_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +152,10 @@ impl Runtime {
             return Err(RuntimeError::MissingLibrary(model.to_path_buf()));
         }
         let mut builder = Session::builder(&self.env)?.with_optimization_level(GraphOptimizationLevel::Level3).map_err(ort_err)?;
+        if let Some(dir) = &self.config.profile_dir {
+            let stem = model.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "session".into());
+            builder = builder.with_profiling(dir.join(stem)).map_err(ort_err)?;
+        }
         builder = match self.config.device {
             Device::Cuda { ordinal } => builder
                 .with_execution_providers([ep::CUDA::default().with_device_id(ordinal).build().error_on_failure(), ep::CPU::default().build()])
@@ -197,7 +204,7 @@ mod tests {
 
     #[test]
     fn missing_library_is_an_error_not_a_crash() {
-        let cfg = RuntimeConfig { ort_dir: PathBuf::from("Z:/nowhere"), library_dirs: vec![], device: Device::Cpu };
+        let cfg = RuntimeConfig { ort_dir: PathBuf::from("Z:/nowhere"), library_dirs: vec![], device: Device::Cpu, profile_dir: None };
         match Runtime::open(cfg) {
             Err(RuntimeError::MissingLibrary(p)) => assert!(p.ends_with(library_name())),
             other => panic!("expected MissingLibrary, got {:?}", other.err()),

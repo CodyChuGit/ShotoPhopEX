@@ -28,13 +28,14 @@
 use std::path::Path;
 use std::time::Instant;
 
+use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
 use ort::session::Session;
-use ort::value::{Tensor, TensorRef};
+use ort::value::Tensor;
 
 pub use crate::graph::{Error, Instance};
 use crate::graph::{Feat, Result, dim, sigmoid, take_bool, take_f32};
 use crate::resample::bilinear;
-use crate::runtime::Runtime;
+use crate::runtime::{Device, Runtime};
 use crate::tokenizer::ClipTokenizer;
 
 /// The side of the square window every picture (and every refinement crop) is squashed into.
@@ -52,16 +53,22 @@ pub struct Sam31 {
     decoder: Session,
     heads: Session,
     tokenizer: ClipTokenizer,
+    /// Where the vision graph's feature maps live between graphs: the device's memory, so the
+    /// decoder and the heads read them in place instead of round-tripping 220 MB through the
+    /// host per picture and 110 MB per prompt.
+    device_mem: MemoryInfo<'static>,
+    cpu_mem: MemoryInfo<'static>,
 }
 
-/// Everything the vision graph returns for one 1008×1008 frame.
+/// Everything the vision graph returns for one 1008×1008 frame. The feature maps stay on the
+/// device; only the CLS token (256 numbers) comes to the host, where the prompt is assembled.
 pub struct Frame {
-    fpn0: Feat,
-    fpn1: Feat,
-    fpn2: Feat,
-    pos2: Feat,
+    fpn0: Tensor<f32>,
+    fpn1: Tensor<f32>,
+    fpn2: Tensor<f32>,
+    pos2: Tensor<f32>,
     geo_cls: Feat,
-    trk: [Feat; 3],
+    trk: [Tensor<f32>; 3],
 }
 
 /// A picture encoded once.
@@ -71,8 +78,10 @@ pub struct Embedding {
     /// The picture itself, kept for the refinement crops.
     rgba: Vec<u8>,
     frame: Frame,
-    /// Wall time of the vision graph.
+    /// Wall time of the vision graph, all in.
     pub ms: u64,
+    /// Where that time went: squashing the picture, the session's run, copying the outputs out.
+    pub split_ms: [u64; 3],
 }
 
 /// The node's knobs.
@@ -119,8 +128,12 @@ fn planes_of(rgba: &[u8], width: usize, rect: [usize; 4]) -> Vec<f32> {
     out
 }
 
-fn view(f: &Feat) -> ort::Result<TensorRef<'_, f32>> {
-    TensorRef::from_array_view((f.0.as_slice(), f.1.as_slice()))
+/// A memory description for one device.
+fn memory_of(device: Device) -> ort::Result<MemoryInfo<'static>> {
+    match device {
+        Device::Cuda { ordinal } => MemoryInfo::new(AllocationDevice::CUDA, ordinal, AllocatorType::Device, MemoryType::Default),
+        Device::Cpu => MemoryInfo::new(AllocationDevice::CPU, 0, AllocatorType::Device, MemoryType::Default),
+    }
 }
 
 /// What the mask heads answered for one call.
@@ -146,6 +159,8 @@ impl Sam31 {
             decoder: rt.session(&dir.join(FILES[3]))?,
             heads: rt.session(&dir.join(FILES[4]))?,
             tokenizer: ClipTokenizer::open(&dir.join(FILES[5])).map_err(Error::Tokenizer)?,
+            device_mem: memory_of(rt.config().device)?,
+            cpu_mem: memory_of(Device::Cpu)?,
         })
     }
 
@@ -154,30 +169,49 @@ impl Sam31 {
         FILES.iter().all(|f| dir.join(f).is_file())
     }
 
-    fn run_vision(&mut self, planes: Vec<f32>) -> Result<Frame> {
+    /// The vision graph on one window; the frame and (run, copy-out) milliseconds. The outputs
+    /// are bound to the device's memory and kept there as the frame.
+    fn run_vision(&mut self, planes: Vec<f32>) -> Result<(Frame, [u64; 2])> {
+        const ON_DEVICE: [&str; 7] = ["fpn_feat_0", "fpn_feat_1", "fpn_feat_2", "fpn_pos_2", "trk_feat_0", "trk_feat_1", "trk_feat_2"];
+        let t = Instant::now();
         let input = Tensor::from_array(([1usize, 3, INPUT, INPUT], planes))?;
-        let outputs = self.vision.run(ort::inputs!["images" => input])?;
-        Ok(Frame {
-            fpn0: take_f32(&outputs, "fpn_feat_0")?,
-            fpn1: take_f32(&outputs, "fpn_feat_1")?,
-            fpn2: take_f32(&outputs, "fpn_feat_2")?,
-            pos2: take_f32(&outputs, "fpn_pos_2")?,
-            geo_cls: take_f32(&outputs, "geo_cls")?,
-            trk: [take_f32(&outputs, "trk_feat_0")?, take_f32(&outputs, "trk_feat_1")?, take_f32(&outputs, "trk_feat_2")?],
-        })
+        let mut binding = self.vision.create_binding()?;
+        binding.bind_input("images", &input)?;
+        for name in ON_DEVICE {
+            binding.bind_output_to_device(name, &self.device_mem)?;
+        }
+        binding.bind_output_to_device("geo_cls", &self.cpu_mem)?;
+        let mut outputs = self.vision.run_binding(&binding)?;
+        let run_ms = t.elapsed().as_millis() as u64;
+        let t = Instant::now();
+        let geo_cls = take_f32(&outputs, "geo_cls")?;
+        let mut take = |name: &str| -> Result<Tensor<f32>> {
+            let v = outputs.remove(name).ok_or_else(|| Error::Shape(format!("no output `{name}`")))?;
+            v.downcast::<ort::value::TensorValueType<f32>>().map_err(|e| Error::Shape(format!("`{name}`: {e}")))
+        };
+        let frame = Frame {
+            fpn0: take("fpn_feat_0")?,
+            fpn1: take("fpn_feat_1")?,
+            fpn2: take("fpn_feat_2")?,
+            pos2: take("fpn_pos_2")?,
+            geo_cls,
+            trk: [take("trk_feat_0")?, take("trk_feat_1")?, take("trk_feat_2")?],
+        };
+        Ok((frame, [run_ms, t.elapsed().as_millis() as u64]))
     }
 
     /// Encode a whole RGBA8 picture.
     pub fn embed(&mut self, rgba: &[u8], width: usize, height: usize) -> Result<Embedding> {
         let t0 = Instant::now();
         let planes = planes_of(rgba, width, [0, 0, width, height]);
-        let frame = self.run_vision(planes)?;
-        Ok(Embedding { width, height, rgba: rgba.to_vec(), frame, ms: t0.elapsed().as_millis() as u64 })
+        let planes_ms = t0.elapsed().as_millis() as u64;
+        let (frame, [run_ms, copy_ms]) = self.run_vision(planes)?;
+        Ok(Embedding { width, height, rgba: rgba.to_vec(), frame, ms: t0.elapsed().as_millis() as u64, split_ms: [planes_ms, run_ms, copy_ms] })
     }
 
     /// One call of the tracker heads. `coords` are pixels of the 1008 window; `mask` is a
     /// 1008×1008 logit plane when given.
-    fn run_heads(&mut self, trk: &[Feat; 3], coords: &[[f32; 2]], labels: &[i32], mask: Option<&[f32]>) -> Result<HeadsOut> {
+    fn run_heads(&mut self, trk: &[Tensor<f32>; 3], coords: &[[f32; 2]], labels: &[i32], mask: Option<&[f32]>) -> Result<HeadsOut> {
         let n = coords.len();
         let pc = Tensor::from_array(([1usize, n, 2], coords.iter().flatten().copied().collect::<Vec<f32>>()))?;
         let pl = Tensor::from_array(([1usize, n], labels.to_vec()))?;
@@ -187,9 +221,8 @@ impl Sam31 {
         };
         let mp = Tensor::from_array(([1usize, 1, INPUT, INPUT], mask_plane))?;
         let hm = Tensor::from_array(([1usize], vec![has]))?;
-        let (t0, t1, t2) = (view(&trk[0])?, view(&trk[1])?, view(&trk[2])?);
         let outputs = self.heads.run(ort::inputs![
-            "trk_feat_0" => t0, "trk_feat_1" => t1, "trk_feat_2" => t2,
+            "trk_feat_0" => &trk[0], "trk_feat_1" => &trk[1], "trk_feat_2" => &trk[2],
             "point_coords" => pc, "point_labels" => pl, "mask_prompt" => mp, "has_mask" => hm,
         ])?;
         let (mshape, masks) = take_f32(&outputs, "masks")?;
@@ -207,7 +240,7 @@ impl Sam31 {
 
     /// `SAM3Model.forward_segment`: one pass of the tracker heads on a frame, with points, a box
     /// or a mask, answering 1008×1008 logits.
-    fn forward_segment(&mut self, trk: &[Feat; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&[f32]>) -> Result<Vec<f32>> {
+    fn forward_segment(&mut self, trk: &[Tensor<f32>; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&[f32]>) -> Result<Vec<f32>> {
         let mut coords: Vec<[f32; 2]> = Vec::new();
         let mut labels: Vec<i32> = Vec::new();
         if points.is_empty() {
@@ -301,8 +334,7 @@ impl Sam31 {
         // The node's cxcywh, normalised to the picture.
         let flat: Vec<f32> = boxes.iter().flat_map(|b| [(b[0] + b[2]) * 0.5 / w, (b[1] + b[3]) * 0.5 / h, (b[2] - b[0]) / w, (b[3] - b[1]) / h]).collect();
         let bt = Tensor::from_array(([1usize, boxes.len(), 4], flat))?;
-        let f2 = view(&emb.frame.fpn2)?;
-        let outputs = self.geometry.run(ort::inputs!["boxes" => bt, "fpn_feat_2" => f2])?;
+        let outputs = self.geometry.run(ort::inputs!["boxes" => bt, "fpn_feat_2" => &emb.frame.fpn2])?;
         take_f32(&outputs, "geo_features")
     }
 
@@ -342,9 +374,9 @@ impl Sam31 {
         let t = Instant::now();
         let pf = Tensor::from_array(([1usize, plen, 256], feats))?;
         let pm = Tensor::from_array(([1usize, plen], mask))?;
-        let (f0, f1, f2, p2) = (view(&emb.frame.fpn0)?, view(&emb.frame.fpn1)?, view(&emb.frame.fpn2)?, view(&emb.frame.pos2)?);
+        let f = &emb.frame;
         let outputs = self.decoder.run(ort::inputs![
-            "fpn_feat_0" => f0, "fpn_feat_1" => f1, "fpn_feat_2" => f2, "fpn_pos_2" => p2,
+            "fpn_feat_0" => &f.fpn0, "fpn_feat_1" => &f.fpn1, "fpn_feat_2" => &f.fpn2, "fpn_pos_2" => &f.pos2,
             "prompt_features" => pf, "prompt_mask" => pm,
         ])?;
         let (mshape, masks) = take_f32(&outputs, "pred_masks")?;
@@ -407,7 +439,7 @@ impl Sam31 {
         }
 
         let t = Instant::now();
-        let crop_frame = self.run_vision(planes_of(&emb.rgba, w, [cx1, cy1, crop_w, crop_h]))?;
+        let (crop_frame, _) = self.run_vision(planes_of(&emb.rgba, w, [cx1, cy1, crop_w, crop_h]))?;
         timing.crop_ms += t.elapsed().as_millis() as u64;
 
         let (mw, mh) = (mx2 - mx1, my2 - my1);

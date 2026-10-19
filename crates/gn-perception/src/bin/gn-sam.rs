@@ -103,7 +103,8 @@ fn write_mask(path: &Path, mask: &[f32], w: usize, h: usize) -> Result<(), Strin
 
 fn runtime(args: &Args) -> Result<Runtime, String> {
     let device = if args.flag("cpu") { Device::Cpu } else { Device::Cuda { ordinal: 0 } };
-    let cfg = RuntimeConfig { ort_dir: PathBuf::from(args.need("ort")?), library_dirs: args.all("lib").into_iter().map(PathBuf::from).collect(), device };
+    let profile_dir = args.one("profile").map(PathBuf::from);
+    let cfg = RuntimeConfig { ort_dir: PathBuf::from(args.need("ort")?), library_dirs: args.all("lib").into_iter().map(PathBuf::from).collect(), device, profile_dir };
     Runtime::open(cfg).map_err(|e| e.to_string())
 }
 
@@ -160,7 +161,7 @@ fn run_comfy(rt: &Runtime, models: &Path, args: &Args, rgba: &[u8], w: usize, h:
     let mut last: Option<(Vec<Instance>, u64, u64)> = None;
     for round in 0..repeat {
         let emb = sam.embed(rgba, w, h).map_err(|e| e.to_string())?;
-        eprintln!("gn-sam: [{}] vision {} ms for {w}×{h}", round + 1, emb.ms);
+        eprintln!("gn-sam: [{}] vision {} ms for {w}×{h} (squash {} + run {} + copy out {})", round + 1, emb.ms, emb.split_ms[0], emb.split_ms[1], emb.split_ms[2]);
         let t1 = Instant::now();
         let mut instances = Vec::new();
         // The node's order: points, then boxes (without text), then text detections.

@@ -67,7 +67,7 @@ impl PerceptionEngine {
                     return Err(EngineError::new(ErrorKind::ModelUnreadable, format!("no {} in the runtime directories {:?}", library_name(), self.runtime_dirs)));
                 };
                 progress(0.0, "Loading the runtime");
-                let cfg = RuntimeConfig { ort_dir, library_dirs: self.runtime_dirs.clone(), device: self.device };
+                let cfg = RuntimeConfig { ort_dir, library_dirs: self.runtime_dirs.clone(), device: self.device, profile_dir: None };
                 self.rt = Some(Runtime::open(cfg).map_err(|e| EngineError::new(ErrorKind::ModelUnreadable, e.to_string()))?);
             }
             let Some(rt) = self.rt.as_ref() else { return Err(EngineError::new(ErrorKind::Internal, "no runtime")) };

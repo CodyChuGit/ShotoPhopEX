@@ -42,6 +42,7 @@ def main():
     ap.add_argument("--verify", action="store_true", help="compare each graph with torch through onnxruntime (CPU)")
     ap.add_argument("--image", default=None, help="a picture for the verification inputs (random otherwise)")
     ap.add_argument("--fp16", action="store_true", help="trace the vision, geometry, decoder and heads graphs in fp16 (inputs and outputs stay fp32; the text graph stays fp32)")
+    ap.add_argument("--mha", action="store_true", help="translate unmasked scaled_dot_product_attention to ONNX Runtime's fused com.microsoft.MultiHeadAttention (the vision graph; the exporter's own MatMul-Softmax-MatMul chain otherwise)")
     args = ap.parse_args()
     parts = set(args.parts.split(","))
     os.makedirs(args.out, exist_ok=True)
@@ -201,12 +202,46 @@ def main():
         print("heads outputs:", tuple(hmasks.shape), tuple(hiou.shape), tuple(hobj.shape))
 
     # ---------------------------------------------------------------- export
-    def export(name, module, inputs, input_names, output_names, dynamic_shapes):
+    # ORT's fused attention for the trunk: aten::scaled_dot_product_attention (q, k, v as
+    # [B, H, S, D], no mask) → MultiHeadAttention over [B, S, H·D] and back. ORT's CUDA provider
+    # runs that op with its flash / memory-efficient kernels in fp16; the exporter's own
+    # decomposition is an unfused MatMul-Softmax-MatMul chain.
+    def sdpa_as_mha(query, key, value, attn_mask=None, dropout_p: float = 0.0, is_causal: bool = False, scale=None, enable_gqa: bool = False):
+        import onnxscript
+        from onnxscript import opset18 as op
+        msft = onnxscript.values.Opset("com.microsoft", 1)
+        heads = int(query.shape[1])
+        perm = [0, 2, 1, 3]
+        to3 = op.Constant(value_ints=[0, 0, -1])
+        q = op.Reshape(op.Transpose(query, perm=perm), to3)
+        k = op.Reshape(op.Transpose(key, perm=perm), to3)
+        v = op.Reshape(op.Transpose(value, perm=perm), to3)
+        out = msft.MultiHeadAttention(q, k, v, num_heads=heads)
+        shape4 = op.Shape(op.Transpose(query, perm=perm))
+        return op.Transpose(op.Reshape(out, shape4), perm=perm)
+
+    if args.mha:
+        # onnxscript resolves `msft.MultiHeadAttention` through the ONNX schema registry, which
+        # knows nothing of ORT's contrib domain: register the three-input form we emit.
+        import onnx
+        from onnx.defs import OpSchema
+        try:
+            onnx.defs.get_schema("MultiHeadAttention", 1, "com.microsoft")
+        except Exception:
+            onnx.defs.register_schema(OpSchema(
+                "MultiHeadAttention", "com.microsoft", 1, doc="ORT fused attention (query, key, value as [B, S, H*D])",
+                inputs=[OpSchema.FormalParameter("query", "T"), OpSchema.FormalParameter("key", "T"), OpSchema.FormalParameter("value", "T")],
+                outputs=[OpSchema.FormalParameter("output", "T")],
+                type_constraints=[("T", ["tensor(float16)", "tensor(float)"], "")],
+                attributes=[OpSchema.Attribute("num_heads", OpSchema.AttrType.INT, "")]))
+    translation = {torch.ops.aten.scaled_dot_product_attention.default: sdpa_as_mha} if args.mha else None
+
+    def export(name, module, inputs, input_names, output_names, dynamic_shapes, fused=False):
         path = os.path.join(args.out, f"{name}.onnx")
         t = time.perf_counter()
         prog = torch.onnx.export(module, inputs, dynamo=True, opset_version=args.opset, input_names=input_names,
                                  output_names=output_names, dynamic_shapes=dynamic_shapes, external_data=True,
-                                 optimize=True, verify=False)
+                                 optimize=True, verify=False, custom_translation_table=translation if fused else None)
         prog.save(path, external_data=True)
         size = sum(os.path.getsize(os.path.join(args.out, f)) for f in os.listdir(args.out) if f.startswith(f"{name}.onnx"))
         print(f"exported {name}: {size / 1e6:.0f} MB in {time.perf_counter() - t:.0f} s")
@@ -216,7 +251,7 @@ def main():
     with torch.no_grad():
         if "vision" in parts:
             exported["vision"] = export("vision", vis, (images,), ["images"],
-                                        ["fpn_feat_0", "fpn_feat_1", "fpn_feat_2", "fpn_pos_2", "geo_cls", "trk_feat_0", "trk_feat_1", "trk_feat_2"], None)
+                                        ["fpn_feat_0", "fpn_feat_1", "fpn_feat_2", "fpn_pos_2", "geo_cls", "trk_feat_0", "trk_feat_1", "trk_feat_2"], None, fused=True)
         if "text" in parts:
             exported["text"] = export("text", Text().eval(), (ids, amask), ["input_ids", "attention_mask"], ["text_features", "text_mask"], None)
         if "geometry" in parts:
