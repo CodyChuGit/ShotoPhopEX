@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! gn-bench run --engine comfy --suite t2i --fixtures <dir> --images <dir> --cli <photocraft-cli> --out <dir> [--comfy-path <install>] [--template <id>] [--only <substring>]
+//! gn-bench run --engine sdcpp --suite t2i --fixtures <dir> --images <dir> --sd-cli <exe> --diffusion-model <file> --llm <file> --vae <file> --out <dir> [--steps N] [--cfg X] [--sd-args "…"] [--only <substring>]
 //! gn-bench compare <run-a> <run-b> [--out <report.md>]
 //! gn-bench summary <run>
 //! ```
@@ -9,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gn_harness::engines::{ComfyCli, Engine, RunCtx, run_suite};
+use gn_harness::engines::{ComfyCli, Engine, RunCtx, SdCli, run_suite};
 use gn_harness::{Suite, report};
 
 fn flags(args: &[String]) -> (Vec<String>, HashMap<String, String>) {
@@ -45,7 +46,20 @@ fn main_inner() -> Result<(), String> {
             let ctx = RunCtx { images: PathBuf::from(need(&named, "images")?), out: PathBuf::from(need(&named, "out")?), template: named.get("template").cloned().filter(|t| !t.is_empty()) };
             let engine: Box<dyn Engine> = match need(&named, "engine")?.as_str() {
                 "comfy" => Box::new(ComfyCli { cli: PathBuf::from(need(&named, "cli")?), comfy_path: named.get("comfy-path").filter(|p| !p.is_empty()).map(PathBuf::from) }),
-                other => return Err(format!("unknown engine `{other}` (comfy; sdcpp and native come with later phases)")),
+                "sdcpp" => {
+                    let mut e = SdCli::krea2_turbo(PathBuf::from(need(&named, "sd-cli")?), PathBuf::from(need(&named, "diffusion-model")?), PathBuf::from(need(&named, "llm")?), PathBuf::from(need(&named, "vae")?));
+                    if let Some(s) = named.get("steps").and_then(|v| v.parse().ok()) {
+                        e.steps = s;
+                    }
+                    if let Some(c) = named.get("cfg").and_then(|v| v.parse().ok()) {
+                        e.cfg = c;
+                    }
+                    if let Some(x) = named.get("sd-args") {
+                        e.extra = x.split_whitespace().map(str::to_string).collect();
+                    }
+                    Box::new(e)
+                }
+                other => return Err(format!("unknown engine `{other}` (comfy, sdcpp; native comes with the engine)")),
             };
             let only = named.get("only").map(String::as_str).filter(|s| !s.is_empty());
             println!("{} cases of `{}` on {} → {}", suite.cases.len(), suite.suite, engine.name(), ctx.out.display());

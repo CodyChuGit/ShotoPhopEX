@@ -193,6 +193,135 @@ impl Engine for ComfyCli {
     }
 }
 
+/// stable-diffusion.cpp's `sd-cli` (plan §5.3): the same prompts and seeds through ggml. Text
+/// to image for now (Krea 2 Turbo: a GGUF or repack DiT, the Qwen3-VL-4B encoder, the Wan
+/// VAE); the Qwen Image Edit path for edit/fill comes with its files. `sd-cli` loads the
+/// weights inside every call, so `engine_ms` is sd.cpp's own `generate_image` time (encode +
+/// sampling + decode, after loading) and the sampling time is kept in `result`.
+pub struct SdCli {
+    pub exe: PathBuf,
+    pub diffusion_model: PathBuf,
+    pub llm: PathBuf,
+    pub vae: PathBuf,
+    /// Sampler settings; Krea 2 Turbo's recipe by default (8 steps, CFG 1, euler).
+    pub steps: u32,
+    pub cfg: f32,
+    pub sampler: String,
+    /// Extra flags appended as they are.
+    pub extra: Vec<String>,
+}
+
+impl SdCli {
+    pub fn krea2_turbo(exe: PathBuf, diffusion_model: PathBuf, llm: PathBuf, vae: PathBuf) -> Self {
+        Self { exe, diffusion_model, llm, vae, steps: 8, cfg: 1.0, sampler: "euler".into(), extra: Vec::new() }
+    }
+
+    pub fn arguments(&self, case: &Case, ctx: &RunCtx) -> crate::Result<Vec<String>> {
+        let Kind::T2i { prompt, seed, width, height } = &case.kind else {
+            return Err("the sd.cpp runner does text to image only for now".into());
+        };
+        let out = ctx.out.join(format!("{}.png", case.id));
+        let mut args: Vec<String> = vec![
+            "--diffusion-model".into(),
+            self.diffusion_model.to_string_lossy().into_owned(),
+            "--llm".into(),
+            self.llm.to_string_lossy().into_owned(),
+            "--vae".into(),
+            self.vae.to_string_lossy().into_owned(),
+            "-p".into(),
+            prompt.clone(),
+            "-W".into(),
+            width.to_string(),
+            "-H".into(),
+            height.to_string(),
+            "--steps".into(),
+            self.steps.to_string(),
+            "--cfg-scale".into(),
+            self.cfg.to_string(),
+            "--sampling-method".into(),
+            self.sampler.clone(),
+            "--seed".into(),
+            seed.to_string(),
+            // ComfyUI's noise, so seeds mean the same thing across engines.
+            "--rng".into(),
+            "cpu".into(),
+            "--backend".into(),
+            "cuda0".into(),
+            "--params-backend".into(),
+            "cuda0".into(),
+            "--flash-attn".into(),
+            "on".into(),
+            "-v".into(),
+            "-o".into(),
+            out.to_string_lossy().into_owned(),
+        ];
+        args.extend(self.extra.iter().cloned());
+        Ok(args)
+    }
+}
+
+/// `… completed in 9.70s` / `… taking 8.02s` → milliseconds.
+fn seconds_after(text: &str, marker: &str) -> Option<u64> {
+    text.lines().filter(|l| l.contains(marker)).find_map(|l| {
+        let rest = l.split(marker).nth(1)?;
+        let num: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        num.parse::<f64>().ok().map(|s| (s * 1000.0) as u64)
+    })
+}
+
+impl Engine for SdCli {
+    fn name(&self) -> &str {
+        "sdcpp"
+    }
+
+    fn run(&self, case: &Case, ctx: &RunCtx) -> Record {
+        let mut rec = Record {
+            id: case.id.clone(),
+            engine: self.name().into(),
+            image: None,
+            wall_ms: 0,
+            engine_ms: None,
+            seed: case.seed(),
+            result: Value::Null,
+            error: None,
+        };
+        let args = match self.arguments(case, ctx) {
+            Ok(a) => a,
+            Err(e) => {
+                rec.error = Some(e);
+                return rec;
+            }
+        };
+        let t0 = Instant::now();
+        let out = Command::new(&self.exe).args(&args).output();
+        rec.wall_ms = t0.elapsed().as_millis() as u64;
+        match out {
+            Ok(o) => {
+                let log = format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+                // The log carries ANSI colour codes and `--- file:line` suffixes.
+                let clean: String = log.lines().map(|l| l.split(" --- ").next().unwrap_or(l)).collect::<Vec<_>>().join("\n");
+                rec.engine_ms = seconds_after(&clean, "generate_image completed in");
+                rec.result = json!({
+                    "samplingMs": seconds_after(&clean, "sampling completed, taking"),
+                    "conditionMs": seconds_after(&clean, "get_learned_condition completed, taking"),
+                    "decodeMs": seconds_after(&clean, "decode_first_stage completed, taking"),
+                });
+                let name = format!("{}.png", case.id);
+                if !o.status.success() {
+                    let tail: String = clean.lines().filter(|l| l.contains("[E]") || l.contains("error")).rev().take(3).collect::<Vec<_>>().join(" | ");
+                    rec.error = Some(if tail.is_empty() { format!("exit {}", o.status) } else { tail });
+                } else if ctx.out.join(&name).is_file() {
+                    rec.image = Some(name);
+                } else {
+                    rec.error = Some("sd-cli wrote no picture".into());
+                }
+            }
+            Err(e) => rec.error = Some(format!("cannot run {}: {e}", self.exe.display())),
+        }
+        rec
+    }
+}
+
 /// Run a suite on an engine; one record per case, written as it completes.
 pub fn run_suite(engine: &dyn Engine, cases: &[Case], ctx: &RunCtx, only: Option<&str>, mut progress: impl FnMut(&Record)) -> crate::Result<Vec<Record>> {
     std::fs::create_dir_all(&ctx.out).map_err(|e| format!("cannot create {}: {e}", ctx.out.display()))?;
@@ -232,6 +361,16 @@ mod tests {
         assert!(!produces && args.contains(&"select.byPoint".to_string()));
         assert!(args.iter().any(|a| a.contains("[100,50]") && a.contains("negativePoints")), "{args:?}");
         assert_eq!(last_result("noise\n{\"id\":\"x\",\"result\":{\"ms\":5}}\n").and_then(|v| v["ms"].as_u64()), Some(5));
+        // sd.cpp: the same case as a sd-cli command line, and its log's timings.
+        let sd = SdCli::krea2_turbo(PathBuf::from("sd-cli"), PathBuf::from("krea.gguf"), PathBuf::from("llm.gguf"), PathBuf::from("vae.safetensors"));
+        let args = sd.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            args.windows(2).any(|w| w == ["--seed", "7"]) && args.windows(2).any(|w| w == ["--rng", "cpu"]) && args.windows(2).any(|w| w == ["-W", "1024"]),
+            "{args:?}"
+        );
+        assert!(sd.arguments(&fill, &ctx).is_err(), "text to image only, for now");
+        let log = "[I] get_learned_condition completed, taking 1.10s\n[I] sampling completed, taking 8.02s\n[I] generate_image completed in 9.70s";
+        assert_eq!((seconds_after(log, "sampling completed, taking"), seconds_after(log, "generate_image completed in")), (Some(8020), Some(9700)));
         let _ = std::fs::remove_dir_all(d);
     }
 }
