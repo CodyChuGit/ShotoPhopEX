@@ -41,6 +41,7 @@ def main():
     ap.add_argument("--opset", type=int, default=18)
     ap.add_argument("--verify", action="store_true", help="compare each graph with torch through onnxruntime (CPU)")
     ap.add_argument("--image", default=None, help="a picture for the verification inputs (random otherwise)")
+    ap.add_argument("--fp16", action="store_true", help="trace the vision, geometry, decoder and heads graphs in fp16 (inputs and outputs stay fp32; the text graph stays fp32)")
     args = ap.parse_args()
     parts = set(args.parts.split(","))
     os.makedirs(args.out, exist_ok=True)
@@ -62,9 +63,10 @@ def main():
 
     ckpt = folder_paths.get_full_path_or_raise("checkpoints", args.ckpt)
     t0 = time.perf_counter()
+    mdtype = torch.float16 if args.fp16 else torch.float32
     model, clip, _vae, _cv = comfy.sd.load_checkpoint_guess_config(
         ckpt, output_vae=False, output_clip=True, embedding_directory=None,
-        model_options={"dtype": torch.float32}, te_model_options={"dtype": torch.float32})
+        model_options={"dtype": mdtype}, te_model_options={"dtype": torch.float32})
     comfy.model_management.load_model_gpu(model)
     clip.load_model()
     device = comfy.model_management.get_torch_device()
@@ -78,6 +80,7 @@ def main():
     # ---------------------------------------------------------------- wrappers
     class Vision(nn.Module):
         def forward(self, images):
+            images = images.to(mdtype)
             bb = det.backbone["vision_backbone"]
             features, positions, tracker_features, _ = bb(images, tracker_mode="interactive")
             enc_feat, enc_pos = features[-1], positions[-1]
@@ -95,23 +98,25 @@ def main():
                 no_mem = getattr(trk, "no_mem_embed")
             flat = t2.flatten(2).permute(0, 2, 1) + cast_to_input(no_mem, t2)
             t2 = flat.view(B, H, W, C).permute(0, 3, 1, 2)
-            return features[0], features[1], features[2], positions[2], geo_cls, tracker_features[0], tracker_features[1], t2
+            outs = (features[0], features[1], features[2], positions[2], geo_cls, tracker_features[0], tracker_features[1], t2)
+            return tuple(o.float() for o in outs)
 
     class Text(nn.Module):
         def forward(self, input_ids, attention_mask):
             outputs = te.transformer(input_ids, attention_mask, intermediate_output=te.layer_idx,
                                      final_layer_norm_intermediate=te.layer_norm_hidden_state, dtype=torch.float32)
             z = outputs[0].float()
-            feats = det.backbone["language_backbone"]["resizer"](z)
-            return feats, attention_mask.bool()
+            feats = det.backbone["language_backbone"]["resizer"](z.to(mdtype))
+            return feats.float(), attention_mask.bool()
 
     class Geometry(nn.Module):
         def forward(self, boxes, fpn_feat_2):
-            img_flat = fpn_feat_2.flatten(2).permute(0, 2, 1)
-            return det.geometry_encoder(points=None, boxes=boxes, image_features=img_flat)
+            img_flat = fpn_feat_2.to(mdtype).flatten(2).permute(0, 2, 1)
+            return det.geometry_encoder(points=None, boxes=boxes.to(mdtype), image_features=img_flat).float()
 
     class Decoder(nn.Module):
         def forward(self, f0, f1, f2, p2, prompt, prompt_mask):
+            f0, f1, f2, p2, prompt = (t.to(mdtype) for t in (f0, f1, f2, p2, prompt))
             _, _, H, W = f2.shape
             img_flat = f2.flatten(2).permute(0, 2, 1)
             pos_flat = p2.flatten(2).permute(0, 2, 1)
@@ -120,10 +125,11 @@ def main():
             query_out, pred_boxes = dec["decoder_output"], dec["pred_boxes"]
             scores = det.dot_prod_scoring(query_out, prompt, prompt_mask)
             masks = det.segmentation_head(query_out, [f0, f1, f2], encoder_hidden_states=memory, prompt=prompt, prompt_mask=prompt_mask)
-            return box_cxcywh_to_xyxy(pred_boxes), scores, masks, dec["presence"]
+            return box_cxcywh_to_xyxy(pred_boxes).float(), scores.float(), masks.float(), dec["presence"].float()
 
     class Heads(nn.Module):
         def forward(self, t0, t1, t2, point_coords, point_labels, mask_prompt, has_mask):
+            t0, t1, t2, point_coords, mask_prompt, has_mask = (t.to(mdtype) for t in (t0, t1, t2, point_coords, mask_prompt, has_mask))
             pe = getattr(trk, "interactive_sam_prompt_encoder", None) or trk.sam_prompt_encoder
             md = getattr(trk, "interactive_sam_mask_decoder", None) or trk.sam_mask_decoder
             # Sparse prompts: every label through the same table, -1 = "not a point".
@@ -159,7 +165,7 @@ def main():
             masks = (hyper_in @ upscaled.flatten(2)).view(B, md.num_mask_tokens, upscaled.shape[2], upscaled.shape[3])
             iou_pred = md.iou_prediction_head(iou_token_out)
             object_score_logits = md.pred_obj_score_head(obj_score_token_out)
-            return masks, iou_pred, object_score_logits
+            return masks.float(), iou_pred.float(), object_score_logits.float()
 
     # ---------------------------------------------------------------- inputs
     from torch.export import Dim
@@ -231,6 +237,9 @@ def main():
                                        (None, None, None, {1: n}, {1: n}, None, None))
 
     # ---------------------------------------------------------------- verify
+    if args.verify and args.fp16:
+        print("verify: fp16 graphs are checked through the parity harness (gn-bench), not on the CPU; skipped")
+        return
     if args.verify:
         try:
             import onnxruntime as ort
