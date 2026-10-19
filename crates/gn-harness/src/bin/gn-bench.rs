@@ -1,7 +1,7 @@
 //! `gn-bench`: run a suite on an engine, or compare two runs.
 //!
 //! ```text
-//! gn-bench run --engine comfy --suite t2i --fixtures <dir> --images <dir> --cli <photocraft-cli> --out <dir> [--comfy-path <install>] [--template <id>] [--only <substring>]
+//! gn-bench run --engine comfy --suite t2i --fixtures <dir> --images <dir> --cli <photocraft-cli> --out <dir> [--comfy-path <install>] [--pref path=value]... [--template <id>] [--only <substring>]
 //! gn-bench run --engine sdcpp --suite t2i --fixtures <dir> --images <dir> --sd-cli <exe> --diffusion-model <file> --llm <file> --vae <file> --out <dir> [--steps N] [--cfg X] [--sd-args "…"] [--only <substring>]
 //! gn-bench run --engine sam-ort --suite sam --fixtures <dir> --images <dir> --gn-sam <exe> --ort <dir> --models <dir> --out <dir> [--libs "<dir>;<dir>"] [--cpu] [--threshold 0.5] [--only <substring>]
 //! gn-bench compare <run-a> <run-b> [--out <report.md>]
@@ -14,22 +14,28 @@ use std::path::PathBuf;
 use gn_harness::engines::{ComfyCli, Engine, RunCtx, SamOrt, SdCli, run_suite};
 use gn_harness::{Suite, report};
 
-fn flags(args: &[String]) -> (Vec<String>, HashMap<String, String>) {
+/// Positional arguments, `--name value` flags (the last wins), and every `--pref` value in order.
+fn flags(args: &[String]) -> (Vec<String>, HashMap<String, String>, Vec<String>) {
     let mut positional = Vec::new();
     let mut named = HashMap::new();
+    let mut prefs = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
         if let Some(name) = a.strip_prefix("--") {
             let value = args.get(i + 1).cloned().unwrap_or_default();
-            named.insert(name.to_string(), value);
+            if name == "pref" {
+                prefs.push(value);
+            } else {
+                named.insert(name.to_string(), value);
+            }
             i += 2;
         } else {
             positional.push(a.clone());
             i += 1;
         }
     }
-    (positional, named)
+    (positional, named, prefs)
 }
 
 fn need<'a>(named: &'a HashMap<String, String>, key: &str) -> Result<&'a String, String> {
@@ -38,7 +44,7 @@ fn need<'a>(named: &'a HashMap<String, String>, key: &str) -> Result<&'a String,
 
 fn main_inner() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (pos, named) = flags(&args);
+    let (pos, named, prefs) = flags(&args);
     match pos.first().map(String::as_str) {
         Some("run") => {
             let suite_name = need(&named, "suite")?;
@@ -46,7 +52,15 @@ fn main_inner() -> Result<(), String> {
             let suite = Suite::load(&fixtures.join(format!("{suite_name}.json")))?;
             let ctx = RunCtx { images: PathBuf::from(need(&named, "images")?), out: PathBuf::from(need(&named, "out")?), template: named.get("template").cloned().filter(|t| !t.is_empty()) };
             let engine: Box<dyn Engine> = match need(&named, "engine")?.as_str() {
-                "comfy" => Box::new(ComfyCli { cli: PathBuf::from(need(&named, "cli")?), comfy_path: named.get("comfy-path").filter(|p| !p.is_empty()).map(PathBuf::from) }),
+                "comfy" => {
+                    // `--pref path=value` (repeatable; `true`/`false`/numbers are typed, the rest strings).
+                    let prefs: Vec<(String, serde_json::Value)> = prefs
+                        .iter()
+                        .filter_map(|p| p.split_once('='))
+                        .map(|(k, v)| (k.to_string(), serde_json::from_str(v).unwrap_or_else(|_| serde_json::Value::String(v.to_string()))))
+                        .collect();
+                    Box::new(ComfyCli { cli: PathBuf::from(need(&named, "cli")?), comfy_path: named.get("comfy-path").filter(|p| !p.is_empty()).map(PathBuf::from), prefs })
+                }
                 "sdcpp" => {
                     let mut e = SdCli::krea2_turbo(PathBuf::from(need(&named, "sd-cli")?), PathBuf::from(need(&named, "diffusion-model")?), PathBuf::from(need(&named, "llm")?), PathBuf::from(need(&named, "vae")?));
                     if let Some(s) = named.get("steps").and_then(|v| v.parse().ok()) {

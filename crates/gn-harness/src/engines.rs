@@ -55,6 +55,9 @@ pub struct ComfyCli {
     /// preference at the start of every invocation, so a server that is down is started by the
     /// first command that needs it (the CLI's session starts from default preferences).
     pub comfy_path: Option<PathBuf>,
+    /// Further preferences set before every case (`integrations.allowResearchModels` = true
+    /// for the Qwen-Image-2.1 templates, say).
+    pub prefs: Vec<(String, Value)>,
 }
 
 /// The size of a bench picture (for fractions → pixels).
@@ -78,12 +81,15 @@ impl ComfyCli {
             }
         };
         let out = ctx.out.join(format!("{}.png", case.id));
-        let sidecar: Vec<String> = match &self.comfy_path {
+        let mut sidecar: Vec<String> = match &self.comfy_path {
             Some(p) => {
                 vec!["--cmd".into(), "prefs.set".into(), "--params".into(), json!({"path": "integrations.comfyPath", "value": p.to_string_lossy()}).to_string()]
             }
             None => Vec::new(),
         };
+        for (path, value) in &self.prefs {
+            sidecar.extend(["--cmd".into(), "prefs.set".into(), "--params".into(), json!({"path": path, "value": value}).to_string()]);
+        }
         let produces = match &case.kind {
             Kind::T2i { prompt, seed, width, height } => {
                 args.extend(["--new".into(), json!({"width": width, "height": height}).to_string()]);
@@ -431,7 +437,7 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap_or_else(|e| panic!("{e}"));
         Image::new(200, 100).write(&d.join("pic.png")).unwrap_or_else(|e| panic!("{e}"));
         let ctx = RunCtx { images: d.clone(), out: d.join("run"), template: Some("qwen-2.1/image".into()) };
-        let e = ComfyCli { cli: PathBuf::from("photocraft-cli"), comfy_path: Some(PathBuf::from("C:/comfy")) };
+        let e = ComfyCli { cli: PathBuf::from("photocraft-cli"), comfy_path: Some(PathBuf::from("C:/comfy")), prefs: vec![("integrations.allowResearchModels".into(), json!(true))] };
         let t2i = Case { id: "a".into(), kind: Kind::T2i { prompt: "a fox".into(), seed: 7, width: 1024, height: 768 } };
         let (args, produces) = e.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
         assert!(produces && args.contains(&"--new".to_string()) && args.contains(&"generate.image".to_string()));
