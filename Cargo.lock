@@ -291,6 +291,7 @@ dependencies = [
 name = "gn-perception"
 version = "0.1.0"
 dependencies = [
+ "gn-engine",
  "ort",
  "png",
  "serde",

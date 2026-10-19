@@ -6,6 +6,8 @@
 //! user points at, exactly like the weights: the application ships neither.
 #![cfg_attr(test, allow(clippy::panic, clippy::unwrap_used, clippy::expect_used))]
 
+#[cfg(feature = "engine")]
+pub mod engine;
 pub mod graph;
 pub mod resample;
 pub mod runtime;
