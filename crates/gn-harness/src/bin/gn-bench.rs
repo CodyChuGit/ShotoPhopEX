@@ -3,6 +3,7 @@
 //! ```text
 //! gn-bench run --engine comfy --suite t2i --fixtures <dir> --images <dir> --cli <photocraft-cli> --out <dir> [--comfy-path <install>] [--pref path=value]... [--template <id>] [--only <substring>]
 //! gn-bench run --engine sdcpp --suite t2i --fixtures <dir> --images <dir> --sd-cli <exe> --diffusion-model <file> --llm <file> --vae <file> --out <dir> [--steps N] [--cfg X] [--sd-args "…"] [--only <substring>]
+//! gn-bench run --engine qir --suite t2i --fixtures <dir> --images <dir> --qir <qwen-image-rs exe> --model <snapshot> --out <dir> [--steps 25] [--qir-args "--convrot …"] [--only <substring>]
 //! gn-bench run --engine sam-ort --suite sam --fixtures <dir> --images <dir> --gn-sam <exe> --ort <dir> --models <dir> --out <dir> [--libs "<dir>;<dir>"] [--cpu] [--threshold 0.5] [--only <substring>]
 //! gn-bench compare <run-a> <run-b> [--out <report.md>]
 //! gn-bench summary <run>
@@ -11,7 +12,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gn_harness::engines::{ComfyCli, Engine, RunCtx, SamOrt, SdCli, run_suite};
+use gn_harness::engines::{ComfyCli, Engine, QirCli, RunCtx, SamOrt, SdCli, run_suite};
 use gn_harness::{Suite, report};
 
 /// Positional arguments, `--name value` flags (the last wins), and every `--pref` value in order.
@@ -74,6 +75,12 @@ fn main_inner() -> Result<(), String> {
                     }
                     Box::new(e)
                 }
+                "qir" => Box::new(QirCli {
+                    exe: PathBuf::from(need(&named, "qir")?),
+                    model: PathBuf::from(need(&named, "model")?),
+                    steps: named.get("steps").and_then(|v| v.parse().ok()).unwrap_or(25),
+                    extra: named.get("qir-args").map(|x| x.split_whitespace().map(str::to_string).collect()).unwrap_or_default(),
+                }),
                 "sam-ort" => Box::new(SamOrt {
                     exe: PathBuf::from(need(&named, "gn-sam")?),
                     ort: PathBuf::from(need(&named, "ort")?),
@@ -82,7 +89,7 @@ fn main_inner() -> Result<(), String> {
                     cpu: named.contains_key("cpu"),
                     threshold: named.get("threshold").and_then(|t| t.parse().ok()).unwrap_or(0.5),
                 }),
-                other => return Err(format!("unknown engine `{other}` (comfy, sdcpp, sam-ort; native comes with the engine)")),
+                other => return Err(format!("unknown engine `{other}` (comfy, sdcpp, qir, sam-ort; native comes with the engine)")),
             };
             let only = named.get("only").map(String::as_str).filter(|s| !s.is_empty());
             println!("{} cases of `{}` on {} → {}", suite.cases.len(), suite.suite, engine.name(), ctx.out.display());

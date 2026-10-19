@@ -284,6 +284,92 @@ impl Engine for SamOrt {
     }
 }
 
+/// qwen-image-rs's CLI (plan §5.2, the Phase 2 bring-up): Qwen-Image-2.1 text to image through
+/// its own candle + CUDA kernels. Square pictures only (`--size` is one number); its seed is
+/// candle's CUDA RNG and its schedule diffusers', so seed-level parity with ComfyUI is not
+/// expected, the scene and the timings are what the run records.
+pub struct QirCli {
+    pub exe: PathBuf,
+    /// The official snapshot directory (`processor/ text_encoder/ transformer/ vae/`).
+    pub model: PathBuf,
+    /// Steps per picture (ComfyUI's template: 25).
+    pub steps: u32,
+    /// `--convrot`, `--text-gguf <file>`, `--quant-text` … as given.
+    pub extra: Vec<String>,
+}
+
+impl QirCli {
+    pub fn arguments(&self, case: &Case, ctx: &RunCtx) -> crate::Result<Vec<String>> {
+        let Kind::T2i { prompt, seed, width, height } = &case.kind else {
+            return Err(format!("{}: qir runs text-to-image cases only", case.id));
+        };
+        if width != height {
+            return Err(format!("{}: qwen-image-rs makes square pictures only ({width}×{height} asked)", case.id));
+        }
+        let out = ctx.out.join(format!("{}.png", case.id));
+        let mut args: Vec<String> = vec![
+            "generate".into(),
+            "--model".into(),
+            self.model.to_string_lossy().into_owned(),
+            "--prompt".into(),
+            prompt.clone(),
+            "--size".into(),
+            width.to_string(),
+            "--steps".into(),
+            self.steps.to_string(),
+            "--seed".into(),
+            seed.to_string(),
+            "--guidance".into(),
+            "1".into(),
+            "--out".into(),
+            out.to_string_lossy().into_owned(),
+        ];
+        args.extend(self.extra.iter().cloned());
+        Ok(args)
+    }
+}
+
+impl Engine for QirCli {
+    fn name(&self) -> &str {
+        "qir"
+    }
+
+    fn run(&self, case: &Case, ctx: &RunCtx) -> Record {
+        let mut rec = Record { id: case.id.clone(), engine: self.name().into(), image: None, wall_ms: 0, engine_ms: None, seed: case.seed(), result: Value::Null, error: None };
+        let args = match self.arguments(case, ctx) {
+            Ok(a) => a,
+            Err(e) => {
+                rec.error = Some(e);
+                return rec;
+            }
+        };
+        let t0 = Instant::now();
+        let out = Command::new(&self.exe).args(&args).output();
+        rec.wall_ms = t0.elapsed().as_millis() as u64;
+        match out {
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+                // The CLI logs its phases through `tracing`; keep the lines that carry seconds.
+                let timing_lines: Vec<&str> = stderr.lines().filter(|l| l.contains(" s") && (l.contains("denoise") || l.contains("decode") || l.contains("encode") || l.contains("load"))).take(12).collect();
+                rec.result = json!({"log": timing_lines});
+                if !o.status.success() {
+                    let tail: String = stderr.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+                    rec.error = Some(if tail.is_empty() { format!("exit {}", o.status) } else { tail });
+                } else {
+                    let name = format!("{}.png", case.id);
+                    if ctx.out.join(&name).is_file() {
+                        rec.image = Some(name);
+                    } else {
+                        rec.error = Some("qwen-image-rs wrote no picture".into());
+                    }
+                }
+            }
+            Err(e) => rec.error = Some(format!("cannot run {}: {e}", self.exe.display())),
+        }
+        rec
+    }
+}
+
 /// stable-diffusion.cpp's `sd-cli` (plan §5.3): the same prompts and seeds through ggml. Text
 /// to image for now (Krea 2 Turbo: a GGUF or repack DiT, the Qwen3-VL-4B encoder, the Wan
 /// VAE); the Qwen Image Edit path for edit/fill comes with its files. `sd-cli` loads the
