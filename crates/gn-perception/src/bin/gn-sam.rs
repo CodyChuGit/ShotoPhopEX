@@ -151,7 +151,13 @@ fn prompt_of(args: &Args) -> Result<Prompt, String> {
 fn run_comfy(rt: &Runtime, models: &Path, args: &Args, rgba: &[u8], w: usize, h: usize, prompt: &Prompt) -> Result<(Vec<Instance>, u64, u64), String> {
     let t0 = Instant::now();
     let mut sam = Sam31::open_with(rt, models, args.flag("graph")).map_err(|e| e.to_string())?;
-    eprintln!("gn-sam: sessions open in {:.1} s ({:?}, ComfyUI layout, CUDA graph {})", t0.elapsed().as_secs_f64(), rt.config().device, if sam.captured() { "on" } else { "off" });
+    eprintln!(
+        "gn-sam: sessions open in {:.1} s ({:?}, ComfyUI layout, CUDA graph {}, tracker graph {})",
+        t0.elapsed().as_secs_f64(),
+        rt.config().device,
+        if sam.captured() { "on" } else { "off" },
+        if sam.has_tracker_graph() { "yes" } else { "no" }
+    );
     let opts = Options {
         threshold: args.one("threshold").and_then(|t| t.parse().ok()).unwrap_or(0.5),
         max_detections: args.one("max").and_then(|t| t.parse().ok()).unwrap_or(1),
@@ -184,7 +190,9 @@ fn run_comfy(rt: &Runtime, models: &Path, args: &Args, rgba: &[u8], w: usize, h:
         }
         last = Some((instances, emb.ms, t1.elapsed().as_millis() as u64));
     }
-    eprintln!("gn-sam: CUDA graph {} after the runs", if sam.captured() { "on" } else { "off (given up)" });
+    if args.flag("graph") {
+        eprintln!("gn-sam: CUDA graph {} after the runs", if sam.captured() { "on" } else { "off (given up)" });
+    }
     last.ok_or_else(|| "no run".to_string())
 }
 

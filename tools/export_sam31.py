@@ -16,6 +16,8 @@ Five graphs come out, one model directory (`<out>/`):
     geometry.onnx   boxes [1,M,4] (cx,cy,w,h in 0..1), fpn_feat_2 → geo_features [1,M,256]
     decoder.onnx    fpn_feat_0..2, fpn_pos_2, prompt_features [1,P,256], prompt_mask [1,P] bool
                     → pred_boxes [1,200,4] (x0,y0,x1,y1 in 0..1), pred_logits [1,200], pred_masks [1,200,288,288], presence [1]
+    vision-tracker.onnx  images → trk_feat_0..2 only (the trunk and the tracker's FPN: what a refinement
+                    crop needs; optional, the full vision graph serves when it is absent)
     heads.onnx      trk_feat_0..2, point_coords [1,N,2] (pixels of the 1008 window), point_labels [1,N] i32
                     (-1 pad, 0 negative, 1 positive, 2 box top-left, 3 box bottom-right),
                     mask_prompt [1,1,1008,1008] (logits), has_mask [1] (0 or 1)
@@ -37,7 +39,7 @@ def main():
     ap.add_argument("--comfy", required=True)
     ap.add_argument("--ckpt", default="sam3.1_multiplex_fp16.safetensors")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--parts", default="vision,text,geometry,decoder,heads")
+    ap.add_argument("--parts", default="vision,tracker,text,geometry,decoder,heads")
     ap.add_argument("--opset", type=int, default=18)
     ap.add_argument("--verify", action="store_true", help="compare each graph with torch through onnxruntime (CPU)")
     ap.add_argument("--image", default=None, help="a picture for the verification inputs (random otherwise)")
@@ -101,6 +103,26 @@ def main():
             t2 = flat.view(B, H, W, C).permute(0, 3, 1, 2)
             outs = (features[0], features[1], features[2], positions[2], geo_cls, tracker_features[0], tracker_features[1], t2)
             return tuple(o.float() for o in outs)
+
+    class VisionTracker(nn.Module):
+        """The trunk and the tracker's FPN only: what a refinement crop needs."""
+        def forward(self, images):
+            images = images.to(mdtype)
+            bb = det.backbone["vision_backbone"]
+            if bb.multiplex:
+                _, _, tracker_features, _ = bb(images, tracker_mode="interactive", tracker_only=True)
+            else:
+                _, _, tracker_features, _ = bb(images, need_tracker=True, tracker_only=True)
+                if det.scalp > 0:
+                    tracker_features = tracker_features[:-det.scalp]
+            t2 = tracker_features[-1]
+            B, C, H, W = t2.shape
+            no_mem = getattr(trk, "interactivity_no_mem_embed", None)
+            if no_mem is None:
+                no_mem = getattr(trk, "no_mem_embed")
+            flat = t2.flatten(2).permute(0, 2, 1) + cast_to_input(no_mem, t2)
+            t2 = flat.view(B, H, W, C).permute(0, 3, 1, 2)
+            return tracker_features[0].float(), tracker_features[1].float(), t2.float()
 
     class Text(nn.Module):
         def forward(self, input_ids, attention_mask):
@@ -252,6 +274,8 @@ def main():
         if "vision" in parts:
             exported["vision"] = export("vision", vis, (images,), ["images"],
                                         ["fpn_feat_0", "fpn_feat_1", "fpn_feat_2", "fpn_pos_2", "geo_cls", "trk_feat_0", "trk_feat_1", "trk_feat_2"], None, fused=True)
+        if "tracker" in parts:
+            exported["vision-tracker"] = export("vision-tracker", VisionTracker().eval(), (images,), ["images"], ["trk_feat_0", "trk_feat_1", "trk_feat_2"], None, fused=True)
         if "text" in parts:
             exported["text"] = export("text", Text().eval(), (ids, amask), ["input_ids", "attention_mask"], ["text_features", "text_mask"], None)
         if "geometry" in parts:

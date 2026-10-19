@@ -46,8 +46,13 @@ pub const LOW: usize = 288;
 pub const NO_OBJ_SCORE: f32 = -1024.0;
 pub const FILES: [&str; 6] = ["vision.onnx", "text.onnx", "geometry.onnx", "decoder.onnx", "heads.onnx", "tokenizer.json"];
 
+/// The optional tracker-only vision graph (the trunk and the tracker's FPN) for refinement crops.
+pub const TRACKER_FILE: &str = "vision-tracker.onnx";
+
 pub struct Sam31 {
     vision: Session,
+    /// `vision-tracker.onnx` when the model directory has it; crops run through it.
+    tracker: Option<Session>,
     text: Session,
     geometry: Session,
     decoder: Session,
@@ -219,8 +224,11 @@ impl Sam31 {
             },
             _ => (rt.session(&vision_path)?, None),
         };
+        let tracker_path = dir.join(TRACKER_FILE);
+        let tracker = if tracker_path.is_file() { Some(rt.session(&tracker_path)?) } else { None };
         Ok(Sam31 {
             vision,
+            tracker,
             text: rt.session(&dir.join(FILES[1]))?,
             geometry: rt.session(&dir.join(FILES[2]))?,
             decoder: rt.session(&dir.join(FILES[3]))?,
@@ -245,6 +253,31 @@ impl Sam31 {
     /// Is the vision session replaying a CUDA graph?
     pub fn captured(&self) -> bool {
         self.captured.is_some()
+    }
+
+    /// Do refinement crops run through the tracker-only graph?
+    pub fn has_tracker_graph(&self) -> bool {
+        self.tracker.is_some()
+    }
+
+    /// The tracker features of one window: through `vision-tracker.onnx` when present (the
+    /// trunk and the tracker's FPN only), through the full vision graph otherwise.
+    fn run_tracker(&mut self, planes: Vec<f32>) -> Result<[Tensor<f32>; 3]> {
+        let Some(tracker) = self.tracker.as_mut() else {
+            return Ok(self.run_vision(planes)?.0.trk);
+        };
+        let input = Tensor::from_array(([1usize, 3, INPUT, INPUT], planes))?;
+        let mut binding = tracker.create_binding()?;
+        binding.bind_input("images", &input)?;
+        for name in ["trk_feat_0", "trk_feat_1", "trk_feat_2"] {
+            binding.bind_output_to_device(name, &self.device_mem)?;
+        }
+        let mut outputs = tracker.run_binding(&binding)?;
+        let mut take = |name: &str| -> Result<Tensor<f32>> {
+            let v = outputs.remove(name).ok_or_else(|| Error::Shape(format!("no output `{name}`")))?;
+            v.downcast::<ort::value::TensorValueType<f32>>().map_err(|e| Error::Shape(format!("`{name}`: {e}")))
+        };
+        Ok([take("trk_feat_0")?, take("trk_feat_1")?, take("trk_feat_2")?])
     }
 
     /// Does `dir` hold this layout?
@@ -562,7 +595,7 @@ impl Sam31 {
         }
 
         let t = Instant::now();
-        let (crop_frame, _) = self.run_vision(planes_of(&emb.rgba, w, [cx1, cy1, crop_w, crop_h]))?;
+        let crop_trk = self.run_tracker(planes_of(&emb.rgba, w, [cx1, cy1, crop_w, crop_h]))?;
         timing.crop_ms += t.elapsed().as_millis() as u64;
 
         let (mw, mh) = (mx2 - mx1, my2 - my1);
@@ -573,7 +606,7 @@ impl Sam31 {
         let t = Instant::now();
         let mut logit = bilinear(&region, mw, mh, INPUT, INPUT);
         for _ in 0..iterations {
-            logit = self.forward_segment(&crop_frame.trk, &[], None, Some(&logit))?;
+            logit = self.forward_segment(&crop_trk, &[], None, Some(&logit))?;
         }
         timing.heads_ms += t.elapsed().as_millis() as u64;
 
