@@ -1,0 +1,8 @@
+/target
+/target-*
+# Generated locally: reference outputs and run folders (pictures, records).
+/references/
+/runs/
+/benchmarks/*/
+!/benchmarks/*.md
+*.log

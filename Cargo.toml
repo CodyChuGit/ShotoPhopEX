@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/gn-harness"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/CodyChuGit/genai-native"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+png = "0.17"
+
+# The same never-crash rules as PhotoshopEX (AGENTS.md): errors are values, never panics.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+unreachable = "deny"
+# Fixed-size array and `serde_json::Value` indexing are idiomatic here; slices go through `get`.
+indexing_slicing = "allow"
+
+[profile.release]
+debug = 1

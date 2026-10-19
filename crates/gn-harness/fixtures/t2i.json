@@ -1,0 +1,33 @@
+{
+  "suite": "t2i",
+  "cases": [
+    { "id": "t2i-portrait-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "close-up portrait of an elderly fisherman with a weathered face and a wool cap, soft overcast light, shallow depth of field, photograph" },
+    { "id": "t2i-portrait-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "close-up portrait of an elderly fisherman with a weathered face and a wool cap, soft overcast light, shallow depth of field, photograph" },
+    { "id": "t2i-product-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a matte black ceramic coffee mug on a light oak table, morning window light, product photograph, clean background" },
+    { "id": "t2i-product-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a matte black ceramic coffee mug on a light oak table, morning window light, product photograph, clean background" },
+    { "id": "t2i-landscape-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a fjord at dawn with low mist over still water, steep green cliffs, a small red boathouse, wide landscape photograph" },
+    { "id": "t2i-landscape-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a fjord at dawn with low mist over still water, steep green cliffs, a small red boathouse, wide landscape photograph" },
+    { "id": "t2i-typography-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a vintage enamel shop sign that reads \"BAKERY\" in cream serif letters on dark green, slight rust at the edges, straight on" },
+    { "id": "t2i-typography-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a vintage enamel shop sign that reads \"BAKERY\" in cream serif letters on dark green, slight rust at the edges, straight on" },
+    { "id": "t2i-interior-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a sunlit reading nook with a worn leather armchair, tall bookshelves, a brass floor lamp and a plant, warm afternoon light, interior photograph" },
+    { "id": "t2i-interior-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a sunlit reading nook with a worn leather armchair, tall bookshelves, a brass floor lamp and a plant, warm afternoon light, interior photograph" },
+    { "id": "t2i-animal-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a red fox sitting in autumn leaves looking at the camera, telephoto, soft background, wildlife photograph" },
+    { "id": "t2i-animal-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a red fox sitting in autumn leaves looking at the camera, telephoto, soft background, wildlife photograph" },
+    { "id": "t2i-food-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a bowl of ramen with a soft egg, scallions and nori on a dark wooden counter, steam rising, overhead, food photograph" },
+    { "id": "t2i-food-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a bowl of ramen with a soft egg, scallions and nori on a dark wooden counter, steam rising, overhead, food photograph" },
+    { "id": "t2i-architecture-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a brutalist concrete library facade with deep window recesses under a clear blue sky, strong shadows, architectural photograph" },
+    { "id": "t2i-architecture-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a brutalist concrete library facade with deep window recesses under a clear blue sky, strong shadows, architectural photograph" },
+    { "id": "t2i-vehicle-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a 1970s orange hatchback parked on a wet cobblestone street at night, neon reflections, cinematic photograph" },
+    { "id": "t2i-vehicle-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a 1970s orange hatchback parked on a wet cobblestone street at night, neon reflections, cinematic photograph" },
+    { "id": "t2i-fantasy-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a floating island with a stone lighthouse and waterfalls pouring into clouds, golden hour, detailed matte painting" },
+    { "id": "t2i-fantasy-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a floating island with a stone lighthouse and waterfalls pouring into clouds, golden hour, detailed matte painting" },
+    { "id": "t2i-macro-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "macro photograph of a dew-covered dragonfly wing, iridescent veins, early morning, extreme detail" },
+    { "id": "t2i-macro-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "macro photograph of a dew-covered dragonfly wing, iridescent veins, early morning, extreme detail" },
+    { "id": "t2i-street-s7", "kind": "t2i", "seed": 7, "width": 1024, "height": 1024, "prompt": "a busy Tokyo crossing in the rain seen from a cafe window, umbrellas, bokeh signs, street photograph" },
+    { "id": "t2i-street-s11", "kind": "t2i", "seed": 11, "width": 1024, "height": 1024, "prompt": "a busy Tokyo crossing in the rain seen from a cafe window, umbrellas, bokeh signs, street photograph" },
+    { "id": "t2i-landscape-wide-s7", "kind": "t2i", "seed": 7, "width": 1344, "height": 768, "prompt": "a fjord at dawn with low mist over still water, steep green cliffs, a small red boathouse, wide landscape photograph" },
+    { "id": "t2i-portrait-tall-s7", "kind": "t2i", "seed": 7, "width": 768, "height": 1344, "prompt": "close-up portrait of an elderly fisherman with a weathered face and a wool cap, soft overcast light, shallow depth of field, photograph" },
+    { "id": "t2i-street-wide-s11", "kind": "t2i", "seed": 11, "width": 1344, "height": 768, "prompt": "a busy Tokyo crossing in the rain seen from a cafe window, umbrellas, bokeh signs, street photograph" },
+    { "id": "t2i-fantasy-tall-s11", "kind": "t2i", "seed": 11, "width": 768, "height": 1344, "prompt": "a floating island with a stone lighthouse and waterfalls pouring into clouds, golden hour, detailed matte painting" }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "suite": "sam",
+  "cases": [
+    { "id": "sam-fox-text", "kind": "sam", "image": "krea2-fox.png", "prompt": { "text": "fox" } },
+    { "id": "sam-fox-point", "kind": "sam", "image": "krea2-fox.png", "prompt": { "point": [0.47, 0.51] } },
+    { "id": "sam-fox-point-neg-tail", "kind": "sam", "image": "krea2-fox.png", "prompt": { "point": [0.47, 0.51] }, "negatives": [[0.29, 0.80]] },
+    { "id": "sam-fox-box", "kind": "sam", "image": "krea2-fox.png", "prompt": { "box": [0.08, 0.12, 0.65, 0.74] } },
+    { "id": "sam-boat-text", "kind": "sam", "image": "matte-boat.png", "prompt": { "text": "boat" } },
+    { "id": "sam-boat-point", "kind": "sam", "image": "matte-boat.png", "prompt": { "point": [0.5, 0.55] } },
+    { "id": "sam-lighthouse-text", "kind": "sam", "image": "matte-lighthouse.png", "prompt": { "text": "lighthouse" } },
+    { "id": "sam-lighthouse-subject", "kind": "sam", "image": "matte-lighthouse.png", "prompt": { "text": "the main subject" } },
+    { "id": "sam-balloon-text", "kind": "sam", "image": "similar-balloon.png", "prompt": { "text": "balloon" } },
+    { "id": "sam-balloon-point", "kind": "sam", "image": "similar-balloon.png", "prompt": { "point": [0.5, 0.4] } },
+    { "id": "sam-compass-text", "kind": "sam", "image": "transparent-compass.png", "prompt": { "text": "compass" } },
+    { "id": "sam-compass-box", "kind": "sam", "image": "transparent-compass.png", "prompt": { "box": [0.15, 0.15, 0.70, 0.70] } },
+    { "id": "sam-portrait-face", "kind": "sam", "image": "user-drawing-edit-portrait.png", "prompt": { "text": "face" } },
+    { "id": "sam-portrait-subject", "kind": "sam", "image": "user-drawing-edit-portrait.png", "prompt": { "text": "the main subject" } },
+    { "id": "sam-stormy-sky", "kind": "sam", "image": "edit-stormy.png", "prompt": { "text": "sky" } },
+    { "id": "sam-krea-subject", "kind": "sam", "image": "nvfp4-krea2-fp8.png", "prompt": { "text": "the main subject" } }
+  ]
+}

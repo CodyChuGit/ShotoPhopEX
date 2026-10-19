@@ -1,0 +1,13 @@
+{
+  "suite": "fill",
+  "cases": [
+    { "id": "fill-fox-hat-s7", "kind": "fill", "image": "krea2-fox.png", "seed": 7, "rect": [0.30, 0.10, 0.40, 0.25], "prompt": "a small knitted red hat" },
+    { "id": "fill-fox-hat-s11", "kind": "fill", "image": "krea2-fox.png", "seed": 11, "rect": [0.30, 0.10, 0.40, 0.25], "prompt": "a small knitted red hat" },
+    { "id": "fill-boat-buoy-s7", "kind": "fill", "image": "matte-boat.png", "seed": 7, "rect": [0.05, 0.55, 0.25, 0.25], "prompt": "an orange mooring buoy floating on the water" },
+    { "id": "fill-lighthouse-bird-s7", "kind": "fill", "image": "matte-lighthouse.png", "seed": 7, "rect": [0.55, 0.05, 0.35, 0.25], "prompt": "a seagull flying" },
+    { "id": "fill-balloon-cloud-s7", "kind": "fill", "image": "similar-balloon.png", "seed": 7, "rect": [0.60, 0.10, 0.35, 0.25], "prompt": "a small white cloud" },
+    { "id": "fill-compass-remove-s7", "kind": "fill", "image": "transparent-compass.png", "seed": 7, "rect": [0.25, 0.25, 0.50, 0.50], "prompt": "the plain background continued, nothing there" },
+    { "id": "fill-stormy-boat-s7", "kind": "fill", "image": "edit-stormy.png", "seed": 7, "rect": [0.35, 0.55, 0.30, 0.25], "prompt": "a small wooden rowing boat" },
+    { "id": "fill-portrait-earring-s7", "kind": "fill", "image": "user-drawing-edit-portrait.png", "seed": 7, "rect": [0.62, 0.45, 0.12, 0.18], "prompt": "a gold hoop earring" }
+  ]
+}

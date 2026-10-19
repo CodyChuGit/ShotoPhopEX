@@ -1,0 +1,9 @@
+genai-native
+Copyright (c) 2026 Cody Chu
+
+Licensed under either of the MIT licence or the Apache License, Version 2.0, at your option.
+
+Ported or vendored code keeps its origin here (file, upstream repository, commit, licence):
+
+- (none yet; the first entries will be the kernels and the parity method taken from
+  umag/qwen-image-rs, Apache-2.0, and block references from huggingface/diffusers, Apache-2.0)
