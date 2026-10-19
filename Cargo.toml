@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/gn-engine", "crates/gn-harness", "crates/gn-weights"]
+members = ["crates/gn-engine", "crates/gn-harness", "crates/gn-perception", "crates/gn-weights"]
 
 [workspace.package]
 version = "0.1.0"
