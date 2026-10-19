@@ -15,7 +15,9 @@
 fn nvcc() -> cc::Build {
     let cap = std::env::var("CUDA_COMPUTE_CAP").unwrap_or_else(|_| "89".into());
     let mut b = cc::Build::new();
-    b.cuda(true).flag("-std=c++17").flag("--expt-relaxed-constexpr").flag(format!("-arch=sm_{cap}"));
+    // Never device-debug builds: a profile with `debug = 1` makes `cc` pass nvcc `-G`, which
+    // strips every device optimisation and turns a 3 s denoise into a stall.
+    b.cuda(true).debug(false).opt_level(3).flag("-std=c++17").flag("--expt-relaxed-constexpr").flag(format!("-arch=sm_{cap}"));
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         // CUDA 13's CCCL under MSVC: the standard-conforming preprocessor; and the CRT the Rust
         // target links (static with `+crt-static`, dynamic otherwise) so every object agrees.
