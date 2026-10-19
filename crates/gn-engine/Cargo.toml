@@ -1,0 +1,19 @@
+[package]
+name = "gn-engine"
+description = "The worker process of genai-native: the protocol between the editor and an engine, the server loop, the client, a fake engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "gn-engine"
+path = "src/bin/gn-engine.rs"

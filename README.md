@@ -19,7 +19,7 @@ safetensors, ComfyUI's repacks, GGUF.
 | `gn-models` | thin definitions: Krea 2, Qwen-Image-2.1, … | planned |
 | `gn-weights` | the BYOM loader: hardened safetensors and GGUF readers (headers only on open, ranges on demand), ComfyUI's repack conventions (`comfy_quant`: fp8-scaled, INT8 convrot, NVFP4), a folder index that identifies families from the tensors; the `gn-inspect` tool | Phase 0: readers and the index identify all 16 files of the owner's install ([`docs/MODELS-ON-DISK.md`](docs/MODELS-ON-DISK.md)); key maps and dequantisation come with the first model definition |
 | `gn-perception` | SAM 3.1 through ONNX Runtime | planned |
-| `gn-engine` | the worker process the editor talks to | planned |
+| `gn-engine` | the worker process: the protocol (JSON messages, binary pixel frames), the server loop (one client, progress streamed, cancel mid-run, a second client turned away at once), the client (spawn or connect, resumable frame reads, respawn-ready), a fake engine, the `gn-engine` binary | Phase 0: round-trips as a real child process (progress, cancel, kill noticed, 4 MB pictures both ways, token checked); the editor side (`NativeBackend`) follows once the repository is a dependency |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PARITY.md`](docs/PARITY.md) and
 [`docs/PORTING.md`](docs/PORTING.md).
