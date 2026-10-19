@@ -66,9 +66,11 @@ pub fn parse_port_line(line: &str) -> Option<u16> {
     line.trim().strip_prefix("gn-engine port=")?.parse().ok()
 }
 
-/// Serve `engine` on `listener` until a `Quit` arrives (or the listener fails). Each connection
+/// Serve `engine` on `listener` until the greeted client says `Quit` **or goes away** (an editor
+/// that crashed must not leave a worker behind; it starts a new one next time). Each connection
 /// must open with `Hello` carrying `token`. The engine serves one client at a time; a second
-/// client is told so at once and closed, instead of waiting in the backlog.
+/// client is told so at once and closed, instead of waiting in the backlog; a client refused at
+/// the greeting does not end the worker.
 pub fn serve(listener: &TcpListener, token: &str, engine: &mut dyn Engine) -> std::io::Result<()> {
     let port = listener.local_addr()?.port();
     let engine = Mutex::new(engine);
@@ -85,15 +87,19 @@ pub fn serve(listener: &TcpListener, token: &str, engine: &mut dyn Engine) -> st
                     let _ = refuse(stream, "another client is connected to this engine");
                     return;
                 };
-                match serve_connection(stream, token, *guard) {
-                    Ok(true) => {
-                        quit.store(true, Ordering::SeqCst);
-                        drop(guard);
-                        // Wake the accept loop so it sees the flag.
-                        let _ = TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), std::time::Duration::from_secs(1));
+                let ended = match serve_connection(stream, token, *guard) {
+                    Ok(Ended::Quit | Ended::Left) => true,
+                    Ok(Ended::Refused) => false,
+                    Err(e) => {
+                        eprintln!("gn-engine: connection ended: {e}");
+                        true
                     }
-                    Ok(false) => {}
-                    Err(e) => eprintln!("gn-engine: connection ended: {e}"),
+                };
+                if ended {
+                    quit.store(true, Ordering::SeqCst);
+                    drop(guard);
+                    // Wake the accept loop so it sees the flag.
+                    let _ = TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), std::time::Duration::from_secs(1));
                 }
             });
         }
@@ -110,15 +116,25 @@ fn refuse(stream: TcpStream, why: &str) -> std::io::Result<()> {
     write_json(&mut stream, &Reply::Error { kind: ErrorKind::BadRequest, message: why.to_string() })
 }
 
-/// One connection; `Ok(true)` when the editor asked the worker to quit.
-fn serve_connection(stream: TcpStream, token: &str, engine: &mut dyn Engine) -> std::io::Result<bool> {
+/// How a connection ended.
+enum Ended {
+    /// The greeted client said `Quit`.
+    Quit,
+    /// The greeted client hung up (or its process died).
+    Left,
+    /// Never greeted (wrong token or version): the worker carries on.
+    Refused,
+}
+
+/// One connection.
+fn serve_connection(stream: TcpStream, token: &str, engine: &mut dyn Engine) -> std::io::Result<Ended> {
     stream.set_nodelay(true)?;
     let mut reader = stream.try_clone()?;
     let writer = Arc::new(Mutex::new(stream));
     // Handshake, on this thread.
     let hello: Framed<Request> = match protocol::read_message(&mut reader)? {
         Some(f) => f,
-        None => return Ok(false),
+        None => return Ok(Ended::Refused),
     };
     match hello.message {
         Request::Hello { version, token: t } if version == protocol::VERSION && t == token => {
@@ -129,11 +145,11 @@ fn serve_connection(stream: TcpStream, token: &str, engine: &mut dyn Engine) -> 
                 &writer,
                 &Reply::Error { kind: ErrorKind::BadRequest, message: format!("protocol version {version}, this engine speaks {}", protocol::VERSION) },
             )?;
-            return Ok(false);
+            return Ok(Ended::Refused);
         }
         _ => {
             send(&writer, &Reply::Error { kind: ErrorKind::BadRequest, message: "the first message must be Hello with the token".into() })?;
-            return Ok(false);
+            return Ok(Ended::Refused);
         }
     }
     // Reader thread: every message into a channel; a Cancel also flips the flag at once.
@@ -194,11 +210,11 @@ fn serve_connection(stream: TcpStream, token: &str, engine: &mut dyn Engine) -> 
             }
             Request::Quit => {
                 let _ = send(&writer, &Reply::Bye);
-                return Ok(true);
+                return Ok(Ended::Quit);
             }
         }
     }
-    Ok(false)
+    Ok(Ended::Left)
 }
 
 fn send(writer: &Arc<Mutex<TcpStream>>, reply: &Reply) -> std::io::Result<()> {

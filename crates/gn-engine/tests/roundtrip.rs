@@ -120,5 +120,43 @@ fn pictures_travel_both_ways_and_the_token_is_checked() {
     // A second client with the wrong token is turned away; the right one still works.
     let port = c.port;
     assert!(matches!(EngineClient::connect(port, "wrong"), Err(ClientError::Start(_))));
+    assert!(c.health().is_ok());
     c.quit();
+}
+
+/// A client that hangs up without `Quit` (what a crashed editor amounts to) ends the worker.
+#[test]
+fn a_worker_whose_client_vanishes_exits_by_itself() {
+    use std::io::BufRead as _;
+    let token = new_token();
+    // Spawned by hand so no client `Drop` can send Quit or kill it.
+    let mut child = std::process::Command::new(exe())
+        .arg("--serve")
+        .env("GN_ENGINE_TOKEN", &token)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut first).unwrap();
+    let port = gn_engine::server::parse_port_line(&first).unwrap();
+    {
+        let mut c = EngineClient::connect(port, &token).unwrap_or_else(|e| panic!("{e}"));
+        assert!(c.health().is_ok());
+        // Dropped here: the socket closes, nothing is sent.
+    }
+    let t0 = Instant::now();
+    let mut exited = None;
+    while t0.elapsed().as_secs() < 5 {
+        if let Ok(Some(status)) = child.try_wait() {
+            exited = Some(status);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if exited.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(exited.is_some(), "the worker should exit once its greeted client left");
 }
