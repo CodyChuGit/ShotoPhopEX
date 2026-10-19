@@ -150,33 +150,39 @@ fn run_comfy(rt: &Runtime, models: &Path, args: &Args, rgba: &[u8], w: usize, h:
     let t0 = Instant::now();
     let mut sam = Sam31::open(rt, models).map_err(|e| e.to_string())?;
     eprintln!("gn-sam: sessions open in {:.1} s ({:?}, ComfyUI layout)", t0.elapsed().as_secs_f64(), rt.config().device);
-    let emb = sam.embed(rgba, w, h).map_err(|e| e.to_string())?;
-    eprintln!("gn-sam: vision {} ms for {w}×{h}", emb.ms);
     let opts = Options {
         threshold: args.one("threshold").and_then(|t| t.parse().ok()).unwrap_or(0.5),
         max_detections: args.one("max").and_then(|t| t.parse().ok()).unwrap_or(1),
         refine_iterations: args.one("refine").and_then(|t| t.parse().ok()).unwrap_or(2),
     };
-    let t1 = Instant::now();
-    let mut instances = Vec::new();
-    // The node's order: points, then boxes (without text), then text detections.
-    if !prompt.points.is_empty() || !prompt.negatives.is_empty() {
-        let (inst, t) = sam.segment_points(&emb, &prompt.points, &prompt.negatives, opts).map_err(|e| e.to_string())?;
-        eprintln!("gn-sam: points: heads {} ms, post {} ms", t.heads_ms, t.post_ms);
-        instances.push(inst);
-    }
-    if prompt.text.is_empty() {
-        for b in &prompt.boxes {
-            let (inst, t) = sam.segment_box(&emb, *b, opts).map_err(|e| e.to_string())?;
-            eprintln!("gn-sam: box: heads {} ms, post {} ms", t.heads_ms, t.post_ms);
+    // `--repeat N` runs the whole thing N times: the last run's timings are the warm ones.
+    let repeat = args.one("repeat").and_then(|t| t.parse::<usize>().ok()).unwrap_or(1).max(1);
+    let mut last: Option<(Vec<Instance>, u64, u64)> = None;
+    for round in 0..repeat {
+        let emb = sam.embed(rgba, w, h).map_err(|e| e.to_string())?;
+        eprintln!("gn-sam: [{}] vision {} ms for {w}×{h}", round + 1, emb.ms);
+        let t1 = Instant::now();
+        let mut instances = Vec::new();
+        // The node's order: points, then boxes (without text), then text detections.
+        if !prompt.points.is_empty() || !prompt.negatives.is_empty() {
+            let (inst, t) = sam.segment_points(&emb, &prompt.points, &prompt.negatives, opts).map_err(|e| e.to_string())?;
+            eprintln!("gn-sam: [{}] points: heads {} ms, post {} ms", round + 1, t.heads_ms, t.post_ms);
             instances.push(inst);
         }
-    } else {
-        let (found, t) = sam.detect_text(&emb, &prompt.text, &prompt.boxes, opts).map_err(|e| e.to_string())?;
-        eprintln!("gn-sam: text: text {} + decoder {} + crops {} + heads {} + post {} ms; {} detection(s)", t.text_ms, t.decoder_ms, t.crop_ms, t.heads_ms, t.post_ms, found.len());
-        instances.extend(found);
+        if prompt.text.is_empty() {
+            for b in &prompt.boxes {
+                let (inst, t) = sam.segment_box(&emb, *b, opts).map_err(|e| e.to_string())?;
+                eprintln!("gn-sam: [{}] box: heads {} ms, post {} ms", round + 1, t.heads_ms, t.post_ms);
+                instances.push(inst);
+            }
+        } else {
+            let (found, t) = sam.detect_text(&emb, &prompt.text, &prompt.boxes, opts).map_err(|e| e.to_string())?;
+            eprintln!("gn-sam: [{}] text: text {} + decoder {} + crops {} + heads {} + post {} ms; {} detection(s)", round + 1, t.text_ms, t.decoder_ms, t.crop_ms, t.heads_ms, t.post_ms, found.len());
+            instances.extend(found);
+        }
+        last = Some((instances, emb.ms, t1.elapsed().as_millis() as u64));
     }
-    Ok((instances, emb.ms, t1.elapsed().as_millis() as u64))
+    last.ok_or_else(|| "no run".to_string())
 }
 
 /// The Hugging Face layout (`vision-encoder.onnx` …): detector only.
