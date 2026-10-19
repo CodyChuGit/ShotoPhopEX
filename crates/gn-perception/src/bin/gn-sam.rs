@@ -5,6 +5,7 @@
 //! gn-sam run --ort <dir> [--lib <dir>]... [--cpu] --models <dir> --image <png>
 //!            (--text "fox" | --point x,y | --box x0,y0,x1,y1)... [--negative x,y]...
 //!            [--threshold 0.5] [--max 1] [--refine 2] [--presence] [--no-normalize] [--out mask.png] [--id name]
+//!            [--repeat N] [--profile <dir>] [--graph]
 //! ```
 //!
 //! The model directory's layout picks the path: ComfyUI's export (`vision.onnx` … `heads.onnx`,
@@ -37,7 +38,7 @@ impl Args {
         let mut i = 0;
         while i < raw.len() {
             if let Some(name) = raw[i].strip_prefix("--") {
-                let takes_value = !matches!(name, "cpu" | "presence" | "no-normalize");
+                let takes_value = !matches!(name, "cpu" | "presence" | "no-normalize" | "graph");
                 let value = if takes_value { raw.get(i + 1).cloned().unwrap_or_default() } else { String::new() };
                 named.push((name.to_string(), value));
                 i += if takes_value { 2 } else { 1 };
@@ -149,8 +150,8 @@ fn prompt_of(args: &Args) -> Result<Prompt, String> {
 /// The ComfyUI layout (`vision.onnx` … `heads.onnx`): the node's own routes.
 fn run_comfy(rt: &Runtime, models: &Path, args: &Args, rgba: &[u8], w: usize, h: usize, prompt: &Prompt) -> Result<(Vec<Instance>, u64, u64), String> {
     let t0 = Instant::now();
-    let mut sam = Sam31::open(rt, models).map_err(|e| e.to_string())?;
-    eprintln!("gn-sam: sessions open in {:.1} s ({:?}, ComfyUI layout)", t0.elapsed().as_secs_f64(), rt.config().device);
+    let mut sam = Sam31::open_with(rt, models, args.flag("graph")).map_err(|e| e.to_string())?;
+    eprintln!("gn-sam: sessions open in {:.1} s ({:?}, ComfyUI layout, CUDA graph {})", t0.elapsed().as_secs_f64(), rt.config().device, if sam.captured() { "on" } else { "off" });
     let opts = Options {
         threshold: args.one("threshold").and_then(|t| t.parse().ok()).unwrap_or(0.5),
         max_detections: args.one("max").and_then(|t| t.parse().ok()).unwrap_or(1),
@@ -183,6 +184,7 @@ fn run_comfy(rt: &Runtime, models: &Path, args: &Args, rgba: &[u8], w: usize, h:
         }
         last = Some((instances, emb.ms, t1.elapsed().as_millis() as u64));
     }
+    eprintln!("gn-sam: CUDA graph {} after the runs", if sam.captured() { "on" } else { "off (given up)" });
     last.ok_or_else(|| "no run".to_string())
 }
 

@@ -36,7 +36,8 @@ pub enum Device {
     Cpu,
 }
 
-/// An open runtime: one environment, sessions created from it.
+/// An open runtime: one environment, sessions created from it. Cloning shares the environment.
+#[derive(Clone)]
 pub struct Runtime {
     env: Environment,
     config: RuntimeConfig,
@@ -148,6 +149,14 @@ impl Runtime {
 
     /// Open a model file as a session on the configured device.
     pub fn session(&self, model: &Path) -> Result<Session, RuntimeError> {
+        self.session_with(model, false)
+    }
+
+    /// Open a model file as a session on the configured device; `cuda_graph` asks the CUDA
+    /// provider to capture the model's kernels into a CUDA graph and replay it (static shapes,
+    /// every input and output bound to device memory through an `IoBinding`, every node on the
+    /// CUDA provider). Ignored on the CPU.
+    pub fn session_with(&self, model: &Path, cuda_graph: bool) -> Result<Session, RuntimeError> {
         if !model.is_file() {
             return Err(RuntimeError::MissingLibrary(model.to_path_buf()));
         }
@@ -157,9 +166,15 @@ impl Runtime {
             builder = builder.with_profiling(dir.join(stem)).map_err(ort_err)?;
         }
         builder = match self.config.device {
-            Device::Cuda { ordinal } => builder
-                .with_execution_providers([ep::CUDA::default().with_device_id(ordinal).build().error_on_failure(), ep::CPU::default().build()])
-                .map_err(ort_err)?,
+            Device::Cuda { ordinal } => {
+                let mut cuda = ep::CUDA::default().with_device_id(ordinal).with_cuda_graph(cuda_graph);
+                if cuda_graph {
+                    // cuDNN's exhaustive algorithm search allocates and synchronises while it
+                    // measures, which a stream capture cannot contain.
+                    cuda = cuda.with_conv_algorithm_search(ep::cuda::ConvAlgorithmSearch::Default).with_conv_max_workspace(false);
+                }
+                builder.with_execution_providers([cuda.build().error_on_failure(), ep::CPU::default().build()]).map_err(ort_err)?
+            }
             Device::Cpu => builder.with_execution_providers([ep::CPU::default().build()]).map_err(ort_err)?,
         };
         Ok(builder.commit_from_file(model)?)

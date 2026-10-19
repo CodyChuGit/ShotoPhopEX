@@ -28,8 +28,8 @@
 use std::path::Path;
 use std::time::Instant;
 
-use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
-use ort::session::Session;
+use ort::memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType};
+use ort::session::{IoBinding, Session};
 use ort::value::Tensor;
 
 pub use crate::graph::{Error, Instance};
@@ -58,6 +58,50 @@ pub struct Sam31 {
     /// host per picture and 110 MB per prompt.
     device_mem: MemoryInfo<'static>,
     cpu_mem: MemoryInfo<'static>,
+    device: Device,
+    /// The vision session captured as a CUDA graph: fixed device buffers for its input and
+    /// outputs, replayed per picture (`None` when the device or the graph refused).
+    captured: Option<Captured>,
+    /// To reopen the vision session plainly when a capture fails at run time.
+    rt: Runtime,
+    vision_path: std::path::PathBuf,
+}
+
+/// The fixed buffers a CUDA-graph session replays into.
+struct Captured {
+    binding: IoBinding,
+    input: Tensor<f32>,
+    outputs: Vec<(&'static str, Tensor<f32>)>,
+}
+
+/// The vision graph's outputs and their static shapes.
+const VISION_OUTPUTS: [(&str, [usize; 4]); 8] = [
+    ("fpn_feat_0", [1, 256, 288, 288]),
+    ("fpn_feat_1", [1, 256, 144, 144]),
+    ("fpn_feat_2", [1, 256, 72, 72]),
+    ("fpn_pos_2", [1, 256, 72, 72]),
+    // Three dimensions; the fourth is dropped where the buffer is made.
+    ("geo_cls", [1, 1, 256, 1]),
+    ("trk_feat_0", [1, 256, 288, 288]),
+    ("trk_feat_1", [1, 256, 144, 144]),
+    ("trk_feat_2", [1, 256, 72, 72]),
+];
+
+/// Allocate the fixed buffers of a captured vision session and bind them.
+fn capture(session: &Session, mem: MemoryInfo<'static>) -> ort::Result<Captured> {
+    let alloc = Allocator::new(session, mem)?;
+    let input = Tensor::<f32>::new(&alloc, [1usize, 3, INPUT, INPUT])?;
+    let mut outputs = Vec::with_capacity(VISION_OUTPUTS.len());
+    for (name, shape) in VISION_OUTPUTS {
+        let dims: Vec<usize> = if name == "geo_cls" { shape[..3].to_vec() } else { shape.to_vec() };
+        outputs.push((name, Tensor::<f32>::new(&alloc, dims)?));
+    }
+    let mut binding = session.create_binding()?;
+    binding.bind_input("images", &input)?;
+    for (name, t) in &mut outputs {
+        binding.bind_output(*name, &mut *t)?;
+    }
+    Ok(Captured { binding, input, outputs })
 }
 
 /// Everything the vision graph returns for one 1008×1008 frame. The feature maps stay on the
@@ -145,23 +189,62 @@ struct HeadsOut {
 }
 
 impl Sam31 {
+    /// Open the graphs with a plain vision session.
     pub fn open(rt: &Runtime, dir: &Path) -> Result<Self> {
+        Self::open_with(rt, dir, false)
+    }
+
+    /// Open the graphs; `cuda_graph` asks for the vision session to be captured as a CUDA graph
+    /// and replayed. ORT 1.31's CUDA provider has not managed the capture on this model yet
+    /// ("operation failed due to a previous error during capture", with the exporter's attention
+    /// and with the fused one, with cuDNN's search on and off), so the plain session is the
+    /// default and a failed capture falls back to it at the cost of one slow picture.
+    pub fn open_with(rt: &Runtime, dir: &Path, cuda_graph: bool) -> Result<Self> {
         for f in FILES {
             let p = dir.join(f);
             if !p.is_file() {
                 return Err(Error::Missing(p));
             }
         }
+        let device = rt.config().device;
+        let vision_path = dir.join(FILES[0]);
+        // The captured form first; a provider or graph that refuses it leaves the plain session.
+        let (vision, captured) = match (cuda_graph, device) {
+            (true, Device::Cuda { .. }) => match rt.session_with(&vision_path, true) {
+                Ok(s) => match capture(&s, memory_of(device)?) {
+                    Ok(c) => (s, Some(c)),
+                    Err(_) => (rt.session(&vision_path)?, None),
+                },
+                Err(_) => (rt.session(&vision_path)?, None),
+            },
+            _ => (rt.session(&vision_path)?, None),
+        };
         Ok(Sam31 {
-            vision: rt.session(&dir.join(FILES[0]))?,
+            vision,
             text: rt.session(&dir.join(FILES[1]))?,
             geometry: rt.session(&dir.join(FILES[2]))?,
             decoder: rt.session(&dir.join(FILES[3]))?,
             heads: rt.session(&dir.join(FILES[4]))?,
             tokenizer: ClipTokenizer::open(&dir.join(FILES[5])).map_err(Error::Tokenizer)?,
-            device_mem: memory_of(rt.config().device)?,
+            device_mem: memory_of(device)?,
             cpu_mem: memory_of(Device::Cpu)?,
+            device,
+            captured,
+            rt: rt.clone(),
+            vision_path,
         })
+    }
+
+    /// Give up the CUDA graph: a plain vision session from now on.
+    fn uncapture(&mut self) -> Result<()> {
+        self.captured = None;
+        self.vision = self.rt.session(&self.vision_path)?;
+        Ok(())
+    }
+
+    /// Is the vision session replaying a CUDA graph?
+    pub fn captured(&self) -> bool {
+        self.captured.is_some()
     }
 
     /// Does `dir` hold this layout?
@@ -172,9 +255,49 @@ impl Sam31 {
     /// The vision graph on one window; the frame and (run, copy-out) milliseconds. The outputs
     /// are bound to the device's memory and kept there as the frame.
     fn run_vision(&mut self, planes: Vec<f32>) -> Result<(Frame, [u64; 2])> {
-        const ON_DEVICE: [&str; 7] = ["fpn_feat_0", "fpn_feat_1", "fpn_feat_2", "fpn_pos_2", "trk_feat_0", "trk_feat_1", "trk_feat_2"];
         let t = Instant::now();
         let input = Tensor::from_array(([1usize, 3, INPUT, INPUT], planes))?;
+        if let Some(c) = self.captured.as_mut() {
+            // Replay: the picture into the fixed input buffer, the graph, then the frame's own
+            // copies of the fixed outputs (the buffers are reused by the next picture). A graph
+            // that fails to capture or replay is given up for good, and this picture runs plainly.
+            let replayed = input.copy_into(&mut c.input).and_then(|()| self.vision.run_binding(&c.binding).map(|_| ()));
+            if replayed.is_err() {
+                self.uncapture()?;
+                return self.run_vision_plain(input, t);
+            }
+            let run_ms = t.elapsed().as_millis() as u64;
+            let t = Instant::now();
+            let (dev, id) = match self.device {
+                Device::Cuda { ordinal } => (AllocationDevice::CUDA, ordinal),
+                Device::Cpu => (AllocationDevice::CPU, 0),
+            };
+            let own = |name: &str| -> Result<Tensor<f32>> {
+                let (_, t) = c.outputs.iter().find(|(n, _)| *n == name).ok_or_else(|| Error::Shape(format!("no output `{name}`")))?;
+                Ok(t.to(dev.clone(), id)?)
+            };
+            let geo_cls = {
+                let (_, t) = c.outputs.iter().find(|(n, _)| *n == "geo_cls").ok_or_else(|| Error::Shape("no output `geo_cls`".into()))?;
+                let host = t.to(AllocationDevice::CPU, 0)?;
+                let (shape, data) = host.try_extract_tensor::<f32>()?;
+                (shape.to_vec(), data.to_vec())
+            };
+            let frame = Frame {
+                fpn0: own("fpn_feat_0")?,
+                fpn1: own("fpn_feat_1")?,
+                fpn2: own("fpn_feat_2")?,
+                pos2: own("fpn_pos_2")?,
+                geo_cls,
+                trk: [own("trk_feat_0")?, own("trk_feat_1")?, own("trk_feat_2")?],
+            };
+            return Ok((frame, [run_ms, t.elapsed().as_millis() as u64]));
+        }
+        self.run_vision_plain(input, t)
+    }
+
+    /// The vision session through a per-call binding whose outputs land in fresh device memory.
+    fn run_vision_plain(&mut self, input: Tensor<f32>, t: Instant) -> Result<(Frame, [u64; 2])> {
+        const ON_DEVICE: [&str; 7] = ["fpn_feat_0", "fpn_feat_1", "fpn_feat_2", "fpn_pos_2", "trk_feat_0", "trk_feat_1", "trk_feat_2"];
         let mut binding = self.vision.create_binding()?;
         binding.bind_input("images", &input)?;
         for name in ON_DEVICE {
