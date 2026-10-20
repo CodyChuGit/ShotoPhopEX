@@ -355,6 +355,28 @@ enum Command {
         #[arg(long)]
         out: std::path::PathBuf,
     },
+    /// Krea 2's conditioning for a prompt through the Qwen3-VL-4B encoder (Phase 4 parity):
+    /// the twelve tapped states after the template's prefix, saved as `(tokens, 12*2560)`.
+    Krea2Cond {
+        /// The converted encoder (`text_encoder/model.safetensors`, keys `model.*`).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// A Qwen3-VL `tokenizer.json`.
+        #[arg(long)]
+        tokenizer: std::path::PathBuf,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Rewrite one of ComfyUI's `fp8_scaled` repacks as bf16 safetensors (the fp8 linears
+    /// dequantised with their `weight_scale`, everything else copied), for the loaders.
+    ConvertFp8 {
+        #[arg(long)]
+        src: std::path::PathBuf,
+        #[arg(long)]
+        dst: std::path::PathBuf,
+    },
     /// Run the Qwen3-VL vision tower on dumped patches and save its features (Phase 3 parity).
     VisionForward {
         /// The text_encoder/ directory (holds `model.visual.*`).
@@ -505,6 +527,13 @@ fn main() -> Result<()> {
         Command::PrequantizeConvrot { weights, out, convrot_cache } => prequantize_convrot(&weights, out.as_deref(), convrot_cache.as_deref()),
         Command::VaeEncode { weights, image, bf16, out, roundtrip } => vae_encode(&weights, &image, bf16, &out, roundtrip.as_deref()),
         Command::VisionForward { weights, inputs, grid_h, grid_w, out } => vision_forward(&weights, &inputs, grid_h, grid_w, &out),
+        Command::Krea2Cond { weights, tokenizer, prompt, out } => krea2_cond(&weights, &tokenizer, &prompt, &out),
+        Command::ConvertFp8 { src, dst } => {
+            let t0 = std::time::Instant::now();
+            let r = qwen_image_rs::convert::dequantize_fp8_file(&src, &dst)?;
+            println!("wrote {} ({} dequantised, {} copied, {} dropped) in {:.1} s", dst.display(), r.dequantized, r.copied, r.dropped, t0.elapsed().as_secs_f32());
+            Ok(())
+        }
         Command::Edit { model, prompt, image, width, height, steps, seed, guidance, negative, convrot, cache, no_prefix_cache, out } => edit(
             &model,
             &prompt,
@@ -1155,6 +1184,33 @@ fn edit(
     let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
     buf.save(out)?;
     println!("wrote {} ({}x{}, seed {seed})", out.display(), pic.width, pic.height);
+    Ok(())
+}
+
+/// Phase 4: Krea 2's conditioning for a prompt, for the parity check against ComfyUI's.
+fn krea2_cond(weights: &std::path::Path, tokenizer: &std::path::Path, prompt: &str, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::krea2;
+    use qwen_image_rs::model::text_encoder::{QwenTextEncoder, TextConfig};
+    let dev = device::best_device()?;
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let tok = tokenizers::Tokenizer::from_file(tokenizer).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+    let ids: Vec<u32> = tok.encode(krea2::template(prompt), false).map_err(|e| anyhow::anyhow!("encode: {e}"))?.get_ids().to_vec();
+    tracing::info!(tokens = ids.len(), end = krea2::template_end(&ids), "prompt");
+    let files = WeightSet::resolve(weights)?.files;
+    let t0 = std::time::Instant::now();
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
+    let te = QwenTextEncoder::load_at(&TextConfig::qwen3vl_4b(), false, vb.pp("model"))?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "encoder loaded");
+    let t0 = std::time::Instant::now();
+    let cond = krea2::condition(&te, &ids, &dev)?; // (keep, 12, 2560)
+    dev.synchronize()?;
+    tracing::info!(ms = t0.elapsed().as_millis(), shape = ?cond.dims(), "conditioning");
+    let (keep, n, d) = cond.dims3()?;
+    let flat = cond.reshape((keep, n * d))?.to_dtype(DType::F32)?.contiguous()?;
+    let mut map = std::collections::HashMap::new();
+    map.insert("cond".to_string(), flat);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {} ({keep} tokens x {} )", out.display(), n * d);
     Ok(())
 }
 

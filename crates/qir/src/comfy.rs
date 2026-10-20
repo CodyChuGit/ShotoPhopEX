@@ -172,6 +172,9 @@ pub struct FlowSchedule {
 impl FlowSchedule {
     /// Qwen-Image-2.1's model sampling in ComfyUI: `ModelSamplingFlux`, `shift 0.69`.
     pub const QWEN_IMAGE_21: Shift = Shift::Flux { shift: 0.69, timesteps: 10_000 };
+    /// Krea 2's: a `FLUX`-type model too, `sampling_settings.shift = 1.15` (ComfyUI's
+    /// `supported_models.Krea2`; read off the running model's `model_sampling` 2026-10-20).
+    pub const KREA2: Shift = Shift::Flux { shift: 1.15, timesteps: 10_000 };
 
     /// The sigma at every training timestep `1..=timesteps`, computed in f32 like the torch
     /// buffer.
@@ -374,6 +377,10 @@ mod tests {
         close(&s.sigmas[28..], &[0.12471463531255722, 0.06445096433162689, 0.0]);
         let s = FlowSchedule::simple(1, q).unwrap();
         close(&s.sigmas, &[1.0, 0.0]);
+        // Krea 2 Turbo's 8 steps, as `comfy.samplers.calculate_sigmas(model_sampling, "simple", 8)`
+        // printed them off the loaded model (shift 1.15).
+        let s = FlowSchedule::simple(8, FlowSchedule::KREA2).unwrap();
+        close(&s.sigmas, &[1.0, 0.956724, 0.904531, 0.840349, 0.759511, 0.654567, 0.512844, 0.310901, 0.0]);
         // The SNR table, for the models that use it.
         let s = FlowSchedule::simple(4, Shift::Snr { shift: 0.69, multiplier: 1.0, timesteps: 1000 }).unwrap();
         close(&s.sigmas, &[1.0, 0.6742671132087708, 0.4082840085029602, 0.1869918704032898, 0.0]);
