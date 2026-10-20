@@ -16,6 +16,7 @@ use candle_core::{DType, Device, Tensor};
 use tokenizers::Tokenizer;
 
 use crate::Result;
+use crate::convrot_cache::{CacheSpec, Policy};
 use crate::loader::WeightSet;
 use crate::model::krea2::{self, Krea2Config, Krea2Dit};
 use crate::model::text_encoder::{QwenTextEncoder, TextConfig};
@@ -28,12 +29,15 @@ pub struct Krea2Options {
     /// ConvRot W8A8 INT8 for the DiT's block linears (the `convrot` feature): 12 GB instead of
     /// 24, and the encoder stays resident beside it.
     pub convrot: bool,
+    /// Where the prequantized ConvRot DiT is cached (the quantisation is 11 s of each cold
+    /// start otherwise).
+    pub cache: CacheSpec,
 }
 
 impl Krea2Options {
-    /// ConvRot on when the build has it.
+    /// ConvRot on when the build has it, the cache where the environment says.
     pub fn defaults() -> Self {
-        Self { convrot: cfg!(feature = "convrot") }
+        Self { convrot: cfg!(feature = "convrot"), cache: CacheSpec::from_cli(None, false, false) }
     }
 }
 
@@ -78,7 +82,7 @@ impl Krea2Pipeline {
 
         progress(0.3, "Loading the transformer");
         let t0 = Instant::now();
-        let files = WeightSet::resolve(&model.join("transformer"))?.files;
+        let files = crate::convrot_cache::resolve_files(&model.join("transformer"), opts.convrot, &opts.cache, &Policy::krea2())?;
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
         let dit = Krea2Dit::load(&Krea2Config::default(), opts.convrot, vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), convrot = opts.convrot, "DiT loaded");

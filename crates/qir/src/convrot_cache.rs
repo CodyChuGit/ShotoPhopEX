@@ -325,11 +325,36 @@ fn sweep_stale_tmps(out: &Path) {
     }
 }
 
+/// Which linears of a model are rotated and quantized, and the tag that names the policy in
+/// a cache entry's header (a change of policy invalidates the entry).
+pub struct Policy<'a> {
+    pub tag: String,
+    /// `true` for the weight prefix (the tensor name without `.weight`) of a ConvRot linear.
+    pub is_target: &'a dyn Fn(&str) -> bool,
+}
+
+impl Policy<'_> {
+    /// Qwen-Image-2.1's DiT (`dit::linear_precision`).
+    pub fn qwen_image_21() -> Policy<'static> {
+        Policy { tag: crate::model::dit::convrot_policy_tag(), is_target: &crate::model::dit::is_convrot_target }
+    }
+
+    /// Krea 2's DiT (`krea2::is_convrot_target`).
+    pub fn krea2() -> Policy<'static> {
+        Policy { tag: crate::model::krea2::convrot_policy_tag(), is_target: &crate::model::krea2::is_convrot_target }
+    }
+}
+
 /// The weight files to mmap for the DiT at `dir` (its `*.safetensors`).
 /// Under `convrot` with the cache on, that is the validated (or freshly built)
 /// cache entry; on any cache failure it warns and returns the source files,
 /// which `QwenImageDit::load` rotates + quantizes on load — identical output.
 pub fn resolve_dit_files(dir: &Path, convrot: bool, spec: &CacheSpec) -> Result<Vec<PathBuf>> {
+    resolve_files(dir, convrot, spec, &Policy::qwen_image_21())
+}
+
+/// [`resolve_dit_files`] for any model whose linears `policy` names.
+pub fn resolve_files(dir: &Path, convrot: bool, spec: &CacheSpec, policy: &Policy<'_>) -> Result<Vec<PathBuf>> {
     let files = crate::loader::WeightSet::resolve(dir)?.files;
     // Without the `convrot` feature the loader ignores --convrot (no rotation),
     // so there is nothing to cache.
@@ -344,7 +369,7 @@ pub fn resolve_dit_files(dir: &Path, convrot: bool, spec: &CacheSpec) -> Result<
         tracing::warn!("no convrot cache dir (no --convrot-cache, QIR_CONVROT_CACHE, XDG_CACHE_HOME or HOME): quantizing on load");
         return Ok(files);
     };
-    match resolve_entry(dir, &files, root, spec.mode) {
+    match resolve_entry(dir, &files, root, spec.mode, policy) {
         Ok(entry) => Ok(vec![entry]),
         Err(e) => {
             tracing::warn!(error = %format!("{e:#}"), "convrot cache unavailable: quantizing on load (same output)");
@@ -353,9 +378,10 @@ pub fn resolve_dit_files(dir: &Path, convrot: bool, spec: &CacheSpec) -> Result<
     }
 }
 
-fn resolve_entry(dir: &Path, files: &[PathBuf], root: &Path, mode: CacheMode) -> Result<PathBuf> {
+fn resolve_entry(dir: &Path, files: &[PathBuf], root: &Path, mode: CacheMode, policy: &Policy<'_>) -> Result<PathBuf> {
     let entry = entry_path(root, dir)?;
-    let policy = crate::model::dit::convrot_policy_tag();
+    let is_target = policy.is_target;
+    let policy = policy.tag.clone();
     let source = source_fingerprint(dir, files)?;
     let reason = if mode == CacheMode::Rebuild {
         Some("--rebuild-convrot-cache".to_string())
@@ -375,7 +401,7 @@ fn resolve_entry(dir: &Path, files: &[PathBuf], root: &Path, mode: CacheMode) ->
         (META_POLICY.to_string(), policy.clone()),
         (META_SOURCE.to_string(), source.clone()),
     ]);
-    let n = build(files, &entry, meta)?;
+    let n = build_with(files, &entry, meta, is_target)?;
     // Re-check what we just wrote before trusting it.
     if let Some(why) = check_entry(&entry, &policy, &source) {
         anyhow::bail!("freshly built cache entry fails validation: {why}");
@@ -398,6 +424,12 @@ fn resolve_entry(dir: &Path, files: &[PathBuf], root: &Path, mode: CacheMode) ->
 /// atomically with `metadata` in the header. Returns the ConvRot linear count.
 #[cfg(feature = "convrot")]
 pub fn build(files: &[PathBuf], out: &Path, metadata: HashMap<String, String>) -> Result<usize> {
+    build_with(files, out, metadata, &crate::model::dit::is_convrot_target)
+}
+
+/// [`build`] for the linears `is_target` names.
+#[cfg(feature = "convrot")]
+pub fn build_with(files: &[PathBuf], out: &Path, metadata: HashMap<String, String>, is_target: &dyn Fn(&str) -> bool) -> Result<usize> {
     use crate::convrot::ConvRotLinear;
     use candle_core::{DType, Device, Tensor};
 
@@ -415,9 +447,7 @@ pub fn build(files: &[PathBuf], out: &Path, metadata: HashMap<String, String>) -
     let mut n_quant = 0usize;
     for name in &names {
         let t = st.load(name, &Device::Cpu)?;
-        let base = name
-            .strip_suffix(".weight")
-            .filter(|b| crate::model::dit::is_convrot_target(b));
+        let base = name.strip_suffix(".weight").filter(|b| is_target(b));
         if let Some(base) = base {
             let w = t.to_device(&dev)?.to_dtype(DType::BF16)?; // (N,K) bf16
             let cr = ConvRotLinear::from_weight(&w, &r)?;
@@ -439,6 +469,11 @@ pub fn build(files: &[PathBuf], out: &Path, metadata: HashMap<String, String>) -
 
 #[cfg(not(feature = "convrot"))]
 pub fn build(_: &[PathBuf], _: &Path, _: HashMap<String, String>) -> Result<usize> {
+    anyhow::bail!("building ConvRot weights requires the `convrot` feature")
+}
+
+#[cfg(not(feature = "convrot"))]
+pub fn build_with(_: &[PathBuf], _: &Path, _: HashMap<String, String>, _: &dyn Fn(&str) -> bool) -> Result<usize> {
     anyhow::bail!("building ConvRot weights requires the `convrot` feature")
 }
 

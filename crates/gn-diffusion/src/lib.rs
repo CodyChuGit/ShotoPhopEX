@@ -146,7 +146,8 @@ impl DiffusionEngine {
                         format!("no Krea 2 weights in {} (tokenizer/, text_encoder/, transformer/, vae/; convert-fp8 makes them from ComfyUI's files)", dir.display()),
                     ));
                 }
-                Resident::Krea2(Krea2Pipeline::load(&dir, Krea2Options::defaults(), &mut report).map_err(err)?)
+                let opts = Krea2Options { cache: CacheSpec::from_cli(Some(&self.models_root.join(CACHE_DIR)), false, false), ..Krea2Options::defaults() };
+                Resident::Krea2(Krea2Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
         };
         Ok(())

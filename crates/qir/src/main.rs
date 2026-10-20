@@ -388,6 +388,8 @@ enum Command {
         /// ConvRot W8A8 INT8 for the DiT's block linears (`convrot` feature).
         #[arg(long)]
         convrot: bool,
+        #[command(flatten)]
+        cache: ConvrotCacheArgs,
         #[arg(long)]
         out: std::path::PathBuf,
     },
@@ -583,7 +585,9 @@ fn main() -> Result<()> {
         Command::Krea2Cond { weights, tokenizer, prompt, out } => krea2_cond(&weights, &tokenizer, &prompt, &out),
         Command::WanVaeDecode { weights, latent, bf16, out } => wan_vae_decode(&weights, &latent, bf16, &out),
         Command::Krea2DitForward { weights, inputs, cond, t, out } => krea2_dit_forward(&weights, &inputs, &cond, t, &out),
-        Command::GenerateKrea2 { model, prompt, width, height, steps, seed, convrot, out } => generate_krea2(&model, &prompt, width, height, steps, seed, convrot, &out),
+        Command::GenerateKrea2 { model, prompt, width, height, steps, seed, convrot, cache, out } => {
+            generate_krea2(&model, &prompt, width, height, steps, seed, convrot, &cache.spec(), &out)
+        }
         Command::ConvertFp8 { src, dst } => {
             let t0 = std::time::Instant::now();
             let r = qwen_image_rs::convert::dequantize_fp8_file(&src, &dst)?;
@@ -1245,12 +1249,22 @@ fn edit(
 
 /// Phase 4: a Krea 2 Turbo picture through the resident pipeline.
 #[allow(clippy::too_many_arguments)]
-fn generate_krea2(model: &std::path::Path, prompt: &str, width: usize, height: usize, steps: usize, seed: u64, convrot: bool, out: &std::path::Path) -> Result<()> {
+fn generate_krea2(
+    model: &std::path::Path,
+    prompt: &str,
+    width: usize,
+    height: usize,
+    steps: usize,
+    seed: u64,
+    convrot: bool,
+    cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    out: &std::path::Path,
+) -> Result<()> {
     use qwen_image_rs::krea2_pipeline::{Krea2Options, Krea2Pipeline};
     use qwen_image_rs::pipeline::{Request, Schedule};
     let mut report = |f: f32, m: &str| tracing::info!(progress = f, "{m}");
     let t0 = std::time::Instant::now();
-    let p = Krea2Pipeline::load(model, Krea2Options { convrot }, &mut report)?;
+    let p = Krea2Pipeline::load(model, Krea2Options { convrot, cache: cache.clone() }, &mut report)?;
     tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
     let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references: Vec::new() };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
