@@ -200,8 +200,8 @@ impl QLinear {
     }
 }
 
-const INNER: usize = 4096; // num_heads * head_dim = 32 * 128
-const HEADS: usize = 32;
+pub const INNER: usize = 4096; // num_heads * head_dim = 32 * 128
+pub const HEADS: usize = 32;
 const HEAD_DIM: usize = 128;
 const AXES: [usize; 3] = [16, 56, 56]; // rope dims (frame, height, width)
 const ROPE_THETA: f64 = 10000.0;
@@ -1110,6 +1110,12 @@ impl QwenImageDit {
             pending = Some(y);
         }
         self.output(&hs, pending.as_ref(), &mods, &temb, b, prefix_len, img_tokens)
+    }
+
+    /// What a [`PrefixCache`] of `prefix_len` rows holds on the device: every block's keys and
+    /// values of those rows, two bytes an element.
+    pub fn prefix_cache_bytes(&self, prefix_len: usize) -> usize {
+        self.blocks.len() * 2 * prefix_len * INNER * 2
     }
 
     /// The prefix pass of a cached generation: the text and reference rows through every block

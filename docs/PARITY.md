@@ -40,3 +40,17 @@ then picks from that table), the timestep the DiT is handed (its bf16 rounding),
 tokens the encoder node produces. Check each against numbers the real objects print, and keep
 the calibration: ComfyUI's own INT8 and bf16 routes agree on 26 of the 28 t2i cases, so a
 native route at 24–26 of 28 is at parity, and the cases that miss are the same for everyone.
+
+## Edits and fills: compare through the app (what Phase 3 taught)
+
+The product builds an edit's request before any engine sees it: it resamples the picture to
+its working size (a 1024² picture goes out at 880²), feathers the mask, wraps the prompt. A
+direct `--engine qir` run of the edit suite therefore does not match the app's references
+(2 of 8 at the gate) while the same engine behind the app matches 8 of 8. Measure edit and
+fill parity with the app's CLI on both routes: `--engine comfy` for the references, then
+`--engine comfy --pref integrations.engine=native --pref integrations.runtimePath=… --pref
+integrations.modelsPath=…` for the native worker. The conventions that matter beyond §2.1's:
+`TextEncodeQwenImage21` resizes every picture to multiples of 32 at `resolution 0`, the vision
+tower and the VAE see the same resized picture, `LoadImage` hands over RGB (alpha dropped,
+the VAE's alpha channel padded opaque), the mask of a fill is a grey picture as image 2, and the
+rows before the target (text and references) are a prefix the model treats as t = 0.
