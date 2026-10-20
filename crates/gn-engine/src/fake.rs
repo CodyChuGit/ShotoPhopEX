@@ -78,6 +78,22 @@ impl Engine for FakeEngine {
                 }
                 (Blob { width: w, height: h, channels: 1, index: 0 }, bytes)
             }
+            "matte" => {
+                // The input's colours with a centred disc as the alpha (the matte models answer
+                // RGBA whose alpha is the cut-out).
+                let (cx, cy, r) = (w as f32 / 2.0, h as f32 / 2.0, w.min(h) as f32 * 0.3);
+                let src = req.image.as_ref().and_then(|b| blobs.get(b.index as usize)).cloned().unwrap_or_default();
+                let mut bytes = Vec::with_capacity(w as usize * h as usize * 4);
+                for y in 0..h {
+                    for x in 0..w {
+                        let i = (y as usize * w as usize + x as usize) * 4;
+                        let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                        let a = if dx * dx + dy * dy <= r * r { 255 } else { 0 };
+                        bytes.extend_from_slice(&[*src.get(i).unwrap_or(&0), *src.get(i + 1).unwrap_or(&0), *src.get(i + 2).unwrap_or(&0), a]);
+                    }
+                }
+                (Blob { width: w, height: h, channels: 4, index: 0 }, bytes)
+            }
             "edit" | "fill" | "expand" => {
                 // The input tinted by the seed's colour (a visible, deterministic change).
                 let c = colour(req.seed);

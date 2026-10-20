@@ -30,8 +30,14 @@ pub const TEMPLATE: &str = "qwen-2.1/image";
 pub const TEMPLATE_EDIT: &str = "qwen-2.1/edit";
 /// The fill template: the picture (image 1) and the selection mask (image 2).
 pub const TEMPLATE_FILL: &str = "qwen-2.1/fill";
+/// The expand template: the prefilled canvas (image 1) and the mask of the new area (image 2).
+pub const TEMPLATE_EXPAND: &str = "qwen-2.1/expand";
+/// The matte template: the picture alone, the answer's alpha is the cut-out (the 2.1 VAE
+/// decodes RGBA).
+pub const TEMPLATE_MATTE: &str = "qwen-2.1/matte";
 /// Every template served, with the task each one answers.
-pub const TEMPLATES: [(&str, &str); 3] = [(TEMPLATE, "image"), (TEMPLATE_EDIT, "edit"), (TEMPLATE_FILL, "fill")];
+pub const TEMPLATES: [(&str, &str); 5] =
+    [(TEMPLATE, "image"), (TEMPLATE_EDIT, "edit"), (TEMPLATE_FILL, "fill"), (TEMPLATE_EXPAND, "expand"), (TEMPLATE_MATTE, "matte")];
 /// The model root's subdirectory for the snapshot.
 pub const MODEL_DIR: &str = "qwen-image-2.1";
 /// The model root's subdirectory for the prequantized DiT.
@@ -175,17 +181,18 @@ impl Engine for DiffusionEngine {
             return Err(EngineError::new(ErrorKind::BadRequest, "a prompt is needed"));
         }
         // The pictures the model sees in order: image 1 is the picture being edited, then the
-        // mask (a fill) or the references (an edit). The target takes image 1's size, as
-        // ComfyUI's `TextEncodeQwenImage21` sizes its latent at `resolution 0`.
+        // mask (a fill or an expand) or the references (an edit; a matte has none). The target
+        // takes image 1's size, as ComfyUI's `TextEncodeQwenImage21` sizes its latent at
+        // `resolution 0`.
         let mut references: Vec<RefImage> = Vec::new();
         match task {
-            "edit" | "fill" => {
+            "edit" | "fill" | "expand" | "matte" => {
                 let Some(image) = &req.image else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the picture", req.model))) };
                 references.push(reference_of(image, blobs, "picture")?);
-                if task == "fill" {
+                if task == "fill" || task == "expand" {
                     let Some(mask) = &req.mask else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the mask", req.model))) };
                     references.push(reference_of(mask, blobs, "mask")?);
-                } else {
+                } else if task == "edit" {
                     for (i, r) in req.references.iter().enumerate() {
                         references.push(reference_of(r, blobs, &format!("reference {}", i + 2))?);
                     }
@@ -322,6 +329,11 @@ mod tests {
         f.mask = Some(Blob { width: 2, height: 1, channels: 1, index: 1 });
         let r = e.run(&f, &[vec![0; 8], vec![255, 0]], &mut |_, _| {}, &AtomicBool::new(false));
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
+        // A matte takes the picture alone and goes on to the models.
+        let mut m = req(TEMPLATE_MATTE, "matte");
+        m.image = Some(Blob { width: 2, height: 1, channels: 4, index: 0 });
+        let r = e.run(&m, &[vec![0; 8]], &mut |_, _| {}, &AtomicBool::new(false));
+        assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
         assert!(!has_models(Path::new("Z:/nowhere")));
     }
 
@@ -352,6 +364,7 @@ mod tests {
         assert_eq!(e.snapshot_dir(), PathBuf::from("m").join(MODEL_DIR));
         assert_eq!((side(0), side(1024), side(1000), side(5)), (1024, 1024, 992, 16));
         assert_eq!((task_of(TEMPLATE), task_of(TEMPLATE_EDIT), task_of(TEMPLATE_FILL), task_of("krea2-turbo/image")), (Some("image"), Some("edit"), Some("fill"), None));
+        assert_eq!((task_of(TEMPLATE_EXPAND), task_of(TEMPLATE_MATTE)), (Some("expand"), Some("matte")));
         assert_eq!(kind_of(&anyhow::anyhow!("CUDA_ERROR_OUT_OF_MEMORY")), ErrorKind::OutOfMemory);
         assert_eq!(kind_of(&Cancelled.into()), ErrorKind::Cancelled);
         assert_eq!(kind_of(&anyhow::anyhow!("weight directory does not exist: x")), ErrorKind::ModelMissing);
