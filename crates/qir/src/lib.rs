@@ -12,6 +12,7 @@
 //! - scheduler: `FlowMatchEulerDiscreteScheduler` — [`model::scheduler`]
 
 pub mod comfy;
+pub mod convert;
 #[cfg(feature = "convrot")]
 pub mod convrot;
 pub mod convrot_cache;

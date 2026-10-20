@@ -28,7 +28,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 candle-flash-attn = { version = "0.11", optional = true }
-half = { version = "2", optional = true }
+half = "2"
+# ComfyUI's fp8_scaled repacks are rewritten as bf16 (src/convert.rs): the e4m3 decode and a
+# read-only map of the source file.
+float8 = "0.7"
+memmap2 = "0.9"
 # Only for its `cudnn` module (feature `cudnn`); unifies with candle's cudarc 0.19.
 # Deliberately NOT candle-core/cudnn: candle's own cuDNN conv uses default math
 # (FP32 SIMT kernels for bf16) and is slower than its im2col path.
@@ -43,15 +47,15 @@ default = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 # cuDNN conv2d for the VAE (tensor-core math; src/cudnn_conv.rs). Needs libcudnn
 # (pip wheel nvidia-cudnn-cu13, see scripts/setup-host.sh; QIR_CUDNN_LIB).
-cudnn = ["cuda", "dep:cudarc", "dep:half"]
+cudnn = ["cuda", "dep:cudarc"]
 # FlashAttention-2 kernels (Ada/Ampere/Hopper only). ~19 min first build.
 flash-attn = ["cuda", "dep:candle-flash-attn"]
 # ConvRot INT8 W8A8: compiles kernels/convrot/*.cu (needs CUTLASS_DIR).
-convrot = ["cuda", "dep:cc", "dep:half"]
+convrot = ["cuda", "dep:cc"]
 # SageAttention INT8-QK / FP16-PV attention: compiles vendored kernels/sage/*.cu.
-sage = ["cuda", "dep:cc", "dep:half"]
+sage = ["cuda", "dep:cc"]
 # SageAttention2 (sm89): INT8-QK per-thread + K smoothing, FP8-PV. Adds
 # kernels/sage/sage2_ffi.cu; runtime QIR_SAGE=1|2|2f32 picks v1 / SA2 (default 2).
 sage2 = ["sage"]
 # Fused LayerNorm+AdaLN kernel: compiles kernels/fusednorm/*.cu.
-fusednorm = ["cuda", "dep:cc", "dep:half"]
+fusednorm = ["cuda", "dep:cc"]

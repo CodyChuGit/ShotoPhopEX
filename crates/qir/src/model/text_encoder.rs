@@ -77,6 +77,14 @@ impl Default for TextConfig {
     }
 }
 
+impl TextConfig {
+    /// Qwen3-VL-4B-Instruct's language model (Krea 2's encoder): the 8B's shape at width 2560
+    /// (36 layers, 32 query heads over 8 key/value heads of 128, SwiGLU 9728), tied embeddings.
+    pub fn qwen3vl_4b() -> Self {
+        Self { hidden_size: 2560, intermediate_size: 9728, ..Self::default() }
+    }
+}
+
 /// Qwen3-VL's interleaved multimodal RoPE: 64 frequency pairs per head; pair `j` turns by the
 /// temporal position, except pairs `j ≡ 1 (mod 3)` by the height position and `j ≡ 2 (mod 3)`
 /// by the width position for `j < 60` (`mrope_section [24, 20, 20]`). Text has all three
@@ -269,7 +277,13 @@ impl QwenTextEncoder {
     /// (weight-only) — ~half the VRAM, near-lossless — so all three models stay
     /// resident in 24 GB. The token embedding stays full precision.
     pub fn load(cfg: &TextConfig, quant: bool, vb: VarBuilder) -> Result<Self> {
-        let vb_m = vb.pp("model").pp("language_model");
+        Self::load_at(cfg, quant, vb.pp("model").pp("language_model"))
+    }
+
+    /// Load from `vb_m`, the language model's own root (`model.language_model` in Hugging
+    /// Face's Qwen3-VL snapshot, `model` in ComfyUI's `qwen3vl_4b` repack).
+    pub fn load_at(cfg: &TextConfig, quant: bool, vb_m: VarBuilder) -> Result<Self> {
+        let vb = vb_m.clone();
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rope = RotaryEmbedding::new(cfg, vb.device(), vb.dtype())?;
         let vb_l = vb_m.pp("layers");
@@ -349,6 +363,25 @@ impl QwenTextEncoder {
             xs = layer.forward(&xs, &mask, &rope)?;
         }
         Ok(xs)
+    }
+
+    /// The decoder's hidden states at `taps`, numbered as transformers' `hidden_states` (and
+    /// ComfyUI's `intermediate_output` list): `0` is the embedding, `k` the stream after layer
+    /// `k - 1`; a tap past the last layer is the final layer's output. Each `(B, S, hidden)`,
+    /// in `taps`' order. Krea 2 conditions on twelve of them.
+    pub fn forward_taps(&self, input_ids: &Tensor, taps: &[usize]) -> Result<Vec<Tensor>> {
+        let (_b, s) = input_ids.dims2()?;
+        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mask = self.causal_mask(s, xs.dtype())?;
+        let rope = self.rope.text_tables(s)?;
+        let last = taps.iter().copied().max().unwrap_or(0).min(self.layers.len());
+        let mut states: Vec<Tensor> = Vec::with_capacity(last + 1);
+        states.push(xs.clone());
+        for layer in self.layers.iter().take(last) {
+            xs = layer.forward(&xs, &mask, &rope)?;
+            states.push(xs.clone());
+        }
+        taps.iter().map(|t| states.get((*t).min(last)).cloned().ok_or_else(|| anyhow::anyhow!("tap {t} past the layers"))).collect()
     }
 
     /// The decoder on a prompt with pictures, as ComfyUI's `Qwen3VL` runs it: each `<|image_pad|>`
