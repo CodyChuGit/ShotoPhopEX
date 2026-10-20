@@ -50,6 +50,9 @@ pub struct Krea2Pipeline {
     te: std::sync::Mutex<Option<QwenTextEncoder>>,
     dit: Krea2Dit,
     vae: WanVae,
+    /// Drop the encoder after each prompt (the bf16 DiT leaves no room for it; it loads again
+    /// in two seconds for the next prompt).
+    evict_te: bool,
 }
 
 impl Krea2Pipeline {
@@ -61,10 +64,17 @@ impl Krea2Pipeline {
         let dtype = if matches!(dev, Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
         let tok = Tokenizer::from_file(model.join("tokenizer/tokenizer.json")).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
 
-        progress(0.0, "Loading the text encoder");
-        let t0 = Instant::now();
-        let te = load_text_encoder(model, &dev, dtype)?;
-        tracing::info!(load_s = t0.elapsed().as_secs_f32(), "text encoder loaded");
+        // Without ConvRot the DiT is 24 GB in bf16: the encoder comes and goes per prompt.
+        let evict_te = !opts.convrot || !cfg!(feature = "convrot");
+        let te = if evict_te {
+            None
+        } else {
+            progress(0.0, "Loading the text encoder");
+            let t0 = Instant::now();
+            let te = load_text_encoder(model, &dev, dtype)?;
+            tracing::info!(load_s = t0.elapsed().as_secs_f32(), "text encoder loaded");
+            Some(te)
+        };
 
         progress(0.3, "Loading the transformer");
         let t0 = Instant::now();
@@ -80,7 +90,7 @@ impl Krea2Pipeline {
         let vae = WanVae::load(vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "VAE loaded");
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, model: model.to_path_buf(), te: std::sync::Mutex::new(Some(te)), dit, vae })
+        Ok(Self { dev, dtype, tok, model: model.to_path_buf(), te: std::sync::Mutex::new(te), dit, vae, evict_te })
     }
 
     pub fn is_cuda(&self) -> bool {
@@ -95,7 +105,12 @@ impl Krea2Pipeline {
             *slot = Some(load_text_encoder(&self.model, &self.dev, self.dtype)?);
         }
         let te = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no text encoder"))?;
-        Ok(krea2::condition(te, &ids, &self.dev)?.unsqueeze(0)?)
+        let cond = krea2::condition(te, &ids, &self.dev)?.unsqueeze(0)?;
+        if self.evict_te {
+            *slot = None;
+            let _ = self.dev.synchronize();
+        }
+        Ok(cond)
     }
 
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
