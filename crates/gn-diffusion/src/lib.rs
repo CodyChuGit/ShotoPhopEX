@@ -1,11 +1,15 @@
-//! The diffusion models behind `gn-engine`'s worker protocol (plan Phase 2): Qwen-Image-2.1
-//! text to image through `qwen-image-rs`'s resident pipeline. The editor's `RunRequest` with
-//! task `image` and template `qwen-2.1/image` makes a picture with ComfyUI's conventions (its
-//! noise for the seed, its `simple` schedule), so the two routes agree picture for picture.
+//! The diffusion models behind `gn-engine`'s worker protocol (plan Phases 2 and 3):
+//! Qwen-Image-2.1 through `qwen-image-rs`'s resident pipeline. The editor's `RunRequest` with
+//! template `qwen-2.1/image` (task `image`) makes a picture from text, `qwen-2.1/edit` (task
+//! `edit`) re-renders the picture it carries by instruction with its reference pictures in
+//! context, and `qwen-2.1/fill` (task `fill`) does the same with the mask as the second
+//! picture, the way the app's ComfyUI graphs do; all with ComfyUI's conventions (its noise for
+//! the seed, its `simple` schedule, its reference sizes), so the two routes agree picture for
+//! picture.
 //!
 //! The snapshot lives under the model root as `qwen-image-2.1/` (Hugging Face's layout:
 //! `processor/ text_encoder/ transformer/ vae/`); the INT8 DiT cache under `.qir-cache/` beside
-//! it. The three models load on the first request and stay on the device.
+//! it. The models load on the first request and stay on the device.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
@@ -17,11 +21,17 @@ use std::time::Instant;
 use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
 use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
-use qwen_image_rs::pipeline::{Cancelled, Options, Pipeline, Request, Schedule, is_snapshot};
+use qwen_image_rs::pipeline::{Cancelled, Options, Pipeline, RefImage, Request, Schedule, is_snapshot};
 use serde_json::{Value, json};
 
-/// The template id this engine answers, as PhotoshopEX names it.
+/// The text-to-image template id this engine answers, as PhotoshopEX names it.
 pub const TEMPLATE: &str = "qwen-2.1/image";
+/// The edit template: the picture (image 1) and up to nine references (image 2, …).
+pub const TEMPLATE_EDIT: &str = "qwen-2.1/edit";
+/// The fill template: the picture (image 1) and the selection mask (image 2).
+pub const TEMPLATE_FILL: &str = "qwen-2.1/fill";
+/// Every template served, with the task each one answers.
+pub const TEMPLATES: [(&str, &str); 3] = [(TEMPLATE, "image"), (TEMPLATE_EDIT, "edit"), (TEMPLATE_FILL, "fill")];
 /// The model root's subdirectory for the snapshot.
 pub const MODEL_DIR: &str = "qwen-image-2.1";
 /// The model root's subdirectory for the prequantized DiT.
@@ -29,6 +39,8 @@ pub const CACHE_DIR: &str = ".qir-cache";
 /// The template's defaults when a request leaves them at zero (ComfyUI's `qwen-2.1/image`).
 pub const DEFAULT_STEPS: u32 = 25;
 pub const DEFAULT_SIDE: u32 = 1024;
+/// How many pictures an edit may carry: the picture and the template's nine references.
+pub const MAX_PICTURES: usize = 10;
 
 pub struct DiffusionEngine {
     models_root: PathBuf,
@@ -95,6 +107,38 @@ fn side(v: u32) -> usize {
     (v as usize / 16 * 16).max(16)
 }
 
+/// The task a served template answers; `None` for a template served elsewhere.
+pub fn task_of(template: &str) -> Option<&'static str> {
+    TEMPLATES.iter().find(|(t, _)| *t == template).map(|(_, task)| *task)
+}
+
+/// A blob's bytes, checked against its header.
+fn bytes_of<'a>(b: &Blob, blobs: &'a [Vec<u8>], what: &str) -> Result<&'a [u8], EngineError> {
+    let bytes = blobs.get(b.index as usize).ok_or_else(|| EngineError::new(ErrorKind::BadRequest, format!("the {what} names blob {} that was not sent", b.index)))?;
+    let want = b.width as usize * b.height as usize * usize::from(b.channels);
+    if b.width == 0 || b.height == 0 || bytes.len() != want {
+        return Err(EngineError::new(
+            ErrorKind::BadRequest,
+            format!("the {what} is {}x{} with {} channels but carries {} bytes", b.width, b.height, b.channels, bytes.len()),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// A picture blob as a reference: RGBA with the alpha made opaque, the way the ComfyUI route's
+/// `LoadImage` hands the model its pictures (the colours as they are, the VAE's alpha channel
+/// padded opaque; nothing is composited over white).
+fn reference_of(b: &Blob, blobs: &[Vec<u8>], what: &str) -> Result<RefImage, EngineError> {
+    let bytes = bytes_of(b, blobs, what)?;
+    let rgba: Vec<u8> = match b.channels {
+        4 => bytes.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        3 => bytes.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        1 => bytes.iter().flat_map(|v| [*v, *v, *v, 255]).collect(),
+        c => return Err(EngineError::new(ErrorKind::BadRequest, format!("the {what} has {c} channels (1, 3 or 4 expected)"))),
+    };
+    Ok(RefImage { width: b.width as usize, height: b.height as usize, rgba })
+}
+
 impl Engine for DiffusionEngine {
     fn name(&self) -> String {
         "qir".into()
@@ -115,19 +159,42 @@ impl Engine for DiffusionEngine {
     fn run(
         &mut self,
         req: &RunRequest,
-        _blobs: &[Vec<u8>],
+        blobs: &[Vec<u8>],
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
         let started = Instant::now();
-        if req.model != TEMPLATE {
-            return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not served here ({TEMPLATE} is)", req.model)));
-        }
-        if req.task != "image" {
-            return Err(EngineError::new(ErrorKind::Unsupported, format!("this engine makes pictures from text only, not `{}`", req.task)));
+        let Some(task) = task_of(&req.model) else {
+            let served: Vec<&str> = TEMPLATES.iter().map(|(t, _)| *t).collect();
+            return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not served here ({} are)", req.model, served.join(", "))));
+        };
+        if req.task != task {
+            return Err(EngineError::new(ErrorKind::Unsupported, format!("{} answers `{task}`, not `{}`", req.model, req.task)));
         }
         if req.prompt.trim().is_empty() {
             return Err(EngineError::new(ErrorKind::BadRequest, "a prompt is needed"));
+        }
+        // The pictures the model sees in order: image 1 is the picture being edited, then the
+        // mask (a fill) or the references (an edit). The target takes image 1's size, as
+        // ComfyUI's `TextEncodeQwenImage21` sizes its latent at `resolution 0`.
+        let mut references: Vec<RefImage> = Vec::new();
+        match task {
+            "edit" | "fill" => {
+                let Some(image) = &req.image else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the picture", req.model))) };
+                references.push(reference_of(image, blobs, "picture")?);
+                if task == "fill" {
+                    let Some(mask) = &req.mask else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the mask", req.model))) };
+                    references.push(reference_of(mask, blobs, "mask")?);
+                } else {
+                    for (i, r) in req.references.iter().enumerate() {
+                        references.push(reference_of(r, blobs, &format!("reference {}", i + 2))?);
+                    }
+                }
+                if references.len() > MAX_PICTURES {
+                    return Err(EngineError::new(ErrorKind::BadRequest, format!("{} pictures; at most {MAX_PICTURES}", references.len())));
+                }
+            }
+            _ => {}
         }
         let result: Result<qwen_image_rs::pipeline::Picture, EngineError> = (|| {
             self.ensure_loaded(progress)?;
@@ -135,15 +202,17 @@ impl Engine for DiffusionEngine {
             if cancel.load(Ordering::SeqCst) {
                 return Err(EngineError::cancelled());
             }
+            let (width, height) = if references.is_empty() { (side(req.width), side(req.height)) } else { (0, 0) };
             let ask = Request {
                 prompt: req.prompt.clone(),
                 negative: req.negative.clone(),
-                width: side(req.width),
-                height: side(req.height),
+                width,
+                height,
                 steps: if req.steps == 0 { DEFAULT_STEPS } else { req.steps } as usize,
                 seed: req.seed,
                 guidance: if req.guidance > 0.0 { req.guidance } else { 1.0 },
                 schedule: Schedule::Comfy,
+                references,
             };
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             p.generate(&ask, &mut report, &|| cancel.load(Ordering::SeqCst)).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))
@@ -171,7 +240,7 @@ impl Engine for DiffusionEngine {
     }
 
     fn index(&mut self, dir: &str) -> Value {
-        let installed: Vec<&str> = if self.has_snapshot() { vec![TEMPLATE] } else { Vec::new() };
+        let installed: Vec<&str> = if self.has_snapshot() { TEMPLATES.iter().map(|(t, _)| *t).collect() } else { Vec::new() };
         json!({
             "dir": dir,
             "installed": installed,
@@ -240,9 +309,39 @@ mod tests {
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
         let r = e.run(&req("sam3.1/segment", "segment"), &[], &mut |_, _| {}, &AtomicBool::new(false));
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })));
+        // A task the template does not answer.
         let r = e.run(&req(TEMPLATE, "edit"), &[], &mut |_, _| {}, &AtomicBool::new(false));
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::Unsupported, .. })));
+        // The edit and fill templates check their pictures before the models.
+        let r = e.run(&req(TEMPLATE_EDIT, "edit"), &[], &mut |_, _| {}, &AtomicBool::new(false));
+        assert!(matches!(&r, Err(EngineError { kind: ErrorKind::BadRequest, message }) if message.contains("picture")), "{r:?}");
+        let mut f = req(TEMPLATE_FILL, "fill");
+        f.image = Some(Blob { width: 2, height: 1, channels: 4, index: 0 });
+        let r = e.run(&f, &[vec![0; 8]], &mut |_, _| {}, &AtomicBool::new(false));
+        assert!(matches!(&r, Err(EngineError { kind: ErrorKind::BadRequest, message }) if message.contains("mask")), "{r:?}");
+        f.mask = Some(Blob { width: 2, height: 1, channels: 1, index: 1 });
+        let r = e.run(&f, &[vec![0; 8], vec![255, 0]], &mut |_, _| {}, &AtomicBool::new(false));
+        assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
         assert!(!has_models(Path::new("Z:/nowhere")));
+    }
+
+    #[test]
+    fn pictures_become_opaque_references() {
+        let blobs = vec![vec![10, 20, 30, 0, 40, 50, 60, 128], vec![255, 0], vec![1, 2, 3]];
+        let img = reference_of(&Blob { width: 2, height: 1, channels: 4, index: 0 }, &blobs, "picture").unwrap();
+        assert_eq!((img.width, img.height), (2, 1));
+        assert_eq!(img.rgba, vec![10, 20, 30, 255, 40, 50, 60, 255], "the colours as they are, alpha opaque");
+        let mask = reference_of(&Blob { width: 2, height: 1, channels: 1, index: 1 }, &blobs, "mask").unwrap();
+        assert_eq!(mask.rgba, vec![255, 255, 255, 255, 0, 0, 0, 255], "a grey picture of the mask");
+        let rgb = reference_of(&Blob { width: 1, height: 1, channels: 3, index: 2 }, &blobs, "reference").unwrap();
+        assert_eq!(rgb.rgba, vec![1, 2, 3, 255]);
+        // Headers that do not match their bytes, or name a missing blob, are refused.
+        let r = reference_of(&Blob { width: 3, height: 1, channels: 4, index: 0 }, &blobs, "picture");
+        assert!(matches!(r, Err(EngineError { kind: ErrorKind::BadRequest, .. })));
+        let r = reference_of(&Blob { width: 1, height: 1, channels: 4, index: 9 }, &blobs, "picture");
+        assert!(matches!(r, Err(EngineError { kind: ErrorKind::BadRequest, .. })));
+        let r = reference_of(&Blob { width: 1, height: 1, channels: 2, index: 1 }, &blobs, "picture");
+        assert!(matches!(r, Err(EngineError { kind: ErrorKind::BadRequest, .. })));
     }
 
     #[test]
@@ -252,6 +351,7 @@ mod tests {
         assert!(e.quant_text);
         assert_eq!(e.snapshot_dir(), PathBuf::from("m").join(MODEL_DIR));
         assert_eq!((side(0), side(1024), side(1000), side(5)), (1024, 1024, 992, 16));
+        assert_eq!((task_of(TEMPLATE), task_of(TEMPLATE_EDIT), task_of(TEMPLATE_FILL), task_of("krea2-turbo/image")), (Some("image"), Some("edit"), Some("fill"), None));
         assert_eq!(kind_of(&anyhow::anyhow!("CUDA_ERROR_OUT_OF_MEMORY")), ErrorKind::OutOfMemory);
         assert_eq!(kind_of(&Cancelled.into()), ErrorKind::Cancelled);
         assert_eq!(kind_of(&anyhow::anyhow!("weight directory does not exist: x")), ErrorKind::ModelMissing);

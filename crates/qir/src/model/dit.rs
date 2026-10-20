@@ -523,46 +523,74 @@ impl Attention {
     /// form of `segments`), for the sequences the fused kernels are not laid out for.
     fn attend_general(&self, x: &Tensor, cos: &Tensor, sin: &Tensor, segments: &[Segment]) -> Result<Tensor> {
         let (b, s, _) = x.dims3()?;
-        let scale = 1.0 / (HEAD_DIM as f64).sqrt();
         let (qh, kh, vv) = self.project(x, false)?; // (B,S,H,D), v bf16
-        let qh = qh.transpose(1, 2)?.contiguous()?;
-        let kh = kh.transpose(1, 2)?.contiguous()?;
-        let qh = candle_nn::rotary_emb::rope_i(&qh, cos, sin)?;
-        let kh = candle_nn::rotary_emb::rope_i(&kh, cos, sin)?;
-        let v = vv.transpose(1, 2)?.contiguous()?; // (B,H,S,D)
-                                                   // Per segment, in query chunks: the scores are f32 (a sequence of 8000 keys loses its
-                                                   // softmax in bf16) but never the whole S×S at once. A segment sees the keys before its
-                                                   // end; a causal one builds the small (chunk × end) mask it needs.
-        const CHUNK: usize = 1024;
-        let mut outs: Vec<Tensor> = Vec::new();
-        for seg in segments {
-            let keys = kh.narrow(2, 0, seg.end)?.to_dtype(DType::F32)?.transpose(2, 3)?.contiguous()?;
-            let vals = v.narrow(2, 0, seg.end)?;
-            let mut q0 = seg.start;
-            while q0 < seg.end {
-                let n = CHUNK.min(seg.end - q0);
-                let q = qh.narrow(2, q0, n)?.to_dtype(DType::F32)?;
-                let mut attn = (q.matmul(&keys)? * scale)?; // (B,H,n,end)
-                if seg.causal {
-                    let mut m = vec![0f32; n * seg.end];
-                    for (i, row) in m.chunks_mut(seg.end).enumerate() {
-                        for (kv, cell) in row.iter_mut().enumerate() {
-                            if kv > q0 + i {
-                                *cell = f32::NEG_INFINITY;
-                            }
-                        }
-                    }
-                    let m = Tensor::from_vec(m, (1, 1, n, seg.end), &self.device())?;
-                    attn = attn.broadcast_add(&m)?;
-                }
-                let attn = candle_nn::ops::softmax_last_dim(&attn)?.to_dtype(vals.dtype())?;
-                outs.push(attn.matmul(&vals)?); // (B,H,n,D)
-                q0 += n;
-            }
-        }
-        let out = Tensor::cat(&outs, 2)?; // (B,H,S,D)
-        let out = out.transpose(1, 2)?.contiguous()?;
+        let out = Self::attend_segments(&qh, &kh, &vv, cos, sin, segments, &self.device())?;
         self.to_out.forward(&out.reshape((b, s, INNER))?)
+    }
+
+    /// The plain attention of a joint sequence: `qh`, `kh` `(B,S,H,D)` per-head normalised and
+    /// pre-RoPE, `vv` `(B,S,H,D)`; the keys a segment sees are the ones before its end, a causal
+    /// segment's queries only those at or before each query. Returns `(B,S,H,D)`.
+    fn attend_segments(qh: &Tensor, kh: &Tensor, vv: &Tensor, cos: &Tensor, sin: &Tensor, segments: &[Segment], dev: &Device) -> Result<Tensor> {
+        let scale = 1.0 / (HEAD_DIM as f64).sqrt();
+        let qh = candle_nn::rotary_emb::rope_i(&qh.transpose(1, 2)?.contiguous()?, cos, sin)?;
+        let kh = candle_nn::rotary_emb::rope_i(&kh.transpose(1, 2)?.contiguous()?, cos, sin)?;
+        let v = vv.transpose(1, 2)?.contiguous()?; // (B,H,S,D)
+        let mut outs: Vec<Tensor> = Vec::with_capacity(segments.len());
+        for seg in segments {
+            let q = qh.narrow(2, seg.start, seg.end - seg.start)?;
+            let (k, vals) = (kh.narrow(2, 0, seg.end)?, v.narrow(2, 0, seg.end)?);
+            outs.push(chunked_attention(&q, &k, &vals, seg.causal.then_some(seg.start), scale, dev)?);
+        }
+        Ok(Tensor::cat(&outs, 2)?.transpose(1, 2)?.contiguous()?) // (B,S,H,D)
+    }
+
+    /// The prefix pass of a cached generation (see [`PrefixCache`]): the plain attention of the
+    /// rows before the target, returning its output with this block's keys (pre-RoPE,
+    /// normalised) and values of those rows, `(B,P,H,D)` each.
+    fn forward_prefix(&self, x: &Tensor, cos: &Tensor, sin: &Tensor, segments: &[Segment]) -> Result<(Tensor, (Tensor, Tensor))> {
+        let (b, s, _) = x.dims3()?;
+        let (qh, kh, vv) = self.project(x, cfg!(feature = "sage"))?; // v f16 under sage, the P·V operand
+        let out = Self::attend_segments(&qh, &kh, &vv, cos, sin, segments, &self.device())?.to_dtype(x.dtype())?;
+        Ok((self.to_out.forward(&out.reshape((b, s, INNER))?)?, (kh, vv)))
+    }
+
+    /// The target pass of a cached generation: the target's `x` `(B,T,INNER)` attends to the
+    /// cached prefix keys and values `(B,P,H,D)` and its own, with no mask (the target sees
+    /// everything); `cos`/`sin` are the joint sequence's tables, the prefix rows first.
+    fn forward_cached(&self, x: &Tensor, cos: &Tensor, sin: &Tensor, prefix: &(Tensor, Tensor)) -> Result<Tensor> {
+        let (b, t, _) = x.dims3()?;
+        let p = prefix.0.dim(1)?;
+        let scale = 1.0 / (HEAD_DIM as f64).sqrt();
+        let (qh, kh, vv) = self.project(x, cfg!(feature = "sage"))?; // (B,T,H,D)
+        let k_full = Tensor::cat(&[&prefix.0, &kh], 1)?; // (B,P+T,H,D)
+        let v_full = Tensor::cat(&[&prefix.1, &vv], 1)?;
+        let (cos_t, sin_t) = (cos.narrow(0, p, t)?, sin.narrow(0, p, t)?);
+        #[cfg(feature = "sage")]
+        let out = {
+            let sc = scale as f32;
+            #[cfg(feature = "sage2")]
+            if let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? {
+                use crate::sage2::{Role, attention, quant_v, rope_quant};
+                let q = rope_quant(&qh, &cos_t, &sin_t, Role::Query)?;
+                let k = rope_quant(&k_full, cos, sin, Role::Key)?;
+                let v = quant_v(&v_full, accum)?;
+                let o = attention(&q, &k, &v, sc, false)?; // (B,T,H,D)
+                return self.to_out.forward(&o.reshape((b, t, INNER))?);
+            }
+            use crate::sage::{QkRole, rope_quant_bshd, sage_attention_quantized};
+            let q = rope_quant_bshd(&qh, &cos_t, &sin_t, QkRole::Query)?;
+            let k = rope_quant_bshd(&k_full, cos, sin, QkRole::Key)?;
+            sage_attention_quantized(&q, &k, &v_full, sc, false)? // (B,T,H,D)
+        };
+        #[cfg(not(feature = "sage"))]
+        let out = {
+            let q = candle_nn::rotary_emb::rope_i(&qh.transpose(1, 2)?.contiguous()?, &cos_t, &sin_t)?;
+            let k = candle_nn::rotary_emb::rope_i(&k_full.transpose(1, 2)?.contiguous()?, cos, sin)?;
+            let v = v_full.transpose(1, 2)?.contiguous()?;
+            chunked_attention(&q, &k, &v, None, scale, &self.device())?.transpose(1, 2)?.contiguous()?
+        };
+        self.to_out.forward(&out.reshape((b, t, INNER))?)
     }
 
     fn device(&self) -> Device {
@@ -692,6 +720,39 @@ impl Attention {
     }
 }
 
+/// Plain attention of the queries `q` `(B,H,Q,D)` over the keys `k` `(B,H,K,D)` and values `v`
+/// `(B,H,K,D)`, q and k rotated: the scores in f32 (a sequence of 8000 keys loses its softmax
+/// in bf16) in query chunks, never a dense Q×K at once. With `causal = Some(off)` query row
+/// `i` sees the keys at or before `i + off`. Returns `(B,H,Q,D)` in `v`'s dtype.
+fn chunked_attention(q: &Tensor, k: &Tensor, v: &Tensor, causal: Option<usize>, scale: f64, dev: &Device) -> Result<Tensor> {
+    const CHUNK: usize = 1024;
+    let qn = q.dim(2)?;
+    let kn = k.dim(2)?;
+    let keys = k.to_dtype(DType::F32)?.transpose(2, 3)?.contiguous()?; // (B,H,D,K)
+    let mut outs: Vec<Tensor> = Vec::with_capacity(qn.div_ceil(CHUNK));
+    let mut q0 = 0;
+    while q0 < qn {
+        let n = CHUNK.min(qn - q0);
+        let qc = q.narrow(2, q0, n)?.to_dtype(DType::F32)?;
+        let mut attn = (qc.matmul(&keys)? * scale)?; // (B,H,n,K)
+        if let Some(off) = causal {
+            let mut m = vec![0f32; n * kn];
+            for (i, row) in m.chunks_mut(kn).enumerate() {
+                for (kv, cell) in row.iter_mut().enumerate() {
+                    if kv > q0 + i + off {
+                        *cell = f32::NEG_INFINITY;
+                    }
+                }
+            }
+            attn = attn.broadcast_add(&Tensor::from_vec(m, (1, 1, n, kn), dev)?)?;
+        }
+        let attn = candle_nn::ops::softmax_last_dim(&attn)?.to_dtype(v.dtype())?;
+        outs.push(attn.matmul(v)?); // (B,H,n,D)
+        q0 += n;
+    }
+    Ok(Tensor::cat(&outs, 2)?)
+}
+
 /// How the SwiGLU MLP projects its gate and proj inputs.
 enum MlpIn {
     /// Two linears (bf16, Q8_0, or unmerged ConvRot).
@@ -796,6 +857,33 @@ impl Block {
         let m = self.mlp.forward(&x)?;
         Ok((h, m))
     }
+
+    /// [`Self::forward`] on the prefix rows alone, also returning this block's keys and values
+    /// of those rows for the [`PrefixCache`].
+    fn forward_prefix(
+        &self,
+        h: &Tensor,
+        pending: Option<&Tensor>,
+        mods: &BlockMods,
+        cos: &Tensor,
+        sin: &Tensor,
+        segments: &[Segment],
+    ) -> Result<(Tensor, Tensor, (Tensor, Tensor))> {
+        let (h, x) = residual_norm_mod(h, pending.map(|y| (&mods.gate2, y)), &mods.scale1, self.eps)?;
+        let (attn, kv) = self.attn.forward_prefix(&x, cos, sin, segments)?;
+        let (h, x) = residual_norm_mod(&h, Some((&mods.gate1, &attn)), &mods.scale2, self.eps)?;
+        let m = self.mlp.forward(&x)?;
+        Ok((h, m, kv))
+    }
+
+    /// [`Self::forward`] on the target rows alone, attending to the cached prefix.
+    fn forward_cached(&self, h: &Tensor, pending: Option<&Tensor>, mods: &BlockMods, cos: &Tensor, sin: &Tensor, prefix: &(Tensor, Tensor)) -> Result<(Tensor, Tensor)> {
+        let (h, x) = residual_norm_mod(h, pending.map(|y| (&mods.gate2, y)), &mods.scale1, self.eps)?;
+        let attn = self.attn.forward_cached(&x, cos, sin, prefix)?;
+        let (h, x) = residual_norm_mod(&h, Some((&mods.gate1, &attn)), &mods.scale2, self.eps)?;
+        let m = self.mlp.forward(&x)?;
+        Ok((h, m))
+    }
 }
 
 /// One stretch of the joint sequence and how its queries attend: to every key before `end`,
@@ -838,6 +926,30 @@ pub struct RefLatent<'a> {
     pub packed: &'a Tensor,
     pub h: usize,
     pub w: usize,
+}
+
+/// What the rows before the target (the text and the reference pictures) contribute to every
+/// block's attention. They modulate at t = 0 and never attend to the target, so their hidden
+/// states, keys and values are the same at every step (what ComfyUI's `QwenImage21Cache`
+/// keeps): [`QwenImageDit::prefix_cache`] computes them once per generation, and
+/// [`QwenImageDit::forward_cached`] then runs each step over the target's rows alone.
+pub struct PrefixCache {
+    /// Per block: the prefix rows' keys `(B,P,H,D)` (per-head normalised, before RoPE) and
+    /// values `(B,P,H,D)` (f16 under `sage`, the P·V operand).
+    layers: Vec<(Tensor, Tensor)>,
+    /// The joint sequence's RoPE tables `(P+T, 64)`: the prefix rows, then the target's.
+    cos: Tensor,
+    sin: Tensor,
+    prefix_len: usize,
+    /// The target grid the tables were built for.
+    h: usize,
+    w: usize,
+}
+
+impl PrefixCache {
+    pub fn prefix_len(&self) -> usize {
+        self.prefix_len
+    }
 }
 
 /// The modulation every block shares (one `modulation` linear per forward).
@@ -969,12 +1081,91 @@ impl QwenImageDit {
         slots: &[usize],
     ) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
-        let (b, txt_len, _) = encoder_hidden_states.dims3()?;
+        let b = encoder_hidden_states.dim(0)?;
         let img_tokens = h * w;
-        anyhow::ensure!(slots.len() == refs.len(), "{} slots for {} references", slots.len(), refs.len());
+        let Layout { parts, ids, segments } = self.layout(encoder_hidden_states, Some(hidden_states), h, w, refs, slots)?;
+        let joint = Tensor::cat(&parts, 1)?; // (1, S, INNER)
+        let seq = ids.len();
+        let prefix_len = seq - img_tokens;
 
+        // Modulation for the two timestep rows [t, 0]; the per-token selection (the target's
+        // rows take row 0 = real t, everything before them row 1 = t = 0) happens inside the
+        // AdaLN step (see `Modulation`).
+        let (temb, mods) = self.modulation(timestep, dtype, b, prefix_len, img_tokens)?;
+
+        // The dense mask serves the plain path of the text-to-image layout; the fused kernels
+        // and the segment path derive the structure themselves and get a token they ignore.
+        let mask = if !cfg!(any(feature = "flash-attn", feature = "sage")) && simple_prefix(&segments).is_some() {
+            segments_mask(&segments, seq, dtype, &self.device)?
+        } else {
+            Tensor::zeros((1, 1, 1, 1), dtype, &self.device)?
+        };
+        let (cos, sin) = self.rope_from_ids(&ids, dtype)?;
+
+        let mut hs = joint;
+        let mut pending: Option<Tensor> = None;
+        for block in &self.blocks {
+            let (nh, y) = block.forward(&hs, pending.as_ref(), &mods, &mask, &cos, &sin, &segments)?;
+            hs = nh;
+            pending = Some(y);
+        }
+        self.output(&hs, pending.as_ref(), &mods, &temb, b, prefix_len, img_tokens)
+    }
+
+    /// The prefix pass of a cached generation: the text and reference rows through every block
+    /// at t = 0, keeping each block's keys and values of them (see [`PrefixCache`]). The target
+    /// grid `(h, w)` fixes the reference grids' centring and the joint RoPE tables.
+    pub fn prefix_cache(&self, encoder_hidden_states: &Tensor, h: usize, w: usize, refs: &[RefLatent], slots: &[usize]) -> Result<PrefixCache> {
+        let dtype = encoder_hidden_states.dtype();
+        let b = encoder_hidden_states.dim(0)?;
+        let Layout { parts, ids, segments } = self.layout(encoder_hidden_states, None, h, w, refs, slots)?;
+        let prefix_len = ids.len() - h * w;
+        anyhow::ensure!(prefix_len > 0, "a prefix cache needs text or reference rows");
+        let joint = Tensor::cat(&parts, 1)?; // (1, P, INNER)
+        // Every prefix row modulates at t = 0 (both rows of the pair are t = 0 here).
+        let t0 = Tensor::zeros((1,), dtype, &self.device)?;
+        let (_, mods) = self.modulation(&t0, dtype, b, 0, prefix_len)?;
+        let (cos, sin) = self.rope_from_ids(&ids, dtype)?;
+        let (cos_p, sin_p) = (cos.narrow(0, 0, prefix_len)?, sin.narrow(0, 0, prefix_len)?);
+        let mut layers = Vec::with_capacity(self.blocks.len());
+        let mut hs = joint;
+        let mut pending: Option<Tensor> = None;
+        for block in &self.blocks {
+            let (nh, y, kv) = block.forward_prefix(&hs, pending.as_ref(), &mods, &cos_p, &sin_p, &segments)?;
+            layers.push(kv);
+            hs = nh;
+            pending = Some(y);
+        }
+        Ok(PrefixCache { layers, cos, sin, prefix_len, h, w })
+    }
+
+    /// One step over the target's rows alone, attending to the cached prefix: `hidden_states`
+    /// `(1, h·w, 64)` on the cache's grid. Returns `(1, h·w, out_channels)`.
+    pub fn forward_cached(&self, hidden_states: &Tensor, timestep: &Tensor, cache: &PrefixCache) -> Result<Tensor> {
+        let dtype = hidden_states.dtype();
+        let (b, img_tokens, _) = hidden_states.dims3()?;
+        anyhow::ensure!(img_tokens == cache.h * cache.w, "the cache was built for a {}x{} target, not {img_tokens} tokens", cache.w, cache.h);
+        let img = self.img_in.forward(hidden_states)?;
+        // Every target row modulates at the real t.
+        let (temb, mods) = self.modulation(timestep, dtype, b, 0, img_tokens)?;
+        let mut hs = img;
+        let mut pending: Option<Tensor> = None;
+        for (block, prefix) in self.blocks.iter().zip(&cache.layers) {
+            let (nh, y) = block.forward_cached(&hs, pending.as_ref(), &mods, &cache.cos, &cache.sin, prefix)?;
+            hs = nh;
+            pending = Some(y);
+        }
+        self.output(&hs, pending.as_ref(), &mods, &temb, b, 0, img_tokens)
+    }
+
+    /// ComfyUI's `build_sequence`: the embedded rows of the joint sequence in order (the text
+    /// stretches, each reference's latent tokens at its slot, the target last when given),
+    /// their 3-axis positions and the attention segments.
+    fn layout(&self, encoder_hidden_states: &Tensor, target: Option<&Tensor>, h: usize, w: usize, refs: &[RefLatent], slots: &[usize]) -> Result<Layout> {
+        let txt_len = encoder_hidden_states.dim(1)?;
+        anyhow::ensure!(slots.len() == refs.len(), "{} slots for {} references", slots.len(), refs.len());
         let txt = self.txt_in.forward(encoder_hidden_states)?; // (1, txt, INNER)
-                                                               // bounds of the text stretches: [0, slot_0, ..., slot_{k-1}, txt_len]
+        // bounds of the text stretches: [0, slot_0, ..., slot_{k-1}, txt_len]
         let mut bounds: Vec<usize> = vec![0];
         bounds.extend(slots.iter().map(|s| (*s).min(txt_len)));
         bounds.push(txt_len);
@@ -993,10 +1184,9 @@ impl QwenImageDit {
                 length += n;
             }
             let (img, ih, iw) = match refs.get(i) {
-                Some(r) => (self.img_in.forward(r.packed)?, r.h, r.w),
-                None => (self.img_in.forward(hidden_states)?, h, w),
+                Some(r) => (Some(self.img_in.forward(r.packed)?), r.h, r.w),
+                None => (target.map(|t| self.img_in.forward(t)).transpose()?, h, w),
             };
-            parts.push(img);
             // half a token where a reference grid has the other parity, so it centres on the target
             let hh0 = -((ih - ih / 2) as f32) + 0.5 * ((ih % 2) as f32 - (h % 2) as f32);
             let ww0 = -((iw - iw / 2) as f32) + 0.5 * ((iw % 2) as f32 - (w % 2) as f32);
@@ -1005,53 +1195,44 @@ impl QwenImageDit {
                     ids.push([pos as f32, hh0 + r as f32, ww0 + c as f32]);
                 }
             }
-            segments.push(Segment { start: length, end: length + ih * iw, causal: false });
+            if let Some(img) = img {
+                parts.push(img);
+                segments.push(Segment { start: length, end: length + ih * iw, causal: false });
+            }
             pos += ih.max(iw);
             length += ih * iw;
         }
-        let joint = Tensor::cat(&parts, 1)?; // (1, S, INNER)
-        let seq = length;
-        let prefix_len = seq - img_tokens;
+        Ok(Layout { parts, ids, segments })
+    }
 
-        // timestep embedding for [t, 0]; modulation for both rows.
+    /// The timestep embedding of the pair `[t, 0]` and the four modulations of a forward, laid
+    /// over `prefix_len` rows at t = 0 then `img_tokens` rows at `t`.
+    fn modulation(&self, timestep: &Tensor, dtype: DType, b: usize, prefix_len: usize, img_tokens: usize) -> Result<(Tensor, BlockMods)> {
         let t0 = Tensor::zeros((1,), dtype, &self.device)?;
         let ts = Tensor::cat(&[&timestep.to_dtype(dtype)?, &t0], 0)?; // (2,)
         let temb = self.time_embed.forward(&ts, dtype)?; // (2, INNER)
         let modhad = self.modulation.forward(&silu(&temb)?)?; // (2, 4*INNER)
-
-        // Split modulation into scale1,gate1,scale2,gate2, each (2, INNER).
-        let chunk = |t: &Tensor, i: usize| -> Result<Tensor> { Ok(t.narrow(1, i * INNER, INNER)?) };
-        let mods: Vec<Tensor> = (0..4).map(|i| chunk(&modhad, i)).collect::<Result<_>>()?;
-        // Per-token selection (the target's rows take row 0 = real t, everything before
-        // them row 1 = t=0) happens inside the AdaLN step (see `Modulation`).
-        let md = |m: &Tensor| Modulation::new(m.clone(), b, prefix_len, img_tokens);
-        let mods = BlockMods { scale1: md(&mods[0])?, gate1: md(&mods[1])?, scale2: md(&mods[2])?, gate2: md(&mods[3])? };
-
-        // The dense mask serves the plain path of the text-to-image layout; the fused kernels
-        // and the segment path derive the structure themselves and get a token they ignore.
-        let mask = if !cfg!(any(feature = "flash-attn", feature = "sage")) && simple_prefix(&segments).is_some() {
-            segments_mask(&segments, seq, dtype, &self.device)?
-        } else {
-            Tensor::zeros((1, 1, 1, 1), dtype, &self.device)?
-        };
-        let (cos, sin) = self.rope_from_ids(&ids, dtype)?;
-
-        let mut hs = joint;
-        let mut pending: Option<Tensor> = None;
-        for block in &self.blocks {
-            let (nh, y) = block.forward(&hs, pending.as_ref(), &mods, &mask, &cos, &sin, &segments)?;
-            hs = nh;
-            pending = Some(y);
-        }
-
-        // norm_out: AdaLayerNorm scale-only (fused with the last block's MLP
-        // residual), then proj_out. Scale from temb rows.
-        let scale_out = self.norm_out_linear.forward(&silu(&temb)?)?; // (2, INNER)
-        let scale_out = Modulation::new(scale_out, b, prefix_len, img_tokens)?;
-        let (_, x) = residual_norm_mod(&hs, pending.as_ref().map(|y| (&mods.gate2, y)), &scale_out, 1e-6)?;
-        let out = self.proj_out.forward(&x)?; // (1, seq, out_channels)
-        Ok(out)
+        // scale1, gate1, scale2, gate2, each (2, INNER).
+        let chunk = |i: usize| -> Result<Modulation> { Modulation::new(modhad.narrow(1, i * INNER, INNER)?, b, prefix_len, img_tokens) };
+        Ok((temb, BlockMods { scale1: chunk(0)?, gate1: chunk(1)?, scale2: chunk(2)?, gate2: chunk(3)? }))
     }
+
+    /// `norm_out` (AdaLayerNorm, scale only, fused with the last block's MLP residual) then
+    /// `proj_out`: `(B, seq, out_channels)`.
+    #[allow(clippy::too_many_arguments)]
+    fn output(&self, hs: &Tensor, pending: Option<&Tensor>, mods: &BlockMods, temb: &Tensor, b: usize, prefix_len: usize, img_tokens: usize) -> Result<Tensor> {
+        let scale_out = self.norm_out_linear.forward(&silu(temb)?)?; // (2, INNER)
+        let scale_out = Modulation::new(scale_out, b, prefix_len, img_tokens)?;
+        let (_, x) = residual_norm_mod(hs, pending.map(|y| (&mods.gate2, y)), &scale_out, 1e-6)?;
+        self.proj_out.forward(&x)
+    }
+}
+
+/// The joint sequence of a forward (see [`QwenImageDit::layout`]).
+struct Layout {
+    parts: Vec<Tensor>,
+    ids: Vec<[f32; 3]>,
+    segments: Vec<Segment>,
 }
 
 /// Select modulation rows per token: `(2, INNER)` -> `(1, seq, INNER)`, image
@@ -1060,10 +1241,12 @@ impl QwenImageDit {
 fn select_rows(m: &Tensor, txt_len: usize, img_tokens: usize) -> Result<Tensor> {
     let real = m.narrow(0, 0, 1)?; // (1, INNER)
     let zero = m.narrow(0, 1, 1)?; // (1, INNER)
-    let text_rows = zero.broadcast_as((txt_len, m.dim(1)?))?;
-    let img_rows = real.broadcast_as((img_tokens, m.dim(1)?))?;
-    let rows = Tensor::cat(&[&text_rows, &img_rows], 0)?.unsqueeze(0)?; // (1, seq, INNER)
-    Ok(rows)
+    let rows = match (txt_len, img_tokens) {
+        (0, n) => real.broadcast_as((n, m.dim(1)?))?.contiguous()?,
+        (n, 0) => zero.broadcast_as((n, m.dim(1)?))?.contiguous()?,
+        (t, n) => Tensor::cat(&[&zero.broadcast_as((t, m.dim(1)?))?, &real.broadcast_as((n, m.dim(1)?))?], 0)?,
+    };
+    Ok(rows.unsqueeze(0)?) // (1, seq, INNER)
 }
 
 #[cfg(test)]
