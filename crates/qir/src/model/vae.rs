@@ -799,6 +799,17 @@ impl QwenImageVae {
         self.lay
     }
 
+    /// A latent in the VAE's own (raw) space `(B, z, H, W)` into the normalised space the DiT
+    /// was trained in: `(z − latents_mean) / latents_std`, the inverse of what [`Self::decode`]
+    /// applies (ComfyUI's `SaveLatent` writes raw-space latents; this takes them in).
+    pub fn normalize(&self, z_raw: &Tensor) -> Result<Tensor> {
+        let z = z_raw
+            .to_dtype(DType::F32)?
+            .broadcast_sub(&self.latents_mean)?
+            .broadcast_div(&self.latents_std)?;
+        Ok(z)
+    }
+
     /// Decode an already-unpacked, normalized latent `(B, z, H, W)` into an RGBA
     /// image `(B, 4, H*16, W*16)` in [-1, 1] (pre postprocess). On the NHWC
     /// path the result is a zero-copy `(B, 4, H, W)` view of NHWC storage.
