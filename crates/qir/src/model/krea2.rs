@@ -124,9 +124,25 @@ impl Krea2Config {
     }
 }
 
+/// The linears ConvRot takes: the attention and SwiGLU projections of the blocks and of the
+/// text-fusion adapter (`<prefix>` is the tensor name without `.weight`). The tails (`first`,
+/// `tmlp`, `tproj`, `txtmlp`, `last`, the projector) stay bf16.
+pub fn is_convrot_target(prefix: &str) -> bool {
+    let under = prefix.starts_with("blocks.") || prefix.starts_with("txtfusion.");
+    let name = prefix.rsplit('.').next().unwrap_or("");
+    let kind = prefix.rsplit('.').nth(1).unwrap_or("");
+    under && ((kind == "attn" && matches!(name, "wq" | "wk" | "wv" | "gate" | "wo")) || (kind == "mlp" && matches!(name, "gate" | "up" | "down")))
+}
+
+/// The policy tag a Krea 2 ConvRot cache entry carries (a change invalidates the entry).
+pub fn convrot_policy_tag() -> String {
+    format!("qir-krea2-convrot-v{};group={};blocks+txtfusion attn/mlp", crate::model::dit::PREQUANT_FORMAT, crate::model::rotation::GROUP)
+}
+
 /// A linear of the DiT: bf16, or ConvRot W8A8 INT8 when the rotation is given and the shape
 /// allows (the 2.1 port's kernels, `convrot` feature): the block and text-fusion linears take
-/// it so the 24 GB bf16 model fits beside the encoder; the small tails stay bf16.
+/// it so the 24 GB bf16 model fits beside the encoder; the small tails stay bf16. A
+/// prequantized file (`weight_i8` + `col_scale`, the cache's) loads as it is.
 enum KLinear {
     Full(Linear),
     #[cfg(feature = "convrot")]
@@ -138,9 +154,17 @@ impl KLinear {
         #[cfg(feature = "convrot")]
         if let Some(r) = rot {
             if !bias && in_c.is_multiple_of(crate::model::rotation::GROUP) && out_c.is_multiple_of(8) {
+                if vb.contains_tensor("weight_i8") {
+                    let w_i8 = vb.get_unchecked_dtype("weight_i8", DType::U8)?;
+                    let col_scale = vb.get_unchecked_dtype("col_scale", DType::F32)?;
+                    return Ok(Self::Convrot(crate::convrot::ConvRotLinear::from_prequantized(w_i8, col_scale, r)?));
+                }
                 let w = vb.get((out_c, in_c), "weight")?;
                 return Ok(Self::Convrot(crate::convrot::ConvRotLinear::from_weight(&w, r)?));
             }
+        }
+        if !vb.contains_tensor("weight") && vb.contains_tensor("weight_i8") {
+            anyhow::bail!("{}: the file holds only a ConvRot INT8 weight for this layer (run with --convrot)", vb.prefix());
         }
         let _ = rot;
         Ok(Self::Full(if bias { linear(in_c, out_c, vb)? } else { linear_no_bias(in_c, out_c, vb)? }))
@@ -542,6 +566,17 @@ mod tests {
         assert_eq!((c.head_dim(), c.axes()), (128, [32, 48, 48]));
         assert_eq!(Krea2Config::mlp_dim(6144, 4), 16384);
         assert_eq!(Krea2Config::mlp_dim(2560, 4), 6912);
+    }
+
+    #[test]
+    fn the_convrot_policy_names_the_block_linears_only() {
+        for p in ["blocks.0.attn.wq", "blocks.27.attn.gate", "blocks.3.mlp.down", "txtfusion.layerwise_blocks.1.attn.wo", "txtfusion.refiner_blocks.0.mlp.up"] {
+            assert!(is_convrot_target(p), "{p}");
+        }
+        for p in ["first", "tmlp.0", "tproj.1", "txtmlp.1", "last.linear", "txtfusion.projector", "blocks.0.attn.qknorm.qnorm", "blocks.0.mod"] {
+            assert!(!is_convrot_target(p), "{p}");
+        }
+        assert!(convrot_policy_tag().starts_with("qir-krea2-convrot-v"));
     }
 
     #[test]
