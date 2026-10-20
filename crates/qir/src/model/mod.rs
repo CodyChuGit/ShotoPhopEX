@@ -9,3 +9,4 @@ pub mod scheduler;
 pub mod text_encoder;
 pub mod vae;
 pub mod vision;
+pub mod wan_vae;

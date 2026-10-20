@@ -369,6 +369,59 @@ enum Command {
         #[arg(long)]
         out: std::path::PathBuf,
     },
+    /// Text to image with Krea 2 Turbo through the resident pipeline, ComfyUI's conventions
+    /// (Phase 4).
+    GenerateKrea2 {
+        /// The Krea 2 weights folder (tokenizer/, text_encoder/, transformer/, vae/).
+        #[arg(long)]
+        model: std::path::PathBuf,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long, default_value_t = 1024)]
+        width: usize,
+        #[arg(long, default_value_t = 1024)]
+        height: usize,
+        #[arg(long, default_value_t = 8)]
+        steps: usize,
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
+        /// ConvRot W8A8 INT8 for the DiT's block linears (`convrot` feature).
+        #[arg(long)]
+        convrot: bool,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// One Krea 2 DiT forward on a dumped latent (`x`) and conditioning (`cond`) at `--t`,
+    /// saved as `dit_out` (Phase 4 parity).
+    Krea2DitForward {
+        /// The converted transformer directory (`transformer/model.safetensors`).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// The safetensors holding `x` `(1, 16, h, w)`.
+        #[arg(long)]
+        inputs: std::path::PathBuf,
+        /// The safetensors holding `cond` `(tokens, 12*2560)`.
+        #[arg(long)]
+        cond: std::path::PathBuf,
+        #[arg(long, default_value_t = 1.0)]
+        t: f32,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Decode a dumped Wan 2.1 latent (`z_raw`, the VAE's own space) through the ported decoder
+    /// and save the picture as `(1, 1, H, W, 3)` in `[0, 1]`, ComfyUI's shape (Phase 4 parity).
+    WanVaeDecode {
+        /// The VAE file (`wan_2.1_vae.safetensors`).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        #[arg(long)]
+        latent: std::path::PathBuf,
+        /// Decode in bf16 (f32 otherwise).
+        #[arg(long)]
+        bf16: bool,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// Rewrite one of ComfyUI's `fp8_scaled` repacks as bf16 safetensors (the fp8 linears
     /// dequantised with their `weight_scale`, everything else copied), for the loaders.
     ConvertFp8 {
@@ -528,6 +581,9 @@ fn main() -> Result<()> {
         Command::VaeEncode { weights, image, bf16, out, roundtrip } => vae_encode(&weights, &image, bf16, &out, roundtrip.as_deref()),
         Command::VisionForward { weights, inputs, grid_h, grid_w, out } => vision_forward(&weights, &inputs, grid_h, grid_w, &out),
         Command::Krea2Cond { weights, tokenizer, prompt, out } => krea2_cond(&weights, &tokenizer, &prompt, &out),
+        Command::WanVaeDecode { weights, latent, bf16, out } => wan_vae_decode(&weights, &latent, bf16, &out),
+        Command::Krea2DitForward { weights, inputs, cond, t, out } => krea2_dit_forward(&weights, &inputs, &cond, t, &out),
+        Command::GenerateKrea2 { model, prompt, width, height, steps, seed, convrot, out } => generate_krea2(&model, &prompt, width, height, steps, seed, convrot, &out),
         Command::ConvertFp8 { src, dst } => {
             let t0 = std::time::Instant::now();
             let r = qwen_image_rs::convert::dequantize_fp8_file(&src, &dst)?;
@@ -1184,6 +1240,74 @@ fn edit(
     let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
     buf.save(out)?;
     println!("wrote {} ({}x{}, seed {seed})", out.display(), pic.width, pic.height);
+    Ok(())
+}
+
+/// Phase 4: a Krea 2 Turbo picture through the resident pipeline.
+#[allow(clippy::too_many_arguments)]
+fn generate_krea2(model: &std::path::Path, prompt: &str, width: usize, height: usize, steps: usize, seed: u64, convrot: bool, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::krea2_pipeline::{Krea2Options, Krea2Pipeline};
+    use qwen_image_rs::pipeline::{Request, Schedule};
+    let mut report = |f: f32, m: &str| tracing::info!(progress = f, "{m}");
+    let t0 = std::time::Instant::now();
+    let p = Krea2Pipeline::load(model, Krea2Options { convrot }, &mut report)?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
+    let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references: Vec::new() };
+    let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
+    let pic = p.generate(&req, &mut report, &|| false)?;
+    let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
+    buf.save(out)?;
+    println!("wrote {} ({}x{}, seed {seed})", out.display(), pic.width, pic.height);
+    Ok(())
+}
+
+/// Phase 4: one Krea 2 DiT forward on dumped inputs, for the parity check against ComfyUI's.
+fn krea2_dit_forward(weights: &std::path::Path, inputs: &std::path::Path, cond: &std::path::Path, t: f32, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::krea2::{Krea2Config, Krea2Dit, TAPS, TEXT_DIM};
+    let dev = device::best_device()?;
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let files = WeightSet::resolve(weights)?.files;
+    let t0 = std::time::Instant::now();
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
+    let dit = Krea2Dit::load(&Krea2Config::default(), false, vb)?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "krea 2 dit loaded");
+    let x = candle_core::safetensors::load(inputs, &dev)?.get("x").context("no `x`")?.to_dtype(dtype)?;
+    let c = candle_core::safetensors::load(cond, &dev)?.get("cond").context("no `cond`")?.to_dtype(dtype)?;
+    let (tokens, _) = c.dims2()?;
+    let c = c.reshape((1, tokens, TAPS.len(), TEXT_DIM))?;
+    let t0 = std::time::Instant::now();
+    let y = dit.forward(&x, t, &c)?;
+    dev.synchronize()?;
+    tracing::info!(ms = t0.elapsed().as_millis(), shape = ?y.dims(), "forward");
+    let mut map = std::collections::HashMap::new();
+    map.insert("dit_out".to_string(), y.to_dtype(DType::F32)?.contiguous()?);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Phase 4: the Wan 2.1 VAE decoder on a dumped latent, for the parity check against ComfyUI's.
+fn wan_vae_decode(weights: &std::path::Path, latent: &std::path::Path, bf16: bool, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::wan_vae::WanVae;
+    let dev = device::best_device()?;
+    let t0 = std::time::Instant::now();
+    let dtype = if bf16 && matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[weights.to_path_buf()], dtype, &dev)? };
+    let vae = WanVae::load(vb)?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "wan 2.1 vae loaded");
+    let m = candle_core::safetensors::load(latent, &dev)?;
+    let z = m.get("z_raw").context("no `z_raw`")?.to_dtype(DType::F32)?;
+    let z = if z.dims().len() == 5 { z.squeeze(2)? } else { z };
+    let t0 = std::time::Instant::now();
+    let img = vae.decode(&z)?; // (1, 3, H, W) in [-1, 1]
+    dev.synchronize()?;
+    tracing::info!(ms = t0.elapsed().as_millis(), shape = ?img.dims(), "decoded");
+    let (b, _, h, w) = img.dims4()?;
+    let pic = ((img.permute((0, 2, 3, 1))?.clamp(-1.0, 1.0)? + 1.0)? * 0.5)?.reshape((b, 1, h, w, 3))?.contiguous()?;
+    let mut map = std::collections::HashMap::new();
+    map.insert("decoded".to_string(), pic);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {}", out.display());
     Ok(())
 }
 
