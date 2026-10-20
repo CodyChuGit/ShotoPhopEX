@@ -13,6 +13,7 @@
 
 pub mod comfy;
 pub mod convert;
+pub mod krea2_pipeline;
 #[cfg(feature = "convrot")]
 pub mod convrot;
 pub mod convrot_cache;

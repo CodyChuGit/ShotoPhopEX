@@ -291,28 +291,36 @@ impl Engine for SamOrt {
 /// RNG and the schedule diffusers', and only the scene and the timings are comparable.
 pub struct QirCli {
     pub exe: PathBuf,
-    /// The official snapshot directory (`processor/ text_encoder/ transformer/ vae/`).
+    /// The official snapshot directory (`processor/ text_encoder/ transformer/ vae/`), or the
+    /// Krea 2 weights folder for `generate-krea2`.
     pub model: PathBuf,
-    /// Steps per picture (ComfyUI's template: 25).
+    /// Steps per picture (ComfyUI's templates: 25 for Qwen-Image-2.1, 8 for Krea 2 Turbo).
     pub steps: u32,
     /// `--convrot`, `--comfy`, `--text-gguf <file>`, `--quant-text` … as given.
     pub extra: Vec<String>,
+    /// The text-to-image subcommand: `generate` (Qwen-Image-2.1) or `generate-krea2`, which
+    /// always walks ComfyUI's conventions and takes no `--comfy` or `--guidance`.
+    pub subcommand: String,
 }
 
 impl QirCli {
     pub fn arguments(&self, case: &Case, ctx: &RunCtx) -> crate::Result<Vec<String>> {
         let out = ctx.out.join(format!("{}.png", case.id));
         let model = self.model.to_string_lossy().into_owned();
+        let plain = self.subcommand == "generate";
         let mut args: Vec<String> = match &case.kind {
             Kind::T2i { prompt, seed, width, height } => {
-                let mut a: Vec<String> = vec!["generate".into(), "--model".into(), model, "--prompt".into(), prompt.clone()];
+                let mut a: Vec<String> = vec![self.subcommand.clone(), "--model".into(), model, "--prompt".into(), prompt.clone()];
                 a.extend(["--width".into(), width.to_string(), "--height".into(), height.to_string()]);
-                a.extend(["--steps".into(), self.steps.to_string(), "--seed".into(), seed.to_string(), "--guidance".into(), "1".into()]);
-                a.extend(self.extra.iter().cloned());
+                a.extend(["--steps".into(), self.steps.to_string(), "--seed".into(), seed.to_string()]);
+                if plain {
+                    a.extend(["--guidance".into(), "1".into()]);
+                }
+                a.extend(self.extra.iter().filter(|x| plain || *x != "--comfy").cloned());
                 a
             }
             // An edit always walks ComfyUI's conventions: `--comfy` is `generate`'s flag.
-            Kind::Edit { image, prompt, seed, references } => {
+            Kind::Edit { image, prompt, seed, references } if plain => {
                 let mut a: Vec<String> = vec!["edit".into(), "--model".into(), model, "--prompt".into(), prompt.clone()];
                 for p in std::iter::once(image).chain(references) {
                     a.extend(["--image".into(), ctx.images.join(p).to_string_lossy().into_owned()]);
@@ -562,7 +570,7 @@ mod tests {
         let log = "[I] get_learned_condition completed, taking 1.10s\n[I] sampling completed, taking 8.02s\n[I] generate_image completed in 9.70s";
         assert_eq!((seconds_after(log, "sampling completed, taking"), seconds_after(log, "generate_image completed in")), (Some(8020), Some(9700)));
         // qwen-image-rs: width and height as given, the extra flags, and its timings line.
-        let q = QirCli { exe: PathBuf::from("qir"), model: PathBuf::from("snap"), steps: 25, extra: vec!["--convrot".into(), "--comfy".into()] };
+        let q = QirCli { exe: PathBuf::from("qir"), model: PathBuf::from("snap"), steps: 25, extra: vec!["--convrot".into(), "--comfy".into()], subcommand: "generate".into() };
         let args = q.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
         assert!(args.windows(2).any(|w| w == ["--width", "1024"]) && args.windows(2).any(|w| w == ["--height", "768"]), "{args:?}");
         assert!(args.windows(3).any(|w| w == ["--convrot", "--comfy", "--out"]) && args.first().is_some_and(|a| a == "generate"), "{args:?}");
@@ -573,6 +581,12 @@ mod tests {
         assert!(args.first().is_some_and(|a| a == "edit") && images.len() == 2 && images[0].ends_with("pic.png") && images[1].ends_with("ref.png"), "{args:?}");
         assert!(args.contains(&"--convrot".to_string()) && !args.contains(&"--comfy".to_string()), "{args:?}");
         assert!(q.arguments(&fill, &ctx).is_err(), "a fill goes through the app");
+        // Krea 2: its own subcommand, no `--comfy` or `--guidance`, 8 steps.
+        let k = QirCli { exe: PathBuf::from("qir"), model: PathBuf::from("krea"), steps: 8, extra: vec!["--convrot".into(), "--comfy".into()], subcommand: "generate-krea2".into() };
+        let args = k.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
+        assert!(args.first().is_some_and(|a| a == "generate-krea2") && args.windows(2).any(|w| w == ["--steps", "8"]), "{args:?}");
+        assert!(!args.contains(&"--comfy".to_string()) && !args.contains(&"--guidance".to_string()) && args.contains(&"--convrot".to_string()), "{args:?}");
+        assert!(k.arguments(&edit, &ctx).is_err(), "no Krea 2 edits yet");
         let log = "INFO qwen_image_rs: denoised denoise_s=2.9 steps=25\nINFO qwen_image_rs: timings encode_s=0.25 denoise_s=2.9 decode_s=0.43 comfy=true width=1024 height=1024 steps=25\n";
         assert_eq!(qir_phases(log), Some((0.25, 2.9, 0.43)));
         assert_eq!(qir_phases("nothing"), None);

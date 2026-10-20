@@ -75,12 +75,18 @@ fn main_inner() -> Result<(), String> {
                     }
                     Box::new(e)
                 }
-                "qir" => Box::new(QirCli {
-                    exe: PathBuf::from(need(&named, "qir")?),
-                    model: PathBuf::from(need(&named, "model")?),
-                    steps: named.get("steps").and_then(|v| v.parse().ok()).unwrap_or(25),
-                    extra: named.get("qir-args").map(|x| x.split_whitespace().map(str::to_string).collect()).unwrap_or_default(),
-                }),
+                "qir" => {
+                    // `--qir-cmd generate-krea2` runs Krea 2 Turbo (8 steps unless `--steps` says).
+                    let subcommand = named.get("qir-cmd").cloned().filter(|c| !c.is_empty()).unwrap_or_else(|| "generate".into());
+                    let default_steps = if subcommand == "generate-krea2" { 8 } else { 25 };
+                    Box::new(QirCli {
+                        exe: PathBuf::from(need(&named, "qir")?),
+                        model: PathBuf::from(need(&named, "model")?),
+                        steps: named.get("steps").and_then(|v| v.parse().ok()).unwrap_or(default_steps),
+                        extra: named.get("qir-args").map(|x| x.split_whitespace().map(str::to_string).collect()).unwrap_or_default(),
+                        subcommand,
+                    })
+                }
                 "sam-ort" => Box::new(SamOrt {
                     exe: PathBuf::from(need(&named, "gn-sam")?),
                     ort: PathBuf::from(need(&named, "ort")?),
