@@ -112,8 +112,8 @@ enum Command {
         #[arg(long, default_value = "42")]
         seed: qwen_image_rs::seed::Seed,
         /// ComfyUI's conventions (`qwen_image_rs::comfy`): torch's CPU noise for the seed, the
-        /// `simple` flow schedule (shift 0.69) and its timestep rounding, so a picture matches
-        /// ComfyUI's for the same prompt, seed and steps.
+        /// `simple` schedule over `ModelSamplingFlux`'s sigmas (shift 0.69) and its timestep
+        /// rounding, so a picture matches ComfyUI's for the same prompt, seed and steps.
         #[arg(long)]
         comfy: bool,
         /// Quantize the DiT block linears to Q8_0 (GGUF) — lower VRAM.
@@ -681,8 +681,7 @@ fn generate(
     // the model's shift-0.69 sigmas. Both are (timestep for the DiT, Euler delta) per step.
     let (tsteps, dts): (Vec<f32>, Vec<f32>) = if comfy {
         use qwen_image_rs::comfy::{FlowSchedule, comfy_timestep};
-        let (shift, mult) = FlowSchedule::QWEN_IMAGE_21;
-        let s = FlowSchedule::simple(steps, shift, mult).map_err(anyhow::Error::msg)?;
+        let s = FlowSchedule::simple(steps, FlowSchedule::QWEN_IMAGE_21).map_err(anyhow::Error::msg)?;
         (
             (0..steps).map(|i| comfy_timestep(s.sigma(i))).collect(),
             (0..steps).map(|i| s.dt(i)).collect(),
@@ -736,9 +735,18 @@ fn generate(
                 (lh, lw),
                 img_seq,
             )?;
-            latents = (latents + (np * *dt as f64)?)?;
+            latents = (latents + (&np * *dt as f64)?)?;
             if i % 10 == 0 || i + 1 == steps {
                 tracing::info!(step = i, "denoising");
+            }
+            // Debug: `QIR_DUMP_STEPS=<dir>` writes every step's latent (packed, f32) and the
+            // velocity that made it, for trajectory comparisons against another sampler.
+            if let Ok(dir) = std::env::var("QIR_DUMP_STEPS") {
+                let mut m = std::collections::HashMap::new();
+                m.insert("latent".to_string(), latents.contiguous()?);
+                m.insert("v".to_string(), np.contiguous()?);
+                let _ = std::fs::create_dir_all(&dir);
+                candle_core::safetensors::save(&m, std::path::Path::new(&dir).join(format!("step-{i:02}.safetensors")))?;
             }
         }
         dev.synchronize()?;

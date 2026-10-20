@@ -6,10 +6,17 @@
 //!    `torch.randn([1, 64, H/16, W/16], float32)`: PyTorch's MT19937 and its 16-wide Box–Muller
 //!    fill ([`torch_randn`]), in channel-major order ([`noise_packed`] reorders it to this
 //!    crate's `(H·W, 64)` token layout).
-//! 2. **Schedule.** The `simple` scheduler over the model's 1000 flow sigmas,
-//!    `σ(t) = shift·t / (1 + (shift − 1)·t)` with Qwen-Image-2.1's `shift 0.69`
-//!    ([`FlowSchedule::simple`]), a trailing 0, and the Euler step `x += (σ_next − σ)·v`.
+//! 2. **Schedule.** The `simple` scheduler over the model's flow sigma table ([`FlowSchedule`]):
+//!    Qwen-Image-2.1 is a `FLUX`-type model in ComfyUI, so its table is `ModelSamplingFlux`'s,
+//!    10 000 entries of the exponential time shift `σ(t) = e^s / (e^s + 1/t − 1)` with `shift
+//!    0.69` ([`Shift::Flux`]); other flow models use `ModelSamplingDiscreteFlow`'s 1000-entry
+//!    SNR shift `σ(t) = s·t / (1 + (s − 1)·t)` ([`Shift::Snr`]). A trailing 0, and the Euler
+//!    step `x += (σ_next − σ)·v`.
 //! 3. **Timestep rounding.** The DiT gets `t = bf16(bf16(σ·1000) / 1000)` ([`comfy_timestep`]).
+//!
+//! The latent space is the same on both sides: ComfyUI's `QwenImage21` latent format normalises
+//! with the VAE's per-channel statistics (`process_in`/`process_out`), as the diffusers pipeline
+//! and this crate's VAE do.
 //!
 //! The prompt template and the system-turn drop already match (`text_encoder::prompt`, and
 //! ComfyUI's `qwen_image21.py` drops everything before the second `<|im_start|>`).
@@ -129,7 +136,7 @@ pub fn noise_packed(seed: u64, h: usize, w: usize) -> Result<Vec<f32>, String> {
     Ok(packed)
 }
 
-/// `time_snr_shift(alpha, t)` in f32, as the model's sigma table is built.
+/// `time_snr_shift(alpha, t)` in f32, as `ModelSamplingDiscreteFlow` builds its table.
 fn time_snr_shift(alpha: f32, t: f32) -> f32 {
     if alpha == 1.0 {
         return t;
@@ -137,7 +144,25 @@ fn time_snr_shift(alpha: f32, t: f32) -> f32 {
     alpha * t / (1.0 + (alpha as f64 - 1.0) as f32 * t)
 }
 
-/// The `simple` scheduler over `ModelSamplingDiscreteFlow`'s sigmas.
+/// `flux_time_shift(mu, 1.0, t)` in f32, as `ModelSamplingFlux` builds its table:
+/// `e^mu / (e^mu + (1/t − 1))`.
+fn flux_time_shift(mu: f32, t: f32) -> f32 {
+    let e = (mu as f64).exp() as f32;
+    e / (e + (1.0 / t - 1.0))
+}
+
+/// How a ComfyUI model type builds its sigma table.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shift {
+    /// `ModelSamplingFlux` (model type `FLUX`, what Qwen-Image-2.1 is): the exponential shift
+    /// over `timesteps` entries (10 000).
+    Flux { shift: f32, timesteps: usize },
+    /// `ModelSamplingDiscreteFlow` (model type `FLOW`): the SNR shift with a `multiplier` over
+    /// `timesteps` entries (1000).
+    Snr { shift: f32, multiplier: f32, timesteps: usize },
+}
+
+/// The `simple` scheduler over a model's sigma table.
 #[derive(Clone, Debug)]
 pub struct FlowSchedule {
     /// `steps + 1` sigmas, decreasing, trailing 0.
@@ -145,26 +170,29 @@ pub struct FlowSchedule {
 }
 
 impl FlowSchedule {
-    /// Qwen-Image-2.1's model sampling: `shift 0.69`, `multiplier 1.0`.
-    pub const QWEN_IMAGE_21: (f32, f32) = (0.69, 1.0);
+    /// Qwen-Image-2.1's model sampling in ComfyUI: `ModelSamplingFlux`, `shift 0.69`.
+    pub const QWEN_IMAGE_21: Shift = Shift::Flux { shift: 0.69, timesteps: 10_000 };
 
-    /// `ModelSamplingDiscreteFlow.set_parameters(shift, timesteps=1000, multiplier)`: the sigma
-    /// at every training timestep `1..=1000`, computed in f32 like the torch buffer.
-    pub fn model_sigmas(shift: f32, multiplier: f32, timesteps: usize) -> Vec<f32> {
-        (1..=timesteps)
-            .map(|i| {
-                let t = (i as f32 / timesteps as f32) * multiplier;
-                time_snr_shift(shift, t / multiplier)
-            })
-            .collect()
+    /// The sigma at every training timestep `1..=timesteps`, computed in f32 like the torch
+    /// buffer.
+    pub fn model_sigmas(shift: Shift) -> Vec<f32> {
+        match shift {
+            Shift::Flux { shift, timesteps } => (1..=timesteps).map(|i| flux_time_shift(shift, i as f32 / timesteps as f32)).collect(),
+            Shift::Snr { shift, multiplier, timesteps } => (1..=timesteps)
+                .map(|i| {
+                    let t = (i as f32 / timesteps as f32) * multiplier;
+                    time_snr_shift(shift, t / multiplier)
+                })
+                .collect(),
+        }
     }
 
     /// `comfy.samplers.simple_scheduler(model_sampling, steps)`.
-    pub fn simple(steps: usize, shift: f32, multiplier: f32) -> Result<Self, String> {
+    pub fn simple(steps: usize, shift: Shift) -> Result<Self, String> {
         if steps == 0 {
             return Err("a schedule needs at least one step".into());
         }
-        let table = Self::model_sigmas(shift, multiplier, 1000);
+        let table = Self::model_sigmas(shift);
         let ss = table.len() as f64 / steps as f64;
         let mut sigmas: Vec<f32> = (0..steps)
             .map(|x| {
@@ -318,26 +346,39 @@ mod tests {
     }
 
     #[test]
-    fn model_sigmas_match_comfy_table() {
-        let t = FlowSchedule::model_sigmas(0.69, 1.0, 1000);
+    fn model_sigmas_match_comfy_tables() {
+        // ModelSamplingDiscreteFlow(shift 0.69, multiplier 1.0): 1000 entries.
+        let t = FlowSchedule::model_sigmas(Shift::Snr { shift: 0.69, multiplier: 1.0, timesteps: 1000 });
         close(&t[..4], &[0.000690213986672461, 0.0013808561488986015, 0.002071926835924387, 0.00276342686265707]);
         close(&t[996..], &[0.9956579804420471, 0.9971041679382324, 0.9985513687133789, 1.0]);
+        // ModelSamplingFlux(shift 0.69): 10 000 entries, the table the Qwen-Image-2.1 model object holds.
+        let t = FlowSchedule::model_sigmas(FlowSchedule::QWEN_IMAGE_21);
+        assert_eq!(t.len(), 10_000);
+        close(&t[..3], &[0.00019935173622798175, 0.00039866389124654233, 0.0005979364505037665]);
+        close(&t[9997..], &[0.999899685382843, 0.9999498128890991, 1.0]);
     }
 
     #[test]
     fn simple_schedule_matches_comfy() {
-        let s = FlowSchedule::simple(25, 0.69, 1.0).unwrap();
+        // comfy.samplers.simple_scheduler over the model's ModelSamplingFlux, as the KSampler runs it.
+        let q = FlowSchedule::QWEN_IMAGE_21;
+        let s = FlowSchedule::simple(25, q).unwrap();
         assert_eq!(s.steps(), 25);
-        close(&s.sigmas[..4], &[1.0, 0.9430524706840515, 0.8880805969238281, 0.8349834084510803]);
-        close(&s.sigmas[23..], &[0.056603774428367615, 0.027946535497903824, 0.0]);
-        // 30 steps: ss = 33.33.., int() truncation picks the rows.
-        let s = FlowSchedule::simple(30, 0.69, 1.0).unwrap();
-        close(&s.sigmas[..3], &[1.0, 0.952872633934021, 0.9071024656295776]);
-        close(&s.sigmas[28..], &[0.047210562974214554, 0.02370990253984928, 0.0]);
-        let s = FlowSchedule::simple(4, 0.69, 1.0).unwrap();
+        close(&s.sigmas[..4], &[1.0, 0.9795287847518921, 0.9582074880599976, 0.935981810092926]);
+        close(&s.sigmas[22..], &[0.21375630795955658, 0.14775140583515167, 0.07669990509748459, 0.0]);
+        let s = FlowSchedule::simple(8, q).unwrap();
+        close(&s.sigmas, &[1.0, 0.9331371784210205, 0.8567571043968201, 0.7686715722084045, 0.6659669280052185, 0.5446740984916687, 0.39924493432044983, 0.2216787487268448, 0.0]);
+        // 30 steps: ss = 333.33.., int() truncation picks the rows.
+        let s = FlowSchedule::simple(30, q).unwrap();
+        close(&s.sigmas[..3], &[1.0, 0.9830156564712524, 0.9654479622840881]);
+        close(&s.sigmas[28..], &[0.12471463531255722, 0.06445096433162689, 0.0]);
+        let s = FlowSchedule::simple(1, q).unwrap();
+        close(&s.sigmas, &[1.0, 0.0]);
+        // The SNR table, for the models that use it.
+        let s = FlowSchedule::simple(4, Shift::Snr { shift: 0.69, multiplier: 1.0, timesteps: 1000 }).unwrap();
         close(&s.sigmas, &[1.0, 0.6742671132087708, 0.4082840085029602, 0.1869918704032898, 0.0]);
         assert!(s.dt(0) < 0.0);
-        assert!(FlowSchedule::simple(0, 0.69, 1.0).is_err());
+        assert!(FlowSchedule::simple(0, q).is_err());
     }
 
     #[test]

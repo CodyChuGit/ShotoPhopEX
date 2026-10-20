@@ -259,8 +259,7 @@ impl Pipeline {
         let (tsteps, dts): (Vec<f32>, Vec<f32>) = match req.schedule {
             Schedule::Comfy => {
                 use crate::comfy::{FlowSchedule, comfy_timestep};
-                let (shift, mult) = FlowSchedule::QWEN_IMAGE_21;
-                let s = FlowSchedule::simple(req.steps, shift, mult).map_err(anyhow::Error::msg)?;
+                let s = FlowSchedule::simple(req.steps, FlowSchedule::QWEN_IMAGE_21).map_err(anyhow::Error::msg)?;
                 ((0..req.steps).map(|i| comfy_timestep(s.sigma(i))).collect(), (0..req.steps).map(|i| s.dt(i)).collect())
             }
             Schedule::Diffusers => {
