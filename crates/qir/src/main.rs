@@ -1146,7 +1146,7 @@ fn edit(
     let mut references = Vec::new();
     for path in images {
         let img = image::open(path).with_context(|| format!("reading {}", path.display()))?.to_rgba8();
-        references.push(RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw() });
+        references.push(RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw(), offset: None });
     }
     let req =
         Request { prompt: prompt.to_string(), negative: negative.to_string(), width, height, steps, seed, guidance, schedule: Schedule::Comfy, references };

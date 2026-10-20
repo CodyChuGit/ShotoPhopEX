@@ -926,6 +926,11 @@ pub struct RefLatent<'a> {
     pub packed: &'a Tensor,
     pub h: usize,
     pub w: usize,
+    /// Where the reference sits on the target's latent grid, `(row, column)`: its tokens take
+    /// the positions of the target tokens under them (an expand's picture inside the larger
+    /// canvas). `None`: centred on the target, as ComfyUI's `build_sequence` places every
+    /// reference.
+    pub offset: Option<(usize, usize)>,
 }
 
 /// What the rows before the target (the text and the reference pictures) contribute to every
@@ -1189,13 +1194,19 @@ impl QwenImageDit {
                 pos += n;
                 length += n;
             }
-            let (img, ih, iw) = match refs.get(i) {
-                Some(r) => (Some(self.img_in.forward(r.packed)?), r.h, r.w),
-                None => (target.map(|t| self.img_in.forward(t)).transpose()?, h, w),
+            let (img, ih, iw, offset) = match refs.get(i) {
+                Some(r) => (Some(self.img_in.forward(r.packed)?), r.h, r.w, r.offset),
+                None => (target.map(|t| self.img_in.forward(t)).transpose()?, h, w, None),
             };
-            // half a token where a reference grid has the other parity, so it centres on the target
-            let hh0 = -((ih - ih / 2) as f32) + 0.5 * ((ih % 2) as f32 - (h % 2) as f32);
-            let ww0 = -((iw - iw / 2) as f32) + 0.5 * ((iw % 2) as f32 - (w % 2) as f32);
+            // The target's grid starts at -(h - h/2); a reference is centred on it, half a
+            // token off where its grid has the other parity, or placed at its offset.
+            let (hh0, ww0) = match offset {
+                Some((oy, ox)) => (-((h - h / 2) as f32) + oy as f32, -((w - w / 2) as f32) + ox as f32),
+                None => (
+                    -((ih - ih / 2) as f32) + 0.5 * ((ih % 2) as f32 - (h % 2) as f32),
+                    -((iw - iw / 2) as f32) + 0.5 * ((iw % 2) as f32 - (w % 2) as f32),
+                ),
+            };
             for r in 0..ih {
                 for c in 0..iw {
                     ids.push([pos as f32, hh0 + r as f32, ww0 + c as f32]);

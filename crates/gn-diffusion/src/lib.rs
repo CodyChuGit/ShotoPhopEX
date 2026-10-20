@@ -142,7 +142,34 @@ fn reference_of(b: &Blob, blobs: &[Vec<u8>], what: &str) -> Result<RefImage, Eng
         1 => bytes.iter().flat_map(|v| [*v, *v, *v, 255]).collect(),
         c => return Err(EngineError::new(ErrorKind::BadRequest, format!("the {what} has {c} channels (1, 3 or 4 expected)"))),
     };
-    Ok(RefImage { width: b.width as usize, height: b.height as usize, rgba })
+    Ok(RefImage { width: b.width as usize, height: b.height as usize, rgba, offset: None })
+}
+
+/// An expand's reference: the picture cut out of the canvas at the request's `ref_x`, `ref_y`,
+/// `ref_w`, `ref_h` (widened to whole latent tokens of 16 px) and placed back at that offset,
+/// so the model continues the picture into the rest of the canvas with the picture's tokens at
+/// their own positions (the editor masks the result to the new area afterwards).
+fn placed_picture(canvas: &RefImage, params: &std::collections::BTreeMap<String, Value>) -> Result<RefImage, EngineError> {
+    let p = |k: &str| params.get(k).and_then(Value::as_u64).map(|v| v as usize);
+    let (Some(x), Some(y), Some(w), Some(h)) = (p("ref_x"), p("ref_y"), p("ref_w"), p("ref_h")) else {
+        return Err(EngineError::new(ErrorKind::BadRequest, "an expand names the picture's place in the canvas (ref_x, ref_y, ref_w, ref_h)"));
+    };
+    let (x0, y0) = (x / 16 * 16, y / 16 * 16);
+    let x1 = ((x + w).div_ceil(16) * 16).min(canvas.width / 16 * 16);
+    let y1 = ((y + h).div_ceil(16) * 16).min(canvas.height / 16 * 16);
+    if x1 <= x0 || y1 <= y0 {
+        return Err(EngineError::new(ErrorKind::BadRequest, format!("the picture's place {x},{y} {w}x{h} lies outside the {}x{} canvas", canvas.width, canvas.height)));
+    }
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let mut rgba = Vec::with_capacity(cw * ch * 4);
+    for row in y0..y1 {
+        let start = (row * canvas.width + x0) * 4;
+        rgba.extend_from_slice(canvas.rgba.get(start..start + cw * 4).unwrap_or(&[]));
+    }
+    if rgba.len() != cw * ch * 4 {
+        return Err(EngineError::new(ErrorKind::BadRequest, "the canvas is shorter than its header says"));
+    }
+    Ok(RefImage { width: cw, height: ch, rgba, offset: Some((x0, y0)) })
 }
 
 impl Engine for DiffusionEngine {
@@ -181,15 +208,23 @@ impl Engine for DiffusionEngine {
             return Err(EngineError::new(ErrorKind::BadRequest, "a prompt is needed"));
         }
         // The pictures the model sees in order: image 1 is the picture being edited, then the
-        // mask (a fill or an expand) or the references (an edit; a matte has none). The target
-        // takes image 1's size, as ComfyUI's `TextEncodeQwenImage21` sizes its latent at
-        // `resolution 0`.
+        // mask (a fill) or the references (an edit; a matte has none). The target takes image
+        // 1's size, as ComfyUI's `TextEncodeQwenImage21` sizes its latent at `resolution 0`.
+        // An expand is the exception: its one reference is the picture cut out of the canvas
+        // and placed at its own position, and the target is the whole canvas.
         let mut references: Vec<RefImage> = Vec::new();
+        let mut canvas: Option<(usize, usize)> = None;
         match task {
             "edit" | "fill" | "expand" | "matte" => {
                 let Some(image) = &req.image else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the picture", req.model))) };
-                references.push(reference_of(image, blobs, "picture")?);
-                if task == "fill" || task == "expand" {
+                let picture = reference_of(image, blobs, "picture")?;
+                if task == "expand" {
+                    canvas = Some((picture.width / 16 * 16, picture.height / 16 * 16));
+                    references.push(placed_picture(&picture, &req.params)?);
+                } else {
+                    references.push(picture);
+                }
+                if task == "fill" {
                     let Some(mask) = &req.mask else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the mask", req.model))) };
                     references.push(reference_of(mask, blobs, "mask")?);
                 } else if task == "edit" {
@@ -209,7 +244,11 @@ impl Engine for DiffusionEngine {
             if cancel.load(Ordering::SeqCst) {
                 return Err(EngineError::cancelled());
             }
-            let (width, height) = if references.is_empty() { (side(req.width), side(req.height)) } else { (0, 0) };
+            let (width, height) = match canvas {
+                Some(c) => c,
+                None if references.is_empty() => (side(req.width), side(req.height)),
+                None => (0, 0),
+            };
             let ask = Request {
                 prompt: req.prompt.clone(),
                 negative: req.negative.clone(),
@@ -354,6 +393,20 @@ mod tests {
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::BadRequest, .. })));
         let r = reference_of(&Blob { width: 1, height: 1, channels: 2, index: 1 }, &blobs, "picture");
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::BadRequest, .. })));
+    }
+
+    #[test]
+    fn an_expand_places_the_picture_on_whole_tokens() {
+        // A 64x48 canvas whose pixel value is its column; the picture at (20, 0) 30x48.
+        let canvas = RefImage { width: 64, height: 48, rgba: (0..48).flat_map(|_| (0..64u8).flat_map(|x| [x, 0, 0, 255])).collect(), offset: None };
+        let params: BTreeMap<String, Value> = [("ref_x", 20u64), ("ref_y", 0), ("ref_w", 30), ("ref_h", 48)].into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        let p = placed_picture(&canvas, &params).unwrap();
+        // 20..50 widened to 16..64: 48 wide, placed at x = 16.
+        assert_eq!((p.width, p.height, p.offset), (48, 48, Some((16, 0))));
+        assert_eq!((p.rgba[0], p.rgba[4 * 47]), (16, 63), "the first row runs from column 16 to 63");
+        assert!(placed_picture(&canvas, &BTreeMap::new()).is_err(), "no place named");
+        let off: BTreeMap<String, Value> = [("ref_x", 70u64), ("ref_y", 0), ("ref_w", 10), ("ref_h", 10)].into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        assert!(placed_picture(&canvas, &off).is_err(), "outside the canvas");
     }
 
     #[test]
