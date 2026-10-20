@@ -14,15 +14,7 @@ use crate::Result;
 
 /// The seven linears of every transformer block, by weight prefix relative to
 /// `transformer_blocks.<i>.` (the safetensors key minus `.weight`).
-const BLOCK_LINEARS: [&str; 7] = [
-    "attn.to_q",
-    "attn.to_k",
-    "attn.to_v",
-    "attn.to_out.0",
-    "img_mlp.proj",
-    "img_mlp.gate_layer",
-    "img_mlp.out",
-];
+const BLOCK_LINEARS: [&str; 7] = ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "img_mlp.proj", "img_mlp.gate_layer", "img_mlp.out"];
 
 /// The DiT's non-block ("tail") linears: `(weight prefix, in K, out N, ConvRot
 /// under --convrot)`. A rotated layer needs K % 256 == 0 (the 256-wide
@@ -32,18 +24,8 @@ const TAIL_LINEARS: [(&str, usize, usize, bool); 8] = [
     ("img_in", 64, INNER, false),
     ("txt_in.in_layer", 4096, INNER, true),
     ("txt_in.out_layer", INNER, INNER, true),
-    (
-        "time_text_embed.timestep_embedder.linear_1",
-        256,
-        INNER,
-        true,
-    ),
-    (
-        "time_text_embed.timestep_embedder.linear_2",
-        INNER,
-        INNER,
-        true,
-    ),
+    ("time_text_embed.timestep_embedder.linear_1", 256, INNER, true),
+    ("time_text_embed.timestep_embedder.linear_2", INNER, INNER, true),
     ("modulation.1", INNER, 4 * INNER, true),
     ("norm_out.linear", INNER, INNER, true),
     ("proj_out", INNER, 64, true),
@@ -114,16 +96,8 @@ pub fn convrot_policy_tag() -> String {
 }
 
 fn policy_tag(block: &[&str], tail: &[(&str, usize, usize, bool)]) -> String {
-    let tail: Vec<String> = tail
-        .iter()
-        .map(|&(p, k, n, rot)| format!("{p}:{k}x{n}:{}", u8::from(rot)))
-        .collect();
-    format!(
-        "qir-convrot-v{PREQUANT_FORMAT};group={};block={};tail={}",
-        crate::model::rotation::GROUP,
-        block.join(","),
-        tail.join(",")
-    )
+    let tail: Vec<String> = tail.iter().map(|&(p, k, n, rot)| format!("{p}:{k}x{n}:{}", u8::from(rot))).collect();
+    format!("qir-convrot-v{PREQUANT_FORMAT};group={};block={};tail={}", crate::model::rotation::GROUP, block.join(","), tail.join(","))
 }
 
 /// Load-time precision switches shared by every DiT linear.
@@ -151,8 +125,7 @@ impl QLinear {
     fn load(in_c: usize, out_c: usize, opts: LinearOpts, vb: VarBuilder) -> Result<Self> {
         let prefix = vb.prefix();
         let convrot = opts.convrot && opts.rot.is_some();
-        let precision = linear_precision(&prefix, opts.quant, convrot)
-            .ok_or_else(|| anyhow::anyhow!("{prefix}: not a DiT linear in the precision policy"))?;
+        let precision = linear_precision(&prefix, opts.quant, convrot).ok_or_else(|| anyhow::anyhow!("{prefix}: not a DiT linear in the precision policy"))?;
         match precision {
             LinearPrecision::ConvRot => Self::load_convrot(in_c, out_c, opts.rot, &prefix, vb),
             LinearPrecision::Q8 => {
@@ -176,13 +149,7 @@ impl QLinear {
     /// `prequantize-convrot`, detected by `weight_i8` next to `weight`), else
     /// rotate + quantize the bf16 weight now.
     #[cfg(feature = "convrot")]
-    fn load_convrot(
-        in_c: usize,
-        out_c: usize,
-        rot: Option<&Tensor>,
-        prefix: &str,
-        vb: VarBuilder,
-    ) -> Result<Self> {
+    fn load_convrot(in_c: usize, out_c: usize, rot: Option<&Tensor>, prefix: &str, vb: VarBuilder) -> Result<Self> {
         let r = rot.ok_or_else(|| anyhow::anyhow!("{prefix}: ConvRot needs the rotation"))?;
         anyhow::ensure!(
             in_c.is_multiple_of(crate::model::rotation::GROUP) && out_c.is_multiple_of(8),
@@ -191,24 +158,14 @@ impl QLinear {
         if vb.contains_tensor("weight_i8") {
             let w_i8 = vb.get_unchecked_dtype("weight_i8", DType::U8)?;
             let col_scale = vb.get_unchecked_dtype("col_scale", DType::F32)?;
-            return Ok(QLinear::Convrot(
-                crate::convrot::ConvRotLinear::from_prequantized(w_i8, col_scale, r)?,
-            ));
+            return Ok(QLinear::Convrot(crate::convrot::ConvRotLinear::from_prequantized(w_i8, col_scale, r)?));
         }
         let w = vb.get((out_c, in_c), "weight")?;
-        Ok(QLinear::Convrot(
-            crate::convrot::ConvRotLinear::from_weight(&w, r)?,
-        ))
+        Ok(QLinear::Convrot(crate::convrot::ConvRotLinear::from_weight(&w, r)?))
     }
 
     #[cfg(not(feature = "convrot"))]
-    fn load_convrot(
-        _: usize,
-        _: usize,
-        _: Option<&Tensor>,
-        prefix: &str,
-        _: VarBuilder,
-    ) -> Result<Self> {
+    fn load_convrot(_: usize, _: usize, _: Option<&Tensor>, prefix: &str, _: VarBuilder) -> Result<Self> {
         anyhow::bail!("{prefix}: ConvRot requires the `convrot` feature")
     }
 
@@ -288,21 +245,13 @@ impl Modulation {
     #[cfg(not(feature = "fusednorm"))]
     fn new(rows: Tensor, b: usize, txt_len: usize, img_tokens: usize) -> Result<Self> {
         let r = select_rows(&rows, txt_len, img_tokens)?; // (1, seq, INNER)
-        let tokens = if b > 1 {
-            r.broadcast_as((b, txt_len + img_tokens, rows.dim(1)?))?
-                .contiguous()?
-        } else {
-            r
-        };
+        let tokens = if b > 1 { r.broadcast_as((b, txt_len + img_tokens, rows.dim(1)?))?.contiguous()? } else { r };
         Ok(Self { tokens })
     }
 
     #[cfg(feature = "fusednorm")]
     fn fused(&self) -> crate::fusednorm::ModRows<'_> {
-        crate::fusednorm::ModRows {
-            rows: &self.rows,
-            txt_len: self.txt_len,
-        }
+        crate::fusednorm::ModRows { rows: &self.rows, txt_len: self.txt_len }
     }
 }
 
@@ -314,20 +263,10 @@ impl Modulation {
 /// `scale2`, the block-final one by the next block's `scale1` or by
 /// `norm_out`), so under `fusednorm` both are one CTA-per-row kernel that never
 /// re-reads `h'` (`qwen-image-rs-residual-norm-fusion`); otherwise the candle ops.
-fn residual_norm_mod(
-    h: &Tensor,
-    residual: Option<(&Modulation, &Tensor)>,
-    scale: &Modulation,
-    eps: f64,
-) -> Result<(Tensor, Tensor)> {
+fn residual_norm_mod(h: &Tensor, residual: Option<(&Modulation, &Tensor)>, scale: &Modulation, eps: f64) -> Result<(Tensor, Tensor)> {
     #[cfg(feature = "fusednorm")]
     {
-        crate::fusednorm::fused_residual_norm_mod(
-            h,
-            residual.map(|(g, y)| (g.fused(), y)),
-            scale.fused(),
-            eps as f32,
-        )
+        crate::fusednorm::fused_residual_norm_mod(h, residual.map(|(g, y)| (g.fused(), y)), scale.fused(), eps as f32)
     }
     #[cfg(not(feature = "fusednorm"))]
     {
@@ -370,10 +309,7 @@ struct ZeroCenterRmsNorm {
 
 impl ZeroCenterRmsNorm {
     fn load(dim: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            weight: (vb.get(dim, "weight")?.to_dtype(DType::F32)? + 1.0)?,
-            eps,
-        })
+        Ok(Self { weight: (vb.get(dim, "weight")?.to_dtype(DType::F32)? + 1.0)?, eps })
     }
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         rmsnorm_scale(x, &self.weight, self.eps)
@@ -413,17 +349,10 @@ struct TimestepEmbed {
 impl TimestepEmbed {
     fn load(opts: LinearOpts, vb: VarBuilder, dev: &Device) -> Result<Self> {
         let half = 128usize;
-        let freqs: Vec<f32> = (0..half)
-            .map(|i| (-(10000f32.ln()) * i as f32 / half as f32).exp())
-            .collect();
+        let freqs: Vec<f32> = (0..half).map(|i| (-(10000f32.ln()) * i as f32 / half as f32).exp()).collect();
         Ok(Self {
             linear1: QLinear::load(256, INNER, opts, vb.pp("timestep_embedder").pp("linear_1"))?,
-            linear2: QLinear::load(
-                INNER,
-                INNER,
-                opts,
-                vb.pp("timestep_embedder").pp("linear_2"),
-            )?,
+            linear2: QLinear::load(INNER, INNER, opts, vb.pp("timestep_embedder").pp("linear_2"))?,
             freqs: Tensor::from_vec(freqs, (1, half), dev)?,
         })
     }
@@ -448,10 +377,7 @@ struct HeadRmsNorm {
 }
 impl HeadRmsNorm {
     fn load(vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            weight: vb.get(HEAD_DIM, "weight")?.to_dtype(DType::F32)?,
-            eps: 1e-6,
-        })
+        Ok(Self { weight: vb.get(HEAD_DIM, "weight")?.to_dtype(DType::F32)?, eps: 1e-6 })
     }
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         // x (..., head_dim)
@@ -462,21 +388,14 @@ impl HeadRmsNorm {
 /// How an attention block projects q/k/v from its input.
 enum QkvProj {
     /// Three linears (bf16, Q8_0, or ConvRot if they could not be merged).
-    Separate {
-        to_q: QLinear,
-        to_k: QLinear,
-        to_v: QLinear,
-    },
+    Separate { to_q: QLinear, to_k: QLinear, to_v: QLinear },
     /// ConvRot (`qwen-image-rs-gemm-merge-tune`): `x` is rotated + quantized
     /// once; q|k is ONE head-interleaved INT8 GEMM (`[q_h, k_h]` per head,
     /// N = 2 * INNER) and v a second GEMM on the same quantized `x` (its own
     /// f16 epilogue for the sage P·V). Built at load from the per-layer
     /// weights; outputs are bit-identical to the separate linears.
     #[cfg(feature = "convrot")]
-    Merged {
-        qk: crate::convrot::ConvRotLinear,
-        v: crate::convrot::ConvRotLinear,
-    },
+    Merged { qk: crate::convrot::ConvRotLinear, v: crate::convrot::ConvRotLinear },
 }
 
 struct Attention {
@@ -493,10 +412,9 @@ impl Attention {
         let to_v = QLinear::load(INNER, INNER, opts, vb.pp("to_v"))?;
         let qkv = match (to_q, to_k, to_v) {
             #[cfg(feature = "convrot")]
-            (QLinear::Convrot(q), QLinear::Convrot(k), QLinear::Convrot(v)) => QkvProj::Merged {
-                qk: crate::convrot::ConvRotLinear::interleave_heads(&q, &k, HEAD_DIM)?,
-                v,
-            },
+            (QLinear::Convrot(q), QLinear::Convrot(k), QLinear::Convrot(v)) => {
+                QkvProj::Merged { qk: crate::convrot::ConvRotLinear::interleave_heads(&q, &k, HEAD_DIM)?, v }
+            }
             (to_q, to_k, to_v) => QkvProj::Separate { to_q, to_k, to_v },
         };
         Ok(Self {
@@ -510,9 +428,7 @@ impl Attention {
     /// The block's ConvRot linear count (load accounting; a merged q|k counts 2).
     fn convrot_count(&self) -> usize {
         let qkv = match &self.qkv {
-            QkvProj::Separate { to_q, to_k, to_v } => {
-                [to_q, to_k, to_v].iter().filter(|l| l.is_convrot()).count()
-            }
+            QkvProj::Separate { to_q, to_k, to_v } => [to_q, to_k, to_v].iter().filter(|l| l.is_convrot()).count(),
             #[cfg(feature = "convrot")]
             QkvProj::Merged { .. } => 3,
         };
@@ -535,14 +451,8 @@ impl Attention {
                 let (qk_out, v) = Self::merged_qk_v(qk, v, x, v_f16)?;
                 // Rows of [q_h | k_h]: q and k are ld = 2*HEAD_DIM column views.
                 let rows = qk_out.reshape((b * s * HEADS, 2 * HEAD_DIM))?;
-                let qh = self
-                    .norm_q
-                    .forward(&rows.narrow(1, 0, HEAD_DIM)?)?
-                    .reshape(shape)?;
-                let kh = self
-                    .norm_k
-                    .forward(&rows.narrow(1, HEAD_DIM, HEAD_DIM)?)?
-                    .reshape(shape)?;
+                let qh = self.norm_q.forward(&rows.narrow(1, 0, HEAD_DIM)?)?.reshape(shape)?;
+                let kh = self.norm_k.forward(&rows.narrow(1, HEAD_DIM, HEAD_DIM)?)?.reshape(shape)?;
                 Ok((qh, kh, v))
             }
         }
@@ -560,11 +470,7 @@ impl Attention {
                 let q = to_q.forward(x)?.reshape(shape)?;
                 let k = to_k.forward(x)?.reshape(shape)?;
                 #[cfg(feature = "sage")]
-                let v = if v_f16 {
-                    to_v.forward_f16(x)?
-                } else {
-                    to_v.forward(x)?
-                };
+                let v = if v_f16 { to_v.forward_f16(x)? } else { to_v.forward(x)? };
                 #[cfg(not(feature = "sage"))]
                 let v = {
                     let _ = v_f16;
@@ -576,11 +482,7 @@ impl Attention {
             QkvProj::Merged { qk, v } => {
                 let (qk_out, v) = Self::merged_qk_v(qk, v, x, v_f16)?;
                 let qk4 = qk_out.reshape((b, s, HEADS, 2 * HEAD_DIM))?;
-                Ok((
-                    qk4.narrow(3, 0, HEAD_DIM)?,
-                    qk4.narrow(3, HEAD_DIM, HEAD_DIM)?,
-                    v,
-                ))
+                Ok((qk4.narrow(3, 0, HEAD_DIM)?, qk4.narrow(3, HEAD_DIM, HEAD_DIM)?, v))
             }
         }
     }
@@ -588,24 +490,13 @@ impl Attention {
     /// Merged ConvRot projection: `x` quantized once; the head-interleaved q|k
     /// GEMM `(B,S,2*INNER)` and v `(B,S,H,D)` (f16 when `v_f16`).
     #[cfg(feature = "convrot")]
-    fn merged_qk_v(
-        qk: &crate::convrot::ConvRotLinear,
-        v: &crate::convrot::ConvRotLinear,
-        x: &Tensor,
-        v_f16: bool,
-    ) -> Result<(Tensor, Tensor)> {
+    fn merged_qk_v(qk: &crate::convrot::ConvRotLinear, v: &crate::convrot::ConvRotLinear, x: &Tensor, v_f16: bool) -> Result<(Tensor, Tensor)> {
         use crate::convrot::EpilogueOut;
         let (b, s, _) = x.dims3()?;
         let qa = qk.quantize(x)?;
         let qk_out = qk.forward_quantized(&qa, EpilogueOut::Bf16)?; // (B,S,2*INNER)
-        let v_ty = if v_f16 {
-            EpilogueOut::F16
-        } else {
-            EpilogueOut::Bf16
-        };
-        let v = v
-            .forward_quantized(&qa, v_ty)?
-            .reshape((b, s, HEADS, HEAD_DIM))?;
+        let v_ty = if v_f16 { EpilogueOut::F16 } else { EpilogueOut::Bf16 };
+        let v = v.forward_quantized(&qa, v_ty)?.reshape((b, s, HEADS, HEAD_DIM))?;
         Ok((qk_out, v))
     }
 
@@ -618,10 +509,7 @@ impl Attention {
     fn qk_norm_fused() -> Result<bool> {
         #[cfg(all(feature = "sage2", feature = "fusednorm"))]
         {
-            Ok(matches!(
-                crate::sage2::attention_impl()?,
-                crate::sage2::AttentionImpl::Sage2(_)
-            ))
+            Ok(matches!(crate::sage2::attention_impl()?, crate::sage2::AttentionImpl::Sage2(_)))
         }
         #[cfg(not(all(feature = "sage2", feature = "fusednorm")))]
         {
@@ -629,17 +517,66 @@ impl Attention {
         }
     }
 
+    /// Attention over a joint sequence of several segments (text, reference pictures, the
+    /// target): every segment's queries see the keys before its end, a causal segment only
+    /// the keys at or before each query. The plain candle path (`mask` is the dense additive
+    /// form of `segments`), for the sequences the fused kernels are not laid out for.
+    fn attend_general(&self, x: &Tensor, cos: &Tensor, sin: &Tensor, segments: &[Segment]) -> Result<Tensor> {
+        let (b, s, _) = x.dims3()?;
+        let scale = 1.0 / (HEAD_DIM as f64).sqrt();
+        let (qh, kh, vv) = self.project(x, false)?; // (B,S,H,D), v bf16
+        let qh = qh.transpose(1, 2)?.contiguous()?;
+        let kh = kh.transpose(1, 2)?.contiguous()?;
+        let qh = candle_nn::rotary_emb::rope_i(&qh, cos, sin)?;
+        let kh = candle_nn::rotary_emb::rope_i(&kh, cos, sin)?;
+        let v = vv.transpose(1, 2)?.contiguous()?; // (B,H,S,D)
+                                                   // Per segment, in query chunks: the scores are f32 (a sequence of 8000 keys loses its
+                                                   // softmax in bf16) but never the whole S×S at once. A segment sees the keys before its
+                                                   // end; a causal one builds the small (chunk × end) mask it needs.
+        const CHUNK: usize = 1024;
+        let mut outs: Vec<Tensor> = Vec::new();
+        for seg in segments {
+            let keys = kh.narrow(2, 0, seg.end)?.to_dtype(DType::F32)?.transpose(2, 3)?.contiguous()?;
+            let vals = v.narrow(2, 0, seg.end)?;
+            let mut q0 = seg.start;
+            while q0 < seg.end {
+                let n = CHUNK.min(seg.end - q0);
+                let q = qh.narrow(2, q0, n)?.to_dtype(DType::F32)?;
+                let mut attn = (q.matmul(&keys)? * scale)?; // (B,H,n,end)
+                if seg.causal {
+                    let mut m = vec![0f32; n * seg.end];
+                    for (i, row) in m.chunks_mut(seg.end).enumerate() {
+                        for (kv, cell) in row.iter_mut().enumerate() {
+                            if kv > q0 + i {
+                                *cell = f32::NEG_INFINITY;
+                            }
+                        }
+                    }
+                    let m = Tensor::from_vec(m, (1, 1, n, seg.end), &self.device())?;
+                    attn = attn.broadcast_add(&m)?;
+                }
+                let attn = candle_nn::ops::softmax_last_dim(&attn)?.to_dtype(vals.dtype())?;
+                outs.push(attn.matmul(&vals)?); // (B,H,n,D)
+                q0 += n;
+            }
+        }
+        let out = Tensor::cat(&outs, 2)?; // (B,H,S,D)
+        let out = out.transpose(1, 2)?.contiguous()?;
+        self.to_out.forward(&out.reshape((b, s, INNER))?)
+    }
+
+    fn device(&self) -> Device {
+        self.norm_q.weight.device().clone()
+    }
+
     // One of two cfg-selected bodies binds `out`; clippy sees only one and
     // would ask to inline it.
     #[allow(clippy::let_and_return)]
-    fn forward(
-        &self,
-        x: &Tensor,
-        mask: &Tensor,
-        cos: &Tensor,
-        sin: &Tensor,
-        txt_len: usize,
-    ) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor, mask: &Tensor, cos: &Tensor, sin: &Tensor, segments: &[Segment]) -> Result<Tensor> {
+        let Some(txt_len) = simple_prefix(segments) else {
+            let _ = mask;
+            return self.attend_general(x, cos, sin, segments);
+        };
         let (b, s, _) = x.dims3()?;
         let scale = 1.0 / (HEAD_DIM as f64).sqrt();
         #[cfg(feature = "sage")]
@@ -651,11 +588,7 @@ impl Attention {
                           // rotated-bf16 round trip, no transpose copies.
                           // SA2 (+fusednorm): q/k stay RAW; the quant applies the per-head norm.
             let fused = Self::qk_norm_fused()?;
-            let (qh, kh, vv) = if fused {
-                self.project_raw(x, true)?
-            } else {
-                self.project(x, true)?
-            }; // (B,S,H,D), pre-rope; v f16
+            let (qh, kh, vv) = if fused { self.project_raw(x, true)? } else { self.project(x, true)? }; // (B,S,H,D), pre-rope; v f16
             let out = self.attend_bshd(&qh, &kh, &vv, cos, sin, txt_len, scale, fused)?; // (B,S,H,D)
             self.to_out.forward(&out.reshape((b, s, INNER))?)
         };
@@ -688,17 +621,7 @@ impl Attention {
     /// (only when [`Self::qk_norm_fused`]). Returns `(B,S,H,D)`.
     #[cfg(feature = "sage")]
     #[allow(clippy::too_many_arguments)]
-    fn attend_bshd(
-        &self,
-        qh: &Tensor,
-        kh: &Tensor,
-        vf: &Tensor,
-        cos: &Tensor,
-        sin: &Tensor,
-        txt_len: usize,
-        scale: f64,
-        norm_fused: bool,
-    ) -> Result<Tensor> {
+    fn attend_bshd(&self, qh: &Tensor, kh: &Tensor, vf: &Tensor, cos: &Tensor, sin: &Tensor, txt_len: usize, scale: f64, norm_fused: bool) -> Result<Tensor> {
         use crate::sage::{rope_quant_bshd, sage_attention_quantized, QkRole};
         let (_b, s, _h, _d) = qh.dims4()?;
         let img = s - txt_len;
@@ -710,17 +633,11 @@ impl Attention {
         // sage2 build: SageAttention2 unless QIR_SAGE=1 selects v1 (fallback / A/B).
         #[cfg(feature = "sage2")]
         if let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? {
-            let norm = norm_fused.then_some(crate::sage2::QkNorm {
-                wq: &self.norm_q.weight,
-                wk: &self.norm_k.weight,
-                eps: self.norm_q.eps as f32,
-            });
+            let norm = norm_fused.then_some(crate::sage2::QkNorm { wq: &self.norm_q.weight, wk: &self.norm_k.weight, eps: self.norm_q.eps as f32 });
             if norm_fused && self.norm_k.eps != self.norm_q.eps {
                 anyhow::bail!("attend_bshd: fused q/k norm needs one eps for q and k");
             }
-            return crate::sage2::attend_block_causal(
-                qh, kh, vf, cos, sin, txt_len, sc, accum, norm,
-            );
+            return crate::sage2::attend_block_causal(qh, kh, vf, cos, sin, txt_len, sc, accum, norm);
         }
         if norm_fused {
             anyhow::bail!("attend_bshd: raw q/k reached the v1 path (norm not applied)");
@@ -733,12 +650,7 @@ impl Attention {
         let ot = sage_attention_quantized(&qt, &kt, &vt, sc, true)?; // (B,txt,H,D)
 
         // image queries: full non-causal attention over the whole sequence
-        let qi = rope_quant_bshd(
-            &qh.narrow(1, txt_len, img)?,
-            &cos.narrow(0, txt_len, img)?,
-            &sin.narrow(0, txt_len, img)?,
-            QkRole::Query,
-        )?;
+        let qi = rope_quant_bshd(&qh.narrow(1, txt_len, img)?, &cos.narrow(0, txt_len, img)?, &sin.narrow(0, txt_len, img)?, QkRole::Query)?;
         let kf = rope_quant_bshd(kh, cos, sin, QkRole::Key)?;
         let oi = sage_attention_quantized(&qi, &kf, vf, sc, false)?; // (B,img,H,D)
         Ok(Tensor::cat(&[ot, oi], 1)?) // (B,S,H,D)
@@ -749,15 +661,7 @@ impl Attention {
     /// causal FlashAttention — exactly the block-causal structure for
     /// text-to-image, so no dense S² matrix is materialized. Returns (B,S,H,D).
     #[cfg(all(feature = "flash-attn", not(feature = "sage")))]
-    fn attend(
-        &self,
-        qh: &Tensor,
-        kh: &Tensor,
-        vv: &Tensor,
-        mask: &Tensor,
-        txt_len: usize,
-        scale: f64,
-    ) -> Result<Tensor> {
+    fn attend(&self, qh: &Tensor, kh: &Tensor, vv: &Tensor, mask: &Tensor, txt_len: usize, scale: f64) -> Result<Tensor> {
         let _ = mask;
         let (_b, _h, s, _d) = qh.dims4()?;
         let qf = qh.transpose(1, 2)?.contiguous()?; // (B,S,H,D)
@@ -771,27 +675,13 @@ impl Attention {
             sc,
             true,
         )?;
-        let oi = candle_flash_attn::flash_attn(
-            &qf.narrow(1, txt_len, s - txt_len)?.contiguous()?,
-            &kf,
-            &vf,
-            sc,
-            false,
-        )?;
+        let oi = candle_flash_attn::flash_attn(&qf.narrow(1, txt_len, s - txt_len)?.contiguous()?, &kf, &vf, sc, false)?;
         Ok(Tensor::cat(&[ot, oi], 1)?)
     }
 
     /// Naive attention with the additive block-causal `mask`. Returns (B,S,H,D).
     #[cfg(all(not(feature = "flash-attn"), not(feature = "sage")))]
-    fn attend(
-        &self,
-        qh: &Tensor,
-        kh: &Tensor,
-        vv: &Tensor,
-        mask: &Tensor,
-        txt_len: usize,
-        scale: f64,
-    ) -> Result<Tensor> {
+    fn attend(&self, qh: &Tensor, kh: &Tensor, vv: &Tensor, mask: &Tensor, txt_len: usize, scale: f64) -> Result<Tensor> {
         let _ = txt_len;
         let v = vv.transpose(1, 2)?.contiguous()?; // (B,H,S,D)
         let attn = (qh.matmul(&kh.transpose(2, 3)?)? * scale)?;
@@ -824,9 +714,7 @@ impl SwiGlu {
         let out = QLinear::load(INNER * 3, INNER, opts, vb.pp("out"))?;
         let input = match (gate, proj, &out) {
             #[cfg(feature = "convrot")]
-            (QLinear::Convrot(g), QLinear::Convrot(p), QLinear::Convrot(_)) => {
-                MlpIn::Merged(crate::convrot::ConvRotLinear::concat_out(&[&g, &p])?)
-            }
+            (QLinear::Convrot(g), QLinear::Convrot(p), QLinear::Convrot(_)) => MlpIn::Merged(crate::convrot::ConvRotLinear::concat_out(&[&g, &p])?),
             (gate, proj, _) => MlpIn::Separate { proj, gate },
         };
         Ok(Self { input, out })
@@ -835,9 +723,7 @@ impl SwiGlu {
     /// The MLP's ConvRot linear count (load accounting; merged gate|proj counts 2).
     fn convrot_count(&self) -> usize {
         let input = match &self.input {
-            MlpIn::Separate { proj, gate } => {
-                usize::from(proj.is_convrot()) + usize::from(gate.is_convrot())
-            }
+            MlpIn::Separate { proj, gate } => usize::from(proj.is_convrot()) + usize::from(gate.is_convrot()),
             #[cfg(feature = "convrot")]
             MlpIn::Merged(_) => 2,
         };
@@ -859,11 +745,7 @@ impl SwiGlu {
                 let m: usize = dims[..dims.len() - 1].iter().product();
                 let n = INNER * 3;
                 let y = gp.forward(x)?.reshape((m, 2 * n))?; // [gate | proj]
-                let h = out.forward_swiglu(
-                    &y.narrow(1, 0, n)?,
-                    &y.narrow(1, n, n)?,
-                    crate::convrot::EpilogueOut::Bf16,
-                )?; // (m, INNER)
+                let h = out.forward_swiglu(&y.narrow(1, 0, n)?, &y.narrow(1, n, n)?, crate::convrot::EpilogueOut::Bf16)?; // (m, INNER)
                 let mut out_dims = dims[..dims.len() - 1].to_vec();
                 out_dims.push(INNER);
                 Ok(h.reshape(out_dims)?)
@@ -889,11 +771,7 @@ struct Block {
 
 impl Block {
     fn load(opts: LinearOpts, vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            attn: Attention::load(opts, vb.pp("attn"))?,
-            mlp: SwiGlu::load(opts, vb.pp("img_mlp"))?,
-            eps: 1e-6,
-        })
+        Ok(Self { attn: Attention::load(opts, vb.pp("attn"))?, mlp: SwiGlu::load(opts, vb.pp("img_mlp"))?, eps: 1e-6 })
     }
 
     /// One transformer block on the residual stream `h`. `pending` is the
@@ -910,15 +788,56 @@ impl Block {
         mask: &Tensor,
         cos: &Tensor,
         sin: &Tensor,
-        txt_len: usize,
+        segments: &[Segment],
     ) -> Result<(Tensor, Tensor)> {
-        let (h, x) =
-            residual_norm_mod(h, pending.map(|y| (&mods.gate2, y)), &mods.scale1, self.eps)?;
-        let attn = self.attn.forward(&x, mask, cos, sin, txt_len)?;
+        let (h, x) = residual_norm_mod(h, pending.map(|y| (&mods.gate2, y)), &mods.scale1, self.eps)?;
+        let attn = self.attn.forward(&x, mask, cos, sin, segments)?;
         let (h, x) = residual_norm_mod(&h, Some((&mods.gate1, &attn)), &mods.scale2, self.eps)?;
         let m = self.mlp.forward(&x)?;
         Ok((h, m))
     }
+}
+
+/// One stretch of the joint sequence and how its queries attend: to every key before `end`,
+/// and, when `causal` (a text stretch), only to keys at or before the query (ComfyUI's
+/// `build_sequence` segments: text causal, each picture block bidirectional over what
+/// precedes it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Segment {
+    pub start: usize,
+    pub end: usize,
+    pub causal: bool,
+}
+
+/// The text-to-image layout the fused attention kernels are written for: one causal text
+/// stretch then one picture block to the end. Returns the text length.
+fn simple_prefix(segments: &[Segment]) -> Option<usize> {
+    match segments {
+        [Segment { start: 0, end: t, causal: true }, Segment { start: s, end: _, causal: false }] if s == t => Some(*t),
+        _ => None,
+    }
+}
+
+/// The dense additive mask `(1, 1, S, S)` of `segments`.
+fn segments_mask(segments: &[Segment], s: usize, dtype: DType, dev: &Device) -> Result<Tensor> {
+    let mut data = vec![f32::NEG_INFINITY; s * s];
+    for seg in segments {
+        for q in seg.start..seg.end {
+            let last = if seg.causal { q + 1 } else { seg.end };
+            for kv in 0..last.min(s) {
+                data[q * s + kv] = 0.0;
+            }
+        }
+    }
+    Ok(Tensor::from_vec(data, (1, 1, s, s), dev)?.to_dtype(dtype)?)
+}
+
+/// A reference picture's latent for [`QwenImageDit::forward_refs`]: packed `(1, h·w, 64)` in
+/// the DiT's dtype, and its latent grid.
+pub struct RefLatent<'a> {
+    pub packed: &'a Tensor,
+    pub h: usize,
+    pub w: usize,
 }
 
 /// The modulation every block shares (one `modulation` linear per forward).
@@ -943,32 +862,18 @@ pub struct QwenImageDit {
 }
 
 impl QwenImageDit {
-    pub fn load(
-        num_layers: usize,
-        out_channels: usize,
-        quant: bool,
-        convrot: bool,
-        vb: VarBuilder,
-    ) -> Result<Self> {
+    pub fn load(num_layers: usize, out_channels: usize, quant: bool, convrot: bool, vb: VarBuilder) -> Result<Self> {
         let dev = vb.device().clone();
         // Build the 256×256 Regular Hadamard rotation once; ConvRotLinear stores
         // a cheap handle clone. Only meaningful under the `convrot` feature.
         #[cfg(feature = "convrot")]
-        let rot: Option<Tensor> = if convrot {
-            Some(crate::model::rotation::regular_hadamard_256(&dev)?)
-        } else {
-            None
-        };
+        let rot: Option<Tensor> = if convrot { Some(crate::model::rotation::regular_hadamard_256(&dev)?) } else { None };
         #[cfg(not(feature = "convrot"))]
         let rot: Option<Tensor> = {
             let _ = convrot;
             None
         };
-        let opts = LinearOpts {
-            quant,
-            convrot,
-            rot: rot.as_ref(),
-        };
+        let opts = LinearOpts { quant, convrot, rot: rot.as_ref() };
         let mut blocks = Vec::with_capacity(num_layers);
         let vb_b = vb.pp("transformer_blocks");
         for i in 0..num_layers {
@@ -976,9 +881,7 @@ impl QwenImageDit {
         }
         let inv_freqs = std::array::from_fn(|a| {
             let d = AXES[a];
-            (0..d / 2)
-                .map(|j| 1f32 / ROPE_THETA.powf(2.0 * j as f64 / d as f64) as f32)
-                .collect()
+            (0..d / 2).map(|j| 1f32 / ROPE_THETA.powf(2.0 * j as f64 / d as f64) as f32).collect()
         });
         let dit = Self {
             img_in: QLinear::load(64, INNER, opts, vb.pp("img_in"))?,
@@ -1011,56 +914,23 @@ impl QwenImageDit {
             &self.norm_out_linear,
             &self.proj_out,
         ];
-        let blocks: usize = self
-            .blocks
-            .iter()
-            .map(|b| b.attn.convrot_count() + b.mlp.convrot_count())
-            .sum();
+        let blocks: usize = self.blocks.iter().map(|b| b.attn.convrot_count() + b.mlp.convrot_count()).sum();
         tail.into_iter().filter(|l| l.is_convrot()).count() + blocks
     }
 
-    /// Build cos/sin `(S, 32)` for interleaved RoPE, from per-token 3-axis
-    /// position indices. `img_shapes` = (frame, H, W) for the target image;
-    /// `txt_len` text tokens precede `H*W` image tokens.
-    fn rope_cos_sin(
-        &self,
-        txt_len: usize,
-        h: usize,
-        w: usize,
-        dtype: DType,
-    ) -> Result<(Tensor, Tensor)> {
-        let img = h * w;
-        let seq = txt_len + img;
-        // frame/height/width index per token (i32 to allow negatives)
-        let mut frame = vec![0i64; seq];
-        let mut height = vec![0i64; seq];
-        let mut width = vec![0i64; seq];
-        // text: positions 0..txt_len on all axes
-        for (p, item) in frame.iter_mut().enumerate().take(txt_len) {
-            *item = p as i64;
-            height[p] = p as i64;
-            width[p] = p as i64;
-        }
-        // image: frame frozen at txt_len; height/width grid centered on zero
-        let hs = -((h - h / 2) as i64);
-        let ws = -((w - w / 2) as i64);
-        for r in 0..h {
-            for c in 0..w {
-                let idx = txt_len + r * w + c;
-                frame[idx] = txt_len as i64;
-                height[idx] = hs + r as i64;
-                width[idx] = ws + c as i64;
-            }
-        }
+    /// Build cos/sin `(S, 64)` for interleaved RoPE from per-token 3-axis positions
+    /// `(frame, height, width)` (f32: reference grids of the other parity sit half a token
+    /// off, as ComfyUI centres them on the target).
+    fn rope_from_ids(&self, ids: &[[f32; 3]], dtype: DType) -> Result<(Tensor, Tensor)> {
+        let seq = ids.len();
         // angle per token = concat over axes of pos * inv_freq
         let half: usize = AXES.iter().map(|d| d / 2).sum(); // 8+28+28 = 64
         let mut cos = vec![0f32; seq * half];
         let mut sin = vec![0f32; seq * half];
-        let idxs = [&frame, &height, &width];
-        for s in 0..seq {
+        for (s, id) in ids.iter().enumerate() {
             let mut off = 0;
             for a in 0..3 {
-                let pos = idxs[a][s] as f32;
+                let pos = id[a];
                 for (j, inv) in self.inv_freqs[a].iter().enumerate() {
                     let ang = pos * inv;
                     cos[s * half + off + j] = ang.cos();
@@ -1078,23 +948,70 @@ impl QwenImageDit {
     /// `hidden_states` (1, H*W, 64), `encoder_hidden_states` (1, txt_len, 4096),
     /// `timestep` scalar tensor (1,), `(h,w)` target latent grid.
     /// Returns the joint output (1, txt_len + H*W, out_channels).
-    pub fn forward(
+    pub fn forward(&self, hidden_states: &Tensor, encoder_hidden_states: &Tensor, timestep: &Tensor, h: usize, w: usize) -> Result<Tensor> {
+        self.forward_refs(hidden_states, encoder_hidden_states, timestep, h, w, &[], &[])
+    }
+
+    /// The forward with reference pictures (ComfyUI's `build_sequence`): the text rows with
+    /// each reference's latent tokens spliced in at its slot (`slots[i]` = the text rows before
+    /// reference `i`), the target last; every picture block carries its own frame position and
+    /// a height/width grid centred on the target; text and reference rows modulate from t = 0.
+    /// Returns the joint output `(1, S, out_channels)`; the target is its last `h·w` rows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_refs(
         &self,
         hidden_states: &Tensor,
         encoder_hidden_states: &Tensor,
         timestep: &Tensor,
         h: usize,
         w: usize,
+        refs: &[RefLatent],
+        slots: &[usize],
     ) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
         let (b, txt_len, _) = encoder_hidden_states.dims3()?;
         let img_tokens = h * w;
-        let seq = txt_len + img_tokens;
+        anyhow::ensure!(slots.len() == refs.len(), "{} slots for {} references", slots.len(), refs.len());
 
-        let img = self.img_in.forward(hidden_states)?; // (1, img, INNER)
         let txt = self.txt_in.forward(encoder_hidden_states)?; // (1, txt, INNER)
-                                                               // joint = [text, image]
-        let joint = Tensor::cat(&[&txt, &img], 1)?; // (1, seq, INNER)
+                                                               // bounds of the text stretches: [0, slot_0, ..., slot_{k-1}, txt_len]
+        let mut bounds: Vec<usize> = vec![0];
+        bounds.extend(slots.iter().map(|s| (*s).min(txt_len)));
+        bounds.push(txt_len);
+        let mut parts: Vec<Tensor> = Vec::new();
+        let mut ids: Vec<[f32; 3]> = Vec::new();
+        let mut segments: Vec<Segment> = Vec::new();
+        let (mut pos, mut length) = (0usize, 0usize);
+        for i in 0..bounds.len() - 1 {
+            let (start, end) = (bounds[i], bounds[i + 1].max(bounds[i]));
+            let n = end - start;
+            if n > 0 {
+                parts.push(txt.narrow(1, start, n)?);
+                ids.extend((0..n).map(|k| [(pos + k) as f32; 3]));
+                segments.push(Segment { start: length, end: length + n, causal: true });
+                pos += n;
+                length += n;
+            }
+            let (img, ih, iw) = match refs.get(i) {
+                Some(r) => (self.img_in.forward(r.packed)?, r.h, r.w),
+                None => (self.img_in.forward(hidden_states)?, h, w),
+            };
+            parts.push(img);
+            // half a token where a reference grid has the other parity, so it centres on the target
+            let hh0 = -((ih - ih / 2) as f32) + 0.5 * ((ih % 2) as f32 - (h % 2) as f32);
+            let ww0 = -((iw - iw / 2) as f32) + 0.5 * ((iw % 2) as f32 - (w % 2) as f32);
+            for r in 0..ih {
+                for c in 0..iw {
+                    ids.push([pos as f32, hh0 + r as f32, ww0 + c as f32]);
+                }
+            }
+            segments.push(Segment { start: length, end: length + ih * iw, causal: false });
+            pos += ih.max(iw);
+            length += ih * iw;
+        }
+        let joint = Tensor::cat(&parts, 1)?; // (1, S, INNER)
+        let seq = length;
+        let prefix_len = seq - img_tokens;
 
         // timestep embedding for [t, 0]; modulation for both rows.
         let t0 = Tensor::zeros((1,), dtype, &self.device)?;
@@ -1105,44 +1022,34 @@ impl QwenImageDit {
         // Split modulation into scale1,gate1,scale2,gate2, each (2, INNER).
         let chunk = |t: &Tensor, i: usize| -> Result<Tensor> { Ok(t.narrow(1, i * INNER, INNER)?) };
         let mods: Vec<Tensor> = (0..4).map(|i| chunk(&modhad, i)).collect::<Result<_>>()?;
-        // Per-token selection (image tokens row 0 = real t, text row 1 = t=0)
-        // happens inside the AdaLN step (see `Modulation`).
-        let md = |m: &Tensor| Modulation::new(m.clone(), b, txt_len, img_tokens);
-        let mods = BlockMods {
-            scale1: md(&mods[0])?,
-            gate1: md(&mods[1])?,
-            scale2: md(&mods[2])?,
-            gate2: md(&mods[3])?,
+        // Per-token selection (the target's rows take row 0 = real t, everything before
+        // them row 1 = t=0) happens inside the AdaLN step (see `Modulation`).
+        let md = |m: &Tensor| Modulation::new(m.clone(), b, prefix_len, img_tokens);
+        let mods = BlockMods { scale1: md(&mods[0])?, gate1: md(&mods[1])?, scale2: md(&mods[2])?, gate2: md(&mods[3])? };
+
+        // The dense mask serves the plain path of the text-to-image layout; the fused kernels
+        // and the segment path derive the structure themselves and get a token they ignore.
+        let mask = if !cfg!(any(feature = "flash-attn", feature = "sage")) && simple_prefix(&segments).is_some() {
+            segments_mask(&segments, seq, dtype, &self.device)?
+        } else {
+            Tensor::zeros((1, 1, 1, 1), dtype, &self.device)?
         };
+        let (cos, sin) = self.rope_from_ids(&ids, dtype)?;
 
-        // The dense block-causal mask is only needed by the naive path; the
-        // flash and sage paths derive the same structure from the text/image split.
-        #[cfg(all(not(feature = "flash-attn"), not(feature = "sage")))]
-        let mask = block_causal_mask(txt_len, img_tokens, dtype, &self.device)?;
-        #[cfg(any(feature = "flash-attn", feature = "sage"))]
-        let mask = Tensor::zeros((1, 1, 1, 1), dtype, &self.device)?;
-        let (cos, sin) = self.rope_cos_sin(txt_len, h, w, dtype)?;
-
-        let mut h = joint;
+        let mut hs = joint;
         let mut pending: Option<Tensor> = None;
         for block in &self.blocks {
-            let (nh, y) = block.forward(&h, pending.as_ref(), &mods, &mask, &cos, &sin, txt_len)?;
-            h = nh;
+            let (nh, y) = block.forward(&hs, pending.as_ref(), &mods, &mask, &cos, &sin, &segments)?;
+            hs = nh;
             pending = Some(y);
         }
 
         // norm_out: AdaLayerNorm scale-only (fused with the last block's MLP
         // residual), then proj_out. Scale from temb rows.
         let scale_out = self.norm_out_linear.forward(&silu(&temb)?)?; // (2, INNER)
-        let scale_out = Modulation::new(scale_out, b, txt_len, img_tokens)?;
-        let (_, x) = residual_norm_mod(
-            &h,
-            pending.as_ref().map(|y| (&mods.gate2, y)),
-            &scale_out,
-            1e-6,
-        )?;
+        let scale_out = Modulation::new(scale_out, b, prefix_len, img_tokens)?;
+        let (_, x) = residual_norm_mod(&hs, pending.as_ref().map(|y| (&mods.gate2, y)), &scale_out, 1e-6)?;
         let out = self.proj_out.forward(&x)?; // (1, seq, out_channels)
-        let _ = seq;
         Ok(out)
     }
 }
@@ -1159,29 +1066,6 @@ fn select_rows(m: &Tensor, txt_len: usize, img_tokens: usize) -> Result<Tensor> 
     Ok(rows)
 }
 
-/// Block-causal additive mask `(1,1,S,S)`: allowed[q,kv] = (q>=kv) OR both-image.
-/// Used by the naive attention path only (the flash path derives the structure).
-#[cfg_attr(any(feature = "flash-attn", feature = "sage"), allow(dead_code))]
-fn block_causal_mask(
-    txt_len: usize,
-    img_tokens: usize,
-    dtype: DType,
-    dev: &Device,
-) -> Result<Tensor> {
-    let s = txt_len + img_tokens;
-    let mut data = vec![0f32; s * s];
-    for q in 0..s {
-        for kv in 0..s {
-            let both_image = q >= txt_len && kv >= txt_len;
-            let allowed = kv <= q || both_image;
-            if !allowed {
-                data[q * s + kv] = f32::NEG_INFINITY;
-            }
-        }
-    }
-    Ok(Tensor::from_vec(data, (1, 1, s, s), dev)?.to_dtype(dtype)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,24 +1079,12 @@ mod tests {
     fn residual_norm_mod_fallback_matches_the_unfused_pair() {
         let dev = Device::Cpu;
         let (b, txt, img, n) = (2usize, 3usize, 5usize, 16usize);
-        let rows = |seed: f32| {
-            Tensor::arange(0f32, (2 * n) as f32, &dev)
-                .unwrap()
-                .affine(0.05, seed as f64)
-                .unwrap()
-                .sin()
-                .unwrap()
-                .reshape((2, n))
-                .unwrap()
-        };
+        let rows = |seed: f32| Tensor::arange(0f32, (2 * n) as f32, &dev).unwrap().affine(0.05, seed as f64).unwrap().sin().unwrap().reshape((2, n)).unwrap();
         let (g, sc) = (rows(0.3), rows(1.7));
         let gm = Modulation::new(g.clone(), b, txt, img).unwrap();
         let sm = Modulation::new(sc.clone(), b, txt, img).unwrap();
         let tok = gm.tokens.to_vec3::<f32>().unwrap();
-        let (g0, g1) = (
-            g.get(0).unwrap().to_vec1::<f32>().unwrap(),
-            g.get(1).unwrap().to_vec1::<f32>().unwrap(),
-        );
+        let (g0, g1) = (g.get(0).unwrap().to_vec1::<f32>().unwrap(), g.get(1).unwrap().to_vec1::<f32>().unwrap());
         for lane in &tok {
             for (pos, row) in lane.iter().enumerate() {
                 assert_eq!(row, if pos < txt { &g1 } else { &g0 }, "pos {pos}");
@@ -1222,19 +1094,13 @@ mod tests {
         let y = Tensor::randn(0f32, 1f32, (b, txt + img, n), &dev).unwrap();
         let (h2, x2) = residual_norm_mod(&h, Some((&gm, &y)), &sm, 1e-6).unwrap();
         let h_ref = (&h + gm.tokens.tanh().unwrap().broadcast_mul(&y).unwrap()).unwrap();
-        let x_ref = norm_no_affine(&h_ref, 1e-6)
-            .unwrap()
-            .broadcast_mul(&(&sm.tokens + 1.0).unwrap())
-            .unwrap();
+        let x_ref = norm_no_affine(&h_ref, 1e-6).unwrap().broadcast_mul(&(&sm.tokens + 1.0).unwrap()).unwrap();
         let v = |t: &Tensor| t.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         assert_eq!(v(&h2), v(&h_ref));
         assert_eq!(v(&x2), v(&x_ref));
         let (h3, x3) = residual_norm_mod(&h, None, &sm, 1e-6).unwrap();
         assert_eq!(v(&h3), v(&h));
-        let x_ref = norm_no_affine(&h, 1e-6)
-            .unwrap()
-            .broadcast_mul(&(&sm.tokens + 1.0).unwrap())
-            .unwrap();
+        let x_ref = norm_no_affine(&h, 1e-6).unwrap().broadcast_mul(&(&sm.tokens + 1.0).unwrap()).unwrap();
         assert_eq!(v(&x3), v(&x_ref));
     }
 
@@ -1242,10 +1108,7 @@ mod tests {
     fn rotated_tail_linears_meet_the_convrot_shape_rules() {
         for (prefix, k, n, rot) in TAIL_LINEARS {
             if rot {
-                assert!(
-                    k.is_multiple_of(crate::model::rotation::GROUP),
-                    "{prefix}: K={k}"
-                );
+                assert!(k.is_multiple_of(crate::model::rotation::GROUP), "{prefix}: K={k}");
                 assert!(n.is_multiple_of(8), "{prefix}: N={n}");
             }
         }
@@ -1268,47 +1131,29 @@ mod tests {
 
     #[test]
     fn img_in_cannot_rotate() {
-        assert_eq!(
-            linear_precision("img_in", true, true),
-            Some(LinearPrecision::Full)
-        );
+        assert_eq!(linear_precision("img_in", true, true), Some(LinearPrecision::Full));
         assert!(!is_convrot_target("img_in"));
     }
 
     #[test]
     fn block_linears_follow_convrot_then_quant() {
         let p = "transformer_blocks.31.img_mlp.gate_layer";
-        assert_eq!(
-            linear_precision(p, true, true),
-            Some(LinearPrecision::ConvRot)
-        );
+        assert_eq!(linear_precision(p, true, true), Some(LinearPrecision::ConvRot));
         assert_eq!(linear_precision(p, true, false), Some(LinearPrecision::Q8));
-        assert_eq!(
-            linear_precision(p, false, false),
-            Some(LinearPrecision::Full)
-        );
+        assert_eq!(linear_precision(p, false, false), Some(LinearPrecision::Full));
         assert!(is_convrot_target("transformer_blocks.0.attn.to_out.0"));
     }
 
     #[test]
     fn tail_linears_never_take_q8() {
         for (prefix, ..) in TAIL_LINEARS {
-            assert_ne!(
-                linear_precision(prefix, true, false),
-                Some(LinearPrecision::Q8)
-            );
+            assert_ne!(linear_precision(prefix, true, false), Some(LinearPrecision::Q8));
         }
     }
 
     #[test]
     fn non_linears_are_outside_the_policy() {
-        for p in [
-            "transformer_blocks.0.attn.norm_q",
-            "transformer_blocks.x.attn.to_q",
-            "transformer_blocks..attn.to_q",
-            "txt_in.text_norm",
-            "modulation",
-        ] {
+        for p in ["transformer_blocks.0.attn.norm_q", "transformer_blocks.x.attn.to_q", "transformer_blocks..attn.to_q", "txt_in.text_norm", "modulation"] {
             assert_eq!(linear_precision(p, true, true), None, "{p}");
             assert!(!is_convrot_target(p));
         }
