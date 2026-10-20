@@ -72,14 +72,21 @@ impl Default for Options {
 
 /// A reference picture: straight RGBA8, row-major (any size; the pipeline resizes it the way
 /// ComfyUI's `TextEncodeQwenImage21` does at `resolution 0`, to multiples of 32).
-/// A reference's packed normalised latent `(1, h·w, 64)` with its latent grid.
-type PackedLatent = (Tensor, usize, usize);
+/// A reference's packed normalised latent `(1, h·w, 64)` with its latent grid and its offset on
+/// the target's grid (see [`RefImage::offset`]).
+type PackedLatent = (Tensor, usize, usize, Option<(usize, usize)>);
 
 #[derive(Clone, Debug)]
 pub struct RefImage {
     pub width: usize,
     pub height: usize,
     pub rgba: Vec<u8>,
+    /// Where the picture sits inside the target, `(x, y)` in pixels, multiples of 16 (an
+    /// expand's picture inside the larger canvas): its latent tokens then take the positions of
+    /// the target tokens under them, and the picture is cropped to the latent grid rather than
+    /// resized to ComfyUI's multiples of 32. `None`: a reference centred on the target, as
+    /// ComfyUI places every reference.
+    pub offset: Option<(usize, usize)>,
 }
 
 /// Which sampling conventions a generation follows.
@@ -137,10 +144,17 @@ pub fn ref_size(width: usize, height: usize) -> (usize, usize) {
 /// two consumers see: RGBA in `[-1, 1]` for the VAE, RGB over white in `[0, 1]` for the
 /// vision tower.
 fn prepare_ref(r: &RefImage, dev: &Device) -> Result<(Tensor, Tensor, (usize, usize))> {
-    let (w, h) = ref_size(r.width, r.height);
     let img: image::RgbaImage = image::ImageBuffer::from_raw(r.width as u32, r.height as u32, r.rgba.clone())
         .ok_or_else(|| anyhow::anyhow!("reference of {}x{} with {} bytes", r.width, r.height, r.rgba.len()))?;
-    let img = if (w, h) == (r.width, r.height) { img } else { image::imageops::resize(&img, w as u32, h as u32, image::imageops::FilterType::Lanczos3) };
+    let (w, h, img) = if r.offset.is_some() {
+        // Placed on the target's grid: cropped to whole latent tokens, never resampled.
+        let (w, h) = ((r.width / 16).max(1) * 16, (r.height / 16).max(1) * 16);
+        anyhow::ensure!(w <= r.width && h <= r.height, "a placed reference needs at least 16x16 pixels");
+        (w, h, if (w, h) == (r.width, r.height) { img } else { image::imageops::crop_imm(&img, 0, 0, w as u32, h as u32).to_image() })
+    } else {
+        let (w, h) = ref_size(r.width, r.height);
+        (w, h, if (w, h) == (r.width, r.height) { img } else { image::imageops::resize(&img, w as u32, h as u32, image::imageops::FilterType::Lanczos3) })
+    };
     let rgba = vae::from_rgba_u8(w, h, img.as_raw(), dev)?; // (1, 4, H, W) in [-1, 1]
     let px = rgba.i(0)?; // (4, H, W)
     let rgb01 = ((px.narrow(0, 0, 3)? + 1.0)? * 0.5)?;
@@ -337,7 +351,14 @@ impl Pipeline {
             let z = self.vae.encode(&rgba)?; // (1, 64, h/16, w/16) f32
             let (lh, lw) = (h / 16, w / 16);
             let packed = z.reshape((1, 64, lh * lw))?.transpose(1, 2)?.contiguous()?.to_dtype(self.dtype)?;
-            latents.push((packed, lh, lw));
+            let offset = match r.offset {
+                Some((x, y)) => {
+                    anyhow::ensure!(x.is_multiple_of(16) && y.is_multiple_of(16), "a reference's offset must be a multiple of 16 pixels ({x}, {y} given)");
+                    Some((y / 16, x / 16))
+                }
+                None => None,
+            };
+            latents.push((packed, lh, lw, offset));
             let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
             let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
             let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
@@ -372,11 +393,18 @@ impl Pipeline {
         };
         // The target: the request's size, or the first reference's when it says nothing.
         let (w, h) = match (req.width, req.height, ref_latents.first()) {
-            (0, 0, Some((_, lh, lw))) => (lw * 16, lh * 16),
+            (0, 0, Some((_, lh, lw, None))) => (lw * 16, lh * 16),
             (w, h, _) => (w, h),
         };
         if w == 0 || h == 0 || !w.is_multiple_of(16) || !h.is_multiple_of(16) {
             anyhow::bail!("the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
+        }
+        for (_, lh, lw, offset) in &ref_latents {
+            if let Some((oy, ox)) = offset {
+                if ox + lw > w / 16 || oy + lh > h / 16 {
+                    anyhow::bail!("a placed reference of {}x{} at ({}, {}) does not fit the {w}x{h} picture", lw * 16, lh * 16, ox * 16, oy * 16);
+                }
+            }
         }
         check(cancel)?;
         progress(0.02, "Encoding the prompt");
@@ -386,14 +414,14 @@ impl Pipeline {
         } else {
             None
         };
-        let refs: Vec<RefLatent> = ref_latents.iter().map(|(t, lh, lw)| RefLatent { packed: t, h: *lh, w: *lw }).collect();
+        let refs: Vec<RefLatent> = ref_latents.iter().map(|(t, lh, lw, o)| RefLatent { packed: t, h: *lh, w: *lw, offset: *o }).collect();
         // With references, the prefix (text and reference rows) through the DiT once; each
         // step then runs the target's rows against the cached keys and values.
         let (lw, lh) = (w / 16, h / 16);
         let caches: Option<(PrefixCache, Option<PrefixCache>)> = if self.opts.prefix_cache && !refs.is_empty() {
             check(cancel)?;
             progress(0.03, "Reading the references into the model");
-            let prefix_len = cond.dim(1)? + ref_latents.iter().map(|(_, lh, lw)| lh * lw).sum::<usize>();
+            let prefix_len = cond.dim(1)? + ref_latents.iter().map(|(_, lh, lw, _)| lh * lw).sum::<usize>();
             self.make_room(prefix_len * if neg.is_some() { 2 } else { 1 }, lh * lw);
             let c = self.dit.prefix_cache(&cond, lh, lw, &refs, &slots)?;
             let n = match &neg {
