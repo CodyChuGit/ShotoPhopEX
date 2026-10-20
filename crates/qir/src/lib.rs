@@ -11,6 +11,7 @@
 //! - vae: `AutoencoderKLQwenImage21` (64-ch RGBA, 16x) — [`model::vae`]
 //! - scheduler: `FlowMatchEulerDiscreteScheduler` — [`model::scheduler`]
 
+pub mod comfy;
 #[cfg(feature = "convrot")]
 pub mod convrot;
 pub mod convrot_cache;
@@ -23,6 +24,7 @@ pub mod gemm_tiles;
 pub mod layout;
 pub mod loader;
 pub mod model;
+pub mod pipeline;
 #[cfg(feature = "sage")]
 pub mod rope;
 #[cfg(feature = "sage")]

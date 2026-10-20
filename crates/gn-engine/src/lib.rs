@@ -21,9 +21,11 @@
 
 pub mod client;
 pub mod fake;
+pub mod multi;
 pub mod protocol;
 pub mod server;
 
 pub use client::EngineClient;
+pub use multi::Multi;
 pub use protocol::{Blob, DoneInfo, ErrorKind, Health, Reply, Request, RunRequest};
 pub use server::{Engine, EngineError, serve};

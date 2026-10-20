@@ -96,14 +96,26 @@ enum Command {
         model: std::path::PathBuf,
         #[arg(long)]
         prompt: String,
+        /// Square picture side in pixels (a multiple of 16); `--width`/`--height` override it.
         #[arg(long, default_value_t = 1024)]
         size: usize,
+        /// Picture width in pixels (a multiple of 16); defaults to `--size`.
+        #[arg(long)]
+        width: Option<usize>,
+        /// Picture height in pixels (a multiple of 16); defaults to `--size`.
+        #[arg(long)]
+        height: Option<usize>,
         #[arg(long, default_value_t = 40)]
         steps: usize,
         /// Noise seed: a number (with --batch N, lanes use seed..seed+N-1) or
         /// `random` (a fresh seed per image, printed + written to seeds.tsv).
         #[arg(long, default_value = "42")]
         seed: qwen_image_rs::seed::Seed,
+        /// ComfyUI's conventions (`qwen_image_rs::comfy`): torch's CPU noise for the seed, the
+        /// `simple` flow schedule (shift 0.69) and its timestep rounding, so a picture matches
+        /// ComfyUI's for the same prompt, seed and steps.
+        #[arg(long)]
+        comfy: bool,
         /// Quantize the DiT block linears to Q8_0 (GGUF) — lower VRAM.
         #[arg(long)]
         quant: bool,
@@ -373,8 +385,11 @@ fn main() -> Result<()> {
             model,
             prompt,
             size,
+            width,
+            height,
             steps,
             seed,
+            comfy,
             quant,
             convrot,
             cache,
@@ -391,9 +406,10 @@ fn main() -> Result<()> {
         } => generate(
             &model,
             &prompt,
-            size,
+            (width.unwrap_or(size), height.unwrap_or(size)),
             steps,
             seed,
+            comfy,
             quant,
             convrot,
             &cache.spec(),
@@ -472,17 +488,17 @@ fn guided_noise_pred(
     neg: Option<&Tensor>,
     guidance: f32,
     tt: &Tensor,
-    hw: usize,
+    (h, w): (usize, usize),
     img_seq: usize,
 ) -> Result<Tensor> {
-    let joint = dit.forward(latents_dt, cond, tt, hw, hw)?;
+    let joint = dit.forward(latents_dt, cond, tt, h, w)?;
     let (_b, jl, _) = joint.dims3()?;
     let v_cond = joint
         .narrow(1, jl - img_seq, img_seq)?
         .to_dtype(DType::F32)?;
     if guidance > 1.0 {
         if let Some(neg) = neg {
-            let ju = dit.forward(latents_dt, neg, tt, hw, hw)?;
+            let ju = dit.forward(latents_dt, neg, tt, h, w)?;
             let (_b, jlu, _) = ju.dims3()?;
             let v_uncond = ju.narrow(1, jlu - img_seq, img_seq)?.to_dtype(DType::F32)?;
             return Ok((&v_uncond + ((&v_cond - &v_uncond)? * guidance as f64)?)?);
@@ -533,9 +549,10 @@ fn load_text_encoder(
 fn generate(
     model: &std::path::Path,
     prompt: &str,
-    size: usize,
+    (width, height): (usize, usize),
     steps: usize,
     seed: qwen_image_rs::seed::Seed,
+    comfy: bool,
     quant: bool,
     convrot: bool,
     cache: &qwen_image_rs::convrot_cache::CacheSpec,
@@ -552,6 +569,12 @@ fn generate(
 ) -> Result<()> {
     if batch < 1 {
         anyhow::bail!("--batch must be >= 1");
+    }
+    if width == 0 || height == 0 || !width.is_multiple_of(16) || !height.is_multiple_of(16) {
+        anyhow::bail!("--width/--height must be positive multiples of 16 ({width}x{height} asked)");
+    }
+    if steps == 0 {
+        anyhow::bail!("--steps must be >= 1");
     }
     // Output-target validation up front (before the ~20s of model loads).
     if batch == 1 && out.is_none() {
@@ -603,8 +626,10 @@ fn generate(
         .len();
 
     // 1. Text encoder -> prompt embeddings (+ negative, for CFG). Freed after.
+    let t_phase = std::time::Instant::now();
     let (embeds, neg_embeds) = {
         let te = load_text_encoder(model, &dev, dtype, quant_text, text_gguf)?;
+        tracing::info!(load_s = t_phase.elapsed().as_secs_f32(), "text encoder loaded");
         let encode = |p: &str| -> Result<Tensor> {
             let ids: Vec<u32> = tok
                 .encode(tmpl::t2i_template(p), false)
@@ -623,7 +648,9 @@ fn generate(
         };
         (cond, neg)
     };
-    tracing::info!(shape = ?embeds.dims(), guidance, "prompt embeddings");
+    dev.synchronize()?;
+    let encode_s = t_phase.elapsed().as_secs_f32();
+    tracing::info!(shape = ?embeds.dims(), guidance, encode_s, "prompt embeddings");
 
     // Broadcast the (1, txt, 4096) embeds across the batch lanes (all lanes share
     // the prompt; only the seed differs). Materialized so the fused kernels read
@@ -648,9 +675,27 @@ fn generate(
     };
 
     // 2. DiT + flow-match denoise -> final latent (freed after).
-    let hw = size / 16; // vae spatial compression
-    let img_seq = hw * hw;
-    let latent = {
+    let (lw, lh) = (width / 16, height / 16); // vae spatial compression
+    let img_seq = lw * lh;
+    // The schedule: diffusers' resolution-shifted FlowMatchEuler, or ComfyUI's `simple` over
+    // the model's shift-0.69 sigmas. Both are (timestep for the DiT, Euler delta) per step.
+    let (tsteps, dts): (Vec<f32>, Vec<f32>) = if comfy {
+        use qwen_image_rs::comfy::{FlowSchedule, comfy_timestep};
+        let (shift, mult) = FlowSchedule::QWEN_IMAGE_21;
+        let s = FlowSchedule::simple(steps, shift, mult).map_err(anyhow::Error::msg)?;
+        (
+            (0..steps).map(|i| comfy_timestep(s.sigma(i))).collect(),
+            (0..steps).map(|i| s.dt(i)).collect(),
+        )
+    } else {
+        let s = FlowMatchEuler::new(&FlowConfig::default(), steps, img_seq);
+        (
+            s.timesteps().iter().map(|t| (*t / 1000.0) as f32).collect(),
+            (0..steps).map(|i| s.dt(i) as f32).collect(),
+        )
+    };
+    let t_phase = std::time::Instant::now();
+    let (latent, denoise_s) = {
         let dit = QwenImageDit::load(
             32,
             64,
@@ -658,6 +703,8 @@ fn generate(
             convrot,
             dit_vb(&model.join("transformer"), convrot, cache, dtype, &dev)?,
         )?;
+        tracing::info!(load_s = t_phase.elapsed().as_secs_f32(), "DiT loaded");
+        let t_denoise = std::time::Instant::now();
         // One seed per lane: lane i uses (seed + i), resetting the RNG each lane
         // so lane i's NOISE is identical to a sequential `generate --seed (seed+i)`
         // run. The resulting IMAGE is NOT bit-identical to that single run — the
@@ -666,13 +713,19 @@ fn generate(
         // collapse this into a single set_seed + N draws.
         let mut lanes = Vec::with_capacity(batch);
         for &lane_seed in &seeds {
-            dev.set_seed(lane_seed)?;
-            lanes.push(Tensor::randn(0f32, 1f32, (1, img_seq, 64), &dev)?);
+            if comfy {
+                // ComfyUI's noise: torch's CPU generator over the [1, 64, H, W] latent.
+                let noise = qwen_image_rs::comfy::noise_packed(lane_seed, lh, lw)
+                    .map_err(anyhow::Error::msg)?;
+                lanes.push(Tensor::from_vec(noise, (1, img_seq, 64), &dev)?);
+            } else {
+                dev.set_seed(lane_seed)?;
+                lanes.push(Tensor::randn(0f32, 1f32, (1, img_seq, 64), &dev)?);
+            }
         }
         let mut latents = Tensor::cat(&lanes, 0)?.to_dtype(DType::F32)?; // (batch, img, 64)
-        let sched = FlowMatchEuler::new(&FlowConfig::default(), steps, img_seq);
-        for (i, t) in sched.timesteps().iter().enumerate() {
-            let tt = Tensor::from_vec(vec![(*t / 1000.0) as f32], (1,), &dev)?;
+        for (i, (t, dt)) in tsteps.iter().zip(&dts).enumerate() {
+            let tt = Tensor::from_vec(vec![*t], (1,), &dev)?;
             let np = guided_noise_pred(
                 &dit,
                 &latents.to_dtype(dtype)?,
@@ -680,15 +733,18 @@ fn generate(
                 neg_embeds.as_ref(),
                 guidance,
                 &tt,
-                hw,
+                (lh, lw),
                 img_seq,
             )?;
-            latents = (latents + (np * sched.dt(i))?)?;
+            latents = (latents + (np * *dt as f64)?)?;
             if i % 10 == 0 || i + 1 == steps {
                 tracing::info!(step = i, "denoising");
             }
         }
-        latents
+        dev.synchronize()?;
+        let denoise_s = t_denoise.elapsed().as_secs_f32();
+        tracing::info!(denoise_s, steps, per_step_ms = denoise_s * 1000.0 / steps as f32, "denoised");
+        (latents, denoise_s)
     };
 
     // 3. VAE decode -> RGBA PNG.
@@ -711,12 +767,14 @@ fn generate(
             std::fs::create_dir_all(d)?;
         }
     }
+    let mut decode_s = 0f32;
     for (i, &lane_seed) in seeds.iter().enumerate() {
         let li = latent.narrow(0, i, 1)?; // (1, img, 64)
-        let z = vae::unpack_latents(&li, 64)?;
+        let z = vae::unpack_latents_hw(&li, lh, lw)?;
         let t_dec = std::time::Instant::now();
         let img = vmodel.decode_auto(&z, vae_tile)?;
         dev.synchronize()?;
+        decode_s += t_dec.elapsed().as_secs_f32();
         tracing::info!(lane = i, decode_ms = t_dec.elapsed().as_millis(), "decoded");
         let (w, h, bytes) = vae::to_rgba_u8(&img)?;
         let buf: image::RgbaImage =
@@ -749,6 +807,8 @@ fn generate(
         let m = qwen_image_rs::seed::write_manifest(d, &manifest)?;
         println!("seeds -> {}", m.display());
     }
+    // One line a harness can read: the compute phases without the model loads.
+    tracing::info!(encode_s, denoise_s, decode_s, comfy, width, height, steps, "timings");
     Ok(())
 }
 
@@ -904,7 +964,7 @@ fn batch(
                     neg_embeds.as_ref(),
                     guidance,
                     &tt,
-                    hw,
+                    (hw, hw),
                     img_seq,
                 )?;
                 latents = (latents + (np * sched.dt(si))?)?;
@@ -984,7 +1044,7 @@ fn batch(
                     neg_embeds.as_ref(),
                     guidance,
                     &tt,
-                    hw,
+                    (hw, hw),
                     img_seq,
                 )?;
                 latents = (latents + (np * sched.dt(si))?)?;

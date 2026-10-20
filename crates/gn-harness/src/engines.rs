@@ -285,16 +285,17 @@ impl Engine for SamOrt {
 }
 
 /// qwen-image-rs's CLI (plan §5.2, the Phase 2 bring-up): Qwen-Image-2.1 text to image through
-/// its own candle + CUDA kernels. Square pictures only (`--size` is one number); its seed is
-/// candle's CUDA RNG and its schedule diffusers', so seed-level parity with ComfyUI is not
-/// expected, the scene and the timings are what the run records.
+/// its own candle + CUDA kernels, the case's width and height as given. With `--comfy` among
+/// the extra arguments it draws ComfyUI's noise for the seed and walks ComfyUI's schedule, so
+/// the pictures compare seed for seed with a `comfy` run; without it the seed is candle's CUDA
+/// RNG and the schedule diffusers', and only the scene and the timings are comparable.
 pub struct QirCli {
     pub exe: PathBuf,
     /// The official snapshot directory (`processor/ text_encoder/ transformer/ vae/`).
     pub model: PathBuf,
     /// Steps per picture (ComfyUI's template: 25).
     pub steps: u32,
-    /// `--convrot`, `--text-gguf <file>`, `--quant-text` … as given.
+    /// `--convrot`, `--comfy`, `--text-gguf <file>`, `--quant-text` … as given.
     pub extra: Vec<String>,
 }
 
@@ -303,9 +304,6 @@ impl QirCli {
         let Kind::T2i { prompt, seed, width, height } = &case.kind else {
             return Err(format!("{}: qir runs text-to-image cases only", case.id));
         };
-        if width != height {
-            return Err(format!("{}: qwen-image-rs makes square pictures only ({width}×{height} asked)", case.id));
-        }
         let out = ctx.out.join(format!("{}.png", case.id));
         let mut args: Vec<String> = vec![
             "generate".into(),
@@ -313,8 +311,10 @@ impl QirCli {
             self.model.to_string_lossy().into_owned(),
             "--prompt".into(),
             prompt.clone(),
-            "--size".into(),
+            "--width".into(),
             width.to_string(),
+            "--height".into(),
+            height.to_string(),
             "--steps".into(),
             self.steps.to_string(),
             "--seed".into(),
@@ -348,10 +348,14 @@ impl Engine for QirCli {
         rec.wall_ms = t0.elapsed().as_millis() as u64;
         match out {
             Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
-                // The CLI logs its phases through `tracing`; keep the lines that carry seconds.
-                let timing_lines: Vec<&str> = stderr.lines().filter(|l| l.contains(" s") && (l.contains("denoise") || l.contains("decode") || l.contains("encode") || l.contains("load"))).take(12).collect();
-                rec.result = json!({"log": timing_lines});
+                // Its `tracing` log goes to stdout, errors to stderr: read both.
+                let stderr = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+                // The CLI's last `timings` line (`encode_s=… denoise_s=… decode_s=…`) is the
+                // engine time: the compute phases, without the per-process model loads.
+                let phases = qir_phases(&stderr);
+                rec.engine_ms = phases.map(|(e, d, v)| ((e + d + v) * 1000.0) as u64);
+                let timing_lines: Vec<&str> = stderr.lines().filter(|l| l.contains("_s=") || l.contains("per_step_ms=")).take(12).collect();
+                rec.result = json!({"log": timing_lines, "phases": phases.map(|(e, d, v)| json!({"encode_s": e, "denoise_s": d, "decode_s": v}))});
                 if !o.status.success() {
                     let tail: String = stderr.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
                     rec.error = Some(if tail.is_empty() { format!("exit {}", o.status) } else { tail });
@@ -368,6 +372,16 @@ impl Engine for QirCli {
         }
         rec
     }
+}
+
+/// `(encode_s, denoise_s, decode_s)` from qwen-image-rs's `timings` log line, when it printed one.
+fn qir_phases(stderr: &str) -> Option<(f32, f32, f32)> {
+    let line = stderr.lines().rev().find(|l| l.contains("timings") && l.contains("denoise_s="))?;
+    let field = |key: &str| -> Option<f32> {
+        let rest = line.split(key).nth(1)?;
+        rest.split(|c: char| c.is_whitespace()).next()?.parse().ok()
+    };
+    Some((field("encode_s=")?, field("denoise_s=")?, field("decode_s=")?))
 }
 
 /// stable-diffusion.cpp's `sd-cli` (plan §5.3): the same prompts and seeds through ggml. Text
@@ -548,6 +562,13 @@ mod tests {
         assert!(sd.arguments(&fill, &ctx).is_err(), "text to image only, for now");
         let log = "[I] get_learned_condition completed, taking 1.10s\n[I] sampling completed, taking 8.02s\n[I] generate_image completed in 9.70s";
         assert_eq!((seconds_after(log, "sampling completed, taking"), seconds_after(log, "generate_image completed in")), (Some(8020), Some(9700)));
+        // qwen-image-rs: width and height as given, the extra flags, and its timings line.
+        let q = QirCli { exe: PathBuf::from("qir"), model: PathBuf::from("snap"), steps: 25, extra: vec!["--convrot".into(), "--comfy".into()] };
+        let args = q.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
+        assert!(args.windows(2).any(|w| w == ["--width", "1024"]) && args.windows(2).any(|w| w == ["--height", "768"]) && args.ends_with(&["--convrot".into(), "--comfy".into()]), "{args:?}");
+        let log = "INFO qwen_image_rs: denoised denoise_s=2.9 steps=25\nINFO qwen_image_rs: timings encode_s=0.25 denoise_s=2.9 decode_s=0.43 comfy=true width=1024 height=1024 steps=25\n";
+        assert_eq!(qir_phases(log), Some((0.25, 2.9, 0.43)));
+        assert_eq!(qir_phases("nothing"), None);
         let _ = std::fs::remove_dir_all(d);
     }
 }

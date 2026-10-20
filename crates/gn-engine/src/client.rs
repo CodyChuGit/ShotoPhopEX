@@ -147,8 +147,17 @@ impl EngineClient {
     /// Start `program args…` as the worker: it receives the token in `GN_ENGINE_TOKEN`, prints
     /// its port line first, and is greeted.
     pub fn spawn(program: &Path, args: &[String], token: &str) -> Result<Self, ClientError> {
+        Self::spawn_with_env(program, args, token, &[])
+    }
+
+    /// [`Self::spawn`] with extra environment variables for the worker (a `PATH` that holds the
+    /// CUDA libraries an engine links, for one).
+    pub fn spawn_with_env(program: &Path, args: &[String], token: &str, env: &[(String, String)]) -> Result<Self, ClientError> {
         let mut cmd = Command::new(program);
         cmd.args(args).env("GN_ENGINE_TOKEN", token).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt as _;

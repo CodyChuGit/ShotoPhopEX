@@ -1,0 +1,23 @@
+[package]
+name = "gn-diffusion"
+description = "Diffusion models of genai-native behind the worker protocol: Qwen-Image-2.1 text to image through qwen-image-rs, resident"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The CUDA build with every kernel (needs nvcc, CUTLASS and the recipe in PhotoshopEX's
+# dev-environment-windows.md). Without it the crate compiles against CPU candle: the engine
+# answers, its tests run, pictures would take minutes.
+cuda = ["qwen-image-rs/cuda", "qwen-image-rs/convrot", "qwen-image-rs/sage", "qwen-image-rs/sage2", "qwen-image-rs/fusednorm"]
+
+[dependencies]
+anyhow = "1"
+serde_json = { workspace = true }
+gn-engine = { path = "../gn-engine", version = "0.1.0" }
+qwen-image-rs = { path = "../qir", version = "0.0.0" }

@@ -1153,6 +1153,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "gn-diffusion"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gn-engine",
+ "qwen-image-rs",
+ "serde_json",
+]
+
+[[package]]
 name = "gn-engine"
 version = "0.1.0"
 dependencies = [
