@@ -19,7 +19,7 @@ use crate::convrot_cache::CacheSpec;
 use crate::loader::WeightSet;
 use crate::model::config::VaeConfig;
 use crate::model::dit::QwenImageDit;
-use crate::model::dit::{PrefixCache, RefLatent};
+use crate::model::dit::{self, PrefixCache, RefLatent};
 use crate::model::scheduler::{FlowConfig, FlowMatchEuler};
 use crate::model::text_encoder::{self, prompt as tmpl, QwenTextEncoder, TextConfig};
 use crate::model::vae::{self, QwenImageVae, VaeTiling};
@@ -47,6 +47,11 @@ pub struct Options {
     /// every step runs the target's rows alone. Off, each step runs the whole joint sequence
     /// (the plain reference for the cache, several times slower).
     pub prefix_cache: bool,
+    /// When the prefix cache of a request would not fit beside the resident models (the bf16
+    /// text encoder alone holds 16 GB), drop the text encoder after it has encoded the prompt
+    /// and load it again for the next request (about 7 s). Off, the driver pages instead,
+    /// which made a two-reference edit twenty times slower on a 32 GB card.
+    pub evict_text_encoder: bool,
 }
 
 impl Default for Options {
@@ -60,6 +65,7 @@ impl Default for Options {
             vae_f32: false,
             vision: true,
             prefix_cache: true,
+            evict_text_encoder: true,
         }
     }
 }
@@ -188,7 +194,11 @@ pub struct Pipeline {
     tok: Tokenizer,
     /// Tokens of the system turn, dropped from the encoder's output.
     drop: usize,
-    te: QwenTextEncoder,
+    /// The snapshot, for loading the text encoder again after an eviction.
+    model: PathBuf,
+    /// The text encoder; `None` between an eviction (`Options::evict_text_encoder`) and the
+    /// next prompt.
+    te: std::sync::Mutex<Option<QwenTextEncoder>>,
     dit: QwenImageDit,
     vae: QwenImageVae,
     vision: Option<VisionTower>,
@@ -242,7 +252,47 @@ impl Pipeline {
             None
         };
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, drop, te, dit, vae, vision, opts })
+        Ok(Self { dev, dtype, tok, drop, model: model.to_path_buf(), te: std::sync::Mutex::new(Some(te)), dit, vae, vision, opts })
+    }
+
+    /// Run `f` on the text encoder, loading it again first if it was evicted.
+    fn with_text_encoder<R>(&self, f: impl FnOnce(&QwenTextEncoder) -> Result<R>) -> Result<R> {
+        let mut slot = self.te.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            let t0 = Instant::now();
+            *slot = Some(load_text_encoder(&self.model, &self.dev, self.dtype, self.opts.quant_text, self.opts.text_gguf.as_deref())?);
+            tracing::info!(load_s = t0.elapsed().as_secs_f32(), "text encoder loaded again");
+        }
+        match slot.as_ref() {
+            Some(te) => f(te),
+            None => anyhow::bail!("no text encoder"),
+        }
+    }
+
+    /// Is the text encoder on the device right now?
+    pub fn text_encoder_resident(&self) -> bool {
+        self.te.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    /// The prompt is encoded; make room for the sampling if the device cannot hold the
+    /// prefix cache of `prefix_len` rows (plus the step's working set) beside everything
+    /// resident: drop the text encoder, which the next prompt loads again.
+    fn make_room(&self, prefix_len: usize, target_len: usize) {
+        if !self.opts.evict_text_encoder || !self.text_encoder_resident() {
+            return;
+        }
+        let Some((free, total)) = crate::device::free_vram(&self.dev) else { return };
+        let cache = self.dit.prefix_cache_bytes(prefix_len);
+        // The step's working set: the joint keys and values the target attends to (two
+        // copies in flight), the prefix pass's f32 score chunks, and a margin.
+        let working = 4 * (prefix_len + target_len) * dit::INNER * 2 + 3 * dit::HEADS * 1024 * prefix_len * 4 + (1 << 30);
+        let need = cache + working;
+        if free >= need {
+            return;
+        }
+        tracing::info!(free_gb = free as f32 / 1e9, need_gb = need as f32 / 1e9, total_gb = total as f32 / 1e9, "evicting the text encoder for the sampling");
+        *self.te.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let _ = self.dev.synchronize();
     }
 
     pub fn device(&self) -> &Device {
@@ -261,7 +311,7 @@ impl Pipeline {
     fn encode(&self, text: &str) -> Result<Tensor> {
         let ids: Vec<u32> = self.tok.encode(tmpl::t2i_template(text), false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec();
         let seq = ids.len();
-        let hidden = self.te.forward(&Tensor::from_vec(ids, (1, seq), &self.dev)?)?;
+        let hidden = self.with_text_encoder(|te| te.forward(&Tensor::from_vec(ids, (1, seq), &self.dev)?))?;
         Ok(hidden.narrow(1, self.drop, seq - self.drop)?.contiguous()?)
     }
 
@@ -271,7 +321,7 @@ impl Pipeline {
         let ids: Vec<u32> =
             self.tok.encode(tmpl::edit_template(text, feats.len()), false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec();
         let refs: Vec<&VisionFeatures> = feats.iter().collect();
-        let (hidden, spans) = self.te.forward_with_images(&ids, &refs)?;
+        let (hidden, spans) = self.with_text_encoder(|te| te.forward_with_images(&ids, &refs))?;
         text_encoder::condition(&hidden, &spans, self.drop)
     }
 
@@ -343,6 +393,8 @@ impl Pipeline {
         let caches: Option<(PrefixCache, Option<PrefixCache>)> = if self.opts.prefix_cache && !refs.is_empty() {
             check(cancel)?;
             progress(0.03, "Reading the references into the model");
+            let prefix_len = cond.dim(1)? + ref_latents.iter().map(|(_, lh, lw)| lh * lw).sum::<usize>();
+            self.make_room(prefix_len * if neg.is_some() { 2 } else { 1 }, lh * lw);
             let c = self.dit.prefix_cache(&cond, lh, lw, &refs, &slots)?;
             let n = match &neg {
                 Some((n, ns)) => Some(self.dit.prefix_cache(n, lh, lw, &refs, ns)?),
