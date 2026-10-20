@@ -948,13 +948,20 @@ impl QwenImageVae {
 /// Mirrors `QwenImage21Pipeline._unpack_latents`: `transpose(1,2).reshape(B,C,H,W)`
 /// with `H = W = sqrt(seq)`.
 pub fn unpack_latents(packed: &Tensor, _z_dim: usize) -> Result<Tensor> {
-    let (b, seq, c) = packed.dims3()?;
+    let (_b, seq, _c) = packed.dims3()?;
     let hw = (seq as f64).sqrt() as usize;
     debug_assert_eq!(hw * hw, seq, "non-square latent");
+    unpack_latents_hw(packed, hw, hw)
+}
+
+/// [`unpack_latents`] for a known `H × W` latent grid (non-square pictures).
+pub fn unpack_latents_hw(packed: &Tensor, h: usize, w: usize) -> Result<Tensor> {
+    let (b, seq, c) = packed.dims3()?;
+    anyhow::ensure!(h * w == seq, "latent grid {h}x{w} does not hold {seq} tokens");
     let x = packed
         .transpose(1, 2)?
         .contiguous()?
-        .reshape((b, c, hw, hw))?;
+        .reshape((b, c, h, w))?;
     Ok(x)
 }
 
