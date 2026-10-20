@@ -301,30 +301,29 @@ pub struct QirCli {
 
 impl QirCli {
     pub fn arguments(&self, case: &Case, ctx: &RunCtx) -> crate::Result<Vec<String>> {
-        let Kind::T2i { prompt, seed, width, height } = &case.kind else {
-            return Err(format!("{}: qir runs text-to-image cases only", case.id));
-        };
         let out = ctx.out.join(format!("{}.png", case.id));
-        let mut args: Vec<String> = vec![
-            "generate".into(),
-            "--model".into(),
-            self.model.to_string_lossy().into_owned(),
-            "--prompt".into(),
-            prompt.clone(),
-            "--width".into(),
-            width.to_string(),
-            "--height".into(),
-            height.to_string(),
-            "--steps".into(),
-            self.steps.to_string(),
-            "--seed".into(),
-            seed.to_string(),
-            "--guidance".into(),
-            "1".into(),
-            "--out".into(),
-            out.to_string_lossy().into_owned(),
-        ];
-        args.extend(self.extra.iter().cloned());
+        let model = self.model.to_string_lossy().into_owned();
+        let mut args: Vec<String> = match &case.kind {
+            Kind::T2i { prompt, seed, width, height } => {
+                let mut a: Vec<String> = vec!["generate".into(), "--model".into(), model, "--prompt".into(), prompt.clone()];
+                a.extend(["--width".into(), width.to_string(), "--height".into(), height.to_string()]);
+                a.extend(["--steps".into(), self.steps.to_string(), "--seed".into(), seed.to_string(), "--guidance".into(), "1".into()]);
+                a.extend(self.extra.iter().cloned());
+                a
+            }
+            // An edit always walks ComfyUI's conventions: `--comfy` is `generate`'s flag.
+            Kind::Edit { image, prompt, seed, references } => {
+                let mut a: Vec<String> = vec!["edit".into(), "--model".into(), model, "--prompt".into(), prompt.clone()];
+                for p in std::iter::once(image).chain(references) {
+                    a.extend(["--image".into(), ctx.images.join(p).to_string_lossy().into_owned()]);
+                }
+                a.extend(["--steps".into(), self.steps.to_string(), "--seed".into(), seed.to_string(), "--guidance".into(), "1".into()]);
+                a.extend(self.extra.iter().filter(|x| *x != "--comfy").cloned());
+                a
+            }
+            _ => return Err(format!("{}: qir runs text-to-image and edit cases (a fill goes through the app's CLI on the native engine)", case.id)),
+        };
+        args.extend(["--out".into(), out.to_string_lossy().into_owned()]);
         Ok(args)
     }
 }
@@ -565,7 +564,15 @@ mod tests {
         // qwen-image-rs: width and height as given, the extra flags, and its timings line.
         let q = QirCli { exe: PathBuf::from("qir"), model: PathBuf::from("snap"), steps: 25, extra: vec!["--convrot".into(), "--comfy".into()] };
         let args = q.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
-        assert!(args.windows(2).any(|w| w == ["--width", "1024"]) && args.windows(2).any(|w| w == ["--height", "768"]) && args.ends_with(&["--convrot".into(), "--comfy".into()]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["--width", "1024"]) && args.windows(2).any(|w| w == ["--height", "768"]), "{args:?}");
+        assert!(args.windows(3).any(|w| w == ["--convrot", "--comfy", "--out"]) && args.first().is_some_and(|a| a == "generate"), "{args:?}");
+        // An edit: the picture then the references as `--image`, without `generate`'s `--comfy`.
+        let edit = Case { id: "e".into(), kind: Kind::Edit { image: "pic.png".into(), prompt: "winter".into(), seed: 7, references: vec!["ref.png".into()] } };
+        let args = q.arguments(&edit, &ctx).unwrap_or_else(|e| panic!("{e}"));
+        let images: Vec<&String> = args.windows(2).filter(|w| w[0] == "--image").map(|w| &w[1]).collect();
+        assert!(args.first().is_some_and(|a| a == "edit") && images.len() == 2 && images[0].ends_with("pic.png") && images[1].ends_with("ref.png"), "{args:?}");
+        assert!(args.contains(&"--convrot".to_string()) && !args.contains(&"--comfy".to_string()), "{args:?}");
+        assert!(q.arguments(&fill, &ctx).is_err(), "a fill goes through the app");
         let log = "INFO qwen_image_rs: denoised denoise_s=2.9 steps=25\nINFO qwen_image_rs: timings encode_s=0.25 denoise_s=2.9 decode_s=0.43 comfy=true width=1024 height=1024 steps=25\n";
         assert_eq!(qir_phases(log), Some((0.25, 2.9, 0.43)));
         assert_eq!(qir_phases("nothing"), None);

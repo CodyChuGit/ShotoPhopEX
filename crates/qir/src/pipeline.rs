@@ -19,7 +19,7 @@ use crate::convrot_cache::CacheSpec;
 use crate::loader::WeightSet;
 use crate::model::config::VaeConfig;
 use crate::model::dit::QwenImageDit;
-use crate::model::dit::RefLatent;
+use crate::model::dit::{PrefixCache, RefLatent};
 use crate::model::scheduler::{FlowConfig, FlowMatchEuler};
 use crate::model::text_encoder::{self, prompt as tmpl, QwenTextEncoder, TextConfig};
 use crate::model::vae::{self, QwenImageVae, VaeTiling};
@@ -42,6 +42,11 @@ pub struct Options {
     pub vae_f32: bool,
     /// Load the vision tower (2.4 GB in f32) so requests may carry reference pictures.
     pub vision: bool,
+    /// With references: run the text and reference rows through the DiT once per generation
+    /// and keep their keys and values (`dit::PrefixCache`, ComfyUI's `QwenImage21Cache`), so
+    /// every step runs the target's rows alone. Off, each step runs the whole joint sequence
+    /// (the plain reference for the cache, several times slower).
+    pub prefix_cache: bool,
 }
 
 impl Default for Options {
@@ -54,6 +59,7 @@ impl Default for Options {
             vae_tile: VaeTiling::Auto,
             vae_f32: false,
             vision: true,
+            prefix_cache: true,
         }
     }
 }
@@ -331,11 +337,25 @@ impl Pipeline {
             None
         };
         let refs: Vec<RefLatent> = ref_latents.iter().map(|(t, lh, lw)| RefLatent { packed: t, h: *lh, w: *lw }).collect();
+        // With references, the prefix (text and reference rows) through the DiT once; each
+        // step then runs the target's rows against the cached keys and values.
+        let (lw, lh) = (w / 16, h / 16);
+        let caches: Option<(PrefixCache, Option<PrefixCache>)> = if self.opts.prefix_cache && !refs.is_empty() {
+            check(cancel)?;
+            progress(0.03, "Reading the references into the model");
+            let c = self.dit.prefix_cache(&cond, lh, lw, &refs, &slots)?;
+            let n = match &neg {
+                Some((n, ns)) => Some(self.dit.prefix_cache(n, lh, lw, &refs, ns)?),
+                None => None,
+            };
+            Some((c, n))
+        } else {
+            None
+        };
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
 
         // 2. Noise and schedule, then the Euler loop.
-        let (lw, lh) = (w / 16, h / 16);
         let img_seq = lw * lh;
         let (tsteps, dts): (Vec<f32>, Vec<f32>) = match req.schedule {
             Schedule::Comfy => {
@@ -363,15 +383,18 @@ impl Pipeline {
         for (i, (t, dt)) in tsteps.iter().zip(&dts).enumerate() {
             check(cancel)?;
             let tt = Tensor::from_vec(vec![*t], (1,), &self.dev)?;
-            let v = self.velocity(
-                &latents.to_dtype(self.dtype)?,
-                (&cond, &slots),
-                neg.as_ref().map(|(n, s)| (n, s.as_slice())),
-                req.guidance,
-                &tt,
-                (lh, lw),
-                &refs,
-            )?;
+            let v = match &caches {
+                Some((c, n)) => self.velocity_cached(&latents.to_dtype(self.dtype)?, c, n.as_ref(), req.guidance, &tt)?,
+                None => self.velocity(
+                    &latents.to_dtype(self.dtype)?,
+                    (&cond, &slots),
+                    neg.as_ref().map(|(n, s)| (n, s.as_slice())),
+                    req.guidance,
+                    &tt,
+                    (lh, lw),
+                    &refs,
+                )?,
+            };
             latents = (latents + (v * *dt as f64)?)?;
             progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
         }
@@ -422,6 +445,18 @@ impl Pipeline {
                 let ju = self.dit.forward_refs(latents, neg, tt, h, w, refs, nslots)?;
                 let (_b, jlu, _) = ju.dims3()?;
                 let v_uncond = ju.narrow(1, jlu - img_seq, img_seq)?.to_dtype(DType::F32)?;
+                return Ok((&v_uncond + ((&v_cond - &v_uncond)? * guidance as f64)?)?);
+            }
+        }
+        Ok(v_cond)
+    }
+
+    /// [`Self::velocity`] against the prefix caches: the target's rows alone through the DiT.
+    fn velocity_cached(&self, latents: &Tensor, cond: &PrefixCache, neg: Option<&PrefixCache>, guidance: f32, tt: &Tensor) -> Result<Tensor> {
+        let v_cond = self.dit.forward_cached(latents, tt, cond)?.to_dtype(DType::F32)?;
+        if guidance > 1.0 {
+            if let Some(neg) = neg {
+                let v_uncond = self.dit.forward_cached(latents, tt, neg)?.to_dtype(DType::F32)?;
                 return Ok((&v_uncond + ((&v_cond - &v_uncond)? * guidance as f64)?)?);
             }
         }

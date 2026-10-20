@@ -348,6 +348,10 @@ enum Command {
         convrot: bool,
         #[command(flatten)]
         cache: ConvrotCacheArgs,
+        /// Run the whole joint sequence every step instead of caching the text and reference
+        /// rows' keys and values (the plain reference for the cache; several times slower).
+        #[arg(long)]
+        no_prefix_cache: bool,
         #[arg(long)]
         out: std::path::PathBuf,
     },
@@ -501,9 +505,20 @@ fn main() -> Result<()> {
         Command::PrequantizeConvrot { weights, out, convrot_cache } => prequantize_convrot(&weights, out.as_deref(), convrot_cache.as_deref()),
         Command::VaeEncode { weights, image, bf16, out, roundtrip } => vae_encode(&weights, &image, bf16, &out, roundtrip.as_deref()),
         Command::VisionForward { weights, inputs, grid_h, grid_w, out } => vision_forward(&weights, &inputs, grid_h, grid_w, &out),
-        Command::Edit { model, prompt, image, width, height, steps, seed, guidance, negative, convrot, cache, out } => {
-            edit(&model, &prompt, &image, (width.unwrap_or(0), height.unwrap_or(0)), steps, seed, guidance, &negative, convrot, &cache.spec(), &out)
-        }
+        Command::Edit { model, prompt, image, width, height, steps, seed, guidance, negative, convrot, cache, no_prefix_cache, out } => edit(
+            &model,
+            &prompt,
+            &image,
+            (width.unwrap_or(0), height.unwrap_or(0)),
+            steps,
+            seed,
+            guidance,
+            &negative,
+            convrot,
+            &cache.spec(),
+            !no_prefix_cache,
+            &out,
+        ),
         Command::EditCond { weights, tokenizer, image, prompt, out } => edit_cond(&weights, &tokenizer, &image, &prompt, &out),
         Command::VaeDecode { weights, latent, bf16, out, tile, iters } => vae_decode(&weights, &latent, bf16, &out, tile, iters),
         Command::TextEncode { weights, input_ids, drop, quant, out } => text_encode(&weights, &input_ids, drop, quant, &out),
@@ -1119,10 +1134,11 @@ fn edit(
     negative: &str,
     convrot: bool,
     cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    prefix_cache: bool,
     out: &std::path::Path,
 ) -> Result<()> {
     use qwen_image_rs::pipeline::{Options, Pipeline, RefImage, Request, Schedule};
-    let opts = Options { convrot, cache: cache.clone(), ..Options::default() };
+    let opts = Options { convrot, cache: cache.clone(), prefix_cache, ..Options::default() };
     let mut report = |f: f32, m: &str| tracing::info!(progress = f, "{m}");
     let t0 = std::time::Instant::now();
     let p = Pipeline::load(model, opts, &mut report)?;
