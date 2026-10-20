@@ -179,9 +179,15 @@ impl Attention {
         let (q, k) = rope.apply(&q, &k, s)?;
         let k = repeat_kv(k, self.groups)?.contiguous()?;
         let v = repeat_kv(v, self.groups)?.contiguous()?;
-        let attn = (q.contiguous()?.matmul(&k.transpose(2, 3)?)? * self.scale)?;
-        let attn = attn.broadcast_add(mask)?;
-        let attn = candle_nn::ops::softmax_last_dim(&attn)?;
+        // Scores and softmax in f32, as torch's SDPA keeps them: bf16 scores lose ~0.3 of a
+        // logit at the magnitudes a prompt reaches, which showed as a 7 % embedding error
+        // against ComfyUI (genai-native dev log 2026-10-20). A prompt is a few dozen tokens,
+        // so the f32 pass costs nothing.
+        let q32 = q.contiguous()?.to_dtype(DType::F32)?;
+        let k32 = k.to_dtype(DType::F32)?;
+        let attn = (q32.matmul(&k32.transpose(2, 3)?)? * self.scale)?;
+        let attn = attn.broadcast_add(&mask.to_dtype(DType::F32)?)?;
+        let attn = candle_nn::ops::softmax_last_dim(&attn)?.to_dtype(v.dtype())?;
         let out = attn.matmul(&v)?; // (B,H,S,D)
         let out = out
             .transpose(1, 2)?
