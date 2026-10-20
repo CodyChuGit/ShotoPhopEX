@@ -28,3 +28,15 @@ Generated locally with `gn-bench run --engine comfy …` against PhotoshopEX's C
 Quality `best`; kept under `references/<date>-comfy-<suite>/`, ignored by git. A run folder
 holds `<case>.png`, `<case>.json` (`Record`: wall and engine time, seed, the engine's result)
 and `summary.md`. `gn-bench compare a b` writes the parity table.
+
+## Reproducing a ComfyUI route (what Phase 2 taught)
+
+A seed-for-seed match with ComfyUI needs four things read from the **running** ComfyUI, not
+from its source by eye: the noise (`torch.manual_seed` + CPU `randn` on the model-space latent,
+ported in `qir::comfy`), the sigma table of the loaded model object
+(`model.model_sampling.sigmas`: Qwen-Image-2.1 is a `FLUX`-type model whose `ModelSamplingFlux`
+holds 10 000 exponentially shifted sigmas, not `ModelSamplingDiscreteFlow`'s 1000; the scheduler
+then picks from that table), the timestep the DiT is handed (its bf16 rounding), and the prompt
+tokens the encoder node produces. Check each against numbers the real objects print, and keep
+the calibration: ComfyUI's own INT8 and bf16 routes agree on 26 of the 28 t2i cases, so a
+native route at 24–26 of 28 is at parity, and the cases that miss are the same for everyone.
