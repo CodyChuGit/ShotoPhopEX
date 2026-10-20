@@ -54,3 +54,8 @@ integrations.modelsPath=…` for the native worker. The conventions that matter 
 tower and the VAE see the same resized picture, `LoadImage` hands over RGB (alpha dropped,
 the VAE's alpha channel padded opaque), the mask of a fill is a grey picture as image 2, and the
 rows before the target (text and references) are a prefix the model treats as t = 0.
+
+An expand has no ComfyUI twin to match: the native route places the picture at its own
+position inside the larger canvas (`RefImage::offset`), which `TextEncodeQwenImage21` cannot
+(it centres every reference), so expands are judged by eye on a contact sheet, symmetric and
+one-sided cases both. A matte is compared as a soft IoU of the two alphas (the fox: 0.992).
