@@ -759,10 +759,149 @@ impl Decoder3d {
     }
 }
 
-/// The decode half of `AutoencoderKLQwenImage21`.
+/// `QwenImage21Resample(downsample2d)` at T=1: `ZeroPad2d((0, 1, 0, 1))` then a 3×3 conv with
+/// stride 2 and no padding (the `downsample3d` variant's `time_conv` only runs with a temporal
+/// cache, which a single image never has). NCHW.
+struct Downsampler {
+    weight: Tensor,
+    bias: Tensor,
+}
+
+impl Downsampler {
+    fn load(dim: usize, vb: VarBuilder) -> Result<Self> {
+        let cfg = Conv2dConfig { padding: 0, stride: 2, ..Default::default() };
+        let inner = conv2d(dim, dim, 3, cfg, vb.pp("resample").pp("1"))?;
+        let bias = inner.bias().cloned().ok_or_else(|| anyhow::anyhow!("downsampler conv without bias"))?;
+        Ok(Self { weight: inner.weight().clone(), bias })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let x = x.pad_with_zeros(3, 0, 1)?.pad_with_zeros(2, 0, 1)?;
+        let y = x.conv2d(&self.weight, 0, 2, 1, 1)?;
+        Ok(y.broadcast_add(&self.bias.reshape((1, self.bias.dim(0)?, 1, 1))?)?)
+    }
+}
+
+/// `QwenImage21AvgDown3D` at T=1: the parameter-free shortcut of a down block. Space-to-depth
+/// by `fs`, the `ft − 1` missing earlier frames padded with zeros in front (`F.pad` on the time
+/// axis), channels ordered `[c][t][i][j]`, then the mean over each group of
+/// `in·ft·fs² / out` consecutive channels. NCHW in and out.
+fn avg_down(x: &Tensor, out_c: usize, factor_t: usize, factor_s: usize) -> Result<Tensor> {
+    let (b, c, h, w) = x.dims4()?;
+    anyhow::ensure!(h.is_multiple_of(factor_s) && w.is_multiple_of(factor_s), "avg_down: {h}x{w} not divisible by {factor_s}");
+    let (hp, wp) = (h / factor_s, w / factor_s);
+    let fs2 = factor_s * factor_s;
+    let s = x
+        .reshape((b, c, hp, factor_s, wp, factor_s))?
+        .permute((0, 1, 3, 5, 2, 4))?
+        .contiguous()?
+        .reshape((b, c, 1, fs2, hp, wp))?;
+    let s = if factor_t > 1 {
+        let zeros = Tensor::zeros((b, c, factor_t - 1, fs2, hp, wp), s.dtype(), s.device())?;
+        Tensor::cat(&[&zeros, &s], 2)?
+    } else {
+        s
+    };
+    let factor = factor_t * fs2;
+    anyhow::ensure!((c * factor).is_multiple_of(out_c), "avg_down: {c}·{factor} channels do not group into {out_c}");
+    let group = c * factor / out_c;
+    let s = s.reshape((b, out_c, group, hp, wp))?;
+    Ok(s.mean(2)?)
+}
+
+/// `QwenImage21DownBlock`: `num_res_blocks` resnets, an optional strided downsampler, plus the
+/// parameter-free `AvgDown3D` shortcut from the block's input.
+struct DownBlock {
+    resnets: Vec<ResidualBlock>,
+    downsampler: Option<Downsampler>,
+    /// `(out_c, factor_t, factor_s)` of the shortcut.
+    shortcut: (usize, usize, usize),
+}
+
+impl DownBlock {
+    fn load(in_c: usize, out_c: usize, num_res_blocks: usize, down_flag: bool, temporal_downsample: bool, vb: VarBuilder) -> Result<Self> {
+        let rvb = vb.pp("resnets");
+        let mut resnets = Vec::new();
+        let mut cur = in_c;
+        for j in 0..num_res_blocks {
+            resnets.push(ResidualBlock::load(cur, out_c, ActLayout::Nchw, rvb.pp(j.to_string()))?);
+            cur = out_c;
+        }
+        let downsampler = if down_flag { Some(Downsampler::load(out_c, vb.pp("downsampler"))?) } else { None };
+        let factor_t = if temporal_downsample { 2 } else { 1 };
+        let factor_s = if down_flag { 2 } else { 1 };
+        Ok(Self { resnets, downsampler, shortcut: (out_c, factor_t, factor_s) })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let mut h = x.clone();
+        for r in &self.resnets {
+            h = r.forward(&h)?;
+        }
+        if let Some(d) = &self.downsampler {
+            h = d.forward(&h)?;
+        }
+        let (out_c, ft, fs) = self.shortcut;
+        Ok((h + avg_down(x, out_c, ft, fs)?)?)
+    }
+}
+
+/// `QwenImage21Encoder3d` at T=1: conv_in, five down blocks, the mid block, norm, conv_out
+/// to `2·z` channels (mean and log-variance). NCHW, candle's own convs (an encode runs once per
+/// picture, so it stays on the plain path).
+struct Encoder3d {
+    conv_in: Conv,
+    down_blocks: Vec<DownBlock>,
+    mid_block: MidBlock,
+    norm_out: RmsNorm,
+    conv_out: Conv,
+}
+
+impl Encoder3d {
+    fn load(cfg: &VaeConfig, vb: VarBuilder) -> Result<Self> {
+        let lay = ActLayout::Nchw;
+        let dim = cfg.base_dim; // 96
+        let z = cfg.latent_channels;
+        let num_res_blocks = 2usize;
+        let temporal_downsample = [false, true, true, true];
+        let mut mult = vec![1usize];
+        mult.extend(cfg.dim_mult.iter().copied());
+        let dims: Vec<usize> = mult.iter().map(|u| dim * u).collect(); // [96, 96, 192, 384, 768, 768]
+        let conv_in = conv2d_k3(cfg.in_channels, dims[0], lay, vb.pp("conv_in"))?;
+        let dvb = vb.pp("down_blocks");
+        let mut down_blocks = Vec::new();
+        for i in 0..dims.len() - 1 {
+            let down_flag = i != cfg.dim_mult.len() - 1;
+            let td = temporal_downsample.get(i).copied().unwrap_or(false);
+            down_blocks.push(DownBlock::load(dims[i], dims[i + 1], num_res_blocks, down_flag, td, dvb.pp(i.to_string()))?);
+        }
+        let last = *dims.last().unwrap_or(&dim);
+        Ok(Self {
+            conv_in,
+            down_blocks,
+            mid_block: MidBlock::load(last, lay, vb.pp("mid_block"))?,
+            norm_out: RmsNorm::load(last, false, lay, vb.pp("norm_out"))?,
+            conv_out: conv2d_k3(last, 2 * z, lay, vb.pp("conv_out"))?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let mut x = self.conv_in.forward(x)?;
+        for d in &self.down_blocks {
+            x = d.forward(&x)?;
+        }
+        x = self.mid_block.forward(&x)?;
+        x = self.norm_out.forward_silu(&x, None, true)?;
+        Ok(self.conv_out.forward(&x)?)
+    }
+}
+
+/// `AutoencoderKLQwenImage21`: the decoder, and the encoder when the weights hold one.
 pub struct QwenImageVae {
     post_quant_conv: Conv,
     decoder: Decoder3d,
+    /// `encoder` + `quant_conv`, present when the weight set has them (the snapshot does).
+    encoder: Option<(Encoder3d, Conv)>,
     latents_mean: Tensor, // (1, z, 1, 1) f32
     latents_std: Tensor,  // (1, z, 1, 1) f32
     dtype: DType,         // conv working dtype (bf16 on CUDA, f32 fallback)
@@ -784,14 +923,39 @@ impl QwenImageVae {
         let std = Tensor::from_slice(latents_std, (1, z, 1, 1), &dev)?;
         let lay = layout_for(dev.is_cuda(), vb.dtype(), nhwc_available());
         tracing::info!(layout = ?lay, dtype = ?vb.dtype(), "vae decoder");
+        let encoder = if vb.contains_tensor("encoder.conv_in.weight") {
+            Some((Encoder3d::load(cfg, vb.pp("encoder"))?, conv2d_k1(2 * z, 2 * z, ActLayout::Nchw, vb.pp("quant_conv"))?))
+        } else {
+            None
+        };
         Ok(Self {
             dtype: vb.dtype(),
             post_quant_conv: conv2d_k1(z, z, lay, vb.pp("post_quant_conv"))?,
             decoder: Decoder3d::load(cfg, lay, vb.pp("decoder"))?,
+            encoder,
             latents_mean: mean,
             latents_std: std,
             lay,
         })
+    }
+
+    /// Whether the weights came with the encoder.
+    pub fn can_encode(&self) -> bool {
+        self.encoder.is_some()
+    }
+
+    /// Encode a picture `(B, 4, H, W)` in `[-1, 1]` (RGBA, alpha 1 for an opaque picture; `H`
+    /// and `W` multiples of 16) into the normalised latent `(B, z, H/16, W/16)` the DiT works
+    /// in: the posterior mean through `quant_conv`, then `(z − mean) / std`. f32 out.
+    pub fn encode(&self, rgba: &Tensor) -> Result<Tensor> {
+        let Some((enc, quant)) = &self.encoder else { anyhow::bail!("this VAE weight set has no encoder") };
+        let (_b, c, h, w) = rgba.dims4()?;
+        anyhow::ensure!(c == 4 && h.is_multiple_of(16) && w.is_multiple_of(16), "encode wants (B, 4, 16k, 16k), got (_, {c}, {h}, {w})");
+        let x = rgba.to_dtype(self.dtype)?;
+        let moments = quant.forward(&enc.forward(&x)?)?;
+        let z = self.latents_mean.dim(1)?;
+        let mu = moments.narrow(1, 0, z)?.to_dtype(DType::F32)?;
+        self.normalize(&mu)
     }
 
     /// The decoder's activation layout.
@@ -974,6 +1138,15 @@ pub fn unpack_latents_hw(packed: &Tensor, h: usize, w: usize) -> Result<Tensor> 
         .contiguous()?
         .reshape((b, c, h, w))?;
     Ok(x)
+}
+
+/// Straight RGBA8 bytes (row-major, HWC) into the `(1, 4, H, W)` f32 picture in `[-1, 1]` the
+/// encoder takes (the inverse of [`to_rgba_u8`]).
+pub fn from_rgba_u8(width: usize, height: usize, bytes: &[u8], dev: &candle_core::Device) -> Result<Tensor> {
+    anyhow::ensure!(bytes.len() == width * height * 4, "from_rgba_u8: {} bytes for {width}x{height}x4", bytes.len());
+    let hwc = Tensor::from_slice(bytes, (1, height, width, 4), dev)?.to_dtype(DType::F32)?;
+    let chw = hwc.permute((0, 3, 1, 2))?.contiguous()?;
+    Ok(((chw / 127.5)? - 1.0)?)
 }
 
 /// Convert a decoded `(B, 4, H, W)` image in [-1,1] to u8 RGBA bytes (row-major,
