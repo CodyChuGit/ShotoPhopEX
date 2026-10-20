@@ -327,6 +327,24 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         iters: usize,
     },
+    /// Encode a PNG through the VAE to the normalised packed latent (Phase 3: edit, fill).
+    VaeEncode {
+        /// The vae/ directory (holds config.json + *.safetensors, encoder included).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// The picture (any PNG; sides must be multiples of 16; alpha 1 where missing).
+        #[arg(long)]
+        image: std::path::PathBuf,
+        /// Encode in bf16 (default: f32 reference).
+        #[arg(long)]
+        bf16: bool,
+        /// Output safetensors: `latent` (1, H/16·W/16, 64) f32, normalised (the DiT's space).
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Also decode the latent back and write the round trip here (a PNG).
+        #[arg(long)]
+        roundtrip: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -430,6 +448,7 @@ fn main() -> Result<()> {
             out,
             convrot_cache,
         } => prequantize_convrot(&weights, out.as_deref(), convrot_cache.as_deref()),
+        Command::VaeEncode { weights, image, bf16, out, roundtrip } => vae_encode(&weights, &image, bf16, &out, roundtrip.as_deref()),
         Command::VaeDecode {
             weights,
             latent,
@@ -1253,6 +1272,60 @@ fn text_encode(
 }
 
 /// Phase 2: load the VAE decoder, decode a saved packed latent, save RGBA PNG.
+/// Load the VAE from a `vae/` directory (config + shards) in the given working dtype.
+fn load_vae(weights: &std::path::Path, dtype: DType, dev: &candle_core::Device) -> Result<qwen_image_rs::model::vae::QwenImageVae> {
+    use qwen_image_rs::model::{config::VaeConfig, vae};
+    let cfg_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(weights.join("config.json"))?).context("parsing vae config.json")?;
+    let f32vec = |k: &str| -> Result<Vec<f32>> {
+        Ok(cfg_json[k]
+            .as_array()
+            .with_context(|| format!("config.{k} not an array"))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect())
+    };
+    let files = WeightSet::resolve(weights)?.files;
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
+    vae::QwenImageVae::load(&VaeConfig::default(), &f32vec("latents_mean")?, &f32vec("latents_std")?, vb)
+}
+
+/// Phase 3: encode a PNG to the normalised packed latent (and optionally decode it back).
+fn vae_encode(
+    weights: &std::path::Path,
+    image: &std::path::Path,
+    bf16: bool,
+    out: &std::path::Path,
+    roundtrip: Option<&std::path::Path>,
+) -> Result<()> {
+    use qwen_image_rs::model::vae;
+    let dev = device::best_device()?;
+    let dtype = if bf16 && matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    tracing::info!(device = device::label(&dev), ?dtype, "vae-encode");
+    let model = load_vae(weights, dtype, &dev)?;
+    let img = image::open(image).with_context(|| format!("reading {}", image.display()))?.to_rgba8();
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let x = vae::from_rgba_u8(w, h, img.as_raw(), &dev)?;
+    let t = std::time::Instant::now();
+    let z = model.encode(&x)?; // (1, 64, H/16, W/16) f32, normalised
+    dev.synchronize()?;
+    tracing::info!(shape = ?z.dims(), encode_ms = t.elapsed().as_millis(), "encoded");
+    let (_, c, lh, lw) = z.dims4()?;
+    let packed = z.reshape((1, c, lh * lw))?.transpose(1, 2)?.contiguous()?;
+    let mut map = std::collections::HashMap::new();
+    map.insert("latent".to_string(), packed);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {} ({lw}x{lh} latent)", out.display());
+    if let Some(rt) = roundtrip {
+        let pic = model.decode_auto(&z, vae::VaeTiling::Auto)?;
+        let (pw, ph, bytes) = vae::to_rgba_u8(&pic)?;
+        let buf: image::RgbaImage = image::ImageBuffer::from_raw(pw as u32, ph as u32, bytes).context("image buffer")?;
+        buf.save(rt)?;
+        println!("wrote {} (round trip)", rt.display());
+    }
+    Ok(())
+}
+
 fn vae_decode(
     weights: &std::path::Path,
     latent: &std::path::Path,
