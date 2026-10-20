@@ -12,17 +12,19 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use tokenizers::Tokenizer;
 
-use crate::Result;
 use crate::convrot_cache::CacheSpec;
 use crate::loader::WeightSet;
 use crate::model::config::VaeConfig;
 use crate::model::dit::QwenImageDit;
+use crate::model::dit::RefLatent;
 use crate::model::scheduler::{FlowConfig, FlowMatchEuler};
-use crate::model::text_encoder::{QwenTextEncoder, TextConfig, prompt as tmpl};
+use crate::model::text_encoder::{self, prompt as tmpl, QwenTextEncoder, TextConfig};
 use crate::model::vae::{self, QwenImageVae, VaeTiling};
+use crate::model::vision::{self, VisionConfig, VisionFeatures, VisionTower};
+use crate::Result;
 
 /// How the pipeline is loaded.
 #[derive(Clone, Debug)]
@@ -38,6 +40,8 @@ pub struct Options {
     pub vae_tile: VaeTiling,
     /// Decode in f32 (bf16 on CUDA otherwise).
     pub vae_f32: bool,
+    /// Load the vision tower (2.4 GB in f32) so requests may carry reference pictures.
+    pub vision: bool,
 }
 
 impl Default for Options {
@@ -49,8 +53,21 @@ impl Default for Options {
             text_gguf: None,
             vae_tile: VaeTiling::Auto,
             vae_f32: false,
+            vision: true,
         }
     }
+}
+
+/// A reference picture: straight RGBA8, row-major (any size; the pipeline resizes it the way
+/// ComfyUI's `TextEncodeQwenImage21` does at `resolution 0`, to multiples of 32).
+/// A reference's packed normalised latent `(1, h·w, 64)` with its latent grid.
+type PackedLatent = (Tensor, usize, usize);
+
+#[derive(Clone, Debug)]
+pub struct RefImage {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
 }
 
 /// Which sampling conventions a generation follows.
@@ -68,13 +85,17 @@ pub struct Request {
     pub prompt: String,
     /// Used only when `guidance > 1` (true CFG, two DiT passes per step).
     pub negative: String,
-    /// Pixels; multiples of 16.
+    /// Pixels; multiples of 16. With references, 0 means the first reference's size (what
+    /// ComfyUI's edit template does: its empty latent is sized to `image_1`).
     pub width: usize,
     pub height: usize,
     pub steps: usize,
     pub seed: u64,
     pub guidance: f32,
     pub schedule: Schedule,
+    /// Reference pictures in prompt order (`<image1>`, `<image2>`, …): the picture being edited
+    /// first. Empty for text to image.
+    pub references: Vec<RefImage>,
 }
 
 impl Request {
@@ -88,8 +109,32 @@ impl Request {
             seed: 0,
             guidance: 1.0,
             schedule: Schedule::Comfy,
+            references: Vec::new(),
         }
     }
+}
+
+/// `TextEncodeQwenImage21` at `resolution 0`: each side rounded to the nearest multiple of
+/// 32, at least 32.
+pub fn ref_size(width: usize, height: usize) -> (usize, usize) {
+    let r = |v: usize| (((v as f64 / 32.0).round() as usize) * 32).max(32);
+    (r(width), r(height))
+}
+
+/// A reference picture resized to `ref_size` (Lanczos, as the node) and split into what the
+/// two consumers see: RGBA in `[-1, 1]` for the VAE, RGB over white in `[0, 1]` for the
+/// vision tower.
+fn prepare_ref(r: &RefImage, dev: &Device) -> Result<(Tensor, Tensor, (usize, usize))> {
+    let (w, h) = ref_size(r.width, r.height);
+    let img: image::RgbaImage = image::ImageBuffer::from_raw(r.width as u32, r.height as u32, r.rgba.clone())
+        .ok_or_else(|| anyhow::anyhow!("reference of {}x{} with {} bytes", r.width, r.height, r.rgba.len()))?;
+    let img = if (w, h) == (r.width, r.height) { img } else { image::imageops::resize(&img, w as u32, h as u32, image::imageops::FilterType::Lanczos3) };
+    let rgba = vae::from_rgba_u8(w, h, img.as_raw(), dev)?; // (1, 4, H, W) in [-1, 1]
+    let px = rgba.i(0)?; // (4, H, W)
+    let rgb01 = ((px.narrow(0, 0, 3)? + 1.0)? * 0.5)?;
+    let a01 = ((px.narrow(0, 3, 1)? + 1.0)? * 0.5)?;
+    let over_white = (rgb01.broadcast_mul(&a01)? + (a01.neg()? + 1.0)?.broadcast_as((3, h, w))?)?;
+    Ok((rgba, over_white, (w, h)))
 }
 
 /// Seconds spent in each phase of one generation (device-synchronised).
@@ -140,6 +185,7 @@ pub struct Pipeline {
     te: QwenTextEncoder,
     dit: QwenImageDit,
     vae: QwenImageVae,
+    vision: Option<VisionTower>,
     opts: Options,
 }
 
@@ -148,25 +194,13 @@ impl Pipeline {
     /// hears each phase.
     pub fn load(model: &Path, opts: Options, progress: &mut dyn FnMut(f32, &str)) -> Result<Self> {
         if !is_snapshot(model) {
-            anyhow::bail!(
-                "{} is not a Qwen-Image-2.1 snapshot (processor/, text_encoder/, transformer/, vae/)",
-                model.display()
-            );
+            anyhow::bail!("{} is not a Qwen-Image-2.1 snapshot (processor/, text_encoder/, transformer/, vae/)", model.display());
         }
         let dev = crate::device::best_device()?;
-        let dtype = if matches!(dev, Device::Cuda(_)) {
-            DType::BF16
-        } else {
-            DType::F32
-        };
-        let tok = Tokenizer::from_file(model.join("processor/tokenizer.json"))
-            .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+        let dtype = if matches!(dev, Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+        let tok = Tokenizer::from_file(model.join("processor/tokenizer.json")).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
         let sysp = format!("<|im_start|>system\n{}<|im_end|>\n", tmpl::SYS_PROMPT);
-        let drop = tok
-            .encode(sysp, false)
-            .map_err(|e| anyhow::anyhow!("encode system turn: {e}"))?
-            .get_ids()
-            .len();
+        let drop = tok.encode(sysp, false).map_err(|e| anyhow::anyhow!("encode system turn: {e}"))?.get_ids().len();
 
         progress(0.0, "Loading the text encoder");
         let t0 = Instant::now();
@@ -182,21 +216,27 @@ impl Pipeline {
 
         progress(0.8, "Loading the VAE");
         let t0 = Instant::now();
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(model.join("vae/config.json")).context("vae/config.json")?,
-        )?;
-        let f32vec = |k: &str| -> Vec<f32> {
-            cfg[k].as_array().map_or(vec![], |a| {
-                a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect()
-            })
-        };
+        let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(model.join("vae/config.json")).context("vae/config.json")?)?;
+        let f32vec = |k: &str| -> Vec<f32> { cfg[k].as_array().map_or(vec![], |a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect()) };
         let vae_dt = if opts.vae_f32 { DType::F32 } else { dtype };
         let vae_files = WeightSet::resolve(&model.join("vae"))?.files;
         let vae_vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&vae_files, vae_dt, &dev)? };
         let vae = QwenImageVae::load(&VaeConfig::default(), &f32vec("latents_mean"), &f32vec("latents_std"), vae_vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "VAE loaded");
+
+        let vision = if opts.vision {
+            progress(0.9, "Loading the vision tower");
+            let t0 = Instant::now();
+            let files = WeightSet::resolve(&model.join("text_encoder"))?.files;
+            let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, &dev)? };
+            let tower = VisionTower::load(&VisionConfig::default(), vb32.pp("model").pp("visual"))?;
+            tracing::info!(load_s = t0.elapsed().as_secs_f32(), "vision tower loaded");
+            Some(tower)
+        } else {
+            None
+        };
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, drop, te, dit, vae, opts })
+        Ok(Self { dev, dtype, tok, drop, te, dit, vae, vision, opts })
     }
 
     pub fn device(&self) -> &Device {
@@ -213,43 +253,84 @@ impl Pipeline {
 
     /// The prompt's embedding `(1, tokens, 4096)` without the system turn.
     fn encode(&self, text: &str) -> Result<Tensor> {
-        let ids: Vec<u32> = self
-            .tok
-            .encode(tmpl::t2i_template(text), false)
-            .map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?
-            .get_ids()
-            .to_vec();
+        let ids: Vec<u32> = self.tok.encode(tmpl::t2i_template(text), false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec();
         let seq = ids.len();
         let hidden = self.te.forward(&Tensor::from_vec(ids, (1, seq), &self.dev)?)?;
         Ok(hidden.narrow(1, self.drop, seq - self.drop)?.contiguous()?)
     }
 
+    /// The prompt's conditioning with pictures: the tower's features spliced into the prompt,
+    /// the picture rows dropped again on the way out, and where each reference latent goes.
+    fn encode_with_images(&self, text: &str, feats: &[VisionFeatures]) -> Result<(Tensor, Vec<usize>)> {
+        let ids: Vec<u32> =
+            self.tok.encode(tmpl::edit_template(text, feats.len()), false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec();
+        let refs: Vec<&VisionFeatures> = feats.iter().collect();
+        let (hidden, spans) = self.te.forward_with_images(&ids, &refs)?;
+        text_encoder::condition(&hidden, &spans, self.drop)
+    }
+
+    /// Each reference through the VAE encoder (its packed normalised latent and grid) and the
+    /// vision tower.
+    fn prepare_references(&self, refs: &[RefImage]) -> Result<(Vec<PackedLatent>, Vec<VisionFeatures>)> {
+        let Some(tower) = &self.vision else { anyhow::bail!("this pipeline was loaded without the vision tower; references need it") };
+        anyhow::ensure!(self.vae.can_encode(), "this VAE weight set has no encoder; references need it");
+        let mut latents = Vec::with_capacity(refs.len());
+        let mut feats = Vec::with_capacity(refs.len());
+        for r in refs {
+            let (rgba, rgb, (w, h)) = prepare_ref(r, &self.dev)?;
+            let z = self.vae.encode(&rgba)?; // (1, 64, h/16, w/16) f32
+            let (lh, lw) = (h / 16, w / 16);
+            let packed = z.reshape((1, 64, lh * lw))?.transpose(1, 2)?.contiguous()?.to_dtype(self.dtype)?;
+            latents.push((packed, lh, lw));
+            let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
+            let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
+            let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
+            feats.push(tower.forward(&patches, gh, gw)?);
+        }
+        Ok((latents, feats))
+    }
+
     /// Make one picture. `progress` hears every step; `cancel` is read between steps and a
     /// true answer ends the run with [`Cancelled`].
-    pub fn generate(
-        &self,
-        req: &Request,
-        progress: &mut dyn FnMut(f32, &str),
-        cancel: &dyn Fn() -> bool,
-    ) -> Result<Picture> {
-        let (w, h) = (req.width, req.height);
-        if w == 0 || h == 0 || !w.is_multiple_of(16) || !h.is_multiple_of(16) {
-            anyhow::bail!("the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
-        }
+    pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
         if req.steps == 0 {
             anyhow::bail!("at least one step");
         }
         let check = |cancel: &dyn Fn() -> bool| -> Result<()> {
-            if cancel() { Err(Cancelled.into()) } else { Ok(()) }
+            if cancel() {
+                Err(Cancelled.into())
+            } else {
+                Ok(())
+            }
         };
         let mut timings = Timings::default();
 
-        // 1. Text.
+        // 1. The references (their latents and vision features), then the text.
         check(cancel)?;
-        progress(0.0, "Encoding the prompt");
         let t0 = Instant::now();
-        let cond = self.encode(&req.prompt)?;
-        let neg = if req.guidance > 1.0 { Some(self.encode(&req.negative)?) } else { None };
+        let (ref_latents, feats) = if req.references.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            progress(0.0, "Reading the references");
+            self.prepare_references(&req.references)?
+        };
+        // The target: the request's size, or the first reference's when it says nothing.
+        let (w, h) = match (req.width, req.height, ref_latents.first()) {
+            (0, 0, Some((_, lh, lw))) => (lw * 16, lh * 16),
+            (w, h, _) => (w, h),
+        };
+        if w == 0 || h == 0 || !w.is_multiple_of(16) || !h.is_multiple_of(16) {
+            anyhow::bail!("the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
+        }
+        check(cancel)?;
+        progress(0.02, "Encoding the prompt");
+        let (cond, slots) = if feats.is_empty() { (self.encode(&req.prompt)?, Vec::new()) } else { self.encode_with_images(&req.prompt, &feats)? };
+        let neg = if req.guidance > 1.0 {
+            Some(if feats.is_empty() { (self.encode(&req.negative)?, Vec::new()) } else { self.encode_with_images(&req.negative, &feats)? })
+        } else {
+            None
+        };
+        let refs: Vec<RefLatent> = ref_latents.iter().map(|(t, lh, lw)| RefLatent { packed: t, h: *lh, w: *lw }).collect();
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
 
@@ -258,7 +339,7 @@ impl Pipeline {
         let img_seq = lw * lh;
         let (tsteps, dts): (Vec<f32>, Vec<f32>) = match req.schedule {
             Schedule::Comfy => {
-                use crate::comfy::{FlowSchedule, comfy_timestep};
+                use crate::comfy::{comfy_timestep, FlowSchedule};
                 let s = FlowSchedule::simple(req.steps, FlowSchedule::QWEN_IMAGE_21).map_err(anyhow::Error::msg)?;
                 ((0..req.steps).map(|i| comfy_timestep(s.sigma(i))).collect(), (0..req.steps).map(|i| s.dt(i)).collect())
             }
@@ -282,7 +363,15 @@ impl Pipeline {
         for (i, (t, dt)) in tsteps.iter().zip(&dts).enumerate() {
             check(cancel)?;
             let tt = Tensor::from_vec(vec![*t], (1,), &self.dev)?;
-            let v = self.velocity(&latents.to_dtype(self.dtype)?, &cond, neg.as_ref(), req.guidance, &tt, (lh, lw), img_seq)?;
+            let v = self.velocity(
+                &latents.to_dtype(self.dtype)?,
+                (&cond, &slots),
+                neg.as_ref().map(|(n, s)| (n, s.as_slice())),
+                req.guidance,
+                &tt,
+                (lh, lw),
+                &refs,
+            )?;
             latents = (latents + (v * *dt as f64)?)?;
             progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
         }
@@ -311,25 +400,26 @@ impl Pipeline {
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
 
-    /// The DiT's velocity over the image tokens, with true CFG when `guidance > 1` and a
-    /// negative embedding is given.
+    /// The DiT's velocity over the target's tokens, with true CFG when `guidance > 1` and a
+    /// negative conditioning is given. `cond` and `neg` carry their image slots.
     #[allow(clippy::too_many_arguments)]
     fn velocity(
         &self,
         latents: &Tensor,
-        cond: &Tensor,
-        neg: Option<&Tensor>,
+        cond: (&Tensor, &[usize]),
+        neg: Option<(&Tensor, &[usize])>,
         guidance: f32,
         tt: &Tensor,
         (h, w): (usize, usize),
-        img_seq: usize,
+        refs: &[RefLatent],
     ) -> Result<Tensor> {
-        let joint = self.dit.forward(latents, cond, tt, h, w)?;
+        let img_seq = h * w;
+        let joint = self.dit.forward_refs(latents, cond.0, tt, h, w, refs, cond.1)?;
         let (_b, jl, _) = joint.dims3()?;
         let v_cond = joint.narrow(1, jl - img_seq, img_seq)?.to_dtype(DType::F32)?;
         if guidance > 1.0 {
-            if let Some(neg) = neg {
-                let ju = self.dit.forward(latents, neg, tt, h, w)?;
+            if let Some((neg, nslots)) = neg {
+                let ju = self.dit.forward_refs(latents, neg, tt, h, w, refs, nslots)?;
                 let (_b, jlu, _) = ju.dims3()?;
                 let v_uncond = ju.narrow(1, jlu - img_seq, img_seq)?.to_dtype(DType::F32)?;
                 return Ok((&v_uncond + ((&v_cond - &v_uncond)? * guidance as f64)?)?);
@@ -341,13 +431,7 @@ impl Pipeline {
 
 /// The text encoder: a pre-quantized GGUF when given (Q8_0, no bf16 transient), else the
 /// snapshot's bf16 shards, quantized on load when asked.
-pub fn load_text_encoder(
-    model: &Path,
-    dev: &Device,
-    dtype: DType,
-    quant_text: bool,
-    text_gguf: Option<&Path>,
-) -> Result<QwenTextEncoder> {
+pub fn load_text_encoder(model: &Path, dev: &Device, dtype: DType, quant_text: bool, text_gguf: Option<&Path>) -> Result<QwenTextEncoder> {
     if let Some(g) = text_gguf {
         let qvb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(g, dev)?;
         QwenTextEncoder::load_gguf(&TextConfig::default(), qvb)
