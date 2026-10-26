@@ -170,12 +170,25 @@ impl DiffusionEngine {
         progress(0.5, "Thinking");
         let opts = ChatOptions { seed: req.seed, ..ChatOptions::default() };
         let stop = || cancel.load(Ordering::SeqCst);
-        let reply = p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop).map_err(|e| {
+        let reply = p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop);
+        self.give_back();
+        let reply = reply.map_err(|e| {
             exit_if_poisoned(&e.to_string());
             EngineError::new(kind_of(&e), e.to_string())
         })?;
         progress(1.0, "Done");
         Ok((DoneInfo { images: Vec::new(), texts: vec![reply], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()))
+    }
+
+    /// Between requests, the device memory the pool kept from this one goes back to the
+    /// driver: the card is shared (ComfyUI, the desktop, other tenants), and 8–11 GB of
+    /// retained slack pushed them into paging (`qwen_image_rs::device::trim_pool`).
+    fn give_back(&self) {
+        match &self.resident {
+            Resident::Qwen(p) => qwen_image_rs::device::trim_pool(p.device()),
+            Resident::Krea2(p) => qwen_image_rs::device::trim_pool(p.device()),
+            Resident::None => {}
+        }
     }
 
     /// The request's LoRA stack on the device of the resident pipeline (loaded once per file,
@@ -502,6 +515,7 @@ impl Engine for DiffusionEngine {
                 Resident::None => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
             }
         })();
+        self.give_back();
         let pic = match result {
             Ok(p) => p,
             Err(e) => {

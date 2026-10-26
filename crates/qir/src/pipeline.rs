@@ -384,7 +384,8 @@ impl Pipeline {
         if !self.opts.evict_text_encoder || !self.text_encoder_resident() {
             return;
         }
-        let Some((free, total)) = crate::device::free_vram(&self.dev) else { return };
+        // The pool's retained memory is this process's to reuse (the driver counts it as used).
+        let Some((free, total)) = crate::device::usable_vram(&self.dev) else { return };
         let cache = self.dit.prefix_cache_bytes(prefix_len);
         // The step's working set: the joint keys and values the target attends to (two
         // copies in flight), the prefix pass's f32 score chunks, and a margin.
