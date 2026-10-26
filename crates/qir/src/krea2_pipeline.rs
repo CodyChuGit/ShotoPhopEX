@@ -101,6 +101,15 @@ impl Krea2Pipeline {
         matches!(self.dev, Device::Cuda(_))
     }
 
+    pub fn device(&self) -> &Device {
+        &self.dev
+    }
+
+    /// The dtype the DiT runs in (what a LoRA's tensors are put in).
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
     /// The conditioning `(1, tokens, 12, 2560)` for a prompt.
     fn condition(&self, prompt: &str) -> Result<Tensor> {
         let ids: Vec<u32> = self.tok.encode(krea2::template(prompt), false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec();
@@ -123,6 +132,10 @@ impl Krea2Pipeline {
         anyhow::ensure!(req.references.is_empty(), "Krea 2 text to image takes no reference pictures yet");
         let (w, h) = (req.width, req.height);
         anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16), "the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
+        let unmatched = self.dit.set_loras(&req.loras)?;
+        if !unmatched.is_empty() {
+            tracing::warn!(modules = unmatched.len(), first = unmatched[0], "LoRA modules this model does not have (a file for another model?)");
+        }
         let check = |cancel: &dyn Fn() -> bool| -> Result<()> {
             if cancel() {
                 Err(Cancelled.into())

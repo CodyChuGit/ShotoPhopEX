@@ -100,6 +100,8 @@ fn policy_tag(block: &[&str], tail: &[(&str, usize, usize, bool)]) -> String {
     format!("qir-convrot-v{PREQUANT_FORMAT};group={};block={};tail={}", crate::model::rotation::GROUP, block.join(","), tail.join(","))
 }
 
+use crate::lora::{LoraSlot, LoraStack, with_lora};
+
 /// Load-time precision switches shared by every DiT linear.
 #[derive(Clone, Copy)]
 struct LinearOpts<'a> {
@@ -344,6 +346,8 @@ struct TimestepEmbed {
     linear1: QLinear,
     linear2: QLinear,
     freqs: Tensor, // (128,)
+    l1: LoraSlot,
+    l2: LoraSlot,
 }
 
 impl TimestepEmbed {
@@ -354,6 +358,8 @@ impl TimestepEmbed {
             linear1: QLinear::load(256, INNER, opts, vb.pp("timestep_embedder").pp("linear_1"))?,
             linear2: QLinear::load(INNER, INNER, opts, vb.pp("timestep_embedder").pp("linear_2"))?,
             freqs: Tensor::from_vec(freqs, (1, half), dev)?,
+            l1: LoraSlot::default(),
+            l2: LoraSlot::default(),
         })
     }
 
@@ -363,9 +369,9 @@ impl TimestepEmbed {
         let args = t.broadcast_mul(&self.freqs)?; // (n, 128)
         let emb = Tensor::cat(&[args.cos()?, args.sin()?], candle_core::D::Minus1)?; // (n,256)
         let emb = emb.to_dtype(dtype)?;
-        let x = self.linear1.forward(&emb)?;
+        let x = with_lora(&self.l1, self.linear1.forward(&emb)?, &emb)?;
         let x = silu(&x)?;
-        self.linear2.forward(&x)
+        with_lora(&self.l2, self.linear2.forward(&x)?, &x)
     }
 }
 
@@ -403,6 +409,11 @@ struct Attention {
     to_out: QLinear,
     norm_q: HeadRmsNorm,
     norm_k: HeadRmsNorm,
+    /// LoRA side paths on the four linears (`crate::lora`), empty unless a request sets them.
+    lq: LoraSlot,
+    lk: LoraSlot,
+    lv: LoraSlot,
+    lo: LoraSlot,
 }
 
 impl Attention {
@@ -422,7 +433,26 @@ impl Attention {
             to_out: QLinear::load(INNER, INNER, opts, vb.pp("to_out").pp("0"))?,
             norm_q: HeadRmsNorm::load(vb.pp("norm_q"))?,
             norm_k: HeadRmsNorm::load(vb.pp("norm_k"))?,
+            lq: LoraSlot::default(),
+            lk: LoraSlot::default(),
+            lv: LoraSlot::default(),
+            lo: LoraSlot::default(),
         })
+    }
+
+    /// The output projection with its LoRA delta.
+    fn out(&self, t: &Tensor) -> Result<Tensor> {
+        let y = self.to_out.forward(t)?;
+        with_lora(&self.lo, y, t)
+    }
+
+    /// Set this block's adapters from `stack` under `prefix` (`transformer_blocks.N.attn`).
+    fn set_loras(&self, stack: &LoraStack, prefix: &str) -> Result<()> {
+        self.lq.set(stack.pairs(&format!("{prefix}.to_q"))?);
+        self.lk.set(stack.pairs(&format!("{prefix}.to_k"))?);
+        self.lv.set(stack.pairs(&format!("{prefix}.to_v"))?);
+        self.lo.set(stack.pairs(&format!("{prefix}.to_out.0"))?);
+        Ok(())
     }
 
     /// The block's ConvRot linear count (load accounting; a merged q|k counts 2).
@@ -451,8 +481,11 @@ impl Attention {
                 let (qk_out, v) = Self::merged_qk_v(qk, v, x, v_f16)?;
                 // Rows of [q_h | k_h]: q and k are ld = 2*HEAD_DIM column views.
                 let rows = qk_out.reshape((b * s * HEADS, 2 * HEAD_DIM))?;
-                let qh = self.norm_q.forward(&rows.narrow(1, 0, HEAD_DIM)?)?.reshape(shape)?;
-                let kh = self.norm_k.forward(&rows.narrow(1, HEAD_DIM, HEAD_DIM)?)?.reshape(shape)?;
+                let qr = with_lora(&self.lq, rows.narrow(1, 0, HEAD_DIM)?, x)?;
+                let kr = with_lora(&self.lk, rows.narrow(1, HEAD_DIM, HEAD_DIM)?, x)?;
+                let qh = self.norm_q.forward(&qr)?.reshape(shape)?;
+                let kh = self.norm_k.forward(&kr)?.reshape(shape)?;
+                let v = with_lora(&self.lv, v, x)?;
                 Ok((qh, kh, v))
             }
         }
@@ -467,8 +500,8 @@ impl Attention {
         let shape = (b, s, HEADS, HEAD_DIM);
         match &self.qkv {
             QkvProj::Separate { to_q, to_k, to_v } => {
-                let q = to_q.forward(x)?.reshape(shape)?;
-                let k = to_k.forward(x)?.reshape(shape)?;
+                let q = with_lora(&self.lq, to_q.forward(x)?, x)?.reshape(shape)?;
+                let k = with_lora(&self.lk, to_k.forward(x)?, x)?.reshape(shape)?;
                 #[cfg(feature = "sage")]
                 let v = if v_f16 { to_v.forward_f16(x)? } else { to_v.forward(x)? };
                 #[cfg(not(feature = "sage"))]
@@ -476,13 +509,17 @@ impl Attention {
                     let _ = v_f16;
                     to_v.forward(x)?
                 };
+                let v = with_lora(&self.lv, v, x)?;
                 Ok((q, k, v.reshape(shape)?))
             }
             #[cfg(feature = "convrot")]
             QkvProj::Merged { qk, v } => {
                 let (qk_out, v) = Self::merged_qk_v(qk, v, x, v_f16)?;
                 let qk4 = qk_out.reshape((b, s, HEADS, 2 * HEAD_DIM))?;
-                Ok((qk4.narrow(3, 0, HEAD_DIM)?, qk4.narrow(3, HEAD_DIM, HEAD_DIM)?, v))
+                let q = with_lora(&self.lq, qk4.narrow(3, 0, HEAD_DIM)?, x)?;
+                let k = with_lora(&self.lk, qk4.narrow(3, HEAD_DIM, HEAD_DIM)?, x)?;
+                let v = with_lora(&self.lv, v, x)?;
+                Ok((q, k, v))
             }
         }
     }
@@ -525,7 +562,7 @@ impl Attention {
         let (b, s, _) = x.dims3()?;
         let (qh, kh, vv) = self.project(x, false)?; // (B,S,H,D), v bf16
         let out = Self::attend_segments(&qh, &kh, &vv, cos, sin, segments, &self.device())?;
-        self.to_out.forward(&out.reshape((b, s, INNER))?)
+        self.out(&out.reshape((b, s, INNER))?)
     }
 
     /// The plain attention of a joint sequence: `qh`, `kh` `(B,S,H,D)` per-head normalised and
@@ -552,7 +589,7 @@ impl Attention {
         let (b, s, _) = x.dims3()?;
         let (qh, kh, vv) = self.project(x, cfg!(feature = "sage"))?; // v f16 under sage, the P·V operand
         let out = Self::attend_segments(&qh, &kh, &vv, cos, sin, segments, &self.device())?.to_dtype(x.dtype())?;
-        Ok((self.to_out.forward(&out.reshape((b, s, INNER))?)?, (kh, vv)))
+        Ok((self.out(&out.reshape((b, s, INNER))?)?, (kh, vv)))
     }
 
     /// The target pass of a cached generation: the target's `x` `(B,T,INNER)` attends to the
@@ -576,7 +613,7 @@ impl Attention {
                 let k = rope_quant(&k_full, cos, sin, Role::Key)?;
                 let v = quant_v(&v_full, accum)?;
                 let o = attention(&q, &k, &v, sc, false)?; // (B,T,H,D)
-                return self.to_out.forward(&o.reshape((b, t, INNER))?);
+                return self.out(&o.reshape((b, t, INNER))?);
             }
             use crate::sage::{QkRole, rope_quant_bshd, sage_attention_quantized};
             let q = rope_quant_bshd(&qh, &cos_t, &sin_t, QkRole::Query)?;
@@ -590,7 +627,7 @@ impl Attention {
             let v = v_full.transpose(1, 2)?.contiguous()?;
             chunked_attention(&q, &k, &v, None, scale, &self.device())?.transpose(1, 2)?.contiguous()?
         };
-        self.to_out.forward(&out.reshape((b, t, INNER))?)
+        self.out(&out.reshape((b, t, INNER))?)
     }
 
     fn device(&self) -> Device {
@@ -618,7 +655,7 @@ impl Attention {
             let fused = Self::qk_norm_fused()?;
             let (qh, kh, vv) = if fused { self.project_raw(x, true)? } else { self.project(x, true)? }; // (B,S,H,D), pre-rope; v f16
             let out = self.attend_bshd(&qh, &kh, &vv, cos, sin, txt_len, scale, fused)?; // (B,S,H,D)
-            self.to_out.forward(&out.reshape((b, s, INNER))?)
+            self.out(&out.reshape((b, s, INNER))?)
         };
         #[cfg(not(feature = "sage"))]
         let out = {
@@ -629,7 +666,7 @@ impl Attention {
             let qh = candle_nn::rotary_emb::rope_i(&qh, cos, sin)?;
             let kh = candle_nn::rotary_emb::rope_i(&kh, cos, sin)?;
             let out = self.attend(&qh, &kh, &vv, mask, txt_len, scale)?; // (B,S,H,D)
-            self.to_out.forward(&out.reshape((b, s, INNER))?)
+            self.out(&out.reshape((b, s, INNER))?)
         };
         out // the cfg-selected body above (sage: BSHD-native; else BHSD)
     }
@@ -767,6 +804,10 @@ enum MlpIn {
 struct SwiGlu {
     input: MlpIn,
     out: QLinear,
+    /// LoRA side paths on the three linears, empty unless a request sets them.
+    lgate: LoraSlot,
+    lproj: LoraSlot,
+    lout: LoraSlot,
 }
 impl SwiGlu {
     fn load(opts: LinearOpts, vb: VarBuilder) -> Result<Self> {
@@ -778,7 +819,26 @@ impl SwiGlu {
             (QLinear::Convrot(g), QLinear::Convrot(p), QLinear::Convrot(_)) => MlpIn::Merged(crate::convrot::ConvRotLinear::concat_out(&[&g, &p])?),
             (gate, proj, _) => MlpIn::Separate { proj, gate },
         };
-        Ok(Self { input, out })
+        Ok(Self { input, out, lgate: LoraSlot::default(), lproj: LoraSlot::default(), lout: LoraSlot::default() })
+    }
+
+    /// Set this MLP's adapters from `stack` under `prefix` (`transformer_blocks.N.img_mlp`).
+    fn set_loras(&self, stack: &LoraStack, prefix: &str) -> Result<()> {
+        self.lgate.set(stack.pairs(&format!("{prefix}.gate_layer"))?);
+        self.lproj.set(stack.pairs(&format!("{prefix}.proj"))?);
+        self.lout.set(stack.pairs(&format!("{prefix}.out"))?);
+        Ok(())
+    }
+
+    /// The out linear's delta on `silu(g)·p`, which the fused epilogue never stores: the
+    /// product is formed only when an adapter asks for it.
+    #[cfg_attr(not(feature = "convrot"), allow(dead_code))]
+    fn out_lora(&self, h: Tensor, g: &Tensor, p: &Tensor) -> Result<Tensor> {
+        if self.lout.is_empty() {
+            return Ok(h);
+        }
+        let hin = (silu(g)? * p)?;
+        with_lora(&self.lout, h, &hin)
     }
 
     /// The MLP's ConvRot linear count (load accounting; merged gate|proj counts 2).
@@ -806,19 +866,26 @@ impl SwiGlu {
                 let m: usize = dims[..dims.len() - 1].iter().product();
                 let n = INNER * 3;
                 let y = gp.forward(x)?.reshape((m, 2 * n))?; // [gate | proj]
-                let h = out.forward_swiglu(&y.narrow(1, 0, n)?, &y.narrow(1, n, n)?, crate::convrot::EpilogueOut::Bf16)?; // (m, INNER)
+                let x2 = x.reshape((m, INNER))?;
+                let g = with_lora(&self.lgate, y.narrow(1, 0, n)?, &x2)?;
+                let p = with_lora(&self.lproj, y.narrow(1, n, n)?, &x2)?;
+                let h = out.forward_swiglu(&g, &p, crate::convrot::EpilogueOut::Bf16)?; // (m, INNER)
+                let h = self.out_lora(h, &g, &p)?;
                 let mut out_dims = dims[..dims.len() - 1].to_vec();
                 out_dims.push(INNER);
                 Ok(h.reshape(out_dims)?)
             }
             MlpIn::Separate { proj, gate } => {
+                let g = with_lora(&self.lgate, gate.forward(x)?, x)?;
+                let p = with_lora(&self.lproj, proj.forward(x)?, x)?;
                 #[cfg(feature = "convrot")]
                 if let QLinear::Convrot(out) = &self.out {
-                    let (g, p) = (gate.forward(x)?, proj.forward(x)?);
-                    return out.forward_swiglu(&g, &p, crate::convrot::EpilogueOut::Bf16);
+                    let h = out.forward_swiglu(&g, &p, crate::convrot::EpilogueOut::Bf16)?;
+                    return self.out_lora(h, &g, &p);
                 }
-                let g = silu(&gate.forward(x)?)?;
-                self.out.forward(&(g * proj.forward(x)?)?)
+                let hin = (silu(&g)? * p)?;
+                let h = self.out.forward(&hin)?;
+                with_lora(&self.lout, h, &hin)
             }
         }
     }
@@ -976,6 +1043,11 @@ pub struct QwenImageDit {
     proj_out: QLinear,        // INNER -> out_channels
     device: Device,
     inv_freqs: [Vec<f32>; 3], // per-axis rope inv-freqs
+    /// LoRA side paths on the tails (the blocks hold their own).
+    l_modulation: LoraSlot,
+    l_img_in: LoraSlot,
+    l_norm_out: LoraSlot,
+    l_proj_out: LoraSlot,
 }
 
 impl QwenImageDit {
@@ -1010,6 +1082,10 @@ impl QwenImageDit {
             proj_out: QLinear::load(INNER, out_channels, opts, vb.pp("proj_out"))?,
             device: dev,
             inv_freqs,
+            l_modulation: LoraSlot::default(),
+            l_img_in: LoraSlot::default(),
+            l_norm_out: LoraSlot::default(),
+            l_proj_out: LoraSlot::default(),
         };
         tracing::info!(
             convrot_linears = dit.convrot_linears(),
@@ -1017,6 +1093,37 @@ impl QwenImageDit {
             "DiT linears loaded"
         );
         Ok(dit)
+    }
+
+    /// Put `stack`'s adapters on every linear they name (an empty stack clears them all).
+    /// Returns the modules the stack names that this model has not (a file for another model,
+    /// or a layout the loader does not map), for the caller to report.
+    pub fn set_loras(&self, stack: &LoraStack) -> Result<Vec<String>> {
+        for (i, b) in self.blocks.iter().enumerate() {
+            b.attn.set_loras(stack, &format!("transformer_blocks.{i}.attn"))?;
+            b.mlp.set_loras(stack, &format!("transformer_blocks.{i}.img_mlp"))?;
+        }
+        self.time_embed.l1.set(stack.pairs("time_text_embed.timestep_embedder.linear_1")?);
+        self.time_embed.l2.set(stack.pairs("time_text_embed.timestep_embedder.linear_2")?);
+        self.l_modulation.set(stack.pairs("modulation.1")?);
+        self.l_img_in.set(stack.pairs("img_in")?);
+        self.l_norm_out.set(stack.pairs("norm_out.linear")?);
+        self.l_proj_out.set(stack.pairs("proj_out")?);
+        let n = self.blocks.len();
+        let known = |m: &str| -> bool {
+            if let Some(rest) = m.strip_prefix("transformer_blocks.") {
+                let Some((idx, tail)) = rest.split_once('.') else { return false };
+                return idx.parse::<usize>().is_ok_and(|i| i < n)
+                    && matches!(tail, "attn.to_q" | "attn.to_k" | "attn.to_v" | "attn.to_out.0" | "img_mlp.gate_layer" | "img_mlp.proj" | "img_mlp.out");
+            }
+            matches!(m, "time_text_embed.timestep_embedder.linear_1" | "time_text_embed.timestep_embedder.linear_2" | "modulation.1" | "img_in" | "norm_out.linear" | "proj_out")
+        };
+        Ok(stack.unmatched(&known).into_iter().map(String::from).collect())
+    }
+
+    /// Patch embedding with its LoRA delta.
+    fn embed(&self, packed: &Tensor) -> Result<Tensor> {
+        with_lora(&self.l_img_in, self.img_in.forward(packed)?, packed)
     }
 
     /// How many linears run ConvRot INT8.
@@ -1156,7 +1263,7 @@ impl QwenImageDit {
         let dtype = hidden_states.dtype();
         let (b, img_tokens, _) = hidden_states.dims3()?;
         anyhow::ensure!(img_tokens == cache.h * cache.w, "the cache was built for a {}x{} target, not {img_tokens} tokens", cache.w, cache.h);
-        let img = self.img_in.forward(hidden_states)?;
+        let img = self.embed(hidden_states)?;
         // Every target row modulates at the real t.
         let (temb, mods) = self.modulation(timestep, dtype, b, 0, img_tokens)?;
         let mut hs = img;
@@ -1195,8 +1302,8 @@ impl QwenImageDit {
                 length += n;
             }
             let (img, ih, iw, offset) = match refs.get(i) {
-                Some(r) => (Some(self.img_in.forward(r.packed)?), r.h, r.w, r.offset),
-                None => (target.map(|t| self.img_in.forward(t)).transpose()?, h, w, None),
+                Some(r) => (Some(self.embed(r.packed)?), r.h, r.w, r.offset),
+                None => (target.map(|t| self.embed(t)).transpose()?, h, w, None),
             };
             // The target's grid starts at -(h - h/2); a reference is centred on it, half a
             // token off where its grid has the other parity, or placed at its offset.
@@ -1228,7 +1335,8 @@ impl QwenImageDit {
         let t0 = Tensor::zeros((1,), dtype, &self.device)?;
         let ts = Tensor::cat(&[&timestep.to_dtype(dtype)?, &t0], 0)?; // (2,)
         let temb = self.time_embed.forward(&ts, dtype)?; // (2, INNER)
-        let modhad = self.modulation.forward(&silu(&temb)?)?; // (2, 4*INNER)
+        let st = silu(&temb)?;
+        let modhad = with_lora(&self.l_modulation, self.modulation.forward(&st)?, &st)?; // (2, 4*INNER)
         // scale1, gate1, scale2, gate2, each (2, INNER).
         let chunk = |i: usize| -> Result<Modulation> { Modulation::new(modhad.narrow(1, i * INNER, INNER)?, b, prefix_len, img_tokens) };
         Ok((temb, BlockMods { scale1: chunk(0)?, gate1: chunk(1)?, scale2: chunk(2)?, gate2: chunk(3)? }))
@@ -1238,10 +1346,11 @@ impl QwenImageDit {
     /// `proj_out`: `(B, seq, out_channels)`.
     #[allow(clippy::too_many_arguments)]
     fn output(&self, hs: &Tensor, pending: Option<&Tensor>, mods: &BlockMods, temb: &Tensor, b: usize, prefix_len: usize, img_tokens: usize) -> Result<Tensor> {
-        let scale_out = self.norm_out_linear.forward(&silu(temb)?)?; // (2, INNER)
+        let st = silu(temb)?;
+        let scale_out = with_lora(&self.l_norm_out, self.norm_out_linear.forward(&st)?, &st)?; // (2, INNER)
         let scale_out = Modulation::new(scale_out, b, prefix_len, img_tokens)?;
         let (_, x) = residual_norm_mod(hs, pending.map(|y| (&mods.gate2, y)), &scale_out, 1e-6)?;
-        self.proj_out.forward(&x)
+        with_lora(&self.l_proj_out, self.proj_out.forward(&x)?, &x)
     }
 }
 

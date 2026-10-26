@@ -1238,7 +1238,7 @@ fn edit(
         references.push(RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw(), offset: None });
     }
     let req =
-        Request { prompt: prompt.to_string(), negative: negative.to_string(), width, height, steps, seed, guidance, schedule: Schedule::Comfy, references };
+        Request { prompt: prompt.to_string(), negative: negative.to_string(), width, height, steps, seed, guidance, schedule: Schedule::Comfy, references, loras: Default::default() };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
     let pic = p.generate(&req, &mut report, &|| false)?;
     let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
@@ -1266,7 +1266,7 @@ fn generate_krea2(
     let t0 = std::time::Instant::now();
     let p = Krea2Pipeline::load(model, Krea2Options { convrot, cache: cache.clone() }, &mut report)?;
     tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
-    let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references: Vec::new() };
+    let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references: Vec::new(), loras: Default::default() };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
     let pic = p.generate(&req, &mut report, &|| false)?;
     let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;

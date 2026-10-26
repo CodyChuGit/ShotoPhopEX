@@ -23,12 +23,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use std::sync::Arc;
+
 use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
 use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
+use qwen_image_rs::lora::{LoraFile, LoraStack};
 use qwen_image_rs::pipeline::{Cancelled, Options, Picture, Pipeline, RefImage, Request, Schedule, is_snapshot};
 use serde_json::{Value, json};
+
+/// The model root's subdirectory for LoRA files (ComfyUI's `models/loras` layout: one file
+/// each); a request may also name a file by its absolute path.
+pub const LORA_DIR: &str = "loras";
+/// How many LoRA files stay loaded on the device between requests.
+const LORA_CACHE: usize = 6;
 
 /// The text-to-image template id this engine answers, as PhotoshopEX names it.
 pub const TEMPLATE: &str = "qwen-2.1/image";
@@ -86,11 +95,83 @@ pub struct DiffusionEngine {
     quant_text: bool,
     resident: Resident,
     last_error: Option<String>,
+    /// LoRA files on the device, by path, in the order they were loaded (the oldest goes when
+    /// the cache is full); cleared with the models.
+    loras: Vec<(PathBuf, Arc<LoraFile>)>,
+}
+
+/// One LoRA a request asks for: `{"file": "name-or-path.safetensors", "strength": 1.0}`.
+fn lora_asks(params: &std::collections::BTreeMap<String, Value>) -> Result<Vec<(String, f32)>, EngineError> {
+    let Some(v) = params.get("loras") else { return Ok(Vec::new()) };
+    let Some(items) = v.as_array() else {
+        return Err(EngineError::new(ErrorKind::BadRequest, "`loras` must be a list of {file, strength}"));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for it in items {
+        let file = it.get("file").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+        let Some(file) = file else {
+            return Err(EngineError::new(ErrorKind::BadRequest, "a LoRA needs its `file`"));
+        };
+        let strength = it.get("strength").and_then(Value::as_f64).unwrap_or(1.0);
+        if !strength.is_finite() || !(-4.0..=4.0).contains(&strength) {
+            return Err(EngineError::new(ErrorKind::BadRequest, format!("LoRA strength {strength} is out of the range -4..4")));
+        }
+        out.push((file.to_string(), strength as f32));
+    }
+    Ok(out)
 }
 
 impl DiffusionEngine {
     pub fn new(models_root: PathBuf, quant_text: bool) -> Self {
-        Self { models_root, quant_text, resident: Resident::None, last_error: None }
+        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new() }
+    }
+
+    /// Where a LoRA named by a request lives: an absolute path as given, a name under the model
+    /// root's `loras/`. A name must stay a plain file name (no folders) so a request cannot read
+    /// outside the root.
+    fn lora_path(&self, file: &str) -> Result<PathBuf, EngineError> {
+        let p = Path::new(file);
+        if p.is_absolute() {
+            return Ok(p.to_path_buf());
+        }
+        if p.components().count() != 1 {
+            return Err(EngineError::new(ErrorKind::BadRequest, format!("a LoRA is named by its file name or an absolute path, not `{file}`")));
+        }
+        Ok(self.models_root.join(LORA_DIR).join(p))
+    }
+
+    /// The request's LoRA stack on the device of the resident pipeline (loaded once per file,
+    /// kept for the next requests).
+    fn stack_for(&mut self, params: &std::collections::BTreeMap<String, Value>) -> Result<LoraStack, EngineError> {
+        let asks = lora_asks(params)?;
+        if asks.is_empty() {
+            return Ok(LoraStack::default());
+        }
+        let (dev, dtype) = match &self.resident {
+            Resident::Qwen(p) => (p.device().clone(), p.dtype()),
+            Resident::Krea2(p) => (p.device().clone(), p.dtype()),
+            Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
+        };
+        let mut layers = Vec::with_capacity(asks.len());
+        for (file, strength) in asks {
+            let path = self.lora_path(&file)?;
+            let loaded = match self.loras.iter().find(|(p, _)| *p == path) {
+                Some((_, f)) => Arc::clone(f),
+                None => {
+                    if !path.is_file() {
+                        return Err(EngineError::new(ErrorKind::ModelMissing, format!("LoRA {} is not installed (looked in {})", file, self.models_root.join(LORA_DIR).display())));
+                    }
+                    let f = Arc::new(LoraFile::load(&path, &dev, dtype).map_err(|e| EngineError::new(ErrorKind::ModelUnreadable, format!("LoRA {file}: {e}")))?);
+                    if self.loras.len() >= LORA_CACHE {
+                        self.loras.remove(0);
+                    }
+                    self.loras.push((path, Arc::clone(&f)));
+                    f
+                }
+            };
+            layers.push((loaded, strength));
+        }
+        Ok(LoraStack { layers })
     }
 
     pub fn snapshot_dir(&self) -> PathBuf {
@@ -325,6 +406,7 @@ impl Engine for DiffusionEngine {
                 None if references.is_empty() => (side(req.width), side(req.height)),
                 None => (0, 0),
             };
+            let loras = self.stack_for(&req.params)?;
             let ask = Request {
                 prompt: req.prompt.clone(),
                 negative: req.negative.clone(),
@@ -335,6 +417,7 @@ impl Engine for DiffusionEngine {
                 guidance: if req.guidance > 0.0 { req.guidance } else { 1.0 },
                 schedule: Schedule::Comfy,
                 references,
+                loras,
             };
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             let stop = || cancel.load(Ordering::SeqCst);
@@ -354,6 +437,7 @@ impl Engine for DiffusionEngine {
                 if e.kind == ErrorKind::OutOfMemory {
                     // Give the memory back: the next request reloads.
                     self.resident = Resident::None;
+                    self.loras.clear();
                 }
                 return Err(e);
             }
@@ -365,6 +449,7 @@ impl Engine for DiffusionEngine {
 
     fn free(&mut self) {
         self.resident = Resident::None;
+        self.loras.clear();
     }
 
     fn index(&mut self, dir: &str) -> Value {
@@ -509,5 +594,25 @@ mod tests {
         assert_eq!(kind_of(&anyhow::anyhow!("CUDA_ERROR_OUT_OF_MEMORY")), ErrorKind::OutOfMemory);
         assert_eq!(kind_of(&Cancelled.into()), ErrorKind::Cancelled);
         assert_eq!(kind_of(&anyhow::anyhow!("weight directory does not exist: x")), ErrorKind::ModelMissing);
+    }
+
+    #[test]
+    fn loras_are_read_from_the_request_and_named_inside_the_root() {
+        let p = |v: Value| -> BTreeMap<String, Value> { [("loras".to_string(), v)].into_iter().collect() };
+        assert!(lora_asks(&BTreeMap::new()).unwrap().is_empty());
+        let asks = lora_asks(&p(json!([{"file": "a.safetensors"}, {"file": "b.safetensors", "strength": 0.5}]))).unwrap();
+        assert_eq!(asks, vec![("a.safetensors".to_string(), 1.0), ("b.safetensors".to_string(), 0.5)]);
+        assert_eq!(lora_asks(&p(json!("x"))).unwrap_err().kind, ErrorKind::BadRequest);
+        assert_eq!(lora_asks(&p(json!([{"strength": 1}]))).unwrap_err().kind, ErrorKind::BadRequest);
+        assert_eq!(lora_asks(&p(json!([{"file": "a", "strength": 9}]))).unwrap_err().kind, ErrorKind::BadRequest);
+        let e = DiffusionEngine::new(PathBuf::from("root"), false);
+        assert_eq!(e.lora_path("a.safetensors").unwrap(), PathBuf::from("root").join(LORA_DIR).join("a.safetensors"));
+        assert!(e.lora_path("../a.safetensors").is_err(), "no folders in a name");
+        let abs = std::env::temp_dir().join("x.safetensors");
+        assert_eq!(e.lora_path(&abs.to_string_lossy()).unwrap(), abs);
+        // A LoRA asked for with no pipeline resident, or a file that is not there, is a typed error.
+        let mut e = e;
+        assert_eq!(e.stack_for(&p(json!([{"file": "a.safetensors"}]))).unwrap_err().kind, ErrorKind::Internal);
+        assert!(e.stack_for(&BTreeMap::new()).unwrap().is_empty());
     }
 }
