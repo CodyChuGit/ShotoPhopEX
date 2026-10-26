@@ -170,7 +170,10 @@ impl DiffusionEngine {
         progress(0.5, "Thinking");
         let opts = ChatOptions { seed: req.seed, ..ChatOptions::default() };
         let stop = || cancel.load(Ordering::SeqCst);
-        let reply = p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
+        let reply = p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop).map_err(|e| {
+            exit_if_poisoned(&e.to_string());
+            EngineError::new(kind_of(&e), e.to_string())
+        })?;
         progress(1.0, "Done");
         Ok((DoneInfo { images: Vec::new(), texts: vec![reply], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()))
     }
@@ -279,6 +282,31 @@ impl DiffusionEngine {
 }
 
 /// The failure taxonomy from a pipeline error's text.
+/// A CUDA error that leaves the process's context unusable (every later call fails the same
+/// way): an illegal address, a failed launch, a misaligned access. Measured 2026-10-26: one
+/// illegal address in a sampling step on a full card, and every request after it failed.
+pub fn is_sticky_cuda_error(message: &str) -> bool {
+    const STICKY: [&str; 6] = [
+        "CUDA_ERROR_ILLEGAL_ADDRESS",
+        "CUDA_ERROR_LAUNCH_FAILED",
+        "CUDA_ERROR_ILLEGAL_INSTRUCTION",
+        "CUDA_ERROR_MISALIGNED_ADDRESS",
+        "CUDA_ERROR_HARDWARE_STACK_ERROR",
+        "CUDA_ERROR_ASSERT",
+    ];
+    STICKY.iter().any(|s| message.contains(s))
+}
+
+/// The worker's way out of a poisoned CUDA context: say why and end the process, so the
+/// editor's client sees the channel close and starts a fresh worker for the next request
+/// (plan-native-engine §12.2, `EngineCrashed`: respawn). Continuing would fail every request.
+fn exit_if_poisoned(message: &str) {
+    if is_sticky_cuda_error(message) {
+        eprintln!("gn-diffusion: the CUDA context is unusable ({message}); the worker exits so a fresh one takes over");
+        std::process::exit(3);
+    }
+}
+
 fn kind_of(e: &anyhow::Error) -> ErrorKind {
     if e.downcast_ref::<Cancelled>().is_some() {
         return ErrorKind::Cancelled;
@@ -477,6 +505,7 @@ impl Engine for DiffusionEngine {
         let pic = match result {
             Ok(p) => p,
             Err(e) => {
+                exit_if_poisoned(&e.message);
                 if matches!(e.kind, ErrorKind::ModelUnreadable | ErrorKind::Internal) {
                     self.last_error = Some(e.message.clone());
                 }
@@ -638,6 +667,8 @@ mod tests {
         assert_eq!((task_of(TEMPLATE_EXPAND), task_of(TEMPLATE_MATTE), task_of("nope/x")), (Some("expand"), Some("matte"), None));
         assert_eq!((family_of(TEMPLATE_KREA2), family_of(TEMPLATE_FILL), family_of("nope/x")), (Some(Family::Krea2), Some(Family::QwenImage21), None));
         assert_eq!((task_of(TEMPLATE_CHAT_EDIT), task_of(TEMPLATE_CHAT_IMAGE), family_of(TEMPLATE_CHAT_EDIT)), (Some("text"), Some("text"), Some(Family::QwenImage21)));
+        assert!(is_sticky_cuda_error(r#"DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")"#));
+        assert!(!is_sticky_cuda_error("DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")"), "out of memory is recoverable: the models are dropped instead");
         assert_eq!(kind_of(&anyhow::anyhow!("CUDA_ERROR_OUT_OF_MEMORY")), ErrorKind::OutOfMemory);
         assert_eq!(kind_of(&Cancelled.into()), ErrorKind::Cancelled);
         assert_eq!(kind_of(&anyhow::anyhow!("weight directory does not exist: x")), ErrorKind::ModelMissing);
