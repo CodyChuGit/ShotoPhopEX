@@ -139,6 +139,34 @@ pub fn pool_slack(device: &Device) -> usize {
     0
 }
 
+/// Hand the default pool's freed-but-retained memory back to the driver
+/// (`cuMemPoolTrimTo(pool, 0)` after a sync), so other processes on the card
+/// see it free between requests. [`retain_pool`] keeps that memory for speed
+/// within a run (the VAE's allocations); on a card shared with other processes
+/// (ComfyUI, the desktop) 8–11 GB of slack held between requests pushed them,
+/// and the worker's own next model load, into paging (2026-10-26). The next
+/// run maps its working set again (on the order of 100 ms). No-op on CPU.
+pub fn trim_pool(device: &Device) {
+    #[cfg(feature = "cuda")]
+    if let Device::Cuda(d) = device {
+        use candle_core::cuda_backend::cudarc::driver::sys;
+        let _ = device.synchronize();
+        let Some(pool) = default_pool(d) else { return };
+        let before = pool_usage(pool);
+        let ok = unsafe { sys::cuMemPoolTrimTo(pool, 0) }.result().is_ok();
+        if let (true, Some((res, used))) = (ok, before) {
+            tracing::debug!(released_mib = res.saturating_sub(used) >> 20, "cuda mempool trimmed");
+        }
+    }
+    let _ = device;
+}
+
+/// Free device memory as the worker can use it: the driver's free count plus
+/// what the pool retains ([`pool_slack`]); `None` where [`free_vram`] is.
+pub fn usable_vram(device: &Device) -> Option<(usize, usize)> {
+    free_vram(device).map(|(free, total)| (free.saturating_add(pool_slack(device)), total))
+}
+
 /// Human-readable device label for logs.
 pub fn label(device: &Device) -> &'static str {
     match device {
