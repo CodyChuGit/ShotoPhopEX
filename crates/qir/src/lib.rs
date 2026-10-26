@@ -25,6 +25,7 @@ pub mod fusednorm;
 pub mod gemm_tiles;
 pub mod layout;
 pub mod loader;
+pub mod lora;
 pub mod model;
 pub mod pipeline;
 #[cfg(feature = "sage")]

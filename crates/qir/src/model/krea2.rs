@@ -10,6 +10,7 @@ use candle_core::{D, DType, Device, IndexOp, Module, Tensor};
 use candle_nn::{Linear, VarBuilder, linear, linear_no_bias};
 
 use crate::Result;
+use crate::lora::{LoraSlot, LoraStack, with_lora};
 use crate::model::text_encoder::QwenTextEncoder;
 
 /// The hidden states Krea 2 taps (transformers' `hidden_states` indices).
@@ -208,6 +209,10 @@ struct SwiGlu {
     gate: KLinear,
     up: KLinear,
     down: KLinear,
+    /// LoRA side paths (`crate::lora`), empty unless a request sets them.
+    lgate: LoraSlot,
+    lup: LoraSlot,
+    ldown: LoraSlot,
 }
 
 impl SwiGlu {
@@ -217,12 +222,23 @@ impl SwiGlu {
             gate: KLinear::load(features, m, false, rot, vb.pp("gate"))?,
             up: KLinear::load(features, m, false, rot, vb.pp("up"))?,
             down: KLinear::load(m, features, false, rot, vb.pp("down"))?,
+            lgate: LoraSlot::default(),
+            lup: LoraSlot::default(),
+            ldown: LoraSlot::default(),
         })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let g = candle_nn::ops::silu(&self.gate.forward(x)?)?;
-        self.down.forward(&(g * self.up.forward(x)?)?)
+        let g = candle_nn::ops::silu(&with_lora(&self.lgate, self.gate.forward(x)?, x)?)?;
+        let hin = (g * with_lora(&self.lup, self.up.forward(x)?, x)?)?;
+        with_lora(&self.ldown, self.down.forward(&hin)?, &hin)
+    }
+
+    fn set_loras(&self, stack: &LoraStack, prefix: &str) -> Result<()> {
+        self.lgate.set(stack.pairs(&format!("{prefix}.gate"))?);
+        self.lup.set(stack.pairs(&format!("{prefix}.up"))?);
+        self.ldown.set(stack.pairs(&format!("{prefix}.down"))?);
+        Ok(())
     }
 }
 
@@ -255,6 +271,12 @@ struct Attention {
     heads: usize,
     kv_heads: usize,
     head_dim: usize,
+    /// LoRA side paths on the five linears, empty unless a request sets them.
+    lq: LoraSlot,
+    lk: LoraSlot,
+    lv: LoraSlot,
+    lgate: LoraSlot,
+    lo: LoraSlot,
 }
 
 impl Attention {
@@ -271,16 +293,37 @@ impl Attention {
             heads,
             kv_heads,
             head_dim: hd,
+            lq: LoraSlot::default(),
+            lk: LoraSlot::default(),
+            lv: LoraSlot::default(),
+            lgate: LoraSlot::default(),
+            lo: LoraSlot::default(),
         })
+    }
+
+    fn set_loras(&self, stack: &LoraStack, prefix: &str) -> Result<()> {
+        self.lq.set(stack.pairs(&format!("{prefix}.wq"))?);
+        self.lk.set(stack.pairs(&format!("{prefix}.wk"))?);
+        self.lv.set(stack.pairs(&format!("{prefix}.wv"))?);
+        self.lgate.set(stack.pairs(&format!("{prefix}.gate"))?);
+        self.lo.set(stack.pairs(&format!("{prefix}.wo"))?);
+        Ok(())
+    }
+
+    /// The sigmoid gate on the attention output, with its LoRA delta.
+    fn gated(&self, out: Tensor, x: &Tensor) -> Result<Tensor> {
+        let gate = candle_nn::ops::sigmoid(&with_lora(&self.lgate, self.gate.forward(x)?, x)?)?;
+        let t = (out * gate)?;
+        with_lora(&self.lo, self.wo.forward(&t)?, &t)
     }
 
     /// `x` `(B,S,dim)`; `rope` the `(S, D/2)` f32 cos/sin tables (interleaved pairs) or none.
     fn forward(&self, x: &Tensor, rope: Option<&(Tensor, Tensor)>) -> Result<Tensor> {
         let (b, s, _) = x.dims3()?;
         let (h, kvh, d) = (self.heads, self.kv_heads, self.head_dim);
-        let qb = self.qnorm.forward(&self.wq.forward(x)?.reshape((b, s, h, d))?)?; // (B,S,H,D)
-        let kb = self.knorm.forward(&self.wk.forward(x)?.reshape((b, s, kvh, d))?)?;
-        let vb = self.wv.forward(x)?.reshape((b, s, kvh, d))?;
+        let qb = self.qnorm.forward(&with_lora(&self.lq, self.wq.forward(x)?, x)?.reshape((b, s, h, d))?)?; // (B,S,H,D)
+        let kb = self.knorm.forward(&with_lora(&self.lk, self.wk.forward(x)?, x)?.reshape((b, s, kvh, d))?)?;
+        let vb = with_lora(&self.lv, self.wv.forward(x)?, x)?.reshape((b, s, kvh, d))?;
         // With RoPE and the `sage2` kernels: INT8-QK SageAttention2 straight from the BSHD
         // projections (the rotation fused into the quantiser), grouped heads handled by the
         // kernel. Otherwise the plain path below.
@@ -294,9 +337,7 @@ impl Attention {
                 let k = rope_quant(&kb.contiguous()?, &c, &sn, Role::Key)?;
                 let v = quant_v(&vb.to_dtype(DType::F16)?.contiguous()?, accum)?;
                 let out = attention(&q, &k, &v, 1.0 / (d as f32).sqrt(), false)?.to_dtype(dt)?; // (B,S,H,D)
-                let out = out.reshape((b, s, h * d))?;
-                let gate = candle_nn::ops::sigmoid(&self.gate.forward(x)?)?;
-                return self.wo.forward(&(out * gate)?);
+                return self.gated(out.reshape((b, s, h * d))?, x);
             }
         }
         let q = qb.transpose(1, 2)?.contiguous()?; // (B,H,S,D)
@@ -319,9 +360,7 @@ impl Attention {
             (k, v)
         };
         let out = attend(&q, &k, &v, 1.0 / (d as f64).sqrt())?; // (B,H,S,D)
-        let out = out.transpose(1, 2)?.reshape((b, s, h * d))?;
-        let gate = candle_nn::ops::sigmoid(&self.gate.forward(x)?)?;
-        self.wo.forward(&(out * gate)?)
+        self.gated(out.transpose(1, 2)?.reshape((b, s, h * d))?, x)
     }
 }
 
@@ -470,6 +509,38 @@ impl Krea2Dit {
 
     pub fn config(&self) -> &Krea2Config {
         &self.cfg
+    }
+
+    /// Put `stack`'s adapters on every block and text-fusion linear they name (an empty stack
+    /// clears them all); the AnyPaint and outpaint LoRAs address exactly these. Returns the
+    /// modules the stack names that this model has not, for the caller to report.
+    pub fn set_loras(&self, stack: &LoraStack) -> Result<Vec<String>> {
+        for (i, b) in self.blocks.iter().enumerate() {
+            b.attn.set_loras(stack, &format!("blocks.{i}.attn"))?;
+            b.mlp.set_loras(stack, &format!("blocks.{i}.mlp"))?;
+        }
+        for (name, group) in [("layerwise_blocks", &self.txtfusion.layerwise), ("refiner_blocks", &self.txtfusion.refiner)] {
+            for (j, blk) in group.iter().enumerate() {
+                blk.attn.set_loras(stack, &format!("txtfusion.{name}.{j}.attn"))?;
+                blk.mlp.set_loras(stack, &format!("txtfusion.{name}.{j}.mlp"))?;
+            }
+        }
+        let n = self.blocks.len();
+        let known = |m: &str| -> bool {
+            let leaf = |tail: &str| matches!(tail, "attn.wq" | "attn.wk" | "attn.wv" | "attn.gate" | "attn.wo" | "mlp.gate" | "mlp.up" | "mlp.down");
+            if let Some(rest) = m.strip_prefix("blocks.") {
+                let Some((idx, tail)) = rest.split_once('.') else { return false };
+                return idx.parse::<usize>().is_ok_and(|i| i < n) && leaf(tail);
+            }
+            for g in ["txtfusion.layerwise_blocks.", "txtfusion.refiner_blocks."] {
+                if let Some(rest) = m.strip_prefix(g) {
+                    let Some((idx, tail)) = rest.split_once('.') else { return false };
+                    return idx.parse::<usize>().is_ok_and(|i| i < 2) && leaf(tail);
+                }
+            }
+            false
+        };
+        Ok(stack.unmatched(&known).into_iter().map(String::from).collect())
     }
 
     /// Flux's sinusoidal embedding of `t` (×1000, 256 wide: 128 cosines then 128 sines), f32.

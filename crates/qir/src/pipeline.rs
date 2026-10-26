@@ -115,6 +115,10 @@ pub struct Request {
     /// Reference pictures in prompt order (`<image1>`, `<image2>`, …): the picture being edited
     /// first. Empty for text to image.
     pub references: Vec<RefImage>,
+    /// LoRA adapters on the DiT for this request, with their strengths (`crate::lora`); empty
+    /// runs the base model. Set on the resident model before sampling, so a request's adapters
+    /// never outlive it.
+    pub loras: crate::lora::LoraStack,
 }
 
 impl Request {
@@ -129,6 +133,7 @@ impl Request {
             guidance: 1.0,
             schedule: Schedule::Comfy,
             references: Vec::new(),
+            loras: crate::lora::LoraStack::default(),
         }
     }
 }
@@ -309,6 +314,11 @@ impl Pipeline {
         let _ = self.dev.synchronize();
     }
 
+    /// The dtype the DiT runs in (what a LoRA's tensors are put in).
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
     pub fn device(&self) -> &Device {
         &self.dev
     }
@@ -372,6 +382,11 @@ impl Pipeline {
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
         if req.steps == 0 {
             anyhow::bail!("at least one step");
+        }
+        // The request's adapters on the DiT (none clears the last request's).
+        let unmatched = self.dit.set_loras(&req.loras)?;
+        if !unmatched.is_empty() {
+            tracing::warn!(modules = unmatched.len(), first = unmatched[0], "LoRA modules this model does not have (a file for another model?)");
         }
         let check = |cancel: &dyn Fn() -> bool| -> Result<()> {
             if cancel() {
