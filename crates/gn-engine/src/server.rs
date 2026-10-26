@@ -72,6 +72,14 @@ pub fn parse_port_line(line: &str) -> Option<u16> {
 /// client is told so at once and closed, instead of waiting in the backlog; a client refused at
 /// the greeting does not end the worker.
 pub fn serve(listener: &TcpListener, token: &str, engine: &mut dyn Engine) -> std::io::Result<()> {
+    serve_with(listener, token, engine, false)
+}
+
+/// [`serve`], and with `stay` the worker outlives its clients: a client that goes away ends
+/// only its connection, and the next one finds the models still resident. Only `Quit` ends
+/// the worker then. For a worker started by hand (`--engine --stay`) that a run of many short
+/// processes shares, such as a bench through the CLI.
+pub fn serve_with(listener: &TcpListener, token: &str, engine: &mut dyn Engine, stay: bool) -> std::io::Result<()> {
     let port = listener.local_addr()?.port();
     let engine = Mutex::new(engine);
     let quit = AtomicBool::new(false);
@@ -88,7 +96,8 @@ pub fn serve(listener: &TcpListener, token: &str, engine: &mut dyn Engine) -> st
                     return;
                 };
                 let ended = match serve_connection(stream, token, *guard) {
-                    Ok(Ended::Quit | Ended::Left) => true,
+                    Ok(Ended::Quit) => true,
+                    Ok(Ended::Left) => !stay,
                     Ok(Ended::Refused) => false,
                     Err(e) => {
                         eprintln!("gn-engine: connection ended: {e}");

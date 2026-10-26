@@ -1,7 +1,8 @@
-//! `gn-engine --serve [--step-ms N]`: a worker on 127.0.0.1 with a random port, announced on
-//! the first stdout line (`gn-engine port=NNNN`); the token comes from `GN_ENGINE_TOKEN` (or
-//! `--token`). Until the native engine exists it serves the fake engine; the editor's
-//! `photocraft.exe --engine` calls the same `serve`.
+//! `gn-engine --serve [--step-ms N] [--stay]`: a worker on 127.0.0.1 with a random port,
+//! announced on the first stdout line (`gn-engine port=NNNN`); the token comes from
+//! `GN_ENGINE_TOKEN` (or `--token`); `--stay` keeps it running when a client goes away. Until
+//! the native engine exists it serves the fake engine; the editor's `photocraft.exe --engine`
+//! calls the same `serve_with`.
 
 use std::io::Write;
 
@@ -12,9 +13,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut token = std::env::var("GN_ENGINE_TOKEN").unwrap_or_default();
     let mut step_ms = 5u64;
+    let mut stay = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--stay" => {
+                stay = true;
+                i += 1;
+            }
             "--token" => {
                 token = args.get(i + 1).cloned().unwrap_or_default();
                 i += 2;
@@ -41,7 +47,7 @@ fn main() {
     println!("{}", server::port_line(port));
     let _ = std::io::stdout().flush();
     let mut engine = FakeEngine { step_ms, ..FakeEngine::default() };
-    if let Err(e) = server::serve(&listener, &token, &mut engine) {
+    if let Err(e) = server::serve_with(&listener, &token, &mut engine, stay) {
         eprintln!("gn-engine: {e}");
         std::process::exit(1);
     }
