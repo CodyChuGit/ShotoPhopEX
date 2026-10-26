@@ -30,7 +30,7 @@ use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::lora::{LoraFile, LoraStack};
-use qwen_image_rs::pipeline::{Cancelled, Options, Picture, Pipeline, RefImage, Request, Schedule, is_snapshot};
+use qwen_image_rs::pipeline::{Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule, is_snapshot};
 use serde_json::{Value, json};
 
 /// The model root's subdirectory for LoRA files (ComfyUI's `models/loras` layout: one file
@@ -52,6 +52,11 @@ pub const TEMPLATE_EXPAND: &str = "qwen-2.1/expand";
 pub const TEMPLATE_MATTE: &str = "qwen-2.1/matte";
 /// Krea 2 Turbo text to image.
 pub const TEMPLATE_KREA2: &str = "krea2-turbo/image";
+/// The app's prompt rewriter and judge with the picture in view, and without: answered by the
+/// 2.1 text encoder as the vision-language model it is (Qwen3-VL 8B Instruct with its
+/// language-model head), so they need no second model on the card.
+pub const TEMPLATE_CHAT_EDIT: &str = "enhance/edit";
+pub const TEMPLATE_CHAT_IMAGE: &str = "enhance/image";
 
 /// The model families served, one resident at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,13 +66,15 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 6] = [
+pub const TEMPLATES: [(&str, &str, Family); 8] = [
     (TEMPLATE, "image", Family::QwenImage21),
     (TEMPLATE_EDIT, "edit", Family::QwenImage21),
     (TEMPLATE_FILL, "fill", Family::QwenImage21),
     (TEMPLATE_EXPAND, "expand", Family::QwenImage21),
     (TEMPLATE_MATTE, "matte", Family::QwenImage21),
     (TEMPLATE_KREA2, "image", Family::Krea2),
+    (TEMPLATE_CHAT_EDIT, "text", Family::QwenImage21),
+    (TEMPLATE_CHAT_IMAGE, "text", Family::QwenImage21),
 ];
 /// The model root's subdirectory for the Qwen-Image-2.1 snapshot.
 pub const MODEL_DIR: &str = "qwen-image-2.1";
@@ -140,6 +147,32 @@ impl DiffusionEngine {
             return Err(EngineError::new(ErrorKind::BadRequest, format!("a LoRA is named by its file name or an absolute path, not `{file}`")));
         }
         Ok(self.models_root.join(LORA_DIR).join(p))
+    }
+
+    /// A text answer (the app's `enhance/*` templates): the 2.1 pipeline's encoder as Qwen3-VL,
+    /// the system turn from `params.system`, the picture (if any) in view, sampled as the app's
+    /// ComfyUI templates ask (temperature 0.3, top-k 40, top-p 0.9, at most 120 tokens).
+    fn chat(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        cancel: &AtomicBool,
+        started: Instant,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        let image = match &req.image {
+            Some(b) => Some(reference_of(b, blobs, "picture")?),
+            None => None,
+        };
+        let system = req.params.get("system").and_then(Value::as_str).unwrap_or_default().to_string();
+        self.ensure_loaded(Family::QwenImage21, progress)?;
+        let Resident::Qwen(p) = &self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no pipeline")) };
+        progress(0.5, "Thinking");
+        let opts = ChatOptions { seed: req.seed, ..ChatOptions::default() };
+        let stop = || cancel.load(Ordering::SeqCst);
+        let reply = p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
+        progress(1.0, "Done");
+        Ok((DoneInfo { images: Vec::new(), texts: vec![reply], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()))
     }
 
     /// The request's LoRA stack on the device of the resident pipeline (loaded once per file,
@@ -371,6 +404,9 @@ impl Engine for DiffusionEngine {
         if req.prompt.trim().is_empty() {
             return Err(EngineError::new(ErrorKind::BadRequest, "a prompt is needed"));
         }
+        if task == "text" {
+            return self.chat(req, blobs, progress, cancel, started);
+        }
         // The pictures the model sees in order: image 1 is the picture being edited, then the
         // mask (a fill) or the references (an edit; a matte has none). The target takes image
         // 1's size, as ComfyUI's `TextEncodeQwenImage21` sizes its latent at `resolution 0`.
@@ -601,6 +637,7 @@ mod tests {
         assert_eq!((task_of(TEMPLATE), task_of(TEMPLATE_EDIT), task_of(TEMPLATE_FILL), task_of("krea2-turbo/image")), (Some("image"), Some("edit"), Some("fill"), Some("image")));
         assert_eq!((task_of(TEMPLATE_EXPAND), task_of(TEMPLATE_MATTE), task_of("nope/x")), (Some("expand"), Some("matte"), None));
         assert_eq!((family_of(TEMPLATE_KREA2), family_of(TEMPLATE_FILL), family_of("nope/x")), (Some(Family::Krea2), Some(Family::QwenImage21), None));
+        assert_eq!((task_of(TEMPLATE_CHAT_EDIT), task_of(TEMPLATE_CHAT_IMAGE), family_of(TEMPLATE_CHAT_EDIT)), (Some("text"), Some("text"), Some(Family::QwenImage21)));
         assert_eq!(kind_of(&anyhow::anyhow!("CUDA_ERROR_OUT_OF_MEMORY")), ErrorKind::OutOfMemory);
         assert_eq!(kind_of(&Cancelled.into()), ErrorKind::Cancelled);
         assert_eq!(kind_of(&anyhow::anyhow!("weight directory does not exist: x")), ErrorKind::ModelMissing);

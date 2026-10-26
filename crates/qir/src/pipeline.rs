@@ -222,6 +222,90 @@ pub struct Pipeline {
     vae: QwenImageVae,
     vision: Option<VisionTower>,
     opts: Options,
+    /// The final norm and language-model head, for [`Pipeline::chat`]; loaded on first use.
+    head: std::sync::Mutex<Option<ChatHead>>,
+}
+
+/// The text encoder's last two pieces, which conditioning never uses and a chat does.
+struct ChatHead {
+    norm: candle_nn::RmsNorm,
+    head: candle_core::quantized::QMatMul,
+}
+
+/// `<|im_end|>` and `<|endoftext|>`: a reply ends at either.
+const IM_END: u32 = 151_645;
+const END_OF_TEXT: u32 = 151_643;
+
+/// How [`Pipeline::chat`] samples (the app's enhance templates: temperature 0.3, top-k 40,
+/// top-p 0.9, at most 120 tokens).
+#[derive(Clone, Debug)]
+pub struct ChatOptions {
+    pub max_new: usize,
+    /// 0 picks the likeliest token every time.
+    pub temperature: f32,
+    pub top_k: usize,
+    pub top_p: f32,
+    pub seed: u64,
+}
+
+impl Default for ChatOptions {
+    fn default() -> Self {
+        Self { max_new: 120, temperature: 0.3, top_k: 40, top_p: 0.9, seed: 0 }
+    }
+}
+
+/// A small seeded generator for the sampling (xorshift64*).
+struct ChatRng(u64);
+
+impl ChatRng {
+    fn new(seed: u64) -> Self {
+        Self(seed ^ 0x9E37_79B9_7F4A_7C15 | 1)
+    }
+
+    /// Uniform in `[0, 1)`.
+    fn next_f32(&mut self) -> f32 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        ((self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as f32) / (1u64 << 24) as f32
+    }
+}
+
+/// The next token from `logits`: the argmax at temperature 0, else top-k then top-p over the
+/// tempered softmax, drawn with `rng`.
+fn sample(logits: &[f32], opts: &ChatOptions, rng: &mut ChatRng) -> u32 {
+    let argmax = || logits.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |b, (i, v)| if *v > b.1 { (i, *v) } else { b }).0 as u32;
+    if opts.temperature <= 0.0 || logits.is_empty() {
+        return argmax();
+    }
+    let mut top: Vec<(usize, f32)> = logits.iter().copied().enumerate().filter(|(_, v)| v.is_finite()).collect();
+    let k = opts.top_k.clamp(1, top.len().max(1));
+    top.select_nth_unstable_by(k - 1, |a, b| b.1.total_cmp(&a.1));
+    top.truncate(k);
+    top.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let Some(&(_, max)) = top.first() else { return argmax() };
+    let mut probs: Vec<f32> = top.iter().map(|(_, v)| ((v - max) / opts.temperature).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    probs.iter_mut().for_each(|p| *p /= sum);
+    // Keep the smallest prefix whose mass reaches top-p.
+    let mut mass = 0.0;
+    let mut keep = probs.len();
+    for (i, p) in probs.iter().enumerate() {
+        mass += p;
+        if mass >= opts.top_p {
+            keep = i + 1;
+            break;
+        }
+    }
+    let total: f32 = probs[..keep].iter().sum();
+    let mut r = rng.next_f32() * total;
+    for (i, p) in probs[..keep].iter().enumerate() {
+        if r < *p {
+            return top[i].0 as u32;
+        }
+        r -= p;
+    }
+    top[keep - 1].0 as u32
 }
 
 impl Pipeline {
@@ -271,7 +355,7 @@ impl Pipeline {
             None
         };
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, drop, model: model.to_path_buf(), te: std::sync::Mutex::new(Some(te)), dit, vae, vision, opts })
+        Ok(Self { dev, dtype, tok, drop, model: model.to_path_buf(), te: std::sync::Mutex::new(Some(te)), dit, vae, vision, opts, head: std::sync::Mutex::new(None) })
     }
 
     /// Run `f` on the text encoder, loading it again first if it was evicted.
@@ -375,6 +459,76 @@ impl Pipeline {
             feats.push(tower.forward(&patches, gh, gw)?);
         }
         Ok((latents, feats))
+    }
+
+    /// The final norm and the language-model head of the text encoder, loaded on first use
+    /// (the head as Q8_0: 0.6 GB instead of 1.2), for [`Self::chat`].
+    fn with_head<R>(&self, f: impl FnOnce(&ChatHead) -> Result<R>) -> Result<R> {
+        let mut slot = self.head.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            let t0 = Instant::now();
+            let files = WeightSet::resolve(&self.model.join("text_encoder"))?.files;
+            let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, self.dtype, &self.dev)? };
+            let cfg = TextConfig::default();
+            let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model").pp("language_model").pp("norm"))?;
+            let w = vb.get((cfg.vocab_size, cfg.hidden_size), "lm_head.weight").context("the text encoder has no lm_head (a text-only repack?)")?;
+            let head = if matches!(self.dev, Device::Cuda(_)) {
+                candle_core::quantized::QMatMul::from_qtensor(candle_core::quantized::QTensor::quantize(&w, candle_core::quantized::GgmlDType::Q8_0)?)?
+            } else {
+                candle_core::quantized::QMatMul::Tensor(w)
+            };
+            tracing::info!(load_s = t0.elapsed().as_secs_f32(), "language-model head loaded");
+            *slot = Some(ChatHead { norm, head });
+        }
+        match slot.as_ref() {
+            Some(h) => f(h),
+            None => anyhow::bail!("no language-model head"),
+        }
+    }
+
+    /// Answer as the vision-language model the text encoder is (Qwen3-VL 8B Instruct, with
+    /// its language-model head): `system` and `user` as the chat's turns, `image` in view, the
+    /// reply sampled token by token (temperature, top-k, top-p with `opts.seed`) until the end
+    /// of the turn or `opts.max_new` tokens. What ComfyUI's `TextGenerate` node does with the
+    /// same file, so the app's prompt rewriter and judge run in the worker without a second
+    /// model on the card. Each token runs the decoder over the whole sequence (no key/value
+    /// cache yet): the rewriter's answers are a few dozen tokens.
+    pub fn chat(&self, system: &str, user: &str, image: Option<&RefImage>, opts: &ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
+        let t0 = Instant::now();
+        let feats: Vec<VisionFeatures> = match image {
+            Some(r) => {
+                let Some(tower) = &self.vision else { anyhow::bail!("this pipeline was loaded without the vision tower") };
+                let (_, rgb, (w, h)) = prepare_ref(r, &self.dev)?;
+                let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
+                let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
+                let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
+                vec![tower.forward(&patches, gh, gw)?]
+            }
+            None => Vec::new(),
+        };
+        let vision_block = if feats.is_empty() { "" } else { tmpl::VISION_BLOCK };
+        let text = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{vision_block}{user}<|im_end|>\n<|im_start|>assistant\n");
+        let mut ids: Vec<u32> = self.tok.encode(text, false).map_err(|e| anyhow::anyhow!("encode the chat: {e}"))?.get_ids().to_vec();
+        let prompt_len = ids.len();
+        let refs: Vec<&VisionFeatures> = feats.iter().collect();
+        let mut rng = ChatRng::new(opts.seed);
+        for _ in 0..opts.max_new {
+            if cancel() {
+                return Err(Cancelled.into());
+            }
+            let hidden = self.with_text_encoder(|te| Ok(te.forward_with_images(&ids, &refs)?.0))?;
+            let last = hidden.i((0, hidden.dim(1)? - 1))?.unsqueeze(0)?; // (1, hidden)
+            let logits: Tensor = self.with_head(|h| Ok(candle_core::Module::forward(&h.head, &last.apply(&h.norm)?)?))?;
+            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+            let next = sample(&logits, opts, &mut rng);
+            if next == IM_END || next == END_OF_TEXT {
+                break;
+            }
+            ids.push(next);
+        }
+        let reply = self.tok.decode(&ids[prompt_len..], true).map_err(|e| anyhow::anyhow!("decode the reply: {e}"))?;
+        tracing::info!(tokens = ids.len() - prompt_len, prompt_tokens = prompt_len, chat_s = t0.elapsed().as_secs_f32(), "chat");
+        Ok(reply.trim().to_string())
     }
 
     /// Make one picture. `progress` hears every step; `cancel` is read between steps and a
@@ -598,5 +752,33 @@ mod tests {
         assert_eq!(Cancelled.to_string(), "cancelled");
         let e: anyhow::Error = Cancelled.into();
         assert!(e.downcast_ref::<Cancelled>().is_some());
+    }
+
+    #[test]
+    fn sampling_is_greedy_at_zero_and_stays_in_the_top_k_and_top_p_otherwise() {
+        let logits = vec![0.0, 5.0, 4.9, -3.0, 1.0];
+        let greedy = ChatOptions { temperature: 0.0, ..ChatOptions::default() };
+        let mut rng = ChatRng::new(1);
+        assert_eq!(sample(&logits, &greedy, &mut rng), 1);
+        // Top-k 2: only tokens 1 and 2 are ever drawn, both of them over many draws.
+        let opts = ChatOptions { temperature: 1.0, top_k: 2, top_p: 1.0, ..ChatOptions::default() };
+        let mut seen = [0usize; 5];
+        for _ in 0..400 {
+            seen[sample(&logits, &opts, &mut rng) as usize] += 1;
+        }
+        assert_eq!((seen[0], seen[3], seen[4]), (0, 0, 0), "{seen:?}");
+        assert!(seen[1] > 50 && seen[2] > 50, "{seen:?}");
+        // A small top-p keeps the likeliest alone.
+        let opts = ChatOptions { temperature: 1.0, top_k: 5, top_p: 0.1, ..ChatOptions::default() };
+        for _ in 0..50 {
+            assert_eq!(sample(&logits, &opts, &mut rng), 1);
+        }
+        // The same seed draws the same tokens.
+        let opts = ChatOptions { temperature: 1.0, top_k: 5, top_p: 1.0, ..ChatOptions::default() };
+        let draw = |seed| {
+            let mut r = ChatRng::new(seed);
+            (0..20).map(|_| sample(&logits, &opts, &mut r)).collect::<Vec<_>>()
+        };
+        assert_eq!(draw(7), draw(7));
     }
 }
