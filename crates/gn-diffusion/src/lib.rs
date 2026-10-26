@@ -75,6 +75,8 @@ pub const MODEL_DIR: &str = "qwen-image-2.1";
 pub const CACHE_DIR: &str = ".qir-cache";
 /// The model root's subdirectory for the Krea 2 Turbo weights.
 pub const KREA2_DIR: &str = "krea2-turbo";
+/// The pre-quantized Qwen3-VL-8B text encoder inside the 2.1 snapshot folder, used when there.
+pub const TEXT_GGUF: &str = "text_encoder.q8_0.gguf";
 /// The templates' defaults when a request leaves them at zero (ComfyUI's templates).
 pub const DEFAULT_STEPS: u32 = 25;
 pub const KREA2_STEPS: u32 = 8;
@@ -215,8 +217,16 @@ impl DiffusionEngine {
                         format!("no Qwen-Image-2.1 snapshot in {} (processor/, text_encoder/, transformer/, vae/)", dir.display()),
                     ));
                 }
-                let opts =
-                    Options { cache: CacheSpec::from_cli(Some(&self.models_root.join(CACHE_DIR)), false, false), quant_text: self.quant_text, ..Options::default() };
+                // A pre-quantized text encoder beside the snapshot (`qwen-image-rs
+                // prequantize-text`, Q8_0 GGUF) loads in seconds; the bf16 shards take about a
+                // minute, Q8 on load two, and the encoder is loaded again after every eviction.
+                let gguf = dir.join(TEXT_GGUF);
+                let opts = Options {
+                    cache: CacheSpec::from_cli(Some(&self.models_root.join(CACHE_DIR)), false, false),
+                    quant_text: self.quant_text,
+                    text_gguf: gguf.is_file().then_some(gguf),
+                    ..Options::default()
+                };
                 Resident::Qwen(Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
             Family::Krea2 => {
