@@ -44,6 +44,13 @@ pub trait Engine: Send {
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError>;
     /// Unload everything.
     fn free(&mut self);
+    /// A light engine (its models load again in a second or two, the perception engine's) that
+    /// gives the device back before another engine of the same worker runs (`Multi`): on a
+    /// card shared with other processes the diffusion pipeline's working set and a resident
+    /// detector together paged for minutes (2026-10-26).
+    fn yields(&self) -> bool {
+        false
+    }
     /// What is installed under `dir` (engine-specific JSON).
     fn index(&mut self, dir: &str) -> Value {
         let _ = dir;
