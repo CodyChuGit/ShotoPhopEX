@@ -160,3 +160,45 @@ fn a_worker_whose_client_vanishes_exits_by_itself() {
     let _ = child.wait();
     assert!(exited.is_some(), "the worker should exit once its greeted client left");
 }
+
+#[test]
+fn a_stay_worker_outlives_its_clients_until_quit() {
+    use std::io::BufRead as _;
+    let token = new_token();
+    let mut child = std::process::Command::new(exe())
+        .args(["--serve", "--stay"])
+        .env("GN_ENGINE_TOKEN", &token)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut first).unwrap();
+    let port = gn_engine::server::parse_port_line(&first).unwrap();
+    // Two clients in turn, each going away without a word (a connected client's drop closes
+    // the socket and sends nothing): the worker serves the next one.
+    for _ in 0..2 {
+        let mut c = EngineClient::connect(port, &token).unwrap_or_else(|e| panic!("{e}"));
+        assert!(c.health().is_ok());
+        drop(c);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    assert!(matches!(child.try_wait(), Ok(None)), "a stay worker keeps running after its clients left");
+    // Quit still ends it.
+    let c = EngineClient::connect(port, &token).unwrap_or_else(|e| panic!("{e}"));
+    c.quit();
+    let t0 = Instant::now();
+    let mut exited = false;
+    while t0.elapsed().as_secs() < 5 {
+        if let Ok(Some(_)) = child.try_wait() {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if !exited {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    assert!(exited, "Quit ends a stay worker");
+}
