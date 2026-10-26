@@ -17,11 +17,13 @@ pub struct FakeEngine {
     pub resident: Vec<String>,
     /// Models this fake "has"; anything else is `ModelMissing`.
     pub installed: Vec<String>,
+    /// Plays a light engine (`Engine::yields`).
+    pub light: bool,
 }
 
 impl Default for FakeEngine {
     fn default() -> Self {
-        Self { step_ms: 5, resident: Vec::new(), installed: vec!["fake/image".into(), "fake/edit".into(), "fake/segment".into()] }
+        Self { step_ms: 5, resident: Vec::new(), installed: vec!["fake/image".into(), "fake/edit".into(), "fake/segment".into()], light: false }
     }
 }
 
@@ -118,6 +120,10 @@ impl Engine for FakeEngine {
 
     fn free(&mut self) {
         self.resident.clear();
+    }
+
+    fn yields(&self) -> bool {
+        self.light
     }
 
     fn index(&mut self, dir: &str) -> Value {

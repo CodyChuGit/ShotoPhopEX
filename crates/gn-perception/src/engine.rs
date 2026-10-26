@@ -270,6 +270,12 @@ impl Engine for PerceptionEngine {
         self.sam = None;
     }
 
+    /// SAM 3.1's sessions load again in about a second; the diffusion engine beside it in the
+    /// worker needs the device more.
+    fn yields(&self) -> bool {
+        true
+    }
+
     fn index(&mut self, dir: &str) -> Value {
         let installed: Vec<&str> = if Sam31::is_layout(&self.sam_dir()) { TEMPLATES.to_vec() } else { Vec::new() };
         json!({
