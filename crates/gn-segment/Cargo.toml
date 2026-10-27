@@ -1,0 +1,18 @@
+[package]
+name = "gn-segment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+candle-core = "0.11"
+candle-nn = "0.11"
+anyhow = "1"
+serde_json = "1"
+
+[features]
+default = []
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
