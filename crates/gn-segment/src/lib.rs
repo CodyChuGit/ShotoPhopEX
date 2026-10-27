@@ -12,3 +12,6 @@ pub mod prompt;
 pub mod text;
 pub mod vision;
 pub mod weights;
+
+mod resample;
+pub mod sam;

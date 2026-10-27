@@ -249,3 +249,20 @@ impl Table {
         self.linear(&format!("{p}.linear2"), 2048, 256);
     }
 }
+
+/// One buffered checkpoint read shared by every model part, without memory mapping.
+pub struct Checkpoint {
+    tensors: candle_core::safetensors::BufferedSafetensors,
+}
+impl Checkpoint {
+    /// Read once; selected tensors are copied to the requested device as parts load.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self { tensors: candle_core::safetensors::BufferedSafetensors::new(std::fs::read(path)?)? })
+    }
+    pub(crate) fn get(&self, key: &str, shape: &[usize], device: &candle_core::Device) -> Result<Tensor> {
+        let t = self.tensors.load(key, device)?;
+        anyhow::ensure!(t.dims() == shape, "{key}: expected {shape:?}, got {:?}", t.dims());
+        anyhow::ensure!(t.dtype() == candle_core::DType::F16, "{key}: expected checkpoint F16");
+        Ok(t)
+    }
+}

@@ -1,8 +1,8 @@
 //! Two-way interactive attention and all four raw SAM mask hypotheses.
 
 use crate::prompt::{Conv, Loader, PromptEncoder, channel_norm};
-use anyhow::{Context, Result, ensure};
-use candle_core::{DType, Device, Tensor, safetensors::BufferedSafetensors};
+use anyhow::{Result, ensure};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::{LayerNorm, Linear, Module};
 use std::path::Path;
 
@@ -36,8 +36,12 @@ impl InteractiveHeads {
     /// Read raw tracker keys from an F16 checkpoint and compute with f32 parameters.
     /// Buffered loading avoids unsafe mapping and leaves unrelated model weights on the host.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
-        let bytes = std::fs::read(path.as_ref()).with_context(|| format!("read {}", path.as_ref().display()))?;
-        let l = Loader { tensors: BufferedSafetensors::new(bytes)?, device };
+        Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
+    }
+
+    /// Load this part from the shared checkpoint buffer.
+    pub fn from_checkpoint(checkpoint: &crate::weights::Checkpoint, device: &Device) -> Result<Self> {
+        let l = Loader { checkpoint, device };
         let p = "tracker.model.interactive_sam_mask_decoder";
         let tokens = Tensor::cat(
             &[

@@ -1,7 +1,7 @@
 //! Pixel-centered Fourier prompts and mask feedback for the interactive SAM heads.
 
 use anyhow::{Result, ensure};
-use candle_core::{DType, Device, Tensor, safetensors::BufferedSafetensors};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::{LayerNorm, Linear, Module};
 
 /// Pack already-scaled 1008-space points and a box exactly as the existing worker does.
@@ -23,15 +23,15 @@ pub fn pack_prompts(points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>) -> (Vec<
 }
 
 pub(crate) struct Loader<'a> {
-    pub(crate) tensors: BufferedSafetensors,
+    pub(crate) checkpoint: &'a crate::weights::Checkpoint,
     pub(crate) device: &'a Device,
 }
 impl Loader<'_> {
+    pub(crate) fn raw(&self, key: &str, shape: &[usize]) -> Result<Tensor> {
+        self.checkpoint.get(key, shape, self.device)
+    }
     pub(crate) fn get(&self, key: &str, shape: &[usize]) -> Result<Tensor> {
-        let t = self.tensors.load(key, self.device)?;
-        ensure!(t.dims() == shape, "{key}: expected {shape:?}, got {:?}", t.dims());
-        ensure!(t.dtype() == DType::F16, "{key}: expected checkpoint F16");
-        Ok(t.to_dtype(DType::F32)?)
+        Ok(self.raw(key, shape)?.to_dtype(DType::F32)?)
     }
     pub(crate) fn linear(&self, p: &str, i: usize, o: usize) -> Result<Linear> {
         Ok(Linear::new(self.get(&format!("{p}.weight"), &[o, i])?, Some(self.get(&format!("{p}.bias"), &[o])?)))
@@ -54,11 +54,9 @@ pub(crate) struct Conv {
 }
 impl Conv {
     pub(crate) fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let (b, _, h, w) = x.dims4()?;
         let o = self.bias.elem_count();
         let y = if self.transpose {
-            let x = x.permute((0, 2, 3, 1))?.contiguous()?.flatten_to(2)?;
-            x.matmul(&self.weight.flatten_from(1)?)?.reshape((b, h, w, o, 2, 2))?.permute((0, 3, 1, 4, 2, 5))?.contiguous()?.reshape((b, o, h * 2, w * 2))?
+            return crate::vision::transpose_conv2(x, &self.weight, &self.bias);
         } else {
             let k = self.weight.dim(2)?;
             x.conv2d(&self.weight, 0, k, 1, 1)?
