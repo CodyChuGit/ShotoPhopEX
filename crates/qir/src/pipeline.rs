@@ -492,8 +492,8 @@ impl Pipeline {
     /// reply sampled token by token (temperature, top-k, top-p with `opts.seed`) until the end
     /// of the turn or `opts.max_new` tokens. What ComfyUI's `TextGenerate` node does with the
     /// same file, so the app's prompt rewriter and judge run in the worker without a second
-    /// model on the card. Each token runs the decoder over the whole sequence (no key/value
-    /// cache yet): the rewriter's answers are a few dozen tokens.
+    /// model on the card. The prompt runs once and every layer keeps its keys and values
+    /// ([`text_encoder::KvCache`]), so each token after it is one row through the decoder.
     pub fn chat(&self, system: &str, user: &str, image: Option<&RefImage>, opts: &ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
         let t0 = Instant::now();
         let feats: Vec<VisionFeatures> = match image {
@@ -513,22 +513,28 @@ impl Pipeline {
         let prompt_len = ids.len();
         let refs: Vec<&VisionFeatures> = feats.iter().collect();
         let mut rng = ChatRng::new(opts.seed);
-        for _ in 0..opts.max_new {
-            if cancel() {
-                return Err(Cancelled.into());
+        let mut prefill_s = 0.0f32;
+        self.with_text_encoder(|te| {
+            let tp = Instant::now();
+            let (mut last, mut cache) = te.prefill(&ids, &refs)?; // (1, hidden)
+            prefill_s = tp.elapsed().as_secs_f32();
+            for _ in 0..opts.max_new {
+                if cancel() {
+                    return Err(Cancelled.into());
+                }
+                let logits: Tensor = self.with_head(|h| Ok(candle_core::Module::forward(&h.head, &last.apply(&h.norm)?)?))?;
+                let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+                let next = sample(&logits, opts, &mut rng);
+                if next == IM_END || next == END_OF_TEXT {
+                    break;
+                }
+                ids.push(next);
+                last = te.step(next, &mut cache)?;
             }
-            let hidden = self.with_text_encoder(|te| Ok(te.forward_with_images(&ids, &refs)?.0))?;
-            let last = hidden.i((0, hidden.dim(1)? - 1))?.unsqueeze(0)?; // (1, hidden)
-            let logits: Tensor = self.with_head(|h| Ok(candle_core::Module::forward(&h.head, &last.apply(&h.norm)?)?))?;
-            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
-            let next = sample(&logits, opts, &mut rng);
-            if next == IM_END || next == END_OF_TEXT {
-                break;
-            }
-            ids.push(next);
-        }
+            Ok(())
+        })?;
         let reply = self.tok.decode(&ids[prompt_len..], true).map_err(|e| anyhow::anyhow!("decode the reply: {e}"))?;
-        tracing::info!(tokens = ids.len() - prompt_len, prompt_tokens = prompt_len, chat_s = t0.elapsed().as_secs_f32(), "chat");
+        tracing::info!(tokens = ids.len() - prompt_len, prompt_tokens = prompt_len, prefill_s, chat_s = t0.elapsed().as_secs_f32(), "chat");
         Ok(reply.trim().to_string())
     }
 

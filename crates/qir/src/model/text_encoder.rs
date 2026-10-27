@@ -187,6 +187,25 @@ impl Attention {
     }
 
     fn forward(&self, xs: &Tensor, mask: &Tensor, rope: &(Tensor, Tensor)) -> Result<Tensor> {
+        let (q, k, v) = self.qkv(xs, rope)?;
+        self.attend(xs, q, k, v, Some(mask))
+    }
+
+    /// [`Self::forward`] with the layer's keys and values kept in `cache` (the rows before
+    /// `xs`, extended by `xs`'s): a prompt's rows once with their causal `mask`, then one new
+    /// token at a time with none (it sees every row before it).
+    fn forward_cached(&self, xs: &Tensor, mask: Option<&Tensor>, rope: &(Tensor, Tensor), cache: &mut Option<(Tensor, Tensor)>) -> Result<Tensor> {
+        let (q, k, v) = self.qkv(xs, rope)?;
+        let (k, v) = match cache.take() {
+            Some((pk, pv)) => (Tensor::cat(&[&pk, &k], 2)?, Tensor::cat(&[&pv, &v], 2)?),
+            None => (k, v),
+        };
+        *cache = Some((k.clone(), v.clone()));
+        self.attend(xs, q, k, v, mask)
+    }
+
+    /// q `(B, H, S, D)` and k, v `(B, KVH, S, D)` of `xs`, normed and turned.
+    fn qkv(&self, xs: &Tensor, rope: &(Tensor, Tensor)) -> Result<(Tensor, Tensor, Tensor)> {
         let (b, s, _) = xs.dims3()?;
         let q = self.q_proj.forward(xs)?.reshape((b, s, self.num_heads, self.head_dim))?;
         let k = self.k_proj.forward(xs)?.reshape((b, s, self.num_kv_heads, self.head_dim))?;
@@ -196,6 +215,12 @@ impl Attention {
         let k = k.apply(&self.k_norm)?.transpose(1, 2)?;
         let v = v.transpose(1, 2)?.contiguous()?;
         let (q, k) = RotaryEmbedding::apply(&q, &k, &rope.0, &rope.1)?;
+        Ok((q, k.contiguous()?, v))
+    }
+
+    /// The attention of `q` over `k`, `v` and the output projection, for `xs`'s rows.
+    fn attend(&self, xs: &Tensor, q: Tensor, k: Tensor, v: Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
+        let (b, s, _) = xs.dims3()?;
         let k = repeat_kv(k, self.groups)?.contiguous()?;
         let v = repeat_kv(v, self.groups)?.contiguous()?;
         // Scores and softmax in f32, as torch's SDPA keeps them: bf16 scores lose ~0.3 of a
@@ -205,7 +230,10 @@ impl Attention {
         let q32 = q.contiguous()?.to_dtype(DType::F32)?;
         let k32 = k.to_dtype(DType::F32)?;
         let attn = (q32.matmul(&k32.transpose(2, 3)?)? * self.scale)?;
-        let attn = attn.broadcast_add(&mask.to_dtype(DType::F32)?)?;
+        let attn = match mask {
+            Some(mask) => attn.broadcast_add(&mask.to_dtype(DType::F32)?)?,
+            None => attn,
+        };
         let attn = candle_nn::ops::softmax_last_dim(&attn)?.to_dtype(v.dtype())?;
         let out = attn.matmul(&v)?; // (B,H,S,D)
         let out = out.transpose(1, 2)?.reshape((b, s, self.num_heads * self.head_dim))?;
@@ -257,10 +285,40 @@ impl DecoderLayer {
         let residual = xs;
         let xs = self.input_ln.forward(xs)?;
         let xs = self.attn.forward(&xs, mask, rope)?;
-        let xs = (xs + residual)?;
+        self.finish(xs, residual)
+    }
+
+    fn forward_cached(&self, xs: &Tensor, mask: Option<&Tensor>, rope: &(Tensor, Tensor), cache: &mut Option<(Tensor, Tensor)>) -> Result<Tensor> {
+        let residual = xs;
+        let xs = self.input_ln.forward(xs)?;
+        let xs = self.attn.forward_cached(&xs, mask, rope, cache)?;
+        self.finish(xs, residual)
+    }
+
+    fn finish(&self, attn: Tensor, residual: &Tensor) -> Result<Tensor> {
+        let xs = (attn + residual)?;
         let residual = &xs;
         let h = self.mlp.forward(&xs.apply(&self.post_attn_ln)?)?;
         Ok((residual + h)?)
+    }
+}
+
+/// The decoder's keys and values for the rows run so far ([`QwenTextEncoder::prefill`]) and
+/// the position the next row takes, so a reply is sampled one token at a time without running
+/// the prompt again.
+pub struct KvCache {
+    layers: Vec<Option<(Tensor, Tensor)>>,
+    next_pos: f32,
+}
+
+impl KvCache {
+    /// Rows held.
+    pub fn len(&self) -> usize {
+        self.layers.first().and_then(|l| l.as_ref()).and_then(|(k, _)| k.dim(2).ok()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -391,6 +449,66 @@ impl QwenTextEncoder {
     /// Returns the pre-final-norm hidden states `(1, S', hidden)` and each picture's
     /// `(start, size)` span in them.
     pub fn forward_with_images(&self, ids: &[u32], images: &[&VisionFeatures]) -> Result<(Tensor, Vec<(usize, usize)>)> {
+        let (mut xs, spans, positions) = self.splice(ids, images)?;
+        let dt = xs.dtype();
+        let rope = self.rope.tables(&positions)?;
+        let mask = self.causal_mask(positions[0].len(), dt)?;
+        for (li, layer) in self.layers.iter().enumerate() {
+            xs = layer.forward(&xs, &mask, &rope)?;
+            xs = self.add_deepstack(xs, li, &spans, images)?;
+        }
+        Ok((xs, spans))
+    }
+
+    /// [`Self::forward_with_images`] keeping every layer's keys and values: the last row's
+    /// pre-final-norm hidden state `(1, hidden)` and the cache [`Self::step`] continues from.
+    pub fn prefill(&self, ids: &[u32], images: &[&VisionFeatures]) -> Result<(Tensor, KvCache)> {
+        let (mut xs, spans, positions) = self.splice(ids, images)?;
+        let dt = xs.dtype();
+        let s = positions[0].len();
+        anyhow::ensure!(s > 0, "an empty prompt");
+        let rope = self.rope.tables(&positions)?;
+        let mask = self.causal_mask(s, dt)?;
+        let mut cache = KvCache { layers: vec![None; self.layers.len()], next_pos: positions[0].last().map_or(0.0, |p| p + 1.0) };
+        for (li, (layer, slot)) in self.layers.iter().zip(cache.layers.iter_mut()).enumerate() {
+            xs = layer.forward_cached(&xs, Some(&mask), &rope, slot)?;
+            xs = self.add_deepstack(xs, li, &spans, images)?;
+        }
+        Ok((xs.narrow(1, s - 1, 1)?.squeeze(1)?, cache))
+    }
+
+    /// One more token after the rows in `cache` (a reply's text runs on from the prompt's last
+    /// position on all three axes): its pre-final-norm hidden state `(1, hidden)`.
+    pub fn step(&self, token: u32, cache: &mut KvCache) -> Result<Tensor> {
+        let ids = Tensor::from_vec(vec![token], (1, 1), &self.device)?;
+        let mut xs = self.embed_tokens.forward(&ids)?;
+        let p = cache.next_pos;
+        let rope = self.rope.tables(&[vec![p], vec![p], vec![p]])?;
+        for (layer, slot) in self.layers.iter().zip(cache.layers.iter_mut()) {
+            xs = layer.forward_cached(&xs, None, &rope, slot)?;
+        }
+        cache.next_pos += 1.0;
+        Ok(xs.squeeze(1)?)
+    }
+
+    /// After decoder layer `li` < 3, each picture's DeepStack feature added to its rows.
+    fn add_deepstack(&self, mut xs: Tensor, li: usize, spans: &[(usize, usize)], images: &[&VisionFeatures]) -> Result<Tensor> {
+        if li >= 3 {
+            return Ok(xs);
+        }
+        let dt = xs.dtype();
+        for ((start, n), img) in spans.iter().zip(images) {
+            let Some(ds) = img.deepstack.get(li) else { continue };
+            let rows = xs.narrow(1, *start, *n)?;
+            let added = (rows + ds.to_dtype(dt)?.to_device(&self.device)?.unsqueeze(0)?)?;
+            xs = xs.slice_assign(&[0..1, *start..*start + *n, 0..xs.dim(2)?], &added)?;
+        }
+        Ok(xs)
+    }
+
+    /// The prompt's rows `(1, S, hidden)` with each `<|image_pad|>` replaced by its picture's
+    /// merged vision rows, each picture's `(start, size)` span, and the rows' 3-axis positions.
+    fn splice(&self, ids: &[u32], images: &[&VisionFeatures]) -> Result<Spliced> {
         let placeholders: Vec<usize> = ids.iter().enumerate().filter(|(_, t)| **t == IMAGE_PAD).map(|(i, _)| i).collect();
         anyhow::ensure!(placeholders.len() == images.len(), "{} <|image_pad|> tokens for {} pictures", placeholders.len(), images.len());
         let text = Tensor::from_vec(ids.to_vec(), (1, ids.len()), &self.device)?;
@@ -416,25 +534,15 @@ impl QwenTextEncoder {
             parts.push(text.narrow(0, cursor, ids.len() - cursor)?);
             len += ids.len() - cursor;
         }
-        let mut xs = Tensor::cat(&parts, 0)?.unsqueeze(0)?; // (1, S, hidden)
-        let s = len;
+        let xs = Tensor::cat(&parts, 0)?.unsqueeze(0)?; // (1, S, hidden)
         let grids: Vec<(usize, usize)> = images.iter().map(|i| (i.rows, i.cols)).collect();
-        let rope = self.rope.tables(&mrope_positions(&spans, &grids, s))?;
-        let mask = self.causal_mask(s, dt)?;
-        for (li, layer) in self.layers.iter().enumerate() {
-            xs = layer.forward(&xs, &mask, &rope)?;
-            if li < 3 {
-                for ((start, n), img) in spans.iter().zip(images) {
-                    let Some(ds) = img.deepstack.get(li) else { continue };
-                    let rows = xs.narrow(1, *start, *n)?;
-                    let added = (rows + ds.to_dtype(dt)?.to_device(&self.device)?.unsqueeze(0)?)?;
-                    xs = xs.slice_assign(&[0..1, *start..*start + *n, 0..xs.dim(2)?], &added)?;
-                }
-            }
-        }
-        Ok((xs, spans))
+        let positions = mrope_positions(&spans, &grids, len);
+        Ok((xs, spans, positions))
     }
 }
+
+/// A spliced prompt: its rows, each picture's span, the rows' 3-axis positions.
+type Spliced = (Tensor, Vec<(usize, usize)>, [Vec<f32>; 3]);
 
 /// `<|image_pad|>`, the one token a picture occupies in the template.
 pub const IMAGE_PAD: u32 = 151_655;
@@ -569,6 +677,46 @@ mod tests {
         let (c, slots) = condition(&h, &[(4, 3)], 2)?;
         assert_eq!(c.flatten_all()?.to_vec1::<f32>()?, [2.0, 3.0, 7.0, 8.0, 9.0]);
         assert_eq!(slots, [2]);
+        Ok(())
+    }
+
+    use candle_core::IndexOp;
+
+    /// A two-layer decoder with random weights, the 8B's layout at toy widths.
+    fn toy() -> Result<(QwenTextEncoder, Device)> {
+        let dev = Device::Cpu;
+        let cfg = TextConfig { hidden_size: 64, intermediate_size: 96, num_layers: 2, num_heads: 4, num_kv_heads: 2, head_dim: 16, vocab_size: IMAGE_PAD as usize + 8, ..TextConfig::default() };
+        let vm = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&vm, DType::F32, &dev);
+        // RMSNorm weights start at one, linears and the embedding random.
+        Ok((QwenTextEncoder::load_at(&cfg, false, vb)?, dev))
+    }
+
+    #[test]
+    fn the_cached_steps_are_the_full_pass_row_by_row() -> Result<()> {
+        let (te, dev) = toy()?;
+        let picture = VisionFeatures {
+            merged: Tensor::randn(0f32, 1.0, (6, 64), &dev)?,
+            deepstack: (0..3).map(|_| Tensor::randn(0f32, 1.0, (6, 64), &dev)).collect::<candle_core::Result<Vec<_>>>()?,
+            rows: 2,
+            cols: 3,
+        };
+        let reply = [17u32, 4, 250, 9];
+        for with_picture in [true, false] {
+            let prompt: Vec<u32> = if with_picture { vec![1, 2, 3, IMAGE_PAD, 5, 6] } else { vec![1, 2, 3, 5, 6] };
+            let images: Vec<&VisionFeatures> = if with_picture { vec![&picture] } else { Vec::new() };
+            let (mut last, mut cache) = te.prefill(&prompt, &images)?;
+            let mut ids = prompt.clone();
+            for t in reply {
+                let (full, _) = te.forward_with_images(&ids, &images)?;
+                let want = full.i((0, full.dim(1)? - 1))?.unsqueeze(0)?;
+                let err = (last - &want)?.abs()?.max_all()?.to_scalar::<f32>()?;
+                assert!(err < 1e-4, "row {} (picture {with_picture}): {err}", ids.len());
+                ids.push(t);
+                last = te.step(t, &mut cache)?;
+            }
+            assert_eq!(cache.len(), if with_picture { prompt.len() - 1 + 6 + reply.len() } else { prompt.len() + reply.len() });
+        }
         Ok(())
     }
 
