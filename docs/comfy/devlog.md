@@ -4,7 +4,7 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
-## 2026-10-28 (small hours): Rust rebuild: SAM 3.1 on candle, models from ComfyUI's folder
+## 2026-10-27 (evening, later): Rust rebuild: SAM 3.1 on candle, models from ComfyUI's folder
 
 Task file `docs/comfy/goals/rust-rebuild.md` (progress log there). Codex wrote the model ports in
 its own worktrees from Claude's briefs; Claude reviewed, landed and integrated. genai-native

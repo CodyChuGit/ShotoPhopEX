@@ -308,7 +308,7 @@ the side-by-side rewriter; learnt from AusBoss's Krea 2 clothing workflow, see
 [`goals/rust-rebuild.md`](goals/rust-rebuild.md)): every generative feature in PhotoshopEX's
 own Rust code, one executable, no Python and no ONNX Runtime; the queue R0–R6 (SAM 3.1 on
 candle, the 2511 holdouts, Qwen-Image-Layered, one models folder, packaging, native by
-default) and its progress log live there. As of 2026-10-28: R0 ✅, R2 ✅ (fill and image from
+default) and its progress log live there. As of 2026-10-27: R0 ✅, R2 ✅ (fill and image from
 references, Angles natively), R4 ✅ for 2.1 and Krea 2 (ComfyUI's folder as it is; ComfyUI's
 int8 repacks open), R1 🟡 (SAM 3.1 on candle in the worker at parity; speed open), R3 🟡
 (encoder and DiT ported; the pipeline next), R5 and R6 ⬜.

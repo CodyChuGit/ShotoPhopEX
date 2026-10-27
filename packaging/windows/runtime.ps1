@@ -13,7 +13,7 @@
   The app finds the folder next to photocraft.exe (`runtime\`) when the preference
   Integrations › Runtime folders is empty; the portable zip of package.ps1 -Native carries it.
 
-  -Ort and -Cudnn are optional since the Rust rebuild (2026-10-28): SAM 3.1 runs on candle from
+  -Ort and -Cudnn are optional since the Rust rebuild (2026-10-27): SAM 3.1 runs on candle from
   its checkpoint, so a folder without them (NVIDIA's CUDA libraries only, about 700 MB less)
   serves every feature when the models come from SAM 3.1's checkpoint; ONNX Runtime and cuDNN
   are only for the exported SAM graphs. Give both or neither.

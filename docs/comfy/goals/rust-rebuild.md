@@ -46,7 +46,7 @@ progress log (newest last). The plan behind it is `docs/comfy/plan-native-engine
 | Generative Expand | 2.1 expand | yes | — |
 | Generative Edit | 2.1 edit; Krea 2 edit (General Edit V2) | yes | — |
 | Remove Background (matte) | 2.1 matte | yes | — |
-| Select by text / subject / point, Object Selection | SAM 3.1 | **on candle from ComfyUI's checkpoint** when it is there (since 2026-10-28; the ONNX graphs otherwise) | speed: by text on a new picture 1.7 s against ONNX Runtime's 0.35 s (R1 step 10), then ONNX Runtime out (R5) |
+| Select by text / subject / point, Object Selection | SAM 3.1 | **on candle from ComfyUI's checkpoint** when it is there (since 2026-10-27; the ONNX graphs otherwise) | speed: by text on a new picture 1.7 s against ONNX Runtime's 0.35 s (R1 step 10), then ONNX Runtime out (R5) |
 | Prompt rewriter, judge, naming | 2.1's Qwen3-VL 8B as a chat model | yes | — |
 | Fill from a reference | 2.1 edit by instruction (since 2026-10-27; 2511 fill-ref without the opt-in) | yes | — |
 | Image from references | 2.1 image-ref (since 2026-10-27; 2511 image-ref without the opt-in) | yes | — |
@@ -144,7 +144,7 @@ step, the dev log and roadmap updated.
   leaves on ComfyUI: Generative Angles, the Krea 2 style reference, the Layered split; on ONNX
   Runtime: SAM 3.1. Codex now on R1 step 5 (the ViT trunk and both FPNs) and step 7 (the
   interactive point/box heads), in parallel worktrees.
-- 2026-10-27, small hours: **every SAM 3.1 part is on candle**, each against ComfyUI's own on
+- 2026-10-27, later: **every SAM 3.1 part is on candle**, each against ComfyUI's own on
   the real checkpoint (Codex in worktrees, landed by Claude; genai-native): the vision trunk and
   both pyramids (`155aa14`, 1.4e-4), the interactive heads (`e0538e3`, 1.1e-4), the box
   geometry and CLS (`45d76f3`, 2e-6), the detector (`181f623`: all 200 boxes and logits within
@@ -157,7 +157,7 @@ step, the dev log and roadmap updated.
   ComfyUI's `models` folder as it is (`comfy_files`; the prequantized-DiT cache goes to
   `%LOCALAPPDATA%\genai-native\qir-cache`, never into ComfyUI's folder); Krea 2 from ComfyUI's
   files is pixel-identical to the snapshot route.
-- 2026-10-28: R4 landed (genai-native `58f7a15`: 2.1 image and edit pixel-identical too; a Q8_0
+- 2026-10-27: R4 landed (genai-native `58f7a15`: 2.1 image and edit pixel-identical too; a Q8_0
   text-encoder GGUF cached once, 2.1 cold load 15 s), R3 encoder (`9994e39`) and DiT (`9941269`).
   **R1 step 9**: the worker's perception engine runs SAM 3.1 on candle on the GPU whenever the
   checkpoint is there (`7619fd6`; PhotoshopEX `41b6d0ef` builds it with `native-diffusion`), the
