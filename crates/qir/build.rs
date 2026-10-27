@@ -1,4 +1,4 @@
-//! Builds the CUDA kernels behind the `convrot`, `fusednorm`, `sage` and `sage2` features.
+//! Builds the CUDA kernels behind the `convrot`, `fusednorm`, `sage`, `sage2`, `fp8` and `flash` features.
 //!
 //! Needs nvcc (CUDA 12.8+ for sm_120; 13.x works) and, for `convrot`, a fresh CUTLASS: set
 //! `CUTLASS_DIR` to its `include/` dir (the flash-attn-vendored CUTLASS has a `matrix.h` bug
@@ -11,7 +11,7 @@
 //! wants `CUDARC_CUDA_VERSION=13030` for a 13.4 toolkit. The recipe is in PhotoshopEX's
 //! `docs/comfy/dev-environment-windows.md`.
 
-#[cfg(any(feature = "convrot", feature = "fusednorm", feature = "sage", feature = "sage2"))]
+#[cfg(any(feature = "convrot", feature = "fusednorm", feature = "sage", feature = "sage2", feature = "fp8", feature = "flash"))]
 fn nvcc() -> cc::Build {
     let cap = std::env::var("CUDA_COMPUTE_CAP").unwrap_or_else(|_| "89".into());
     let mut b = cc::Build::new();
@@ -56,11 +56,13 @@ fn main() {
         println!("cargo:rerun-if-changed=kernels/fusednorm/fused_norm.cu");
         println!("cargo:rerun-if-changed=kernels/fusednorm/vae_norm.cu");
         println!("cargo:rerun-if-changed=kernels/fusednorm/vae_nhwc.cu");
+        println!("cargo:rerun-if-changed=kernels/fusednorm/krea2_fused.cu");
         println!("cargo:rerun-if-changed=kernels/fusednorm/head_rmsnorm.cuh");
         nvcc()
             .file("kernels/fusednorm/fused_norm.cu")
             .file("kernels/fusednorm/vae_norm.cu")
             .file("kernels/fusednorm/vae_nhwc.cu")
+            .file("kernels/fusednorm/krea2_fused.cu")
             .compile("fused_norm");
         println!("cargo:rustc-link-lib=dylib=cudart");
     }
@@ -95,6 +97,22 @@ fn main() {
             .include("kernels/sage")
             .file("kernels/sage/sage2_ffi.cu")
             .compile("sage2_attn");
+        println!("cargo:rustc-link-lib=dylib=cudart");
+    }
+
+    #[cfg(feature = "fp8")]
+    {
+        // The e4m3 casts of src/fp8.rs (candle's PTX has no e4m3 -> bf16 cast on this toolkit).
+        println!("cargo:rerun-if-changed=kernels/fp8/fp8_cast.cu");
+        nvcc().file("kernels/fp8/fp8_cast.cu").compile("qir_fp8");
+        println!("cargo:rustc-link-lib=dylib=cudart");
+    }
+
+    #[cfg(feature = "flash")]
+    {
+        // Exact bf16 attention (src/flash.rs), no external deps.
+        println!("cargo:rerun-if-changed=kernels/flash/flash_fwd.cu");
+        nvcc().file("kernels/flash/flash_fwd.cu").compile("qir_flash");
         println!("cargo:rustc-link-lib=dylib=cudart");
     }
 

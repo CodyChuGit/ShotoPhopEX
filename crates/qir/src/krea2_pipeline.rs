@@ -68,8 +68,13 @@ impl Krea2Pipeline {
         let dtype = if matches!(dev, Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
         let tok = Tokenizer::from_file(model.join("tokenizer/tokenizer.json")).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
 
-        // Without ConvRot the DiT is 24 GB in bf16: the encoder comes and goes per prompt.
-        let evict_te = !opts.convrot || !cfg!(feature = "convrot");
+        // ComfyUI's fp8_scaled file as it is: 13 GB, run with its own fp8 recipe (`crate::fp8`).
+        let raw = WeightSet::resolve(&model.join("transformer"))?.files;
+        let fp8 = crate::fp8::Fp8Plan::from_files(&raw)?;
+        let fp8_text = crate::fp8::Fp8Plan::from_files(&WeightSet::resolve(&model.join("text_encoder"))?.files)?.is_some();
+        anyhow::ensure!((fp8.is_none() && !fp8_text) || crate::fp8::supported_on(&dev), "{} holds fp8_scaled weights and this build has no fp8 kernels (the `fp8` feature)", model.display());
+        // Without ConvRot or fp8 the DiT is 24 GB in bf16: the encoder comes and goes per prompt.
+        let evict_te = fp8.is_none() && (!opts.convrot || !cfg!(feature = "convrot"));
         let te = if evict_te {
             None
         } else {
@@ -82,10 +87,10 @@ impl Krea2Pipeline {
 
         progress(0.3, "Loading the transformer");
         let t0 = Instant::now();
-        let files = crate::convrot_cache::resolve_files(&model.join("transformer"), opts.convrot, &opts.cache, &Policy::krea2())?;
+        let files = if fp8.is_some() { raw } else { crate::convrot_cache::resolve_files(&model.join("transformer"), opts.convrot, &opts.cache, &Policy::krea2())? };
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
-        let dit = Krea2Dit::load(&Krea2Config::default(), opts.convrot, vb)?;
-        tracing::info!(load_s = t0.elapsed().as_secs_f32(), convrot = opts.convrot, "DiT loaded");
+        let dit = Krea2Dit::load_with(&Krea2Config::default(), opts.convrot, fp8.as_ref(), vb)?;
+        tracing::info!(load_s = t0.elapsed().as_secs_f32(), convrot = opts.convrot && fp8.is_none(), fp8 = fp8.is_some(), full_precision = fp8.as_ref().map_or(0, |p| p.full_precision.len()), "DiT loaded");
 
         progress(0.9, "Loading the VAE");
         let t0 = Instant::now();
@@ -152,6 +157,7 @@ impl Krea2Pipeline {
         let cond = self.condition(&req.prompt)?;
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
+        crate::profile::report("krea2 encode");
 
         // ComfyUI's noise on the (1, 16, h, w) latent, in the sampler's normalised space; the
         // `simple` schedule over the model's table; Euler with the velocity the DiT returns.
@@ -168,6 +174,7 @@ impl Krea2Pipeline {
         }
         self.dev.synchronize()?;
         timings.denoise_s = t0.elapsed().as_secs_f32();
+        crate::profile::report("krea2 sampling");
 
         check(cancel)?;
         progress(0.92, "Decoding");

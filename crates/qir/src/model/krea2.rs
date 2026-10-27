@@ -10,6 +10,7 @@ use candle_core::{D, DType, Device, IndexOp, Module, Tensor};
 use candle_nn::{Linear, VarBuilder, linear, linear_no_bias};
 
 use crate::Result;
+use crate::fp8::{Fp8Linear, Fp8Plan};
 use crate::lora::{LoraSlot, LoraStack, with_lora};
 use crate::model::text_encoder::QwenTextEncoder;
 
@@ -148,12 +149,28 @@ enum KLinear {
     Full(Linear),
     #[cfg(feature = "convrot")]
     Convrot(crate::convrot::ConvRotLinear),
+    /// The file's own e4m3 weight (ComfyUI's `fp8_scaled` repacks), `crate::fp8`.
+    Fp8(Fp8Linear),
+}
+
+/// How the block and text-fusion linears are held: as the file has them, rotated to ConvRot
+/// INT8, or (an `fp8_scaled` file) in its e4m3 bytes.
+#[derive(Clone, Copy, Default)]
+pub struct Quant<'a> {
+    #[cfg_attr(not(feature = "convrot"), allow(dead_code))]
+    rot: Option<&'a Tensor>,
+    fp8: Option<&'a Fp8Plan>,
 }
 
 impl KLinear {
-    fn load(in_c: usize, out_c: usize, bias: bool, rot: Option<&Tensor>, vb: VarBuilder) -> Result<Self> {
+    fn load(in_c: usize, out_c: usize, bias: bool, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
+        if q.fp8.is_some() && !bias {
+            if let Some(l) = crate::fp8::load_linear(in_c, out_c, q.fp8, &vb)? {
+                return Ok(Self::Fp8(l));
+            }
+        }
         #[cfg(feature = "convrot")]
-        if let Some(r) = rot {
+        if let Some(r) = q.rot {
             if !bias && in_c.is_multiple_of(crate::model::rotation::GROUP) && out_c.is_multiple_of(8) {
                 if vb.contains_tensor("weight_i8") {
                     let w_i8 = vb.get_unchecked_dtype("weight_i8", DType::U8)?;
@@ -167,7 +184,7 @@ impl KLinear {
         if !vb.contains_tensor("weight") && vb.contains_tensor("weight_i8") {
             anyhow::bail!("{}: the file holds only a ConvRot INT8 weight for this layer (run with --convrot)", vb.prefix());
         }
-        let _ = rot;
+        let _ = q;
         Ok(Self::Full(if bias { linear(in_c, out_c, vb)? } else { linear_no_bias(in_c, out_c, vb)? }))
     }
 
@@ -176,6 +193,7 @@ impl KLinear {
             Self::Full(l) => Ok(l.forward(x)?),
             #[cfg(feature = "convrot")]
             Self::Convrot(c) => c.forward(x),
+            Self::Fp8(l) => l.forward(x),
         }
     }
 }
@@ -193,11 +211,44 @@ impl RmsNorm1p {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "fusednorm")]
+        if fused(x) {
+            return crate::krea2_fused::rms_mod(x, &self.weight, None, self.eps);
+        }
         let dt = x.dtype();
         let x32 = x.to_dtype(DType::F32)?;
         let rms = (x32.sqr()?.mean_keepdim(D::Minus1)? + self.eps)?.sqrt()?;
         Ok(x32.broadcast_div(&rms)?.broadcast_mul(&self.weight)?.to_dtype(dt)?)
     }
+
+    /// [`Self::forward`] then AdaLN: `· (1 + mods[scale]) + mods[shift]`, `mods (B, 1, 6F)`.
+    fn modulated(&self, x: &Tensor, mods: &Tensor, scale: usize, shift: usize) -> Result<Tensor> {
+        #[cfg(feature = "fusednorm")]
+        if fused(x) {
+            return crate::krea2_fused::rms_mod(x, &self.weight, Some((mods, scale, shift)), self.eps);
+        }
+        let f = self.weight.dim(0)?;
+        let (sc, sh) = (mods.narrow(2, scale * f, f)?, mods.narrow(2, shift * f, f)?);
+        Ok(self.forward(x)?.broadcast_mul(&(sc + 1.0)?)?.broadcast_add(&sh)?)
+    }
+}
+
+/// Whether `x` takes the fused kernels (`crate::krea2_fused`): bf16 on CUDA, unless
+/// `QIR_KREA2_FUSED=0` asks for the candle chains (to compare).
+#[cfg(feature = "fusednorm")]
+fn fused(x: &Tensor) -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    x.dtype() == DType::BF16 && x.device().is_cuda() && *ON.get_or_init(|| std::env::var("QIR_KREA2_FUSED").map_or(true, |v| v.trim() != "0"))
+}
+
+/// `x + v · mods[chunk]`, the gated residual.
+fn gate_add(x: &Tensor, v: &Tensor, mods: &Tensor, chunk: usize) -> Result<Tensor> {
+    #[cfg(feature = "fusednorm")]
+    if fused(x) {
+        return crate::krea2_fused::gate_add(x, v, mods, chunk);
+    }
+    let f = x.dim(D::Minus1)?;
+    Ok((x + v.broadcast_mul(&mods.narrow(2, chunk * f, f)?)?)?)
 }
 
 fn gelu_tanh(x: &Tensor) -> Result<Tensor> {
@@ -216,12 +267,12 @@ struct SwiGlu {
 }
 
 impl SwiGlu {
-    fn load(features: usize, multiplier: usize, rot: Option<&Tensor>, vb: VarBuilder) -> Result<Self> {
+    fn load(features: usize, multiplier: usize, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
         let m = Krea2Config::mlp_dim(features, multiplier);
         Ok(Self {
-            gate: KLinear::load(features, m, false, rot, vb.pp("gate"))?,
-            up: KLinear::load(features, m, false, rot, vb.pp("up"))?,
-            down: KLinear::load(m, features, false, rot, vb.pp("down"))?,
+            gate: KLinear::load(features, m, false, q, vb.pp("gate"))?,
+            up: KLinear::load(features, m, false, q, vb.pp("up"))?,
+            down: KLinear::load(m, features, false, q, vb.pp("down"))?,
             lgate: LoraSlot::default(),
             lup: LoraSlot::default(),
             ldown: LoraSlot::default(),
@@ -229,8 +280,12 @@ impl SwiGlu {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let g = candle_nn::ops::silu(&with_lora(&self.lgate, self.gate.forward(x)?, x)?)?;
-        let hin = (g * with_lora(&self.lup, self.up.forward(x)?, x)?)?;
+        let g = with_lora(&self.lgate, self.gate.forward(x)?, x)?;
+        let u = with_lora(&self.lup, self.up.forward(x)?, x)?;
+        #[cfg(feature = "fusednorm")]
+        let hin = if fused(&g) { crate::krea2_fused::swiglu(&g, &u)? } else { (candle_nn::ops::silu(&g)? * u)? };
+        #[cfg(not(feature = "fusednorm"))]
+        let hin = (candle_nn::ops::silu(&g)? * u)?;
         with_lora(&self.ldown, self.down.forward(&hin)?, &hin)
     }
 
@@ -280,14 +335,14 @@ struct Attention {
 }
 
 impl Attention {
-    fn load(dim: usize, heads: usize, kv_heads: usize, eps: f64, rot: Option<&Tensor>, vb: VarBuilder) -> Result<Self> {
+    fn load(dim: usize, heads: usize, kv_heads: usize, eps: f64, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
         let hd = dim / heads;
         Ok(Self {
-            wq: KLinear::load(dim, heads * hd, false, rot, vb.pp("wq"))?,
-            wk: KLinear::load(dim, kv_heads * hd, false, rot, vb.pp("wk"))?,
-            wv: KLinear::load(dim, kv_heads * hd, false, rot, vb.pp("wv"))?,
-            gate: KLinear::load(dim, dim, false, rot, vb.pp("gate"))?,
-            wo: KLinear::load(dim, dim, false, rot, vb.pp("wo"))?,
+            wq: KLinear::load(dim, heads * hd, false, q, vb.pp("wq"))?,
+            wk: KLinear::load(dim, kv_heads * hd, false, q, vb.pp("wk"))?,
+            wv: KLinear::load(dim, kv_heads * hd, false, q, vb.pp("wv"))?,
+            gate: KLinear::load(dim, dim, false, q, vb.pp("gate"))?,
+            wo: KLinear::load(dim, dim, false, q, vb.pp("wo"))?,
             qnorm: RmsNorm1p::load(hd, eps, vb.pp("qknorm").pp("qnorm"))?,
             knorm: RmsNorm1p::load(hd, eps, vb.pp("qknorm").pp("knorm"))?,
             heads,
@@ -312,8 +367,11 @@ impl Attention {
 
     /// The sigmoid gate on the attention output, with its LoRA delta.
     fn gated(&self, out: Tensor, x: &Tensor) -> Result<Tensor> {
-        let gate = candle_nn::ops::sigmoid(&with_lora(&self.lgate, self.gate.forward(x)?, x)?)?;
-        let t = (out * gate)?;
+        let g = with_lora(&self.lgate, self.gate.forward(x)?, x)?;
+        #[cfg(feature = "fusednorm")]
+        let t = if fused(&g) { crate::krea2_fused::sig_mul(&out, &g)? } else { (out * candle_nn::ops::sigmoid(&g)?)? };
+        #[cfg(not(feature = "fusednorm"))]
+        let t = (out * candle_nn::ops::sigmoid(&g)?)?;
         with_lora(&self.lo, self.wo.forward(&t)?, &t)
     }
 
@@ -321,14 +379,31 @@ impl Attention {
     fn forward(&self, x: &Tensor, rope: Option<&(Tensor, Tensor)>) -> Result<Tensor> {
         let (b, s, _) = x.dims3()?;
         let (h, kvh, d) = (self.heads, self.kv_heads, self.head_dim);
+        let choice = attention_choice();
+        // The fused route: per-head norm and RoPE in one pass over the BSHD projections, the
+        // flash kernel reading them where they are, the gate fused into its multiply.
+        #[cfg(all(feature = "fusednorm", feature = "flash"))]
+        if choice == Attn::Flash && d == crate::flash::HEAD_DIM && fused(x) {
+            let cs = match rope {
+                Some((cos, sin)) => Some(Tensor::stack(&[cos, sin], 0)?),
+                None => None,
+            };
+            let q = crate::krea2_fused::head_rope(&with_lora(&self.lq, self.wq.forward(x)?, x)?.reshape((b, s, h, d))?, &self.qnorm.weight, cs.as_ref(), self.qnorm.eps)?;
+            let k = crate::krea2_fused::head_rope(&with_lora(&self.lk, self.wk.forward(x)?, x)?.reshape((b, s, kvh, d))?, &self.knorm.weight, cs.as_ref(), self.knorm.eps)?;
+            let v = with_lora(&self.lv, self.wv.forward(x)?, x)?.reshape((b, s, kvh, d))?;
+            let flops = 4.0 * (b * h * s * s * d) as f64;
+            let out = crate::profile::scope("attention", flops, x.device(), || crate::flash::attention(&q.transpose(1, 2)?, &k.transpose(1, 2)?, &v.transpose(1, 2)?, 1.0 / (d as f32).sqrt()))?;
+            return self.gated(out.reshape((b, s, h * d))?, x);
+        }
         let qb = self.qnorm.forward(&with_lora(&self.lq, self.wq.forward(x)?, x)?.reshape((b, s, h, d))?)?; // (B,S,H,D)
         let kb = self.knorm.forward(&with_lora(&self.lk, self.wk.forward(x)?, x)?.reshape((b, s, kvh, d))?)?;
         let vb = with_lora(&self.lv, self.wv.forward(x)?, x)?.reshape((b, s, kvh, d))?;
-        // With RoPE and the `sage2` kernels: INT8-QK SageAttention2 straight from the BSHD
-        // projections (the rotation fused into the quantiser), grouped heads handled by the
-        // kernel. Otherwise the plain path below.
+        // With RoPE and the `sage2` kernels, when asked (`QIR_KREA2_ATTN=sage`): INT8-QK
+        // SageAttention2 straight from the BSHD projections (the rotation fused into the
+        // quantiser), grouped heads handled by the kernel. Otherwise exact attention: the
+        // `flash` kernel when built (the default), else the plain path below.
         #[cfg(feature = "sage2")]
-        if let Some((cos, sin)) = rope {
+        if let (Some((cos, sin)), Attn::Sage) = (rope, choice) {
             if let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? {
                 use crate::sage2::{Role, attention, quant_v, rope_quant};
                 let dt = x.dtype();
@@ -352,6 +427,13 @@ impl Attention {
             }
             None => (q, k),
         };
+        #[cfg(feature = "flash")]
+        if choice == Attn::Flash && d == crate::flash::HEAD_DIM && q.dtype() == DType::BF16 && q.device().is_cuda() {
+            let flops = 4.0 * (b * h * s * s * d) as f64;
+            let out = crate::profile::scope("attention", flops, q.device(), || crate::flash::attention(&q, &k, &v, 1.0 / (d as f32).sqrt()))?; // (B,S,H,D)
+            return self.gated(out.reshape((b, s, h * d))?, x);
+        }
+        let _ = choice; // builds without the kernels have only the plain path
         let groups = h / kvh;
         let (k, v) = if groups > 1 {
             let rep = |t: &Tensor| -> Result<Tensor> { Ok(t.unsqueeze(2)?.broadcast_as((b, kvh, groups, s, d))?.reshape((b, h, s, d))?.contiguous()?) };
@@ -364,6 +446,32 @@ impl Attention {
     }
 }
 
+/// Krea 2's attention kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Attn {
+    /// Exact, one pass (`crate::flash`); the plain path without the `flash` feature.
+    Flash,
+    /// SageAttention2 (`crate::sage2`, its `QIR_SAGE` accumulation): faster, but measured
+    /// further from ComfyUI's pictures (17 of 28 against 21).
+    Sage,
+    /// The plain f32 path (the reference).
+    Plain,
+}
+
+/// `QIR_KREA2_ATTN`: `sage`, `plain`, or anything else for exact attention; read once.
+fn attention_choice() -> Attn {
+    static CHOICE: std::sync::OnceLock<Attn> = std::sync::OnceLock::new();
+    *CHOICE.get_or_init(|| {
+        let a = match std::env::var("QIR_KREA2_ATTN").ok().as_deref().map(str::trim) {
+            Some("sage") => Attn::Sage,
+            Some("plain") => Attn::Plain,
+            _ => Attn::Flash,
+        };
+        tracing::info!(attention = ?a, "Krea 2 attention");
+        a
+    })
+}
+
 /// A text-fusion block: pre-norm attention and post-norm SwiGLU, plain residuals.
 struct TextFusionBlock {
     prenorm: RmsNorm1p,
@@ -373,12 +481,12 @@ struct TextFusionBlock {
 }
 
 impl TextFusionBlock {
-    fn load(cfg: &Krea2Config, rot: Option<&Tensor>, vb: VarBuilder) -> Result<Self> {
+    fn load(cfg: &Krea2Config, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             prenorm: RmsNorm1p::load(cfg.text_dim, cfg.eps, vb.pp("prenorm"))?,
             postnorm: RmsNorm1p::load(cfg.text_dim, cfg.eps, vb.pp("postnorm"))?,
-            attn: Attention::load(cfg.text_dim, cfg.text_heads, cfg.text_kv_heads, cfg.eps, rot, vb.pp("attn"))?,
-            mlp: SwiGlu::load(cfg.text_dim, cfg.mlp_multiplier, rot, vb.pp("mlp"))?,
+            attn: Attention::load(cfg.text_dim, cfg.text_heads, cfg.text_kv_heads, cfg.eps, q, vb.pp("attn"))?,
+            mlp: SwiGlu::load(cfg.text_dim, cfg.mlp_multiplier, q, vb.pp("mlp"))?,
         })
     }
 
@@ -397,13 +505,13 @@ struct TextFusion {
 }
 
 impl TextFusion {
-    fn load(cfg: &Krea2Config, rot: Option<&Tensor>, vb: VarBuilder) -> Result<Self> {
+    fn load(cfg: &Krea2Config, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
         let lw = vb.pp("layerwise_blocks");
         let rf = vb.pp("refiner_blocks");
         Ok(Self {
-            layerwise: [TextFusionBlock::load(cfg, rot, lw.pp("0"))?, TextFusionBlock::load(cfg, rot, lw.pp("1"))?],
+            layerwise: [TextFusionBlock::load(cfg, q, lw.pp("0"))?, TextFusionBlock::load(cfg, q, lw.pp("1"))?],
             projector: linear_no_bias(cfg.text_layers, 1, vb.pp("projector"))?,
-            refiner: [TextFusionBlock::load(cfg, rot, rf.pp("0"))?, TextFusionBlock::load(cfg, rot, rf.pp("1"))?],
+            refiner: [TextFusionBlock::load(cfg, q, rf.pp("0"))?, TextFusionBlock::load(cfg, q, rf.pp("1"))?],
         })
     }
 
@@ -431,31 +539,27 @@ struct Block {
     postnorm: RmsNorm1p,
     attn: Attention,
     mlp: SwiGlu,
-    features: usize,
 }
 
 impl Block {
-    fn load(cfg: &Krea2Config, rot: Option<&Tensor>, vb: VarBuilder) -> Result<Self> {
+    fn load(cfg: &Krea2Config, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             lin: vb.pp("mod").get(6 * cfg.features, "lin")?,
             prenorm: RmsNorm1p::load(cfg.features, cfg.eps, vb.pp("prenorm"))?,
             postnorm: RmsNorm1p::load(cfg.features, cfg.eps, vb.pp("postnorm"))?,
-            attn: Attention::load(cfg.features, cfg.heads, cfg.kv_heads, cfg.eps, rot, vb.pp("attn"))?,
-            mlp: SwiGlu::load(cfg.features, cfg.mlp_multiplier, rot, vb.pp("mlp"))?,
-            features: cfg.features,
+            attn: Attention::load(cfg.features, cfg.heads, cfg.kv_heads, cfg.eps, q, vb.pp("attn"))?,
+            mlp: SwiGlu::load(cfg.features, cfg.mlp_multiplier, q, vb.pp("mlp"))?,
         })
     }
 
     /// `x` `(B,S,F)`, `tvec` `(B,1,6F)`.
     fn forward(&self, x: &Tensor, tvec: &Tensor, rope: &(Tensor, Tensor)) -> Result<Tensor> {
-        let f = self.features;
+        // mods: (pre scale, pre shift, pre gate, post scale, post shift, post gate) × F.
         let mods = tvec.broadcast_add(&self.lin)?; // (B,1,6F)
-        let m = |i: usize| -> Result<Tensor> { Ok(mods.narrow(2, i * f, f)?) };
-        let (prescale, preshift, pregate, postscale, postshift, postgate) = (m(0)?, m(1)?, m(2)?, m(3)?, m(4)?, m(5)?);
-        let h = self.prenorm.forward(x)?.broadcast_mul(&(prescale + 1.0)?)?.broadcast_add(&preshift)?;
-        let x = (x + self.attn.forward(&h, Some(rope))?.broadcast_mul(&pregate)?)?;
-        let h = self.postnorm.forward(&x)?.broadcast_mul(&(postscale + 1.0)?)?.broadcast_add(&postshift)?;
-        Ok((&x + self.mlp.forward(&h)?.broadcast_mul(&postgate)?)?)
+        let h = self.prenorm.modulated(x, &mods, 0, 1)?;
+        let x = gate_add(x, &self.attn.forward(&h, Some(rope))?, &mods, 2)?;
+        let h = self.postnorm.modulated(&x, &mods, 3, 4)?;
+        gate_add(&x, &self.mlp.forward(&h)?, &mods, 5)
     }
 }
 
@@ -478,26 +582,33 @@ impl Krea2Dit {
     /// Load the model; with `convrot` the block and text-fusion linears are rotated and
     /// quantised to INT8 on the way in (the `convrot` feature; ignored without it).
     pub fn load(cfg: &Krea2Config, convrot: bool, vb: VarBuilder) -> Result<Self> {
+        Self::load_with(cfg, convrot, None, vb)
+    }
+
+    /// [`Self::load`] for a file whose block linears may be e4m3 (`fp8`: what
+    /// [`Fp8Plan::from_files`] read from it); those layers keep the file's bytes and ConvRot is
+    /// not applied to them.
+    pub fn load_with(cfg: &Krea2Config, convrot: bool, fp8: Option<&Fp8Plan>, vb: VarBuilder) -> Result<Self> {
         let f = cfg.features;
         let p2 = cfg.patch * cfg.patch;
         #[cfg(feature = "convrot")]
-        let rot: Option<Tensor> = if convrot { Some(crate::model::rotation::regular_hadamard_256(vb.device())?) } else { None };
+        let rot: Option<Tensor> = if convrot && fp8.is_none() { Some(crate::model::rotation::regular_hadamard_256(vb.device())?) } else { None };
         #[cfg(not(feature = "convrot"))]
         let rot: Option<Tensor> = {
             let _ = convrot;
             None
         };
-        let rot = rot.as_ref();
+        let q = Quant { rot: rot.as_ref(), fp8 };
         let mut blocks = Vec::with_capacity(cfg.layers);
         for i in 0..cfg.layers {
-            blocks.push(Block::load(cfg, rot, vb.pp("blocks").pp(i))?);
+            blocks.push(Block::load(cfg, q, vb.pp("blocks").pp(i))?);
         }
         Ok(Self {
             cfg: cfg.clone(),
             first: linear(cfg.channels * p2, f, vb.pp("first"))?,
             tmlp: (linear(cfg.timestep_dim, f, vb.pp("tmlp").pp("0"))?, linear(f, f, vb.pp("tmlp").pp("2"))?),
             tproj: linear(f, 6 * f, vb.pp("tproj").pp("1"))?,
-            txtfusion: TextFusion::load(cfg, rot, vb.pp("txtfusion"))?,
+            txtfusion: TextFusion::load(cfg, q, vb.pp("txtfusion"))?,
             txtmlp: (RmsNorm1p::load(cfg.text_dim, cfg.eps, vb.pp("txtmlp").pp("0"))?, linear(cfg.text_dim, f, vb.pp("txtmlp").pp("1"))?, linear(f, f, vb.pp("txtmlp").pp("3"))?),
             blocks,
             last_norm: RmsNorm1p::load(f, cfg.eps, vb.pp("last").pp("norm"))?,

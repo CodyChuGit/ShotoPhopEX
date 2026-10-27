@@ -59,3 +59,8 @@ sage = ["cuda", "dep:cc"]
 sage2 = ["sage"]
 # Fused LayerNorm+AdaLN kernel: compiles kernels/fusednorm/*.cu.
 fusednorm = ["cuda", "dep:cc"]
+# FP8 e4m3 linears for ComfyUI's fp8_scaled repacks (src/fp8.rs): compiles kernels/fp8/*.cu;
+# the GEMM is cuBLASLt's (through candle's cudarc).
+fp8 = ["cuda", "dep:cc"]
+# Exact bf16 attention in one pass (src/flash.rs): compiles kernels/flash/*.cu.
+flash = ["cuda", "dep:cc"]

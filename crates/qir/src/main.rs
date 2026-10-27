@@ -59,6 +59,15 @@ enum Command {
         #[arg(long, default_value_t = 21)]
         txt: usize,
     },
+    /// Time Krea 2's linear shapes three ways (bf16 matmul, fp8 dequantized + bf16, fp8
+    /// matmul through cuBLASLt): launches back to back, one synchronise per shape.
+    Fp8Bench {
+        #[arg(long, default_value_t = 20)]
+        iters: usize,
+        /// Rows (image + text tokens).
+        #[arg(long, default_value_t = 4160)]
+        m: usize,
+    },
     /// Self-test the SageAttention INT8-QK/FP16-PV kernel vs an f32 reference.
     SageTest,
     /// Self-test the fused LayerNorm+AdaLN kernel vs the candle reference.
@@ -390,6 +399,10 @@ enum Command {
         convrot: bool,
         #[command(flatten)]
         cache: ConvrotCacheArgs,
+        /// Make the picture this many times on the resident pipeline (the timings of the
+        /// later runs are the warm ones); the last is saved.
+        #[arg(long, default_value_t = 1)]
+        repeat: usize,
         #[arg(long)]
         out: std::path::PathBuf,
     },
@@ -494,6 +507,7 @@ fn main() -> Result<()> {
         Command::Smoke { n } => smoke(n),
         Command::ConvrotTest => convrot_test(),
         Command::GemmBench { iters, batch, txt } => gemm_bench(iters, batch, txt),
+        Command::Fp8Bench { iters, m } => fp8_bench(iters, m),
         Command::SageTest => sage_test(),
         Command::FusednormTest => fusednorm_test(),
         Command::CudnnTest => cudnn_test(),
@@ -585,8 +599,8 @@ fn main() -> Result<()> {
         Command::Krea2Cond { weights, tokenizer, prompt, out } => krea2_cond(&weights, &tokenizer, &prompt, &out),
         Command::WanVaeDecode { weights, latent, bf16, out } => wan_vae_decode(&weights, &latent, bf16, &out),
         Command::Krea2DitForward { weights, inputs, cond, t, out } => krea2_dit_forward(&weights, &inputs, &cond, t, &out),
-        Command::GenerateKrea2 { model, prompt, width, height, steps, seed, convrot, cache, out } => {
-            generate_krea2(&model, &prompt, width, height, steps, seed, convrot, &cache.spec(), &out)
+        Command::GenerateKrea2 { model, prompt, width, height, steps, seed, convrot, cache, repeat, out } => {
+            generate_krea2(&model, &prompt, width, height, steps, seed, convrot, &cache.spec(), repeat, &out)
         }
         Command::ConvertFp8 { src, dst } => {
             let t0 = std::time::Instant::now();
@@ -1258,6 +1272,7 @@ fn generate_krea2(
     seed: u64,
     convrot: bool,
     cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    repeat: usize,
     out: &std::path::Path,
 ) -> Result<()> {
     use qwen_image_rs::krea2_pipeline::{Krea2Options, Krea2Pipeline};
@@ -1268,7 +1283,10 @@ fn generate_krea2(
     tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
     let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references: Vec::new(), loras: Default::default() };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
-    let pic = p.generate(&req, &mut report, &|| false)?;
+    let mut pic = p.generate(&req, &mut report, &|| false)?;
+    for _ in 1..repeat {
+        pic = p.generate(&req, &mut report, &|| false)?;
+    }
     let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
     buf.save(out)?;
     println!("wrote {} ({}x{}, seed {seed})", out.display(), pic.width, pic.height);
@@ -1550,6 +1568,44 @@ fn gemm_bench(iters: usize, batch: usize, txt: usize) -> Result<()> {
         let _ = (iters, batch, txt);
         anyhow::bail!("build with --features convrot (needs CUTLASS_DIR)")
     }
+}
+
+/// Krea 2's linear shapes, three ways: the bf16 matmul, the fp8 file's layer dequantized then
+/// multiplied in bf16, and the fp8 matmul (`qwen_image_rs::fp8`).
+fn fp8_bench(iters: usize, m: usize) -> Result<()> {
+    use candle_core::{DType, Tensor};
+    use qwen_image_rs::fp8::Fp8Linear;
+    let dev = qwen_image_rs::device::best_device()?;
+    let cpu = candle_core::Device::Cpu;
+    let x = Tensor::randn(0f32, 1.0, (m, 6144), &dev)?.to_dtype(DType::BF16)?;
+    for (n, k) in [(6144usize, 6144usize), (1536, 6144), (16384, 6144), (6144, 16384)] {
+        let xk = if k == 6144 { x.clone() } else { Tensor::randn(0f32, 1.0, (m, k), &dev)?.to_dtype(DType::BF16)? };
+        let w = (Tensor::randn(0f32, 1.0, (n, k), &cpu)? * 0.02)?;
+        let wb = w.to_dtype(DType::BF16)?.to_device(&dev)?;
+        let w8 = (&w * 50.0)?.to_dtype(DType::F8E4M3)?.to_device(&dev)?;
+        let scale = Tensor::new(&[0.02f32], &dev)?;
+        let mm = Fp8Linear::new(w8.clone(), &scale, false)?;
+        let full = Fp8Linear::new(w8, &scale, true)?;
+        let flop = 2.0 * (m * n * k) as f64;
+        let mut cells = Vec::new();
+        for (name, f) in [
+            ("bf16", Box::new(|| Ok(xk.matmul(&wb.t()?)?)) as Box<dyn Fn() -> Result<Tensor>>),
+            ("fp8 dequantized", Box::new(|| full.forward(&xk))),
+            ("fp8 matmul", Box::new(|| mm.forward(&xk))),
+        ] {
+            let _ = f()?;
+            dev.synchronize()?;
+            let t0 = std::time::Instant::now();
+            for _ in 0..iters {
+                let _ = f()?;
+            }
+            dev.synchronize()?;
+            let ms = t0.elapsed().as_secs_f64() * 1e3 / iters as f64;
+            cells.push(format!("{name} {ms:.3} ms {:.0} TFLOPS", flop / ms / 1e9));
+        }
+        println!("M={m} N={n} K={k}: {}", cells.join(" | "));
+    }
+    Ok(())
 }
 
 /// Self-test the ConvRot INT8 GEMM bridge end to end.
