@@ -403,6 +403,16 @@ enum Command {
         /// later runs are the warm ones); the last is saved.
         #[arg(long, default_value_t = 1)]
         repeat: usize,
+        /// An edit: the picture (PNG/JPEG) the instruction in `--prompt` changes; the target takes
+        /// its size (floored to 16) unless `--width`/`--height` are given as 0.
+        #[arg(long)]
+        image: Option<std::path::PathBuf>,
+        /// LoRA files (`path` or `path@strength`), e.g. the krea2_edit General Edit V2.
+        #[arg(long)]
+        lora: Vec<String>,
+        /// The edit's pull toward its picture (the target's attention to it multiplied by this).
+        #[arg(long, default_value_t = 1.0)]
+        ref_boost: f32,
         #[arg(long)]
         out: std::path::PathBuf,
     },
@@ -599,8 +609,8 @@ fn main() -> Result<()> {
         Command::Krea2Cond { weights, tokenizer, prompt, out } => krea2_cond(&weights, &tokenizer, &prompt, &out),
         Command::WanVaeDecode { weights, latent, bf16, out } => wan_vae_decode(&weights, &latent, bf16, &out),
         Command::Krea2DitForward { weights, inputs, cond, t, out } => krea2_dit_forward(&weights, &inputs, &cond, t, &out),
-        Command::GenerateKrea2 { model, prompt, width, height, steps, seed, convrot, cache, repeat, out } => {
-            generate_krea2(&model, &prompt, width, height, steps, seed, convrot, &cache.spec(), repeat, &out)
+        Command::GenerateKrea2 { model, prompt, width, height, steps, seed, convrot, cache, repeat, image, lora, ref_boost, out } => {
+            generate_krea2(&model, &prompt, width, height, steps, seed, convrot, &cache.spec(), repeat, image.as_deref(), &lora, ref_boost, &out)
         }
         Command::ConvertFp8 { src, dst } => {
             let t0 = std::time::Instant::now();
@@ -1252,7 +1262,7 @@ fn edit(
         references.push(RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw(), offset: None });
     }
     let req =
-        Request { prompt: prompt.to_string(), negative: negative.to_string(), width, height, steps, seed, guidance, schedule: Schedule::Comfy, references, loras: Default::default() };
+        Request { prompt: prompt.to_string(), negative: negative.to_string(), width, height, steps, seed, guidance, schedule: Schedule::Comfy, references, loras: Default::default(), ref_boost: 1.0 };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
     let pic = p.generate(&req, &mut report, &|| false)?;
     let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
@@ -1273,15 +1283,33 @@ fn generate_krea2(
     convrot: bool,
     cache: &qwen_image_rs::convrot_cache::CacheSpec,
     repeat: usize,
+    image: Option<&std::path::Path>,
+    loras: &[String],
+    ref_boost: f32,
     out: &std::path::Path,
 ) -> Result<()> {
     use qwen_image_rs::krea2_pipeline::{Krea2Options, Krea2Pipeline};
-    use qwen_image_rs::pipeline::{Request, Schedule};
+    use qwen_image_rs::pipeline::{RefImage, Request, Schedule};
     let mut report = |f: f32, m: &str| tracing::info!(progress = f, "{m}");
     let t0 = std::time::Instant::now();
     let p = Krea2Pipeline::load(model, Krea2Options { convrot, cache: cache.clone() }, &mut report)?;
     tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
-    let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references: Vec::new(), loras: Default::default() };
+    let references = match image {
+        Some(path) => {
+            let img = image::open(path).with_context(|| format!("open {}", path.display()))?.to_rgba8();
+            vec![RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw(), offset: None }]
+        }
+        None => Vec::new(),
+    };
+    let mut stack = qwen_image_rs::lora::LoraStack::default();
+    for spec in loras {
+        let (path, strength) = match spec.rsplit_once('@') {
+            Some((p, s)) => (p, s.parse::<f32>().with_context(|| format!("the strength in {spec}"))?),
+            None => (spec.as_str(), 1.0),
+        };
+        stack.layers.push((std::sync::Arc::new(qwen_image_rs::lora::LoraFile::load(std::path::Path::new(path), p.device(), p.dtype())?), strength));
+    }
+    let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references, loras: stack, ref_boost };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
     let mut pic = p.generate(&req, &mut report, &|| false)?;
     for _ in 1..repeat {

@@ -315,6 +315,9 @@ impl DecoderLayer {
 /// The decoder's keys and values for the rows run so far ([`QwenTextEncoder::prefill`]) and
 /// the position the next row takes, so a reply is sampled one token at a time without running
 /// the prompt again.
+/// The tapped hidden states and each picture's `(start, size)` span in them.
+pub type TapsAndSpans = (Vec<Tensor>, Vec<(usize, usize)>);
+
 pub struct KvCache {
     layers: Vec<Option<(Tensor, Tensor)>>,
     next_pos: f32,
@@ -467,6 +470,26 @@ impl QwenTextEncoder {
             xs = self.add_deepstack(xs, li, &spans, images)?;
         }
         Ok((xs, spans))
+    }
+
+    /// [`Self::forward_with_images`] returning the hidden states at `taps` (numbered as in
+    /// [`Self::forward_taps`]: the DeepStack additions are inside the stream they are added to)
+    /// and each picture's span: what Krea 2's image-grounded conditioning reads.
+    pub fn forward_with_images_taps(&self, ids: &[u32], images: &[&VisionFeatures], taps: &[usize]) -> Result<TapsAndSpans> {
+        let (mut xs, spans, positions) = self.splice(ids, images)?;
+        let dt = xs.dtype();
+        let rope = self.rope.tables(&positions)?;
+        let mask = self.causal_mask(positions[0].len(), dt)?;
+        let last = taps.iter().copied().max().unwrap_or(0).min(self.layers.len());
+        let mut states: Vec<Tensor> = Vec::with_capacity(last + 1);
+        states.push(xs.clone());
+        for (li, layer) in self.layers.iter().take(last).enumerate() {
+            xs = layer.forward(&xs, &mask, &rope)?;
+            xs = self.add_deepstack(xs, li, &spans, images)?;
+            states.push(xs.clone());
+        }
+        let out = taps.iter().map(|t| states.get((*t).min(last)).cloned().ok_or_else(|| anyhow::anyhow!("tap {t} past the layers"))).collect::<Result<Vec<_>>>()?;
+        Ok((out, spans))
     }
 
     /// [`Self::forward_with_images`] keeping every layer's keys and values: the last row's

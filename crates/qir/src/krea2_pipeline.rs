@@ -18,10 +18,15 @@ use tokenizers::Tokenizer;
 use crate::Result;
 use crate::convrot_cache::{CacheSpec, Policy};
 use crate::loader::WeightSet;
-use crate::model::krea2::{self, Krea2Config, Krea2Dit};
+use crate::model::krea2::{self, EditRef, Krea2Config, Krea2Dit};
 use crate::model::text_encoder::{QwenTextEncoder, TextConfig};
+use crate::model::vision::{self, VisionConfig, VisionTower};
 use crate::model::wan_vae::{self, WanVae};
-use crate::pipeline::{Cancelled, Picture, Request, Timings};
+use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
+
+/// The longest side of the picture the encoder sees beside an edit's instruction (the
+/// comfyui-krea2edit `grounding_px` default; the LoRAs trained at 384–768).
+pub const GROUNDING_PX: u32 = 768;
 
 /// How the pipeline is loaded.
 #[derive(Clone, Debug)]
@@ -52,6 +57,8 @@ pub struct Krea2Pipeline {
     tok: Tokenizer,
     model: PathBuf,
     te: std::sync::Mutex<Option<QwenTextEncoder>>,
+    /// The encoder's vision tower, loaded on the first edit (f32, ~1.7 GB).
+    vision: std::sync::Mutex<Option<VisionTower>>,
     dit: Krea2Dit,
     vae: WanVae,
     /// Drop the encoder after each prompt (the bf16 DiT leaves no room for it; it loads again
@@ -99,7 +106,7 @@ impl Krea2Pipeline {
         let vae = WanVae::load(vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "VAE loaded");
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, model: model.to_path_buf(), te: std::sync::Mutex::new(te), dit, vae, evict_te })
+        Ok(Self { dev, dtype, tok, model: model.to_path_buf(), te: std::sync::Mutex::new(te), vision: std::sync::Mutex::new(None), dit, vae, evict_te })
     }
 
     pub fn is_cuda(&self) -> bool {
@@ -115,15 +122,25 @@ impl Krea2Pipeline {
         self.dtype
     }
 
-    /// The conditioning `(1, tokens, 12, 2560)` for a prompt.
-    fn condition(&self, prompt: &str) -> Result<Tensor> {
-        let ids: Vec<u32> = self.tok.encode(krea2::template(prompt), false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec();
+    /// The conditioning `(1, tokens, 12, 2560)` for a prompt, grounded on `picture` when one is
+    /// given (an edit: the picture through the vision tower, in view before the instruction).
+    fn condition(&self, prompt: &str, picture: Option<&RefImage>) -> Result<Tensor> {
+        let feats = match picture {
+            Some(p) => Some(self.grounding_features(p)?),
+            None => None,
+        };
+        let text = if feats.is_some() { krea2::edit_template(prompt) } else { krea2::template(prompt) };
+        let ids: Vec<u32> = self.tok.encode(text, false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec();
         let mut slot = self.te.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             *slot = Some(load_text_encoder(&self.model, &self.dev, self.dtype)?);
         }
         let te = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no text encoder"))?;
-        let cond = krea2::condition(te, &ids, &self.dev)?.unsqueeze(0)?;
+        let cond = match &feats {
+            Some(f) => krea2::condition_with_images(te, &ids, &[f])?,
+            None => krea2::condition(te, &ids, &self.dev)?,
+        }
+        .unsqueeze(0)?;
         if self.evict_te {
             *slot = None;
             let _ = self.dev.synchronize();
@@ -131,12 +148,65 @@ impl Krea2Pipeline {
         Ok(cond)
     }
 
+    /// The picture as the encoder sees it: its longest side brought to [`GROUNDING_PX`] at
+    /// most, then to the tower's grid (ComfyUI's `process_qwen2vl_images`), through the 4B
+    /// vision tower (loaded on first use).
+    fn grounding_features(&self, p: &RefImage) -> Result<vision::VisionFeatures> {
+        let img = rgb_image(p)?;
+        let (w, h) = img.dimensions();
+        let img = if w.max(h) > GROUNDING_PX {
+            let s = f64::from(GROUNDING_PX) / f64::from(w.max(h));
+            let (nw, nh) = (((f64::from(w) * s).round() as u32).max(1), ((f64::from(h) * s).round() as u32).max(1));
+            image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle)
+        } else {
+            img
+        };
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let rgb = Tensor::from_vec(img.into_raw(), (h, w, 3), &self.dev)?.permute((2, 0, 1))?.to_dtype(DType::F32)?.affine(1.0 / 255.0, 0.0)?;
+        let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
+        let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
+        let mut slot = self.vision.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            let t0 = Instant::now();
+            let files = WeightSet::resolve(&self.model.join("text_encoder"))?.files;
+            let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, &self.dev)? };
+            *slot = Some(VisionTower::load(&VisionConfig::qwen3vl_4b(), vb32.pp("model").pp("visual")).context("the Qwen3-VL-4B vision tower (an encoder file without it cannot edit)")?);
+            tracing::info!(load_s = t0.elapsed().as_secs_f32(), "vision tower loaded");
+        }
+        let tower = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no vision tower"))?;
+        let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
+        tower.forward(&patches, gh, gw)
+    }
+
+    /// An edit's picture for the DiT: fitted to the target `tw × th` (centre-cropped to its
+    /// aspect, then resampled; the comfyui-krea2edit `fit` path at a matched aspect) and
+    /// through the VAE's encoder, in the sampler's space `(1, 16, th/8, tw/8)`.
+    fn picture_latent(&self, p: &RefImage, tw: usize, th: usize) -> Result<Tensor> {
+        anyhow::ensure!(self.vae.can_encode(), "this VAE file has no encoder; an edit needs it");
+        let img = rgb_image(p)?;
+        let (iw, ih) = (img.width() as f64, img.height() as f64);
+        let s = (th as f64 / ih).max(tw as f64 / iw);
+        let (cw, ch) = (((tw as f64 / s).round() as u32).clamp(1, img.width()), ((th as f64 / s).round() as u32).clamp(1, img.height()));
+        let (x0, y0) = ((img.width() - cw) / 2, (img.height() - ch) / 2);
+        let crop = image::imageops::crop_imm(&img, x0, y0, cw, ch).to_image();
+        let fitted = if (cw as usize, ch as usize) == (tw, th) { crop } else { image::imageops::resize(&crop, tw as u32, th as u32, image::imageops::FilterType::CatmullRom) };
+        let x = Tensor::from_vec(fitted.into_raw(), (th, tw, 3), &self.dev)?.permute((2, 0, 1))?.unsqueeze(0)?.to_dtype(DType::F32)?.affine(2.0 / 255.0, -1.0)?;
+        self.vae.encode(&x)
+    }
+
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
         crate::device::bind_thread(&self.dev);
         anyhow::ensure!(req.steps > 0, "at least one step");
-        anyhow::ensure!(req.references.is_empty(), "Krea 2 text to image takes no reference pictures yet");
-        let (w, h) = (req.width, req.height);
+        // An edit: the first reference is the picture (one picture; the krea2_edit LoRAs take up
+        // to two, a scene and a subject, which nothing asks for yet). Its size is the target's
+        // when the request names none, floored to the 16-pixel grid.
+        anyhow::ensure!(req.references.len() <= 1, "a Krea 2 edit takes one picture ({} given)", req.references.len());
+        let picture = req.references.first();
+        let (w, h) = match picture {
+            Some(p) if req.width == 0 || req.height == 0 => (p.width / 16 * 16, p.height / 16 * 16),
+            _ => (req.width, req.height),
+        };
         anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16), "the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
         let unmatched = self.dit.set_loras(&req.loras)?;
         if !unmatched.is_empty() {
@@ -154,7 +224,11 @@ impl Krea2Pipeline {
         check(cancel)?;
         progress(0.02, "Encoding the prompt");
         let t0 = Instant::now();
-        let cond = self.condition(&req.prompt)?;
+        let cond = self.condition(&req.prompt, picture)?;
+        let edit = match picture {
+            Some(p) => Some(EditRef { latent: self.picture_latent(p, w, h)?.to_dtype(self.dtype)?, boost: req.ref_boost }),
+            None => None,
+        };
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
         crate::profile::report("krea2 encode");
@@ -168,7 +242,7 @@ impl Krea2Pipeline {
         let t0 = Instant::now();
         for i in 0..req.steps {
             check(cancel)?;
-            let v = self.dit.forward(&x.to_dtype(self.dtype)?, schedule.sigma(i), &cond)?.to_dtype(DType::F32)?;
+            let v = self.dit.forward_edit(&x.to_dtype(self.dtype)?, schedule.sigma(i), &cond, edit.as_ref())?.to_dtype(DType::F32)?;
             x = (x + (v * f64::from(schedule.dt(i)))?)?;
             progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
         }
@@ -187,6 +261,14 @@ impl Krea2Pipeline {
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
+}
+
+/// A reference's pixels as RGB (its alpha dropped, as ComfyUI's `LoadImage` hands a picture to
+/// the VAE and the encoder).
+fn rgb_image(p: &RefImage) -> Result<image::RgbImage> {
+    let rgba: image::RgbaImage =
+        image::ImageBuffer::from_raw(p.width as u32, p.height as u32, p.rgba.clone()).ok_or_else(|| anyhow::anyhow!("a picture of {}x{} with {} bytes", p.width, p.height, p.rgba.len()))?;
+    Ok(image::DynamicImage::ImageRgba8(rgba).to_rgb8())
 }
 
 fn load_text_encoder(model: &Path, dev: &Device, dtype: DType) -> Result<QwenTextEncoder> {

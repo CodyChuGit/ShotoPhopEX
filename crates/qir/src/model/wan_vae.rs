@@ -1,4 +1,5 @@
-//! The Wan 2.1 VAE's decoder for one frame (Krea 2's pixels; also Qwen-Image 1's): 16 latent
+//! The Wan 2.1 VAE for one frame, its decoder and (when the file has it) its encoder (Krea 2's
+//! pixels and an edit's picture; also Qwen-Image 1's): 16 latent
 //! channels, 8× spatial, Wan's own tensor layout (`conv2`, `decoder.conv1`, `decoder.middle.N`,
 //! `decoder.upsamples.N`, `decoder.head.N`, RMS norms with a `gamma`). Ported clean-room from
 //! the architecture as ComfyUI runs it (`comfy/ldm/wan/vae.py`, the Alibaba Wan team's code)
@@ -151,6 +152,100 @@ enum Up {
     Sample(Upsample),
 }
 
+/// `Resample` downsampling for one frame: `ZeroPad2d((0, 1, 0, 1))` then a 3×3 convolution with
+/// stride 2 (the `downsample3d` kind's `time_conv` only runs from the second frame on: on the
+/// first chunk the encoder caches the frame and skips it).
+struct Downsample {
+    weight: Tensor,
+    bias: Tensor,
+}
+
+impl Downsample {
+    fn load(dim: usize, vb: VarBuilder) -> Result<Self> {
+        let r = vb.pp("resample").pp("1");
+        Ok(Self { weight: r.get((dim, dim, 3, 3), "weight")?, bias: r.get(dim, "bias")? })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let x = x.pad_with_zeros(3, 0, 1)?.pad_with_zeros(2, 0, 1)?;
+        let y = x.conv2d(&self.weight, 0, 2, 1, 1)?;
+        Ok(y.broadcast_add(&self.bias.reshape((1, self.bias.dim(0)?, 1, 1))?)?)
+    }
+}
+
+enum Down {
+    Res(ResidualBlock),
+    Sample(Downsample),
+}
+
+/// The encoder for one frame: `encoder.conv1`, the downsamples, the middle, the head to
+/// `2·z` channels, then the VAE's own 1×1 `conv1` (the quantisation convolution); the mean is
+/// the first `z` channels.
+struct WanEncoder {
+    conv1: Conv2d,
+    downs: Vec<Down>,
+    middle: (ResidualBlock, AttentionBlock, ResidualBlock),
+    head_norm: RmsNorm,
+    head_conv: Conv2d,
+    quant: Conv2d,
+}
+
+impl WanEncoder {
+    /// `dim` 96, `dim_mult [1, 2, 4, 4]`, two residual blocks per stage, a downsample after
+    /// every stage but the last.
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let dim = 96usize;
+        let dim_mult = [1usize, 2, 4, 4];
+        let z = LATENT_CHANNELS;
+        let mut mult = vec![1usize];
+        mult.extend(dim_mult.iter());
+        let dims: Vec<usize> = mult.iter().map(|m| dim * m).collect(); // [96, 96, 192, 384, 384]
+        let e = vb.pp("encoder");
+        let d = e.pp("downsamples");
+        let mut downs = Vec::new();
+        let mut idx = 0usize;
+        for i in 0..dims.len() - 1 {
+            let (mut in_c, out_c) = (dims[i], dims[i + 1]);
+            for _ in 0..2 {
+                downs.push(Down::Res(ResidualBlock::load(in_c, out_c, d.pp(idx))?));
+                in_c = out_c;
+                idx += 1;
+            }
+            if i != dim_mult.len() - 1 {
+                downs.push(Down::Sample(Downsample::load(out_c, d.pp(idx))?));
+                idx += 1;
+            }
+        }
+        let last = dims[dims.len() - 1];
+        let m = e.pp("middle");
+        Ok(Self {
+            conv1: conv_last_tap(3, dims[0], 3, 3, e.pp("conv1"))?,
+            downs,
+            middle: (ResidualBlock::load(last, last, m.pp("0"))?, AttentionBlock::load(last, m.pp("1"))?, ResidualBlock::load(last, last, m.pp("2"))?),
+            head_norm: RmsNorm::load(last, e.pp("head").pp("0"))?,
+            head_conv: conv_last_tap(last, 2 * z, 3, 3, e.pp("head").pp("2"))?,
+            quant: conv_last_tap(2 * z, 2 * z, 1, 1, vb.pp("conv1"))?,
+        })
+    }
+
+    /// `(B, 3, H, W)` in `[-1, 1]` to the posterior mean `(B, 16, H/8, W/8)` in the VAE's space.
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let mut x = self.conv1.forward(x)?;
+        for d in &self.downs {
+            x = match d {
+                Down::Res(r) => r.forward(&x)?,
+                Down::Sample(s) => s.forward(&x)?,
+            };
+        }
+        x = self.middle.0.forward(&x)?;
+        x = self.middle.1.forward(&x)?;
+        x = self.middle.2.forward(&x)?;
+        let x = self.head_conv.forward(&silu(&self.head_norm.forward(&x)?)?)?;
+        let moments = self.quant.forward(&x)?;
+        Ok(moments.narrow(1, 0, LATENT_CHANNELS)?)
+    }
+}
+
 /// The decoder: `conv2` (the VAE's post-quantisation 1×1), `conv1`, the middle, the upsamples,
 /// the head.
 pub struct WanVae {
@@ -160,6 +255,9 @@ pub struct WanVae {
     ups: Vec<Up>,
     head_norm: RmsNorm,
     head_conv: Conv2d,
+    /// Present when the file has `encoder.*` (ComfyUI's `wan_2.1_vae` does): an edit's picture
+    /// goes in through it.
+    encoder: Option<WanEncoder>,
     device: Device,
     dtype: DType,
 }
@@ -207,9 +305,33 @@ impl WanVae {
             ups,
             head_norm: RmsNorm::load(last, h.pp("0"))?,
             head_conv: conv_last_tap(last, 3, 3, 3, h.pp("2"))?,
+            encoder: if vb.contains_tensor("encoder.conv1.weight") { Some(WanEncoder::load(vb.clone())?) } else { None },
             device: vb.device().clone(),
             dtype: vb.dtype(),
         })
+    }
+
+    /// Whether the file came with the encoder.
+    pub fn can_encode(&self) -> bool {
+        self.encoder.is_some()
+    }
+
+    /// Encode a picture `(B, 3, H, W)` in `[-1, 1]` (`H`, `W` multiples of 8) into the sampler's
+    /// normalised space `(B, 16, H/8, W/8)`: the posterior mean, then `(z − mean) / std` (what
+    /// ComfyUI's `VAEEncode` hands a Wan-latent model after `process_latent_in`). f32 out.
+    pub fn encode(&self, rgb: &Tensor) -> Result<Tensor> {
+        let Some(enc) = &self.encoder else { anyhow::bail!("this VAE file has no encoder") };
+        let (_, c, h, w) = rgb.dims4()?;
+        anyhow::ensure!(c == 3 && h.is_multiple_of(SCALE) && w.is_multiple_of(SCALE), "encode wants (B, 3, 8k, 8k), got (_, {c}, {h}, {w})");
+        let z = enc.forward(&rgb.to_device(&self.device)?.to_dtype(self.dtype)?)?.to_dtype(DType::F32)?;
+        self.normalize(&z)
+    }
+
+    /// The VAE's space to the sampler's: `(z − mean) / std`.
+    pub fn normalize(&self, z: &Tensor) -> Result<Tensor> {
+        let mean = Tensor::from_slice(&WAN21_MEAN, (1, LATENT_CHANNELS, 1, 1), z.device())?.to_dtype(z.dtype())?;
+        let std = Tensor::from_slice(&WAN21_STD, (1, LATENT_CHANNELS, 1, 1), z.device())?.to_dtype(z.dtype())?;
+        Ok(z.broadcast_sub(&mean)?.broadcast_div(&std)?)
     }
 
     /// Decode one frame's raw latent `(B, 16, h, w)` (the VAE's own space) to `(B, 3, 8h, 8w)`

@@ -53,6 +53,14 @@ pub const TEMPLATE_EXPAND: &str = "qwen-2.1/expand";
 pub const TEMPLATE_MATTE: &str = "qwen-2.1/matte";
 /// Krea 2 Turbo text to image.
 pub const TEMPLATE_KREA2: &str = "krea2-turbo/image";
+/// Krea 2 Turbo editing a picture by instruction: the picture as in-context tokens and in the
+/// encoder's view, with the community krea2_edit General Edit V2 LoRA (conradlocke; personal
+/// and non-commercial use, BYOM). Served when that file is under the model root's `loras/`.
+pub const TEMPLATE_KREA2_EDIT: &str = "krea2-turbo/edit";
+/// The LoRA [`TEMPLATE_KREA2_EDIT`] runs with (added to a request's own LoRAs).
+pub const KREA2_EDIT_LORA: &str = "krea2_general_edit_v2.safetensors";
+/// Its card's `ref_boost` for edits at 8 steps and CFG 1; a request's `ref_boost` overrides it.
+pub const KREA2_REF_BOOST: f32 = 4.0;
 /// The app's prompt rewriter and judge with the picture in view, and without: answered by the
 /// 2.1 text encoder as the vision-language model it is (Qwen3-VL 8B Instruct with its
 /// language-model head), so they need no second model on the card.
@@ -67,7 +75,8 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 8] = [
+pub const TEMPLATES: [(&str, &str, Family); 9] = [
+    (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
     (TEMPLATE, "image", Family::QwenImage21),
     (TEMPLATE_EDIT, "edit", Family::QwenImage21),
     (TEMPLATE_FILL, "fill", Family::QwenImage21),
@@ -129,6 +138,19 @@ fn gpu_and_refusal() -> (Option<qwen_image_rs::device::Gpu>, Option<String>) {
     };
     let refused = refused.map(|why| format!("The native diffusion models need an NVIDIA RTX card: {why}."));
     (probed.ok(), refused)
+}
+
+/// A request's params with [`KREA2_EDIT_LORA`] at strength 1 in front of its own `loras`,
+/// unless the request already names that file (at its own strength).
+fn with_edit_lora(params: &std::collections::BTreeMap<String, Value>) -> std::collections::BTreeMap<String, Value> {
+    let mut out = params.clone();
+    let mut list = params.get("loras").and_then(Value::as_array).cloned().unwrap_or_default();
+    let named = list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == KREA2_EDIT_LORA)));
+    if !named {
+        list.insert(0, json!({"file": KREA2_EDIT_LORA, "strength": 1.0}));
+    }
+    out.insert("loras".into(), Value::Array(list));
+    out
 }
 
 /// One LoRA a request asks for: `{"file": "name-or-path.safetensors", "strength": 1.0}`.
@@ -282,7 +304,11 @@ impl DiffusionEngine {
         if self.refused.is_some() {
             return Vec::new();
         }
-        TEMPLATES.iter().filter(|(_, _, f)| self.has_family(*f)).map(|(t, _, _)| *t).collect()
+        TEMPLATES
+            .iter()
+            .filter(|(t, _, f)| self.has_family(*f) && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file())))
+            .map(|(t, _, _)| *t)
+            .collect()
     }
 
     /// Load `family`'s pipeline if it is not resident, letting the other family's go first.
@@ -522,6 +548,9 @@ impl Engine for DiffusionEngine {
                     let Some(mask) = &req.mask else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the mask", req.model))) };
                     references.push(reference_of(mask, blobs, "mask")?);
                 } else if task == "edit" {
+                    if req.model == TEMPLATE_KREA2_EDIT && !req.references.is_empty() {
+                        return Err(EngineError::new(ErrorKind::BadRequest, format!("{} edits the picture alone (no references)", req.model)));
+                    }
                     for (i, r) in req.references.iter().enumerate() {
                         references.push(reference_of(r, blobs, &format!("reference {}", i + 2))?);
                     }
@@ -546,7 +575,17 @@ impl Engine for DiffusionEngine {
                 None if references.is_empty() => (side(req.width), side(req.height)),
                 None => (0, 0),
             };
-            let loras = self.stack_for(&req.params)?;
+            // A Krea 2 edit runs with its edit LoRA first (unless the request names it) and the
+            // card's `ref_boost` unless the request gives one.
+            let krea2_edit = req.model == TEMPLATE_KREA2_EDIT;
+            let params = if krea2_edit { with_edit_lora(&req.params) } else { req.params.clone() };
+            let loras = self.stack_for(&params)?;
+            let ref_boost = match req.params.get("ref_boost").and_then(Value::as_f64) {
+                Some(b) if b.is_finite() && (0.0..=100.0).contains(&b) => b as f32,
+                Some(b) => return Err(EngineError::new(ErrorKind::BadRequest, format!("ref_boost {b} is out of the range 0..100"))),
+                None if krea2_edit => KREA2_REF_BOOST,
+                None => 1.0,
+            };
             let ask = Request {
                 prompt: req.prompt.clone(),
                 negative: req.negative.clone(),
@@ -558,6 +597,7 @@ impl Engine for DiffusionEngine {
                 schedule: Schedule::Comfy,
                 references,
                 loras,
+                ref_boost,
             };
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             let stop = || cancel.load(Ordering::SeqCst);
@@ -688,6 +728,22 @@ mod tests {
         let r = e.run(&m, &[vec![0; 8]], &mut |_, _| {}, &AtomicBool::new(false));
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
         assert!(!has_models(Path::new("Z:/nowhere")));
+    }
+
+    /// A Krea 2 edit runs with its edit LoRA in front of the request's own, once.
+    #[test]
+    fn a_krea2_edit_adds_its_lora_once() {
+        let mut p = BTreeMap::new();
+        let first = |p: &BTreeMap<String, Value>| p["loras"][0]["file"].as_str().map(str::to_string);
+        assert_eq!(first(&with_edit_lora(&p)).as_deref(), Some(KREA2_EDIT_LORA));
+        p.insert("loras".into(), json!([{"file": "krea2_anygles_rank32.safetensors", "strength": 0.8}]));
+        let out = with_edit_lora(&p);
+        assert_eq!(out["loras"].as_array().map(Vec::len), Some(2));
+        assert_eq!(first(&out).as_deref(), Some(KREA2_EDIT_LORA));
+        p.insert("loras".into(), json!([{"file": format!("C:/loras/{KREA2_EDIT_LORA}"), "strength": 0.6}]));
+        assert_eq!(with_edit_lora(&p)["loras"].as_array().map(Vec::len), Some(1), "named already: kept at its own strength");
+        assert_eq!(task_of(TEMPLATE_KREA2_EDIT), Some("edit"));
+        assert_eq!(family_of(TEMPLATE_KREA2_EDIT), Some(Family::Krea2));
     }
 
     /// A refused card (no driver, too old for the kernels): no templates, the sentence in the
