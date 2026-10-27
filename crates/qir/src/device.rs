@@ -19,6 +19,21 @@ pub fn best_device() -> Result<Device> {
     Ok(Device::Cpu)
 }
 
+/// Make `device`'s CUDA context current on this thread. The worker serves each
+/// client on a thread of its own, and the first CUDA call of a request may be a
+/// free (the previous request's LoRA adapters dropped, a resident model let
+/// go): cudarc frees without binding, the driver answers
+/// `CUDA_ERROR_INVALID_CONTEXT`, and the error is handed to the request's next
+/// call (a no-LoRA edit after a LoRA one failed in 0.3 s, 2026-10-27). No-op on
+/// CPU.
+pub fn bind_thread(device: &Device) {
+    #[cfg(feature = "cuda")]
+    if let Device::Cuda(d) = device {
+        let _ = d.cuda_stream().context().bind_to_thread();
+    }
+    let _ = device;
+}
+
 /// `(free, total)` device memory in bytes (cuMemGetInfo) on CUDA; `None` on
 /// CPU or if the query fails.
 pub fn free_vram(device: &Device) -> Option<(usize, usize)> {
