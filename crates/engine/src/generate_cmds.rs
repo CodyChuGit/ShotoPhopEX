@@ -4244,8 +4244,8 @@ fn split_enabled(s: &Session) -> std::result::Result<(), String> {
 /// alpha the model gave it.
 fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_split(s, p)?;
-    let backend = backend(s)?;
-    let server = server_key(s);
+    // The worker serves it when it has the files (Qwen-Image-Layered is Apache-2.0: no opt-in).
+    let (backend, server) = backend_for(s, &plan.common.template.meta.id)?;
     let SplitPlan { common, layers, all_layers } = plan;
     let Common { template, prompt, negative, seed, steps, guidance, models, name } = common;
     let purge = purge_mode(s);
