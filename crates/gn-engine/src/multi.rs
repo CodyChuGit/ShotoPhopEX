@@ -42,7 +42,8 @@ impl Engine for Multi {
         self.engines.iter().map(|e| e.name()).collect::<Vec<_>>().join("+")
     }
 
-    /// Healthy when one engine is; the device of the first that names one; everything resident.
+    /// Healthy when one engine is; the device of the first that names one; everything resident;
+    /// every engine's sentence.
     fn health(&mut self) -> Health {
         let mut out = Health { engine: self.name(), ..Health::default() };
         for e in &mut self.engines {
@@ -54,6 +55,12 @@ impl Engine for Multi {
             out.vram_total = out.vram_total.or(h.vram_total);
             out.vram_free = out.vram_free.or(h.vram_free);
             out.resident.extend(h.resident);
+            if !h.detail.is_empty() {
+                if !out.detail.is_empty() {
+                    out.detail.push(' ');
+                }
+                out.detail.push_str(&h.detail);
+            }
         }
         out
     }

@@ -92,6 +92,10 @@ pub struct Health {
     /// Models loaded right now.
     #[serde(default)]
     pub resident: Vec<String>,
+    /// Why the engine is not healthy, or what it refused, as a sentence for the editor (a card
+    /// the build has no kernels for, the last load that failed); empty when there is nothing to say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
 }
 
 /// A finished run; its pictures travel as blob frames before this message.

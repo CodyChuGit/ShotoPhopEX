@@ -108,6 +108,27 @@ pub struct DiffusionEngine {
     /// LoRA files on the device, by path, in the order they were loaded (the oldest goes when
     /// the cache is full); cleared with the models.
     loras: Vec<(PathBuf, Arc<LoraFile>)>,
+    /// The card as the driver describes it, asked once when the engine is made.
+    gpu: Option<qwen_image_rs::device::Gpu>,
+    /// Why a CUDA build serves nothing on this PC (no NVIDIA driver or card, a card older than
+    /// the kernels): the engine lists no templates and says so in its health.
+    refused: Option<String>,
+}
+
+/// The card and, in a CUDA build, the sentence that refuses it (plan-native-engine §10, GPU
+/// detection). A CPU build refuses nothing: it runs, slowly, for tests.
+fn gpu_and_refusal() -> (Option<qwen_image_rs::device::Gpu>, Option<String>) {
+    use qwen_image_rs::device::{built_compute_cap, check, probe};
+    let probed = probe();
+    if !cfg!(feature = "cuda") {
+        return (probed.ok(), None);
+    }
+    let refused = match &probed {
+        Ok(g) => check(g, built_compute_cap()).err(),
+        Err(e) => Some(e.clone()),
+    };
+    let refused = refused.map(|why| format!("The native diffusion models need an NVIDIA RTX card: {why}."));
+    (probed.ok(), refused)
 }
 
 /// One LoRA a request asks for: `{"file": "name-or-path.safetensors", "strength": 1.0}`.
@@ -133,7 +154,11 @@ fn lora_asks(params: &std::collections::BTreeMap<String, Value>) -> Result<Vec<(
 
 impl DiffusionEngine {
     pub fn new(models_root: PathBuf, quant_text: bool) -> Self {
-        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new() }
+        let (gpu, refused) = gpu_and_refusal();
+        if let Some(why) = &refused {
+            eprintln!("gn-diffusion: {why}");
+        }
+        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused }
     }
 
     /// Where a LoRA named by a request lives: an absolute path as given, a name under the model
@@ -252,8 +277,11 @@ impl DiffusionEngine {
         }
     }
 
-    /// The templates the weights on disk serve.
+    /// The templates the weights on disk serve (none on a refused card).
     fn installed(&self) -> Vec<&'static str> {
+        if self.refused.is_some() {
+            return Vec::new();
+        }
         TEMPLATES.iter().filter(|(_, _, f)| self.has_family(*f)).map(|(t, _, _)| *t).collect()
     }
 
@@ -425,18 +453,27 @@ impl Engine for DiffusionEngine {
     }
 
     fn health(&mut self) -> Health {
-        let (resident, cuda) = match &self.resident {
-            Resident::None => (Vec::new(), true),
-            Resident::Qwen(p) => (vec![MODEL_DIR.to_string()], p.is_cuda()),
-            Resident::Krea2(p) => (vec![KREA2_DIR.to_string()], p.is_cuda()),
+        let (resident, cuda, vram) = match &self.resident {
+            Resident::None => (Vec::new(), cfg!(feature = "cuda"), None),
+            Resident::Qwen(p) => (vec![MODEL_DIR.to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::Krea2(p) => (vec![KREA2_DIR.to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
         };
+        // The card's name where the driver gave one; the free memory only while a pipeline
+        // holds the context (asking without one would create it).
+        let device = match (&self.gpu, cuda) {
+            (Some(g), true) => g.name.clone(),
+            (None, true) => "cuda:0".into(),
+            (_, false) => "cpu".into(),
+        };
+        let detail = self.refused.clone().or_else(|| self.last_error.clone()).unwrap_or_default();
         Health {
             ok: !self.installed().is_empty() && self.last_error.is_none(),
             engine: "qir".into(),
-            device: if cuda { "cuda:0".into() } else { "cpu".into() },
-            vram_total: None,
-            vram_free: None,
+            device,
+            vram_total: vram.map(|(_, t)| t as u64).or(self.gpu.as_ref().map(|g| g.total_bytes as u64)),
+            vram_free: vram.map(|(f, _)| f as u64),
             resident,
+            detail,
         }
     }
 
@@ -448,6 +485,9 @@ impl Engine for DiffusionEngine {
         cancel: &AtomicBool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
         let started = Instant::now();
+        if let Some(why) = &self.refused {
+            return Err(EngineError::new(ErrorKind::Unsupported, why.clone()));
+        }
         let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model)) else {
             let served: Vec<&str> = TEMPLATES.iter().map(|(t, _, _)| *t).collect();
             return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not served here ({} are)", req.model, served.join(", "))));
@@ -648,6 +688,19 @@ mod tests {
         let r = e.run(&m, &[vec![0; 8]], &mut |_, _| {}, &AtomicBool::new(false));
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
         assert!(!has_models(Path::new("Z:/nowhere")));
+    }
+
+    /// A refused card (no driver, too old for the kernels): no templates, the sentence in the
+    /// health and in every run's answer.
+    #[test]
+    fn a_refused_card_serves_nothing_and_says_why() {
+        let mut e = DiffusionEngine::new(PathBuf::from("Z:/nowhere/models"), false);
+        e.refused = Some("The native diffusion models need an NVIDIA RTX card: Card (8.9) is too old.".into());
+        let h = e.health();
+        assert!(!h.ok && h.detail.contains("Card"), "{h:?}");
+        assert!(e.installed().is_empty());
+        let r = e.run(&req(TEMPLATE_KREA2, "image"), &[], &mut |_, _| {}, &AtomicBool::new(false));
+        assert!(matches!(&r, Err(EngineError { kind: ErrorKind::Unsupported, message }) if message.contains("RTX")), "{r:?}");
     }
 
     #[test]
