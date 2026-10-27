@@ -51,6 +51,9 @@ pub const TEMPLATE_EXPAND: &str = "qwen-2.1/expand";
 /// The matte template: the picture alone, the answer's alpha is the cut-out (the 2.1 VAE
 /// decodes RGBA).
 pub const TEMPLATE_MATTE: &str = "qwen-2.1/matte";
+/// A new picture at the asked size from one to nine reference pictures (2.1's text to image
+/// with the references in its encoder's view): PhotoshopEX's Generate Image with references.
+pub const TEMPLATE_IMAGE_REF: &str = "qwen-2.1/image-ref";
 /// Krea 2 Turbo text to image.
 pub const TEMPLATE_KREA2: &str = "krea2-turbo/image";
 /// Krea 2 Turbo editing a picture by instruction: the picture as in-context tokens and in the
@@ -75,8 +78,9 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 9] = [
+pub const TEMPLATES: [(&str, &str, Family); 10] = [
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
+    (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
     (TEMPLATE_EDIT, "edit", Family::QwenImage21),
     (TEMPLATE_FILL, "fill", Family::QwenImage21),
@@ -558,6 +562,19 @@ impl Engine for DiffusionEngine {
                 if references.len() > MAX_PICTURES {
                     return Err(EngineError::new(ErrorKind::BadRequest, format!("{} pictures; at most {MAX_PICTURES}", references.len())));
                 }
+            }
+            // An image from references: the references alone, the target at the asked size.
+            "image" if req.model == TEMPLATE_IMAGE_REF => {
+                if req.references.is_empty() {
+                    return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs at least one reference", req.model)));
+                }
+                for (i, r) in req.references.iter().enumerate() {
+                    references.push(reference_of(r, blobs, &format!("reference {}", i + 1))?);
+                }
+                if references.len() > MAX_PICTURES - 1 {
+                    return Err(EngineError::new(ErrorKind::BadRequest, format!("{} references; at most {}", references.len(), MAX_PICTURES - 1)));
+                }
+                canvas = Some((side(req.width), side(req.height)));
             }
             _ => {}
         }
