@@ -1,7 +1,9 @@
-//! Checkpoint validation, parity primitives, CLIP, vision and the interactive heads for the candle
+//! Checkpoint validation, parity primitives, CLIP, vision, geometry, the detector and the interactive heads for the
 //! SAM 3.1 port.
 
 pub mod attention;
+pub mod detector;
+mod detector_heads;
 pub mod geometry;
 pub mod mask_decoder;
 pub mod ops;
