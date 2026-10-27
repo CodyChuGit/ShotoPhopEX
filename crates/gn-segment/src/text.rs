@@ -2,11 +2,11 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result, ensure};
-use candle_core::{DType, Device, Tensor, safetensors::BufferedSafetensors};
+use anyhow::{Result, ensure};
+use candle_core::{Device, Tensor};
 use candle_nn::{Embedding, LayerNorm, Linear, Module};
 
-use crate::weights::split_qkv;
+use crate::{prompt::Loader, weights::split_qkv};
 
 const CONTEXT: usize = 32;
 const WIDTH: usize = 1024;
@@ -27,9 +27,12 @@ impl TextEncoder {
     /// Load raw SAM checkpoint names and cast the selected parameters to f32.
     /// Buffered loading avoids unsafe memory mapping and does not upload unrelated weights.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
-        let path = path.as_ref();
-        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        let loader = Loader { tensors: BufferedSafetensors::new(bytes)?, device };
+        Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
+    }
+
+    /// Load this part from the shared checkpoint buffer.
+    pub fn from_checkpoint(checkpoint: &crate::weights::Checkpoint, device: &Device) -> Result<Self> {
+        let loader = Loader { checkpoint, device };
         let lang = "detector.backbone.language_backbone";
         let encoder = format!("{lang}.encoder");
         let tokens = Embedding::new(loader.get(&format!("{encoder}.token_embedding.weight"), &[49408, WIDTH])?, WIDTH);
@@ -39,7 +42,7 @@ impl TextEncoder {
             tokens,
             positions,
             blocks,
-            final_norm: loader.norm(&format!("{encoder}.ln_final"))?,
+            final_norm: loader.norm(&format!("{encoder}.ln_final"), WIDTH)?,
             resizer: loader.linear(&format!("{lang}.resizer"), WIDTH, 256)?,
         })
     }
@@ -78,12 +81,12 @@ impl Block {
         let (qw, kw, vw) = split_qkv(&loader.get(&format!("{p}.attn.in_proj_weight"), &[3 * WIDTH, WIDTH])?)?;
         let (qb, kb, vb) = split_qkv(&loader.get(&format!("{p}.attn.in_proj_bias"), &[3 * WIDTH])?)?;
         Ok(Self {
-            norm1: loader.norm(&format!("{p}.ln_1"))?,
+            norm1: loader.norm(&format!("{p}.ln_1"), WIDTH)?,
             q: Linear::new(qw.contiguous()?, Some(qb)),
             k: Linear::new(kw.contiguous()?, Some(kb)),
             v: Linear::new(vw.contiguous()?, Some(vb)),
             out: loader.linear(&format!("{p}.attn.out_proj"), WIDTH, WIDTH)?,
-            norm2: loader.norm(&format!("{p}.ln_2"))?,
+            norm2: loader.norm(&format!("{p}.ln_2"), WIDTH)?,
             fc1: loader.linear(&format!("{p}.mlp.c_fc"), WIDTH, 4096)?,
             fc2: loader.linear(&format!("{p}.mlp.c_proj"), 4096, WIDTH)?,
         })
@@ -105,23 +108,24 @@ impl Block {
     }
 }
 
-struct Loader<'a> {
-    tensors: BufferedSafetensors,
-    device: &'a Device,
-}
-
-impl Loader<'_> {
-    fn get(&self, key: &str, shape: &[usize]) -> Result<Tensor> {
-        let tensor = self.tensors.load(key, self.device).with_context(|| format!("load {key}"))?;
-        ensure!(tensor.dims() == shape, "{key}: expected {shape:?}, got {:?}", tensor.dims());
-        Ok(tensor.to_dtype(DType::F32)?)
+/// Local CLIP BPE tokenizer with the worker's fixed 32-token window.
+pub struct ClipTokenizer(tokenizers::Tokenizer);
+impl ClipTokenizer {
+    /// Read the ONNX route's tokenizer.json, retaining its normalization and BPE rules.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self(tokenizers::Tokenizer::from_file(path).map_err(|e| anyhow::anyhow!("{e}"))?))
     }
-
-    fn linear(&self, p: &str, input: usize, output: usize) -> Result<Linear> {
-        Ok(Linear::new(self.get(&format!("{p}.weight"), &[output, input])?, Some(self.get(&format!("{p}.bias"), &[output])?)))
-    }
-
-    fn norm(&self, p: &str) -> Result<LayerNorm> {
-        Ok(LayerNorm::new(self.get(&format!("{p}.weight"), &[WIDTH])?, self.get(&format!("{p}.bias"), &[WIDTH])?, 1e-5))
+    /// Disable special-token insertion, keep 30 pieces, then add BOS/EOS and zero padding.
+    pub fn encode(&self, text: &str) -> Result<([u32; CONTEXT], [bool; CONTEXT])> {
+        let enc = self.0.encode(text, false).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut ids = [0; CONTEXT];
+        let mut valid = [false; CONTEXT];
+        ids[0] = 49406;
+        let pieces = enc.get_ids();
+        let n = pieces.len().min(CONTEXT - 2);
+        ids[1..n + 1].copy_from_slice(&pieces[..n]);
+        ids[n + 1] = 49407;
+        valid[..n + 2].fill(true);
+        Ok((ids, valid))
     }
 }

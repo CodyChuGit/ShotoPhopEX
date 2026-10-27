@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result, ensure};
-use candle_core::{DType, Device, Tensor, safetensors::BufferedSafetensors};
+use anyhow::{Result, ensure};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::{LayerNorm, Linear, Module};
 
 use crate::{detector_heads::Heads, prompt::Loader, weights::split_qkv};
@@ -40,8 +40,12 @@ pub struct Detector {
 impl Detector {
     /// Load selected raw F16 checkpoint keys as f32 without unsafe mapping or cuDNN.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
-        let bytes = std::fs::read(path.as_ref()).with_context(|| format!("read {}", path.as_ref().display()))?;
-        let l = Loader { tensors: BufferedSafetensors::new(bytes)?, device };
+        Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
+    }
+
+    /// Load this part from the shared checkpoint buffer.
+    pub fn from_checkpoint(checkpoint: &crate::weights::Checkpoint, device: &Device) -> Result<Self> {
+        let l = Loader { checkpoint, device };
         let p = "detector.transformer.decoder";
         Ok(Self {
             encoder: (0..6).map(|i| EncoderLayer::load(&l, &format!("detector.transformer.encoder.layers.{i}"))).collect::<Result<_>>()?,

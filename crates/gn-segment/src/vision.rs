@@ -1,11 +1,12 @@
 //! SAM 3.1 ViTDet trunk and the detector and interactive feature pyramids.
 
+use crate::prompt::Loader;
 use crate::{
     attention::attention,
     position::{Rope2d, image_position},
 };
 use anyhow::{Context, Result, ensure};
-use candle_core::{DType, Device, Tensor, safetensors::BufferedSafetensors};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::{LayerNorm, Module};
 use std::path::Path;
 
@@ -33,11 +34,15 @@ pub struct Vision {
 impl Vision {
     /// Load selected raw checkpoint keys without unsafe memory mapping or loader renames.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
-        let path = path.as_ref();
-        let loader = Loader { tensors: BufferedSafetensors::new(std::fs::read(path).with_context(|| format!("read {}", path.display()))?)?, device };
+        Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
+    }
+
+    /// Load this part from the shared checkpoint buffer.
+    pub fn from_checkpoint(checkpoint: &crate::weights::Checkpoint, device: &Device) -> Result<Self> {
+        let loader = Loader { checkpoint, device };
         let p = "detector.backbone.vision_backbone";
         let t = format!("{p}.trunk");
-        let pos = loader.get(&format!("{t}.pos_embed"), &[1, 577, 1024])?.to_dtype(DType::F32)?;
+        let pos = loader.raw(&format!("{t}.pos_embed"), &[1, 577, 1024])?.to_dtype(DType::F32)?;
         let pos = pos.narrow(1, 1, 576)?.reshape((1, 24, 24, 1024))?;
         let rows = Tensor::cat(&[&pos, &pos, &pos], 1)?;
         let positions = Tensor::cat(&[&rows, &rows, &rows], 2)?;
@@ -49,13 +54,13 @@ impl Vision {
             ])
         };
         Ok(Self {
-            patch: loader.conv(&format!("{t}.patch_embed.proj"), 3, 1024, 14, 14, 0, false)?,
+            patch: loader.vision_conv(&format!("{t}.patch_embed.proj"), 3, 1024, 14, 14, 0, false)?,
             positions,
-            norm: loader.norm(&format!("{t}.ln_pre"))?,
+            norm: loader.norm(&format!("{t}.ln_pre"), 1024)?,
             blocks: (0..32).map(|i| Block::load(&loader, &format!("{t}.blocks.{i}"), i % 8 == 7)).collect::<Result<_>>()?,
             detector: fpn("convs")?,
             interactive: fpn("interactive_convs")?,
-            no_mem: loader.get("tracker.model.interactivity_no_mem_embed", &[1, 1, 256])?.to_dtype(DType::F32)?.reshape((1, 256, 1, 1))?,
+            no_mem: loader.raw("tracker.model.interactivity_no_mem_embed", &[1, 1, 256])?.to_dtype(DType::F32)?.reshape((1, 256, 1, 1))?,
             global_rope: Rope2d::new(72, 72, 64, 24.0 / 72.0, device)?,
             window_rope: Rope2d::new(24, 24, 64, 1.0, device)?,
         })
@@ -66,9 +71,12 @@ impl Vision {
         self.forward_with_observer(pixels, |_, _| Ok(()))
     }
 
-    /// Observe parity boundaries without retaining full intermediate activations.
-    /// Trunk blocks use NHWC; patch and pyramid observations use NCHW.
-    pub fn forward_with_observer(&self, pixels: &Tensor, mut observe: impl FnMut(&str, &Tensor) -> Result<()>) -> Result<VisionOut> {
+    /// Encode refinement crops without computing the unused detector pyramid.
+    pub fn forward_tracker(&self, pixels: &Tensor) -> Result<[Tensor; 3]> {
+        let x = self.trunk(pixels, &mut |_, _| Ok(()))?;
+        Ok([self.interactive[0].forward(&x)?, self.interactive[1].forward(&x)?, self.interactive[2].forward(&x)?.broadcast_add(&self.no_mem)?])
+    }
+    fn trunk(&self, pixels: &Tensor, observe: &mut impl FnMut(&str, &Tensor) -> Result<()>) -> Result<Tensor> {
         ensure!(pixels.dims() == [1, 3, 1008, 1008], "vision requires [1,3,1008,1008]");
         let patch = self.patch.forward(&pixels.to_dtype(DType::F32)?)?;
         observe("patch", &patch)?;
@@ -80,6 +88,13 @@ impl Vision {
             }
         }
         let x = x.permute((0, 3, 1, 2))?.contiguous()?;
+        Ok(x)
+    }
+
+    /// Observe parity boundaries without retaining full intermediate activations.
+    /// Trunk blocks use NHWC; patch and pyramid observations use NCHW.
+    pub fn forward_with_observer(&self, pixels: &Tensor, mut observe: impl FnMut(&str, &Tensor) -> Result<()>) -> Result<VisionOut> {
+        let x = self.trunk(pixels, &mut observe)?;
         let mut pyramid = |branches: &[Fpn; 3], name: &str, interactive: bool| -> Result<[Tensor; 3]> {
             let mut outputs = Vec::with_capacity(3);
             for (i, branch) in branches.iter().enumerate() {
@@ -149,12 +164,12 @@ struct Block {
 impl Block {
     fn load(l: &Loader<'_>, p: &str, global: bool) -> Result<Self> {
         Ok(Self {
-            norm1: l.norm(&format!("{p}.norm1"))?,
-            norm2: l.norm(&format!("{p}.norm2"))?,
-            qkv: l.linear(&format!("{p}.attn.qkv"), 1024, 3072)?,
-            proj: l.linear(&format!("{p}.attn.proj"), 1024, 1024)?,
-            fc1: l.linear(&format!("{p}.mlp.fc1"), 1024, 4736)?,
-            fc2: l.linear(&format!("{p}.mlp.fc2"), 4736, 1024)?,
+            norm1: l.norm(&format!("{p}.norm1"), 1024)?,
+            norm2: l.norm(&format!("{p}.norm2"), 1024)?,
+            qkv: l.compact_linear(&format!("{p}.attn.qkv"), 1024, 3072)?,
+            proj: l.compact_linear(&format!("{p}.attn.proj"), 1024, 1024)?,
+            fc1: l.compact_linear(&format!("{p}.mlp.fc1"), 1024, 4736)?,
+            fc2: l.compact_linear(&format!("{p}.mlp.fc2"), 4736, 1024)?,
             global,
         })
     }
@@ -235,7 +250,7 @@ impl Fpn {
     fn load(l: &Loader<'_>, p: &str, level: usize) -> Result<Self> {
         let mut up = Vec::new();
         let mut add = |name: &str, ic, oc| -> Result<()> {
-            up.push(Up { weight: l.get(&format!("{p}.{name}.weight"), &[ic, oc, 2, 2])?, bias: l.get(&format!("{p}.{name}.bias"), &[oc])? });
+            up.push(Up { weight: l.raw(&format!("{p}.{name}.weight"), &[ic, oc, 2, 2])?, bias: l.raw(&format!("{p}.{name}.bias"), &[oc])? });
             Ok(())
         };
         if level == 0 {
@@ -246,8 +261,8 @@ impl Fpn {
         }
         Ok(Self {
             up,
-            conv1: l.conv(&format!("{p}.conv_1x1"), [256, 512, 1024][level], 256, 1, 1, 0, true)?,
-            conv3: l.conv(&format!("{p}.conv_3x3"), 256, 256, 3, 1, 1, true)?,
+            conv1: l.vision_conv(&format!("{p}.conv_1x1"), [256, 512, 1024][level], 256, 1, 1, 0, true)?,
+            conv3: l.vision_conv(&format!("{p}.conv_3x3"), 256, 256, 3, 1, 1, true)?,
         })
     }
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -261,32 +276,15 @@ impl Fpn {
         self.conv3.forward(&self.conv1.forward(&x)?)
     }
 }
-struct Loader<'a> {
-    tensors: BufferedSafetensors,
-    device: &'a Device,
-}
 impl Loader<'_> {
-    fn get(&self, key: &str, shape: &[usize]) -> Result<Tensor> {
-        let x = self.tensors.load(key, self.device).with_context(|| format!("load {key}"))?;
-        ensure!(x.dims() == shape, "{key}: expected {shape:?}, got {:?}", x.dims());
-        ensure!(x.dtype() == DType::F16, "{key}: SAM checkpoint must store F16 weights");
-        Ok(x)
-    }
-    fn norm(&self, p: &str) -> Result<LayerNorm> {
-        Ok(LayerNorm::new(
-            self.get(&format!("{p}.weight"), &[1024])?.to_dtype(DType::F32)?,
-            self.get(&format!("{p}.bias"), &[1024])?.to_dtype(DType::F32)?,
-            1e-5,
-        ))
-    }
-    fn linear(&self, p: &str, ic: usize, oc: usize) -> Result<Linear> {
-        Ok(Linear { weight: self.get(&format!("{p}.weight"), &[oc, ic])?, bias: self.get(&format!("{p}.bias"), &[oc])? })
+    fn compact_linear(&self, p: &str, ic: usize, oc: usize) -> Result<Linear> {
+        Ok(Linear { weight: self.raw(&format!("{p}.weight"), &[oc, ic])?, bias: self.raw(&format!("{p}.bias"), &[oc])? })
     }
     #[allow(clippy::too_many_arguments)]
-    fn conv(&self, p: &str, ic: usize, oc: usize, k: usize, stride: usize, padding: usize, bias: bool) -> Result<Conv> {
+    fn vision_conv(&self, p: &str, ic: usize, oc: usize, k: usize, stride: usize, padding: usize, bias: bool) -> Result<Conv> {
         Ok(Conv {
-            weight: self.get(&format!("{p}.weight"), &[oc, ic, k, k])?,
-            bias: if bias { Some(self.get(&format!("{p}.bias"), &[oc])?) } else { None },
+            weight: self.raw(&format!("{p}.weight"), &[oc, ic, k, k])?,
+            bias: if bias { Some(self.raw(&format!("{p}.bias"), &[oc])?) } else { None },
             stride,
             padding,
         })

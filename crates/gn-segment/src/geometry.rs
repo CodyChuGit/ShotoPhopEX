@@ -1,8 +1,9 @@
 //! Detector box prompts and the image-conditioned geometry CLS token.
 
+use crate::detector::Attention;
 use crate::prompt::{Loader, channel_norm};
-use anyhow::{Context, Result, ensure};
-use candle_core::{DType, Device, Tensor, safetensors::BufferedSafetensors};
+use anyhow::{Result, ensure};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::{LayerNorm, Linear, Module};
 use std::path::Path;
 
@@ -23,8 +24,12 @@ pub struct Geometry {
 impl Geometry {
     /// Load raw detector.geometry_encoder F16 weights and perform all math in f32.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
-        let bytes = std::fs::read(path.as_ref()).with_context(|| format!("read {}", path.as_ref().display()))?;
-        let l = Loader { tensors: BufferedSafetensors::new(bytes)?, device };
+        Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
+    }
+
+    /// Load this part from the shared checkpoint buffer.
+    pub fn from_checkpoint(checkpoint: &crate::weights::Checkpoint, device: &Device) -> Result<Self> {
+        let l = Loader { checkpoint, device };
         let p = "detector.geometry_encoder";
         Ok(Self {
             direct: l.linear(&format!("{p}.boxes_direct_project"), 4, 256)?,
@@ -104,26 +109,6 @@ fn box_positions(boxes: &Tensor) -> Result<Tensor> {
     Ok(Tensor::cat(&parts, 2)?)
 }
 
-struct Attention {
-    q: Linear,
-    k: Linear,
-    v: Linear,
-    out: Linear,
-}
-impl Attention {
-    fn load(l: &Loader<'_>, p: &str) -> Result<Self> {
-        let weight = l.get(&format!("{p}.in_proj_weight"), &[768, 256])?;
-        let bias = l.get(&format!("{p}.in_proj_bias"), &[768])?;
-        let projection = |i: usize| -> Result<Linear> { Ok(Linear::new(weight.narrow(0, i * 256, 256)?, Some(bias.narrow(0, i * 256, 256)?))) };
-        Ok(Self { q: projection(0)?, k: projection(1)?, v: projection(2)?, out: l.linear(&format!("{p}.out_proj"), 256, 256)? })
-    }
-    fn forward(&self, q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
-        let heads = |x: &Tensor, linear: &Linear| -> Result<Tensor> { Ok(linear.forward(x)?.reshape((1, x.dim(1)?, 8, 32))?.transpose(1, 2)?.contiguous()?) };
-        let out = crate::attention::attention(&heads(q, &self.q)?, &heads(k, &self.k)?, &heads(v, &self.v)?, None, false, None, 64)?;
-        Ok(self.out.forward(&out.transpose(1, 2)?.contiguous()?.reshape((1, q.dim(1)?, 256))?)?)
-    }
-}
-
 struct Layer {
     self_attn: Attention,
     cross_attn: Attention,
@@ -143,8 +128,8 @@ impl Layer {
     }
     fn forward(&self, x: &Tensor, keys: &Tensor, values: &Tensor) -> Result<Tensor> {
         let norm = self.norms[0].forward(x)?;
-        let x = (x + self.self_attn.forward(&norm, &norm, &norm)?)?;
-        let x = (&x + self.cross_attn.forward(&self.norms[1].forward(&x)?, keys, values)?)?;
+        let x = (x + self.self_attn.forward(&norm, &norm, &norm, None, None)?)?;
+        let x = (&x + self.cross_attn.forward(&self.norms[1].forward(&x)?, keys, values, None, None)?)?;
         Ok((&x + self.linear2.forward(&self.linear1.forward(&self.norms[2].forward(&x)?)?.relu()?)?)?)
     }
 }
