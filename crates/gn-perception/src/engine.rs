@@ -9,6 +9,11 @@
 //!
 //! The runtime and the models load on the first request and stay resident; the last picture's
 //! embedding is cached by content, so the probe that follows the pointer pays only the prompt.
+//!
+//! Two backends answer the same requests. With the `candle` feature and SAM 3.1's own
+//! checkpoint on disk (ComfyUI's `checkpoints/sam3.1_multiplex_fp16.safetensors`, or one in
+//! `sam3.1/`), `gn-segment` runs it on candle: no ONNX Runtime, no cuDNN, no exported graphs
+//! (Rust rebuild R1). Otherwise the exported ONNX graphs run through ONNX Runtime.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,17 +31,50 @@ use crate::sam31::{Embedding, Options, Sam31};
 pub const TEMPLATES: [&str; 3] = ["sam3.1/segment", "sam3.1/segment-point", "sam3.1/segment-box"];
 /// The model root's subdirectory for SAM 3.1.
 pub const SAM31_DIR: &str = "sam3.1";
+/// SAM 3.1's checkpoint as ComfyUI names it.
+pub const SAM31_CHECKPOINT: &str = "sam3.1_multiplex_fp16.safetensors";
+
+/// The resident model: the candle port or the ONNX graphs.
+enum Model {
+    Ort(Box<Sam31>),
+    #[cfg(feature = "candle")]
+    Candle(Box<gn_segment::sam::Sam31>),
+}
+
+/// A picture's embedding, from the backend that made it.
+enum Emb {
+    Ort(Embedding),
+    #[cfg(feature = "candle")]
+    Candle(Box<gn_segment::sam::Frame>),
+}
+
+/// The candle backend's files under a models root: the checkpoint and the CLIP tokenizer (the
+/// ONNX folder's tokenizer.json, else ComfyUI's `comfy/sd1_tokenizer` beside a ComfyUI
+/// `models` folder).
+#[cfg(feature = "candle")]
+fn candle_files(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let checkpoint = [root.join("checkpoints").join(SAM31_CHECKPOINT), root.join(SAM31_DIR).join(SAM31_CHECKPOINT)].into_iter().find(|p| p.is_file())?;
+    let own = root.join(SAM31_DIR).join("tokenizer.json");
+    let comfy = root.parent().map(|p| p.join("comfy").join("sd1_tokenizer")).filter(|d| d.join("vocab.json").is_file() && d.join("merges.txt").is_file());
+    let tokenizer = if own.is_file() { Some(own) } else { comfy }?;
+    Some((checkpoint, tokenizer))
+}
+
+#[cfg(not(feature = "candle"))]
+fn candle_files(_: &Path) -> Option<(PathBuf, PathBuf)> {
+    None
+}
 
 pub struct PerceptionEngine {
     /// Directories searched for ONNX Runtime and the CUDA / cuDNN libraries.
     runtime_dirs: Vec<PathBuf>,
-    /// The directory holding one subdirectory per model (`sam3.1/`).
+    /// The directory holding one subdirectory per model (`sam3.1/`), or a ComfyUI `models` folder.
     models_root: PathBuf,
     device: Device,
     rt: Option<Runtime>,
-    sam: Option<Sam31>,
+    sam: Option<Model>,
     /// The last picture embedded: a content hash and its embedding.
-    cache: Option<(u64, Embedding)>,
+    cache: Option<(u64, Emb)>,
     last_error: Option<String>,
 }
 
@@ -55,16 +93,45 @@ impl PerceptionEngine {
         self.models_root.join(SAM31_DIR)
     }
 
-    /// Open the runtime and the SAM graphs if they are not open yet.
+    /// Is a backend's model on disk (the checkpoint for candle, the graphs for ONNX Runtime)?
+    fn has_model(&self) -> bool {
+        candle_files(&self.models_root).is_some() || Sam31::is_layout(&self.sam_dir())
+    }
+
+    /// Open SAM 3.1 if it is not open yet: on candle when its checkpoint is there, else the
+    /// runtime and the ONNX graphs.
     fn ensure_sam(&mut self, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
+        #[cfg(feature = "candle")]
+        if let Some((checkpoint, tokenizer)) = candle_files(&self.models_root).filter(|_| self.sam.is_none()) {
+            progress(0.0, "Loading SAM 3.1");
+            let device = match self.device {
+                Device::Cuda { ordinal } => candle_core::Device::new_cuda(ordinal as usize).map_err(|e| candle_error(e.into()))?,
+                Device::Cpu => candle_core::Device::Cpu,
+            };
+            let t0 = Instant::now();
+            let mut sam = gn_segment::sam::Sam31::load(&checkpoint, &device).map_err(candle_error)?;
+            sam.set_tokenizer(&tokenizer).map_err(candle_error)?;
+            eprintln!("gn-perception: SAM 3.1 on candle ({}) loaded in {:.1} s", checkpoint.display(), t0.elapsed().as_secs_f32());
+            self.sam = Some(Model::Candle(Box::new(sam)));
+        }
         if self.sam.is_none() {
             let dir = self.sam_dir();
             if !Sam31::is_layout(&dir) {
-                return Err(EngineError::new(ErrorKind::ModelMissing, format!("no SAM 3.1 graphs in {} (export them with tools/export_sam31.py)", dir.display())));
+                return Err(EngineError::new(
+                    ErrorKind::ModelMissing,
+                    format!(
+                        "no SAM 3.1 in {}: neither ComfyUI's checkpoints/{SAM31_CHECKPOINT} nor ONNX graphs in {}",
+                        self.models_root.display(),
+                        dir.display()
+                    ),
+                ));
             }
             if self.rt.is_none() {
                 let Some(ort_dir) = self.ort_dir() else {
-                    return Err(EngineError::new(ErrorKind::ModelUnreadable, format!("no {} in the runtime directories {:?}", library_name(), self.runtime_dirs)));
+                    return Err(EngineError::new(
+                        ErrorKind::ModelUnreadable,
+                        format!("no {} in the runtime directories {:?}", library_name(), self.runtime_dirs),
+                    ));
                 };
                 progress(0.0, "Loading the runtime");
                 let cfg = RuntimeConfig { ort_dir, library_dirs: self.runtime_dirs.clone(), device: self.device, profile_dir: None };
@@ -72,9 +139,74 @@ impl PerceptionEngine {
             }
             let Some(rt) = self.rt.as_ref() else { return Err(EngineError::new(ErrorKind::Internal, "no runtime")) };
             progress(0.0, "Loading SAM 3.1");
-            self.sam = Some(Sam31::open(rt, &dir).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?);
+            self.sam = Some(Model::Ort(Box::new(Sam31::open(rt, &dir).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?)));
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "candle")]
+fn candle_error(e: anyhow::Error) -> EngineError {
+    EngineError::new(ErrorKind::ModelUnreadable, format!("{e:#}"))
+}
+
+#[cfg(feature = "candle")]
+fn candle_opts(o: Options) -> gn_segment::sam::Options {
+    gn_segment::sam::Options { threshold: o.threshold, max_detections: o.max_detections, refine_iterations: o.refine_iterations }
+}
+
+#[cfg(feature = "candle")]
+fn from_candle(i: gn_segment::sam::Instance) -> Instance {
+    Instance { score: i.score, bbox: i.bbox, mask: i.mask, bounds: i.bounds, pixels: i.pixels }
+}
+
+#[cfg(feature = "candle")]
+fn mismatched() -> EngineError {
+    EngineError::new(ErrorKind::Internal, "the cached picture came from the other backend")
+}
+
+/// The three routes on whichever backend is resident.
+impl Model {
+    fn embed(&mut self, rgba: &[u8], w: usize, h: usize) -> Result<Emb, EngineError> {
+        match self {
+            Model::Ort(s) => s.embed(rgba, w, h).map(Emb::Ort).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
+            #[cfg(feature = "candle")]
+            Model::Candle(s) => s.encode(rgba, w, h).map(|f| Emb::Candle(Box::new(f))).map_err(candle_error),
+        }
+    }
+
+    fn detect_text(&mut self, emb: &Emb, prompt: &str, boxes: &[[f32; 4]], opts: Options) -> Result<Vec<Instance>, EngineError> {
+        match (self, emb) {
+            (Model::Ort(s), Emb::Ort(e)) => s.detect_text(e, prompt, boxes, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
+            #[cfg(feature = "candle")]
+            (Model::Candle(s), Emb::Candle(f)) => {
+                s.detect_text(f, prompt, boxes, candle_opts(opts)).map(|r| r.0.into_iter().map(from_candle).collect()).map_err(candle_error)
+            }
+            #[cfg(feature = "candle")]
+            _ => Err(mismatched()),
+        }
+    }
+
+    fn segment_points(&mut self, emb: &Emb, positives: &[[f32; 2]], negatives: &[[f32; 2]], opts: Options) -> Result<Instance, EngineError> {
+        match (self, emb) {
+            (Model::Ort(s), Emb::Ort(e)) => {
+                s.segment_points(e, positives, negatives, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))
+            }
+            #[cfg(feature = "candle")]
+            (Model::Candle(s), Emb::Candle(f)) => s.segment_points(f, positives, negatives, candle_opts(opts)).map(|r| from_candle(r.0)).map_err(candle_error),
+            #[cfg(feature = "candle")]
+            _ => Err(mismatched()),
+        }
+    }
+
+    fn segment_box(&mut self, emb: &Emb, bbox: [f32; 4], opts: Options) -> Result<Instance, EngineError> {
+        match (self, emb) {
+            (Model::Ort(s), Emb::Ort(e)) => s.segment_box(e, bbox, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
+            #[cfg(feature = "candle")]
+            (Model::Candle(s), Emb::Candle(f)) => s.segment_box(f, bbox, candle_opts(opts)).map(|r| from_candle(r.0)).map_err(candle_error),
+            #[cfg(feature = "candle")]
+            _ => Err(mismatched()),
+        }
     }
 }
 
@@ -144,7 +276,7 @@ fn coverage_blob(inst: &Instance, w: u32, h: u32, index: u32) -> (Blob, Vec<u8>)
 
 impl Engine for PerceptionEngine {
     fn name(&self) -> String {
-        "ort".into()
+        "perception".into()
     }
 
     fn health(&mut self) -> Health {
@@ -152,11 +284,11 @@ impl Engine for PerceptionEngine {
         if self.sam.is_some() {
             resident.push("sam3.1".to_string());
         }
-        let has_models = Sam31::is_layout(&self.sam_dir());
-        let has_runtime = self.ort_dir().is_some();
+        // Candle needs no runtime library; the ONNX graphs need ONNX Runtime.
+        let ready = candle_files(&self.models_root).is_some() || (Sam31::is_layout(&self.sam_dir()) && self.ort_dir().is_some());
         Health {
-            ok: has_models && has_runtime && self.last_error.is_none(),
-            engine: "ort".into(),
+            ok: ready && self.last_error.is_none(),
+            engine: "perception".into(),
             device: match self.device {
                 Device::Cuda { ordinal } => format!("cuda:{ordinal}"),
                 Device::Cpu => "cpu".into(),
@@ -168,7 +300,13 @@ impl Engine for PerceptionEngine {
         }
     }
 
-    fn run(&mut self, req: &RunRequest, blobs: &[Vec<u8>], progress: &mut dyn FnMut(f32, &str), cancel: &AtomicBool) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+    fn run(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        cancel: &AtomicBool,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
         let started = Instant::now();
         if req.task != "segment" {
             return Err(EngineError::new(ErrorKind::Unsupported, format!("this engine serves segmentation only, not `{}`", req.task)));
@@ -211,7 +349,7 @@ impl Engine for PerceptionEngine {
             let hit = cache.as_ref().is_some_and(|(k, _)| *k == key);
             if !hit {
                 progress(0.1, "Reading the picture");
-                let emb = sam.embed(rgba, w as usize, h as usize).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
+                let emb = sam.embed(rgba, w as usize, h as usize)?;
                 *cache = Some((key, emb));
             }
             let Some((_, emb)) = cache.as_ref() else { return Err(EngineError::new(ErrorKind::Internal, "no embedding")) };
@@ -220,21 +358,17 @@ impl Engine for PerceptionEngine {
             }
             progress(0.5, "Segmenting");
             let mut out = Vec::new();
-            let map = |e: Error| EngineError::new(kind_of(&e), e.to_string());
             match route {
                 Route::Text => {
                     let boxes: Vec<[f32; 4]> = bbox.into_iter().collect();
-                    let (found, _) = sam.detect_text(emb, &req.prompt, &boxes, opts).map_err(map)?;
-                    out.extend(found);
+                    out.extend(sam.detect_text(emb, &req.prompt, &boxes, opts)?);
                 }
                 Route::Point | Route::Box => {
                     if !positives.is_empty() || !negatives.is_empty() {
-                        let (inst, _) = sam.segment_points(emb, &positives, &negatives, opts).map_err(map)?;
-                        out.push(inst);
+                        out.push(sam.segment_points(emb, &positives, &negatives, opts)?);
                     }
                     if let Some(b) = bbox {
-                        let (inst, _) = sam.segment_box(emb, b, opts).map_err(map)?;
-                        out.push(inst);
+                        out.push(sam.segment_box(emb, b, opts)?);
                     }
                     if out.is_empty() {
                         return Err(EngineError::new(ErrorKind::BadRequest, "a point or box segmentation needs points or a box"));
@@ -278,10 +412,11 @@ impl Engine for PerceptionEngine {
     }
 
     fn index(&mut self, dir: &str) -> Value {
-        let installed: Vec<&str> = if Sam31::is_layout(&self.sam_dir()) { TEMPLATES.to_vec() } else { Vec::new() };
+        let installed: Vec<&str> = if self.has_model() { TEMPLATES.to_vec() } else { Vec::new() };
         json!({
             "dir": dir,
             "installed": installed,
+            "backend": if candle_files(&self.models_root).is_some() { "candle" } else { "onnxruntime" },
             "modelsRoot": self.models_root.to_string_lossy(),
             "runtime": self.ort_dir().map(|p| p.to_string_lossy().into_owned()),
         })
@@ -323,7 +458,7 @@ pub fn from_args(args: &[String]) -> Option<PerceptionEngine> {
 
 /// Is `dir` a usable model root (holds at least one model this engine serves)?
 pub fn has_models(dir: &Path) -> bool {
-    Sam31::is_layout(&dir.join(SAM31_DIR))
+    candle_files(dir).is_some() || Sam31::is_layout(&dir.join(SAM31_DIR))
 }
 
 #[cfg(test)]
@@ -382,7 +517,17 @@ mod tests {
     fn flags_make_an_engine_only_when_both_directories_are_given() {
         assert!(from_args(&["--models".into(), "m".into()]).is_none());
         assert!(from_args(&["--runtime".into(), "a;b".into()]).is_none());
-        let e = from_args(&["--token".into(), "t".into(), "--runtime".into(), "a;b".into(), "--runtime".into(), "c".into(), "--models".into(), "m".into(), "--cpu".into()]);
+        let e = from_args(&[
+            "--token".into(),
+            "t".into(),
+            "--runtime".into(),
+            "a;b".into(),
+            "--runtime".into(),
+            "c".into(),
+            "--models".into(),
+            "m".into(),
+            "--cpu".into(),
+        ]);
         let e = e.unwrap_or_else(|| panic!("an engine"));
         assert_eq!(e.runtime_dirs, vec![PathBuf::from("a"), PathBuf::from("b"), PathBuf::from("c")]);
         assert_eq!(e.device, Device::Cpu);
