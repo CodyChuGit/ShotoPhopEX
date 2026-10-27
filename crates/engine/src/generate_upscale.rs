@@ -119,7 +119,7 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     let common = plan_common(s, UPSCALE, &q, default_template, Task::Edit, &s.prefs().integrations.default_edit_model.clone())?;
     let mut loras = loras_of(UPSCALE, p)?;
     let restore_strength = opt_num(UPSCALE, p, "restoreStrength", 0.0, 1.5)?.map_or(RESTORE_STRENGTH, |v| v as f32);
-    let models_root = s.prefs().integrations.models_path.trim().to_string();
+    let models_root = s.prefs().integrations.models_root();
     if loras.is_empty()
         && p.get("loras").is_none()
         && common.template.meta.family == "qwen-image-2.1"

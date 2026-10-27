@@ -786,7 +786,7 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
         return Ok(Arc::clone(b) as Arc<dyn GenerativeBackend>);
     }
     let integrations = &s.prefs().integrations;
-    let wanted = photocraft_genai::native::worker_args(&integrations.runtime_folders(), &integrations.models_path);
+    let wanted = photocraft_genai::native::worker_args(&integrations.runtime_folders(), &integrations.models_root());
     let slot = NATIVE.get_or_init(|| std::sync::Mutex::new(None));
     let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(b) = g.as_ref() {

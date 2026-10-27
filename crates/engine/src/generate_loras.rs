@@ -69,7 +69,7 @@ pub(crate) fn runs_native(s: &Session, template: &str) -> bool {
 pub(crate) fn run_loras(s: &mut Session, p: &Value) -> Result<Value> {
     let template = opt_str(LORAS, p, "template", 200)?.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
     let family = template.as_deref().and_then(|t| photocraft_genai::template::find(t).ok()).map(|t| t.meta.family.clone());
-    let models = s.prefs().integrations.models_path.trim().to_string();
+    let models = s.prefs().integrations.models_root();
     let folder = if models.is_empty() { String::new() } else { std::path::Path::new(&models).join("loras").to_string_lossy().into_owned() };
     let mut loras: Vec<Value> = Vec::new();
     if !folder.is_empty()

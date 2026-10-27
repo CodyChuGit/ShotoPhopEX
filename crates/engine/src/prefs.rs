@@ -974,8 +974,10 @@ pub struct Integrations {
     /// executable when a package put one there ([`Integrations::runtime_folders`]), else the
     /// worker serves no native model.
     pub runtime_path: String,
-    /// The native worker's model root: one subfolder per model (`sam3.1/` holds the ONNX graphs
-    /// `tools/export_sam31.py` writes). Empty = the worker serves no native model.
+    /// The native worker's model root: a ComfyUI `models` folder (read as it is: its
+    /// `diffusion_models/`, `text_encoders/`, `vae/`, `loras/`, `checkpoints/`), or the worker's
+    /// own folders (one subfolder per model). Empty = the `models` folder of the ComfyUI install
+    /// at [`Self::comfy_path`] ([`Integrations::models_root`]), else no native model.
     pub models_path: String,
 }
 
@@ -1022,9 +1024,39 @@ impl Integrations {
         if p.is_empty() { bundled_runtime().unwrap_or_default() } else { p.to_string() }
     }
 
+    /// The native worker's model root: [`Self::models_path`], or when that is empty the `models`
+    /// folder of the ComfyUI install at [`Self::comfy_path`] (the portable build's
+    /// `ComfyUI\models`, or a checkout's `models`), so one folder serves both engines (Rust
+    /// rebuild R4). Empty when there is neither.
+    pub fn models_root(&self) -> String {
+        let p = self.models_path.trim();
+        if !p.is_empty() {
+            return p.to_string();
+        }
+        comfy_models(self.comfy_path.trim()).unwrap_or_default()
+    }
+
     /// Whether the native worker can serve models: runtime folders and a model root.
     pub fn native_configured(&self) -> bool {
-        !self.runtime_folders().is_empty() && !self.models_path.trim().is_empty()
+        !self.runtime_folders().is_empty() && !self.models_root().is_empty()
+    }
+}
+
+/// The `models` folder of a ComfyUI install: `<dir>/ComfyUI/models` (the Windows portable
+/// build) or `<dir>/models` (a checkout), when it is a folder.
+fn comfy_models(dir: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if dir.is_empty() {
+            return None;
+        }
+        let d = std::path::Path::new(dir);
+        [d.join("ComfyUI").join("models"), d.join("models")].into_iter().find(|p| p.is_dir()).map(|p| p.to_string_lossy().into_owned())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dir;
+        None
     }
 }
 

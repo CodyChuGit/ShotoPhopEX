@@ -990,3 +990,26 @@ fn a_wrongly_typed_section_or_colour_setting_resets_only_that_part() {
     assert!(s.load_prefs_json(&deep).is_ok());
     assert!(s.load_prefs_json(r#"{"interface": {"theme": 3, "uiScale": [1]}, "workspaces": {"x": 1}, "menus": 1}"#).is_ok());
 }
+
+/// With Models folder empty, the native worker reads the ComfyUI install's `models` folder (the
+/// portable build's `ComfyUI\models`, or a checkout's `models`); a set folder always wins.
+#[test]
+fn the_models_root_falls_back_to_comfyuis_models_folder() {
+    let d = std::env::temp_dir().join(format!("px-models-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let portable = d.join("portable");
+    std::fs::create_dir_all(portable.join("ComfyUI").join("models")).unwrap();
+    let checkout = d.join("checkout");
+    std::fs::create_dir_all(checkout.join("models")).unwrap();
+    let mut i = Integrations::default();
+    assert_eq!(i.models_root(), "", "nothing set, no ComfyUI");
+    i.comfy_path = portable.to_string_lossy().into_owned();
+    assert_eq!(i.models_root(), portable.join("ComfyUI").join("models").to_string_lossy());
+    i.comfy_path = checkout.to_string_lossy().into_owned();
+    assert_eq!(i.models_root(), checkout.join("models").to_string_lossy());
+    i.comfy_path = d.join("missing").to_string_lossy().into_owned();
+    assert_eq!(i.models_root(), "");
+    i.models_path = " C:/models ".into();
+    assert_eq!(i.models_root(), "C:/models", "a set folder wins");
+    let _ = std::fs::remove_dir_all(&d);
+}
