@@ -1,5 +1,5 @@
 //! The Wan 2.1 VAE for one frame, its decoder and (when the file has it) its encoder (Krea 2's
-//! pixels and an edit's picture; also Qwen-Image 1's): 16 latent
+//! pixels and an edit's picture; also Qwen-Image 1's and Qwen-Image-Layered's RGBA): 16 latent
 //! channels, 8× spatial, Wan's own tensor layout (`conv2`, `decoder.conv1`, `decoder.middle.N`,
 //! `decoder.upsamples.N`, `decoder.head.N`, RMS norms with a `gamma`). Ported clean-room from
 //! the architecture as ComfyUI runs it (`comfy/ldm/wan/vae.py`, the Alibaba Wan team's code)
@@ -193,7 +193,7 @@ struct WanEncoder {
 impl WanEncoder {
     /// `dim` 96, `dim_mult [1, 2, 4, 4]`, two residual blocks per stage, a downsample after
     /// every stage but the last.
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(image_channels: usize, vb: VarBuilder) -> Result<Self> {
         let dim = 96usize;
         let dim_mult = [1usize, 2, 4, 4];
         let z = LATENT_CHANNELS;
@@ -219,7 +219,7 @@ impl WanEncoder {
         let last = dims[dims.len() - 1];
         let m = e.pp("middle");
         Ok(Self {
-            conv1: conv_last_tap(3, dims[0], 3, 3, e.pp("conv1"))?,
+            conv1: conv_last_tap(image_channels, dims[0], 3, 3, e.pp("conv1"))?,
             downs,
             middle: (ResidualBlock::load(last, last, m.pp("0"))?, AttentionBlock::load(last, m.pp("1"))?, ResidualBlock::load(last, last, m.pp("2"))?),
             head_norm: RmsNorm::load(last, e.pp("head").pp("0"))?,
@@ -228,7 +228,7 @@ impl WanEncoder {
         })
     }
 
-    /// `(B, 3, H, W)` in `[-1, 1]` to the posterior mean `(B, 16, H/8, W/8)` in the VAE's space.
+    /// `(B, C, H, W)` in `[-1, 1]` to the posterior mean `(B, 16, H/8, W/8)` in the VAE's space.
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let mut x = self.conv1.forward(x)?;
         for d in &self.downs {
@@ -260,6 +260,7 @@ pub struct WanVae {
     encoder: Option<WanEncoder>,
     device: Device,
     dtype: DType,
+    image_channels: usize,
 }
 
 impl WanVae {
@@ -267,6 +268,13 @@ impl WanVae {
     /// two residual blocks per stage (three in the decoder), temporal upsampling on the first
     /// two stages.
     pub fn load(vb: VarBuilder) -> Result<Self> {
+        let head_shape = vb.get_unchecked("decoder.head.2.weight")?;
+        let (image_channels, _, _, _, _) = head_shape.dims5()?;
+        anyhow::ensure!(matches!(image_channels, 3 | 4), "Wan VAE image channels must be 3 or 4, got {image_channels}");
+        if vb.contains_tensor("encoder.conv1.weight") {
+            let input = vb.get_unchecked("encoder.conv1.weight")?;
+            anyhow::ensure!(input.dim(1)? == image_channels, "Wan VAE encoder/decoder image channels disagree");
+        }
         let dim = 96usize;
         let dim_mult = [1usize, 2, 4, 4];
         let z = LATENT_CHANNELS;
@@ -304,10 +312,11 @@ impl WanVae {
             middle,
             ups,
             head_norm: RmsNorm::load(last, h.pp("0"))?,
-            head_conv: conv_last_tap(last, 3, 3, 3, h.pp("2"))?,
-            encoder: if vb.contains_tensor("encoder.conv1.weight") { Some(WanEncoder::load(vb.clone())?) } else { None },
+            head_conv: conv_last_tap(last, image_channels, 3, 3, h.pp("2"))?,
+            encoder: if vb.contains_tensor("encoder.conv1.weight") { Some(WanEncoder::load(image_channels, vb.clone())?) } else { None },
             device: vb.device().clone(),
             dtype: vb.dtype(),
+            image_channels,
         })
     }
 
@@ -316,14 +325,29 @@ impl WanVae {
         self.encoder.is_some()
     }
 
-    /// Encode a picture `(B, 3, H, W)` in `[-1, 1]` (`H`, `W` multiples of 8) into the sampler's
+    /// Image channels inferred from checkpoint shapes: RGB (3) or RGBA (4).
+    pub fn image_channels(&self) -> usize {
+        self.image_channels
+    }
+
+    /// Encode a picture `(B, C, H, W)` in `[-1, 1]` (`H`, `W` multiples of 8) into the sampler's
     /// normalised space `(B, 16, H/8, W/8)`: the posterior mean, then `(z − mean) / std` (what
     /// ComfyUI's `VAEEncode` hands a Wan-latent model after `process_latent_in`). f32 out.
+    /// C must match the checkpoint; RGB input to an RGBA checkpoint gets opaque alpha (+1).
     pub fn encode(&self, rgb: &Tensor) -> Result<Tensor> {
         let Some(enc) = &self.encoder else { anyhow::bail!("this VAE file has no encoder") };
-        let (_, c, h, w) = rgb.dims4()?;
-        anyhow::ensure!(c == 3 && h.is_multiple_of(SCALE) && w.is_multiple_of(SCALE), "encode wants (B, 3, 8k, 8k), got (_, {c}, {h}, {w})");
-        let z = enc.forward(&rgb.to_device(&self.device)?.to_dtype(self.dtype)?)?.to_dtype(DType::F32)?;
+        let (b, c, h, w) = rgb.dims4()?;
+        anyhow::ensure!(
+            (c == self.image_channels || (c == 3 && self.image_channels == 4)) && h > 0 && w > 0 && h.is_multiple_of(SCALE) && w.is_multiple_of(SCALE),
+            "encode wants (B, {}, 8k, 8k) (also RGB for RGBA), got (_, {c}, {h}, {w})",
+            self.image_channels
+        );
+        let mut pixels = rgb.to_device(&self.device)?.to_dtype(self.dtype)?;
+        if c == 3 && self.image_channels == 4 {
+            let alpha = Tensor::ones((b, 1, h, w), self.dtype, &self.device)?;
+            pixels = Tensor::cat(&[&pixels, &alpha], 1)?;
+        }
+        let z = enc.forward(&pixels)?.to_dtype(DType::F32)?;
         self.normalize(&z)
     }
 
@@ -334,9 +358,9 @@ impl WanVae {
         Ok(z.broadcast_sub(&mean)?.broadcast_div(&std)?)
     }
 
-    /// Decode one frame's raw latent `(B, 16, h, w)` (the VAE's own space) to `(B, 3, 8h, 8w)`
-    /// in `[-1, 1]`, in the dtype the weights were loaded with (norms and attention scores in
-    /// f32 regardless).
+    /// Decode one frame's raw latent `(B, 16, h, w)` (the VAE's own space) to
+    /// `(B, image_channels, 8h, 8w)`. Raw output is nominally `[-1, 1]` but is not clamped.
+    /// Computation uses the weights' dtype (norms and attention scores in f32); output is f32.
     pub fn decode(&self, z: &Tensor) -> Result<Tensor> {
         let z = z.to_device(&self.device)?.to_dtype(self.dtype)?;
         let mut x = self.conv1.forward(&self.conv2.forward(&z)?)?;
@@ -371,4 +395,13 @@ pub fn to_rgba_u8(img: &Tensor) -> Result<(usize, usize, Vec<u8>)> {
         out.extend_from_slice(&[p[0], p[1], p[2], 255]);
     }
     Ok((w, h, out))
+}
+
+/// First image of `(B, 4, H, W)` in `[-1, 1]` to straight RGBA8, retaining decoded alpha.
+/// Clamps and rounds all four channels, matching `to_rgba_u8`'s RGB quantization.
+pub fn rgba_to_rgba_u8(img: &Tensor) -> Result<(usize, usize, Vec<u8>)> {
+    let (_, c, h, w) = img.dims4()?;
+    anyhow::ensure!(c == 4, "RGBA conversion wants 4 channels, got {c}");
+    let hwc = ((img.i(0)?.permute((1, 2, 0))?.clamp(-1.0, 1.0)? + 1.0)? * 127.5)?.round()?.to_dtype(DType::U8)?.contiguous()?;
+    Ok((w, h, hwc.flatten_all()?.to_vec1::<u8>()?))
 }
