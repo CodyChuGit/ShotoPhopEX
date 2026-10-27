@@ -191,6 +191,17 @@ impl DiffusionEngine {
         }
     }
 
+    /// The resident pipeline's CUDA context made current on this (the client's) thread,
+    /// before anything of the last request's is dropped here
+    /// (`qwen_image_rs::device::bind_thread`).
+    fn bind(&self) {
+        match &self.resident {
+            Resident::Qwen(p) => qwen_image_rs::device::bind_thread(p.device()),
+            Resident::Krea2(p) => qwen_image_rs::device::bind_thread(p.device()),
+            Resident::None => {}
+        }
+    }
+
     /// The request's LoRA stack on the device of the resident pipeline (loaded once per file,
     /// kept for the next requests).
     fn stack_for(&mut self, params: &std::collections::BTreeMap<String, Value>) -> Result<LoraStack, EngineError> {
@@ -247,6 +258,7 @@ impl DiffusionEngine {
 
     /// Load `family`'s pipeline if it is not resident, letting the other family's go first.
     fn ensure_loaded(&mut self, family: Family, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
+        self.bind();
         match (&self.resident, family) {
             (Resident::Qwen(_), Family::QwenImage21) | (Resident::Krea2(_), Family::Krea2) => return Ok(()),
             (Resident::None, _) => {}
@@ -537,6 +549,7 @@ impl Engine for DiffusionEngine {
     }
 
     fn free(&mut self) {
+        self.bind();
         self.resident = Resident::None;
         self.loras.clear();
     }

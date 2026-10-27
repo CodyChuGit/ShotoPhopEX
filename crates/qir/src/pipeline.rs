@@ -495,6 +495,7 @@ impl Pipeline {
     /// model on the card. The prompt runs once and every layer keeps its keys and values
     /// ([`text_encoder::KvCache`]), so each token after it is one row through the decoder.
     pub fn chat(&self, system: &str, user: &str, image: Option<&RefImage>, opts: &ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
+        crate::device::bind_thread(&self.dev);
         let t0 = Instant::now();
         let feats: Vec<VisionFeatures> = match image {
             Some(r) => {
@@ -541,6 +542,7 @@ impl Pipeline {
     /// Make one picture. `progress` hears every step; `cancel` is read between steps and a
     /// true answer ends the run with [`Cancelled`].
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+        crate::device::bind_thread(&self.dev);
         if req.steps == 0 {
             anyhow::bail!("at least one step");
         }

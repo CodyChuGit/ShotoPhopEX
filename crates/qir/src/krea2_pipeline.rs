@@ -128,6 +128,7 @@ impl Krea2Pipeline {
 
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+        crate::device::bind_thread(&self.dev);
         anyhow::ensure!(req.steps > 0, "at least one step");
         anyhow::ensure!(req.references.is_empty(), "Krea 2 text to image takes no reference pictures yet");
         let (w, h) = (req.width, req.height);
