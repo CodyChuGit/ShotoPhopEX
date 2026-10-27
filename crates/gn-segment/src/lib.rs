@@ -2,6 +2,7 @@
 //! SAM 3.1 port.
 
 pub mod attention;
+pub mod geometry;
 pub mod mask_decoder;
 pub mod ops;
 pub mod position;
