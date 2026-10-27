@@ -292,14 +292,45 @@ impl DiffusionEngine {
         self.models_root.join(MODEL_DIR)
     }
 
+    /// Where 2.1 loads from: the snapshot folder when there, else the models root itself when
+    /// it is a ComfyUI `models` folder holding ComfyUI's 2.1 files (R4: no snapshot needed).
+    fn qwen21_source(&self) -> Option<PathBuf> {
+        let snap = self.snapshot_dir();
+        if is_snapshot(&snap) {
+            Some(snap)
+        } else {
+            qwen_image_rs::comfy_files::find_qwen21(&self.models_root).map(|_| self.models_root.clone())
+        }
+    }
+
     pub fn krea2_dir(&self) -> PathBuf {
         self.models_root.join(KREA2_DIR)
     }
 
+    /// The prequantized-DiT cache: beside the models in the worker's own folders, but never
+    /// inside a ComfyUI `models` folder (`source` is the models root then), which belongs to
+    /// ComfyUI: the user's local app data instead.
+    fn cache_dir(&self, source: &Path) -> PathBuf {
+        match std::env::var_os("LOCALAPPDATA").filter(|_| source == self.models_root) {
+            Some(d) => PathBuf::from(d).join("genai-native").join("qir-cache"),
+            None => self.models_root.join(CACHE_DIR),
+        }
+    }
+
+    /// Where Krea 2 loads from, as [`Self::qwen21_source`].
+    fn krea2_source(&self) -> Option<PathBuf> {
+        let dir = self.krea2_dir();
+        if krea2_pipeline::is_snapshot(&dir) {
+            Some(dir)
+        } else {
+            qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone())
+        }
+    }
+
     fn has_family(&self, family: Family) -> bool {
         match family {
-            Family::QwenImage21 => is_snapshot(&self.snapshot_dir()),
-            Family::Krea2 => krea2_pipeline::is_snapshot(&self.krea2_dir()),
+            Family::QwenImage21 => self.qwen21_source().is_some(),
+            Family::Krea2 => self.krea2_source().is_some(),
         }
     }
 
@@ -330,34 +361,44 @@ impl DiffusionEngine {
         let err = |e: anyhow::Error| EngineError::new(kind_of(&e), e.to_string());
         self.resident = match family {
             Family::QwenImage21 => {
-                let dir = self.snapshot_dir();
-                if !is_snapshot(&dir) {
+                let Some(dir) = self.qwen21_source() else {
                     return Err(EngineError::new(
                         ErrorKind::ModelMissing,
-                        format!("no Qwen-Image-2.1 snapshot in {} (processor/, text_encoder/, transformer/, vae/)", dir.display()),
+                        format!(
+                            "no Qwen-Image-2.1 in {}: neither a snapshot in {MODEL_DIR}/ nor ComfyUI's files (diffusion_models/qwen_image_2.1_bf16, \
+                             text_encoders/qwen3vl_8b_bf16, vae/qwen_image_2.1_vae_bf16 and ComfyUI's qwen25_tokenizer)",
+                            self.models_root.display()
+                        ),
                     ));
-                }
+                };
                 // A pre-quantized text encoder beside the snapshot (`qwen-image-rs
                 // prequantize-text`, Q8_0 GGUF) loads in seconds; the bf16 shards take about a
                 // minute, Q8 on load two, and the encoder is loaded again after every eviction.
-                let gguf = dir.join(TEXT_GGUF);
-                let opts = Options {
-                    cache: CacheSpec::from_cli(Some(&self.models_root.join(CACHE_DIR)), false, false),
-                    quant_text: self.quant_text,
-                    text_gguf: gguf.is_file().then_some(gguf),
-                    ..Options::default()
+                // From ComfyUI's single file under `--text-quant`: the same GGUF, made once into
+                // the cache folder.
+                let text_gguf = match qwen_image_rs::comfy_files::find_qwen21(&dir).filter(|_| dir == self.models_root) {
+                    Some(f) if self.quant_text => {
+                        report(0.0, "Preparing the text encoder (first run only)");
+                        Some(qwen_image_rs::comfy_files::text_q8_cache(&f.text, "model", &self.cache_dir(&dir)).map_err(err)?)
+                    }
+                    Some(_) => None,
+                    None => Some(dir.join(TEXT_GGUF)).filter(|g| g.is_file()),
                 };
+                let opts = Options { cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false), quant_text: self.quant_text, text_gguf, ..Options::default() };
                 Resident::Qwen(Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
             Family::Krea2 => {
-                let dir = self.krea2_dir();
-                if !krea2_pipeline::is_snapshot(&dir) {
+                let Some(dir) = self.krea2_source() else {
                     return Err(EngineError::new(
                         ErrorKind::ModelMissing,
-                        format!("no Krea 2 weights in {} (tokenizer/, text_encoder/, transformer/, vae/; convert-fp8 makes them from ComfyUI's files)", dir.display()),
+                        format!(
+                            "no Krea 2 in {}: neither a weights folder in {KREA2_DIR}/ nor ComfyUI's files (diffusion_models/krea2_turbo_fp8_scaled, \
+                             text_encoders/qwen3vl_4b_fp8_scaled, vae/wan_2.1_vae and ComfyUI's qwen25_tokenizer)",
+                            self.models_root.display()
+                        ),
                     ));
-                }
-                let opts = Krea2Options { cache: CacheSpec::from_cli(Some(&self.models_root.join(CACHE_DIR)), false, false), ..Krea2Options::defaults() };
+                };
+                let opts = Krea2Options { cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false), ..Krea2Options::defaults() };
                 Resident::Krea2(Krea2Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
         };
@@ -687,7 +728,10 @@ pub fn from_args(args: &[String]) -> Option<DiffusionEngine> {
 
 /// Is `dir` a model root holding either family's weights?
 pub fn has_models(dir: &Path) -> bool {
-    is_snapshot(&dir.join(MODEL_DIR)) || krea2_pipeline::is_snapshot(&dir.join(KREA2_DIR))
+    is_snapshot(&dir.join(MODEL_DIR))
+        || krea2_pipeline::is_snapshot(&dir.join(KREA2_DIR))
+        || qwen_image_rs::comfy_files::find_qwen21(dir).is_some()
+        || qwen_image_rs::comfy_files::find_krea2(dir).is_some()
 }
 
 #[cfg(test)]

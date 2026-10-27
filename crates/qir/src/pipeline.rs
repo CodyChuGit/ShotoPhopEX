@@ -210,6 +210,48 @@ pub fn is_snapshot(dir: &Path) -> bool {
         && dir.join("vae/config.json").is_file()
 }
 
+/// Where the models come from: Hugging Face's snapshot folder, or a ComfyUI `models` folder
+/// holding ComfyUI's single files ([`crate::comfy_files`], Rust rebuild R4).
+#[derive(Clone, Debug)]
+pub enum Source {
+    Snapshot(PathBuf),
+    Comfy(crate::comfy_files::Qwen21Files),
+}
+
+impl Source {
+    /// `dir` as a snapshot, else as a ComfyUI `models` folder with the 2.1 files.
+    pub fn find(dir: &Path) -> Option<Self> {
+        if is_snapshot(dir) {
+            Some(Self::Snapshot(dir.to_path_buf()))
+        } else {
+            crate::comfy_files::find_qwen21(dir).map(Self::Comfy)
+        }
+    }
+
+    fn tokenizer(&self) -> Result<Tokenizer> {
+        match self {
+            Self::Snapshot(d) => Tokenizer::from_file(d.join("processor/tokenizer.json")).map_err(|e| anyhow::anyhow!("load tokenizer: {e}")),
+            Self::Comfy(f) => crate::comfy_files::qwen_tokenizer(&f.tokenizer),
+        }
+    }
+
+    /// The text encoder's files (its vision tower and language-model head live there too).
+    fn text_files(&self) -> Result<Vec<PathBuf>> {
+        match self {
+            Self::Snapshot(d) => Ok(WeightSet::resolve(&d.join("text_encoder"))?.files),
+            Self::Comfy(f) => Ok(vec![f.text.clone()]),
+        }
+    }
+
+    /// The language model's root in those files (ComfyUI's repack drops `language_model`).
+    fn lm_root(&self) -> &'static str {
+        match self {
+            Self::Snapshot(_) => "model.language_model",
+            Self::Comfy(_) => "model",
+        }
+    }
+}
+
 /// The three models, resident.
 pub struct Pipeline {
     dev: Device,
@@ -217,8 +259,8 @@ pub struct Pipeline {
     tok: Tokenizer,
     /// Tokens of the system turn, dropped from the encoder's output.
     drop: usize,
-    /// The snapshot, for loading the text encoder again after an eviction.
-    model: PathBuf,
+    /// The models' source, for loading the text encoder again after an eviction.
+    src: Source,
     /// The text encoder; `None` between an eviction (`Options::evict_text_encoder`) and the
     /// next prompt.
     te: std::sync::Mutex<Option<QwenTextEncoder>>,
@@ -313,44 +355,60 @@ fn sample(logits: &[f32], opts: &ChatOptions, rng: &mut ChatRng) -> u32 {
 }
 
 impl Pipeline {
-    /// Load everything from `model` (a snapshot directory) onto the best device. `progress`
-    /// hears each phase.
+    /// Load everything from `model` (a snapshot directory, or a ComfyUI `models` folder with
+    /// ComfyUI's 2.1 files) onto the best device. `progress` hears each phase.
     pub fn load(model: &Path, opts: Options, progress: &mut dyn FnMut(f32, &str)) -> Result<Self> {
-        if !is_snapshot(model) {
-            anyhow::bail!("{} is not a Qwen-Image-2.1 snapshot (processor/, text_encoder/, transformer/, vae/)", model.display());
-        }
+        let Some(src) = Source::find(model) else {
+            anyhow::bail!(
+                "{} is neither a Qwen-Image-2.1 snapshot (processor/, text_encoder/, transformer/, vae/) nor a ComfyUI models folder with its files \
+                 (diffusion_models/qwen_image_2.1_bf16, text_encoders/qwen3vl_8b_bf16, vae/qwen_image_2.1_vae_bf16, and ComfyUI's qwen25_tokenizer)",
+                model.display()
+            );
+        };
         let dev = crate::device::best_device()?;
         let dtype = if matches!(dev, Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
-        let tok = Tokenizer::from_file(model.join("processor/tokenizer.json")).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+        let tok = src.tokenizer()?;
         let sysp = format!("<|im_start|>system\n{}<|im_end|>\n", tmpl::SYS_PROMPT);
         let drop = tok.encode(sysp, false).map_err(|e| anyhow::anyhow!("encode system turn: {e}"))?.get_ids().len();
 
         progress(0.0, "Loading the text encoder");
         let t0 = Instant::now();
-        let te = load_text_encoder(model, &dev, dtype, opts.quant_text, opts.text_gguf.as_deref())?;
+        let te = load_text_from(&src, &dev, dtype, opts.quant_text, opts.text_gguf.as_deref())?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "text encoder loaded");
 
         progress(0.4, "Loading the transformer");
         let t0 = Instant::now();
-        let files = crate::convrot_cache::resolve_dit_files(&model.join("transformer"), opts.convrot, &opts.cache)?;
+        let files = match &src {
+            Source::Snapshot(d) => crate::convrot_cache::resolve_dit_files(&d.join("transformer"), opts.convrot, &opts.cache)?,
+            Source::Comfy(f) => crate::convrot_cache::resolve_file_set(&f.dit, vec![f.dit.clone()], opts.convrot, &opts.cache, &crate::convrot_cache::Policy::qwen_image_21())?,
+        };
         let dit_vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
         let dit = QwenImageDit::load(32, 64, false, opts.convrot, dit_vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "DiT loaded");
 
         progress(0.8, "Loading the VAE");
         let t0 = Instant::now();
-        let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(model.join("vae/config.json")).context("vae/config.json")?)?;
-        let f32vec = |k: &str| -> Vec<f32> { cfg[k].as_array().map_or(vec![], |a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect()) };
         let vae_dt = if opts.vae_f32 { DType::F32 } else { dtype };
-        let vae_files = WeightSet::resolve(&model.join("vae"))?.files;
-        let vae_vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&vae_files, vae_dt, &dev)? };
-        let vae = QwenImageVae::load(&VaeConfig::default(), &f32vec("latents_mean"), &f32vec("latents_std"), vae_vb)?;
+        let vae = match &src {
+            Source::Snapshot(d) => {
+                let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(d.join("vae/config.json")).context("vae/config.json")?)?;
+                let f32vec = |k: &str| -> Vec<f32> { cfg[k].as_array().map_or(vec![], |a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect()) };
+                let vae_files = WeightSet::resolve(&d.join("vae"))?.files;
+                let vae_vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&vae_files, vae_dt, &dev)? };
+                QwenImageVae::load(&VaeConfig::default(), &f32vec("latents_mean"), &f32vec("latents_std"), vae_vb)?
+            }
+            Source::Comfy(f) => {
+                use crate::comfy_files::{qwen21_vae_name, Renamed, QWEN21_LATENTS_MEAN, QWEN21_LATENTS_STD};
+                let vb = unsafe { Renamed::new(std::slice::from_ref(&f.vae), qwen21_vae_name)? }.var_builder(vae_dt, &dev);
+                QwenImageVae::load(&VaeConfig::default(), &QWEN21_LATENTS_MEAN, &QWEN21_LATENTS_STD, vb)?
+            }
+        };
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "VAE loaded");
 
         let vision = if opts.vision {
             progress(0.9, "Loading the vision tower");
             let t0 = Instant::now();
-            let files = WeightSet::resolve(&model.join("text_encoder"))?.files;
+            let files = src.text_files()?;
             let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, &dev)? };
             let tower = VisionTower::load(&VisionConfig::default(), vb32.pp("model").pp("visual"))?;
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "vision tower loaded");
@@ -359,7 +417,7 @@ impl Pipeline {
             None
         };
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, drop, model: model.to_path_buf(), te: std::sync::Mutex::new(Some(te)), dit, vae, vision, opts, head: std::sync::Mutex::new(None) })
+        Ok(Self { dev, dtype, tok, drop, src, te: std::sync::Mutex::new(Some(te)), dit, vae, vision, opts, head: std::sync::Mutex::new(None) })
     }
 
     /// Run `f` on the text encoder, loading it again first if it was evicted.
@@ -367,7 +425,7 @@ impl Pipeline {
         let mut slot = self.te.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             let t0 = Instant::now();
-            *slot = Some(load_text_encoder(&self.model, &self.dev, self.dtype, self.opts.quant_text, self.opts.text_gguf.as_deref())?);
+            *slot = Some(load_text_from(&self.src, &self.dev, self.dtype, self.opts.quant_text, self.opts.text_gguf.as_deref())?);
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "text encoder loaded again");
         }
         match slot.as_ref() {
@@ -472,10 +530,10 @@ impl Pipeline {
         let mut slot = self.head.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             let t0 = Instant::now();
-            let files = WeightSet::resolve(&self.model.join("text_encoder"))?.files;
+            let files = self.src.text_files()?;
             let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, self.dtype, &self.dev)? };
             let cfg = TextConfig::default();
-            let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model").pp("language_model").pp("norm"))?;
+            let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp(self.src.lm_root()).pp("norm"))?;
             let w = vb.get((cfg.vocab_size, cfg.hidden_size), "lm_head.weight").context("the text encoder has no lm_head (a text-only repack?)")?;
             let head = if matches!(self.dev, Device::Cuda(_)) {
                 candle_core::quantized::QMatMul::from_qtensor(candle_core::quantized::QTensor::quantize(&w, candle_core::quantized::GgmlDType::Q8_0)?)?
@@ -729,13 +787,19 @@ impl Pipeline {
 /// The text encoder: a pre-quantized GGUF when given (Q8_0, no bf16 transient), else the
 /// snapshot's bf16 shards, quantized on load when asked.
 pub fn load_text_encoder(model: &Path, dev: &Device, dtype: DType, quant_text: bool, text_gguf: Option<&Path>) -> Result<QwenTextEncoder> {
+    load_text_from(&Source::Snapshot(model.to_path_buf()), dev, dtype, quant_text, text_gguf)
+}
+
+/// [`load_text_encoder`] from either source (ComfyUI's single file roots the language model at
+/// `model`).
+fn load_text_from(src: &Source, dev: &Device, dtype: DType, quant_text: bool, text_gguf: Option<&Path>) -> Result<QwenTextEncoder> {
     if let Some(g) = text_gguf {
         let qvb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(g, dev)?;
         QwenTextEncoder::load_gguf(&TextConfig::default(), qvb)
     } else {
-        let files = WeightSet::resolve(&model.join("text_encoder"))?.files;
+        let files = src.text_files()?;
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
-        QwenTextEncoder::load(&TextConfig::default(), quant_text, vb)
+        QwenTextEncoder::load_at(&TextConfig::default(), quant_text, vb.pp(src.lm_root()))
     }
 }
 

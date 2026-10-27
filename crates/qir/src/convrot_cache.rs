@@ -355,7 +355,12 @@ pub fn resolve_dit_files(dir: &Path, convrot: bool, spec: &CacheSpec) -> Result<
 
 /// [`resolve_dit_files`] for any model whose linears `policy` names.
 pub fn resolve_files(dir: &Path, convrot: bool, spec: &CacheSpec, policy: &Policy<'_>) -> Result<Vec<PathBuf>> {
-    let files = crate::loader::WeightSet::resolve(dir)?.files;
+    resolve_file_set(dir, crate::loader::WeightSet::resolve(dir)?.files, convrot, spec, policy)
+}
+
+/// [`resolve_files`] for named `files` (a single file in ComfyUI's `diffusion_models/`, which
+/// holds other models too), the cache entry keyed by `dir` (the folder or the file itself).
+pub fn resolve_file_set(dir: &Path, files: Vec<PathBuf>, convrot: bool, spec: &CacheSpec, policy: &Policy<'_>) -> Result<Vec<PathBuf>> {
     // Without the `convrot` feature the loader ignores --convrot (no rotation),
     // so there is nothing to cache.
     if !convrot || !cfg!(feature = "convrot") || spec.mode == CacheMode::Off {

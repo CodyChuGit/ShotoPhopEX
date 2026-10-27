@@ -12,6 +12,7 @@
 //! - scheduler: `FlowMatchEulerDiscreteScheduler` — [`model::scheduler`]
 
 pub mod comfy;
+pub mod comfy_files;
 pub mod convert;
 #[cfg(feature = "fusednorm")]
 pub mod krea2_fused;

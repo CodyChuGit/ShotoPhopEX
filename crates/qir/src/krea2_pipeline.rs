@@ -51,11 +51,52 @@ pub fn is_snapshot(dir: &Path) -> bool {
     dir.join("tokenizer/tokenizer.json").is_file() && dir.join("text_encoder").is_dir() && dir.join("transformer").is_dir() && dir.join("vae").is_dir()
 }
 
+/// The pipeline's files: from the weights folder above, or from a ComfyUI `models` folder
+/// holding ComfyUI's own files ([`crate::comfy_files::find_krea2`], Rust rebuild R4).
+struct Files {
+    /// The ConvRot cache's key: the transformer folder, or ComfyUI's DiT file.
+    dit_key: PathBuf,
+    dit: Vec<PathBuf>,
+    text: Vec<PathBuf>,
+    vae: Vec<PathBuf>,
+    /// `tokenizer.json`, or the folder ComfyUI's Qwen tokenizer is assembled from.
+    tokenizer: std::result::Result<PathBuf, PathBuf>,
+}
+
+impl Files {
+    fn find(dir: &Path) -> Result<Option<Self>> {
+        if is_snapshot(dir) {
+            let tr = dir.join("transformer");
+            return Ok(Some(Self {
+                dit: WeightSet::resolve(&tr)?.files,
+                dit_key: tr,
+                text: WeightSet::resolve(&dir.join("text_encoder"))?.files,
+                vae: WeightSet::resolve(&dir.join("vae"))?.files,
+                tokenizer: Ok(dir.join("tokenizer/tokenizer.json")),
+            }));
+        }
+        Ok(crate::comfy_files::find_krea2(dir).map(|f| Self { dit_key: f.dit.clone(), dit: vec![f.dit], text: vec![f.text], vae: vec![f.vae], tokenizer: Err(f.tokenizer) }))
+    }
+
+    fn tokenizer(&self) -> Result<Tokenizer> {
+        match &self.tokenizer {
+            Ok(file) => Tokenizer::from_file(file).map_err(|e| anyhow::anyhow!("load tokenizer: {e}")),
+            Err(dir) => crate::comfy_files::qwen_tokenizer(dir),
+        }
+    }
+}
+
+/// Krea 2 in `dir` (either layout of [`Files`]).
+pub fn is_available(dir: &Path) -> bool {
+    Files::find(dir).is_ok_and(|f| f.is_some())
+}
+
 pub struct Krea2Pipeline {
     dev: Device,
     dtype: DType,
     tok: Tokenizer,
-    model: PathBuf,
+    /// The encoder's files, for loading it again (and its vision tower on the first edit).
+    text: Vec<PathBuf>,
     te: std::sync::Mutex<Option<QwenTextEncoder>>,
     /// The encoder's vision tower, loaded on the first edit (f32, ~1.7 GB).
     vision: std::sync::Mutex<Option<VisionTower>>,
@@ -68,17 +109,21 @@ pub struct Krea2Pipeline {
 
 impl Krea2Pipeline {
     pub fn load(model: &Path, opts: Krea2Options, progress: &mut dyn FnMut(f32, &str)) -> Result<Self> {
-        if !is_snapshot(model) {
-            anyhow::bail!("{} is not a Krea 2 weights folder (tokenizer/, text_encoder/, transformer/, vae/)", model.display());
-        }
+        let Some(files) = Files::find(model)? else {
+            anyhow::bail!(
+                "{} is neither a Krea 2 weights folder (tokenizer/, text_encoder/, transformer/, vae/) nor a ComfyUI models folder with its files \
+                 (diffusion_models/krea2_turbo_fp8_scaled, text_encoders/qwen3vl_4b_fp8_scaled, vae/wan_2.1_vae, and ComfyUI's qwen25_tokenizer)",
+                model.display()
+            );
+        };
         let dev = crate::device::best_device()?;
         let dtype = if matches!(dev, Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
-        let tok = Tokenizer::from_file(model.join("tokenizer/tokenizer.json")).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+        let tok = files.tokenizer()?;
 
         // ComfyUI's fp8_scaled file as it is: 13 GB, run with its own fp8 recipe (`crate::fp8`).
-        let raw = WeightSet::resolve(&model.join("transformer"))?.files;
+        let raw = files.dit.clone();
         let fp8 = crate::fp8::Fp8Plan::from_files(&raw)?;
-        let fp8_text = crate::fp8::Fp8Plan::from_files(&WeightSet::resolve(&model.join("text_encoder"))?.files)?.is_some();
+        let fp8_text = crate::fp8::Fp8Plan::from_files(&files.text)?.is_some();
         anyhow::ensure!((fp8.is_none() && !fp8_text) || crate::fp8::supported_on(&dev), "{} holds fp8_scaled weights and this build has no fp8 kernels (the `fp8` feature)", model.display());
         // Without ConvRot or fp8 the DiT is 24 GB in bf16: the encoder comes and goes per prompt.
         let evict_te = fp8.is_none() && (!opts.convrot || !cfg!(feature = "convrot"));
@@ -87,26 +132,25 @@ impl Krea2Pipeline {
         } else {
             progress(0.0, "Loading the text encoder");
             let t0 = Instant::now();
-            let te = load_text_encoder(model, &dev, dtype)?;
+            let te = load_text_encoder(&files.text, &dev, dtype)?;
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "text encoder loaded");
             Some(te)
         };
 
         progress(0.3, "Loading the transformer");
         let t0 = Instant::now();
-        let files = if fp8.is_some() { raw } else { crate::convrot_cache::resolve_files(&model.join("transformer"), opts.convrot, &opts.cache, &Policy::krea2())? };
-        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
+        let dit_files = if fp8.is_some() { raw } else { crate::convrot_cache::resolve_file_set(&files.dit_key, raw, opts.convrot, &opts.cache, &Policy::krea2())? };
+        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&dit_files, dtype, &dev)? };
         let dit = Krea2Dit::load_with(&Krea2Config::default(), opts.convrot, fp8.as_ref(), vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), convrot = opts.convrot && fp8.is_none(), fp8 = fp8.is_some(), full_precision = fp8.as_ref().map_or(0, |p| p.full_precision.len()), "DiT loaded");
 
         progress(0.9, "Loading the VAE");
         let t0 = Instant::now();
-        let files = WeightSet::resolve(&model.join("vae"))?.files;
-        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
+        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files.vae, dtype, &dev)? };
         let vae = WanVae::load(vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "VAE loaded");
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, model: model.to_path_buf(), te: std::sync::Mutex::new(te), vision: std::sync::Mutex::new(None), dit, vae, evict_te })
+        Ok(Self { dev, dtype, tok, text: files.text, te: std::sync::Mutex::new(te), vision: std::sync::Mutex::new(None), dit, vae, evict_te })
     }
 
     pub fn is_cuda(&self) -> bool {
@@ -133,7 +177,7 @@ impl Krea2Pipeline {
         let ids: Vec<u32> = self.tok.encode(text, false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec();
         let mut slot = self.te.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
-            *slot = Some(load_text_encoder(&self.model, &self.dev, self.dtype)?);
+            *slot = Some(load_text_encoder(&self.text, &self.dev, self.dtype)?);
         }
         let te = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no text encoder"))?;
         let cond = match &feats {
@@ -168,8 +212,7 @@ impl Krea2Pipeline {
         let mut slot = self.vision.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             let t0 = Instant::now();
-            let files = WeightSet::resolve(&self.model.join("text_encoder"))?.files;
-            let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, &self.dev)? };
+            let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&self.text, DType::F32, &self.dev)? };
             *slot = Some(VisionTower::load(&VisionConfig::qwen3vl_4b(), vb32.pp("model").pp("visual")).context("the Qwen3-VL-4B vision tower (an encoder file without it cannot edit)")?);
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "vision tower loaded");
         }
@@ -271,8 +314,7 @@ fn rgb_image(p: &RefImage) -> Result<image::RgbImage> {
     Ok(image::DynamicImage::ImageRgba8(rgba).to_rgb8())
 }
 
-fn load_text_encoder(model: &Path, dev: &Device, dtype: DType) -> Result<QwenTextEncoder> {
-    let files = WeightSet::resolve(&model.join("text_encoder"))?.files;
-    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
+fn load_text_encoder(files: &[PathBuf], dev: &Device, dtype: DType) -> Result<QwenTextEncoder> {
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(files, dtype, dev)? };
     QwenTextEncoder::load_at(&TextConfig::qwen3vl_4b(), false, vb.pp("model")).context("the Qwen3-VL-4B encoder")
 }
