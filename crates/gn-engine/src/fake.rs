@@ -38,7 +38,7 @@ impl Engine for FakeEngine {
     }
 
     fn health(&mut self) -> Health {
-        Health { ok: true, engine: "fake".into(), device: "none".into(), vram_total: Some(1 << 30), vram_free: Some(1 << 29), resident: self.resident.clone() }
+        Health { ok: true, engine: "fake".into(), device: "none".into(), vram_total: Some(1 << 30), vram_free: Some(1 << 29), resident: self.resident.clone(), detail: String::new() }
     }
 
     fn run(

@@ -32,6 +32,9 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/convrot/quant_ops.cu");
     println!("cargo:rerun-if-env-changed=CUTLASS_DIR");
     println!("cargo:rerun-if-env-changed=CUDA_COMPUTE_CAP");
+    // The architecture the kernels (ours and candle's PTX) were built for, so the engine can
+    // refuse a card they cannot run on with a sentence (`device::check`).
+    println!("cargo:rustc-env=QIR_COMPUTE_CAP={}", std::env::var("CUDA_COMPUTE_CAP").unwrap_or_else(|_| "89".into()));
 
     #[cfg(feature = "convrot")]
     {

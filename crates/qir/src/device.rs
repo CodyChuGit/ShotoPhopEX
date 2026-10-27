@@ -182,11 +182,101 @@ pub fn usable_vram(device: &Device) -> Option<(usize, usize)> {
     free_vram(device).map(|(free, total)| (free.saturating_add(pool_slack(device)), total))
 }
 
+/// The compute capability the kernels were built for (`CUDA_COMPUTE_CAP` at build time, as
+/// `major * 10 + minor`: 120 for the RTX 50 series, 89 for Ada).
+pub fn built_compute_cap() -> u32 {
+    env!("QIR_COMPUTE_CAP").trim().parse().unwrap_or(89)
+}
+
+/// The first CUDA card as the driver describes it, before any context exists.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gpu {
+    pub name: String,
+    /// Compute capability, `major * 10 + minor`.
+    pub compute_cap: u32,
+    pub total_bytes: usize,
+}
+
+/// Ask the driver about card 0 without creating a context (no device memory is taken). The
+/// sentence says why there is none: a build without CUDA, no NVIDIA driver (checked before the
+/// driver library is touched, since loading a missing one aborts in cudarc), no card.
+pub fn probe() -> std::result::Result<Gpu, String> {
+    #[cfg(feature = "cuda")]
+    {
+        if cfg!(windows) {
+            let system = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+            if !system.join("System32").join("nvcuda.dll").is_file() {
+                return Err("no NVIDIA driver is installed (nvcuda.dll not found)".into());
+            }
+        }
+        // cudarc panics when the driver library cannot be loaded; elsewhere than Windows that
+        // is the only check, so it is caught here.
+        match std::panic::catch_unwind(probe_driver) {
+            Ok(r) => r,
+            Err(_) => Err("the NVIDIA driver library could not be loaded".into()),
+        }
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        Err("this build has no CUDA support".into())
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn probe_driver() -> std::result::Result<Gpu, String> {
+    use candle_core::cuda_backend::cudarc::driver::{result, sys};
+    result::init().map_err(|e| format!("the NVIDIA driver did not start ({e})"))?;
+    if result::device::get_count().map_err(|e| e.to_string())? < 1 {
+        return Err("no NVIDIA card was found".into());
+    }
+    let dev = result::device::get(0).map_err(|e| e.to_string())?;
+    let name = result::device::get_name(dev).map_err(|e| e.to_string())?;
+    // SAFETY: `dev` is a device handle the driver just returned; the calls only read attributes.
+    let (major, minor, total) = unsafe {
+        (
+            result::device::get_attribute(dev, sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR).map_err(|e| e.to_string())?,
+            result::device::get_attribute(dev, sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR).map_err(|e| e.to_string())?,
+            result::device::total_mem(dev).map_err(|e| e.to_string())?,
+        )
+    };
+    Ok(Gpu { name: name.trim().to_string(), compute_cap: (major.max(0) * 10 + minor.max(0)) as u32, total_bytes: total })
+}
+
+/// Whether the kernels of this build run on `gpu`: its compute capability at least the built
+/// one (the cubins carry PTX, which the driver compiles for newer cards). The sentence names
+/// the card and what the build needs.
+pub fn check(gpu: &Gpu, built: u32) -> std::result::Result<(), String> {
+    if gpu.compute_cap >= built {
+        return Ok(());
+    }
+    let cc = |c: u32| format!("{}.{}", c / 10, c % 10);
+    Err(format!("{} (compute capability {}) is older than this build's kernels need ({} or newer)", gpu.name, cc(gpu.compute_cap), cc(built)))
+}
+
 /// Human-readable device label for logs.
 pub fn label(device: &Device) -> &'static str {
     match device {
         Device::Cpu => "cpu",
         Device::Cuda(_) => "cuda",
         Device::Metal(_) => "metal",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_card_older_than_the_kernels_is_refused_with_its_name() {
+        let gpu = |cc| Gpu { name: "Card".into(), compute_cap: cc, total_bytes: 1 };
+        assert!(check(&gpu(120), 120).is_ok() && check(&gpu(121), 120).is_ok());
+        let e = check(&gpu(89), 120).unwrap_err();
+        assert!(e.contains("Card") && e.contains("8.9") && e.contains("12.0"), "{e}");
+        assert!(built_compute_cap() >= 50);
+        // The probe answers (a card or a sentence) and never aborts the process.
+        match probe() {
+            Ok(g) => assert!(!g.name.is_empty() && g.compute_cap >= 30, "{g:?}"),
+            Err(e) => assert!(!e.is_empty()),
+        }
     }
 }

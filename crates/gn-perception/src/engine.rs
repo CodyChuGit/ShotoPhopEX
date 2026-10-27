@@ -164,6 +164,7 @@ impl Engine for PerceptionEngine {
             vram_total: None,
             vram_free: None,
             resident,
+            detail: self.last_error.as_ref().map(|e| format!("SAM 3.1: {e}")).unwrap_or_default(),
         }
     }
 

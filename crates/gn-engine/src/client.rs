@@ -153,8 +153,18 @@ impl EngineClient {
     /// [`Self::spawn`] with extra environment variables for the worker (a `PATH` that holds the
     /// CUDA libraries an engine links, for one).
     pub fn spawn_with_env(program: &Path, args: &[String], token: &str, env: &[(String, String)]) -> Result<Self, ClientError> {
+        Self::spawn_logged(program, args, token, env, None)
+    }
+
+    /// [`Self::spawn_with_env`] with the worker's stderr (its log, its panics) written to `log`
+    /// instead of this process's stderr (a GUI parent has none to show).
+    pub fn spawn_logged(program: &Path, args: &[String], token: &str, env: &[(String, String)], log: Option<std::fs::File>) -> Result<Self, ClientError> {
         let mut cmd = Command::new(program);
-        cmd.args(args).env("GN_ENGINE_TOKEN", token).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        let stderr = match log {
+            Some(f) => Stdio::from(f),
+            None => Stdio::inherit(),
+        };
+        cmd.args(args).env("GN_ENGINE_TOKEN", token).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(stderr);
         for (k, v) in env {
             cmd.env(k, v);
         }
