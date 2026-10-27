@@ -119,6 +119,9 @@ pub struct Request {
     /// runs the base model. Set on the resident model before sampling, so a request's adapters
     /// never outlive it.
     pub loras: crate::lora::LoraStack,
+    /// An edit's pull toward its picture on the models that take one as in-context tokens (Krea 2's
+    /// edit LoRAs: the target's attention to the picture multiplied by this; 1 = none).
+    pub ref_boost: f32,
 }
 
 impl Request {
@@ -134,6 +137,7 @@ impl Request {
             schedule: Schedule::Comfy,
             references: Vec::new(),
             loras: crate::lora::LoraStack::default(),
+            ref_boost: 1.0,
         }
     }
 }

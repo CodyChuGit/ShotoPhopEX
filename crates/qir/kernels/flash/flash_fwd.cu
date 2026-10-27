@@ -113,7 +113,8 @@ __device__ __forceinline__ void load_tile(__nv_bfloat16* tile, const __nv_bfloat
 __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ k,
                                                      const __nv_bfloat16* __restrict__ v, __nv_bfloat16* __restrict__ o, int S, int Skv,
                                                      int H, int KVH, long q_bs, long q_hs, long q_rs, long k_bs, long k_hs, long k_rs,
-                                                     long v_bs, long v_hs, long v_rs, float scale_log2) {
+                                                     long v_bs, long v_hs, long v_rs, float scale_log2, int bias_row, int bias_k0,
+                                                     int bias_k1, float bias_s) {
     extern __shared__ __align__(16) unsigned char smem[];
     __nv_bfloat16* sQ = reinterpret_cast<__nv_bfloat16*>(smem);
     __nv_bfloat16* sK = sQ + BR * LD;
@@ -173,6 +174,20 @@ __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __rest
                 ldsm_x4(bk, sK + (j * 8 + (lane & 7)) * LD + kc * 32 + (lane >> 3) * 8);
                 mma(s[j], qf[2 * kc], bk[0], bk[1]);
                 mma(s[j], qf[2 * kc + 1], bk[2], bk[3]);
+            }
+        }
+        // A constant added to the scores of rows from `bias_row` on, for the keys in
+        // [bias_k0, bias_k1) (a reference's tokens boosted for the target's rows); raw units.
+        if (bias_s != 0.f && k0 < bias_k1 && k0 + BC > bias_k0) {
+            const int rr0 = q0 + warp * 16 + (lane >> 2);
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+#pragma unroll
+                for (int e = 0; e < 4; ++e) {
+                    const int kk = k0 + j * 8 + 2 * (lane & 3) + (e & 1);
+                    const int rr = rr0 + (e >> 1) * 8;
+                    if (rr >= bias_row && kk >= bias_k0 && kk < bias_k1) s[j][e] += bias_s;
+                }
             }
         }
         if (k0 + BC > Skv) {
@@ -259,8 +274,10 @@ __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __rest
 }  // namespace
 
 // 0 = ok, 1 = a shape the kernel does not take, 2 = a misaligned pointer, else the CUDA error.
-extern "C" int qir_flash_fwd(void* o, const void* q, const void* k, const void* v, int B, int H, int KVH, int S, int Skv, int head_dim,
-                             const long* strides, float scale, void* stream) {
+// `bias` (natural-log units, 0 = none) is added to the scores of query rows from `bias_row` on
+// for the keys in [bias_k0, bias_k1).
+extern "C" int qir_flash_fwd_bias(void* o, const void* q, const void* k, const void* v, int B, int H, int KVH, int S, int Skv, int head_dim,
+                                  const long* strides, float scale, int bias_row, int bias_k0, int bias_k1, float bias, void* stream) {
     if (head_dim != D || B <= 0 || S <= 0 || Skv <= 0 || KVH <= 0 || H % KVH != 0) return 1;
     if ((reinterpret_cast<uintptr_t>(o) | reinterpret_cast<uintptr_t>(q) | reinterpret_cast<uintptr_t>(k) | reinterpret_cast<uintptr_t>(v)) & 15) return 2;
     for (int i = 0; i < 9; ++i) {
@@ -276,6 +293,11 @@ extern "C" int qir_flash_fwd(void* o, const void* q, const void* k, const void* 
     flash_fwd<<<grid, THREADS, SMEM_BYTES, static_cast<cudaStream_t>(stream)>>>(
         static_cast<const __nv_bfloat16*>(q), static_cast<const __nv_bfloat16*>(k), static_cast<const __nv_bfloat16*>(v),
         static_cast<__nv_bfloat16*>(o), S, Skv, H, KVH, strides[0], strides[1], strides[2], strides[3], strides[4], strides[5], strides[6], strides[7],
-        strides[8], scale * 1.4426950408889634f);
+        strides[8], scale * 1.4426950408889634f, bias_row, bias_k0, bias_k1, scale > 0.f ? bias / scale : 0.f);
     return static_cast<int>(cudaGetLastError());
+}
+
+extern "C" int qir_flash_fwd(void* o, const void* q, const void* k, const void* v, int B, int H, int KVH, int S, int Skv, int head_dim,
+                             const long* strides, float scale, void* stream) {
+    return qir_flash_fwd_bias(o, q, k, v, B, H, KVH, S, Skv, head_dim, strides, scale, 0, 0, 0, 0.f, stream);
 }

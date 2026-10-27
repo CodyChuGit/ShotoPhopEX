@@ -48,6 +48,12 @@ impl Default for VisionConfig {
 }
 
 impl VisionConfig {
+    /// Qwen3-VL-4B's tower (Krea 2's encoder; ComfyUI's `QWEN3VL_VISION["qwen3vl_4b"]`): 1024
+    /// wide, 24 blocks, DeepStack after blocks 5, 11 and 17, into the 2560-wide language model.
+    pub fn qwen3vl_4b() -> Self {
+        Self { hidden_size: 1024, intermediate_size: 4096, depth: 24, deepstack_visual_indexes: vec![5, 11, 17], out_hidden_size: 2560, ..Self::default() }
+    }
+
     /// Values per flattened patch: `C · T · P · P`.
     pub fn patch_dim(&self) -> usize {
         self.in_channels * self.temporal_patch_size * self.patch_size * self.patch_size

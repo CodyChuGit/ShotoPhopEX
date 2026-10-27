@@ -17,7 +17,25 @@ pub const HEAD_DIM: usize = 128;
 
 extern "C" {
     #[allow(clippy::too_many_arguments)]
-    fn qir_flash_fwd(o: *mut c_void, q: *const c_void, k: *const c_void, v: *const c_void, b: i32, h: i32, kvh: i32, s: i32, skv: i32, head_dim: i32, strides: *const std::ffi::c_long, scale: f32, stream: *mut c_void) -> i32;
+    fn qir_flash_fwd_bias(
+        o: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        b: i32,
+        h: i32,
+        kvh: i32,
+        s: i32,
+        skv: i32,
+        head_dim: i32,
+        strides: *const std::ffi::c_long,
+        scale: f32,
+        bias_row: i32,
+        bias_k0: i32,
+        bias_k1: i32,
+        bias: f32,
+        stream: *mut c_void,
+    ) -> i32;
 }
 
 /// A `(B, heads, rows, 128)` view's batch, head and row strides and its start, in elements:
@@ -30,8 +48,19 @@ fn bhs_strides(l: &Layout, what: &str) -> candle_core::Result<([std::ffi::c_long
     Ok(([st[0] as std::ffi::c_long, st[1] as std::ffi::c_long, st[2] as std::ffi::c_long], l.start_offset()))
 }
 
+/// A constant added to the attention scores (before the softmax, in natural-log units) of the
+/// query rows from `rows_from` on for the keys in `keys`: `ln(b)` multiplies those keys'
+/// share of the attention by `b` before it is renormalised (a reference's pull on the target).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeyBias {
+    pub rows_from: usize,
+    pub keys: (usize, usize),
+    pub log_boost: f32,
+}
+
 struct Flash {
     scale: f32,
+    bias: Option<KeyBias>,
 }
 
 impl candle_core::CustomOp3 for Flash {
@@ -63,8 +92,12 @@ impl candle_core::CustomOp3 for Flash {
             let (kp, _gk) = ks.device_ptr(&stream);
             let (vp, _gv) = vs.device_ptr(&stream);
             let (op, _go) = out.device_ptr(&stream);
+            let (bias_row, bias_k0, bias_k1, bias) = match self.bias {
+                Some(kb) => (kb.rows_from as i32, kb.keys.0 as i32, kb.keys.1 as i32, kb.log_boost),
+                None => (0, 0, 0, 0.0),
+            };
             let rc = unsafe {
-                qir_flash_fwd(
+                qir_flash_fwd_bias(
                     op as *mut c_void,
                     (qp + qo) as *const c_void,
                     (kp + ko) as *const c_void,
@@ -77,6 +110,10 @@ impl candle_core::CustomOp3 for Flash {
                     d as i32,
                     strides.as_ptr(),
                     self.scale,
+                    bias_row,
+                    bias_k0,
+                    bias_k1,
+                    bias,
                     stream.cu_stream() as *mut c_void,
                 )
             };
@@ -92,9 +129,14 @@ impl candle_core::CustomOp3 for Flash {
 /// heads shared by `H / KVH` query heads each); the result is `(B, S, H, 128)`. The inputs may
 /// be views with dense rows (the BSHD projections through `transpose(1, 2)`): no copy is made.
 pub fn attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Result<Tensor> {
+    attention_biased(q, k, v, scale, None)
+}
+
+/// [`attention`] with a [`KeyBias`] on the scores.
+pub fn attention_biased(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, bias: Option<KeyBias>) -> Result<Tensor> {
     anyhow::ensure!(q.dtype() == DType::BF16 && k.dtype() == DType::BF16 && v.dtype() == DType::BF16, "flash-attention takes bf16");
     let dense_rows = |t: &Tensor| -> Result<Tensor> { Ok(if t.stride().last() == Some(&1) { t.clone() } else { t.contiguous()? }) };
-    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { scale })?)
+    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { scale, bias })?)
 }
 
 #[cfg(test)]
@@ -120,6 +162,34 @@ mod tests {
         let want = p.matmul(&vf)?.transpose(1, 2)?; // (B,S,H,D)
         let err = (got - want)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
         eprintln!("flash attention: max abs error {err} against the f32 reference");
+        assert!(err < 0.02, "max abs error {err}");
+        Ok(())
+    }
+
+    /// The key bias against the plain attention with the same constant added to the scores of
+    /// the rows from `rows_from` on, for the keys in range (a ragged tail on both).
+    #[test]
+    fn the_key_bias_is_added_to_the_scores() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let (b, h, kvh, s, d) = (1, 4, 2, 301, HEAD_DIM);
+        let bias = KeyBias { rows_from: 150, keys: (37, 211), log_boost: 4f32.ln() };
+        let q = Tensor::randn(0f32, 1.0, (b, h, s, d), &dev)?.to_dtype(DType::BF16)?;
+        let k = Tensor::randn(0f32, 1.0, (b, kvh, s, d), &dev)?.to_dtype(DType::BF16)?;
+        let v = Tensor::randn(0f32, 1.0, (b, kvh, s, d), &dev)?.to_dtype(DType::BF16)?;
+        let scale = 1.0 / (d as f32).sqrt();
+        let got = attention_biased(&q, &k, &v, scale, Some(bias))?.to_dtype(DType::F32)?;
+        let rep = |t: &Tensor| -> Result<Tensor> { Ok(t.unsqueeze(2)?.broadcast_as((b, kvh, h / kvh, s, d))?.reshape((b, h, s, d))?.to_dtype(DType::F32)?) };
+        let (qf, kf, vf) = (q.to_dtype(DType::F32)?, rep(&k)?, rep(&v)?);
+        let mut add = vec![0f32; s * s];
+        for r in bias.rows_from..s {
+            for c in bias.keys.0..bias.keys.1 {
+                add[r * s + c] = bias.log_boost;
+            }
+        }
+        let add = Tensor::from_vec(add, (1, 1, s, s), &dev)?;
+        let p = candle_nn::ops::softmax_last_dim(&(qf.matmul(&kf.t()?)? * f64::from(scale))?.broadcast_add(&add)?)?;
+        let want = p.matmul(&vf)?.transpose(1, 2)?;
+        let err = (got - want)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
         assert!(err < 0.02, "max abs error {err}");
         Ok(())
     }

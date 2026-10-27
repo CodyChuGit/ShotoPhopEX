@@ -31,6 +31,27 @@ pub fn template(prompt: &str) -> String {
     format!("<|im_start|>system\n{SYS_PROMPT}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
 }
 
+/// The prompt with one picture in view, as the krea2_edit LoRAs were trained (the
+/// comfyui-krea2edit `Krea2EditGroundedEncode` template): the same system turn, the picture's
+/// vision block opening the user turn, then the instruction.
+pub fn edit_template(prompt: &str) -> String {
+    format!("<|im_start|>system\n{SYS_PROMPT}<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>\n<|im_start|>assistant\n")
+}
+
+/// [`condition`] with pictures in view: their vision rows spliced in for `<|image_pad|>`, the
+/// twelve taps kept from the end of the template's prefix (the pictures come after it, so the
+/// prefix is the same rows as in `ids`), the picture rows kept as ComfyUI keeps them.
+pub fn condition_with_images(te: &QwenTextEncoder, ids: &[u32], images: &[&crate::model::vision::VisionFeatures]) -> Result<Tensor> {
+    let (taps, spans) = te.forward_with_images_taps(ids, images, &TAPS)?;
+    let end = template_end(ids);
+    anyhow::ensure!(spans.iter().all(|(start, _)| *start >= end), "a picture inside the template's prefix");
+    let total = taps.first().map(|t| t.dim(1)).transpose()?.unwrap_or(0);
+    let keep = total.saturating_sub(end);
+    anyhow::ensure!(keep > 0, "the prompt has no tokens after the template");
+    let rows: Vec<Tensor> = taps.iter().map(|t| t.narrow(1, end, keep)).collect::<candle_core::Result<_>>()?;
+    Ok(Tensor::stack(&rows, 2)?.squeeze(0)?.contiguous()?)
+}
+
 /// How many leading tokens the encoder's output drops: up to the second `<|im_start|>`, and
 /// through the `user\n` that follows it (ComfyUI's `Krea2TEModel.encode_token_weights`).
 pub fn template_end(ids: &[u32]) -> usize {
@@ -297,17 +318,38 @@ impl SwiGlu {
     }
 }
 
+/// A constant added to the attention scores (natural-log units, before the softmax) of the rows
+/// from `rows_from` on, for the keys in `keys`: an edit's `ref_boost`, `ln(b)` on the target's
+/// attention to the reference's tokens (the comfyui-krea2edit nodes' `_ref_attn_bias`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScoreBias {
+    pub rows_from: usize,
+    pub keys: (usize, usize),
+    pub log_boost: f32,
+}
+
 /// Plain attention of `q` `(B,H,S,D)` over `k`, `v` `(B,H,S,D)`, scores in f32 in query chunks.
-fn attend(q: &Tensor, k: &Tensor, v: &Tensor, scale: f64) -> Result<Tensor> {
+fn attend(q: &Tensor, k: &Tensor, v: &Tensor, scale: f64, bias: Option<ScoreBias>) -> Result<Tensor> {
     const CHUNK: usize = 1024;
     let s = q.dim(2)?;
+    let skv = k.dim(2)?;
     let keys = k.to_dtype(DType::F32)?.transpose(2, 3)?.contiguous()?;
     let mut outs = Vec::with_capacity(s.div_ceil(CHUNK));
     let mut q0 = 0;
     while q0 < s {
         let n = CHUNK.min(s - q0);
         let qc = q.narrow(2, q0, n)?.to_dtype(DType::F32)?;
-        let attn = candle_nn::ops::softmax_last_dim(&(qc.matmul(&keys)? * scale)?)?.to_dtype(v.dtype())?;
+        let mut scores = (qc.matmul(&keys)? * scale)?;
+        if let Some(b) = bias.filter(|b| q0 + n > b.rows_from) {
+            let mut add = vec![0f32; n * skv];
+            for r in b.rows_from.saturating_sub(q0)..n {
+                for c in b.keys.0..b.keys.1.min(skv) {
+                    add[r * skv + c] = b.log_boost;
+                }
+            }
+            scores = scores.broadcast_add(&Tensor::from_vec(add, (1, 1, n, skv), q.device())?)?;
+        }
+        let attn = candle_nn::ops::softmax_last_dim(&scores)?.to_dtype(v.dtype())?;
         outs.push(attn.matmul(v)?);
         q0 += n;
     }
@@ -375,8 +417,11 @@ impl Attention {
         with_lora(&self.lo, self.wo.forward(&t)?, &t)
     }
 
-    /// `x` `(B,S,dim)`; `rope` the `(S, D/2)` f32 cos/sin tables (interleaved pairs) or none.
-    fn forward(&self, x: &Tensor, rope: Option<&(Tensor, Tensor)>) -> Result<Tensor> {
+    /// `x` `(B,S,dim)`; `rope` the `(S, D/2)` f32 cos/sin tables (interleaved pairs) or none;
+    /// `bias` on the scores (exact attention only: SageAttention is not taken with one).
+    fn forward(&self, x: &Tensor, rope: Option<&(Tensor, Tensor)>, bias: Option<ScoreBias>) -> Result<Tensor> {
+        #[cfg(feature = "flash")]
+        let kbias = bias.map(|b| crate::flash::KeyBias { rows_from: b.rows_from, keys: b.keys, log_boost: b.log_boost });
         let (b, s, _) = x.dims3()?;
         let (h, kvh, d) = (self.heads, self.kv_heads, self.head_dim);
         let choice = attention_choice();
@@ -392,7 +437,9 @@ impl Attention {
             let k = crate::krea2_fused::head_rope(&with_lora(&self.lk, self.wk.forward(x)?, x)?.reshape((b, s, kvh, d))?, &self.knorm.weight, cs.as_ref(), self.knorm.eps)?;
             let v = with_lora(&self.lv, self.wv.forward(x)?, x)?.reshape((b, s, kvh, d))?;
             let flops = 4.0 * (b * h * s * s * d) as f64;
-            let out = crate::profile::scope("attention", flops, x.device(), || crate::flash::attention(&q.transpose(1, 2)?, &k.transpose(1, 2)?, &v.transpose(1, 2)?, 1.0 / (d as f32).sqrt()))?;
+            let out = crate::profile::scope("attention", flops, x.device(), || {
+                crate::flash::attention_biased(&q.transpose(1, 2)?, &k.transpose(1, 2)?, &v.transpose(1, 2)?, 1.0 / (d as f32).sqrt(), kbias)
+            })?;
             return self.gated(out.reshape((b, s, h * d))?, x);
         }
         let qb = self.qnorm.forward(&with_lora(&self.lq, self.wq.forward(x)?, x)?.reshape((b, s, h, d))?)?; // (B,S,H,D)
@@ -403,7 +450,7 @@ impl Attention {
         // quantiser), grouped heads handled by the kernel. Otherwise exact attention: the
         // `flash` kernel when built (the default), else the plain path below.
         #[cfg(feature = "sage2")]
-        if let (Some((cos, sin)), Attn::Sage) = (rope, choice) {
+        if let (Some((cos, sin)), Attn::Sage, None) = (rope, choice, bias) {
             if let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? {
                 use crate::sage2::{Role, attention, quant_v, rope_quant};
                 let dt = x.dtype();
@@ -430,7 +477,7 @@ impl Attention {
         #[cfg(feature = "flash")]
         if choice == Attn::Flash && d == crate::flash::HEAD_DIM && q.dtype() == DType::BF16 && q.device().is_cuda() {
             let flops = 4.0 * (b * h * s * s * d) as f64;
-            let out = crate::profile::scope("attention", flops, q.device(), || crate::flash::attention(&q, &k, &v, 1.0 / (d as f32).sqrt()))?; // (B,S,H,D)
+            let out = crate::profile::scope("attention", flops, q.device(), || crate::flash::attention_biased(&q, &k, &v, 1.0 / (d as f32).sqrt(), kbias))?; // (B,S,H,D)
             return self.gated(out.reshape((b, s, h * d))?, x);
         }
         let _ = choice; // builds without the kernels have only the plain path
@@ -441,7 +488,7 @@ impl Attention {
         } else {
             (k, v)
         };
-        let out = attend(&q, &k, &v, 1.0 / (d as f64).sqrt())?; // (B,H,S,D)
+        let out = attend(&q, &k, &v, 1.0 / (d as f64).sqrt(), bias)?; // (B,H,S,D)
         self.gated(out.transpose(1, 2)?.reshape((b, s, h * d))?, x)
     }
 }
@@ -491,7 +538,7 @@ impl TextFusionBlock {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = (x + self.attn.forward(&self.prenorm.forward(x)?, None)?)?;
+        let x = (x + self.attn.forward(&self.prenorm.forward(x)?, None, None)?)?;
         Ok((&x + self.mlp.forward(&self.postnorm.forward(&x)?)?)?)
     }
 }
@@ -552,15 +599,24 @@ impl Block {
         })
     }
 
-    /// `x` `(B,S,F)`, `tvec` `(B,1,6F)`.
-    fn forward(&self, x: &Tensor, tvec: &Tensor, rope: &(Tensor, Tensor)) -> Result<Tensor> {
+    /// `x` `(B,S,F)`, `tvec` `(B,1,6F)`; `bias` on the attention scores (an edit's reference).
+    fn forward(&self, x: &Tensor, tvec: &Tensor, rope: &(Tensor, Tensor), bias: Option<ScoreBias>) -> Result<Tensor> {
         // mods: (pre scale, pre shift, pre gate, post scale, post shift, post gate) × F.
         let mods = tvec.broadcast_add(&self.lin)?; // (B,1,6F)
         let h = self.prenorm.modulated(x, &mods, 0, 1)?;
-        let x = gate_add(x, &self.attn.forward(&h, Some(rope))?, &mods, 2)?;
+        let x = gate_add(x, &self.attn.forward(&h, Some(rope), bias)?, &mods, 2)?;
         let h = self.postnorm.modulated(&x, &mods, 3, 4)?;
         gate_add(&x, &self.mlp.forward(&h)?, &mods, 5)
     }
+}
+
+/// An edit's reference for [`Krea2Dit::forward_edit`]: the picture's clean latent in the
+/// sampler's space `(B, 16, h, w)` (sides no larger than the target's) and `ref_boost`, the
+/// factor on the target's attention to its tokens (1 = none; the General Edit V2 LoRA's card
+/// recommends 4).
+pub struct EditRef {
+    pub latent: Tensor,
+    pub boost: f32,
 }
 
 /// The whole model.
@@ -708,6 +764,15 @@ impl Krea2Dit {
     /// The velocity for the latent `x` `(B, 16, H, W)` at `t` (the sigma, 1 → 0) with the
     /// conditioning `ctx` `(B, seq, 12, 2560)`.
     pub fn forward(&self, x: &Tensor, t: f32, ctx: &Tensor) -> Result<Tensor> {
+        self.forward_edit(x, t, ctx, None)
+    }
+
+    /// [`Self::forward`] with an edit's reference ([`EditRef`]): the sequence is
+    /// `[text | reference | target]`, the reference's clean tokens on RoPE frame 1 at the
+    /// target's own grid positions ("aligned", how the krea2_edit LoRAs were trained), the same
+    /// timestep modulation for every token, and only the target's tokens come out (the
+    /// comfyui-krea2edit nodes' `krea2_edit_forward`, read 2026-10-27).
+    pub fn forward_edit(&self, x: &Tensor, t: f32, ctx: &Tensor, edit: Option<&EditRef>) -> Result<Tensor> {
         let dt = x.dtype();
         let (img, h, w) = self.patchify(x)?;
         let img = self.first.forward(&img)?; // (B, N, F)
@@ -717,23 +782,42 @@ impl Krea2Dit {
         let context = self.txtmlp.2.forward(&gelu_tanh(&self.txtmlp.1.forward(&self.txtmlp.0.forward(&context)?)?)?)?; // (B, seq, F)
         let seq = context.dim(1)?;
         let mut ids: Vec<[f32; 3]> = vec![[0.0; 3]; seq];
+        let mut parts: Vec<Tensor> = vec![context];
+        let mut bias = None;
+        if let Some(e) = edit {
+            let (rtok, rh, rw) = self.patchify(&e.latent.to_dtype(dt)?)?;
+            anyhow::ensure!(rtok.dim(0)? == img.dim(0)?, "the reference's batch differs from the target's");
+            // Centred inside the target's grid when smaller (`_imgids_offset`); aligned when equal.
+            let (oh, ow) = ((h as f32 - rh as f32).max(0.0) / 2.0, (w as f32 - rw as f32).max(0.0) / 2.0);
+            for r in 0..rh {
+                for c in 0..rw {
+                    ids.push([1.0, r as f32 + oh, c as f32 + ow]);
+                }
+            }
+            if e.boost != 1.0 && e.boost > 0.0 {
+                bias = Some(ScoreBias { rows_from: seq + rh * rw, keys: (seq, seq + rh * rw), log_boost: e.boost.ln() });
+            }
+            parts.push(self.first.forward(&rtok)?);
+        }
+        let prefix: usize = ids.len();
         for r in 0..h {
             for c in 0..w {
                 ids.push([0.0, r as f32, c as f32]);
             }
         }
+        parts.push(img);
         let rope = self.rope_tables(&ids)?;
-        let mut xs = Tensor::cat(&[&context, &img], 1)?;
+        let mut xs = Tensor::cat(&parts.iter().collect::<Vec<_>>(), 1)?;
         for blk in &self.blocks {
-            xs = blk.forward(&xs, &tvec, &rope)?;
+            xs = blk.forward(&xs, &tvec, &rope, bias)?;
         }
         // The last layer: scale and shift are `temb` plus the layer's own two rows.
+        let xs = xs.narrow(1, prefix, h * w)?;
         let lm = self.last_mod.to_dtype(dt)?; // (2, F)
         let scale = temb.broadcast_add(&lm.i(0)?)?; // (1,1,F)
         let shift = temb.broadcast_add(&lm.i(1)?)?;
         let out = self.last_norm.forward(&xs)?.broadcast_mul(&(scale + 1.0)?)?.broadcast_add(&shift)?;
-        let out = self.last_lin.forward(&out)?; // (B, seq+N, C·p·p)
-        let out = out.narrow(1, seq, h * w)?;
+        let out = self.last_lin.forward(&out)?; // (B, N, C·p·p)
         self.unpatchify(&out, h, w)
     }
 }
