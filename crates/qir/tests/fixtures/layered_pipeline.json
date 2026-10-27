@@ -1,0 +1,20 @@
+{
+  "arguments": {
+    "comfy": "C:\\Users\\5090\\ComfyUI\\ComfyUI_windows_portable\\ComfyUI",
+    "models": null,
+    "full": false,
+    "device": "cpu",
+    "width": 64,
+    "height": 64,
+    "layers": 2,
+    "seed": 7,
+    "steps": 1,
+    "prompt": "A red cat.",
+    "input": null,
+    "out": null,
+    "compare": null
+  },
+  "torch": "2.14.0+cu130",
+  "seconds": 0.08409310004208237,
+  "peak_working_bytes": 931237888
+}

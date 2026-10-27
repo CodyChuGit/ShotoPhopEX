@@ -30,6 +30,7 @@ pub mod fp8;
 pub mod fusednorm;
 pub mod gemm_tiles;
 pub mod layered_files;
+pub mod layered_pipeline;
 pub mod layout;
 pub mod loader;
 pub mod lora;
