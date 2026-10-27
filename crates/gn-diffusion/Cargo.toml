@@ -14,7 +14,7 @@ workspace = true
 # The CUDA build with every kernel (needs nvcc, CUTLASS and the recipe in PhotoshopEX's
 # dev-environment-windows.md). Without it the crate compiles against CPU candle: the engine
 # answers, its tests run, pictures would take minutes.
-cuda = ["qwen-image-rs/cuda", "qwen-image-rs/convrot", "qwen-image-rs/sage", "qwen-image-rs/sage2", "qwen-image-rs/fusednorm"]
+cuda = ["qwen-image-rs/cuda", "qwen-image-rs/convrot", "qwen-image-rs/sage", "qwen-image-rs/sage2", "qwen-image-rs/fusednorm", "qwen-image-rs/fp8", "qwen-image-rs/flash"]
 
 [dependencies]
 anyhow = "1"

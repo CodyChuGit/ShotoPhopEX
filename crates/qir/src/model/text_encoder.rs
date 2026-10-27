@@ -20,14 +20,22 @@ use crate::Result;
 
 /// A no-bias linear, full-precision or Q8_0-quantized (GGUF, weight-only). Q8_0
 /// halves the weight VRAM near-losslessly so the 8B text encoder fits alongside
-/// the DiT and VAE, resident in 24 GB.
+/// the DiT and VAE, resident in 24 GB. A ComfyUI `fp8_scaled` encoder file's
+/// linears keep its e4m3 bytes and multiply in bf16 (`crate::fp8`, full
+/// precision): measured on Krea 2's 28 cases, the fp8 matmul its `comfy_quant`
+/// records ask for agrees with ComfyUI's pictures less (12 of 28) than bf16 does
+/// (19 of 28).
 enum QLinear {
     Full(Linear),
     Quant(QMatMul),
+    Fp8(crate::fp8::Fp8Linear),
 }
 
 impl QLinear {
     fn load(in_c: usize, out_c: usize, quant: bool, vb: VarBuilder) -> Result<Self> {
+        if let Some(l) = crate::fp8::load_linear(in_c, out_c, None, &vb)? {
+            return Ok(QLinear::Fp8(l.full_precision()));
+        }
         if quant {
             let w = vb.get((out_c, in_c), "weight")?;
             let qt = QTensor::quantize(&w, GgmlDType::Q8_0)?;
@@ -41,6 +49,7 @@ impl QLinear {
         match self {
             QLinear::Full(l) => Ok(l.forward(x)?),
             QLinear::Quant(q) => Ok(q.forward(x)?),
+            QLinear::Fp8(l) => l.forward(x),
         }
     }
 }

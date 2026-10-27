@@ -11,8 +11,9 @@
 //!
 //! The weights live under the model root: `qwen-image-2.1/` (Hugging Face's layout:
 //! `processor/ text_encoder/ transformer/ vae/`) with the INT8 DiT cache under `.qir-cache/`
-//! beside it, and `krea2-turbo/` (`tokenizer/ text_encoder/ transformer/ vae/`, bf16
-//! safetensors: `qwen-image-rs convert-fp8` rewrites ComfyUI's fp8 repacks). One family's
+//! beside it, and `krea2-turbo/` (`tokenizer/ text_encoder/ transformer/ vae/`; the
+//! transformer either ComfyUI's `fp8_scaled` repack as it is, run with ComfyUI's own fp8
+//! recipe, or bf16 safetensors from `qwen-image-rs convert-fp8`, run with ConvRot). One family's
 //! models are resident at a time (the card holds either set, not both); the other family's
 //! first request swaps them.
 

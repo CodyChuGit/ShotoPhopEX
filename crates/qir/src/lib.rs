@@ -13,6 +13,8 @@
 
 pub mod comfy;
 pub mod convert;
+#[cfg(feature = "fusednorm")]
+pub mod krea2_fused;
 pub mod krea2_pipeline;
 #[cfg(feature = "convrot")]
 pub mod convrot;
@@ -20,6 +22,9 @@ pub mod convrot_cache;
 #[cfg(feature = "cudnn")]
 pub mod cudnn_conv;
 pub mod device;
+#[cfg(feature = "flash")]
+pub mod flash;
+pub mod fp8;
 #[cfg(feature = "fusednorm")]
 pub mod fusednorm;
 pub mod gemm_tiles;
@@ -28,6 +33,7 @@ pub mod loader;
 pub mod lora;
 pub mod model;
 pub mod pipeline;
+pub mod profile;
 #[cfg(feature = "sage")]
 pub mod rope;
 #[cfg(feature = "sage")]
