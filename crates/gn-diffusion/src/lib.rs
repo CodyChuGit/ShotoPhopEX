@@ -30,6 +30,7 @@ use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
 use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
+use qwen_image_rs::layered_pipeline::LayeredPipeline;
 use qwen_image_rs::lora::{LoraFile, LoraStack};
 use qwen_image_rs::pipeline::{Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule, is_snapshot};
 use serde_json::{Value, json};
@@ -69,16 +70,24 @@ pub const KREA2_REF_BOOST: f32 = 4.0;
 /// language-model head), so they need no second model on the card.
 pub const TEMPLATE_CHAT_EDIT: &str = "enhance/edit";
 pub const TEMPLATE_CHAT_IMAGE: &str = "enhance/image";
+/// Split into Layers: Qwen-Image-Layered (Apache-2.0) from ComfyUI's files (fp8mixed DiT, the
+/// Qwen2.5-VL 7B encoder, the RGBA layered VAE), the picture in, one RGBA layer per slice out,
+/// background first (`qir::layered_pipeline`, Rust rebuild R3).
+pub const TEMPLATE_LAYERS: &str = "qwen-layered/split";
+/// Its template's defaults: 20 steps, 3 layers.
+pub const LAYERS_STEPS: u32 = 20;
+pub const DEFAULT_LAYERS: u64 = 3;
 
 /// The model families served, one resident at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
     QwenImage21,
     Krea2,
+    Layered,
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 10] = [
+pub const TEMPLATES: [(&str, &str, Family); 11] = [
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
     (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
@@ -89,6 +98,7 @@ pub const TEMPLATES: [(&str, &str, Family); 10] = [
     (TEMPLATE_KREA2, "image", Family::Krea2),
     (TEMPLATE_CHAT_EDIT, "text", Family::QwenImage21),
     (TEMPLATE_CHAT_IMAGE, "text", Family::QwenImage21),
+    (TEMPLATE_LAYERS, "layers", Family::Layered),
 ];
 /// The model root's subdirectory for the Qwen-Image-2.1 snapshot.
 pub const MODEL_DIR: &str = "qwen-image-2.1";
@@ -110,6 +120,7 @@ enum Resident {
     None,
     Qwen(Pipeline),
     Krea2(Krea2Pipeline),
+    Layered(LayeredPipeline),
 }
 
 pub struct DiffusionEngine {
@@ -149,7 +160,8 @@ fn gpu_and_refusal() -> (Option<qwen_image_rs::device::Gpu>, Option<String>) {
 fn with_edit_lora(params: &std::collections::BTreeMap<String, Value>) -> std::collections::BTreeMap<String, Value> {
     let mut out = params.clone();
     let mut list = params.get("loras").and_then(Value::as_array).cloned().unwrap_or_default();
-    let named = list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == KREA2_EDIT_LORA)));
+    let named =
+        list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == KREA2_EDIT_LORA)));
     if !named {
         list.insert(0, json!({"file": KREA2_EDIT_LORA, "strength": 1.0}));
     }
@@ -239,6 +251,7 @@ impl DiffusionEngine {
         match &self.resident {
             Resident::Qwen(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Krea2(p) => qwen_image_rs::device::trim_pool(p.device()),
+            Resident::Layered(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::None => {}
         }
     }
@@ -250,6 +263,7 @@ impl DiffusionEngine {
         match &self.resident {
             Resident::Qwen(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Krea2(p) => qwen_image_rs::device::bind_thread(p.device()),
+            Resident::Layered(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::None => {}
         }
     }
@@ -264,7 +278,7 @@ impl DiffusionEngine {
         let (dev, dtype) = match &self.resident {
             Resident::Qwen(p) => (p.device().clone(), p.dtype()),
             Resident::Krea2(p) => (p.device().clone(), p.dtype()),
-            Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
+            Resident::Layered(_) | Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
         };
         let mut layers = Vec::with_capacity(asks.len());
         for (file, strength) in asks {
@@ -273,9 +287,13 @@ impl DiffusionEngine {
                 Some((_, f)) => Arc::clone(f),
                 None => {
                     if !path.is_file() {
-                        return Err(EngineError::new(ErrorKind::ModelMissing, format!("LoRA {} is not installed (looked in {})", file, self.models_root.join(LORA_DIR).display())));
+                        return Err(EngineError::new(
+                            ErrorKind::ModelMissing,
+                            format!("LoRA {} is not installed (looked in {})", file, self.models_root.join(LORA_DIR).display()),
+                        ));
                     }
-                    let f = Arc::new(LoraFile::load(&path, &dev, dtype).map_err(|e| EngineError::new(ErrorKind::ModelUnreadable, format!("LoRA {file}: {e}")))?);
+                    let f =
+                        Arc::new(LoraFile::load(&path, &dev, dtype).map_err(|e| EngineError::new(ErrorKind::ModelUnreadable, format!("LoRA {file}: {e}")))?);
                     if self.loras.len() >= LORA_CACHE {
                         self.loras.remove(0);
                     }
@@ -296,11 +314,7 @@ impl DiffusionEngine {
     /// it is a ComfyUI `models` folder holding ComfyUI's 2.1 files (R4: no snapshot needed).
     fn qwen21_source(&self) -> Option<PathBuf> {
         let snap = self.snapshot_dir();
-        if is_snapshot(&snap) {
-            Some(snap)
-        } else {
-            qwen_image_rs::comfy_files::find_qwen21(&self.models_root).map(|_| self.models_root.clone())
-        }
+        if is_snapshot(&snap) { Some(snap) } else { qwen_image_rs::comfy_files::find_qwen21(&self.models_root).map(|_| self.models_root.clone()) }
     }
 
     pub fn krea2_dir(&self) -> PathBuf {
@@ -320,17 +334,14 @@ impl DiffusionEngine {
     /// Where Krea 2 loads from, as [`Self::qwen21_source`].
     fn krea2_source(&self) -> Option<PathBuf> {
         let dir = self.krea2_dir();
-        if krea2_pipeline::is_snapshot(&dir) {
-            Some(dir)
-        } else {
-            qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone())
-        }
+        if krea2_pipeline::is_snapshot(&dir) { Some(dir) } else { qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone()) }
     }
 
     fn has_family(&self, family: Family) -> bool {
         match family {
             Family::QwenImage21 => self.qwen21_source().is_some(),
             Family::Krea2 => self.krea2_source().is_some(),
+            Family::Layered => self.layered_available(),
         }
     }
 
@@ -350,7 +361,7 @@ impl DiffusionEngine {
     fn ensure_loaded(&mut self, family: Family, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
         self.bind();
         match (&self.resident, family) {
-            (Resident::Qwen(_), Family::QwenImage21) | (Resident::Krea2(_), Family::Krea2) => return Ok(()),
+            (Resident::Qwen(_), Family::QwenImage21) | (Resident::Krea2(_), Family::Krea2) | (Resident::Layered(_), Family::Layered) => return Ok(()),
             (Resident::None, _) => {}
             _ => {
                 progress(0.0, "Unloading the other models");
@@ -384,7 +395,12 @@ impl DiffusionEngine {
                     Some(_) => None,
                     None => Some(dir.join(TEXT_GGUF)).filter(|g| g.is_file()),
                 };
-                let opts = Options { cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false), quant_text: self.quant_text, text_gguf, ..Options::default() };
+                let opts = Options {
+                    cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false),
+                    quant_text: self.quant_text,
+                    text_gguf,
+                    ..Options::default()
+                };
                 Resident::Qwen(Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
             Family::Krea2 => {
@@ -401,8 +417,86 @@ impl DiffusionEngine {
                 let opts = Krea2Options { cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false), ..Krea2Options::defaults() };
                 Resident::Krea2(Krea2Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
+            Family::Layered => {
+                if !self.layered_available() {
+                    return Err(EngineError::new(
+                        ErrorKind::ModelMissing,
+                        format!(
+                            "no Qwen-Image-Layered in {}: ComfyUI's diffusion_models/qwen_image_layered_fp8mixed, \
+                             text_encoders/qwen_2.5_vl_7b_fp8_scaled, vae/qwen_image_layered_vae and ComfyUI's qwen25_tokenizer",
+                            self.models_root.display()
+                        ),
+                    ));
+                }
+                report(0.0, "Loading Qwen-Image-Layered");
+                Resident::Layered(LayeredPipeline::load(&self.models_root).map_err(err)?)
+            }
         };
         Ok(())
+    }
+
+    /// Qwen-Image-Layered's three files and the Qwen tokenizer under the models root (ComfyUI's
+    /// layout only: it has no snapshot form here).
+    fn layered_available(&self) -> bool {
+        qwen_image_rs::layered_files::LayeredFiles::resolve(&self.models_root).is_ok() && qwen_image_rs::comfy_files::tokenizer_dir(&self.models_root).is_some()
+    }
+
+    /// Split into Layers: the picture (a multiple of 16 on each side, as the app sends it) and
+    /// `params.layers`; one RGBA blob per layer, background first. The text encoder and the DiT
+    /// take the card in turn inside the pipeline, so the other families are unloaded first.
+    fn split(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        cancel: &AtomicBool,
+        started: Instant,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        let Some(image) = &req.image else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the picture", req.model))) };
+        let picture = reference_of(image, blobs, "picture")?;
+        if picture.width == 0 || picture.height == 0 || picture.width % 16 != 0 || picture.height % 16 != 0 {
+            return Err(EngineError::new(
+                ErrorKind::BadRequest,
+                format!("the picture is {}x{}; the split takes multiples of 16", picture.width, picture.height),
+            ));
+        }
+        let layers = match req.params.get("layers") {
+            None => DEFAULT_LAYERS,
+            Some(v) => v
+                .as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+                .filter(|n| (1..=8).contains(n))
+                .ok_or_else(|| EngineError::new(ErrorKind::BadRequest, format!("layers {v} is not a whole number from 1 to 8")))?,
+        } as usize;
+        let steps = if req.steps == 0 { LAYERS_STEPS } else { req.steps } as usize;
+        let Some(rgba) = qwen_image_rs::layered_pipeline::RgbaImage::from_raw(picture.width as u32, picture.height as u32, picture.rgba) else {
+            return Err(EngineError::new(ErrorKind::BadRequest, "the picture's bytes do not match its size"));
+        };
+        let result: Result<Vec<_>, EngineError> = (|| {
+            self.ensure_loaded(Family::Layered, progress)?;
+            let Resident::Layered(p) = &self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no pipeline")) };
+            let mut report = |i: usize, n: usize| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Splitting");
+            p.split(&rgba, layers, &req.prompt, req.seed, steps, &mut report, cancel)
+                .map_err(|e| if cancel.load(Ordering::SeqCst) { EngineError::cancelled() } else { EngineError::new(kind_of(&e), e.to_string()) })
+        })();
+        self.give_back();
+        let out = match result {
+            Ok(o) => o,
+            Err(e) => {
+                exit_if_poisoned(&e.message);
+                if matches!(e.kind, ErrorKind::ModelUnreadable | ErrorKind::Internal) {
+                    self.last_error = Some(e.message.clone());
+                }
+                if e.kind == ErrorKind::OutOfMemory {
+                    self.resident = Resident::None;
+                }
+                return Err(e);
+            }
+        };
+        self.last_error = None;
+        let images = out.iter().enumerate().map(|(i, l)| Blob { width: l.width(), height: l.height(), channels: 4, index: i as u32 }).collect();
+        let bytes = out.into_iter().map(|l| l.into_raw()).collect();
+        Ok((DoneInfo { images, texts: Vec::new(), seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, bytes))
     }
 }
 
@@ -466,7 +560,8 @@ pub fn family_of(template: &str) -> Option<Family> {
 
 /// A blob's bytes, checked against its header.
 fn bytes_of<'a>(b: &Blob, blobs: &'a [Vec<u8>], what: &str) -> Result<&'a [u8], EngineError> {
-    let bytes = blobs.get(b.index as usize).ok_or_else(|| EngineError::new(ErrorKind::BadRequest, format!("the {what} names blob {} that was not sent", b.index)))?;
+    let bytes =
+        blobs.get(b.index as usize).ok_or_else(|| EngineError::new(ErrorKind::BadRequest, format!("the {what} names blob {} that was not sent", b.index)))?;
     let want = b.width as usize * b.height as usize * usize::from(b.channels);
     if b.width == 0 || b.height == 0 || bytes.len() != want {
         return Err(EngineError::new(
@@ -504,7 +599,10 @@ fn placed_picture(canvas: &RefImage, params: &std::collections::BTreeMap<String,
     let x1 = ((x + w).div_ceil(16) * 16).min(canvas.width / 16 * 16);
     let y1 = ((y + h).div_ceil(16) * 16).min(canvas.height / 16 * 16);
     if x1 <= x0 || y1 <= y0 {
-        return Err(EngineError::new(ErrorKind::BadRequest, format!("the picture's place {x},{y} {w}x{h} lies outside the {}x{} canvas", canvas.width, canvas.height)));
+        return Err(EngineError::new(
+            ErrorKind::BadRequest,
+            format!("the picture's place {x},{y} {w}x{h} lies outside the {}x{} canvas", canvas.width, canvas.height),
+        ));
     }
     let (cw, ch) = (x1 - x0, y1 - y0);
     let mut rgba = Vec::with_capacity(cw * ch * 4);
@@ -528,6 +626,7 @@ impl Engine for DiffusionEngine {
             Resident::None => (Vec::new(), cfg!(feature = "cuda"), None),
             Resident::Qwen(p) => (vec![MODEL_DIR.to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Krea2(p) => (vec![KREA2_DIR.to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::Layered(p) => (vec!["qwen-image-layered".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
         };
         // The card's name where the driver gave one; the free memory only while a pipeline
         // holds the context (asking without one would create it).
@@ -571,6 +670,9 @@ impl Engine for DiffusionEngine {
         }
         if task == "text" {
             return self.chat(req, blobs, progress, cancel, started);
+        }
+        if task == "layers" {
+            return self.split(req, blobs, progress, cancel, started);
         }
         // The pictures the model sees in order: image 1 is the picture being edited, then the
         // mask (a fill) or the references (an edit; a matte has none). The target takes image
@@ -622,6 +724,7 @@ impl Engine for DiffusionEngine {
         let default_steps = match family {
             Family::QwenImage21 => DEFAULT_STEPS,
             Family::Krea2 => KREA2_STEPS,
+            Family::Layered => LAYERS_STEPS,
         };
         let result: Result<Picture, EngineError> = (|| {
             self.ensure_loaded(family, progress)?;
@@ -663,7 +766,7 @@ impl Engine for DiffusionEngine {
             match &self.resident {
                 Resident::Qwen(p) => p.generate(&ask, &mut report, &stop).map_err(err),
                 Resident::Krea2(p) => p.generate(&ask, &mut report, &stop).map_err(err),
-                Resident::None => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
+                Resident::Layered(_) | Resident::None => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
             }
         })();
         self.give_back();
@@ -732,6 +835,7 @@ pub fn has_models(dir: &Path) -> bool {
         || krea2_pipeline::is_snapshot(&dir.join(KREA2_DIR))
         || qwen_image_rs::comfy_files::find_qwen21(dir).is_some()
         || qwen_image_rs::comfy_files::find_krea2(dir).is_some()
+        || qwen_image_rs::layered_files::LayeredFiles::resolve(dir).is_ok()
 }
 
 #[cfg(test)]
@@ -843,13 +947,15 @@ mod tests {
     fn an_expand_places_the_picture_on_whole_tokens() {
         // A 64x48 canvas whose pixel value is its column; the picture at (20, 0) 30x48.
         let canvas = RefImage { width: 64, height: 48, rgba: (0..48).flat_map(|_| (0..64u8).flat_map(|x| [x, 0, 0, 255])).collect(), offset: None };
-        let params: BTreeMap<String, Value> = [("ref_x", 20u64), ("ref_y", 0), ("ref_w", 30), ("ref_h", 48)].into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        let params: BTreeMap<String, Value> =
+            [("ref_x", 20u64), ("ref_y", 0), ("ref_w", 30), ("ref_h", 48)].into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
         let p = placed_picture(&canvas, &params).unwrap();
         // 20..50 widened to 16..64: 48 wide, placed at x = 16.
         assert_eq!((p.width, p.height, p.offset), (48, 48, Some((16, 0))));
         assert_eq!((p.rgba[0], p.rgba[4 * 47]), (16, 63), "the first row runs from column 16 to 63");
         assert!(placed_picture(&canvas, &BTreeMap::new()).is_err(), "no place named");
-        let off: BTreeMap<String, Value> = [("ref_x", 70u64), ("ref_y", 0), ("ref_w", 10), ("ref_h", 10)].into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        let off: BTreeMap<String, Value> =
+            [("ref_x", 70u64), ("ref_y", 0), ("ref_w", 10), ("ref_h", 10)].into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
         assert!(placed_picture(&canvas, &off).is_err(), "outside the canvas");
     }
 
@@ -861,12 +967,21 @@ mod tests {
         assert_eq!(e.snapshot_dir(), PathBuf::from("m").join(MODEL_DIR));
         assert_eq!(e.krea2_dir(), PathBuf::from("m").join(KREA2_DIR));
         assert_eq!((side(0), side(1024), side(1000), side(5)), (1024, 1024, 992, 16));
-        assert_eq!((task_of(TEMPLATE), task_of(TEMPLATE_EDIT), task_of(TEMPLATE_FILL), task_of("krea2-turbo/image")), (Some("image"), Some("edit"), Some("fill"), Some("image")));
+        assert_eq!(
+            (task_of(TEMPLATE), task_of(TEMPLATE_EDIT), task_of(TEMPLATE_FILL), task_of("krea2-turbo/image")),
+            (Some("image"), Some("edit"), Some("fill"), Some("image"))
+        );
         assert_eq!((task_of(TEMPLATE_EXPAND), task_of(TEMPLATE_MATTE), task_of("nope/x")), (Some("expand"), Some("matte"), None));
         assert_eq!((family_of(TEMPLATE_KREA2), family_of(TEMPLATE_FILL), family_of("nope/x")), (Some(Family::Krea2), Some(Family::QwenImage21), None));
-        assert_eq!((task_of(TEMPLATE_CHAT_EDIT), task_of(TEMPLATE_CHAT_IMAGE), family_of(TEMPLATE_CHAT_EDIT)), (Some("text"), Some("text"), Some(Family::QwenImage21)));
+        assert_eq!(
+            (task_of(TEMPLATE_CHAT_EDIT), task_of(TEMPLATE_CHAT_IMAGE), family_of(TEMPLATE_CHAT_EDIT)),
+            (Some("text"), Some("text"), Some(Family::QwenImage21))
+        );
         assert!(is_sticky_cuda_error(r#"DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")"#));
-        assert!(!is_sticky_cuda_error("DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")"), "out of memory is recoverable: the models are dropped instead");
+        assert!(
+            !is_sticky_cuda_error("DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")"),
+            "out of memory is recoverable: the models are dropped instead"
+        );
         assert_eq!(kind_of(&anyhow::anyhow!("CUDA_ERROR_OUT_OF_MEMORY")), ErrorKind::OutOfMemory);
         assert_eq!(kind_of(&Cancelled.into()), ErrorKind::Cancelled);
         assert_eq!(kind_of(&anyhow::anyhow!("weight directory does not exist: x")), ErrorKind::ModelMissing);

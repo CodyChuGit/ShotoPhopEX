@@ -4,7 +4,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use candle_core::{DType, Device, Tensor};
-use image::RgbaImage;
+/// The pictures split takes and returns.
+pub use image::RgbaImage;
 use tokenizers::Tokenizer;
 
 use crate::comfy::{torch_randn, FlowSchedule, Shift};
@@ -86,6 +87,11 @@ impl LayeredPipeline {
         Ok(Self { files, tokenizer: load_tokenizer(tokenizer)?, dtype: if device.is_cuda() { DType::BF16 } else { DType::F32 }, device })
     }
 
+    /// The device the split runs on.
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
     fn vae(&self) -> Result<WanVae> {
         let vae = WanVae::load(TensorFile::open(&self.files.vae)?.builder("", self.dtype, &self.device)?)?;
         anyhow::ensure!(vae.image_channels() == 4 && vae.can_encode(), "Layered requires an RGBA encoder and decoder");
@@ -157,7 +163,13 @@ impl LayeredPipeline {
         observe("noise", &latent)?;
         progress(0, steps);
         {
-            let dit = LayeredDit::open_streamed(&self.files.diffusion, &self.device)?;
+            // On CUDA the whole DiT goes on the device for the split's forwards (the encoder is
+            // gone by now: the two do not fit 32 GB together), else one block at a time.
+            let dit = if self.device.is_cuda() {
+                LayeredDit::open_resident(&self.files.diffusion, &self.device)?
+            } else {
+                LayeredDit::open_streamed(&self.files.diffusion, &self.device)?
+            };
             for i in 0..steps {
                 check()?;
                 let packed = patchify(&latent)?.to_dtype(self.dtype)?;

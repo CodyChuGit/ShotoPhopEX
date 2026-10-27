@@ -408,6 +408,12 @@ impl LayeredDit {
         Ok(Self { input: LayeredInput::load(vb.clone())?, blocks, output: LayeredOutput::load(vb)?, streamed: None })
     }
 
+    /// Every block resident, read from the checkpoint as `open_streamed` reads it (fp8 kept
+    /// until each matmul): about 20 GB on the GPU, for a worker that splits more than once.
+    pub fn open_resident(path: impl AsRef<std::path::Path>, device: &Device) -> Result<Self> {
+        Self::load(checkpoint_builder(path, device)?)
+    }
+
     /// Keep only one block resident at a time, including when running on CPU.
     pub fn open_streamed(path: impl AsRef<std::path::Path>, device: &Device) -> Result<Self> {
         let vb = checkpoint_builder(path, device)?;
