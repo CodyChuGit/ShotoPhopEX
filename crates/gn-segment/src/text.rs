@@ -111,9 +111,47 @@ impl Block {
 /// Local CLIP BPE tokenizer with the worker's fixed 32-token window.
 pub struct ClipTokenizer(tokenizers::Tokenizer);
 impl ClipTokenizer {
-    /// Read the ONNX route's tokenizer.json, retaining its normalization and BPE rules.
+    /// Read the ONNX route's tokenizer.json, retaining its normalization and BPE rules, or, for a
+    /// folder, assemble the same tokenizer from its `vocab.json` and `merges.txt` (ComfyUI's
+    /// `comfy/sd1_tokenizer`: no file of ours needed beside a ComfyUI install).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if path.is_dir() {
+            return Self::from_vocab_dir(path);
+        }
         Ok(Self(tokenizers::Tokenizer::from_file(path).map_err(|e| anyhow::anyhow!("{e}"))?))
+    }
+
+    /// OpenAI CLIP's byte-level BPE (NFC, whitespace runs to one space, lowercase, CLIP's split
+    /// pattern, `</w>` word ends) from `dir`'s vocabulary and merges, as CLIP's tokenizer.json.
+    pub fn from_vocab_dir(dir: &Path) -> Result<Self> {
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).map_err(|e| anyhow::anyhow!("read {}: {e}", dir.join(f).display()));
+        let vocab: serde_json::Value = serde_json::from_str(&read("vocab.json")?)?;
+        let merges: Vec<serde_json::Value> = read("merges.txt")?
+            .lines()
+            .filter(|l| !l.starts_with("#version") && !l.is_empty())
+            .map(|l| l.split_once(' ').map(|(a, b)| serde_json::json!([a, b])).ok_or_else(|| anyhow::anyhow!("merges.txt: no pair in {l:?}")))
+            .collect::<Result<_>>()?;
+        let special = |id: u32, content: &str, normalized: bool| serde_json::json!({"id": id, "content": content, "single_word": false, "lstrip": false, "rstrip": false, "normalized": normalized, "special": true});
+        let json = serde_json::json!({
+            "version": "1.0",
+            "truncation": null,
+            "padding": null,
+            "added_tokens": [special(49406, "<|startoftext|>", true), special(49407, "<|endoftext|>", false)],
+            "normalizer": {"type": "Sequence", "normalizers": [{"type": "NFC"}, {"type": "Replace", "pattern": {"Regex": r"\s+"}, "content": " "}, {"type": "Lowercase"}]},
+            "pre_tokenizer": {"type": "Sequence", "pretokenizers": [
+                {"type": "Split", "pattern": {"Regex": r"<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"}, "behavior": "Removed", "invert": true},
+                {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": true},
+            ]},
+            "post_processor": {"type": "RobertaProcessing", "sep": ["<|endoftext|>", 49407], "cls": ["<|startoftext|>", 49406], "trim_offsets": false, "add_prefix_space": false},
+            "decoder": {"type": "ByteLevel", "add_prefix_space": true, "trim_offsets": true, "use_regex": true},
+            "model": {"type": "BPE", "dropout": null, "unk_token": "<|endoftext|>", "continuing_subword_prefix": "", "end_of_word_suffix": "</w>",
+                "fuse_unk": false, "byte_fallback": false, "ignore_merges": false, "vocab": vocab, "merges": merges},
+        });
+        Ok(Self(
+            tokenizers::Tokenizer::from_bytes(serde_json::to_vec(&json)?)
+                .map_err(|e| anyhow::anyhow!("assemble the CLIP tokenizer from {}: {e}", dir.display()))?,
+        ))
     }
     /// Disable special-token insertion, keep 30 pieces, then add BOS/EOS and zero padding.
     pub fn encode(&self, text: &str) -> Result<([u32; CONTEXT], [bool; CONTEXT])> {

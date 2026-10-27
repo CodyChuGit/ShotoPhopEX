@@ -13,6 +13,10 @@ workspace = true
 [features]
 # The worker-side `Engine` over gn-engine's protocol (what `photocraft --engine` serves).
 engine = ["dep:gn-engine"]
+# SAM 3.1 on candle from its own checkpoint (`gn-segment`), before the ONNX graphs.
+candle = ["dep:gn-segment", "dep:candle-core", "dep:anyhow"]
+# The same on the GPU.
+cuda = ["candle", "gn-segment/cuda", "candle-core/cuda"]
 
 [dependencies]
 serde = { workspace = true }
@@ -25,6 +29,9 @@ ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dy
 # The CLIP byte-pair tokenizer, read from the model directory's tokenizer.json. Pure Rust:
 # no oniguruma, no C++ suffix array.
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+gn-segment = { path = "../gn-segment", version = "0.1.0", optional = true }
+candle-core = { version = "0.11", optional = true }
+anyhow = { version = "1", optional = true }
 
 [[bin]]
 name = "gn-sam"
