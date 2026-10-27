@@ -15,6 +15,10 @@ use crate::Result;
 /// The seven linears of every transformer block, by weight prefix relative to
 /// `transformer_blocks.<i>.` (the safetensors key minus `.weight`).
 const BLOCK_LINEARS: [&str; 7] = ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "img_mlp.proj", "img_mlp.gate_layer", "img_mlp.out"];
+/// ComfyUI's single-file name for `img_mlp.gate_layer` and `img_mlp.proj` stacked (gate rows
+/// first). Same precision as the two; not in the policy tag, which a snapshot's cache entries
+/// were built under (an entry from ComfyUI's file holds this name and no other).
+const FUSED_GATE_UP: &str = "img_mlp.gate_up";
 
 /// The DiT's non-block ("tail") linears: `(weight prefix, in K, out N, ConvRot
 /// under --convrot)`. A rotated layer needs K % 256 == 0 (the 256-wide
@@ -56,7 +60,7 @@ fn block_suffix(prefix: &str) -> Option<&str> {
 /// linears: ConvRot when `convrot` and the table enables it, else Full (Q8_0
 /// never applied to them). `None` = not a DiT linear.
 pub fn linear_precision(prefix: &str, quant: bool, convrot: bool) -> Option<LinearPrecision> {
-    let p = if block_suffix(prefix).is_some_and(|s| BLOCK_LINEARS.contains(&s)) {
+    let p = if block_suffix(prefix).is_some_and(|s| BLOCK_LINEARS.contains(&s) || s == FUSED_GATE_UP) {
         if convrot {
             LinearPrecision::ConvRot
         } else if quant {
@@ -811,15 +815,41 @@ struct SwiGlu {
 }
 impl SwiGlu {
     fn load(opts: LinearOpts, vb: VarBuilder) -> Result<Self> {
-        let proj = QLinear::load(INNER, INNER * 3, opts, vb.pp("proj"))?;
-        let gate = QLinear::load(INNER, INNER * 3, opts, vb.pp("gate_layer"))?;
         let out = QLinear::load(INNER * 3, INNER, opts, vb.pp("out"))?;
-        let input = match (gate, proj, &out) {
-            #[cfg(feature = "convrot")]
-            (QLinear::Convrot(g), QLinear::Convrot(p), QLinear::Convrot(_)) => MlpIn::Merged(crate::convrot::ConvRotLinear::concat_out(&[&g, &p])?),
-            (gate, proj, _) => MlpIn::Separate { proj, gate },
+        // `vb` is at `transformer_blocks.N.img_mlp`.
+        let fused = FUSED_GATE_UP.trim_start_matches("img_mlp.");
+        let input = if vb.contains_tensor(&format!("{fused}.weight")) || vb.contains_tensor(&format!("{fused}.weight_i8")) {
+            Self::load_fused(opts, &out, vb.pp(fused))?
+        } else {
+            let proj = QLinear::load(INNER, INNER * 3, opts, vb.pp("proj"))?;
+            let gate = QLinear::load(INNER, INNER * 3, opts, vb.pp("gate_layer"))?;
+            match (gate, proj, &out) {
+                #[cfg(feature = "convrot")]
+                (QLinear::Convrot(g), QLinear::Convrot(p), QLinear::Convrot(_)) => MlpIn::Merged(crate::convrot::ConvRotLinear::concat_out(&[&g, &p])?),
+                (gate, proj, _) => MlpIn::Separate { proj, gate },
+            }
         };
         Ok(Self { input, out, lgate: LoraSlot::default(), lproj: LoraSlot::default(), lout: LoraSlot::default() })
+    }
+
+    /// ComfyUI's single file stores the two input linears as one `img_mlp.gate_up` (the gate's
+    /// rows, then the proj's: `comfy/ldm/qwen_image21/model.py`). Under ConvRot that is the
+    /// merged GEMM as it is; otherwise its halves become the two linears.
+    fn load_fused(opts: LinearOpts, out: &QLinear, vb: VarBuilder) -> Result<MlpIn> {
+        let rotated = linear_precision(&vb.prefix(), opts.quant, opts.convrot && opts.rot.is_some()) == Some(LinearPrecision::ConvRot);
+        #[cfg(feature = "convrot")]
+        if rotated && out.is_convrot() {
+            if let QLinear::Convrot(c) = QLinear::load(INNER, 2 * INNER * 3, opts, vb.clone())? {
+                return Ok(MlpIn::Merged(c));
+            }
+        }
+        let _ = (rotated, out);
+        let w = vb.get((2 * INNER * 3, INNER), "weight")?;
+        let half = |i: usize| -> Result<QLinear> {
+            let w = w.narrow(0, i * INNER * 3, INNER * 3)?.contiguous()?;
+            Ok(if opts.quant { QLinear::Quant(QMatMul::from_qtensor(QTensor::quantize(&w, GgmlDType::Q8_0)?)?) } else { QLinear::Full(Linear::new(w, None)) })
+        };
+        Ok(MlpIn::Separate { gate: half(0)?, proj: half(1)? })
     }
 
     /// Set this MLP's adapters from `stack` under `prefix` (`transformer_blocks.N.img_mlp`).
