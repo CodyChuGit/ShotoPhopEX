@@ -211,6 +211,7 @@ pub struct Interface {
     /// Command ids and the control protocol stay English.
     pub language: String,
     pub ui_font_size: UiFontSize,
+    /// Single colour channels (the Channels panel and the canvas) show in their colour, not gray.
     pub show_channels_in_color: bool,
     pub dynamic_color_sliders: bool,
     /// Draw menu item colours set with Edit › Menus.
@@ -252,6 +253,7 @@ pub struct Workspace {
     pub auto_show_hidden_panels: bool,
     pub open_documents_as_tabs: bool,
     pub enable_floating_document_window_docking: bool,
+    /// Taller document tabs with a larger title.
     pub large_tabs: bool,
     pub enable_narrow_options_bar: bool,
     pub remember_workspace_changes: bool,
@@ -277,13 +279,19 @@ pub struct Tools {
     pub show_tooltips: bool,
     /// Tool keys cycle a tool group only with ⇧ held (Photoshop's "Use Shift Key for Tool Switch").
     pub use_shift_key_for_tool_switch: bool,
+    /// A Zoom tool click also centres the view on the clicked point.
     pub zoom_clicked_point_to_center: bool,
     pub enable_flick_panning: bool,
+    /// The on-canvas brush resize gesture's vertical movement changes the hardness (off: the
+    /// opacity).
     pub vary_round_brush_hardness_on_hud: bool,
     /// Round snapped vector and transform coordinates to whole pixels.
     pub snap_vector_tools_and_transforms_to_pixel_grid: bool,
+    /// The size readout beside the pointer while dragging a marquee.
     pub show_transformation_values: bool,
     pub overscroll: bool,
+    /// Double-clicking a layer-mask thumbnail opens Select and Mask on the mask (off: the
+    /// Properties panel).
     pub double_click_layer_mask_launches_select_and_mask: bool,
     /// What the right mouse button does on the canvas with the Brush and other painting tools.
     pub right_click_with_painting_tools: RightClickPaint,
@@ -329,6 +337,7 @@ impl Default for HistoryLog {
 #[serde(default, rename_all = "camelCase")]
 pub struct FileHandling {
     pub image_previews: Ask,
+    /// Save As writes the file extension in lower case.
     pub lowercase_extension: bool,
     pub save_in_background: bool,
     /// Save recovery information (crash recovery autosave).
@@ -637,12 +646,15 @@ impl Default for PlugIns {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TypePrefs {
+    /// Typed straight quotes become curly quotes.
     pub smart_quotes: bool,
     pub missing_glyph_protection: bool,
     pub show_font_names_in_english: bool,
+    /// Esc commits type being edited (off: Esc cancels the edit).
     pub use_esc_to_commit: bool,
     pub text_engine: TextEngine,
     pub font_preview: FontPreview,
+    /// New type layers start with selected placeholder text (off: empty).
     pub fill_new_type_layers_with_placeholder: bool,
     pub recent_fonts: u32,
 }
@@ -667,6 +679,7 @@ impl Default for TypePrefs {
 pub struct EnhancedControls {
     pub scrubby_slider_acceleration: bool,
     pub touch_gestures: bool,
+    /// A trackpad pinch zooms the canvas.
     pub zoom_with_trackpad_pinch: bool,
     pub rotate_view_with_trackpad: bool,
 }
@@ -819,21 +832,14 @@ pub const HIDDEN_UNTIL_IMPLEMENTED: &[&str] = &[
     "general.alwaysCreateSmartObjectsWhenPlacing",
     "general.animatedZoom",
     "general.zoomResizesWindows",
-    "interface.showChannelsInColor",
     "interface.dynamicColorSliders",
     "workspace.autoCollapseIconPanels",
     "workspace.autoShowHiddenPanels",
     "workspace.openDocumentsAsTabs",
     "workspace.enableFloatingDocumentWindowDocking",
-    "workspace.largeTabs",
     "workspace.enableNarrowOptionsBar",
-    "tools.zoomClickedPointToCenter",
     "tools.enableFlickPanning",
-    "tools.varyRoundBrushHardnessOnHud",
-    "tools.showTransformationValues",
-    "tools.doubleClickLayerMaskLaunchesSelectAndMask",
     "fileHandling.imagePreviews",
-    "fileHandling.lowercaseExtension",
     "fileHandling.saveInBackground",
     "fileHandling.ignoreExifProfileTag",
     "fileHandling.maximizePsdCompatibility",
@@ -850,17 +856,13 @@ pub const HIDDEN_UNTIL_IMPLEMENTED: &[&str] = &[
     "plugIns.showExtensionPanels",
     "plugIns.allowScriptsToConnect",
     "plugIns.generatorEnabled",
-    "type.smartQuotes",
     "type.missingGlyphProtection",
     "type.showFontNamesInEnglish",
-    "type.useEscToCommit",
     "type.textEngine",
     "type.fontPreview",
-    "type.fillNewTypeLayersWithPlaceholder",
     "type.recentFonts",
     "enhancedControls.scrubbySliderAcceleration",
     "enhancedControls.touchGestures",
-    "enhancedControls.zoomWithTrackpadPinch",
     "enhancedControls.rotateViewWithTrackpad",
     "rawDefaults.colorSpace",
     "rawDefaults.bitDepth",

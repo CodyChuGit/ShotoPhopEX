@@ -25,10 +25,11 @@ fn session() -> (photocraft_engine::Session, u64, u64) {
 }
 
 fn harness(session: photocraft_engine::Session, tab: usize, ppp: f32, dock_width: f32) -> Harness<'static, PhotocraftApp> {
-    let mut h = Harness::builder().with_size(vec2(1440.0, 1000.0)).with_pixels_per_point(ppp).with_max_steps(64).build_eframe(move |cc| {
-        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-        PhotocraftApp::new(session, crate::Services::default())
-    });
+    let mut h =
+        Harness::builder().with_size(vec2(1440.0, 1000.0)).with_pixels_per_point(ppp).with_step_dt(1.0 / 60.0).with_max_steps(64).build_eframe(move |cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+            PhotocraftApp::new(session, crate::Services::default())
+        });
     let ctx = h.ctx.clone();
     let (req, _rx) = crate::control::ControlRequest::new(
         "ui.set",
@@ -413,4 +414,43 @@ fn command_i_inverts_the_targeted_mask() {
     let st = app.session.active().unwrap();
     let mask = &st.doc.layer(st.active_layer.unwrap()).unwrap().mask.as_ref().unwrap().surface;
     assert_eq!(mask.sample_channel(10, 10, 0), 0.0, "reveal all → hide all");
+}
+
+/// Preferences › Tools › Double Click Layer Mask Launches Select and Mask: on, double-clicking
+/// the layer-mask thumbnail loads the mask as the selection and opens Select and Mask; off, it
+/// shows the Properties panel.
+#[test]
+fn double_clicking_a_layer_mask_opens_select_and_mask_or_properties() {
+    for select_and_mask in [true, false] {
+        let (mut s, masked, _) = session();
+        s.execute("prefs.set", json!({"values": {"tools.doubleClickLayerMaskLaunchesSelectAndMask": select_and_mask}})).unwrap();
+        let mut h = harness(s, 0, 1.0, 290.0);
+        let r = recorded(&h.ctx, masked).unwrap().0.into_iter().find(|(k, _)| *k == MaskKind::Pixel).unwrap().1;
+        let at = r.center();
+        h.hover_at(at);
+        h.run_steps(40);
+        for _ in 0..2 {
+            h.hover_at(at);
+            h.step();
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+                h.step();
+            }
+            h.run_steps(3);
+        }
+        let app = h.state();
+        let opened = app.ui.dialogs.iter().any(|d| d.fields.get("__command") == Some(&json!("select.refineEdge")));
+        assert_eq!(
+            opened,
+            select_and_mask,
+            "Select and Mask opened; status {:?}, journal {:?}",
+            app.ui.status,
+            app.session.journal.iter().rev().take(4).map(|(i, _)| i.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(app.session.active().unwrap().doc.selection.is_some(), select_and_mask, "the mask became the selection");
+        if !select_and_mask {
+            assert_eq!(crate::view_cmds::checked(app, "window.panel.properties"), Some(true), "Properties shown");
+            assert!(!app.ui.dock.is_collapsed(crate::dock::Group::Properties), "and expanded");
+        }
+    }
 }

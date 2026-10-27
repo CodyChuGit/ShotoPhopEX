@@ -86,3 +86,19 @@ fn studio_tabs_overflow_into_the_same_menu() {
     let name = h.state().session.documents()[active].doc.name.clone();
     assert!(h.query_by_label(&name).is_some(), "the active tab is on the strip: {name}");
 }
+
+/// Preferences › Workspace › Large Tabs: taller document tabs in every theme.
+#[test]
+fn large_tabs_make_the_strip_taller() {
+    for theme in [ThemeKind::Pro, ThemeKind::Studio] {
+        let mut h = harness(3, theme);
+        let small = strip(&h);
+        assert!(small.tabs.iter().all(|r| r.height() == super::TAB_H), "{theme:?}");
+        h.state_mut().run("prefs.set", json!({"values": {"workspace.largeTabs": true}})).unwrap();
+        h.run_steps(3);
+        let large = strip(&h);
+        assert_eq!(large.tabs.len(), 3);
+        assert!(large.tabs.iter().all(|r| r.height() == super::LARGE_TAB_H), "{theme:?}: {:?}", large.tabs);
+        assert_eq!(large.rect.height() - small.rect.height(), super::LARGE_TAB_H - super::TAB_H, "{theme:?}");
+    }
+}

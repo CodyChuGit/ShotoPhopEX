@@ -2,8 +2,9 @@
 //! (Windows, Linux) or Control+Option+drag (macOS; Control+Alt+drag works everywhere) changes the
 //! brush instead of painting. Left and right
 //! set the diameter (the circle's edge follows the pointer), up and down the hardness (down makes
-//! it harder). The brush circle stays where the drag began, tinted to show the hardness, with a
-//! Diameter/Hardness readout beside the pointer.
+//! it harder), or the opacity with Preferences › Tools › Vary Round Brush Hardness based on HUD
+//! vertical movement off. The brush circle stays where the drag began, tinted to show the
+//! hardness, with a Diameter/Hardness (or Opacity) readout beside the pointer.
 //!
 //! The change is `tools.setBrush` calls sharing one `coalesce` key, so the whole drag is one
 //! journal entry (Rule 1) and, the brush being tool state, no history step. Krita's ⇧+drag (the
@@ -19,7 +20,7 @@ use crate::PhotocraftApp;
 use crate::canvas::{ToolEvent, ViewXform};
 use crate::state::Tool;
 
-/// Screen points of vertical drag that take the hardness from 0 % to 100 %.
+/// Screen points of vertical drag that take the hardness (or opacity) from 0 % to 100 %.
 pub const HARDNESS_TRAVEL: f32 = 200.0;
 /// The brush size range (`tools.setBrush` accepts the same).
 const SIZE: std::ops::RangeInclusive<f32> = 1.0..=MAX_BRUSH_SIZE;
@@ -29,8 +30,10 @@ const SIZE: std::ops::RangeInclusive<f32> = 1.0..=MAX_BRUSH_SIZE;
 pub struct Resize {
     /// Where the drag began, in document pixels: the circle stays there.
     pub anchor: [f64; 2],
-    /// The brush's diameter and hardness when it began.
+    /// The brush's diameter and hardness (or opacity) when it began.
     pub start: (f32, f32),
+    /// Vertical movement changes the opacity instead of the hardness.
+    pub opacity: bool,
     /// The `coalesce` key of this drag's `tools.setBrush` calls.
     key: u64,
     /// Begun by an Alt+right-drag (#297): it ends when the right button is up.
@@ -76,8 +79,10 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers, ar
             if app.drag.is_some() || !applies(app.ui.tool) || !(armed || is_gesture(mods)) {
                 return false;
             }
+            let opacity = !app.session.prefs().tools.vary_round_brush_hardness_on_hud;
             let b = &app.session.tools.brush;
-            app.brush_resize = Some(Resize { anchor: [x, y], start: (b.size, b.hardness), key: KEY.fetch_add(1, Ordering::Relaxed), secondary: armed });
+            let start = (b.size, if opacity { b.opacity } else { b.hardness });
+            app.brush_resize = Some(Resize { anchor: [x, y], start, opacity, key: KEY.fetch_add(1, Ordering::Relaxed), secondary: armed });
             true
         }
         ToolEvent::Move { x, y, .. } => match app.brush_resize {
@@ -108,12 +113,22 @@ pub fn release_stale(app: &mut PhotocraftApp, secondary_down: bool) {
 fn update(app: &mut PhotocraftApp, r: Resize, x: f64, y: f64) {
     // Right is bigger on screen, also in a flipped view (View › Flip Horizontal).
     let dx = (x - r.anchor[0]) * if app.ui.view.flip_horizontal { -1.0 } else { 1.0 };
-    let (size, hardness) = resized(r.start, dx, y - r.anchor[1], app.current_zoom());
+    let (size, v) = resized(r.start, dx, y - r.anchor[1], app.current_zoom());
     let b = &app.session.tools.brush;
-    if b.size == size && b.hardness == hardness {
-        return;
-    }
-    let p = json!({ "brush": { "size": size, "hardness": hardness }, "coalesce": format!("brush-resize:{}", r.key) });
+    let brush = if r.opacity {
+        // A brush at 0 % paints nothing: stop at the options bar's 1 %.
+        let v = v.max(0.01);
+        if b.size == size && b.opacity == v {
+            return;
+        }
+        json!({ "size": size, "opacity": v })
+    } else {
+        if b.size == size && b.hardness == v {
+            return;
+        }
+        json!({ "size": size, "hardness": v })
+    };
+    let p = json!({ "brush": brush, "coalesce": format!("brush-resize:{}", r.key) });
     if let Err(e) = app.run("tools.setBrush", p) {
         app.ui.status = e;
     }
@@ -133,12 +148,13 @@ pub fn draw(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) -> boo
     // Photoshop hides the pointer while the circle stays put.
     painter.ctx().set_cursor_icon(egui::CursorIcon::None);
     let at = painter.ctx().pointer_latest_pos().unwrap_or(c);
+    let (label, v) = if r.opacity { (tl!("Opacity:"), b.opacity) } else { (tl!("Hardness:"), b.hardness) };
     crate::canvas::draw_readout(
         painter.ctx(),
         "brush-resize-readout",
         at,
-        [tl!("Diameter:"), tl!("Hardness:")],
-        [format!("{} px", b.size.round() as i64), format!("{}%", (b.hardness * 100.0).round() as i64)],
+        [tl!("Diameter:"), label],
+        [format!("{} px", b.size.round() as i64), format!("{}%", (v * 100.0).round() as i64)],
     );
     true
 }
@@ -232,6 +248,20 @@ mod tests {
             assert_eq!(new, ["tools.setBrush"], "{tool:?}");
             assert_eq!(app.session.journal.last().unwrap().1["brush"], json!({"size": 80.0f32, "hardness": 0.6f32}));
         }
+    }
+
+    #[test]
+    fn with_the_hardness_preference_off_vertical_drag_changes_the_opacity() {
+        let mut app = app(Tool::Brush);
+        app.run("prefs.set", json!({"values": {"tools.varyRoundBrushHardnessOnHud": false}})).unwrap();
+        app.run("tools.setBrush", json!({"brush": {"opacity": 0.5}})).unwrap();
+        tool_event(&mut app, ToolEvent::Down { x: 100.0, y: 100.0, pressure: 1.0 }, CTRL_ALT);
+        tool_event(&mut app, ToolEvent::Move { x: 110.0, y: 160.0, pressure: 1.0 }, CTRL_ALT);
+        let b = &app.session.tools.brush;
+        assert_eq!((b.size, b.hardness, b.opacity), (60.0, 0.2, 0.8));
+        // Up as far as it goes stops at 1 %.
+        tool_event(&mut app, ToolEvent::Up { x: 110.0, y: -1000.0 }, CTRL_ALT);
+        assert_eq!(app.session.tools.brush.opacity, 0.01);
     }
 
     #[test]

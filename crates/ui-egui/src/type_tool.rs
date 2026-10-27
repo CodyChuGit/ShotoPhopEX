@@ -255,8 +255,10 @@ pub fn pointer_up(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) {
     let (w, h) = ((end[0] - start[0]).abs(), (end[1] - start[1]).abs());
     let min = 4.0 / app.current_zoom().max(0.01) as f64;
     let o = app.ui.tool_options.clone();
+    // Preferences › Type › Fill New Type Layers with Placeholder Text.
+    let placeholder = if app.session.prefs().type_.fill_new_type_layers_with_placeholder { PLACEHOLDER } else { "" };
     let mut p = json!({
-        "text": PLACEHOLDER,
+        "text": placeholder,
         "orientation": if app.ui.tool == crate::state::Tool::VerticalType { "vertical" } else { "horizontal" },
         "font": o.type_font,
         "fontStyle": o.type_style,
@@ -279,7 +281,7 @@ pub fn pointer_up(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) {
             let _ = app.run("type.edit", json!({"layer": id, "antialias": o.type_aa, "coalesce": key}));
         }
         // Like Photoshop: the placeholder is selected, so typing replaces it.
-        let n = PLACEHOLDER.chars().count();
+        let n = placeholder.chars().count();
         app.ui.text_edit = Some(TextEdit { layer: id, caret: n, anchor: 0, session: key, created: true, dragging: false, resize: None, preedit: None });
     }
 }
@@ -306,6 +308,26 @@ fn insert(app: &mut PhotocraftApp, s: &str) {
         e.caret = a + s.chars().count();
         e.anchor = e.caret;
     }
+}
+
+/// Typed straight quotes as curly ones (Preferences › Type › Use Smart Quotes): a quote opens
+/// after the start of the text, a space, a line break or an opening bracket or quote, and closes
+/// (or is an apostrophe) anywhere else. `before` is the character before the insertion point.
+fn smart_quotes(s: &str, mut before: Option<char>) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let opens = before.is_none_or(|b| b.is_whitespace() || "([{\u{2018}\u{201C}".contains(b));
+        let q = match c {
+            '"' if opens => '\u{201C}',
+            '"' => '\u{201D}',
+            '\'' if opens => '\u{2018}',
+            '\'' => '\u{2019}',
+            c => c,
+        };
+        out.push(q);
+        before = Some(q);
+    }
+    out
 }
 
 /// Alt+←/→: kern the pair before the caret by `by` (1/1000 em). No pair (caret at a text or line
@@ -438,6 +460,10 @@ pub fn handle_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
         };
         handled[k] = true;
         match ev {
+            egui::Event::Text(s) if app.session.prefs().type_.smart_quotes => {
+                let before = a.checked_sub(1).and_then(|i| text.chars().nth(i));
+                insert(app, &smart_quotes(s, before));
+            }
             egui::Event::Text(s) | egui::Event::Paste(s) => insert(app, s),
             // A bare line break from the IME is the Enter key, which the key arm handles.
             egui::Event::Ime(egui::ImeEvent::Preedit { text: s, .. } | egui::ImeEvent::Commit(s)) if s == "\n" || s == "\r" => handled[k] = false,
@@ -511,7 +537,9 @@ pub fn handle_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
                     }
                     Key::Enter if m.command => commit(app),
                     Key::Enter => insert(app, "\n"),
-                    Key::Escape => commit(app),
+                    // Preferences › Type › Use ESC Key to Commit Text; off, Esc cancels the edit.
+                    Key::Escape if app.session.prefs().type_.use_esc_to_commit => commit(app),
+                    Key::Escape => cancel(app),
                     Key::A if m.command => {
                         if let Some(e) = app.ui.text_edit.as_mut() {
                             e.anchor = 0;
@@ -1471,6 +1499,30 @@ mod tests {
         insert(&mut app, "");
         commit(&mut app);
         assert_eq!(app.session.active().unwrap().doc.layers.len(), n - 1);
+    }
+
+    #[test]
+    fn new_layers_start_empty_without_the_placeholder_preference() {
+        let mut app = app();
+        app.run("prefs.set", json!({"values": {"type.fillNewTypeLayersWithPlaceholder": false}})).unwrap();
+        pointer_up(&mut app, [50.0, 100.0], [50.0, 100.0]);
+        let ed = app.ui.text_edit.clone().unwrap();
+        assert_eq!((ed.anchor, ed.caret), (0, 0));
+        assert_eq!(layer_text(&app), "");
+        insert(&mut app, "Hi");
+        assert_eq!(layer_text(&app), "Hi");
+        commit(&mut app);
+        assert_eq!(app.session.active().unwrap().doc.layers.last().unwrap().name, "Hi");
+    }
+
+    #[test]
+    fn smart_quotes_open_after_spaces_and_brackets_and_close_elsewhere() {
+        assert_eq!(smart_quotes("\"a\"", None), "\u{201C}a\u{201D}");
+        assert_eq!(smart_quotes("'", Some(' ')), "\u{2018}");
+        assert_eq!(smart_quotes("'", Some('(')), "\u{2018}");
+        assert_eq!(smart_quotes("'s", Some('t')), "\u{2019}s");
+        assert_eq!(smart_quotes("\"'", Some('\n')), "\u{201C}\u{2018}");
+        assert_eq!(smart_quotes("abc", None), "abc");
     }
 
     #[test]

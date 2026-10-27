@@ -220,4 +220,27 @@ mod tests {
         let c = h.state().ui.views[0].center;
         assert!((c[0] as f64 - mid[0]).abs() < 1.0 && (c[1] as f64 - mid[1]).abs() < 1.0, "{c:?} vs {mid:?}");
     }
+
+    /// A click steps the zoom about the clicked point; with Preferences › Tools › Zoom Clicked
+    /// Point to Center that point also moves to the middle of the view.
+    #[test]
+    fn a_click_centres_the_clicked_point_with_the_preference() {
+        for centre in [false, true] {
+            let mut h = harness(false);
+            h.state_mut().run("prefs.set", json!({"values": {"tools.zoomClickedPointToCenter": centre}})).unwrap();
+            let r = h.state().last_canvas_rect;
+            let p = r.center() + vec2(-120.0, 50.0);
+            let d = view_xf(&h).to_doc(p);
+            let z0 = h.state().current_zoom();
+            h.event(Event::PointerMoved(p));
+            h.step();
+            press(&mut h, p, true);
+            press(&mut h, p, false);
+            h.run_steps(2);
+            assert!(h.state().current_zoom() > z0, "zoomed in");
+            let at = view_xf(&h).to_screen(d[0] as f32, d[1] as f32);
+            let expect = if centre { r.center() } else { p };
+            assert!(at.distance(expect) < 1.0, "centre={centre}: the clicked point is at {at:?}, expected {expect:?}");
+        }
+    }
 }

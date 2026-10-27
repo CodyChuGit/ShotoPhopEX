@@ -1143,8 +1143,10 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     // Layers dragged over a tab show its document (`layer_transfer`).
     let dragging = crate::layer_transfer::pointer_if_armed(app, ui.ctx());
     let mut drag_over = None;
-    let font = crate::theme::medium(12.5);
-    let meta_font = egui::FontId::proportional(10.5);
+    // Preferences › Workspace › Large Tabs.
+    let large = app.session.prefs().workspace.large_tabs;
+    let font = crate::theme::medium(if large { 14.0 } else { 12.5 });
+    let meta_font = egui::FontId::proportional(if large { 11.5 } else { 10.5 });
     // Files opening in the background (#210) are tabs too; they share the fit's index space,
     // after the documents.
     let opening = crate::jobs_ui::open_tabs(app);
@@ -1171,7 +1173,7 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         .and_then(|job| opening.iter().position(|(open, _, _)| *open == job))
         .map_or_else(|| app.session.active_index().unwrap_or(0), |p| tab_count + p);
     let frame = egui::Frame::NONE.fill(t.canvas).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 4 }).show(ui, |ui| {
-        let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::hover());
+        let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), if large { LARGE_TAB_H } else { TAB_H }), Sense::hover());
         let f = crate::tab_strip::fit(&natural, selected, row.width(), DOC_TAB_MIN_W, crate::tab_strip::CHEVRON_W);
         let mut x = row.left();
         let mut placed: Vec<(usize, Rect)> = Vec::with_capacity(f.shown.len());
@@ -1330,6 +1332,10 @@ fn open_tab_clicks(
 /// Document tabs: the chrome around a title (the × and its gaps), and the width a tab shrinks to
 /// before it moves into the » overflow menu.
 const DOC_TAB_PAD: f32 = 42.0;
+/// Height of the document tab strip.
+const TAB_H: f32 = 26.0;
+/// Its height with Preferences › Workspace › Large Tabs.
+const LARGE_TAB_H: f32 = 34.0;
 const DOC_TAB_MIN_W: f32 = 72.0;
 /// The Studio strip's tabs carried 4 pt of spacing between them and 44 pt of chrome; `fit` sees
 /// one number per tab, so the gap rides in the natural width and comes back out when painted.
@@ -1360,8 +1366,10 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     let dragging = crate::layer_transfer::pointer_if_armed(app, ui.ctx());
     let mut drag_over = None;
     let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
-    let font = egui::FontId::proportional(11.5);
-    let (strip, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::hover());
+    // Preferences › Workspace › Large Tabs.
+    let large = app.session.prefs().workspace.large_tabs;
+    let font = egui::FontId::proportional(if large { 13.0 } else { 11.5 });
+    let (strip, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), if large { LARGE_TAB_H } else { TAB_H }), Sense::hover());
     ui.painter().rect_filled(strip, 0.0, t.tab_strip);
     // Files opening in the background (#210) are tabs too ("name (Opening… 45%)" with a progress
     // underline); they share the fit's index space, after the documents.
@@ -1922,7 +1930,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let under_dialog = !app.ui.dialogs.is_empty();
     let free_hover = under_dialog && crate::dialogs::free_pointer_over(&ctx, rect).is_some();
     // Navigation (wheel_nav.rs): scroll pans (⇧ or ⌘/Ctrl sideways); pinch and ⌥-scroll zoom around the pointer.
-    let wheel = crate::wheel_nav::read(&ctx, app.session.prefs().general.zoom_with_scroll_wheel);
+    let wheel =
+        crate::wheel_nav::read(&ctx, app.session.prefs().general.zoom_with_scroll_wheel, app.session.prefs().enhanced_controls.zoom_with_trackpad_pinch);
     // The wheel also scrolls over the scrollbars drawn on top of the canvas (last frame's hover).
     let bars_id = egui::Id::new(("pc-canvas-bars-hover", idx));
     let over_bars = ctx.data(|d| d.get_temp::<bool>(bars_id)).unwrap_or(false);
@@ -2127,6 +2136,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                 Tool::Zoom => {
                     let nz = zoom_step(view.zoom, if zoom_out(click_mods.alt) { -1 } else { 1 });
                     zoom_about(&mut view, &xf, p, nz);
+                    // Preferences › Tools › Zoom Clicked Point to Center.
+                    if app.session.prefs().tools.zoom_clicked_point_to_center {
+                        view.center = [d[0] as f32, d[1] as f32];
+                    }
                 }
                 // A click with the (temporary) Hand does nothing, never the tool underneath.
                 Tool::Hand => {}
@@ -2512,7 +2525,8 @@ fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &View
     }
     let last = d.points.last().map(|p| [p[0], p[1]]).unwrap_or(d.start);
     let marquee = matches!(d.tool, Tool::RectMarquee | Tool::EllipseMarquee).then(|| marquee_corners(&app.ui.tool_options, d, last));
-    if let Some((a, b)) = marquee {
+    // Preferences › Tools › Show Transformation Values.
+    if let Some((a, b)) = marquee.filter(|_| app.session.prefs().tools.show_transformation_values) {
         draw_marquee_readout(painter.ctx(), xf.to_screen(last[0] as f32, last[1] as f32), marquee_readout(marquee_px(a, b)));
     }
     match d.tool {

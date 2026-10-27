@@ -1660,10 +1660,10 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             app.ui.mask_target = false;
             continue;
         }
-        if p.is_null() {
+        if p.is_null() || id.starts_with("window.") {
             // Context-menu items behave like their menu-bar twins (dialogs included).
             let ctx = ui.ctx().clone();
-            if let Err(e) = crate::menus::invoke(app, &ctx, &id, json!({})) {
+            if let Err(e) = crate::menus::invoke(app, &ctx, &id, if p.is_null() { json!({}) } else { p }) {
                 app.ui.status = e;
                 app.ui.status_error = true;
             }
@@ -1946,6 +1946,7 @@ fn layer_row(
     // adjustment or fill thumbnail opens its settings and a Smart Object thumbnail its contents,
     // and a type thumbnail edits its text; anywhere else on the row opens Layer Style (#350, #537).
     // The first click already made this the active layer.
+
     if resp.double_clicked() {
         let pos = resp.interact_pointer_pos();
         let on = |r: Rect| pos.is_some_and(|p| r.expand(2.0).contains(p));
@@ -1955,6 +1956,11 @@ fn layer_row(
             if let Some(done) = crate::layer_row_ui::start_rename(ctx, l.id.0, &l.name) {
                 // One rename at a time: starting this one commits any other (#314).
                 actions.push(done);
+            }
+        } else if pos.and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel) {
+            // A plain double-click only: two quick ⌥/⇧/⌘-clicks stay two clicks.
+            if ui.input(|i| i.modifiers.is_none()) {
+                actions.extend(crate::mask_thumbs_ui::double_click_actions(app, l));
             }
         } else if pos.and_then(|p| masks.hit(p)).is_none() {
             let id = match &l.content {
