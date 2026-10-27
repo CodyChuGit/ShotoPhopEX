@@ -4,6 +4,7 @@
 pub mod config;
 pub mod dit;
 pub mod krea2;
+pub mod qwen25_text;
 pub mod rotation;
 pub mod scheduler;
 pub mod text_encoder;
