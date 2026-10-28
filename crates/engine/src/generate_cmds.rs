@@ -958,7 +958,35 @@ pub(crate) fn backend_for(s: &Session, template: &str) -> Result<(Arc<dyn Genera
             return Ok((b, NATIVE_SERVER_KEY.to_string()));
         }
     }
-    Ok((backend(s)?, server_key(s)))
+    let b = backend(s)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(hint) = research_hint(s, template)
+        && !b.health().ok
+    {
+        return Err(EngineError::Other(hint));
+    }
+    Ok((b, server_key(s)))
+}
+
+/// Under `auto` with research-only models off (the permissive default), a Qwen-Image-Edit-2511
+/// template goes to ComfyUI even when the native worker is set up and runs Qwen-Image-2.1. When
+/// no ComfyUI answers and none is started by the app, the request would fail with "cannot
+/// reach the ComfyUI server" alone; this says both ways out instead (Rust rebuild R6: the
+/// licence choice stays the user's). `None` when it does not apply.
+#[cfg(not(target_arch = "wasm32"))]
+fn research_hint(s: &Session, template: &str) -> Option<String> {
+    let i = &s.prefs().integrations;
+    let is_2511 = template::find(template).is_ok_and(|t| t.meta.family == "qwen-image-edit-2511");
+    if engine_mode(s) != "auto" || !is_2511 || i.allow_research_models || !i.comfy_path.trim().is_empty() || !i.native_configured() {
+        return None;
+    }
+    let serves_21 = native_backend(s).ok()?.model_files("").ok()?.iter().any(|m| m.starts_with("qwen-2.1/"));
+    serves_21.then(|| {
+        format!(
+            "this runs Qwen-Image-Edit-2511 on a ComfyUI server, and none answers at {}. The native engine can run it with Qwen-Image-2.1 instead: turn on Allow Research-Only Models in Preferences › AI Integrations (its licence is for research and personal use, not commercial work). Or start ComfyUI, or name its folder there so the app starts it.",
+            i.comfy_server.trim()
+        )
+    })
 }
 
 /// The backend for the vision-language questions a job asks (the rewriter, the judge, the

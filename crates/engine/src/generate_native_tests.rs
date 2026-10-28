@@ -274,3 +274,30 @@ fn auto_runs_qwen_image_2_1_on_the_worker_instead_of_2511() {
     assert_eq!(m["autoFill"].as_str(), Some("qwen-2.1/fill"), "fills stay on the fill template unless fillAsEdit is asked: {m}");
     assert!(comfy.state().prompts.is_empty(), "nothing went to ComfyUI");
 }
+
+/// The permissive default (research-only models off) with the worker set up and no ComfyUI:
+/// a 2511 request says how to get it running (allow Qwen-Image-2.1, or start ComfyUI) instead of
+/// only "cannot reach the ComfyUI server" (Rust rebuild R6). With ComfyUI answering, or a folder
+/// the app starts it from, the request goes on as before.
+#[test]
+fn a_2511_request_without_comfyui_names_the_native_alternative() {
+    let _turn = WORKER_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+    let (port, token) = photocraft_genai::native::serve_fake(vec!["qwen-2.1/edit".into(), "sam3.1/segment".into()], 1).unwrap();
+    set_native_backend(Arc::new(photocraft_genai::native::NativeBackend::attached(port, &token).unwrap()));
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+    s.edit_prefs(|p| {
+        p.integrations.engine = "auto".into();
+        p.integrations.runtime_path = "runtime".into();
+        p.integrations.models_path = "models".into();
+        // A port nothing listens on.
+        p.integrations.comfy_server = "http://127.0.0.1:9".into();
+    });
+    let err = s.execute("generate.edit", json!({"prompt": "make it winter", "template": "qwen-edit-2511/edit", "seed": 1})).unwrap_err().to_string();
+    assert!(err.contains("Allow Research-Only Models") && err.contains("start ComfyUI"), "{err}");
+    // A ComfyUI that answers takes the request as before.
+    let comfy = photocraft_genai::fake::FakeComfy::start().unwrap();
+    s.edit_prefs(|p| p.integrations.comfy_server = comfy.url.clone());
+    let r = s.execute("generate.edit", json!({"prompt": "make it winter", "template": "qwen-edit-2511/edit", "seed": 1}));
+    assert!(r.as_ref().is_ok_and(|r| r["template"] == "qwen-edit-2511/edit"), "{r:?}");
+}
