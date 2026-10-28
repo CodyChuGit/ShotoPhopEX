@@ -84,3 +84,29 @@ Queue status: R0 ✅ R1 ✅ R2 ✅ R3 ✅ (640 px) R4 ✅ R5 ✅, R6 waiting on 
   account (creating an account is a system change I don't make). Same check from a new account:
   unzip `dist\release\…-native-portable.zip` there and run `clean-profile-native.ps1 -Zip <it>`.
 - The Krea 2 style reference still needs its LoRA path natively (R2 remainder).
+
+## Update, 2026-10-28 evening
+
+- **Defaults** (Cody's call): engine native, research-only models on; no default path goes to
+  2511 or ComfyUI (PhotoshopEX `df40a2bb`). The ComfyUI engine is an opt-in.
+- **Speed vs ComfyUI at 864×1152, warm, same template** (`benchmarks.md` §0): split 125 vs
+  125 s; image Krea 2 3.8 vs 4.0 s; image 2.1 3.9 vs 4.2 s; fill 3.2 vs 3.3 s; edit 5.1 vs
+  5.6 s; image from a ref 5.2 vs 5.6 s; Remove Background 5.1 vs 5.5 s; select by text 0.3 vs
+  0.6 s; upscale 2× 40.6 vs 39.0 s (the last, within 4 %). The fixes: genai-native `f66aeb6`
+  (split), `03fb72e` (2.1 picture routes: the text encoder stays resident, a conditioning
+  cache), `3da83bd` (LoRAs merged into the INT8 weights once, flash prefix), PhotoshopEX
+  `3b6f3ca5` (upscale's app side). Every change kept the outputs within 1/255 (most within
+  0.006/255; the split byte-identical).
+- **The -Native zip rebuilt** (558 MB) and walked from a fresh profile, ComfyUI not configured:
+  **11 of 11**; the worker loaded no onnxruntime, cudnn, python or torch module. The watcher saw
+  one python.exe with no readable path, consistent with a Codex job's sandboxed fixture
+  commands running at the same time (the app can start Python only through the ComfyUI
+  sidecar, which was not configured).
+- Remove Background with no prompt now names the subject first (`49ecf6d3`).
+- **2511 natively** (a benchmark alternative, not a default): spec `90e005a`, vision tower
+  `7049357`; the text encoder's image splicing and the DiT step in progress.
+- **Krea 2 style reference natively**: implemented (Codex), every CPU gate but one strict
+  absolute cap; the GPU comparison against ComfyUI is next.
+- Needs Cody: four `python.exe` processes (ComfyUI's Python, since 16:26, PIDs 16508, 3372,
+  6984, 5216; most likely an orphaned ComfyUI from a Codex comparison) hold GPU memory; I was
+  not permitted to stop them.
