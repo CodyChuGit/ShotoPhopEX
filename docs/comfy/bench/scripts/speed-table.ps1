@@ -111,7 +111,7 @@ foreach ($route in $Routes) {
 foreach ($name in $cases.Keys) {
     if ($Only.Count -and $Only -notcontains $name) { continue }
     $n = $table["$name|native"]; $c = $table["$name|comfy"]
-    $f = { param($r) if ($r -and $r.ok) { "{0:N1}" -f $r.secs } elseif ($r) { "fail" } else { "—" } }
+    $f = { param($r) if ($r -and $r.ok) { "{0:N1}" -f $r.secs } elseif ($r) { "fail" } else { "-" } }
     if (-not $n) { $n = @($null, $null) }; if (-not $c) { $c = @($null, $null) }
     $same = $n -and $c -and $n[1].template -eq $c[1].template
     $ratio = if ($n -and $c -and $n[1].ok -and $c[1].ok) { if ($same) { "{0:N2}x" -f ($n[1].secs / $c[1].secs) } else { "different model" } } else { "" }
