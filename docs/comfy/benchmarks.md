@@ -9,6 +9,42 @@ from the command's `timings`: `encode` (PNG), `upload`, `queue` (queued → the 
 numbers are milliseconds. The raw CSVs and the output PNGs sit in
 `C:\Users\5090\ComfyUI\photocraft-tests\bench\` (not in the repository).
 
+## 0. Native vs ComfyUI, every feature at 1 MP (2026-10-28)
+
+The owner's goal of 2026-10-28: every native feature at least as fast as its ComfyUI route at
+the same settings and size, parity kept. [`bench/scripts/speed-table.ps1`](bench/scripts/speed-table.ps1):
+an 864×1152 portrait (the owner's usual 1 MP 3:4 size), the same template, seed and settings on
+both routes, wall seconds through the app's CLI. "Cold" is a case's first run (its model loads
+after whatever ran before), "warm" the second, with a new seed (ComfyUI answers a repeated
+request from its cache in 0.2–0.6 s, which the first attempt measured by mistake). Native: the
+app's worker flags (no `--text-quant`, SAM 3.1 f16), genai-native `f66aeb6`; ComfyUI:
+`start-comfyui-fast.ps1` (`--fast fp8_matrix_mult`). One route on the GPU at a time; two Codex
+jobs were running CPU-only (8 threads each) during the native half.
+
+| Feature (864×1152) | native cold | native warm | ComfyUI cold | ComfyUI warm | warm ratio | template (native / ComfyUI) |
+|---|---|---|---|---|---|---|
+| image (Krea 2) | 14.3 | 3.8 | 24.3 | 4.0 | 0.96× | krea2-turbo/image both |
+| image (2.1) | 16.3 | 3.9 | 8.3 | 4.2 | 0.92× | qwen-2.1/image both |
+| image from a ref | 6.0 | 10.3 | 7.4 | 5.6 | **1.83×** | qwen-2.1/image-ref both |
+| fill | 8.2 | 8.2 | 4.9 | 3.3 | **2.51×** | qwen-2.1/fill both |
+| fill from a ref | 9.6 | 9.6 | 120.5 | 114.0 | different model | 2.1 edit / 2511 fill-ref |
+| edit | 10.1 | 10.1 | 8.7 | 5.6 | **1.82×** | qwen-2.1/edit both |
+| expand | 10.0 | 10.0 | fails | fails | — | ComfyUI's 2.1 expand route: "needs an output size" (a bug of that route) |
+| remove (stroke) | 9.3 | 4.3 | 14.3 | 12.6 | different model | 2.1 edit / 2511 fill-lightning-8 |
+| remove background | 5.7 | 10.1 | 8.6 | 5.5 | **1.85×** | qwen-2.1/matte both |
+| angles | 10.1 | 10.1 | 10.9 | 4.9 | different model | 2.1 edit / 2511 angles |
+| select by text | 1.1 | 0.3 | 1.8 | 0.6 | 0.47× | SAM 3.1 both |
+| upscale 2× | 80.3 | 79.7 | 42.8 | 40.8 | **1.96×** | qwen-2.1/edit tiles both |
+| split (3 layers) | 130.1 | 125.0 | 129.0 | 124.8 | 1.00× | qwen-layered/split both (after `f66aeb6`: 175 → 130 s) |
+
+Reading: text to image, selection and the split are level or faster natively; **every
+Qwen-Image-2.1 route that conditions on a picture is 1.8–2.5× slower natively** (fill, edit,
+image from a reference, matte, upscale's tiles): the reference path (the vision tower, the VAE
+encode, the reference tokens) is the gap to close. Native image-from-a-ref and matte were faster
+cold than warm (6.0 vs 10.3 s, 5.7 vs 10.1 s): something is recomputed on the second request.
+The three "different model" rows run 2511 on ComfyUI because `paint.remove`, `generate.angles`
+and a fill with references have no template parameter and ComfyUI's `auto` picks 2511 there.
+
 ## 1. Fill templates, default server flags, no cache (run 1)
 
 Uploads had unique names, so every run paid the 7 B vision text encoder and the VAE encode;
