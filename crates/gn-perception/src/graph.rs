@@ -1,9 +1,38 @@
 //! Small shared pieces for graphs run through ONNX Runtime: copying outputs out of a run, the
-//! error type, and mask bookkeeping.
+//! error type, and mask bookkeeping. The device, the node's knobs and the found objects are
+//! shared with the candle backend, so they build without the `onnx` feature too.
 
 use std::path::PathBuf;
 
+#[cfg(feature = "onnx")]
 use crate::runtime::RuntimeError;
+
+/// The device a backend runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Device {
+    /// The CUDA execution provider on GPU `ordinal`; falls back to the CPU provider for operators
+    /// CUDA cannot run.
+    Cuda { ordinal: i32 },
+    /// The CPU provider only.
+    Cpu,
+}
+
+/// The node's knobs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Options {
+    /// `sigmoid(score)` above this keeps a detection (ComfyUI: 0.5).
+    pub threshold: f32,
+    /// Detections kept per text prompt, best first (ComfyUI: 1 unless the prompt says `:N`).
+    pub max_detections: usize,
+    /// Tracker refinement passes (ComfyUI: 2; 0 keeps the detector's masks).
+    pub refine_iterations: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2 }
+    }
+}
 
 /// A tensor copied out of a run: its shape and its data.
 pub type Feat = (Vec<i64>, Vec<f32>);
@@ -12,6 +41,7 @@ pub type Feat = (Vec<i64>, Vec<f32>);
 #[derive(Debug)]
 pub enum Error {
     Missing(PathBuf),
+    #[cfg(feature = "onnx")]
     Runtime(RuntimeError),
     /// A graph output did not have the shape or type the module relies on.
     Shape(String),
@@ -22,6 +52,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Missing(p) => write!(f, "model file missing: {}", p.display()),
+            #[cfg(feature = "onnx")]
             Error::Runtime(e) => write!(f, "{e}"),
             Error::Shape(s) => write!(f, "unexpected graph output: {s}"),
             Error::Tokenizer(s) => write!(f, "tokenizer: {s}"),
@@ -31,12 +62,14 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[cfg(feature = "onnx")]
 impl From<RuntimeError> for Error {
     fn from(e: RuntimeError) -> Self {
         Error::Runtime(e)
     }
 }
 
+#[cfg(feature = "onnx")]
 impl From<ort::Error> for Error {
     fn from(e: ort::Error) -> Self {
         Error::Runtime(RuntimeError::Ort(e.to_string()))
@@ -50,12 +83,14 @@ pub fn sigmoid(x: f32) -> f32 {
 }
 
 /// Copy a named `f32` output out of a run.
+#[cfg(feature = "onnx")]
 pub fn take_f32(outputs: &ort::session::SessionOutputs<'_>, name: &str) -> Result<Feat> {
     let v = outputs.get(name).ok_or_else(|| Error::Shape(format!("no output `{name}`")))?;
     let (shape, data) = v.try_extract_tensor::<f32>().map_err(|e| Error::Shape(format!("`{name}`: {e}")))?;
     Ok((shape.to_vec(), data.to_vec()))
 }
 
+#[cfg(feature = "onnx")]
 pub fn take_bool(outputs: &ort::session::SessionOutputs<'_>, name: &str) -> Result<(Vec<i64>, Vec<bool>)> {
     let v = outputs.get(name).ok_or_else(|| Error::Shape(format!("no output `{name}`")))?;
     let (shape, data) = v.try_extract_tensor::<bool>().map_err(|e| Error::Shape(format!("`{name}`: {e}")))?;

@@ -1183,10 +1183,27 @@ dependencies = [
 name = "gn-perception"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "candle-core",
  "gn-engine",
+ "gn-segment",
  "ort",
  "png 0.17.16",
  "serde",
+ "serde_json",
+ "tokenizers 0.23.2",
+]
+
+[[package]]
+name = "gn-segment"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "gn-perception",
+ "image",
+ "ort",
  "serde_json",
  "tokenizers 0.23.2",
 ]
@@ -1936,8 +1953,10 @@ dependencies = [
  "cc",
  "clap",
  "cudarc 0.19.9",
+ "float8",
  "half",
  "image",
+ "memmap2",
  "safetensors 0.8.0",
  "serde",
  "serde_json",
@@ -3003,3 +3022,15 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
+
+[[patch.unused]]
+name = "gn-diffusion"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "gn-engine"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "gn-perception"
+version = "0.1.0"

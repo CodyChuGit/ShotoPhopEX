@@ -23,9 +23,13 @@ use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
 use gn_engine::server::{Engine, EngineError};
 use serde_json::{Value, json};
 
-use crate::graph::{Error, Instance};
-use crate::runtime::{Device, Runtime, RuntimeConfig, library_name};
-use crate::sam31::{Embedding, Options, Sam31};
+#[cfg(feature = "onnx")]
+use crate::graph::Error;
+use crate::graph::{Device, Instance, Options};
+#[cfg(feature = "onnx")]
+use crate::runtime::{Runtime, RuntimeConfig, library_name};
+#[cfg(feature = "onnx")]
+use crate::sam31::{Embedding, Sam31};
 
 /// The template ids this engine answers, as PhotoshopEX names them.
 pub const TEMPLATES: [&str; 3] = ["sam3.1/segment", "sam3.1/segment-point", "sam3.1/segment-box"];
@@ -36,6 +40,7 @@ pub const SAM31_CHECKPOINT: &str = "sam3.1_multiplex_fp16.safetensors";
 
 /// The resident model: the candle port or the ONNX graphs.
 enum Model {
+    #[cfg(feature = "onnx")]
     Ort(Box<Sam31>),
     #[cfg(feature = "candle")]
     Candle(Box<gn_segment::sam::Sam31>),
@@ -43,6 +48,7 @@ enum Model {
 
 /// A picture's embedding, from the backend that made it.
 enum Emb {
+    #[cfg(feature = "onnx")]
     Ort(Embedding),
     #[cfg(feature = "candle")]
     Candle(Box<gn_segment::sam::Frame>),
@@ -71,6 +77,7 @@ pub struct PerceptionEngine {
     /// The directory holding one subdirectory per model (`sam3.1/`), or a ComfyUI `models` folder.
     models_root: PathBuf,
     device: Device,
+    #[cfg(feature = "onnx")]
     rt: Option<Runtime>,
     sam: Option<Model>,
     /// The last picture embedded: a content hash and its embedding.
@@ -81,21 +88,38 @@ pub struct PerceptionEngine {
 impl PerceptionEngine {
     pub fn new(runtime_dirs: Vec<PathBuf>, models_root: PathBuf, cpu: bool) -> Self {
         let device = if cpu { Device::Cpu } else { Device::Cuda { ordinal: 0 } };
-        PerceptionEngine { runtime_dirs, models_root, device, rt: None, sam: None, cache: None, last_error: None }
+        PerceptionEngine {
+            runtime_dirs,
+            models_root,
+            device,
+            #[cfg(feature = "onnx")]
+            rt: None,
+            sam: None,
+            cache: None,
+            last_error: None,
+        }
     }
 
     /// The directory among `runtime_dirs` that holds the runtime library.
+    #[cfg(feature = "onnx")]
     fn ort_dir(&self) -> Option<PathBuf> {
         self.runtime_dirs.iter().find(|d| d.join(library_name()).is_file()).cloned()
     }
 
-    fn sam_dir(&self) -> PathBuf {
-        self.models_root.join(SAM31_DIR)
+    /// Built without ONNX Runtime: never one.
+    #[cfg(not(feature = "onnx"))]
+    fn ort_dir(&self) -> Option<PathBuf> {
+        None
     }
 
     /// Is a backend's model on disk (the checkpoint for candle, the graphs for ONNX Runtime)?
     fn has_model(&self) -> bool {
-        candle_files(&self.models_root).is_some() || Sam31::is_layout(&self.sam_dir())
+        has_models(&self.models_root)
+    }
+
+    /// Can a backend run (candle needs no runtime library; the ONNX graphs need ONNX Runtime)?
+    fn ready(&self) -> bool {
+        candle_files(&self.models_root).is_some() || (onnx_layout(&self.models_root) && self.ort_dir().is_some())
     }
 
     /// Open SAM 3.1 if it is not open yet: on candle when its checkpoint is there, else the
@@ -114,8 +138,16 @@ impl PerceptionEngine {
             eprintln!("gn-perception: SAM 3.1 on candle ({}) loaded in {:.1} s", checkpoint.display(), t0.elapsed().as_secs_f32());
             self.sam = Some(Model::Candle(Box::new(sam)));
         }
+        #[cfg(not(feature = "onnx"))]
         if self.sam.is_none() {
-            let dir = self.sam_dir();
+            return Err(EngineError::new(
+                ErrorKind::ModelMissing,
+                format!("no SAM 3.1 in {}: ComfyUI's checkpoints/{SAM31_CHECKPOINT} is missing", self.models_root.display()),
+            ));
+        }
+        #[cfg(feature = "onnx")]
+        if self.sam.is_none() {
+            let dir = self.models_root.join(SAM31_DIR);
             if !Sam31::is_layout(&dir) {
                 return Err(EngineError::new(
                     ErrorKind::ModelMissing,
@@ -160,7 +192,7 @@ fn from_candle(i: gn_segment::sam::Instance) -> Instance {
     Instance { score: i.score, bbox: i.bbox, mask: i.mask, bounds: i.bounds, pixels: i.pixels }
 }
 
-#[cfg(feature = "candle")]
+#[cfg(all(feature = "candle", feature = "onnx"))]
 fn mismatched() -> EngineError {
     EngineError::new(ErrorKind::Internal, "the cached picture came from the other backend")
 }
@@ -169,6 +201,7 @@ fn mismatched() -> EngineError {
 impl Model {
     fn embed(&mut self, rgba: &[u8], w: usize, h: usize) -> Result<Emb, EngineError> {
         match self {
+            #[cfg(feature = "onnx")]
             Model::Ort(s) => s.embed(rgba, w, h).map(Emb::Ort).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
             #[cfg(feature = "candle")]
             Model::Candle(s) => s.encode(rgba, w, h).map(|f| Emb::Candle(Box::new(f))).map_err(candle_error),
@@ -177,39 +210,43 @@ impl Model {
 
     fn detect_text(&mut self, emb: &Emb, prompt: &str, boxes: &[[f32; 4]], opts: Options) -> Result<Vec<Instance>, EngineError> {
         match (self, emb) {
+            #[cfg(feature = "onnx")]
             (Model::Ort(s), Emb::Ort(e)) => s.detect_text(e, prompt, boxes, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
             #[cfg(feature = "candle")]
             (Model::Candle(s), Emb::Candle(f)) => {
                 s.detect_text(f, prompt, boxes, candle_opts(opts)).map(|r| r.0.into_iter().map(from_candle).collect()).map_err(candle_error)
             }
-            #[cfg(feature = "candle")]
+            #[cfg(all(feature = "candle", feature = "onnx"))]
             _ => Err(mismatched()),
         }
     }
 
     fn segment_points(&mut self, emb: &Emb, positives: &[[f32; 2]], negatives: &[[f32; 2]], opts: Options) -> Result<Instance, EngineError> {
         match (self, emb) {
+            #[cfg(feature = "onnx")]
             (Model::Ort(s), Emb::Ort(e)) => {
                 s.segment_points(e, positives, negatives, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))
             }
             #[cfg(feature = "candle")]
             (Model::Candle(s), Emb::Candle(f)) => s.segment_points(f, positives, negatives, candle_opts(opts)).map(|r| from_candle(r.0)).map_err(candle_error),
-            #[cfg(feature = "candle")]
+            #[cfg(all(feature = "candle", feature = "onnx"))]
             _ => Err(mismatched()),
         }
     }
 
     fn segment_box(&mut self, emb: &Emb, bbox: [f32; 4], opts: Options) -> Result<Instance, EngineError> {
         match (self, emb) {
+            #[cfg(feature = "onnx")]
             (Model::Ort(s), Emb::Ort(e)) => s.segment_box(e, bbox, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
             #[cfg(feature = "candle")]
             (Model::Candle(s), Emb::Candle(f)) => s.segment_box(f, bbox, candle_opts(opts)).map(|r| from_candle(r.0)).map_err(candle_error),
-            #[cfg(feature = "candle")]
+            #[cfg(all(feature = "candle", feature = "onnx"))]
             _ => Err(mismatched()),
         }
     }
 }
 
+#[cfg(feature = "onnx")]
 fn kind_of(e: &Error) -> ErrorKind {
     match e {
         Error::Missing(_) => ErrorKind::ModelMissing,
@@ -284,8 +321,7 @@ impl Engine for PerceptionEngine {
         if self.sam.is_some() {
             resident.push("sam3.1".to_string());
         }
-        // Candle needs no runtime library; the ONNX graphs need ONNX Runtime.
-        let ready = candle_files(&self.models_root).is_some() || (Sam31::is_layout(&self.sam_dir()) && self.ort_dir().is_some());
+        let ready = self.ready();
         Health {
             ok: ready && self.last_error.is_none(),
             engine: "perception".into(),
@@ -419,6 +455,7 @@ impl Engine for PerceptionEngine {
             "backend": if candle_files(&self.models_root).is_some() { "candle" } else { "onnxruntime" },
             "modelsRoot": self.models_root.to_string_lossy(),
             "runtime": self.ort_dir().map(|p| p.to_string_lossy().into_owned()),
+            "runtimeDirs": self.runtime_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         })
     }
 }
@@ -458,7 +495,18 @@ pub fn from_args(args: &[String]) -> Option<PerceptionEngine> {
 
 /// Is `dir` a usable model root (holds at least one model this engine serves)?
 pub fn has_models(dir: &Path) -> bool {
-    candle_files(dir).is_some() || Sam31::is_layout(&dir.join(SAM31_DIR))
+    candle_files(dir).is_some() || onnx_layout(dir)
+}
+
+/// Are SAM 3.1's exported graphs under the model root (and can this build run them)?
+#[cfg(feature = "onnx")]
+fn onnx_layout(root: &Path) -> bool {
+    Sam31::is_layout(&root.join(SAM31_DIR))
+}
+
+#[cfg(not(feature = "onnx"))]
+fn onnx_layout(_: &Path) -> bool {
+    false
 }
 
 #[cfg(test)]
