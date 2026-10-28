@@ -23,3 +23,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 [features]
 default = []
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
+
+# The f16 measurement drives candle's CUDA backend directly (F16.md).
+[[example]]
+name = "sam31_f16"
+required-features = ["cuda"]
