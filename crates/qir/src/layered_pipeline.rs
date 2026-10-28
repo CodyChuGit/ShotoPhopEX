@@ -138,11 +138,23 @@ impl LayeredPipeline {
             "expected 1..8 layers and positive picture dimensions divisible by 16"
         );
         let schedule = layered_schedule(steps)?;
+        // `QIR_PROFILE=1`: each phase's seconds on stderr (the device synchronised at each mark).
+        let profile = std::env::var("QIR_PROFILE").is_ok_and(|v| v.trim() == "1");
+        let mut last = std::time::Instant::now();
+        let mut mark = |what: &str| -> Result<()> {
+            if profile {
+                self.device.synchronize()?;
+                eprintln!("layered {what}: {:.2} s", last.elapsed().as_secs_f32());
+                last = std::time::Instant::now();
+            }
+            Ok(())
+        };
         // LoadImage supplies RGB to VAEEncode; alpha is a separate, unused mask in this graph.
         let rgb: Vec<f32> = picture.pixels().flat_map(|p| p.0[..3].iter().map(|v| (*v as f32 / 255.0) * 2.0 - 1.0)).collect();
         let pixels = Tensor::from_vec(rgb, (1, h, w, 3), &self.device)?.permute((0, 3, 1, 2))?.contiguous()?;
         let reference = self.vae()?.encode(&pixels)?.unsqueeze(2)?;
         observe("reference", &reference)?;
+        mark("reference encode")?;
         check()?;
         let (positive, negative) = {
             let encoder = Qwen25TextEncoder::from_file(&self.files.text_encoder, self.dtype, &self.device)?;
@@ -153,6 +165,11 @@ impl LayeredPipeline {
         };
         observe("positive_text", &positive)?;
         observe("negative_text", &negative)?;
+        // The encoder's memory back to the driver before the 20 GB DiT arrives: kept in the
+        // pool, the two overfilled the 32 GB card and the first steps paged (50 s each, then 15
+        // under the profiler, 2026-10-27).
+        crate::device::trim_pool(&self.device);
+        mark("text encode")?;
         check()?;
         let (lh, lw, frames) = (h / 8, w / 8, layers + 1);
         let reference = patchify(&reference)?.to_dtype(self.dtype)?;
@@ -170,6 +187,7 @@ impl LayeredPipeline {
             } else {
                 LayeredDit::open_streamed(&self.files.diffusion, &self.device)?
             };
+            mark("DiT load")?;
             for i in 0..steps {
                 check()?;
                 let packed = patchify(&latent)?.to_dtype(self.dtype)?;
@@ -186,7 +204,12 @@ impl LayeredPipeline {
                 latent = euler_cfg(&latent, &pos, &neg, schedule.sigma(i), schedule.sigmas[i + 1])?;
                 observe(&format!("step_{i}.latent"), &latent)?;
                 progress(i + 1, steps);
+                mark(&format!("step {i}"))?;
+                if i == 0 {
+                    crate::profile::report("layered step 0");
+                }
             }
+            crate::profile::report("layered steps 1..");
         }
         check()?;
         let retained = retained_slices(&latent)?;
@@ -200,6 +223,7 @@ impl LayeredPipeline {
             observe(&format!("decoded_{i}"), &decoded)?;
             images.push(rgba_image(&decoded)?);
         }
+        mark("decode")?;
         Ok(images)
     }
 }
