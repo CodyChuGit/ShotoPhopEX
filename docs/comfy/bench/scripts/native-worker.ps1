@@ -1,4 +1,4 @@
-﻿# Start the native worker by hand so a run of many CLI processes shares one resident set of
+# Start the native worker by hand so a run of many CLI processes shares one resident set of
 # models: `photocraft-cli --engine --stay --runtime … --models …` with a token, its port read
 # from its first stdout line. Prints `PHOTOCRAFT_NATIVE_ENGINE=port:token` for the caller to
 # put in the environment (dot-source this script: `. native-worker.ps1` sets $env: too).
@@ -7,7 +7,7 @@
 # 16), so the worker's set, ComfyUI's vision-language model for the rewriter and the card's
 # other tenants fit the 32 GB together (without it the rewriter paged for minutes, 2026-10-26).
 # -Models: the models root (a ComfyUI `models` folder works since R4, 2026-10-27).
-param([switch]$Stop, [string]$Log = "C:\Users\5090\ComfyUI\photocraft-tests\bench\native-worker.log", [bool]$TextQuant = $true, [string]$Models = "C:/Users/5090/Documents/_eval/native-models")
+param([switch]$Stop, [string]$Log = "C:\Users\5090\ComfyUI\photocraft-tests\bench\native-worker.log", [bool]$TextQuant = $true, [string]$Models = "C:/Users/5090/Documents/_eval/native-models", [string]$SamPrecision = "")
 $pidFile = Join-Path $env:TEMP "photocraft-native-worker.pid"
 if ($Stop) {
     if (Test-Path $pidFile) {
@@ -30,6 +30,8 @@ if (-not $env:RUST_LOG) { $env:RUST_LOG = "info" }
 $env:PATH = ($runtime -replace "/", "\") + ";" + $env:PATH
 $flags = @("--engine", "--stay", "--runtime", $runtime, "--models", $Models)
 if ($TextQuant) { $flags += "--text-quant" }
+# -SamPrecision f16|f32: SAM 3.1's compute precision on candle (the worker's `--sam-precision`).
+if ($SamPrecision) { $flags += "--sam-precision", $SamPrecision }
 $p = Start-Process -FilePath $cli -ArgumentList $flags -RedirectStandardOutput $Log -RedirectStandardError "$Log.err" -PassThru -WindowStyle Hidden
 $deadline = (Get-Date).AddSeconds(60)
 $port = $null

@@ -1,8 +1,8 @@
-﻿# Rust rebuild R1 live check: Select Subject by text and by point on a worker over the native
+# Rust rebuild R1 live check: Select Subject by text and by point on a worker over the native
 # folders (SAM 3.1's ONNX graphs through ONNX Runtime) and on one over ComfyUI's `models` folder
 # (SAM 3.1 on candle from ComfyUI's checkpoint). Prints each selection's result (bounds, pixel
 # count) and wall time per request, the second request on a picture reusing its embedding.
-param([string]$Out = "C:\Users\5090\ComfyUI\photocraft-tests\bench\sam-live")
+param([string]$Out = "C:\Users\5090\ComfyUI\photocraft-tests\bench\sam-live", [string]$SamPrecision = "", [string[]]$Only = @())
 $sc = Split-Path -Parent $MyInvocation.MyCommand.Path
 $cli = "C:\Users\5090\Documents\PhotoshopEX\target\release\photocraft-cli.exe"
 $stock = "C:\Users\5090\ComfyUI\photocraft-tests\bench\stock"
@@ -16,8 +16,9 @@ $cases = @(
     @{ id = "cup"; image = "$stock\st-cup.jpg"; text = "coffee cup"; point = @{ x = 590; y = 870 } }
 )
 foreach ($r in $roots.Keys) {
+    if ($Only.Count -and $Only -notcontains $r) { continue }
     $env:PHOTOCRAFT_NATIVE_ENGINE = $null
-    . "$sc\native-worker.ps1" -Models $roots[$r] -Log "$Out\worker-$r.log"
+    . "$sc\native-worker.ps1" -Models $roots[$r] -Log "$Out\worker-$r.log" -SamPrecision $SamPrecision
     if (-not $env:PHOTOCRAFT_NATIVE_ENGINE) { "no worker for $r"; continue }
     foreach ($c in $cases) {
         foreach ($step in @(@("select.byText", @{ prompt = $c.text }), @("select.byPoint", @{ x = $c.point.x; y = $c.point.y }))) {

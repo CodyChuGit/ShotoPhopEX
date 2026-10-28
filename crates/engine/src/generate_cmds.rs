@@ -779,6 +779,19 @@ static NATIVE: std::sync::OnceLock<std::sync::Mutex<Option<Arc<photocraft_genai:
 #[cfg(all(test, not(target_arch = "wasm32")))]
 static NATIVE_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<Arc<photocraft_genai::native::NativeBackend>>>> = std::sync::OnceLock::new();
 
+/// SAM 3.1's precision on the worker's GPU: `f16` (1.9x the speed of f32; select by text on a
+/// new picture 273–278 ms through the app against ONNX Runtime's 249–346 ms, every mask at an
+/// IoU of at least 0.993 against ComfyUI's own f32 node: genai-native gn-segment F16.md), or
+/// `f32` with `PHOTOCRAFT_SAM_PRECISION=f32` (equal to ComfyUI's within 3 pixels). Not yet a
+/// preference: the owner decides whether it gets one.
+#[cfg(not(target_arch = "wasm32"))]
+fn sam_precision() -> &'static str {
+    match std::env::var("PHOTOCRAFT_SAM_PRECISION").ok().as_deref().map(str::trim) {
+        Some(p) if p.eq_ignore_ascii_case("f32") => "f32",
+        _ => "f16",
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> {
     #[cfg(test)]
@@ -786,7 +799,10 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
         return Ok(Arc::clone(b) as Arc<dyn GenerativeBackend>);
     }
     let integrations = &s.prefs().integrations;
-    let wanted = photocraft_genai::native::worker_args(&integrations.runtime_folders(), &integrations.models_root());
+    let mut wanted = photocraft_genai::native::worker_args(&integrations.runtime_folders(), &integrations.models_root());
+    if !wanted.is_empty() {
+        wanted.extend(["--sam-precision".to_string(), sam_precision().to_string()]);
+    }
     let slot = NATIVE.get_or_init(|| std::sync::Mutex::new(None));
     let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(b) = g.as_ref() {
