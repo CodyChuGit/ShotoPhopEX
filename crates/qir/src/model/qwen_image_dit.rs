@@ -1,4 +1,4 @@
-//! Layered Qwen-Image's 60 dual-stream blocks, without sampler or pipeline state.
+//! Shared Layered/Edit-2511 Qwen-Image dual-stream blocks, without sampler state.
 //! Checkpoint builders are unprefixed ComfyUI model keys; CPU uses f32, CUDA bf16.
 
 use candle_core::{DType, Device, Tensor, D};
@@ -91,6 +91,32 @@ impl LayeredLinear {
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         self.forward_impl(x, false)
+    }
+
+    // Wider accumulation limits CPU error amplified by the edit model's large MLP gates.
+    fn forward_precise(&self, x: &Tensor) -> Result<Tensor> {
+        if !x.device().is_cpu() || x.dtype() != DType::F32 {
+            return self.forward(x);
+        }
+        let weight = match (&self.dense, &self.fp8) {
+            (Some(dense), _) => dense.weight().clone(),
+            (_, Some((weight, scale))) => weight.to_dtype(DType::F32)?.broadcast_mul(scale)?,
+            _ => anyhow::bail!("missing DiT linear weight"),
+        };
+        let mut shape = x.dims().to_vec();
+        let (output, input) = weight.dims2()?;
+        if let Some(last) = shape.last_mut() {
+            *last = output;
+        }
+        let y = x.reshape(((), input))?.to_dtype(DType::F64)?.matmul(&weight.to_dtype(DType::F64)?.t()?)?.to_dtype(DType::F32)?.reshape(shape)?;
+        linear_bias(y, &self.bias, false)
+    }
+
+    fn forward_gelu_precise(&self, x: &Tensor) -> Result<Tensor> {
+        if x.device().is_cpu() && x.dtype() == DType::F32 {
+            return Ok(self.forward_precise(x)?.gelu()?);
+        }
+        self.forward_gelu(x)
     }
 
     fn forward_gelu(&self, x: &Tensor) -> Result<Tensor> {
@@ -296,6 +322,30 @@ pub fn timestep_projection(timestep: &Tensor) -> Result<Tensor> {
     Ok(Tensor::cat(&[phase.cos()?, phase.sin()?], 1)?)
 }
 
+/// Fixed CPU float32 frequencies avoid scalar/vector exp drift before the 1000x phase.
+/// These are ComfyUI Timesteps(256)'s exp(-ln(10000)*arange(128)/128) bit patterns.
+pub fn edit_timestep_projection(timestep: &Tensor) -> Result<Tensor> {
+    if !timestep.device().is_cpu() {
+        return timestep_projection(timestep);
+    }
+    const FREQUENCIES: [u32; 128] = [
+        0x3f800000, 0x3f6e39f8, 0x3f5dafd6, 0x3f4e4bac, 0x3f3ff911, 0x3f32a506, 0x3f263de0, 0x3f1ab32b, 0x3f0ff59a, 0x3f05f6ee, 0x3ef953ce, 0x3ee80460,
+        0x3ed7e89b, 0x3ec8eb23, 0x3ebaf81b, 0x3eadfcff, 0x3ea1e89b, 0x3e96aaea, 0x3e8c3503, 0x3e827908, 0x3e72d422, 0x3e61f836, 0x3e5247ed, 0x3e43ae7c,
+        0x3e361887, 0x3e297409, 0x3e1db03f, 0x3e12bd90, 0x3e088d77, 0x3dfe24df, 0x3dec7fd5, 0x3ddc1464, 0x3dcccccc, 0x3dbe94c7, 0x3db15978, 0x3da50957,
+        0x3d99940d, 0x3d8eea6c, 0x3d84fe4c, 0x3d778511, 0x3d6655c1, 0x3d5657e3, 0x3d477640, 0x3d399d18, 0x3d2cba15, 0x3d20bc1b, 0x3d159348, 0x3d0b30cb,
+        0x3d0186e2, 0x3cf11177, 0x3ce054d1, 0x3cd0c1a8, 0x3cc2434e, 0x3cb4c691, 0x3ca83989, 0x3c9c8b96, 0x3c91ad39, 0x3c879009, 0x3c7c4d30, 0x3c6ac8e6,
+        0x3c5a7bf1, 0x3c4b50b5, 0x3c3d330e, 0x3c301050, 0x3c23d70a, 0x3c187706, 0x3c0de12e, 0x3c040777, 0x3bf5b9ad, 0x3be4aa45, 0x3bd4ca15, 0x3bc6040a,
+        0x3bb8449a, 0x3bab7982, 0x3b9f91cc, 0x3b947daf, 0x3b8a2e75, 0x3b80967c, 0x3b6f520d, 0x3b5eb47a, 0x3b4f3e33, 0x3b40dac2, 0x3b33770d, 0x3b270153,
+        0x3b1b690d, 0x3b109ed8, 0x3b06946d, 0x3afa78f0, 0x3ae91528, 0x3ad8e675, 0x3ac9d759, 0x3abbd3eb, 0x3aaec98e, 0x3aa2a6f7, 0x3a975c0b, 0x3a8cd9d9,
+        0x3a83126e, 0x3a73f1a2, 0x3a6301e3, 0x3a533f24, 0x3a44948a, 0x3a36ee9d, 0x3a2a3b44, 0x3a1e69a2, 0x3a136a14, 0x3a092e01, 0x39ff4fad, 0x39ed95e4,
+        0x39dd1721, 0x39cdbd93, 0x39bf74d6, 0x39b229fb, 0x39a5cb61, 0x399a48a0, 0x398f9275, 0x39859aa4, 0x3978a80d, 0x3967648c, 0x395753e2, 0x394860bf,
+        0x393a7753, 0x392d852a, 0x39217919, 0x39164326, 0x390bd46d, 0x39021f28, 0x38f22cdd, 0x38e15c8e,
+    ];
+    let frequencies = Tensor::from_vec(FREQUENCIES.map(f32::from_bits).to_vec(), (1, 128), timestep.device())?;
+    let phase = (timestep.to_dtype(DType::F32)?.reshape(((), 1))?.broadcast_mul(&frequencies)? * 1000.0)?;
+    Ok(Tensor::cat(&[phase.cos()?, phase.sin()?], 1)?)
+}
+
 /// Input projections and learned timestep conditioning, independently loadable for parity.
 pub struct LayeredInput {
     img: LayeredLinear,
@@ -303,7 +353,7 @@ pub struct LayeredInput {
     txt_norm: Tensor,
     time1: LayeredLinear,
     time2: LayeredLinear,
-    addition: Tensor,
+    addition: Option<Tensor>,
 }
 
 impl LayeredInput {
@@ -314,19 +364,26 @@ impl LayeredInput {
             txt_norm: vb.pp("txt_norm").get(TEXT_WIDTH, "weight")?,
             time1: LayeredLinear::load(256, WIDTH, vb.pp("time_text_embed.timestep_embedder.linear_1"))?,
             time2: LayeredLinear::load(WIDTH, WIDTH, vb.pp("time_text_embed.timestep_embedder.linear_2"))?,
-            addition: vb.pp("time_text_embed.addition_t_embedding").get((2, WIDTH), "weight")?,
+            addition: if vb.contains_tensor("time_text_embed.addition_t_embedding.weight") {
+                Some(vb.pp("time_text_embed.addition_t_embedding").get((2, WIDTH), "weight")?)
+            } else {
+                None
+            },
         })
     }
 
     pub fn timestep(&self, timestep: &Tensor, additional_t_cond: Option<&Tensor>) -> Result<Tensor> {
-        let time = timestep_projection(timestep)?.to_dtype(self.addition.dtype())?;
-        let time = self.time2.forward(&candle_nn::ops::silu(&self.time1.forward(&time)?)?)?;
+        let time = if self.addition.is_none() { edit_timestep_projection(timestep)? } else { timestep_projection(timestep)? };
+        let time = time.to_dtype(self.time1.bias.dtype())?;
+        let linear = |layer: &LayeredLinear, x: &Tensor| if self.addition.is_none() { layer.forward_precise(x) } else { layer.forward(x) };
+        let time = linear(&self.time2, &candle_nn::ops::silu(&linear(&self.time1, &time)?)?)?;
+        let Some(addition) = &self.addition else { return Ok(time) };
         let batch = time.dim(0)?;
         let ids = match additional_t_cond {
             Some(ids) => ids.to_dtype(DType::U32)?.reshape(batch)?,
             None => Tensor::zeros(batch, DType::U32, time.device())?,
         };
-        Ok((time + self.addition.index_select(&ids, 0)?)?)
+        Ok((time + addition.index_select(&ids, 0)?)?)
     }
 
     pub fn project(&self, img: &Tensor, txt: &Tensor) -> Result<(Tensor, Tensor)> {
@@ -377,7 +434,46 @@ impl Stream {
         add_product(&shift, &layer_norm(x)?, &scale)
     }
 
-    fn qkv(&self, x: &Tensor) -> Result<(Tensor, Tensor, Tensor)> {
+    // Keep the established Layered arithmetic; editing uses wider CPU norm statistics.
+    fn modulate_edit(x: &Tensor, params: &Tensor, offset: usize) -> Result<Tensor> {
+        if !x.device().is_cpu() || x.dtype() != DType::F32 {
+            return Self::modulate(x, params, offset);
+        }
+        let f = x.to_dtype(DType::F64)?;
+        let centered = f.broadcast_sub(&f.mean_keepdim(D::Minus1)?)?;
+        let norm = centered.broadcast_div(&(centered.sqr()?.mean_keepdim(D::Minus1)? + 1e-6)?.sqrt()?)?.to_dtype(x.dtype())?;
+        let shift = params.narrow(1, offset * WIDTH, WIDTH)?.unsqueeze(1)?;
+        let scale = (params.narrow(1, (offset + 1) * WIDTH, WIDTH)? + 1.0)?.unsqueeze(1)?;
+        add_product(&shift, &norm, &scale)
+    }
+
+    fn modulate_split(x: &Tensor, params: &Tensor, offset: usize, split: Option<usize>) -> Result<Tensor> {
+        let Some(n) = split else { return Self::modulate(x, params, offset) };
+        let b = x.dim(0)?;
+        Ok(Tensor::cat(
+            &[
+                Self::modulate_edit(&x.narrow(1, 0, n)?.contiguous()?, &params.narrow(0, 0, b)?, offset)?,
+                Self::modulate_edit(&x.narrow(1, n, x.dim(1)? - n)?.contiguous()?, &params.narrow(0, b, b)?, offset)?,
+            ],
+            1,
+        )?)
+    }
+
+    fn finish_split(&self, x: &Tensor, attention: &Tensor, params: &Tensor, split: Option<usize>) -> Result<Tensor> {
+        let Some(n) = split else { return self.finish(x, attention, params) };
+        // Project jointly; select the two gates at each residual boundary.
+        let x = (x + self.out.forward_precise(attention)?.broadcast_mul(&Self::selected_gate(x, params, 2, n)?)?)?;
+        let mlp = self.down.forward_precise(&self.up.forward_gelu_precise(&Self::modulate_split(&x, params, 3, split)?)?)?;
+        Ok((&x + mlp.broadcast_mul(&Self::selected_gate(&x, params, 5, n)?)?)?)
+    }
+
+    fn selected_gate(x: &Tensor, params: &Tensor, offset: usize, n: usize) -> Result<Tensor> {
+        let b = x.dim(0)?;
+        let p = params.narrow(1, offset * WIDTH, WIDTH)?.unsqueeze(1)?;
+        Ok(Tensor::cat(&[p.narrow(0, 0, b)?.broadcast_as((b, n, WIDTH))?, p.narrow(0, b, b)?.broadcast_as((b, x.dim(1)? - n, WIDTH))?], 1)?)
+    }
+
+    fn qkv(&self, x: &Tensor, editing: bool) -> Result<(Tensor, Tensor, Tensor)> {
         #[cfg(feature = "fusednorm")]
         if x.device().is_cuda() && x.dtype() == DType::BF16 {
             let norm = |x: Tensor, w: &Tensor| -> Result<Tensor> {
@@ -392,14 +488,28 @@ impl Stream {
         }
         let (b, s, _) = x.dims3()?;
         let heads = |x: Tensor| -> Result<Tensor> { Ok(x.reshape((b, s, HEADS, HEAD_DIM))?.transpose(1, 2)?.contiguous()?) };
-        Ok((rms_norm(&heads(self.q.forward(x)?)?, &self.q_norm)?, rms_norm(&heads(self.k.forward(x)?)?, &self.k_norm)?, heads(self.v.forward(x)?)?))
+        let norm = |x: Tensor, weight: &Tensor| -> Result<Tensor> {
+            if editing && x.device().is_cpu() && x.dtype() == DType::F32 {
+                let f = x.to_dtype(DType::F64)?;
+                return Ok(f.broadcast_div(&(f.sqr()?.mean_keepdim(D::Minus1)? + 1e-6)?.sqrt()?)?.to_dtype(x.dtype())?.broadcast_mul(weight)?);
+            }
+            rms_norm(&x, weight)
+        };
+        let linear = |l: &LayeredLinear| if editing { l.forward_precise(x) } else { l.forward(x) };
+        Ok((norm(heads(linear(&self.q)?)?, &self.q_norm)?, norm(heads(linear(&self.k)?)?, &self.k_norm)?, heads(linear(&self.v)?)?))
     }
 
     fn finish(&self, x: &Tensor, attention: &Tensor, params: &Tensor) -> Result<Tensor> {
-        let projected = self.out.forward(attention)?;
+        self.finish_mode(x, attention, params, false)
+    }
+
+    fn finish_mode(&self, x: &Tensor, attention: &Tensor, params: &Tensor, editing: bool) -> Result<Tensor> {
+        let projected = if editing { self.out.forward_precise(attention)? } else { self.out.forward(attention)? };
         let gate = params.narrow(1, 2 * WIDTH, WIDTH)?.unsqueeze(1)?;
         let x = if self.image { add_product(x, &gate, &projected)? } else { (x + projected.broadcast_mul(&gate)?)? };
-        let mlp = self.down.forward(&self.up.forward_gelu(&Self::modulate(&x, params, 3)?)?)?;
+        let normalized = if editing { Self::modulate_edit(&x, params, 3)? } else { Self::modulate(&x, params, 3)? };
+        let hidden = if editing { self.up.forward_gelu_precise(&normalized)? } else { self.up.forward_gelu(&normalized)? };
+        let mlp = if editing { self.down.forward_precise(&hidden)? } else { self.down.forward(&hidden)? };
         add_product(&x, &params.narrow(1, 5 * WIDTH, WIDTH)?.unsqueeze(1)?, &mlp)
     }
 }
@@ -415,6 +525,13 @@ impl LayeredBlock {
         Ok(Self { image: Stream::load(false, vb.clone())?, text: Stream::load(true, vb)? })
     }
 
+    /// Inspect image conditioning at either attention (0) or MLP (1) boundary.
+    pub fn image_conditioning(&self, image: &Tensor, temb: &Tensor, half: usize, split: usize) -> Result<(Tensor, Tensor)> {
+        anyhow::ensure!(half < 2 && split > 0 && split < image.dim(1)? && temb.dim(0)? == 2 * image.dim(0)?, "invalid image conditioning split");
+        let params = self.image.modulation.forward_precise(&candle_nn::ops::silu(temb)?)?;
+        Ok((Stream::modulate_split(image, &params, half * 3, Some(split))?, Stream::selected_gate(image, &params, half * 3 + 2, split)?))
+    }
+
     pub fn forward(&self, image: &Tensor, text: &Tensor, temb: &Tensor, rope: &LayeredRope) -> Result<(Tensor, Tensor)> {
         self.forward_masked(image, text, temb, rope, None)
     }
@@ -428,18 +545,42 @@ impl LayeredBlock {
         rope: &LayeredRope,
         padding: Option<(usize, usize)>,
     ) -> Result<(Tensor, Tensor)> {
+        self.forward_split(image, text, temb, rope, padding, None)
+    }
+
+    /// Select t for target/text and zero for reference tokens in both modulation halves.
+    pub fn forward_split(
+        &self,
+        image: &Tensor,
+        text: &Tensor,
+        temb: &Tensor,
+        rope: &LayeredRope,
+        padding: Option<(usize, usize)>,
+        split: Option<usize>,
+    ) -> Result<(Tensor, Tensor)> {
+        if let Some(n) = split {
+            anyhow::ensure!(n > 0 && n < image.dim(1)? && temb.dim(0)? == 2 * image.dim(0)?, "invalid zero-timestep split");
+        }
         let activated = candle_nn::ops::silu(temb)?;
-        let im = self.image.modulation.forward(&activated)?;
-        let tm = self.text.modulation.forward(&activated)?;
-        let (iq, ik, iv) = self.image.qkv(&Stream::modulate(image, &im, 0)?)?;
-        let (tq, tk, tv) = self.text.qkv(&Stream::modulate(text, &tm, 0)?)?;
+        let im = if split.is_some() { self.image.modulation.forward_precise(&activated)? } else { self.image.modulation.forward(&activated)? };
+        let tm = if split.is_some() {
+            self.text.modulation.forward_precise(&activated.narrow(0, 0, image.dim(0)?)?)?
+        } else {
+            self.text.modulation.forward(&activated)?
+        };
+        let (iq, ik, iv) = self.image.qkv(&Stream::modulate_split(image, &im, 0, split)?, split.is_some())?;
+        let text_modulated = if split.is_some() { Stream::modulate_edit(text, &tm, 0)? } else { Stream::modulate(text, &tm, 0)? };
+        let (tq, tk, tv) = self.text.qkv(&text_modulated, split.is_some())?;
         let q = rope.apply(&Tensor::cat(&[tq, iq], 2)?)?;
         let k = rope.apply(&Tensor::cat(&[tk, ik], 2)?)?;
         let v = Tensor::cat(&[tv, iv], 2)?;
         let (b, _, s, _) = q.dims4()?;
         let attention = joint_attention(&q, &k, &v, padding)?.reshape((b, s, WIDTH))?;
         let nt = text.dim(1)?;
-        Ok((self.image.finish(image, &attention.narrow(1, nt, image.dim(1)?)?, &im)?, self.text.finish(text, &attention.narrow(1, 0, nt)?, &tm)?))
+        Ok((
+            self.image.finish_split(image, &attention.narrow(1, nt, image.dim(1)?)?, &im, split)?,
+            self.text.finish_mode(text, &attention.narrow(1, 0, nt)?, &tm, split.is_some())?,
+        ))
     }
 }
 
@@ -523,8 +664,66 @@ impl LayeredOutput {
     }
 }
 
-/// Layered checkpoint backbone, distinct from Qwen-Image-2.1's single-stream DiT.
+/// Shared architecture; checkpoint markers select reference and timestep conventions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DitKind {
+    Layered,
+    Edit2511,
+}
+
+impl DitKind {
+    pub fn detect(vb: &VarBuilder<'_>) -> Result<Self> {
+        if vb.contains_tensor("__index_timestep_zero__") {
+            anyhow::ensure!(!vb.contains_tensor("time_text_embed.addition_t_embedding.weight"), "conflicting DiT markers");
+            Ok(Self::Edit2511)
+        } else {
+            anyhow::ensure!(vb.contains_tensor("time_text_embed.addition_t_embedding.weight"), "unsupported Qwen DiT markers");
+            Ok(Self::Layered)
+        }
+    }
+}
+
+/// Independent centered grids, with target tokens first and circular patch padding.
+pub struct PackedImages {
+    pub tokens: Tensor,
+    pub positions: Tensor,
+    pub target_tokens: usize,
+    pub rows: usize,
+    pub cols: usize,
+}
+
+impl PackedImages {
+    pub fn new(kind: DitKind, target: &Tensor, references: &[Tensor]) -> Result<Self> {
+        let (b, c, frames, h, w) = target.dims5()?;
+        anyhow::ensure!(c == 16 && h > 0 && w > 0 && frames > 0, "invalid target latent");
+        let rows = h.div_ceil(2);
+        let cols = w.div_ceil(2);
+        let mut tokens = vec![patchify_padded(target)?];
+        let target_tokens = tokens[0].dim(1)?;
+        let mut positions = vec![image_positions(b, frames, rows, cols, 0, target.device())?];
+        for (i, reference) in references.iter().enumerate() {
+            let (rb, rc, rt, rh, rw) = reference.dims5()?;
+            anyhow::ensure!(rb == b && rc == 16 && rt == 1 && rh > 0 && rw > 0, "invalid reference latent");
+            let index = i32::try_from(i + 1)? * if kind == DitKind::Layered { -1 } else { 1 };
+            tokens.push(patchify_padded(reference)?);
+            positions.push(image_positions(b, 1, rh.div_ceil(2), rw.div_ceil(2), index, target.device())?);
+        }
+        Ok(Self { tokens: Tensor::cat(&tokens, 1)?, positions: Tensor::cat(&positions, 1)?, target_tokens, rows, cols })
+    }
+}
+
+/// ComfyUI wraps the first row/column onto the trailing odd patch edge.
+pub fn patchify_padded(x: &Tensor) -> Result<Tensor> {
+    let (_, _, _, h, w) = x.dims5()?;
+    anyhow::ensure!(h > 0 && w > 0, "empty patch grid");
+    let x = if h % 2 == 1 { Tensor::cat(&[x, &x.narrow(3, 0, 1)?], 3)? } else { x.clone() };
+    let x = if w % 2 == 1 { Tensor::cat(&[&x, &x.narrow(4, 0, 1)?], 4)? } else { x };
+    patchify(&x)
+}
+
+/// Shared checkpoint backbone; markers select the Layered or Edit-2511 convention.
 pub struct LayeredDit {
+    pub kind: DitKind,
     pub input: LayeredInput,
     blocks: Vec<LayeredBlock>,
     pub output: LayeredOutput,
@@ -533,8 +732,9 @@ pub struct LayeredDit {
 
 impl LayeredDit {
     pub fn load(vb: VarBuilder<'_>) -> Result<Self> {
+        let kind = DitKind::detect(&vb)?;
         let blocks = (0..BLOCKS).map(|i| LayeredBlock::load(vb.pp(format!("transformer_blocks.{i}")))).collect::<Result<Vec<_>>>()?;
-        Ok(Self { input: LayeredInput::load(vb.clone())?, blocks, output: LayeredOutput::load(vb)?, streamed: None })
+        Ok(Self { kind, input: LayeredInput::load(vb.clone())?, blocks, output: LayeredOutput::load(vb)?, streamed: None })
     }
 
     /// Every block resident, read from the checkpoint as `open_streamed` reads it (fp8 kept
@@ -551,10 +751,17 @@ impl LayeredDit {
     /// Keep only one block resident at a time, including when running on CPU.
     pub fn open_streamed(path: impl AsRef<std::path::Path>, device: &Device) -> Result<Self> {
         let vb = checkpoint_builder(path, device)?;
-        Ok(Self { input: LayeredInput::load(vb.clone())?, blocks: Vec::new(), output: LayeredOutput::load(vb.clone())?, streamed: Some(vb) })
+        Ok(Self {
+            kind: DitKind::detect(&vb)?,
+            input: LayeredInput::load(vb.clone())?,
+            blocks: Vec::new(),
+            output: LayeredOutput::load(vb.clone())?,
+            streamed: Some(vb),
+        })
     }
 
-    /// One CFG branch. Image tokens include trailing references; slice them off afterwards.
+    /// Legacy packed-token CFG branch; returns reference velocities too.
+    /// Use `forward_latents` for Edit-2511 reference timestep selection and target slicing.
     /// Positions are (B,S,3); the optional additional condition defaults to entry zero.
     pub fn forward(
         &self,
@@ -579,17 +786,43 @@ impl LayeredDit {
         rope: &LayeredRope,
         padding: Option<(usize, usize)>,
     ) -> Result<Tensor> {
+        self.forward_selected(img_tokens, txt_tokens, timestep, additional_t_cond, rope, padding, None)
+    }
+
+    /// Latent boundary for editing; returns cropped target velocity only.
+    pub fn forward_latents(&self, target: &Tensor, references: &[Tensor], text: &Tensor, timestep: &Tensor) -> Result<Tensor> {
+        let packed = PackedImages::new(self.kind, target, references)?;
+        let tp = text_positions(target.dim(0)?, text.dim(1)?, packed.rows, packed.cols, target.device())?;
+        let rope = LayeredRope::new(&Tensor::cat(&[&tp, &packed.positions], 1)?, target.dtype())?;
+        let split = (self.kind == DitKind::Edit2511 && !references.is_empty()).then_some(packed.target_tokens);
+        let timestep = if split.is_some() { Tensor::cat(&[timestep, &(timestep * 0.0)?], 0)? } else { timestep.clone() };
+        let velocity = self.forward_selected(&packed.tokens, text, &timestep, None, &rope, None, split)?.narrow(1, 0, packed.target_tokens)?;
+        Ok(unpatchify(&velocity, target.dim(2)?, packed.rows * 2, packed.cols * 2)?.narrow(3, 0, target.dim(3)?)?.narrow(4, 0, target.dim(4)?)?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_selected(
+        &self,
+        img_tokens: &Tensor,
+        txt_tokens: &Tensor,
+        timestep: &Tensor,
+        additional_t_cond: Option<&Tensor>,
+        rope: &LayeredRope,
+        padding: Option<(usize, usize)>,
+        split: Option<usize>,
+    ) -> Result<Tensor> {
         let (mut img, mut txt) = self.input.project(img_tokens, txt_tokens)?;
         let temb = self.input.timestep(timestep, additional_t_cond)?;
         for block in &self.blocks {
-            (img, txt) = block.forward_masked(&img, &txt, &temb, rope, padding)?;
+            (img, txt) = block.forward_split(&img, &txt, &temb, rope, padding, split)?;
         }
         if let Some(vb) = &self.streamed {
             for i in 0..BLOCKS {
                 let block = LayeredBlock::load(vb.pp(format!("transformer_blocks.{i}")))?;
-                (img, txt) = block.forward_masked(&img, &txt, &temb, rope, padding)?;
+                (img, txt) = block.forward_split(&img, &txt, &temb, rope, padding, split)?;
             }
         }
+        let temb = if split.is_some() { temb.narrow(0, 0, img.dim(0)?)? } else { temb };
         self.output.forward(&img, &temb)
     }
 }
