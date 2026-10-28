@@ -25,7 +25,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path "$PSScriptRoot\..\..\..\..").Path
 if (-not $Zip) {
-    $Zip = Get-ChildItem (Join-Path $root "target\windows-package"), (Join-Path $root "dist") -Filter "photocraft-*-windows-x64-native-portable.zip" -ErrorAction SilentlyContinue |
+    $Zip = Get-ChildItem (Join-Path $root "dist\release"), (Join-Path $root "dist") -Filter "photocraft-*-windows-x64-native-portable.zip" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
 }
 if (-not $Zip -or -not (Test-Path $Zip)) { throw "no portable zip (build one with packaging/windows/package.ps1 -Arch x64 -Native, or pass -Zip)" }
@@ -64,7 +64,7 @@ $cases = [ordered]@{
     "byText"     = @{ cmds = @(, @("select.byText", @{ prompt = "t-shirt" })) }
     "byPoint"    = @{ cmds = @(, @("select.byPoint", @{ x = 512; y = 640 })) }
     "fill"       = @{ cmds = @(@("select.byText", @{ prompt = "t-shirt" }), @("generate.fill", @{ prompt = "a denim jacket"; seed = 12 })) }
-    "remove"     = @{ cmds = @(@("select.rect", @{ x = 40; y = 40; width = 160; height = 160 }), @("generate.fill", @{ prompt = ""; erase = $true; seed = 13 })) }
+    "remove"     = @{ cmds = @(, @("paint.remove", @{ points = @(@(80, 80), @(200, 80), @(200, 200), @(80, 200), @(80, 80)); size = 40; generative = $true; variations = 1 })) }
     "edit"       = @{ cmds = @(, @("generate.edit", @{ prompt = "Make it winter: snow falling and a wool scarf around his neck."; wholePicture = $true; seed = 14 })) }
     "expand"     = @{ cmds = @(, @("generate.expand", @{ right = 256; prompt = ""; seed = 15 })) }
     "matte"      = @{ cmds = @(, @("generate.removeBackground", @{ prompt = "" })) }
@@ -90,6 +90,8 @@ $watch = Start-Job -ArgumentList $appDir, $flag -ScriptBlock {
     [pscustomobject]@{ pythons = $pythons; modules = $modules }
 }
 
+# The CLI writes warnings to stderr; under Stop, Windows PowerShell 5.1 would make them fatal.
+$ErrorActionPreference = "Continue"
 $results = [ordered]@{}
 foreach ($name in $cases.Keys) {
     if ($Only.Count -and $Only -notcontains $name) { continue }
