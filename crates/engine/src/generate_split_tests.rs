@@ -74,9 +74,11 @@ fn split_lays_the_models_layers_above_the_active_one_background_first() {
 
 #[test]
 fn split_sizes_validates_and_has_no_similar() {
-    assert_eq!(layered_request_size(1024, 1024), (640, 640));
-    assert_eq!(layered_request_size(1920, 1080), (640, 352), "aspect kept, multiples of 16");
-    assert_eq!(layered_request_size(300, 200), (288, 192), "small pictures only snap to the grid");
+    assert_eq!(layered_request_size(1024, 1024, None), (640, 640));
+    assert_eq!(layered_request_size(1920, 1080, None), (640, 352), "aspect kept, multiples of 16");
+    assert_eq!(layered_request_size(300, 200, None), (288, 192), "small pictures only snap to the grid");
+    assert_eq!(layered_request_size(832, 1109, Some(1_000_000)), (864, 1152), "1 MP at 3:4");
+    assert_eq!(layered_request_size(3000, 4000, Some(1_000_000)), (864, 1152), "down to 1 MP");
     let fake = FakeComfy::start().unwrap();
     let mut s = session(&fake.url);
     for p in [json!({"layers": 0}), json!({"layers": 9}), json!({"layers": 2.5}), json!({"sampleAllLayers": "no"}), json!({"template": "qwen-edit-2511/fill"})]

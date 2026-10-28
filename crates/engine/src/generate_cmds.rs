@@ -4200,11 +4200,16 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
 /// A detector request is sent at most this large (SAM 3.1 works at about 1 megapixel inside).
 const MAX_SEGMENT_REQUEST_PIXELS: u64 = 2048 * 1024;
 
-/// The size a split request goes out at: at most [`LAYERED_MAX_SIDE`] on the longer side,
+/// The size a split request goes out at: at most [`LAYERED_MAX_SIDE`] on the longer side, or,
+/// with `max_pixels`, as large as fits that many pixels (up or down: 1 MP at 3:4 is 864×1152);
 /// multiples of 16 (the layered latent's step), at least 64.
-pub(crate) fn layered_request_size(w: u32, h: u32) -> (u32, u32) {
+pub(crate) fn layered_request_size(w: u32, h: u32, max_pixels: Option<u64>) -> (u32, u32) {
     let longer = w.max(h).max(1);
-    let scale = if longer > LAYERED_MAX_SIDE { f64::from(LAYERED_MAX_SIDE) / f64::from(longer) } else { 1.0 };
+    let scale = match max_pixels {
+        Some(m) => (m as f64 / (f64::from(w.max(1)) * f64::from(h.max(1)))).sqrt(),
+        None if longer > LAYERED_MAX_SIDE => f64::from(LAYERED_MAX_SIDE) / f64::from(longer),
+        None => 1.0,
+    };
     let fit = |v: u32| (((f64::from(v) * scale).round() as u32) / SIZE_STEP * SIZE_STEP).max(SIZE_STEP);
     (fit(w), fit(h))
 }
@@ -4214,6 +4219,8 @@ struct SplitPlan {
     common: Common,
     layers: u32,
     all_layers: bool,
+    /// `maxPixels`: the working size by pixel count instead of the 640 px side.
+    max_pixels: Option<u64>,
 }
 
 fn plan_split(s: &Session, p: &Value) -> Result<SplitPlan> {
@@ -4231,7 +4238,8 @@ fn plan_split(s: &Session, p: &Value) -> Result<SplitPlan> {
         Some(_) => return Err(bad(SPLIT, format!("`layers` must be a whole number from 1 to {MAX_SPLIT_LAYERS}"))),
     };
     let all_layers = opt_bool(SPLIT, p, "sampleAllLayers", true)?;
-    Ok(SplitPlan { common, layers, all_layers })
+    let max_pixels = opt_num(SPLIT, p, "maxPixels", 4096.0, 4_194_304.0)?.map(|m| m as u64);
+    Ok(SplitPlan { common, layers, all_layers, max_pixels })
 }
 
 fn split_enabled(s: &Session) -> std::result::Result<(), String> {
@@ -4246,7 +4254,7 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_split(s, p)?;
     // The worker serves it when it has the files (Qwen-Image-Layered is Apache-2.0: no opt-in).
     let (backend, server) = backend_for(s, &plan.common.template.meta.id)?;
-    let SplitPlan { common, layers, all_layers } = plan;
+    let SplitPlan { common, layers, all_layers, max_pixels } = plan;
     let Common { template, prompt, negative, seed, steps, guidance, models, name } = common;
     let purge = purge_mode(s);
     let tid = template.meta.id.clone();
@@ -4277,7 +4285,7 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
                 None => photocraft_compose::render(doc, area).to_rgba8().pixels,
             };
             let image = Rgba8::new(w, h, rgba8).map_err(gen_err)?;
-            let (rw, rh) = layered_request_size(w, h);
+            let (rw, rh) = layered_request_size(w, h, max_pixels);
             let image = if (rw, rh) == (w, h) { image } else { resize_rgba8(&image, rw, rh)? };
             let mut params = BTreeMap::new();
             params.insert("layers".to_string(), json!(layers));
@@ -4789,7 +4797,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"layers":int=3,"prompt":text,"negative":text,"sampleAllLayers":bool=true,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=qwen-layered/split},"model":{file?},"name":{str?}} → {"layers":[id],"count","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (a layered model (Qwen-Image-Layered, Apache-2.0) decomposes the picture into `layers` RGBA layers, the background first, each a new layer above the active one with the alpha the model gave it; prompt = a description of the picture, empty = a generic instruction; sampleAllLayers false sends the active layer alone; the picture goes out at 640 px on its longer side and the layers come back resampled; a background job; needs a ComfyUI server with the layered model's files)"#,
+            params: r#"{"layers":int=3,"prompt":text,"negative":text,"sampleAllLayers":bool=true,"maxPixels":4096..4194304?,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=qwen-layered/split},"model":{file?},"name":{str?}} → {"layers":[id],"count","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (a layered model (Qwen-Image-Layered, Apache-2.0) decomposes the picture into `layers` RGBA layers, the background first, each a new layer above the active one with the alpha the model gave it; prompt = a description of the picture, empty = a generic instruction; sampleAllLayers false sends the active layer alone; the picture goes out at 640 px on its longer side, or at maxPixels pixels (1000000 = 864x1152 at 3:4), and the layers come back resampled; a background job; needs a ComfyUI server with the layered model's files)"#,
             enabled: split_enabled,
             run: run_split,
             journal: true,

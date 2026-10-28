@@ -1,10 +1,11 @@
 ﻿# Rust rebuild R3 live check: Split into Layers (Qwen-Image-Layered, 3 layers, seed 7) through
 # the app on the native worker (ComfyUI's models folder, engine = native) and on ComfyUI (the
 # server this script starts, then stops: never both on the card), each layer exported as PNG,
-# then compared per layer (mean |RGB| difference and alpha IoU at 0.5) and timed.
-param([string]$Out = "C:\Users\5090\ComfyUI\photocraft-tests\bench\layered", [string]$Picture = "C:\Users\5090\ComfyUI\photocraft-tests\bench\swap\gen\gen-tshirt.png", [int]$Layers = 3, [int]$Seed = 7)
+# then compared per layer (mean |RGB| difference and alpha IoU at 0.5) and timed. -MaxPixels sets the
+# working size by pixel count (1000000 on a 3:4 picture = 864x1152) instead of 640 px.
+param([string]$Out = "C:\Users\5090\ComfyUI\photocraft-tests\bench\layered", [string]$Picture = "C:\Users\5090\ComfyUI\photocraft-tests\bench\swap\gen\gen-tshirt.png", [int]$Layers = 3, [int]$Seed = 7, [int]$MaxPixels = 0)
 $sc = Split-Path -Parent $MyInvocation.MyCommand.Path
-$cli = "C:\Users\5090\Documents\PhotoshopEX\target\release\photocraft-cli.exe"
+$cli = if ($env:PHOTOCRAFT_CLI) { $env:PHOTOCRAFT_CLI } else { "C:\Users\5090\Documents\PhotoshopEX\target\release\photocraft-cli.exe" }
 $models = "C:/Users/5090/ComfyUI/ComfyUI_windows_portable/ComfyUI/models"
 New-Item -ItemType Directory -Force $Out | Out-Null
 function Q([object]$v) { (ConvertTo-Json $v -Compress -Depth 6).Replace(' ', '\u0020').Replace('"', '\"') }
@@ -14,7 +15,7 @@ $prefs = @{
 }
 function Split-Run([string]$route) {
     # The split adds its layers as ids 3.. (1 is the picture; 2 is taken), background first; the result line names them.
-    $args2 = @($Picture, "--cmd", "prefs.set", "--params", (Q @{ values = $prefs[($route -replace "-warm", "")] }), "--cmd", "generate.splitLayers", "--params", (Q @{ layers = $Layers; seed = $Seed }))
+    $args2 = @($Picture, "--cmd", "prefs.set", "--params", (Q @{ values = $prefs[($route -replace "-warm", "")] }), "--cmd", "generate.splitLayers", "--params", (Q $(if ($MaxPixels) { @{ layers = $Layers; seed = $Seed; maxPixels = $MaxPixels } } else { @{ layers = $Layers; seed = $Seed } })))
     foreach ($i in 1..$Layers) { $args2 += "--cmd", "layer.exportAs", "--params", (Q @{ layer = $i + 2; path = (("$Out\$route-$i.png") -replace '\\', '/') }) }
     $t0 = Get-Date
     $lines = & $cli run @args2 2>&1
