@@ -689,7 +689,7 @@ impl Pipeline {
             anyhow::bail!("at least one step");
         }
         // The request's adapters on the DiT (none clears the last request's).
-        let unmatched = self.dit.set_loras(&req.loras)?;
+        let unmatched = crate::profile::phase("LoRA bind", &self.dev, || self.dit.set_loras(&req.loras))?;
         if !unmatched.is_empty() {
             tracing::warn!(modules = unmatched.len(), first = unmatched[0], "LoRA modules this model does not have (a file for another model?)");
         }

@@ -11,15 +11,7 @@ use crate::layout::{dense_byte_offset, row_strided_2d};
 use crate::Result;
 
 extern "C" {
-    fn int8_gemm_s32(
-        c: *mut i32,
-        a: *const i8,
-        b: *const i8,
-        m: i32,
-        n: i32,
-        k: i32,
-        stream: *mut std::ffi::c_void,
-    ) -> i32;
+    fn int8_gemm_s32(c: *mut i32, a: *const i8, b: *const i8, m: i32, n: i32, k: i32, stream: *mut std::ffi::c_void) -> i32;
     // Fused INT8 GEMM + per-row/per-col dequant epilogue with tile config
     // `cfg`: d[m,n] = out(acc[m,n] * s_row[m] * s_col[n]), out_kind 0 = bf16,
     // 1 = f16. 0 = ok, -2 = unknown cfg/out_kind, else the cutlass::Status.
@@ -48,23 +40,11 @@ impl candle_core::CustomOp2 for Int8Gemm {
         "int8-gemm"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("int8-gemm is CUDA-only")
     }
 
-    fn cuda_fwd(
-        &self,
-        a: &CudaStorage,
-        a_l: &Layout,
-        b: &CudaStorage,
-        b_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, a: &CudaStorage, a_l: &Layout, b: &CudaStorage, b_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = a.device().clone();
         let (m, k) = a_l.shape().dims2()?;
         let (n, k2) = b_l.shape().dims2()?;
@@ -114,32 +94,11 @@ pub fn int8_gemm(a: &Tensor, b: &Tensor) -> Result<Tensor> {
 }
 
 extern "C" {
-    fn quantize_rows_i8(
-        out: *mut u8,
-        x: *const std::ffi::c_void,
-        inv_scale: *const f32,
-        m: i32,
-        k: i32,
-        stream: *mut std::ffi::c_void,
-    );
-    fn quantize_rows_fused_launch(
-        out: *mut u8,
-        x: *const std::ffi::c_void,
-        row_scale: *mut f32,
-        m: i32,
-        k: i32,
-        stream: *mut std::ffi::c_void,
-    );
+    fn quantize_rows_i8(out: *mut u8, x: *const std::ffi::c_void, inv_scale: *const f32, m: i32, k: i32, stream: *mut std::ffi::c_void);
+    fn quantize_rows_fused_launch(out: *mut u8, x: *const std::ffi::c_void, row_scale: *mut f32, m: i32, k: i32, stream: *mut std::ffi::c_void);
     // Fused 256-point Regular Hadamard rotation + per-row INT8 quantize.
     // 0 = ok, 1 = unsupported K, 2 = misaligned pointer, else a CUDA error.
-    fn rotate_quantize_rows_launch(
-        out: *mut u8,
-        x: *const std::ffi::c_void,
-        row_scale: *mut f32,
-        m: i32,
-        k: i32,
-        stream: *mut std::ffi::c_void,
-    ) -> i32;
+    fn rotate_quantize_rows_launch(out: *mut u8, x: *const std::ffi::c_void, row_scale: *mut f32, m: i32, k: i32, stream: *mut std::ffi::c_void) -> i32;
     // Fused SwiGLU (silu(g) * p in f32) + rotation + per-row INT8 quantize;
     // g/p rows `ld_g`/`ld_p` elements apart. Same return codes.
     #[allow(clippy::too_many_arguments)]
@@ -165,22 +124,10 @@ impl candle_core::CustomOp2 for QuantizeRows {
     fn name(&self) -> &'static str {
         "quantize-rows-i8"
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("cuda-only")
     }
-    fn cuda_fwd(
-        &self,
-        x: &CudaStorage,
-        x_l: &Layout,
-        s: &CudaStorage,
-        s_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, s: &CudaStorage, s_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = x.device().clone();
         let (m, k) = x_l.shape().dims2()?;
         let xo = dense_byte_offset::<half::bf16>(x_l, "quantize-rows x")?;
@@ -220,22 +167,10 @@ impl candle_core::CustomOp2 for QuantizeFused {
     fn name(&self) -> &'static str {
         "quantize-rows-fused"
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("cuda-only")
     }
-    fn cuda_fwd(
-        &self,
-        x: &CudaStorage,
-        x_l: &Layout,
-        rs: &CudaStorage,
-        rs_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, rs: &CudaStorage, rs_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = x.device().clone();
         let (m, k) = x_l.shape().dims2()?;
         let xo = dense_byte_offset::<half::bf16>(x_l, "quantize-rows-fused x")?;
@@ -274,28 +209,14 @@ impl candle_core::CustomOp2 for RotateQuantizeFused {
     fn name(&self) -> &'static str {
         "rotate-quantize-rows-fused"
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("cuda-only")
     }
-    fn cuda_fwd(
-        &self,
-        x: &CudaStorage,
-        x_l: &Layout,
-        rs: &CudaStorage,
-        rs_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, rs: &CudaStorage, rs_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = x.device().clone();
         let (m, k) = x_l.shape().dims2()?;
         if k == 0 || !k.is_multiple_of(crate::model::rotation::GROUP) || k > ROTATE_QUANT_MAX_K {
-            candle_core::bail!(
-                "rotate-quantize: K={k} must be a positive multiple of 256 and <= {ROTATE_QUANT_MAX_K}"
-            );
+            candle_core::bail!("rotate-quantize: K={k} must be a positive multiple of 256 and <= {ROTATE_QUANT_MAX_K}");
         }
         if rs_l.shape().dims1()? != m {
             candle_core::bail!("rotate-quantize: row_scale len != M={m}");
@@ -339,10 +260,7 @@ fn rotate_quantize_rows_fused(x: &Tensor) -> Result<(Tensor, Tensor)> {
     if m == 0 {
         // Zero-size grid is a launch error; nothing to compute.
         let dev = x.device();
-        return Ok((
-            Tensor::zeros((0, k), candle_core::DType::U8, dev)?,
-            Tensor::zeros(0, candle_core::DType::F32, dev)?,
-        ));
+        return Ok((Tensor::zeros((0, k), candle_core::DType::U8, dev)?, Tensor::zeros(0, candle_core::DType::F32, dev)?));
     }
     let row_scale = Tensor::zeros(m, candle_core::DType::F32, x.device())?;
     let x_i8 = x.apply_op2(&row_scale, RotateQuantizeFused)?;
@@ -361,15 +279,7 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
     fn name(&self) -> &'static str {
         "swiglu-rotate-quantize-rows"
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("cuda-only")
     }
     fn cuda_fwd(
@@ -384,16 +294,10 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
         let dev = g.device().clone();
         let (m, k) = g_l.shape().dims2()?;
         if p_l.shape().dims2()? != (m, k) {
-            candle_core::bail!(
-                "swiglu-rotate-quantize: g {:?} and p {:?} differ in shape",
-                g_l.shape(),
-                p_l.shape()
-            );
+            candle_core::bail!("swiglu-rotate-quantize: g {:?} and p {:?} differ in shape", g_l.shape(), p_l.shape());
         }
         if k == 0 || !k.is_multiple_of(crate::model::rotation::GROUP) || k > ROTATE_QUANT_MAX_K {
-            candle_core::bail!(
-                "swiglu-rotate-quantize: K={k} must be a positive multiple of 256 and <= {ROTATE_QUANT_MAX_K}"
-            );
+            candle_core::bail!("swiglu-rotate-quantize: K={k} must be a positive multiple of 256 and <= {ROTATE_QUANT_MAX_K}");
         }
         if rs_l.shape().dims1()? != m {
             candle_core::bail!("swiglu-rotate-quantize: row_scale len != M={m}");
@@ -401,9 +305,7 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
         let (go, ld_g) = row_strided_2d(g_l, "swiglu-rotate-quantize g")?;
         let (po, ld_p) = row_strided_2d(p_l, "swiglu-rotate-quantize p")?;
         if !ld_g.is_multiple_of(8) || !ld_p.is_multiple_of(8) {
-            candle_core::bail!(
-                "swiglu-rotate-quantize: row strides ld_g={ld_g}, ld_p={ld_p} must be multiples of 8 (16-B rows)"
-            );
+            candle_core::bail!("swiglu-rotate-quantize: row strides ld_g={ld_g}, ld_p={ld_p} must be multiples of 8 (16-B rows)");
         }
         let ro = dense_byte_offset::<f32>(rs_l, "swiglu-rotate-quantize row_scale")?;
         let g = g.as_cuda_slice::<half::bf16>()?;
@@ -418,9 +320,7 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
             let (op, _d) = out.device_ptr(&stream);
             let (gp, pp, rp) = (gp + 2 * go as u64, pp + 2 * po as u64, rp + ro);
             if !gp.is_multiple_of(16) || !pp.is_multiple_of(16) {
-                candle_core::bail!(
-                    "swiglu-rotate-quantize: g/p views not 16-B aligned (g {gp:#x}, p {pp:#x})"
-                );
+                candle_core::bail!("swiglu-rotate-quantize: g/p views not 16-B aligned (g {gp:#x}, p {pp:#x})");
             }
             let rc = unsafe {
                 swiglu_rotate_quantize_rows_launch(
@@ -436,9 +336,7 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
                 )
             };
             if rc != 0 {
-                candle_core::bail!(
-                    "swiglu_rotate_quantize_rows_launch failed rc={rc} (M={m}, K={k}, ld_g={ld_g}, ld_p={ld_p})"
-                );
+                candle_core::bail!("swiglu_rotate_quantize_rows_launch failed rc={rc} (M={m}, K={k}, ld_g={ld_g}, ld_p={ld_p})");
             }
         }
         Ok((CudaStorage::wrap_cuda_slice(out, dev), (m, k).into()))
@@ -449,18 +347,10 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
 /// allowed) -> (`rotated int8 of silu(g)*p (M,K) u8`, `row_scale (M,) f32`).
 fn swiglu_rotate_quantize_rows_fused(g: &Tensor, p: &Tensor) -> Result<(Tensor, Tensor)> {
     let (m, k) = g.dims2()?;
-    anyhow::ensure!(
-        p.dims2()? == (m, k),
-        "swiglu-rotate-quantize: g {:?} vs p {:?}",
-        g.dims(),
-        p.dims()
-    );
+    anyhow::ensure!(p.dims2()? == (m, k), "swiglu-rotate-quantize: g {:?} vs p {:?}", g.dims(), p.dims());
     if m == 0 {
         let dev = g.device();
-        return Ok((
-            Tensor::zeros((0, k), candle_core::DType::U8, dev)?,
-            Tensor::zeros(0, candle_core::DType::F32, dev)?,
-        ));
+        return Ok((Tensor::zeros((0, k), candle_core::DType::U8, dev)?, Tensor::zeros(0, candle_core::DType::F32, dev)?));
     }
     let row_scale = Tensor::zeros(m, candle_core::DType::F32, g.device())?;
     let x_i8 = g.apply_op3(p, &row_scale, SwiGluRotateQuantize)?;
@@ -519,15 +409,7 @@ impl candle_core::CustomOp3 for Int8GemmDequant {
             EpilogueOut::F16 => "int8-gemm-dequant-f16",
         }
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("int8-gemm-dequant is CUDA-only")
     }
     fn cuda_fwd(
@@ -547,10 +429,7 @@ impl candle_core::CustomOp3 for Int8GemmDequant {
         }
         let packed = s_l.shape().dims1()?;
         if packed != m + n {
-            candle_core::bail!(
-                "int8-gemm-dequant packed scales len {packed} != N+M = {}",
-                n + m
-            );
+            candle_core::bail!("int8-gemm-dequant packed scales len {packed} != N+M = {}", n + m);
         }
         // U8 storage holding int8 bytes; scales are f32 (col ++ row).
         let ao = dense_byte_offset::<u8>(a_l, "int8-gemm-dequant a")?;
@@ -567,9 +446,7 @@ impl candle_core::CustomOp3 for Int8GemmDequant {
         // CUTLASS 128-bit operand loads need 16-B aligned A/B; the vectorized
         // RowBroadcast of s_col needs a 32-B aligned base (see HANDOVER).
         if !ap.is_multiple_of(16) || !bp.is_multiple_of(16) || !sp.is_multiple_of(32) {
-            candle_core::bail!(
-                "int8-gemm-dequant: misaligned view (a {ap:#x}, b {bp:#x}, scales {sp:#x})"
-            );
+            candle_core::bail!("int8-gemm-dequant: misaligned view (a {ap:#x}, b {bp:#x}, scales {sp:#x})");
         }
         let s_col = sp as *const f32;
         // s_row follows s_col in the packed buffer (offset N floats, aligned).
@@ -604,10 +481,7 @@ impl candle_core::CustomOp3 for Int8GemmDequant {
                     )
                 };
                 if rc != 0 {
-                    candle_core::bail!(
-                        "int8_gemm_dequant (out {:?}, cfg {cfg}, rows {r0}+{rows} of M={m} N={n} K={k}) failed, rc={rc}",
-                        self.out
-                    );
+                    candle_core::bail!("int8_gemm_dequant (out {:?}, cfg {cfg}, rows {r0}+{rows} of M={m} N={n} K={k}) failed, rc={rc}", self.out);
                 }
             }
             Ok(())
@@ -652,9 +526,80 @@ pub struct QuantizedActivation {
 /// rotates + per-token INT8-quantizes the activation, runs the INT8 GEMM, and
 /// dequantizes. Output-equivalent to `x Wᵀ` up to INT8 error.
 pub struct ConvRotLinear {
-    w_i8: Tensor,      // (N, K) u8 holding int8
-    col_scale: Tensor, // (N,) f32
-    hadamard: Tensor,  // (256, 256) f32 rotation
+    weights: std::sync::RwLock<LinearWeights>,
+    hadamard: Tensor, // (256, 256) f32 rotation
+}
+
+#[cfg(test)]
+mod lora_tests {
+    use super::*;
+    use crate::lora::LoraPair;
+    use candle_core::{DType, Device};
+
+    fn pair(dev: &Device, scale: f32) -> Result<LoraPair> {
+        let a = Tensor::from_vec((0..4 * 256).map(|i| (i % 7) as f32 * 0.01 - 0.03).collect::<Vec<_>>(), (4, 256), dev)?.to_dtype(DType::BF16)?;
+        let b = Tensor::from_vec((0..8 * 4).map(|i| (i % 5) as f32 * 0.02 - 0.04).collect::<Vec<_>>(), (8, 4), dev)?.to_dtype(DType::BF16)?;
+        LoraPair::new(&a, &b, scale)
+    }
+
+    fn bytes(w: &Tensor) -> Result<Vec<u8>> {
+        Ok(w.flatten_all()?.to_vec1::<u8>()?)
+    }
+
+    #[test]
+    fn materialization_is_non_cumulative_and_clears_to_original_bytes() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let r = crate::model::rotation::regular_hadamard_256(&dev)?;
+        let data = (0..8 * 256).map(|i| ((i % 17) as i8 - 8) as u8).collect::<Vec<_>>();
+        let q = Tensor::from_vec(data.clone(), (8, 256), &dev)?;
+        let scales = Tensor::full(0.0078125f32, 8, &dev)?;
+        let c = ConvRotLinear::from_prequantized(q, scales, &r)?;
+        let pairs = vec![pair(&dev, 0.5)?];
+        c.set_loras(&pairs, "transformer_blocks.0.attn.to_q")?;
+        let (first, s1) = c.export()?;
+        let first = bytes(&first)?;
+        assert_ne!(first, data);
+        c.set_loras(&pairs, "transformer_blocks.0.attn.to_q")?;
+        let (second, s2) = c.export()?;
+        assert_eq!(bytes(&second)?, first, "must start from the original weight");
+        assert_eq!(s1.to_vec1::<f32>()?, s2.to_vec1::<f32>()?);
+        c.set_loras(&[pair(&dev, 1.0)?], "transformer_blocks.0.attn.to_q")?;
+        c.set_loras(&pairs, "transformer_blocks.0.attn.to_q")?;
+        assert_eq!(bytes(&c.export()?.0)?, first, "strength changes must not accumulate");
+        c.clear_loras()?;
+        let (original, scales) = c.export()?;
+        assert_eq!(bytes(&original)?, data);
+        assert_eq!(scales.to_vec1::<f32>()?, vec![0.0078125f32; 8]);
+        c.clear_loras()?;
+        assert_eq!(bytes(&c.export()?.0)?, data);
+        Ok(())
+    }
+
+    #[test]
+    fn interleaved_patch_keeps_the_unadapted_projection_exact() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let r = crate::model::rotation::regular_hadamard_256(&dev)?;
+        let make = |offset: usize| -> Result<ConvRotLinear> {
+            let data = (0..8 * 256).map(|i| (((i + offset) % 17) as i8 - 8) as u8).collect::<Vec<_>>();
+            ConvRotLinear::from_prequantized(Tensor::from_vec(data, (8, 256), &dev)?, Tensor::full(0.0078125f32, 8, &dev)?, &r)
+        };
+        let (q, k) = (make(0)?, make(3)?);
+        let merged = ConvRotLinear::interleave_heads(&q, &k, 4)?;
+        let before = bytes(&merged.export()?.0)?;
+        merged.set_head_loras((&[pair(&dev, 0.5)?], "transformer_blocks.0.attn.to_q"), (&[], "transformer_blocks.0.attn.to_k"), 4)?;
+        let after = merged.export()?.0.reshape((2, 8, 256))?.narrow(1, 4, 4)?.contiguous()?.reshape((8, 256))?;
+        assert_eq!(bytes(&after)?, bytes(&k.export()?.0)?);
+        merged.clear_loras()?;
+        assert_eq!(bytes(&merged.export()?.0)?, before);
+        Ok(())
+    }
+}
+
+struct LinearWeights {
+    q: Tensor,
+    scales: Tensor,
+    original_cpu: Option<(Tensor, Tensor)>,
+    patched: bool,
 }
 
 impl ConvRotLinear {
@@ -664,25 +609,104 @@ impl ConvRotLinear {
         let wr = crate::model::rotation::fold_weight(weight, r)?; // (N,K) bf16
         let amax = wr.abs()?.max_keepdim(D::Minus1)?; // (N,1)
         let col_scale = (amax.to_dtype(candle_core::DType::F32)? / 127.0)?.reshape(n)?;
-        let inv = (amax.recip()? * 127.0)?
-            .to_dtype(candle_core::DType::F32)?
-            .reshape(n)?;
+        let inv = (amax.recip()? * 127.0)?.to_dtype(candle_core::DType::F32)?.reshape(n)?;
         let w_i8 = wr.apply_op2(&inv, QuantizeRows)?; // (N,K) u8
-        Ok(Self {
-            w_i8,
-            col_scale,
-            hadamard: r.clone(),
-        })
+        Self::from_prequantized(w_i8, col_scale, r)
     }
 
     /// Build from already-rotated-and-quantized tensors (loaded from a
     /// pre-quantized weight file), skipping the rotate+quant done by
     /// `from_weight`. `w_i8 (N,K)` is U8 holding int8; `col_scale (N,)` is f32.
     pub fn from_prequantized(w_i8: Tensor, col_scale: Tensor, r: &Tensor) -> Result<Self> {
-        Ok(Self {
-            w_i8,
-            col_scale,
-            hadamard: r.clone(),
+        Ok(Self { weights: std::sync::RwLock::new(LinearWeights { q: w_i8, scales: col_scale, original_cpu: None, patched: false }), hadamard: r.clone() })
+    }
+
+    /// Restore original bytes without another quantization.
+    pub fn clear_loras(&self) -> Result<()> {
+        let mut weights = self.weights.write().map_err(|_| anyhow::anyhow!("ConvRot weight lock poisoned"))?;
+        if !weights.patched {
+            return Ok(());
+        }
+        let (q, scales) = weights.original_cpu.as_ref().ok_or_else(|| anyhow::anyhow!("missing original ConvRot weight"))?;
+        let (q, scales) = (q.to_device(self.hadamard.device())?, scales.to_device(self.hadamard.device())?);
+        weights.q = q;
+        weights.scales = scales;
+        weights.patched = false;
+        Ok(())
+    }
+
+    fn patch_with(&self, patch: impl FnOnce(&Tensor, &Tensor) -> Result<(Tensor, Tensor)>) -> Result<()> {
+        let (q, scales) = {
+            let weights = self.weights.read().map_err(|_| anyhow::anyhow!("ConvRot weight lock poisoned"))?;
+            if weights.patched {
+                let (q, scales) = weights.original_cpu.as_ref().ok_or_else(|| anyhow::anyhow!("missing original ConvRot weight"))?;
+                (q.to_device(self.hadamard.device())?, scales.to_device(self.hadamard.device())?)
+            } else {
+                (weights.q.clone(), weights.scales.clone())
+            }
+        };
+        let (patched, patched_scales) = patch(&q, &scales)?;
+        let mut weights = self.weights.write().map_err(|_| anyhow::anyhow!("ConvRot weight lock poisoned"))?;
+        if weights.original_cpu.is_none() {
+            weights.original_cpu = Some((q.to_device(&candle_core::Device::Cpu)?, scales.to_device(&candle_core::Device::Cpu)?));
+        }
+        weights.q = patched;
+        weights.scales = patched_scales;
+        weights.patched = true;
+        Ok(())
+    }
+
+    pub fn set_loras(&self, pairs: &[crate::lora::LoraPair], module: &str) -> Result<()> {
+        if pairs.is_empty() {
+            return self.clear_loras();
+        }
+        self.patch_with(|q, s| crate::lora_materialize::merge(q, s, pairs, module))
+    }
+
+    /// Patch the separate q/k modules behind a head-interleaved matrix.
+    pub fn set_head_loras(&self, a: (&[crate::lora::LoraPair], &str), b: (&[crate::lora::LoraPair], &str), head_dim: usize) -> Result<()> {
+        if a.0.is_empty() && b.0.is_empty() {
+            return self.clear_loras();
+        }
+        self.patch_with(|q, scales| {
+            let (n2, k) = q.dims2()?;
+            let n = n2 / 2;
+            anyhow::ensure!(
+                n2 > 0 && head_dim > 0 && head_dim <= n && n2.is_multiple_of(2) && n.is_multiple_of(head_dim),
+                "invalid interleaved LoRA head layout"
+            );
+            let h = n / head_dim;
+            let q = q.reshape((h, 2 * head_dim, k))?;
+            let scales = scales.reshape((h, 2 * head_dim))?;
+            let part = |i: usize, pairs: &[crate::lora::LoraPair], name: &str| -> Result<Self> {
+                let w = q.narrow(1, i * head_dim, head_dim)?.contiguous()?.reshape((n, k))?;
+                let s = scales.narrow(1, i * head_dim, head_dim)?.contiguous()?.reshape(n)?;
+                let (w, s) = crate::lora_materialize::merge(&w, &s, pairs, name)?;
+                Self::from_prequantized(w, s, &self.hadamard)
+            };
+            Self::interleave_heads(&part(0, a.0, a.1)?, &part(1, b.0, b.1)?, head_dim)?.export()
+        })
+    }
+
+    /// Patch gate/projection row halves using the fused ComfyUI parameter's seed.
+    pub fn set_concat_loras(&self, groups: &[Vec<crate::lora::LoraPair>], module: &str) -> Result<()> {
+        if groups.iter().all(Vec::is_empty) {
+            return self.clear_loras();
+        }
+        self.patch_with(|q, s| {
+            let w = crate::lora_materialize::dequantize(q, s)?;
+            let n = w.dim(0)?;
+            anyhow::ensure!(!groups.is_empty() && n.is_multiple_of(groups.len()), "invalid fused LoRA row groups");
+            let half = n / groups.len();
+            let mut parts = Vec::new();
+            for (i, pairs) in groups.iter().enumerate() {
+                let mut part = w.narrow(0, i * half, half)?;
+                for pair in pairs {
+                    part = pair.merge_weight(part)?;
+                }
+                parts.push(part);
+            }
+            crate::lora_materialize::requantize(&Tensor::cat(&parts, 0)?, crate::lora_materialize::key_seed(module), false)
         })
     }
 
@@ -691,24 +715,15 @@ impl ConvRotLinear {
     /// column-concatenation of the parts' outputs, bit-identical per column
     /// (exact INT8 accumulation, per-element epilogue). All parts must share K.
     pub fn concat_out(parts: &[&ConvRotLinear]) -> Result<Self> {
-        let first = parts
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("concat_out: no parts"))?;
-        let k = first.w_i8.dim(1)?;
-        for p in parts {
-            anyhow::ensure!(
-                p.w_i8.dim(1)? == k,
-                "concat_out: K mismatch ({} vs {k})",
-                p.w_i8.dim(1)?
-            );
+        let first = parts.first().ok_or_else(|| anyhow::anyhow!("concat_out: no parts"))?;
+        let weights = parts.iter().map(|p| p.export()).collect::<Result<Vec<_>>>()?;
+        let k = weights[0].0.dim(1)?;
+        for (q, _) in &weights {
+            anyhow::ensure!(q.dim(1)? == k, "concat_out: K mismatch ({} vs {k})", q.dim(1)?);
         }
-        let w: Vec<&Tensor> = parts.iter().map(|p| &p.w_i8).collect();
-        let c: Vec<&Tensor> = parts.iter().map(|p| &p.col_scale).collect();
-        Ok(Self {
-            w_i8: Tensor::cat(&w, 0)?,
-            col_scale: Tensor::cat(&c, 0)?,
-            hadamard: first.hadamard.clone(),
-        })
+        let w: Vec<&Tensor> = weights.iter().map(|p| &p.0).collect();
+        let c: Vec<&Tensor> = weights.iter().map(|p| &p.1).collect();
+        Self::from_prequantized(Tensor::cat(&w, 0)?, Tensor::cat(&c, 0)?, &first.hadamard)
     }
 
     /// Head-interleaved merge of two `(heads * head_dim)`-output linears: the
@@ -717,35 +732,19 @@ impl ConvRotLinear {
     /// rows makes `a` and `b` uniform row-strided views (`ld = 2 * head_dim`)
     /// — the per-head q/k RMSNorm reads them in place.
     pub fn interleave_heads(a: &ConvRotLinear, b: &ConvRotLinear, head_dim: usize) -> Result<Self> {
-        let (n, k) = a.w_i8.dims2()?;
+        let (aw, ac) = a.export()?;
+        let (bw, bc) = b.export()?;
+        let (n, k) = aw.dims2()?;
         anyhow::ensure!(
-            b.w_i8.dims2()? == (n, k) && head_dim > 0 && n.is_multiple_of(head_dim),
+            bw.dims2()? == (n, k) && head_dim > 0 && n.is_multiple_of(head_dim),
             "interleave_heads: shapes {:?} / {:?} with head_dim {head_dim}",
-            a.w_i8.dims(),
-            b.w_i8.dims()
+            aw.dims(),
+            bw.dims()
         );
         let h = n / head_dim;
-        let w = Tensor::stack(
-            &[
-                a.w_i8.reshape((h, head_dim, k))?,
-                b.w_i8.reshape((h, head_dim, k))?,
-            ],
-            1,
-        )?
-        .reshape((2 * n, k))?;
-        let c = Tensor::stack(
-            &[
-                a.col_scale.reshape((h, head_dim))?,
-                b.col_scale.reshape((h, head_dim))?,
-            ],
-            1,
-        )?
-        .reshape(2 * n)?;
-        Ok(Self {
-            w_i8: w,
-            col_scale: c,
-            hadamard: a.hadamard.clone(),
-        })
+        let w = Tensor::stack(&[aw.reshape((h, head_dim, k))?, bw.reshape((h, head_dim, k))?], 1)?.reshape((2 * n, k))?;
+        let c = Tensor::stack(&[ac.reshape((h, head_dim))?, bc.reshape((h, head_dim))?], 1)?.reshape(2 * n)?;
+        Self::from_prequantized(w, c, &a.hadamard)
     }
 
     /// Rotate + quantize `x (..., K)` bf16 once, for one or more linears of
@@ -755,33 +754,21 @@ impl ConvRotLinear {
         let k = *dims.last().unwrap();
         let m: usize = dims[..dims.len() - 1].iter().product();
         let (x_i8, row_scale) = rotate_quantize_rows_fused(&x.reshape((m, k))?)?;
-        Ok(QuantizedActivation {
-            x_i8,
-            row_scale,
-            lead: dims[..dims.len() - 1].to_vec(),
-            k,
-        })
+        Ok(QuantizedActivation { x_i8, row_scale, lead: dims[..dims.len() - 1].to_vec(), k })
     }
 
     /// INT8 GEMM + dequant of an already-quantized activation -> `(lead..., N)`.
     /// Same output as `forward_as(x, out_ty)` on the `x` that `qa` came from.
-    pub fn forward_quantized(
-        &self,
-        qa: &QuantizedActivation,
-        out_ty: EpilogueOut,
-    ) -> Result<Tensor> {
-        let k = self.w_i8.dim(1)?;
-        anyhow::ensure!(
-            qa.k == k,
-            "forward_quantized: activation K={} but weight K={k}",
-            qa.k
-        );
+    pub fn forward_quantized(&self, qa: &QuantizedActivation, out_ty: EpilogueOut) -> Result<Tensor> {
+        let k = self.weights.read().map_err(|_| anyhow::anyhow!("ConvRot weight lock poisoned"))?.q.dim(1)?;
+        anyhow::ensure!(qa.k == k, "forward_quantized: activation K={} but weight K={k}", qa.k);
         self.gemm_dequant(&qa.lead, &qa.x_i8, &qa.row_scale, out_ty)
     }
 
     /// The stored INT8 weight and per-column scale, for serialization.
-    pub fn export(&self) -> (&Tensor, &Tensor) {
-        (&self.w_i8, &self.col_scale)
+    pub fn export(&self) -> Result<(Tensor, Tensor)> {
+        let weights = self.weights.read().map_err(|_| anyhow::anyhow!("ConvRot weight lock poisoned"))?;
+        Ok((weights.q.clone(), weights.scales.clone()))
     }
 
     /// Forward on `x (..., K)` bf16 -> `(..., N)` bf16.
@@ -815,32 +802,18 @@ impl ConvRotLinear {
     /// output) and are read in place; higher-rank inputs are flattened with
     /// `reshape` (free for contiguous tensors).
     pub fn forward_swiglu(&self, g: &Tensor, p: &Tensor, out_ty: EpilogueOut) -> Result<Tensor> {
-        anyhow::ensure!(
-            g.dims() == p.dims(),
-            "forward_swiglu: gate {:?} vs proj {:?}",
-            g.dims(),
-            p.dims()
-        );
+        anyhow::ensure!(g.dims() == p.dims(), "forward_swiglu: gate {:?} vs proj {:?}", g.dims(), p.dims());
         let dims = g.dims().to_vec();
         let k = *dims.last().unwrap();
         let m: usize = dims[..dims.len() - 1].iter().product();
-        let (g2, p2) = if dims.len() == 2 {
-            (g.clone(), p.clone())
-        } else {
-            (g.reshape((m, k))?, p.reshape((m, k))?)
-        };
+        let (g2, p2) = if dims.len() == 2 { (g.clone(), p.clone()) } else { (g.reshape((m, k))?, p.reshape((m, k))?) };
         let (x_i8, row_scale) = swiglu_rotate_quantize_rows_fused(&g2, &p2)?;
         self.gemm_dequant(&dims[..dims.len() - 1], &x_i8, &row_scale, out_ty)
     }
 
     /// Shared head of the plain forwards: `quant` maps the `(M,K)` bf16
     /// activation to (rotated int8, row scale); then [`Self::gemm_dequant`].
-    fn forward_with(
-        &self,
-        x: &Tensor,
-        out_ty: EpilogueOut,
-        quant: impl Fn(&Tensor) -> Result<(Tensor, Tensor)>,
-    ) -> Result<Tensor> {
+    fn forward_with(&self, x: &Tensor, out_ty: EpilogueOut, quant: impl Fn(&Tensor) -> Result<(Tensor, Tensor)>) -> Result<Tensor> {
         let dims = x.dims().to_vec();
         let k = *dims.last().unwrap();
         let m: usize = dims[..dims.len() - 1].iter().product();
@@ -851,21 +824,16 @@ impl ConvRotLinear {
 
     /// Fused INT8 GEMM + dequant of a quantized `(M,K)` activation, reshaped
     /// to `(lead..., N)`.
-    fn gemm_dequant(
-        &self,
-        lead: &[usize],
-        x_i8: &Tensor,
-        row_scale: &Tensor,
-        out_ty: EpilogueOut,
-    ) -> Result<Tensor> {
-        let n = self.col_scale.dim(0)?;
+    fn gemm_dequant(&self, lead: &[usize], x_i8: &Tensor, row_scale: &Tensor, out_ty: EpilogueOut) -> Result<Tensor> {
+        let weights = self.weights.read().map_err(|_| anyhow::anyhow!("ConvRot weight lock poisoned"))?;
+        let n = weights.scales.dim(0)?;
         // Pack the two scale vectors into one tensor (candle has no CustomOp4):
         // scales[0..N] = s_col, scales[N..N+M] = s_row. col first so the
         // vectorized RowBroadcast load of s_col starts at the aligned base.
-        let scales = Tensor::cat(&[&self.col_scale, row_scale], 0)?; // (N+M,) f32
+        let scales = Tensor::cat(&[&weights.scales, row_scale], 0)?; // (N+M,) f32
 
         // Fused INT8 GEMM + per-row/per-col dequant epilogue -> (M,N) out_ty.
-        let out = x_i8.apply_op3(&self.w_i8, &scales, Int8GemmDequant::auto(out_ty))?;
+        let out = x_i8.apply_op3(&weights.q, &scales, Int8GemmDequant::auto(out_ty))?;
         let mut out_dims = lead.to_vec();
         out_dims.push(n);
         Ok(out.reshape(out_dims)?)
@@ -882,9 +850,7 @@ pub fn self_test_linear() -> Result<f32> {
     let r = crate::model::rotation::regular_hadamard_256(&dev)?;
     let cr = ConvRotLinear::from_weight(&w, &r)?;
     let y_int8 = cr.forward(&x)?.to_dtype(DType::F32)?;
-    let y_ref = x
-        .to_dtype(DType::F32)?
-        .matmul(&w.to_dtype(DType::F32)?.t()?)?;
+    let y_ref = x.to_dtype(DType::F32)?.matmul(&w.to_dtype(DType::F32)?.t()?)?;
     let dot = (&y_int8 * &y_ref)?.sum_all()?.to_scalar::<f32>()?;
     let na = y_int8.sqr()?.sum_all()?.to_scalar::<f32>()?.sqrt();
     let nb = y_ref.sqr()?.sum_all()?.to_scalar::<f32>()?.sqrt();
@@ -932,16 +898,8 @@ pub fn self_test() -> Result<i64> {
     let (m, n, k) = (64usize, 128usize, 256usize);
     let ai: Vec<i8> = (0..m * k).map(|i| ((i * 7) % 15) as i8 - 7).collect();
     let bi: Vec<i8> = (0..n * k).map(|i| ((i * 13) % 15) as i8 - 7).collect();
-    let a_u8 = Tensor::from_vec(
-        ai.iter().map(|&v| v as u8).collect::<Vec<u8>>(),
-        (m, k),
-        &dev,
-    )?;
-    let b_u8 = Tensor::from_vec(
-        bi.iter().map(|&v| v as u8).collect::<Vec<u8>>(),
-        (n, k),
-        &dev,
-    )?;
+    let a_u8 = Tensor::from_vec(ai.iter().map(|&v| v as u8).collect::<Vec<u8>>(), (m, k), &dev)?;
+    let b_u8 = Tensor::from_vec(bi.iter().map(|&v| v as u8).collect::<Vec<u8>>(), (n, k), &dev)?;
     let c: Vec<i32> = int8_gemm(&a_u8, &b_u8)?.flatten_all()?.to_vec1::<i32>()?;
 
     let mut maxdiff = 0i64;
@@ -987,9 +945,7 @@ pub fn self_test_epilogue(m: usize, n: usize, k: usize) -> Result<(usize, usize)
     let (mut bad_bf, mut bad_hf) = (0usize, 0usize);
     for mi in 0..m {
         for ni in 0..n {
-            let acc: i32 = (0..k)
-                .map(|kk| ai[mi * k + kk] as i32 * bi[ni * k + kk] as i32)
-                .sum();
+            let acc: i32 = (0..k).map(|kk| ai[mi * k + kk] as i32 * bi[ni * k + kk] as i32).sum();
             let v = (acc as f32 * s_row[mi]) * s_col[ni];
             let i = mi * n + ni;
             if half::bf16::from_f32(v).to_bits() != bf[i].to_bits() {
@@ -1031,45 +987,30 @@ pub fn self_test_offset_views() -> Result<Vec<(&'static str, bool)>> {
     let dev = Device::new_cuda(0)?;
     let (drop, m, n, k) = (5usize, 37usize, 256usize, 512usize);
     let rows = |r: usize, cols: usize, seed: usize| -> Result<Tensor> {
-        let v: Vec<u8> = (0..(drop + r) * cols)
-            .map(|i| (((i * 7 + seed) % 255) as i8) as u8)
-            .collect();
+        let v: Vec<u8> = (0..(drop + r) * cols).map(|i| (((i * 7 + seed) % 255) as i8) as u8).collect();
         Ok(Tensor::from_vec(v, (drop + r, cols), &dev)?.narrow(0, drop, r)?)
     };
     let (a, b) = (rows(m, k, 1)?, rows(n, k, 3)?);
-    anyhow::ensure!(
-        a.layout().start_offset() == drop * k,
-        "test premise: the narrow must be a zero-copy offset view"
-    );
+    anyhow::ensure!(a.layout().start_offset() == drop * k, "test premise: the narrow must be a zero-copy offset view");
     let (af, bf) = (a.force_contiguous()?, b.force_contiguous()?);
     let u8s = |t: &Tensor| -> Result<Vec<u8>> { Ok(t.flatten_all()?.to_vec1::<u8>()?) };
 
     // int8 GEMM (i32 out).
-    let gemm_ok = int8_gemm(&a, &b)?.flatten_all()?.to_vec1::<i32>()?
-        == int8_gemm(&af, &bf)?.flatten_all()?.to_vec1::<i32>()?;
+    let gemm_ok = int8_gemm(&a, &b)?.flatten_all()?.to_vec1::<i32>()? == int8_gemm(&af, &bf)?.flatten_all()?.to_vec1::<i32>()?;
 
     // Fused dequant epilogue, with the packed scales an offset view too.
     // 8 f32 = 32 B keeps the s_col base at the epilogue's 32-B alignment.
     let sdrop = 8usize;
-    let sv: Vec<f32> = (0..sdrop + n + m)
-        .map(|i| 1e-3 * (1.0 + i as f32 * 0.01))
-        .collect();
+    let sv: Vec<f32> = (0..sdrop + n + m).map(|i| 1e-3 * (1.0 + i as f32 * 0.01)).collect();
     let sc = Tensor::from_vec(sv, sdrop + n + m, &dev)?.narrow(0, sdrop, n + m)?;
     let scf = sc.force_contiguous()?;
     let deq = |a: &Tensor, b: &Tensor, s: &Tensor| -> Result<Vec<u16>> {
-        Ok(a.apply_op3(b, s, Int8GemmDequant::auto(EpilogueOut::Bf16))?
-            .flatten_all()?
-            .to_vec1::<half::bf16>()?
-            .iter()
-            .map(|v| v.to_bits())
-            .collect())
+        Ok(a.apply_op3(b, s, Int8GemmDequant::auto(EpilogueOut::Bf16))?.flatten_all()?.to_vec1::<half::bf16>()?.iter().map(|v| v.to_bits()).collect())
     };
     let deq_ok = deq(&a, &b, &sc)? == deq(&af, &bf, &scf)?;
 
     // Activation quantizers on an offset bf16 view.
-    let x = Tensor::randn(0f32, 1f32, (drop + m, k), &dev)?
-        .to_dtype(DType::BF16)?
-        .narrow(0, drop, m)?;
+    let x = Tensor::randn(0f32, 1f32, (drop + m, k), &dev)?.to_dtype(DType::BF16)?.narrow(0, drop, m)?;
     let xf = x.force_contiguous()?;
     let (q, rs) = quantize_rows_fused(&x)?;
     let (qf, rsf) = quantize_rows_fused(&xf)?;
@@ -1079,8 +1020,7 @@ pub fn self_test_offset_views() -> Result<Vec<(&'static str, bool)>> {
     let rotq_ok = u8s(&rq)? == u8s(&rqf)? && rrs.to_vec1::<f32>()? == rrsf.to_vec1::<f32>()?;
     let inv = Tensor::from_vec(vec![100f32; drop + m], drop + m, &dev)?.narrow(0, drop, m)?;
     let invf = inv.force_contiguous()?;
-    let rows_ok =
-        u8s(&x.apply_op2(&inv, QuantizeRows)?)? == u8s(&xf.apply_op2(&invf, QuantizeRows)?)?;
+    let rows_ok = u8s(&x.apply_op2(&inv, QuantizeRows)?)? == u8s(&xf.apply_op2(&invf, QuantizeRows)?)?;
     Ok(vec![
         ("int8_gemm", gemm_ok),
         ("int8_gemm_dequant", deq_ok),
@@ -1118,10 +1058,7 @@ impl RotQuantCase {
     /// `old_dq` steps and `old_scale` relative scale (its own bf16 roundings
     /// set the bound: one for the rotation GEMM, two for candle silu + mul).
     pub fn ok_with_old(&self, old_dq: i32, old_scale: f32) -> bool {
-        self.ref_max_diff <= 1
-            && self.old_max_diff <= old_dq
-            && self.ref_scale_rel <= 1e-5
-            && self.old_scale_rel <= old_scale
+        self.ref_max_diff <= 1 && self.old_max_diff <= old_dq && self.ref_scale_rel <= 1e-5 && self.old_scale_rel <= old_scale
     }
 }
 
@@ -1133,15 +1070,11 @@ pub fn self_test_rotate_quant(shapes: &[(usize, usize)]) -> Result<Vec<RotQuantC
     use candle_core::{DType, Device};
     let dev = Device::new_cuda(0)?;
     let g = crate::model::rotation::GROUP;
-    let r_cpu: Vec<f32> = crate::model::rotation::regular_hadamard_256(&Device::Cpu)?
-        .flatten_all()?
-        .to_vec1()?;
+    let r_cpu: Vec<f32> = crate::model::rotation::regular_hadamard_256(&Device::Cpu)?.flatten_all()?.to_vec1()?;
     let r = crate::model::rotation::regular_hadamard_256(&dev)?;
     let mut cases = Vec::new();
     for &(m, k) in shapes {
-        let mut x: Vec<f32> = Tensor::randn(0f32, 1f32, (m, k), &Device::Cpu)?
-            .flatten_all()?
-            .to_vec1()?;
+        let mut x: Vec<f32> = Tensor::randn(0f32, 1f32, (m, k), &Device::Cpu)?.flatten_all()?.to_vec1()?;
         x[..k].fill(0.0);
         if m > 1 {
             for j in (0..k).step_by(97) {
@@ -1152,41 +1085,20 @@ pub fn self_test_rotate_quant(shapes: &[(usize, usize)]) -> Result<Vec<RotQuantC
         let xh: Vec<f32> = xb.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
         let xg = xb.to_device(&dev)?;
         let (q, s) = rotate_quantize_rows_fused(&xg)?;
-        let q: Vec<i8> = q
-            .flatten_all()?
-            .to_vec1::<u8>()?
-            .iter()
-            .map(|&b| b as i8)
-            .collect();
+        let q: Vec<i8> = q.flatten_all()?.to_vec1::<u8>()?.iter().map(|&b| b as i8).collect();
         let s: Vec<f32> = s.to_vec1()?;
         let xr = crate::model::rotation::rotate(&xg, &r)?;
         let (qo, so) = quantize_rows_fused(&xr)?;
-        let qo: Vec<i8> = qo
-            .flatten_all()?
-            .to_vec1::<u8>()?
-            .iter()
-            .map(|&b| b as i8)
-            .collect();
+        let qo: Vec<i8> = qo.flatten_all()?.to_vec1::<u8>()?.iter().map(|&b| b as i8).collect();
         let so: Vec<f32> = so.to_vec1()?;
 
-        let mut c = RotQuantCase {
-            m,
-            k,
-            ref_max_diff: 0,
-            ref_mismatches: 0,
-            ref_scale_rel: 0.0,
-            old_max_diff: 0,
-            old_mismatches: 0,
-            old_scale_rel: 0.0,
-        };
+        let mut c = RotQuantCase { m, k, ref_max_diff: 0, ref_mismatches: 0, ref_scale_rel: 0.0, old_max_diff: 0, old_mismatches: 0, old_scale_rel: 0.0 };
         let rel = |a: f32, b: f32| if b == 0.0 { a.abs() } else { (a - b).abs() / b };
         for row in 0..m {
             let mut y = vec![0f32; k];
             for ch in 0..k / g {
                 for i in 0..g {
-                    let acc: f64 = (0..g)
-                        .map(|j| r_cpu[i * g + j] as f64 * xh[row * k + ch * g + j] as f64)
-                        .sum();
+                    let acc: f64 = (0..g).map(|j| r_cpu[i * g + j] as f64 * xh[row * k + ch * g + j] as f64).sum();
                     y[ch * g + i] = acc as f32;
                 }
             }
@@ -1239,9 +1151,7 @@ pub fn self_test_linear_fused_vs_unfused() -> Result<Vec<(usize, usize, usize, f
         let x = Tensor::randn(0f32, 1f32, (m, k), &dev)?.to_dtype(DType::BF16)?;
         let cr = ConvRotLinear::from_weight(&w, &r)?;
         let a = cr.forward(&x)?.to_dtype(DType::F32)?;
-        let b = cr
-            .forward_as_unfused(&x, EpilogueOut::Bf16)?
-            .to_dtype(DType::F32)?;
+        let b = cr.forward_as_unfused(&x, EpilogueOut::Bf16)?.to_dtype(DType::F32)?;
         let dot = (&a * &b)?.sum_all()?.to_scalar::<f32>()?;
         let na = a.sqr()?.sum_all()?.to_scalar::<f32>()?.sqrt();
         let nb = b.sqr()?.sum_all()?.to_scalar::<f32>()?.sqrt();
@@ -1286,18 +1196,10 @@ pub fn bench_rotate_quant(iters: usize) -> Result<Vec<(usize, f64, f64)>> {
 /// bf16 `(M, K)` gate/proj test inputs on the host and the device: row 0 is
 /// all zero, row 1 carries 60x outliers in `p`, the rest are randn (`g`
 /// scaled by 2 so silu sees both tails).
-fn swiglu_inputs(
-    m: usize,
-    k: usize,
-    dev: &candle_core::Device,
-) -> Result<(Vec<f32>, Vec<f32>, Tensor, Tensor)> {
+fn swiglu_inputs(m: usize, k: usize, dev: &candle_core::Device) -> Result<(Vec<f32>, Vec<f32>, Tensor, Tensor)> {
     use candle_core::{DType, Device};
-    let mut g: Vec<f32> = (Tensor::randn(0f32, 1f32, (m, k), &Device::Cpu)? * 2.0)?
-        .flatten_all()?
-        .to_vec1()?;
-    let mut p: Vec<f32> = Tensor::randn(0f32, 1f32, (m, k), &Device::Cpu)?
-        .flatten_all()?
-        .to_vec1()?;
+    let mut g: Vec<f32> = (Tensor::randn(0f32, 1f32, (m, k), &Device::Cpu)? * 2.0)?.flatten_all()?.to_vec1()?;
+    let mut p: Vec<f32> = Tensor::randn(0f32, 1f32, (m, k), &Device::Cpu)?.flatten_all()?.to_vec1()?;
     g[..k].fill(0.0);
     p[..k].fill(0.0);
     if m > 1 {
@@ -1320,16 +1222,8 @@ pub fn self_test_swiglu_rotate_quant(shapes: &[(usize, usize)]) -> Result<Vec<Ro
     use candle_core::Device;
     let dev = Device::new_cuda(0)?;
     let gsz = crate::model::rotation::GROUP;
-    let r_cpu: Vec<f32> = crate::model::rotation::regular_hadamard_256(&Device::Cpu)?
-        .flatten_all()?
-        .to_vec1()?;
-    let i8s = |t: &Tensor| -> Result<Vec<i8>> {
-        Ok(t.flatten_all()?
-            .to_vec1::<u8>()?
-            .iter()
-            .map(|&b| b as i8)
-            .collect())
-    };
+    let r_cpu: Vec<f32> = crate::model::rotation::regular_hadamard_256(&Device::Cpu)?.flatten_all()?.to_vec1()?;
+    let i8s = |t: &Tensor| -> Result<Vec<i8>> { Ok(t.flatten_all()?.to_vec1::<u8>()?.iter().map(|&b| b as i8).collect()) };
     let mut cases = Vec::new();
     for &(m, k) in shapes {
         let (gh, ph, g, p) = swiglu_inputs(m, k, &dev)?;
@@ -1338,16 +1232,7 @@ pub fn self_test_swiglu_rotate_quant(shapes: &[(usize, usize)]) -> Result<Vec<Ro
         let h_old = (candle_nn::ops::silu(&g)? * &p)?;
         let (qo, so) = rotate_quantize_rows_fused(&h_old)?;
         let (qo, so) = (i8s(&qo)?, so.to_vec1::<f32>()?);
-        let mut c = RotQuantCase {
-            m,
-            k,
-            ref_max_diff: 0,
-            ref_mismatches: 0,
-            ref_scale_rel: 0.0,
-            old_max_diff: 0,
-            old_mismatches: 0,
-            old_scale_rel: 0.0,
-        };
+        let mut c = RotQuantCase { m, k, ref_max_diff: 0, ref_mismatches: 0, ref_scale_rel: 0.0, old_max_diff: 0, old_mismatches: 0, old_scale_rel: 0.0 };
         let rel = |a: f32, b: f32| if b == 0.0 { a.abs() } else { (a - b).abs() / b };
         for row in 0..m {
             let h: Vec<f64> = (0..k)
@@ -1359,9 +1244,7 @@ pub fn self_test_swiglu_rotate_quant(shapes: &[(usize, usize)]) -> Result<Vec<Ro
             let mut y = vec![0f32; k];
             for ch in 0..k / gsz {
                 for i in 0..gsz {
-                    let acc: f64 = (0..gsz)
-                        .map(|j| r_cpu[i * gsz + j] as f64 * h[ch * gsz + j])
-                        .sum();
+                    let acc: f64 = (0..gsz).map(|j| r_cpu[i * gsz + j] as f64 * h[ch * gsz + j]).sum();
                     y[ch * gsz + i] = acc as f32;
                 }
             }
@@ -1396,19 +1279,13 @@ pub fn self_test_swiglu_views() -> Result<Vec<(&'static str, bool)>> {
     use candle_core::{DType, Device};
     let dev = Device::new_cuda(0)?;
     let (drop, m, k) = (3usize, 37usize, 4096usize);
-    let gp = Tensor::randn(0f32, 1f32, (drop + m, 2 * k), &dev)?
-        .to_dtype(DType::BF16)?
-        .narrow(0, drop, m)?;
+    let gp = Tensor::randn(0f32, 1f32, (drop + m, 2 * k), &dev)?.to_dtype(DType::BF16)?.narrow(0, drop, m)?;
     let (g, p) = (gp.narrow(1, 0, k)?, gp.narrow(1, k, k)?);
-    anyhow::ensure!(
-        p.layout().start_offset() == drop * 2 * k + k && p.stride()[0] == 2 * k,
-        "test premise: p must be a strided, offset view"
-    );
+    anyhow::ensure!(p.layout().start_offset() == drop * 2 * k + k && p.stride()[0] == 2 * k, "test premise: p must be a strided, offset view");
     let (gf, pf) = (g.force_contiguous()?, p.force_contiguous()?);
     let (q, s) = swiglu_rotate_quantize_rows_fused(&g, &p)?;
     let (qf, sf) = swiglu_rotate_quantize_rows_fused(&gf, &pf)?;
-    let merged_ok = q.flatten_all()?.to_vec1::<u8>()? == qf.flatten_all()?.to_vec1::<u8>()?
-        && s.to_vec1::<f32>()? == sf.to_vec1::<f32>()?;
+    let merged_ok = q.flatten_all()?.to_vec1::<u8>()? == qf.flatten_all()?.to_vec1::<u8>()? && s.to_vec1::<f32>()? == sf.to_vec1::<f32>()?;
 
     let z = |r: usize, c: usize| Tensor::zeros((r, c), DType::BF16, &dev);
     let bad_k = swiglu_rotate_quantize_rows_fused(&z(2, 128)?, &z(2, 128)?).is_err();
@@ -1418,10 +1295,7 @@ pub fn self_test_swiglu_views() -> Result<Vec<(&'static str, bool)>> {
     let (qe, se) = swiglu_rotate_quantize_rows_fused(&z(0, k)?, &z(0, k)?)?;
     let empty_ok = qe.dims() == [0, k] && se.dims() == [0];
     Ok(vec![
-        (
-            "swiglu merged halves + row offset == dense copies",
-            merged_ok,
-        ),
+        ("swiglu merged halves + row offset == dense copies", merged_ok),
         ("swiglu rejects K=128", bad_k),
         ("swiglu rejects row stride % 8 != 0", bad_ld),
         ("swiglu rejects g/p shape mismatch", bad_shape),
@@ -1449,21 +1323,12 @@ pub fn self_test_linear_swiglu() -> Result<Vec<(&'static str, f32)>> {
     };
     let gp = (Tensor::randn(0f32, 1f32, (m, 2 * k), &dev)? * 2.0)?.to_dtype(DType::BF16)?;
     let (g2, p2) = (gp.narrow(1, 0, k)?, gp.narrow(1, k, k)?);
-    let (g3, p3) = (
-        g2.contiguous()?.unsqueeze(0)?,
-        p2.contiguous()?.unsqueeze(0)?,
-    );
+    let (g3, p3) = (g2.contiguous()?.unsqueeze(0)?, p2.contiguous()?.unsqueeze(0)?);
     let reference = cr.forward(&(candle_nn::ops::silu(&g3)? * &p3)?)?;
     let fused3 = cr.forward_swiglu(&g3, &p3, EpilogueOut::Bf16)?;
     let fused2 = cr.forward_swiglu(&g2, &p2, EpilogueOut::Bf16)?;
     anyhow::ensure!(fused3.dims() == [1, m, n] && fused2.dims() == [m, n]);
-    Ok(vec![
-        ("3-D (1,M,K) inputs", cos(&fused3, &reference)?),
-        (
-            "merged (M,2K) halves",
-            cos(&fused2, &reference.squeeze(0)?)?,
-        ),
-    ])
+    Ok(vec![("3-D (1,M,K) inputs", cos(&fused3, &reference)?), ("merged (M,2K) halves", cos(&fused2, &reference.squeeze(0)?)?)])
 }
 
 /// Time the MLP-out activation path at M = 4117, K = 12288: fused SwiGLU +
@@ -1521,18 +1386,8 @@ pub fn bench_gemm_plans(
         let sc = Tensor::from_vec(sv, n + m, &dev)?;
         let bits = |t: &Tensor| -> Result<Vec<u16>> {
             Ok(match out {
-                EpilogueOut::Bf16 => t
-                    .flatten_all()?
-                    .to_vec1::<half::bf16>()?
-                    .iter()
-                    .map(|v| v.to_bits())
-                    .collect(),
-                EpilogueOut::F16 => t
-                    .flatten_all()?
-                    .to_vec1::<half::f16>()?
-                    .iter()
-                    .map(|v| v.to_bits())
-                    .collect(),
+                EpilogueOut::Bf16 => t.flatten_all()?.to_vec1::<half::bf16>()?.iter().map(|v| v.to_bits()).collect(),
+                EpilogueOut::F16 => t.flatten_all()?.to_vec1::<half::f16>()?.iter().map(|v| v.to_bits()).collect(),
             })
         };
         const ROUNDS: usize = 3;
@@ -1545,16 +1400,7 @@ pub fn bench_gemm_plans(
                 if !runs[pi] {
                     continue;
                 }
-                let op = || {
-                    a.apply_op3(
-                        &b,
-                        &sc,
-                        Int8GemmDequant {
-                            out,
-                            plan: Some(plan),
-                        },
-                    )
-                };
+                let op = || a.apply_op3(&b, &sc, Int8GemmDequant { out, plan: Some(plan) });
                 let first = match op() {
                     Ok(t) => t,
                     Err(_) => {
@@ -1606,39 +1452,22 @@ pub fn self_test_merged() -> Result<Vec<(String, bool)>> {
     let bits = |t: &Tensor| -> Result<Vec<u16>> {
         let t = t.flatten_all()?;
         Ok(match t.dtype() {
-            DType::F16 => t
-                .to_vec1::<half::f16>()?
-                .iter()
-                .map(|v| v.to_bits())
-                .collect(),
-            _ => t
-                .to_vec1::<half::bf16>()?
-                .iter()
-                .map(|v| v.to_bits())
-                .collect(),
+            DType::F16 => t.to_vec1::<half::f16>()?.iter().map(|v| v.to_bits()).collect(),
+            _ => t.to_vec1::<half::bf16>()?.iter().map(|v| v.to_bits()).collect(),
         })
     };
     let mut res = Vec::new();
     for m in [133usize, 2] {
         let x = Tensor::randn(0f32, 1f32, (1, m, k), &dev)?.to_dtype(DType::BF16)?;
         let qa = qk.quantize(&x)?;
-        let rows = qk
-            .forward_quantized(&qa, EpilogueOut::Bf16)?
-            .reshape((m * 32, 256))?;
+        let rows = qk.forward_quantized(&qa, EpilogueOut::Bf16)?.reshape((m * 32, 256))?;
         let qv = rows.narrow(1, 0, 128)?.force_contiguous()?;
         let kv = rows.narrow(1, 128, 128)?.force_contiguous()?;
-        res.push((
-            format!("merged q|k (interleaved) q == to_q, M={m}"),
-            bits(&qv)? == bits(&q.forward(&x)?)?,
-        ));
-        res.push((
-            format!("merged q|k (interleaved) k == to_k, M={m}"),
-            bits(&kv)? == bits(&kl.forward(&x)?)?,
-        ));
+        res.push((format!("merged q|k (interleaved) q == to_q, M={m}"), bits(&qv)? == bits(&q.forward(&x)?)?));
+        res.push((format!("merged q|k (interleaved) k == to_k, M={m}"), bits(&kv)? == bits(&kl.forward(&x)?)?));
         res.push((
             format!("v on the shared quant (f16) == to_v f16, M={m}"),
-            bits(&v.forward_quantized(&qa, EpilogueOut::F16)?)?
-                == bits(&v.forward_as(&x, EpilogueOut::F16)?)?,
+            bits(&v.forward_quantized(&qa, EpilogueOut::F16)?)? == bits(&v.forward_as(&x, EpilogueOut::F16)?)?,
         ));
         let y = gp.forward(&x)?.reshape((m, 2048))?;
         res.push((
@@ -1649,10 +1478,6 @@ pub fn self_test_merged() -> Result<Vec<(String, bool)>> {
     }
     let wide = lin(64, 12288)?;
     let x = Tensor::randn(0f32, 1f32, (3, k), &dev)?.to_dtype(DType::BF16)?;
-    res.push((
-        "forward_quantized rejects a K mismatch".to_string(),
-        wide.forward_quantized(&qk.quantize(&x)?, EpilogueOut::Bf16)
-            .is_err(),
-    ));
+    res.push(("forward_quantized rejects a K mismatch".to_string(), wide.forward_quantized(&qk.quantize(&x)?, EpilogueOut::Bf16).is_err()));
     Ok(res)
 }
