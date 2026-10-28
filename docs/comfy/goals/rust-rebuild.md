@@ -177,3 +177,9 @@ step, the dev log and roadmap updated.
   `engine = native` (PhotoshopEX `29308319`) and joins `auto` when it is at least as fast.
   **R4 app side** (`8872dbcf`): Models folder empty means the ComfyUI install's `models`.
   **R5**: `runtime.ps1` without ONNX Runtime and cuDNN, 581 MB (`130e4b1b`).
+- 2026-10-27, late night: the split as fast as ComfyUI at 640×640 (`4fcbfc3`, Codex: 57 s vs
+  58 s) and under `auto` (PhotoshopEX `182ded54`). The owner's 1 MP 3:4 test (`maxPixels`,
+  `980e410e`: 864×1152) on a 3:4 portrait: native and ComfyUI agree within 1.4/255 over visible
+  pixels and alpha IoU ≥ 0.996 at 1 MP and at the 640 default (480×640), but native is slower
+  there (179 s vs 140 s; 44 s vs 36 s). Codex on that. (An earlier metric averaged RGB under
+  zero alpha too and reported 14/255; `layered-live.ps1` now counts visible pixels only.)

@@ -40,11 +40,14 @@ foreach ($i in 1..$Layers) {
     $a = "$Out\native-$i.png"; $b = "$Out\comfy-$i.png"
     if (-not ((Test-Path $a) -and (Test-Path $b))) { "layer ${i}: missing"; continue }
     $ia = New-Object System.Drawing.Bitmap $a; $ib = New-Object System.Drawing.Bitmap $b
+    # RGB over the pixels visible in either (the colour under zero alpha is invisible and differs
+    # freely), on the area both exports share (layer.exportAs trims to the layer's bounds).
+    $W = [Math]::Min($ia.Width, $ib.Width); $H = [Math]::Min($ia.Height, $ib.Height)
     $sum = 0.0; $n = 0; $inter = 0; $union = 0
-    for ($y = 0; $y -lt $ia.Height; $y += 3) { for ($x = 0; $x -lt $ia.Width; $x += 3) {
+    for ($y = 0; $y -lt $H; $y += 3) { for ($x = 0; $x -lt $W; $x += 3) {
         $pa = $ia.GetPixel($x, $y); $pb = $ib.GetPixel($x, $y)
-        $sum += [Math]::Abs($pa.R - $pb.R) + [Math]::Abs($pa.G - $pb.G) + [Math]::Abs($pa.B - $pb.B); $n += 3
-        $oa = $pa.A -ge 128; $ob = $pb.A -ge 128; if ($oa -and $ob) { $inter++ }; if ($oa -or $ob) { $union++ } } }
-    "layer {0}: mean |RGB| {1:N2}/255, alpha IoU {2:N3}" -f $i, ($sum / $n), $(if ($union) { $inter / $union } else { 1 })
+        $oa = $pa.A -ge 128; $ob = $pb.A -ge 128; if ($oa -and $ob) { $inter++ }
+        if ($oa -or $ob) { $union++; $sum += [Math]::Abs($pa.R - $pb.R) + [Math]::Abs($pa.G - $pb.G) + [Math]::Abs($pa.B - $pb.B); $n += 3 } } }
+    "layer {0}: visible |RGB| {1:N2}/255, alpha IoU {2:N3}" -f $i, $(if ($n) { $sum / $n } else { 0 }), $(if ($union) { $inter / $union } else { 1 })
     $ia.Dispose(); $ib.Dispose()
 }
