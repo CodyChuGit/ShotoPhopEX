@@ -187,7 +187,8 @@ impl Default for General {
             export_clipboard: true,
             resize_image_during_place: true,
             always_create_smart_objects_when_placing: true,
-            zoom_with_scroll_wheel: false,
+            // Fork: on by default (upstream follows Photoshop's off; Alt + wheel then zooms).
+            zoom_with_scroll_wheel: true,
             animated_zoom: true,
             zoom_resizes_windows: false,
             use_legacy_free_transform: false,
@@ -880,6 +881,27 @@ pub struct Preferences {
     pub dialogs: BTreeMap<String, Value>,
     /// File › Scripts › Script Events Manager: event → script bindings.
     pub script_events: crate::automate_cmds::ScriptEvents,
+    /// Fork: Edit › Preferences › App Icon…'s custom icons (owned by the shell's `app_icon_ui`).
+    pub app_icon: AppIcon,
+}
+
+/// The user's own app icons: any image they chose, pasted or downloaded, kept here as a PNG so it
+/// travels with the preferences (desktop and web alike). Nothing ships in the repository.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppIcon {
+    /// The name of the icon in use; empty (or a name not in `icons`) is the built-in one.
+    pub active: String,
+    pub icons: Vec<CustomIcon>,
+}
+
+/// One custom app icon.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CustomIcon {
+    pub name: String,
+    /// Base64 of a square PNG, at most 256 px.
+    pub png: String,
 }
 
 /// Preferences dialog sections in Photoshop's order: (id, title).

@@ -690,6 +690,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "variations": crate::variations_strip::inspect(app, ctx),
         "hub": crate::generate_hub::inspect(app, ctx),
         "angles": crate::angles_ui::inspect(app),
+        "appIcon": crate::app_icon_ui::inspect(app),
         "objectSelect": crate::object_select::inspect(app),
         "panels": app.ui.panels,
         "views": app.ui.views,

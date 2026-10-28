@@ -2759,3 +2759,13 @@ cameraRaw	Whites	Brancos
 	Click to include a spot, Alt-click to exclude one	Clique para incluir um ponto, Alt+clique para excluir um
 	Click an object, or drag a box around it	Clique em um objeto ou arraste uma caixa ao redor dele
 	Paint over an object to select it	Pinte sobre um objeto para selecioná-lo
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Ícone do aplicativo…
+	App Icon	Ícone do aplicativo
+	Built-in	Integrado
+	Choose Image…	Escolher imagem…
+	Paste Image	Colar imagem
+	Image address (https://…)	Endereço da imagem (https://…)
+	Download	Baixar
+	Downloading…	Baixando…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Qualquer imagem serve; ela é ajustada em um quadrado. Clique com o botão direito em um ícone para removê-lo.

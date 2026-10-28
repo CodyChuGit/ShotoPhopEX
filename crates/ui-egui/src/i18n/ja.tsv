@@ -2305,3 +2305,13 @@ cameraRaw	Color	カラー
 	Click an object, or drag a box around it	オブジェクトをクリックするか、周りをドラッグして枠で囲みます
 	Fast	高速
 	Paint over an object to select it	オブジェクトの上をなぞると選択されます
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	アプリアイコン…
+	App Icon	アプリアイコン
+	Built-in	内蔵
+	Choose Image…	画像を選択…
+	Paste Image	画像をペースト
+	Image address (https://…)	画像のアドレス (https://…)
+	Download	ダウンロード
+	Downloading…	ダウンロード中…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	どんな画像でも使えます。正方形に収められます。右クリックでアイコンを削除します。

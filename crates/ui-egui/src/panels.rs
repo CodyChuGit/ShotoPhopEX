@@ -337,8 +337,12 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let (mut menus_right, mut controls_left) = (full.left(), full.right());
             ui.horizontal_centered(|ui| {
                 let side = if t.pro { 18.0 } else { 20.0 };
-                let (mark, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+                let (mark, mark_resp) = ui.allocate_exact_size(vec2(side, side), Sense::click());
                 crate::brand::paint_mark(ui, mark);
+                // Fork: one click on the mark opens Edit › Preferences › App Icon….
+                if mark_resp.on_hover_text(tl!("App Icon…")).clicked() {
+                    app.ui.app_icon.open = true;
+                }
                 ui.add_space(6.0);
                 // With the macOS menu bar the menus are at the top of the screen instead.
                 menus_right = if app.services.native_menu.is_some() { ui.cursor().left() } else { crate::menus::menu_bar(app, ui) };
@@ -359,9 +363,10 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         ("Painting".to_string(), tl!("Painting")),
                         ("Graphic and Web".to_string(), tl!("Graphic and Web")),
                     ];
-                    // A narrow bar drops what is also in a menu, Discord first (below), then
-                    // the theme toggle (Preferences), then search (Edit › Search), and narrows
-                    // the switcher (Window › Workspace) before anything runs over.
+                    // A narrow bar drops what is also in a menu, the theme toggle (Preferences)
+                    // first, then search (Edit › Search), and narrows the switcher
+                    // (Window › Workspace) before anything runs over. (Fork: no Discord button
+                    // here; it stays under Help › Discord.)
                     let room = ui.available_width();
                     let icons_shown: u8 = if room >= WORKSPACE_MIN + 2.0 * ICON_SLOT {
                         2
@@ -384,18 +389,6 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     if icons_shown >= 2 && icons::button(ui, theme_icon, 28.0, false, tl!("Switch theme")).clicked() {
                         let next = app.ui.theme.next();
                         app.set_theme(ui.ctx(), next);
-                    }
-                    // The community Discord, one click away while the bar has room for it
-                    // (narrow windows drop it first; it is also Help › Discord).
-                    if ui.available_width() >= DISCORD_ROOM {
-                        let discord = egui::Button::image_and_text(
-                            icons::image("message-square", 14.0, t.text_dim),
-                            egui::RichText::new(tl!("Discord")).color(t.text_dim).size(12.0),
-                        )
-                        .frame(false);
-                        if ui.add(discord).on_hover_text(format!("Join the ArtCraft Discord ({})", crate::links::DISCORD)).clicked() {
-                            crate::links::open(app, ui.ctx(), crate::links::DISCORD);
-                        }
                     }
                     ui.min_rect().left()
                 };
@@ -421,8 +414,6 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 /// Minimum space kept between the window title and the menus or controls beside it.
 const TITLE_GAP: f32 = 16.0;
-/// Free room the title bar needs after its other controls to show the Discord button.
-const DISCORD_ROOM: f32 = 120.0;
 /// The workspace switcher's narrowest width, and one 28 pt title-bar icon with its spacing.
 const WORKSPACE_MIN: f32 = 90.0;
 const ICON_SLOT: f32 = 34.0;

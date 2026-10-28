@@ -793,6 +793,9 @@ pub struct UiState {
     /// Edit › Generative Angles…'s window (`angles_ui`).
     #[serde(skip)]
     pub angles: crate::angles_ui::AnglesUi,
+    /// Edit › Preferences › App Icon…'s window and the icon applied (`app_icon_ui`).
+    #[serde(skip)]
+    pub app_icon: crate::app_icon_ui::AppIconUi,
     /// The Object Selection tool's SAM 3.1 mode: the object finder's probe, the last query
     /// (`object_select`).
     #[serde(skip)]
@@ -923,6 +926,7 @@ impl Default for UiState {
             variations: Default::default(),
             hub: Default::default(),
             angles: Default::default(),
+            app_icon: Default::default(),
             object_select: Default::default(),
             smoothing_tool: None,
             tool_smoothing: Vec::new(),

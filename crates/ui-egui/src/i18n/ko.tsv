@@ -2904,3 +2904,13 @@ cameraRaw	Color	색상
 	Click an object, or drag a box around it	개체를 클릭하거나 주위에 상자를 드래그하세요
 	Fast	빠름
 	Paint over an object to select it	개체 위를 칠하면 선택됩니다
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	앱 아이콘…
+	App Icon	앱 아이콘
+	Built-in	기본 제공
+	Choose Image…	이미지 선택…
+	Paste Image	이미지 붙여넣기
+	Image address (https://…)	이미지 주소 (https://…)
+	Download	다운로드
+	Downloading…	다운로드 중…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	어떤 그림이든 사용할 수 있으며 정사각형에 맞춰집니다. 아이콘을 마우스 오른쪽 버튼으로 클릭하면 제거됩니다.

@@ -2597,3 +2597,13 @@ cameraRaw	Roughness	Неровность
 	Click to include a spot, Alt-click to exclude one	Щелчок включает точку, Alt+щелчок исключает
 	Click an object, or drag a box around it	Щёлкните объект или обведите его рамкой
 	Paint over an object to select it	Проведите по объекту, чтобы выделить его
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Значок приложения…
+	App Icon	Значок приложения
+	Built-in	Встроенный
+	Choose Image…	Выбрать изображение…
+	Paste Image	Вставить изображение
+	Image address (https://…)	Адрес изображения (https://…)
+	Download	Загрузить
+	Downloading…	Загрузка…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Подойдёт любое изображение: оно вписывается в квадрат. Щёлкните значок правой кнопкой, чтобы удалить его.

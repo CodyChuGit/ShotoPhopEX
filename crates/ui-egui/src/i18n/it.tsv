@@ -2395,3 +2395,13 @@ cameraRaw	Amount	Quantità
 	Click an object, or drag a box around it	Fai clic su un oggetto o trascina un riquadro attorno
 	Fast	Veloce
 	Paint over an object to select it	Dipingi su un oggetto per selezionarlo
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Icona dell’app…
+	App Icon	Icona dell’app
+	Built-in	Integrata
+	Choose Image…	Scegli immagine…
+	Paste Image	Incolla immagine
+	Image address (https://…)	Indirizzo dell’immagine (https://…)
+	Download	Scarica
+	Downloading…	Download in corso…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Va bene qualsiasi immagine; viene adattata in un quadrato. Fai clic destro su un’icona per rimuoverla.

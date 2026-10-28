@@ -2739,3 +2739,13 @@ cameraRaw	Blending	Pembauran
 	Click to include a spot, Alt-click to exclude one	Klik untuk menyertakan titik, Alt-klik untuk mengecualikan
 	Click an object, or drag a box around it	Klik objek, atau seret kotak di sekelilingnya
 	Paint over an object to select it	Sapukan di atas objek untuk memilihnya
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Ikon Aplikasi…
+	App Icon	Ikon Aplikasi
+	Built-in	Bawaan
+	Choose Image…	Pilih Gambar…
+	Paste Image	Tempel Gambar
+	Image address (https://…)	Alamat gambar (https://…)
+	Download	Unduh
+	Downloading…	Mengunduh…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Gambar apa pun bisa; gambar dimuat ke dalam persegi. Klik kanan ikon untuk menghapusnya.

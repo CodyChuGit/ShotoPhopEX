@@ -22,6 +22,7 @@ pub mod adjust_ui;
 pub mod alerts;
 pub mod analysis_ui;
 pub mod angles_ui;
+pub mod app_icon_ui;
 pub mod artboard_ui;
 pub(crate) mod blend_preview;
 mod brand;
@@ -241,6 +242,8 @@ pub type AppendTextFn = Box<dyn FnMut(&str, &str) -> Result<(), String>>;
 pub type OsEventsFn = Box<dyn FnMut() -> Vec<OsEvent>>;
 /// Where the OS pointer is now, in egui points within the window; `None` when unknown.
 pub type CursorPosFn = Box<dyn FnMut(&egui::Context) -> Option<egui::Pos2>>;
+/// Fetch a URL's bytes (fork: App Icon › Download); a plain function so it can run on a thread.
+pub type DownloadFn = fn(&str) -> Result<Vec<u8>, String>;
 
 /// Platform services injected by the app binary (file dialogs, codecs), keeping this crate free of
 /// I/O dependencies.
@@ -303,6 +306,8 @@ pub struct Services {
     pub read_displays: Option<monitor_status::ReadDisplaysFn>,
     /// The macOS menu bar, when the desktop app installed one; the in-window menus are hidden then.
     pub native_menu: Option<native_menu::NativeMenu>,
+    /// Fork: downloads for Edit › Preferences › App Icon… (desktop; the web has none).
+    pub download: Option<DownloadFn>,
 }
 
 /// A document histogram being computed off the UI thread: (document, revision, receiver of
@@ -1134,6 +1139,7 @@ impl eframe::App for PhotocraftApp {
         generate_hub::tick(self, &ctx);
         generate_hub::window(self, &ctx);
         angles_ui::window(self, &ctx);
+        app_icon_ui::window(self, &ctx);
         generative_bar::show(self, &ctx);
         dialogs::show(self, &ctx);
         jobs_ui::dialog(self, &ctx);

@@ -11,6 +11,8 @@ use crate::PhotocraftApp;
 fn harness() -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
+    // Fork: the wheel zooms by default; these tests check Photoshop's wheel (scroll, ⌥ zooms).
+    app.session.edit_prefs(|p| p.general.zoom_with_scroll_wheel = false);
     app.sync_views();
     let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
         |ui, app: &mut PhotocraftApp| {

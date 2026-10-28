@@ -2322,3 +2322,13 @@ cameraRaw	Color	Barvy
 	Click an object, or drag a box around it	Klikněte na objekt nebo kolem něj táhněte rámeček
 	Fast	Rychlá
 	Paint over an object to select it	Přetáhněte přes objekt a vyberete ho
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Ikona aplikace…
+	App Icon	Ikona aplikace
+	Built-in	Vestavěná
+	Choose Image…	Vybrat obrázek…
+	Paste Image	Vložit obrázek
+	Image address (https://…)	Adresa obrázku (https://…)
+	Download	Stáhnout
+	Downloading…	Stahování…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Hodí se jakýkoli obrázek; vejde se do čtverce. Ikonu odstraníte kliknutím pravým tlačítkem.

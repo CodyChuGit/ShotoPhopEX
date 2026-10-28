@@ -56,6 +56,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("window.theme.classic", "Classic Theme", &["Window", "Theme"], None),
     ("edit.search", "Search…", &["Edit"], Some("Cmd+K")),
     ("help.generativeFeatures", "Generative Features…", &["Help"], None),
+    ("edit.appIcon", "App Icon…", &["Edit", "Preferences"], None),
     ("help.discord", "Join the ArtCraft Discord…", &["Help"], None),
     ("help.website", "PhotoCraft Website", &["Help"], None),
     ("help.artcraftWebsite", "ArtCraft Website", &["Help"], None),
@@ -160,6 +161,10 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     }
     // Edit › Generative Angles… opens its orbit window.
     if let Some(r) = crate::angles_ui::menu(app, id, &params) {
+        return r;
+    }
+    // Edit › Preferences › App Icon… (fork): the window, or a change from automation.
+    if let Some(r) = crate::app_icon_ui::menu(app, ctx, id, &params) {
         return r;
     }
     // Select › Subject goes through SAM 3.1 when a server answers (`retouch_ui::select_subject`).
@@ -519,7 +524,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         return e;
     }
     match id {
-        "file.open" | "file.exit" | "file.clearRecent" | "help.about" | "help.systemInfo" | "help.generativeFeatures" | "edit.search" => true,
+        "file.open" | "file.exit" | "file.clearRecent" | "help.about" | "help.systemInfo" | "help.generativeFeatures" | "edit.appIcon" | "edit.search" => true,
         i if i.starts_with("file.openRecent.") => true,
         i if crate::links::url_for(i).is_some() => true,
         i if i.starts_with("window.theme.") => true,

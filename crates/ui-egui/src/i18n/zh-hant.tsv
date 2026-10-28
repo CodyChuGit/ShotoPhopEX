@@ -2299,3 +2299,13 @@ cameraRaw	Blending	混合
 	Click an object, or drag a box around it	點按物件，或拖曳出方框圍住它
 	Fast	快速
 	Paint over an object to select it	在物件上塗抹即可選取它
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	應用程式圖示…
+	App Icon	應用程式圖示
+	Built-in	內建
+	Choose Image…	選擇影像…
+	Paste Image	貼上影像
+	Image address (https://…)	影像位址 (https://…)
+	Download	下載
+	Downloading…	正在下載…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	任何圖片都可以，會被放入正方形中。按一下右鍵可移除圖示。

@@ -2361,3 +2361,13 @@
 	Click an object, or drag a box around it	Auf ein Objekt klicken oder einen Rahmen darum ziehen
 	Fast	Schnell
 	Paint over an object to select it	Über ein Objekt malen, um es auszuwählen
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	App-Symbol…
+	App Icon	App-Symbol
+	Built-in	Integriert
+	Choose Image…	Bild auswählen…
+	Paste Image	Bild einfügen
+	Image address (https://…)	Bildadresse (https://…)
+	Download	Herunterladen
+	Downloading…	Wird heruntergeladen…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Jedes Bild geht; es wird in ein Quadrat eingepasst. Rechtsklick auf ein Symbol entfernt es.

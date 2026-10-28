@@ -4,6 +4,38 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-27: App Icon: any image, one click (replaces the Ps tile)
+
+The owner: the Ps tile should not live in the repository; the app should take any image, download
+one, and switch between options in one click. So the tile is gone (`assets/app-icon/ps/`, and
+`build.rs`, `app_icon.rs`, `brand.rs` point at upstream's icons again) and a feature replaces it.
+
+**Landed**
+
+- **Edit › Preferences › App Icon…** (`edit.appIcon`, `app_icon_ui.rs`), also one click on the
+  title bar's mark: a gallery of tiles (Built-in plus the user's own), click one to use it,
+  right-click to remove; **Choose Image…** (any format the codecs read), **Paste Image** (the
+  clipboard), and an address field with **Download**. Each image is fitted into a transparent
+  square of at most 256 px (box filter, alpha-weighted, never enlarged) and kept as a base64 PNG
+  in the preferences (`appIcon: {active, icons: [{name, png}]}`, top level so the generic dialog
+  doesn't show it; at most 12), so it works on the web build too and nothing ships.
+- Applied live: the title-bar mark (a custom texture `brand.rs` prefers) and the window/taskbar
+  icon (`ViewportCommand::Icon`). The executable's own file icon (Explorer, pinned shortcuts) is
+  baked in at build time and stays the built-in one.
+- Downloads: a new `Services::download` (a plain `fn`, run on a thread). The desktop app asks the
+  system `curl` (Windows 10 1803+, macOS, Linux ship it; no console window, 30 s, 20 MB,
+  http/https only) since the app builds no TLS stack. The web build has none, so the row hides.
+- Automation: `edit.appIcon {use | remove | add: {name, data}}`, `ui.inspect.appIcon`.
+- Tests: `app_icon_ui_tests.rs` (fitting, add/use/remove/cap/errors, the preferences round trip,
+  a fake download through the window and one click back to Built-in). 13 catalogs got the 9 new
+  strings. `input_tests`' harness pins `zoomWithScrollWheel: false`: three ⌥-wheel tests broke
+  when the 2026-10-15 entry made the wheel zoom by default.
+
+**Open**
+
+- Not tried by hand in the running app yet (tests only). `input_tests::eyedropper_and_alt_sampling_show_a_pipette`
+  is still the known baseline failure on this PC.
+
 ## 2026-10-16: the native-inference question, Quality mode, and the Object Selection tool's SAM 3.1 mode
 
 - **Research** (five researchers, report in `docs/comfy/research/Native inference for PhotoCraft on RTX
@@ -422,6 +454,31 @@ The owner branched the fork into their own version: this checkout,
 Open here: the product name (the window title and `--help` still say PhotoCraft; "Photoshop" is
 Adobe's trademark, so the published name is the owner's call), and everything in the entries
 below.
+
+## 2026-10-15: local-build look and feel (wheel zoom, no Discord button, Ps tile)
+
+The user's three asks for the local build. Hotkeys were already Photoshop's (`shortcuts.rs`,
+no overrides in `preferences.json`); the one that felt off was the wheel: Photoshop's default
+is wheel = scroll, Alt + wheel = zoom, which upstream copies, and the user wants wheel = zoom.
+
+**Landed**
+
+- `General::zoom_with_scroll_wheel` defaults to `true` in the fork (`prefs.rs`); the saved
+  `preferences.json` on this PC was flipped by hand too, since serde writes every field and a
+  stored `false` would have won over the new default. Alt + wheel now scrolls (`wheel_nav.rs`
+  swaps the two; untouched).
+- The title bar's Discord button is gone (`panels.rs`: the block and `DISCORD_ROOM`); Help ›
+  Discord stays, so `links.rs` and its tests are untouched. The `titlebar.rs` width test now
+  asserts the button is absent at every width; `docs/ui-design.md` says the same.
+- A Photoshop-style "Ps" tile (`assets/app-icon/ps/`, README there) in place of the kitsune in
+  the title bar (`brand.rs`), the window/taskbar icon (`app_icon.rs`, non-macOS) and the exe
+  resource (`build.rs`). New files, three path edits; the kitsune assets are untouched for
+  merges. Personal build only: it must never ship (`upstream.md` brand checklist).
+
+**Open**
+
+- The fork is 1,728 commits behind upstream (2026-10-15), which closes ~1,200 issues a week,
+  many of them parity fixes. A merge is the next big lever on "feels unlike Photoshop".
 
 ## 2026-10-09 (night): the prompt enhancer
 

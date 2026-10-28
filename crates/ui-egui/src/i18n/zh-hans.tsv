@@ -2330,3 +2330,13 @@ cameraRaw	Blending	混合
 	Click an object, or drag a box around it	点击对象，或拖出一个框围住它
 	Fast	快速
 	Paint over an object to select it	在对象上涂抹即可选择它
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	应用图标…
+	App Icon	应用图标
+	Built-in	内置
+	Choose Image…	选择图像…
+	Paste Image	粘贴图像
+	Image address (https://…)	图像地址 (https://…)
+	Download	下载
+	Downloading…	正在下载…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	任何图片都可以，会被放入正方形中。右键单击图标可将其删除。
