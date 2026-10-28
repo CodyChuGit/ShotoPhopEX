@@ -10,6 +10,9 @@ use image::RgbaImage;
 use qwen_image_rs::layered_pipeline::{euler_cfg, layered_noise, layered_schedule, layered_timestep, retained_slices, rgba_image, LayeredPipeline};
 use qwen_image_rs::model::qwen_image_dit::{patchify, unpatchify};
 
+#[path = "support/layered_resize.rs"]
+mod layered_resize;
+
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
 }
@@ -84,6 +87,73 @@ fn invalid_sampler_inputs_return_errors() -> anyhow::Result<()> {
     assert!(retained_slices(&x).is_err());
     assert!(euler_cfg(&x, &x, &x, 0.0, 0.0).is_err());
     assert!(euler_cfg(&x, &x, &x, 0.5, 0.6).is_err());
+    Ok(())
+}
+
+/// Time the production path without copying intermediate tensors to the host.
+#[test]
+#[ignore = "installed Layered checkpoints and exclusive GPU"]
+fn installed_benchmark() -> anyhow::Result<()> {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+    let mut started = Instant::now();
+    let root = std::env::var_os("QIR_COMFY_MODELS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models"));
+    let device = Device::new_cuda(0)?;
+    let pipeline = LayeredPipeline::load_on_device(root, device.clone())?;
+    let input = std::env::var_os("QIR_LAYERED_INPUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\photocraft-tests\bench\swap\gen\gen-tshirt.png"));
+    let picture = image::open(input)?.into_rgba8();
+    let picture = layered_resize::resize(&picture, 640, 640);
+    let cancel = AtomicBool::new(false);
+    let steps = std::env::var("QIR_LAYERED_STEPS").ok().map(|v| v.parse()).transpose()?.unwrap_or(20);
+    let repeat = std::env::var("QIR_LAYERED_REPEAT").ok().map(|v| v.parse()).transpose()?.unwrap_or(1);
+    let mut previous = None;
+    for run in 0..repeat {
+        if run > 0 {
+            started = Instant::now();
+        }
+        eprintln!("benchmark run {}", run + 1);
+        let sync_steps = std::env::var("QIR_LAYERED_SYNC_STEPS").is_ok_and(|v| v == "1");
+        let mut last = Instant::now();
+        let images = pipeline.split(
+            &picture,
+            3,
+            "separate this image into layers: the background and each foreground subject on its own layer",
+            7,
+            steps,
+            |done, _| {
+                if sync_steps {
+                    device.synchronize().unwrap();
+                    eprintln!("benchmark synchronized progress {done}: {:.3}s", last.elapsed().as_secs_f64());
+                } else if done.is_multiple_of(5) {
+                    eprintln!("benchmark progress {done}/{steps}");
+                }
+                last = Instant::now();
+            },
+            &cancel,
+        )?;
+        device.synchronize()?;
+        eprintln!("benchmark split end-to-end: {:.3}s", started.elapsed().as_secs_f64());
+        if let Some(previous) = previous {
+            assert_eq!(images, previous, "repeat output bytes");
+        }
+        previous = Some(images.clone());
+        let out = std::env::var_os("QIR_LAYERED_OUTPUT").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("layered-benchmark"));
+        std::fs::create_dir_all(&out)?;
+        for (i, image) in images.iter().enumerate() {
+            image.save(out.join(format!("raw-{}.png", i + 1)))?;
+            let mut image = layered_resize::resize(image, 1024, 1024);
+            // Document export clears color at zero alpha; match the saved ComfyUI files.
+            for pixel in image.pixels_mut() {
+                if pixel[3] == 0 {
+                    pixel.0[..3].fill(0);
+                }
+            }
+            image.save(out.join(format!("native-{}.png", i + 1)))?;
+        }
+    }
     Ok(())
 }
 
@@ -172,5 +242,78 @@ fn installed_one_step_smoke_and_capture() -> anyhow::Result<()> {
     assert!(pipeline.split(&picture, 0, &prompt, seed, steps, |_, _| {}, &cancel).is_err());
     assert!(pipeline.split(&picture, layers, &prompt, seed, 0, |_, _| {}, &cancel).is_err());
     eprintln!("smoke total: {:.3}s", started.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// Compare the actual Layered QKV GEMM shapes before changing weight residency.
+#[test]
+#[ignore = "exclusive RTX 5090 microbenchmark"]
+fn layered_qkv_gemm_benchmark() -> anyhow::Result<()> {
+    let device = Device::new_cuda(0)?;
+    let w = Tensor::randn(0f32, 0.1, (9216, 3072), &device)?.to_dtype(DType::BF16)?;
+    let x = Tensor::randn(0f32, 0.1, (16000, 3072), &device)?.to_dtype(DType::BF16)?;
+    for merged in [false, true, false, true] {
+        device.synchronize()?;
+        let t = Instant::now();
+        for _ in 0..10 {
+            if merged {
+                let _ = x.matmul(&w.t()?)?;
+            } else {
+                for i in 0..3 {
+                    let _ = x.matmul(&w.narrow(0, i * 3072, 3072)?.t()?)?;
+                }
+            }
+        }
+        device.synchronize()?;
+        eprintln!("QKV merged={merged}: {:.4}s per call", t.elapsed().as_secs_f64() / 10.0);
+    }
+    #[cfg(feature = "cuda")]
+    {
+        use candle_core::{
+            cuda_backend::cudarc::cublaslt::{CudaBlasLT, Matmul, MatmulConfig},
+            Storage,
+        };
+        let Device::Cuda(d) = &device else { unreachable!() };
+        let lt = CudaBlasLT::new(d.cuda_stream())?;
+        let (xs, _) = x.storage_and_layout();
+        let Storage::Cuda(xs) = &*xs else { unreachable!() };
+        let xs = xs.as_cuda_slice::<half::bf16>()?;
+        let (ws, _) = w.storage_and_layout();
+        let Storage::Cuda(ws) = &*ws else { unreachable!() };
+        let ws = ws.as_cuda_slice::<half::bf16>()?;
+        let mut out = unsafe { d.alloc::<half::bf16>(16000 * 3072)? };
+        let cfg = MatmulConfig {
+            transa: true,
+            transb: false,
+            transc: false,
+            m: 3072,
+            n: 16000,
+            k: 3072,
+            alpha: 1.,
+            lda: 3072,
+            ldb: 3072,
+            beta: 0.,
+            ldc: 3072,
+            stride_a: None,
+            stride_b: None,
+            stride_c: None,
+            stride_bias: None,
+            batch_size: None,
+        };
+        for _ in 0..2 {
+            device.synchronize()?;
+            let t = Instant::now();
+            for _ in 0..10 {
+                for i in 0..3 {
+                    let wi = ws.slice(i * 3072 * 3072..(i + 1) * 3072 * 3072);
+                    unsafe {
+                        lt.matmul(cfg, &wi, &xs.slice(..), &mut out, None, None)?;
+                    }
+                }
+            }
+            device.synchronize()?;
+            eprintln!("QKV cuBLASLt: {:.4}s per call", t.elapsed().as_secs_f64() / 10.);
+        }
+    }
     Ok(())
 }

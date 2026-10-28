@@ -1,7 +1,7 @@
 //! Layered component inventory and biased ComfyUI FP8 linears.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use candle_core::{DType, Device, Tensor};
@@ -97,11 +97,12 @@ struct TensorInfo {
     data_offsets: [u64; 2],
 }
 
-/// Safe, seek-based reads let the CPU parity runner release each block before loading another.
+/// A validated read-only map avoids per-tensor opens and intermediate payload buffers.
 pub struct TensorFile {
     path: PathBuf,
     start: u64,
     tensors: BTreeMap<String, TensorInfo>,
+    map: memmap2::Mmap,
 }
 
 impl TensorFile {
@@ -134,7 +135,9 @@ impl TensorFile {
             end = b;
         }
         anyhow::ensure!(end == size.saturating_sub(8 + len), "{}: trailing payload", path.display());
-        Ok(Self { path: path.to_path_buf(), start: 8 + len, tensors })
+        // SAFETY: installed checkpoints must remain immutable for the lifetime of this reader.
+        let map = unsafe { memmap2::MmapOptions::new().map(&file)? };
+        Ok(Self { path: path.to_path_buf(), start: 8 + len, tensors, map })
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -143,11 +146,10 @@ impl TensorFile {
 
     pub fn tensor(&self, name: &str, device: &Device) -> Result<Tensor> {
         let info = self.tensors.get(name).ok_or_else(|| anyhow::anyhow!("{}: missing {name}", self.path.display()))?;
-        let mut file = std::fs::File::open(&self.path)?;
-        file.seek(SeekFrom::Start(self.start + info.data_offsets[0]))?;
-        let mut bytes = vec![0; (info.data_offsets[1] - info.data_offsets[0]) as usize];
-        file.read_exact(&mut bytes)?;
-        Ok(Tensor::from_raw_buffer(&bytes, dtype(&info.dtype)?, &info.shape, device)?)
+        let a = usize::try_from(self.start + info.data_offsets[0])?;
+        let b = usize::try_from(self.start + info.data_offsets[1])?;
+        let bytes = self.map.get(a..b).ok_or_else(|| anyhow::anyhow!("{name}: payload outside mapping"))?;
+        Ok(Tensor::from_raw_buffer(bytes, dtype(&info.dtype)?, &info.shape, device)?)
     }
 
     /// A block's raw tensors plus ComfyUI's legacy scale aliases and marker metadata.
@@ -156,12 +158,13 @@ impl TensorFile {
         let legacy_full = self.tensors.get("scaled_fp8").is_some_and(|v| v.shape.iter().product::<usize>() == 2);
         for name in self.tensors.keys().filter(|n| n.starts_with(prefix)) {
             let short = name.strip_prefix(prefix).ok_or_else(|| anyhow::anyhow!("prefix mismatch"))?;
-            let value = self.tensor(name, device)?;
+            let host = short.ends_with(".scale_input") || (short.ends_with(".scale_weight") && self.tensors[name].shape.iter().product::<usize>() == 1);
+            let value = self.tensor(name, if host { &Device::Cpu } else { device })?;
             let mapped = short.replace(".scale_weight", ".weight_scale").replace(".scale_input", ".input_scale");
             if short.ends_with(".scale_weight") {
                 let layer = short.trim_end_matches(".scale_weight");
                 let record = serde_json::to_vec(&serde_json::json!({"format":"float8_e4m3fn", "full_precision_matrix_mult":legacy_full}))?;
-                tensors.insert(format!("{layer}.comfy_quant"), Tensor::from_vec(record.clone(), record.len(), device)?);
+                tensors.insert(format!("{layer}.comfy_quant"), Tensor::from_vec(record.clone(), record.len(), &Device::Cpu)?);
             }
             if short.ends_with(".scale_input") && value.flatten_all()?.to_vec1::<f32>()? == [1.0] {
                 continue;
@@ -169,6 +172,23 @@ impl TensorFile {
             tensors.insert(mapped, value);
         }
         Ok(VarBuilder::from_tensors(tensors, dt, device))
+    }
+
+    /// Upload a contiguous FP8 region once; individual matrices become zero-copy device views.
+    pub fn resident_builder(self, dt: DType, device: &Device) -> Result<VarBuilder<'static>> {
+        let mut ranges: Vec<_> = self.tensors.values().filter(|info| info.dtype == "F8_E4M3").map(|info| info.data_offsets).collect();
+        ranges.sort_unstable();
+        let packed = match (ranges.first(), ranges.last()) {
+            (Some(first), Some(last)) if ranges.windows(2).all(|pair| pair[0][1] == pair[1][0]) => {
+                let start = first[0];
+                let a = usize::try_from(self.start + start)?;
+                let b = usize::try_from(self.start + last[1])?;
+                let bytes = self.map.get(a..b).ok_or_else(|| anyhow::anyhow!("FP8 payload outside mapping"))?;
+                Some((start, Tensor::from_raw_buffer(bytes, DType::F8E4M3, &[bytes.len()], device)?))
+            }
+            _ => None,
+        };
+        Ok(VarBuilder::from_backend(Box::new(ResidentFile { file: self, packed }), dt, device.clone()))
     }
 
     fn check(&self, name: &str, shape: &[usize], dt: &str) -> Result<()> {
@@ -210,6 +230,41 @@ impl TensorFile {
         }
         anyhow::ensure!(found == count, "{}: expected {count} scales, got {found}", self.path.display());
         Ok(())
+    }
+}
+
+struct ResidentFile {
+    file: TensorFile,
+    packed: Option<(u64, Tensor)>,
+}
+
+impl candle_nn::var_builder::SimpleBackend for ResidentFile {
+    fn get(&self, shape: candle_core::Shape, name: &str, _: candle_nn::Init, dt: DType, device: &Device) -> candle_core::Result<Tensor> {
+        let tensor = self.get_unchecked(name, dt, device)?;
+        if tensor.shape() != &shape {
+            candle_core::bail!("{name}: expected {shape:?}, got {:?}", tensor.shape());
+        }
+        Ok(tensor)
+    }
+
+    fn get_unchecked(&self, name: &str, dt: DType, device: &Device) -> candle_core::Result<Tensor> {
+        let load = || -> Result<Tensor> {
+            let info = self.file.tensors.get(name).ok_or_else(|| anyhow::anyhow!("missing checkpoint tensor {name}"))?;
+            if info.dtype == "F8_E4M3" {
+                if let Some((start, packed)) = &self.packed {
+                    let offset = usize::try_from(info.data_offsets[0] - start)?;
+                    let len = usize::try_from(info.data_offsets[1] - info.data_offsets[0])?;
+                    return Ok(packed.narrow(0, offset, len)?.reshape(info.shape.as_slice())?.to_dtype(dt)?);
+                }
+            }
+            let host = name.ends_with(".comfy_quant") || name.ends_with(".weight_scale");
+            Ok(self.file.tensor(name, if host { &Device::Cpu } else { device })?.to_dtype(dt)?)
+        };
+        load().map_err(|e| candle_core::Error::Msg(e.to_string()))
+    }
+
+    fn contains_tensor(&self, name: &str) -> bool {
+        self.file.contains(name)
     }
 }
 
@@ -274,5 +329,54 @@ impl LayeredLinear {
             Some(b) => y.broadcast_add(&b.to_dtype(x.dtype())?)?,
             None => y,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_checkpoint_views_and_noncontiguous_fallback() -> Result<()> {
+        let device = Device::Cpu;
+        for interleaved in [false, true] {
+            let path = std::env::temp_dir().join(format!("qir-layered-bulk-{}-{interleaved}.bin", std::process::id()));
+            let (header, payload) = if interleaved {
+                (
+                    serde_json::json!({
+                        "a": {"dtype":"F8_E4M3", "shape":[2], "data_offsets":[0,2]},
+                        "b": {"dtype":"BF16", "shape":[1], "data_offsets":[2,4]},
+                        "c": {"dtype":"F8_E4M3", "shape":[2], "data_offsets":[4,6]}
+                    }),
+                    vec![0x38u8, 0x40, 0x80, 0x3f, 0x44, 0x48],
+                )
+            } else {
+                (
+                    serde_json::json!({
+                        "a": {"dtype":"F8_E4M3", "shape":[2], "data_offsets":[0,2]},
+                        "c": {"dtype":"F8_E4M3", "shape":[2], "data_offsets":[2,4]},
+                        "b": {"dtype":"BF16", "shape":[1], "data_offsets":[4,6]}
+                    }),
+                    vec![0x38u8, 0x40, 0x44, 0x48, 0x80, 0x3f],
+                )
+            };
+            let header = serde_json::to_vec(&header)?;
+            let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+            bytes.extend(header);
+            bytes.extend(payload);
+            std::fs::write(&path, bytes)?;
+            let file = TensorFile::open(&path)?;
+            let vb = TensorFile::open(&path)?.resident_builder(DType::F32, &device)?;
+            for (name, dt) in [("a", DType::F8E4M3), ("b", DType::BF16), ("c", DType::F8E4M3)] {
+                let expected = file.tensor(name, &device)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+                assert_eq!(vb.get_unchecked_dtype(name, dt)?.to_dtype(DType::F32)?.to_vec1::<f32>()?, expected);
+            }
+            assert!(vb.get(3, "a").is_err());
+            assert!(vb.get_unchecked("missing").is_err());
+            drop(vb);
+            drop(file);
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
     }
 }

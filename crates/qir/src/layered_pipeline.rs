@@ -11,7 +11,7 @@ use tokenizers::Tokenizer;
 use crate::comfy::{torch_randn, FlowSchedule, Shift};
 use crate::layered_files::{LayeredFiles, TensorFile};
 use crate::model::qwen25_text::{load_tokenizer, tokenize, Qwen25TextEncoder};
-use crate::model::qwen_image_dit::{image_positions, patchify, text_positions, unpatchify, LayeredDit};
+use crate::model::qwen_image_dit::{image_positions, patchify, text_positions, unpatchify, LayeredDit, LayeredRope};
 use crate::model::wan_vae::WanVae;
 use crate::Result;
 
@@ -140,9 +140,10 @@ impl LayeredPipeline {
         let schedule = layered_schedule(steps)?;
         // `QIR_PROFILE=1`: each phase's seconds on stderr (the device synchronised at each mark).
         let profile = std::env::var("QIR_PROFILE").is_ok_and(|v| v.trim() == "1");
+        let timing = profile || std::env::var("QIR_LAYERED_TIMING").is_ok_and(|v| v == "1");
         let mut last = std::time::Instant::now();
         let mut mark = |what: &str| -> Result<()> {
-            if profile {
+            if timing {
                 self.device.synchronize()?;
                 eprintln!("layered {what}: {:.2} s", last.elapsed().as_secs_f32());
                 last = std::time::Instant::now();
@@ -154,6 +155,8 @@ impl LayeredPipeline {
         let pixels = Tensor::from_vec(rgb, (1, h, w, 3), &self.device)?.permute((0, 3, 1, 2))?.contiguous()?;
         let reference = self.vae()?.encode(&pixels)?.unsqueeze(2)?;
         observe("reference", &reference)?;
+        // Release reference scratch before loading the resident encoder.
+        crate::device::trim_pool(&self.device);
         mark("reference encode")?;
         check()?;
         let (positive, negative) = {
@@ -170,12 +173,25 @@ impl LayeredPipeline {
         // under the profiler, 2026-10-27).
         crate::device::trim_pool(&self.device);
         mark("text encode")?;
+        crate::profile::report("layered text");
         check()?;
         let (lh, lw, frames) = (h / 8, w / 8, layers + 1);
         let reference = patchify(&reference)?.to_dtype(self.dtype)?;
         let ids = Tensor::cat(&[image_positions(1, frames, lh / 2, lw / 2, 0, &self.device)?, image_positions(1, 1, lh / 2, lw / 2, -1, &self.device)?], 1)?;
         let pos_ids = text_positions(1, positive.dim(1)?, lh / 2, lw / 2, &self.device)?;
         let neg_ids = text_positions(1, negative.dim(1)?, lh / 2, lw / 2, &self.device)?;
+        let batched = self.device.is_cuda() && std::env::var("QIR_LAYERED_CFG_BATCH").map_or(true, |v| v != "0");
+        let nt = positive.dim(1)?;
+        let nn = negative.dim(1)?;
+        let tokens = nt.max(nn);
+        let pad = |x: &Tensor| -> Result<Tensor> {
+            let n = x.dim(1)?;
+            Ok(if n == tokens { x.clone() } else { Tensor::cat(&[x, &Tensor::zeros((1, tokens - n, x.dim(2)?), x.dtype(), x.device())?], 1)? })
+        };
+        let texts = if batched { Some(Tensor::cat(&[pad(&positive)?, pad(&negative)?], 0)?) } else { None };
+        let rope_ids = if batched { text_positions(1, tokens, lh / 2, lw / 2, &self.device)? } else { pos_ids };
+        let rope = LayeredRope::new(&Tensor::cat(&[&rope_ids, &ids], 1)?, self.dtype)?;
+        let neg_rope = if batched { None } else { Some(LayeredRope::new(&Tensor::cat(&[&neg_ids, &ids], 1)?, self.dtype)?) };
         let mut latent = layered_noise(seed, layers, lh, lw, &self.device)?;
         observe("noise", &latent)?;
         progress(0, steps);
@@ -187,30 +203,53 @@ impl LayeredPipeline {
             } else {
                 LayeredDit::open_streamed(&self.files.diffusion, &self.device)?
             };
+            // Finish uploads and release loading scratch before the denoising working set.
+            crate::device::trim_pool(&self.device);
             mark("DiT load")?;
+            #[cfg(feature = "cuda")]
+            let pool = LayeredPool::retain(&self.device);
             for i in 0..steps {
                 check()?;
                 let packed = patchify(&latent)?.to_dtype(self.dtype)?;
                 let count = packed.dim(1)?;
                 let input = Tensor::cat(&[packed, reference.clone()], 1)?;
                 let time = layered_timestep(schedule.sigma(i), &self.device)?;
-                let pos = dit.forward(&input, &positive, &time, &ids, &pos_ids, None)?.narrow(1, 0, count)?;
+                let (pos, neg) = if let Some(texts) = &texts {
+                    let input = Tensor::cat(&[&input, &input], 0)?;
+                    let velocities = dit.forward_prepared(&input, texts, &time, None, &rope, (nn != nt).then_some((nt, nn)))?.narrow(1, 0, count)?;
+                    (velocities.narrow(0, 0, 1)?, velocities.narrow(0, 1, 1)?)
+                } else {
+                    let pos = dit.forward_prepared(&input, &positive, &time, None, &rope, None)?.narrow(1, 0, count)?;
+                    check()?;
+                    let neg_rope = neg_rope.as_ref().ok_or_else(|| anyhow::anyhow!("missing negative RoPE"))?;
+                    let neg = dit.forward_prepared(&input, &negative, &time, None, neg_rope, None)?.narrow(1, 0, count)?;
+                    (pos, neg)
+                };
                 let pos = unpatchify(&pos, frames, lh, lw)?.to_dtype(DType::F32)?;
-                observe(&format!("step_{i}.positive"), &pos)?;
-                check()?;
-                let neg = dit.forward(&input, &negative, &time, &ids, &neg_ids, None)?.narrow(1, 0, count)?;
                 let neg = unpatchify(&neg, frames, lh, lw)?.to_dtype(DType::F32)?;
+                observe(&format!("step_{i}.positive"), &pos)?;
                 observe(&format!("step_{i}.negative"), &neg)?;
+                check()?;
                 latent = euler_cfg(&latent, &pos, &neg, schedule.sigma(i), schedule.sigmas[i + 1])?;
                 observe(&format!("step_{i}.latent"), &latent)?;
+                #[cfg(feature = "cuda")]
+                if pool.is_some() {
+                    self.device.synchronize()?;
+                }
                 progress(i + 1, steps);
-                mark(&format!("step {i}"))?;
+                if profile {
+                    mark(&format!("step {i}"))?;
+                }
                 if i == 0 {
                     crate::profile::report("layered step 0");
                 }
             }
+            // Finish checkpoint use before freeing its storage and loading the decoder.
+            self.device.synchronize()?;
+            mark("denoise")?;
             crate::profile::report("layered steps 1..");
         }
+        crate::device::trim_pool(&self.device);
         check()?;
         let retained = retained_slices(&latent)?;
         observe("retained", &retained)?;
@@ -225,5 +264,83 @@ impl LayeredPipeline {
         }
         mark("decode")?;
         Ok(images)
+    }
+}
+
+/// Keep a bounded denoising workspace across step barriers, restoring the caller's pool policy.
+#[cfg(feature = "cuda")]
+struct LayeredPool {
+    device: candle_core::CudaDevice,
+    pool: candle_core::cuda_backend::cudarc::driver::sys::CUmemoryPool,
+    previous: u64,
+}
+
+#[cfg(feature = "cuda")]
+impl LayeredPool {
+    fn retain(device: &Device) -> Option<Self> {
+        use candle_core::cuda_backend::cudarc::driver::sys;
+        use sys::CUmemPool_attribute as A;
+        if std::env::var("QIR_LAYERED_POOL").is_ok_and(|v| v == "0") || std::env::var("QIR_POOL_RETAIN").is_ok_and(|v| v == "0") {
+            return None;
+        }
+        let Device::Cuda(device) = device else {
+            return None;
+        };
+        let ctx = device.cuda_stream().context().clone();
+        ctx.bind_to_thread().ok()?;
+        let mut pool = std::ptr::null_mut();
+        unsafe { sys::cuDeviceGetDefaultMemPool(&mut pool, ctx.cu_device()) }.result().ok()?;
+        let get = |attribute| -> Option<u64> {
+            let mut value = 0u64;
+            unsafe { sys::cuMemPoolGetAttribute(pool, attribute, (&mut value as *mut u64).cast()) }.result().ok()?;
+            Some(value)
+        };
+        let previous = get(A::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD)?;
+        let threshold = get(A::CU_MEMPOOL_ATTR_USED_MEM_CURRENT)?.saturating_add(2 << 30);
+        unsafe { sys::cuMemPoolSetAttribute(pool, A::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD, (&threshold as *const u64).cast_mut().cast()) }.result().ok()?;
+        Some(Self { device: device.clone(), pool, previous })
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for LayeredPool {
+    fn drop(&mut self) {
+        use candle_core::cuda_backend::cudarc::driver::sys;
+        let _ = self.device.cuda_stream().context().bind_to_thread();
+        let _ = unsafe {
+            sys::cuMemPoolSetAttribute(self.pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD, (&self.previous as *const u64).cast_mut().cast())
+        }
+        .result();
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod layered_pool_tests {
+    use super::*;
+    use candle_core::cuda_backend::cudarc::driver::sys;
+
+    #[test]
+    fn pool_policy_is_restored_on_error() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let Device::Cuda(cuda) = &device else { anyhow::bail!("CUDA required") };
+        let mut pool = std::ptr::null_mut();
+        unsafe { sys::cuDeviceGetDefaultMemPool(&mut pool, cuda.cuda_stream().context().cu_device()) }.result()?;
+        let threshold = || -> Result<u64> {
+            let mut value = 0u64;
+            unsafe { sys::cuMemPoolGetAttribute(pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD, (&mut value as *mut u64).cast()) }
+                .result()?;
+            Ok(value)
+        };
+        let before = threshold()?;
+        let guard = LayeredPool::retain(&device).ok_or_else(|| anyhow::anyhow!("pool retention unavailable or opted out"))?;
+        assert_eq!(guard.previous, before);
+        assert!(threshold()? >= 2 << 30);
+        let attempt = move || -> Result<()> {
+            let _guard = guard;
+            anyhow::bail!("test cancellation")
+        };
+        assert!(attempt().is_err());
+        assert_eq!(threshold()?, before);
+        Ok(())
     }
 }
