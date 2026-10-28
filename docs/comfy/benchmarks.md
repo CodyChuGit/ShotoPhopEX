@@ -77,6 +77,27 @@ unprofiled native warm: 47.5 s with default Restore 0.5, versus 30.8 s with that
 worker's runtime adapter path dominates. These new observations do not replace the historical
 measurements above; source state, profiling overhead and full phase data are in the report.
 
+## 0b. Qwen-Image-Edit-2511 natively vs ComfyUI (2026-10-28)
+
+genai-native `d40c536` (the 2511 port: a selectable alternative, not a default;
+`crates/qir/tools/qwen_edit_2511_pipeline.md`). Same inputs, seed and template on both routes,
+~1 MP, warm (a new seed per request), one route on the GPU at a time:
+
+| Template | steps / CFG | native vs ComfyUI PSNR | native warm | ComfyUI warm |
+|---|---|---|---|---|
+| edit-lightning-8 | 8 / 1 | 43.3 dB | 13.5 s | 8.4 s |
+| fill-lightning-8 | 8 / 1 | 49.7 dB | 13.5 s | 8.8 s |
+| remove-lightning-8 | 8 / 1 | 50.0 dB | 11.4 s | 8.5 s |
+| expand-lightning-8 | 8 / 1 | 33.3 dB | 13.5 s | 8.5 s |
+| fill-ref-lightning-8 | 8 / 1 | 48.6 dB | 26.0 s | 21.1 s |
+| image-ref | 8 / 1 | 35.5 dB | 25.1 s | 21.1 s |
+| angles | 4 / 1 | 43.2 dB | 7.4 s | 4.5 s |
+| edit (base) | 40 / 4 | 36.6 dB | 90.5 s | 81.9 s |
+
+The pictures match; native is 1.1–1.6× slower warm (speed pass running). The first image-ref
+after a load is 27 dB (ComfyUI's first dynamic call uses the bf16 patch before its resident
+copy). The 2511-vs-2.1 comparison on the earlier sets follows once 2511 is at speed.
+
 ## 1. Fill templates, default server flags, no cache (run 1)
 
 Uploads had unique names, so every run paid the 7 B vision text encoder and the VAE encode;
