@@ -15,7 +15,6 @@ use anyhow::Context;
 use candle_core::{DType, Device, Tensor};
 use tokenizers::Tokenizer;
 
-use crate::Result;
 use crate::convrot_cache::{CacheSpec, Policy};
 use crate::loader::WeightSet;
 use crate::model::krea2::{self, EditRef, Krea2Config, Krea2Dit};
@@ -23,6 +22,7 @@ use crate::model::text_encoder::{QwenTextEncoder, TextConfig};
 use crate::model::vision::{self, VisionConfig, VisionTower};
 use crate::model::wan_vae::{self, WanVae};
 use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
+use crate::Result;
 
 /// The longest side of the picture the encoder sees beside an edit's instruction (the
 /// comfyui-krea2edit `grounding_px` default; the LoRAs trained at 384–768).
@@ -75,7 +75,13 @@ impl Files {
                 tokenizer: Ok(dir.join("tokenizer/tokenizer.json")),
             }));
         }
-        Ok(crate::comfy_files::find_krea2(dir).map(|f| Self { dit_key: f.dit.clone(), dit: vec![f.dit], text: vec![f.text], vae: vec![f.vae], tokenizer: Err(f.tokenizer) }))
+        Ok(crate::comfy_files::find_krea2(dir).map(|f| Self {
+            dit_key: f.dit.clone(),
+            dit: vec![f.dit],
+            text: vec![f.text],
+            vae: vec![f.vae],
+            tokenizer: Err(f.tokenizer),
+        }))
     }
 
     fn tokenizer(&self) -> Result<Tokenizer> {
@@ -102,6 +108,9 @@ pub struct Krea2Pipeline {
     vision: std::sync::Mutex<Option<VisionTower>>,
     dit: Krea2Dit,
     vae: WanVae,
+    /// The stock style template names the RGB Qwen VAE; legacy Krea uses Wan's file.
+    style_vae_file: Option<PathBuf>,
+    style_vae: std::sync::Mutex<Option<WanVae>>,
     /// Drop the encoder after each prompt (the bf16 DiT leaves no room for it; it loads again
     /// in two seconds for the next prompt).
     evict_te: bool,
@@ -124,7 +133,11 @@ impl Krea2Pipeline {
         let raw = files.dit.clone();
         let fp8 = crate::fp8::Fp8Plan::from_files(&raw)?;
         let fp8_text = crate::fp8::Fp8Plan::from_files(&files.text)?.is_some();
-        anyhow::ensure!((fp8.is_none() && !fp8_text) || crate::fp8::supported_on(&dev), "{} holds fp8_scaled weights and this build has no fp8 kernels (the `fp8` feature)", model.display());
+        anyhow::ensure!(
+            (fp8.is_none() && !fp8_text) || crate::fp8::supported_on(&dev),
+            "{} holds fp8_scaled weights and this build has no fp8 kernels (the `fp8` feature)",
+            model.display()
+        );
         // Without ConvRot or fp8 the DiT is 24 GB in bf16: the encoder comes and goes per prompt.
         let evict_te = fp8.is_none() && (!opts.convrot || !cfg!(feature = "convrot"));
         let te = if evict_te {
@@ -139,10 +152,17 @@ impl Krea2Pipeline {
 
         progress(0.3, "Loading the transformer");
         let t0 = Instant::now();
-        let dit_files = if fp8.is_some() { raw } else { crate::convrot_cache::resolve_file_set(&files.dit_key, raw, opts.convrot, &opts.cache, &Policy::krea2())? };
+        let dit_files =
+            if fp8.is_some() { raw } else { crate::convrot_cache::resolve_file_set(&files.dit_key, raw, opts.convrot, &opts.cache, &Policy::krea2())? };
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&dit_files, dtype, &dev)? };
         let dit = Krea2Dit::load_with(&Krea2Config::default(), opts.convrot, fp8.as_ref(), vb)?;
-        tracing::info!(load_s = t0.elapsed().as_secs_f32(), convrot = opts.convrot && fp8.is_none(), fp8 = fp8.is_some(), full_precision = fp8.as_ref().map_or(0, |p| p.full_precision.len()), "DiT loaded");
+        tracing::info!(
+            load_s = t0.elapsed().as_secs_f32(),
+            convrot = opts.convrot && fp8.is_none(),
+            fp8 = fp8.is_some(),
+            full_precision = fp8.as_ref().map_or(0, |p| p.full_precision.len()),
+            "DiT loaded"
+        );
 
         progress(0.9, "Loading the VAE");
         let t0 = Instant::now();
@@ -150,7 +170,19 @@ impl Krea2Pipeline {
         let vae = WanVae::load(vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "VAE loaded");
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, text: files.text, te: std::sync::Mutex::new(te), vision: std::sync::Mutex::new(None), dit, vae, evict_te })
+        Ok(Self {
+            dev,
+            dtype,
+            tok,
+            text: files.text,
+            te: std::sync::Mutex::new(te),
+            vision: std::sync::Mutex::new(None),
+            dit,
+            vae,
+            style_vae_file: if is_snapshot(model) { None } else { Some(model.join("vae/qwen_image_vae.safetensors")) },
+            style_vae: std::sync::Mutex::new(None),
+            evict_te,
+        })
     }
 
     pub fn is_cuda(&self) -> bool {
@@ -209,16 +241,27 @@ impl Krea2Pipeline {
         let rgb = Tensor::from_vec(img.into_raw(), (h, w, 3), &self.dev)?.permute((2, 0, 1))?.to_dtype(DType::F32)?.affine(1.0 / 255.0, 0.0)?;
         let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
         let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
+        self.vision_features(&rgb, false)
+    }
+
+    fn vision_features(&self, rgb: &Tensor, editplus: bool) -> Result<vision::VisionFeatures> {
         let mut slot = self.vision.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             let t0 = Instant::now();
             let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&self.text, DType::F32, &self.dev)? };
-            *slot = Some(VisionTower::load(&VisionConfig::qwen3vl_4b(), vb32.pp("model").pp("visual")).context("the Qwen3-VL-4B vision tower (an encoder file without it cannot edit)")?);
+            *slot = Some(
+                VisionTower::load(&VisionConfig::qwen3vl_4b(), vb32.pp("model").pp("visual"))
+                    .context("the Qwen3-VL-4B vision tower (an encoder file without it cannot edit)")?,
+            );
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "vision tower loaded");
         }
         let tower = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no vision tower"))?;
         let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
-        tower.forward(&patches, gh, gw)
+        if editplus {
+            tower.forward_editplus(&patches, gh, gw)
+        } else {
+            tower.forward(&patches, gh, gw)
+        }
     }
 
     /// An edit's picture for the DiT: fitted to the target `tw × th` (centre-cropped to its
@@ -232,20 +275,70 @@ impl Krea2Pipeline {
         let (cw, ch) = (((tw as f64 / s).round() as u32).clamp(1, img.width()), ((th as f64 / s).round() as u32).clamp(1, img.height()));
         let (x0, y0) = ((img.width() - cw) / 2, (img.height() - ch) / 2);
         let crop = image::imageops::crop_imm(&img, x0, y0, cw, ch).to_image();
-        let fitted = if (cw as usize, ch as usize) == (tw, th) { crop } else { image::imageops::resize(&crop, tw as u32, th as u32, image::imageops::FilterType::CatmullRom) };
-        let x = Tensor::from_vec(fitted.into_raw(), (th, tw, 3), &self.dev)?.permute((2, 0, 1))?.unsqueeze(0)?.to_dtype(DType::F32)?.affine(2.0 / 255.0, -1.0)?;
+        let fitted = if (cw as usize, ch as usize) == (tw, th) {
+            crop
+        } else {
+            image::imageops::resize(&crop, tw as u32, th as u32, image::imageops::FilterType::CatmullRom)
+        };
+        let x =
+            Tensor::from_vec(fitted.into_raw(), (th, tw, 3), &self.dev)?.permute((2, 0, 1))?.unsqueeze(0)?.to_dtype(DType::F32)?.affine(2.0 / 255.0, -1.0)?;
         self.vae.encode(&x)
+    }
+
+    fn with_style_vae<T>(&self, run: impl FnOnce(&WanVae) -> Result<T>) -> Result<T> {
+        let Some(path) = &self.style_vae_file else { return run(&self.vae) };
+        let mut slot = self.style_vae.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            anyhow::ensure!(path.is_file(), "the style template needs {}", path.display());
+            let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[path], self.dtype, &self.dev)? };
+            *slot = Some(WanVae::load(vb)?);
+        }
+        run(slot.as_ref().ok_or_else(|| anyhow::anyhow!("no style VAE"))?)
+    }
+
+    fn style_condition(&self, prompt: &str, pictures: &[RefImage]) -> Result<(Tensor, Vec<Tensor>)> {
+        let mut features = Vec::new();
+        let mut references = Vec::new();
+        for picture in pictures {
+            let (vl, vae) = style_inputs(picture, &self.dev)?;
+            features.push(self.vision_features(&vl, true)?);
+            references.push(self.with_style_vae(|encoder| encoder.encode(&vae))?.to_dtype(self.dtype)?);
+        }
+        let ids =
+            self.tok.encode(krea2::style_template(prompt, pictures.len()), false).map_err(|e| anyhow::anyhow!("encode style prompt: {e}"))?.get_ids().to_vec();
+        let mut slot = self.te.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(load_text_encoder(&self.text, &self.dev, self.dtype)?);
+        }
+        let te = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no text encoder"))?;
+        let cond = krea2::condition_with_images(te, &ids, &features.iter().collect::<Vec<_>>())?.unsqueeze(0)?;
+        if self.evict_te {
+            *slot = None;
+            self.dev.synchronize()?;
+        }
+        Ok((cond, references))
+    }
+
+    /// Generate from one or two style pictures using stock EditPlus semantics.
+    pub fn generate_style(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+        anyhow::ensure!((1..=2).contains(&req.references.len()), "Krea style needs one or two references");
+        anyhow::ensure!(req.width > 0 && req.height > 0, "Krea style needs explicit width and height");
+        self.generate_inner(req, progress, cancel, true)
     }
 
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+        self.generate_inner(req, progress, cancel, false)
+    }
+
+    fn generate_inner(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool, style: bool) -> Result<Picture> {
         crate::device::bind_thread(&self.dev);
         anyhow::ensure!(req.steps > 0, "at least one step");
         // An edit: the first reference is the picture (one picture; the krea2_edit LoRAs take up
         // to two, a scene and a subject, which nothing asks for yet). Its size is the target's
         // when the request names none, floored to the 16-pixel grid.
-        anyhow::ensure!(req.references.len() <= 1, "a Krea 2 edit takes one picture ({} given)", req.references.len());
-        let picture = req.references.first();
+        anyhow::ensure!(style || req.references.len() <= 1, "a Krea 2 edit takes one picture ({} given)", req.references.len());
+        let picture = if style { None } else { req.references.first() };
         let (w, h) = match picture {
             Some(p) if req.width == 0 || req.height == 0 => (p.width / 16 * 16, p.height / 16 * 16),
             _ => (req.width, req.height),
@@ -267,7 +360,7 @@ impl Krea2Pipeline {
         check(cancel)?;
         progress(0.02, "Encoding the prompt");
         let t0 = Instant::now();
-        let cond = self.condition(&req.prompt, picture)?;
+        let (cond, style_refs) = if style { self.style_condition(&req.prompt, &req.references)? } else { (self.condition(&req.prompt, picture)?, Vec::new()) };
         let edit = match picture {
             Some(p) => Some(EditRef { latent: self.picture_latent(p, w, h)?.to_dtype(self.dtype)?, boost: req.ref_boost }),
             None => None,
@@ -279,13 +372,35 @@ impl Krea2Pipeline {
         // ComfyUI's noise on the (1, 16, h, w) latent, in the sampler's normalised space; the
         // `simple` schedule over the model's table; Euler with the velocity the DiT returns.
         let (lh, lw) = (h / wan_vae::SCALE, w / wan_vae::SCALE);
-        let schedule = crate::comfy::FlowSchedule::simple(req.steps, crate::comfy::FlowSchedule::KREA2).map_err(anyhow::Error::msg)?;
+        let schedule = crate::comfy::FlowSchedule::simple(
+            req.steps,
+            if style {
+                // ModelSamplingFlux interpolates shift from the requested target token count.
+                let slope = (1.15 - 0.5) / (4096.0 - 256.0);
+                crate::comfy::Shift::Flux { shift: (slope * (w * h) as f64 / 256.0 + 0.5 - slope * 256.0) as f32, timesteps: 10_000 }
+            } else {
+                crate::comfy::FlowSchedule::KREA2
+            },
+        )
+        .map_err(anyhow::Error::msg)?;
         let noise = crate::comfy::torch_randn(req.seed, wan_vae::LATENT_CHANNELS * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, wan_vae::LATENT_CHANNELS, lh, lw), &self.dev)?;
         let t0 = Instant::now();
         for i in 0..req.steps {
             check(cancel)?;
-            let v = self.dit.forward_edit(&x.to_dtype(self.dtype)?, schedule.sigma(i), &cond, edit.as_ref())?.to_dtype(DType::F32)?;
+            let input = x.to_dtype(self.dtype)?;
+            let v = if style {
+                let positive = self.dit.forward_style(&input, schedule.sigma(i), &cond, &style_refs)?.to_dtype(DType::F32)?;
+                if req.guidance != 1.0 {
+                    let negative = self.dit.forward_style(&input, schedule.sigma(i), &cond.zeros_like()?, &style_refs)?.to_dtype(DType::F32)?;
+                    (&negative + ((&positive - &negative)? * f64::from(req.guidance))?)?
+                } else {
+                    positive
+                }
+            } else {
+                self.dit.forward_edit(&input, schedule.sigma(i), &cond, edit.as_ref())?
+            }
+            .to_dtype(DType::F32)?;
             x = (x + (v * f64::from(schedule.dt(i)))?)?;
             progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
         }
@@ -296,21 +411,79 @@ impl Krea2Pipeline {
         check(cancel)?;
         progress(0.92, "Decoding");
         let t0 = Instant::now();
-        let img = self.vae.decode(&self.vae.denormalize(&x)?)?;
+        let img = if style { self.with_style_vae(|vae| vae.decode(&vae.denormalize(&x)?))? } else { self.vae.decode(&self.vae.denormalize(&x)?)? };
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, rgba) = wan_vae::to_rgba_u8(&img)?;
-        tracing::info!(encode_s = timings.encode_s, denoise_s = timings.denoise_s, decode_s = timings.decode_s, width = pw, height = ph, steps = req.steps, "timings");
+        tracing::info!(
+            encode_s = timings.encode_s,
+            denoise_s = timings.denoise_s,
+            decode_s = timings.decode_s,
+            width = pw,
+            height = ph,
+            steps = req.steps,
+            "timings"
+        );
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
 }
 
+/// EditPlus's two area resizes, followed by Qwen3-VL's 32-pixel tower grid.
+/// Returns tower RGB in [0,1] and VAE RGB in [-1,1], preserving aspect ratio.
+pub fn style_inputs(p: &RefImage, dev: &Device) -> Result<(Tensor, Tensor)> {
+    anyhow::ensure!(p.width > 0 && p.height > 0, "empty style picture");
+    let rgb = rgb_image(p)?;
+    let rgb = (Tensor::from_vec(rgb.into_raw(), (p.height, p.width, 3), dev)?.permute((2, 0, 1))?.to_dtype(DType::F32)? / 255.0)?;
+    let size = |side: f64, multiple: f64| {
+        let scale = side / ((p.width * p.height) as f64).sqrt();
+        (
+            ((p.width as f64 * scale / multiple).round_ties_even() * multiple) as usize,
+            ((p.height as f64 * scale / multiple).round_ties_even() * multiple) as usize,
+        )
+    };
+    let (vw, vh) = size(384.0, 1.0);
+    anyhow::ensure!(vw > 0 && vh > 0, "style picture aspect ratio rounds a vision side to zero");
+    let vl = resize_area(&rgb, vh, vw)?;
+    let rounded = (((vw as f64 / 32.0).round_ties_even() * 32.0) as usize, ((vh as f64 / 32.0).round_ties_even() * 32.0) as usize);
+    let (tw, th) = if (3136..=12_845_056).contains(&(rounded.0 * rounded.1)) { rounded } else { vision::vit_size(vw, vh, 3136, 12_845_056) };
+    let vl = if (tw, th) == (vw, vh) { vl } else { vision::resize_bilinear(&vl, th, tw)? };
+    let (rw, rh) = size(1024.0, 8.0);
+    anyhow::ensure!(rw > 0 && rh > 0, "style picture aspect ratio rounds a VAE side to zero");
+    let vae = resize_area(&rgb, rh, rw)?.unsqueeze(0)?.affine(2.0, -1.0)?;
+    Ok((vl, vae))
+}
+
+/// Torch area interpolation is adaptive average pooling, including when upscaling.
+fn resize_area(rgb: &Tensor, dh: usize, dw: usize) -> Result<Tensor> {
+    let (channels, sh, sw) = rgb.dims3()?;
+    let source = rgb.flatten_all()?.to_vec1::<f32>()?;
+    let mut output = vec![0.0f32; channels * dh * dw];
+    for c in 0..channels {
+        for y in 0..dh {
+            let y0 = y * sh / dh;
+            let y1 = ((y + 1) * sh).div_ceil(dh);
+            for x in 0..dw {
+                let x0 = x * sw / dw;
+                let x1 = ((x + 1) * sw).div_ceil(dw);
+                let mut sum = 0.0;
+                for sy in y0..y1 {
+                    for sx in x0..x1 {
+                        sum += source[(c * sh + sy) * sw + sx];
+                    }
+                }
+                output[(c * dh + y) * dw + x] = sum / (y1 - y0) as f32 / (x1 - x0) as f32;
+            }
+        }
+    }
+    Ok(Tensor::from_vec(output, (channels, dh, dw), rgb.device())?)
+}
+
 /// A reference's pixels as RGB (its alpha dropped, as ComfyUI's `LoadImage` hands a picture to
 /// the VAE and the encoder).
 fn rgb_image(p: &RefImage) -> Result<image::RgbImage> {
-    let rgba: image::RgbaImage =
-        image::ImageBuffer::from_raw(p.width as u32, p.height as u32, p.rgba.clone()).ok_or_else(|| anyhow::anyhow!("a picture of {}x{} with {} bytes", p.width, p.height, p.rgba.len()))?;
+    let rgba: image::RgbaImage = image::ImageBuffer::from_raw(p.width as u32, p.height as u32, p.rgba.clone())
+        .ok_or_else(|| anyhow::anyhow!("a picture of {}x{} with {} bytes", p.width, p.height, p.rgba.len()))?;
     Ok(image::DynamicImage::ImageRgba8(rgba).to_rgb8())
 }
 
