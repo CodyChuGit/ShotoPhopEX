@@ -15,6 +15,20 @@ fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var("QIR_PROFILE").is_ok_and(|v| v.trim() == "1"))
 }
 
+/// Time a pipeline phase without synchronizing every kernel (`QIR_PHASE_PROFILE=1`).
+pub fn phase<T>(kind: &str, dev: &Device, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !*ON.get_or_init(|| enabled() || std::env::var("QIR_PHASE_PROFILE").is_ok_and(|v| v == "1")) {
+        return f();
+    }
+    dev.synchronize()?;
+    let t0 = Instant::now();
+    let out = f()?;
+    dev.synchronize()?;
+    tracing::info!(phase = kind, seconds = t0.elapsed().as_secs_f64(), "pipeline phase");
+    Ok(out)
+}
+
 /// Per kind: calls, seconds, floating-point operations.
 static TOTALS: Mutex<Vec<(&'static str, u64, f64, f64)>> = Mutex::new(Vec::new());
 

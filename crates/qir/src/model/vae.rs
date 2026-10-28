@@ -42,15 +42,30 @@ pub fn layout_for(cuda: bool, dtype: DType, nhwc_available: bool) -> ActLayout {
     }
 }
 
-/// Whether this build + environment can run the NHWC decoder:
-/// features `cudnn` + `fusednorm`, and none of `QIR_CUDNN=0`,
-/// `QIR_VAE_FUSED=0`, `QIR_VAE_NHWC=0`.
+/// Bound im2col scratch while preserving full-image decoder attention and receptive fields.
+fn conv_row_tiles(x: &Tensor, weight: &Tensor, padding: usize, rows: usize) -> candle_core::Result<Tensor> {
+    let h = x.dim(2)?;
+    let mut out = Vec::new();
+    for start in (0..h).step_by(rows) {
+        let len = rows.min(h - start);
+        let lo = start.saturating_sub(padding);
+        let hi = (start + len + padding).min(h);
+        let tile = x.narrow(2, lo, hi - lo)?.contiguous()?;
+        let y = tile.conv2d(weight, padding, 1, 1, 1)?;
+        out.push(y.narrow(2, start - lo, len)?.contiguous()?);
+    }
+    Tensor::cat(&out, 2)
+}
+
+fn row_tiles_enabled() -> bool {
+    std::env::var("QIR_VAE_CONV_ROWS").map_or(true, |v| v != "0")
+}
+
+/// NHWC needs cuDNN and fused norms, with their environment switches enabled.
 fn nhwc_available() -> bool {
     #[cfg(all(feature = "cudnn", feature = "fusednorm"))]
     {
-        cudnn_enabled()
-            && vae_fused_enabled()
-            && std::env::var("QIR_VAE_NHWC").map_or(true, |v| v != "0")
+        cudnn_enabled() && vae_fused_enabled() && std::env::var("QIR_VAE_NHWC").map_or(true, |v| v != "0")
     }
     #[cfg(not(all(feature = "cudnn", feature = "fusednorm")))]
     {
@@ -121,8 +136,7 @@ fn nhwc_epilogue(y: &Tensor, bias: &Tensor, res: Res<'_>) -> candle_core::Result
         Res::Dense(r) => t + r,
         Res::DenseBiased(r, rb) => t + r.broadcast_add(rb)?,
         Res::DupUp(x, in_c, out_c, ft) => {
-            let sc = dup_up(&to_nchw(x)?, in_c, out_c, ft)
-                .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+            let sc = dup_up(&to_nchw(x)?, in_c, out_c, ft).map_err(|e| candle_core::Error::Msg(e.to_string()))?;
             t + to_nhwc(&sc)?
         }
     }
@@ -159,33 +173,20 @@ struct Conv {
     bias: Option<Tensor>,
     padding: usize,
     lay: ActLayout,
+    row_tiles: bool,
 }
 
 impl Conv {
-    fn load(
-        in_c: usize,
-        out_c: usize,
-        k: usize,
-        padding: usize,
-        lay: ActLayout,
-        vb: VarBuilder,
-    ) -> Result<Self> {
-        let cfg = Conv2dConfig {
-            padding,
-            ..Default::default()
-        };
+    fn load(in_c: usize, out_c: usize, k: usize, padding: usize, lay: ActLayout, vb: VarBuilder) -> Result<Self> {
+        let cfg = Conv2dConfig { padding, ..Default::default() };
+        let row_tiles = vb.prefix().contains("decoder") && row_tiles_enabled();
         let inner = conv2d(in_c, out_c, k, cfg, vb)?;
         let weight = match lay {
             ActLayout::Nchw => inner.weight().clone(),
             // Reordered once here; the OIHW copy is dropped with `inner`.
             ActLayout::Nhwc => inner.weight().permute((0, 2, 3, 1))?.contiguous()?,
         };
-        Ok(Self {
-            weight,
-            bias: inner.bias().cloned(),
-            padding,
-            lay,
-        })
+        Ok(Self { weight, bias: inner.bias().cloned(), padding, lay, row_tiles })
     }
 
     /// The convolution without its bias.
@@ -201,6 +202,9 @@ impl Conv {
                         // slower).
                         Err(e) => warn_cudnn_fallback(x, &e),
                     }
+                }
+                if self.row_tiles && x.device().is_cuda() && x.dtype() == DType::BF16 && x.dim(2)? > 128 {
+                    return conv_row_tiles(x, &self.weight, self.padding, 128);
                 }
                 // Exactly what candle_nn's Conv2d::forward does before its bias add.
                 x.conv2d(&self.weight, self.padding, 1, 1, 1)
@@ -239,12 +243,7 @@ impl Conv {
     /// `forward(x) + (r [+ r_bias])` (a residual skip). Under `fusednorm` on
     /// CUDA bf16 the bias add and the residual add run as one kernel with the
     /// same two (three, with `r_bias`) bf16 roundings (byte-identical).
-    fn forward_residual(
-        &self,
-        x: &Tensor,
-        r: &Tensor,
-        r_bias: Option<&Tensor>,
-    ) -> candle_core::Result<Tensor> {
+    fn forward_residual(&self, x: &Tensor, r: &Tensor, r_bias: Option<&Tensor>) -> candle_core::Result<Tensor> {
         let r_owned;
         let r = match (r_bias, self.lay) {
             (Some(rb), ActLayout::Nchw) => {
@@ -263,9 +262,7 @@ impl Conv {
         match (&self.bias, self.lay) {
             (Some(b), ActLayout::Nhwc) => nhwc_epilogue(&self.conv_nobias(x)?, b, Res::Dense(r)),
             #[cfg(feature = "fusednorm")]
-            (Some(b), ActLayout::Nchw)
-                if x.device().is_cuda() && x.dtype() == DType::BF16 && vae_fused_enabled() =>
-            {
+            (Some(b), ActLayout::Nchw) if x.device().is_cuda() && x.dtype() == DType::BF16 && vae_fused_enabled() => {
                 crate::vae_fused::bias_residual(&self.conv_nobias(x)?, b, r)
             }
             _ => self.forward(x)? + r,
@@ -312,17 +309,9 @@ struct RmsNorm {
 impl RmsNorm {
     fn load(c: usize, images: bool, lay: ActLayout, vb: VarBuilder) -> Result<Self> {
         // gamma is stored (C,1,1) for images=True, (C,1,1,1) for images=False.
-        let gamma = if images {
-            vb.get((c, 1, 1), "gamma")?
-        } else {
-            vb.get((c, 1, 1, 1), "gamma")?
-        };
+        let gamma = if images { vb.get((c, 1, 1), "gamma")? } else { vb.get((c, 1, 1, 1), "gamma")? };
         let gamma = gamma.reshape((1, c, 1, 1))?;
-        Ok(Self {
-            gamma,
-            scale: (c as f64).sqrt(),
-            lay,
-        })
+        Ok(Self { gamma, scale: (c as f64).sqrt(), lay })
     }
 
     /// `forward(x [+ bias])`, then SiLU if `with_silu` — one fused kernel
@@ -331,11 +320,7 @@ impl RmsNorm {
     fn forward_silu(&self, x: &Tensor, bias: Option<&Tensor>, with_silu: bool) -> Result<Tensor> {
         if self.lay == ActLayout::Nhwc {
             #[cfg(feature = "fusednorm")]
-            if x.device().is_cuda()
-                && x.dtype() == DType::BF16
-                && self.gamma.dtype() == DType::BF16
-                && crate::vae_fused::rmsnorm_nhwc_supports(x.dim(3)?)
-            {
+            if x.device().is_cuda() && x.dtype() == DType::BF16 && self.gamma.dtype() == DType::BF16 && crate::vae_fused::rmsnorm_nhwc_supports(x.dim(3)?) {
                 match crate::vae_fused::rmsnorm_nhwc(x, &self.gamma, bias, with_silu) {
                     Ok(t) => return Ok(t),
                     Err(e) => warn_nhwc_fallback("rmsnorm", &e),
@@ -381,11 +366,7 @@ impl RmsNorm {
         // cast back to the working dtype and apply gamma.
         let dt = x.dtype();
         let xf = x.to_dtype(DType::F32)?;
-        let norm = xf
-            .sqr()?
-            .sum_keepdim(1)?
-            .sqrt()?
-            .clamp(1e-12, f64::INFINITY)?;
+        let norm = xf.sqr()?.sum_keepdim(1)?.sqrt()?.clamp(1e-12, f64::INFINITY)?;
         let normalized = (xf.broadcast_div(&norm)? * self.scale)?.to_dtype(dt)?;
         Ok(normalized.broadcast_mul(&self.gamma)?)
     }
@@ -417,10 +398,7 @@ impl std::str::FromStr for VaeTiling {
         match s.trim() {
             "auto" => Ok(Self::Auto),
             "0" => Ok(Self::Off),
-            n => n
-                .parse::<usize>()
-                .map(Self::Tile)
-                .map_err(|_| format!("--vae-tile: expected auto, 0 or a tile size, got {n:?}")),
+            n => n.parse::<usize>().map(Self::Tile).map_err(|_| format!("--vae-tile: expected auto, 0 or a tile size, got {n:?}")),
         }
     }
 }
@@ -446,10 +424,7 @@ pub fn decode_bytes_per_pixel(cudnn_conv: bool, f32_decoder: bool) -> usize {
 
 /// Does a whole-image decode of `pixels` output pixels fit in `free` bytes?
 pub fn untiled_fits(pixels: usize, bytes_per_pixel: usize, free: usize) -> bool {
-    pixels
-        .saturating_mul(bytes_per_pixel)
-        .saturating_add(FIT_MARGIN)
-        <= free
+    pixels.saturating_mul(bytes_per_pixel).saturating_add(FIT_MARGIN) <= free
 }
 
 /// Whether this build's VAE convs run on cuDNN (feature `cudnn`, not disabled).
@@ -475,11 +450,7 @@ struct ResidualBlock {
 
 impl ResidualBlock {
     fn load(in_c: usize, out_c: usize, lay: ActLayout, vb: VarBuilder) -> Result<Self> {
-        let shortcut = if in_c != out_c {
-            Some(conv2d_k1(in_c, out_c, lay, vb.pp("conv_shortcut"))?)
-        } else {
-            None
-        };
+        let shortcut = if in_c != out_c { Some(conv2d_k1(in_c, out_c, lay, vb.pp("conv_shortcut"))?) } else { None };
         Ok(Self {
             norm1: RmsNorm::load(in_c, false, lay, vb.pp("norm1"))?,
             conv1: conv2d_k3(in_c, out_c, lay, vb.pp("conv1"))?,
@@ -582,34 +553,21 @@ struct Upsampler {
 impl Upsampler {
     fn load(dim: usize, out_dim: usize, lay: ActLayout, vb: VarBuilder) -> Result<Self> {
         // Sequential(Upsample[0], Conv2d[1]) -> weights under "resample.1".
-        Ok(Self {
-            conv: conv2d_k3(dim, out_dim, lay, vb.pp("resample").pp("1"))?,
-        })
+        Ok(Self { conv: conv2d_k3(dim, out_dim, lay, vb.pp("resample").pp("1"))? })
     }
 
     /// `conv(upsample2x(x)) + dup_up(x_in)`, the up block's tail: on NHWC the
     /// conv bias and the DupUp3D shortcut add run as one gather epilogue.
-    fn forward_dupup(
-        &self,
-        x: &Tensor,
-        x_in: &Tensor,
-        sc: (usize, usize, usize),
-    ) -> Result<Tensor> {
+    fn forward_dupup(&self, x: &Tensor, x_in: &Tensor, sc: (usize, usize, usize)) -> Result<Tensor> {
         let (in_c, out_c, factor_t) = sc;
         let up = upsample2x(x, self.conv.lay)?;
         match (self.conv.lay, &self.conv.bias) {
-            (ActLayout::Nhwc, Some(b)) => Ok(nhwc_epilogue(
-                &self.conv.conv_nobias(&up)?,
-                b,
-                Res::DupUp(x_in, in_c, out_c, factor_t),
-            )?),
+            (ActLayout::Nhwc, Some(b)) => Ok(nhwc_epilogue(&self.conv.conv_nobias(&up)?, b, Res::DupUp(x_in, in_c, out_c, factor_t))?),
             (ActLayout::Nhwc, None) => {
                 let sc = to_nhwc(&dup_up(&to_nchw(x_in)?, in_c, out_c, factor_t)?)?;
                 Ok((self.conv.conv_nobias(&up)? + sc)?)
             }
-            (ActLayout::Nchw, _) => {
-                Ok((self.conv.forward(&up)? + dup_up(x_in, in_c, out_c, factor_t)?)?)
-            }
+            (ActLayout::Nchw, _) => Ok((self.conv.forward(&up)? + dup_up(x_in, in_c, out_c, factor_t)?)?),
         }
     }
 }
@@ -623,11 +581,7 @@ pub(crate) fn dup_up(x: &Tensor, in_c: usize, out_c: usize, factor_t: usize) -> 
     let repeats = out_c * factor / in_c;
     let (b, _, h, w) = x.dims4()?;
     // repeat_interleave over channels by `repeats` -> (B, out*factor, H, W)
-    let x = x
-        .reshape((b, in_c, 1, h, w))?
-        .broadcast_as((b, in_c, repeats, h, w))?
-        .contiguous()?
-        .reshape((b, in_c * repeats, h, w))?;
+    let x = x.reshape((b, in_c, 1, h, w))?.broadcast_as((b, in_c, repeats, h, w))?.contiguous()?.reshape((b, in_c * repeats, h, w))?;
     // Channel nesting is [out][factor_t][fs*fs]. Split, pick the kept temporal
     // block (index factor_t-1, == first_chunk), then depth-to-space by 2.
     let x = x.reshape((b, out_c, factor_t, 4, h, w))?; // 6-D
@@ -656,15 +610,7 @@ struct ResidualUpBlock {
 
 impl ResidualUpBlock {
     #[allow(clippy::too_many_arguments)]
-    fn load(
-        in_c: usize,
-        out_c: usize,
-        num_res_blocks: usize,
-        up_flag: bool,
-        temporal_upsample: bool,
-        lay: ActLayout,
-        vb: VarBuilder,
-    ) -> Result<Self> {
+    fn load(in_c: usize, out_c: usize, num_res_blocks: usize, up_flag: bool, temporal_upsample: bool, lay: ActLayout, vb: VarBuilder) -> Result<Self> {
         let rvb = vb.pp("resnets");
         let mut resnets = Vec::new();
         let mut cur = in_c;
@@ -728,15 +674,7 @@ impl Decoder3d {
             let out_c = dims[i + 1];
             let up_flag = i != dim_mult.len() - 1;
             let tu = if up_flag { temporal_upsample[i] } else { false };
-            up_blocks.push(ResidualUpBlock::load(
-                in_c,
-                out_c,
-                num_res_blocks,
-                up_flag,
-                tu,
-                lay,
-                upvb.pp(i.to_string()),
-            )?);
+            up_blocks.push(ResidualUpBlock::load(in_c, out_c, num_res_blocks, up_flag, tu, lay, upvb.pp(i.to_string()))?);
         }
         let last = *dims.last().unwrap();
         Ok(Self {
@@ -791,11 +729,7 @@ fn avg_down(x: &Tensor, out_c: usize, factor_t: usize, factor_s: usize) -> Resul
     anyhow::ensure!(h.is_multiple_of(factor_s) && w.is_multiple_of(factor_s), "avg_down: {h}x{w} not divisible by {factor_s}");
     let (hp, wp) = (h / factor_s, w / factor_s);
     let fs2 = factor_s * factor_s;
-    let s = x
-        .reshape((b, c, hp, factor_s, wp, factor_s))?
-        .permute((0, 1, 3, 5, 2, 4))?
-        .contiguous()?
-        .reshape((b, c, 1, fs2, hp, wp))?;
+    let s = x.reshape((b, c, hp, factor_s, wp, factor_s))?.permute((0, 1, 3, 5, 2, 4))?.contiguous()?.reshape((b, c, 1, fs2, hp, wp))?;
     let s = if factor_t > 1 {
         let zeros = Tensor::zeros((b, c, factor_t - 1, fs2, hp, wp), s.dtype(), s.device())?;
         Tensor::cat(&[&zeros, &s], 2)?
@@ -911,12 +845,7 @@ pub struct QwenImageVae {
 impl QwenImageVae {
     /// Load the decoder + post_quant_conv from a diffusers VarBuilder rooted at
     /// the vae, plus the per-channel latents_mean/std from config.
-    pub fn load(
-        cfg: &VaeConfig,
-        latents_mean: &[f32],
-        latents_std: &[f32],
-        vb: VarBuilder,
-    ) -> Result<Self> {
+    pub fn load(cfg: &VaeConfig, latents_mean: &[f32], latents_std: &[f32], vb: VarBuilder) -> Result<Self> {
         let z = cfg.latent_channels;
         let dev = vb.device().clone();
         let mean = Tensor::from_slice(latents_mean, (1, z, 1, 1), &dev)?;
@@ -967,11 +896,24 @@ impl QwenImageVae {
     /// was trained in: `(z − latents_mean) / latents_std`, the inverse of what [`Self::decode`]
     /// applies (ComfyUI's `SaveLatent` writes raw-space latents; this takes them in).
     pub fn normalize(&self, z_raw: &Tensor) -> Result<Tensor> {
-        let z = z_raw
-            .to_dtype(DType::F32)?
-            .broadcast_sub(&self.latents_mean)?
-            .broadcast_div(&self.latents_std)?;
+        let z = z_raw.to_dtype(DType::F32)?.broadcast_sub(&self.latents_mean)?.broadcast_div(&self.latents_std)?;
         Ok(z)
+    }
+
+    /// Row-wise im2col bounds scratch without changing the decoder's attention domain.
+    fn decode_bytes_per_pixel(&self) -> usize {
+        if self.lay == ActLayout::Nchw
+            && self.dtype == DType::BF16
+            && self.latents_mean.device().is_cuda()
+            && self.decoder.conv_in.row_tiles
+            && !conv_uses_cudnn()
+        {
+            // Full activations and f32 norms remain; only the 9x im2col workspace is striped.
+            // The auto policy adds another GiB of headroom to this estimate.
+            4 << 10
+        } else {
+            decode_bytes_per_pixel(conv_uses_cudnn(), self.dtype == DType::F32)
+        }
     }
 
     /// Decode an already-unpacked, normalized latent `(B, z, H, W)` into an RGBA
@@ -981,15 +923,11 @@ impl QwenImageVae {
         let (b, _, h, w) = z_normalized.dims4()?;
         // Keep this decode's freed memory in the CUDA pool across syncs so the
         // next decode does not re-map it (bounded by the working-set estimate).
-        let bpp = decode_bytes_per_pixel(conv_uses_cudnn(), self.dtype == DType::F32);
+        let bpp = self.decode_bytes_per_pixel();
         crate::device::retain_pool(z_normalized.device(), (b * h * w * 256).saturating_mul(bpp));
         // Unnormalize in f32 (per-channel std/mean; latents_std stores 1/std),
         // then cast to the conv working dtype (bf16 on CUDA → tensor-core convs).
-        let z = z_normalized
-            .to_dtype(DType::F32)?
-            .broadcast_mul(&self.latents_std)?
-            .broadcast_add(&self.latents_mean)?
-            .to_dtype(self.dtype)?;
+        let z = z_normalized.to_dtype(DType::F32)?.broadcast_mul(&self.latents_std)?.broadcast_add(&self.latents_mean)?.to_dtype(self.dtype)?;
         let z = match self.lay {
             ActLayout::Nchw => z,
             ActLayout::Nhwc => to_nhwc(&z)?,
@@ -1008,6 +946,15 @@ impl QwenImageVae {
     /// fail, it silently spills to shared memory (35 s decodes, blank images).
     /// A whole-image attempt that errors anyway is retried tiled.
     pub fn decode_auto(&self, z_normalized: &Tensor, tiling: VaeTiling) -> Result<Tensor> {
+        self.decode_auto_impl(z_normalized, tiling, decode_bytes_per_pixel(conv_uses_cudnn(), self.dtype == DType::F32))
+    }
+
+    /// Picture requests can retain their encoder when row-wise im2col bounds decoder scratch.
+    pub(crate) fn decode_auto_bounded(&self, z_normalized: &Tensor, tiling: VaeTiling) -> Result<Tensor> {
+        self.decode_auto_impl(z_normalized, tiling, self.decode_bytes_per_pixel())
+    }
+
+    fn decode_auto_impl(&self, z_normalized: &Tensor, tiling: VaeTiling, bpp: usize) -> Result<Tensor> {
         let tile = match tiling {
             VaeTiling::Off => return self.decode(z_normalized),
             VaeTiling::Tile(n) => return self.decode_tiled(z_normalized, n, (n / 4).max(1)),
@@ -1015,7 +962,6 @@ impl QwenImageVae {
         };
         let (b, _, h, w) = z_normalized.dims4()?;
         let pixels = b * h * w * 256; // 16x per side
-        let bpp = decode_bytes_per_pixel(conv_uses_cudnn(), self.dtype == DType::F32);
         let need = pixels.saturating_mul(bpp);
         let fits = match crate::device::free_vram(z_normalized.device()) {
             Some((free, _total)) => {
@@ -1053,12 +999,7 @@ impl QwenImageVae {
     /// fits alongside co-resident models (fixes the resident-mode VAE thrash).
     /// `overlap` (latent) is blended with a linear feather to hide seams.
     /// Scale factor latent→image is 16.
-    pub fn decode_tiled(
-        &self,
-        z_normalized: &Tensor,
-        tile: usize,
-        overlap: usize,
-    ) -> Result<Tensor> {
+    pub fn decode_tiled(&self, z_normalized: &Tensor, tile: usize, overlap: usize) -> Result<Tensor> {
         let (b, _c, h, w) = z_normalized.dims4()?;
         if tile == 0 || (tile >= h && tile >= w) {
             return self.decode(z_normalized); // one tile — no benefit
@@ -1074,21 +1015,14 @@ impl QwenImageVae {
         // Linear feather that plateaus at 1 in the interior and ramps toward the
         // edges; floored above 0 so the outer border (covered by one tile) is
         // recovered exactly after the division.
-        let feather = |len: usize| -> Vec<f32> {
-            (0..len)
-                .map(|k| (((k + 1).min(len - k)) as f32 / blend_px).clamp(1.0 / blend_px, 1.0))
-                .collect()
-        };
+        let feather = |len: usize| -> Vec<f32> { (0..len).map(|k| (((k + 1).min(len - k)) as f32 / blend_px).clamp(1.0 / blend_px, 1.0)).collect() };
         let mut i = 0;
         loop {
             let th = tile.min(h - i);
             let mut j = 0;
             loop {
                 let tw = tile.min(w - j);
-                let ztile = z_normalized
-                    .narrow(2, i, th)?
-                    .narrow(3, j, tw)?
-                    .contiguous()?;
+                let ztile = z_normalized.narrow(2, i, th)?.narrow(3, j, tw)?.contiguous()?;
                 let dec = self.decode(&ztile)?.to_dtype(DType::F32)?; // (b,4,th*S,tw*S)
                 let (pi, pj, pth, ptw) = (i * SCALE, j * SCALE, th * SCALE, tw * SCALE);
                 let wy = Tensor::from_vec(feather(pth), (1, 1, pth, 1), &dev)?;
@@ -1096,15 +1030,9 @@ impl QwenImageVae {
                 let mask = wy.broadcast_mul(&wx)?; // (1,1,pth,ptw)
                 let weighted = dec.broadcast_mul(&mask)?;
                 let cregion = canvas.narrow(2, pi, pth)?.narrow(3, pj, ptw)?;
-                canvas = canvas.slice_assign(
-                    &[0..b, 0..out_c, pi..pi + pth, pj..pj + ptw],
-                    &(cregion + weighted)?.contiguous()?,
-                )?;
+                canvas = canvas.slice_assign(&[0..b, 0..out_c, pi..pi + pth, pj..pj + ptw], &(cregion + weighted)?.contiguous()?)?;
                 let wregion = wsum.narrow(2, pi, pth)?.narrow(3, pj, ptw)?;
-                wsum = wsum.slice_assign(
-                    &[0..1, 0..1, pi..pi + pth, pj..pj + ptw],
-                    &(wregion + mask)?.contiguous()?,
-                )?;
+                wsum = wsum.slice_assign(&[0..1, 0..1, pi..pi + pth, pj..pj + ptw], &(wregion + mask)?.contiguous()?)?;
                 if tw >= w - j {
                     break;
                 }
@@ -1133,10 +1061,7 @@ pub fn unpack_latents(packed: &Tensor, _z_dim: usize) -> Result<Tensor> {
 pub fn unpack_latents_hw(packed: &Tensor, h: usize, w: usize) -> Result<Tensor> {
     let (b, seq, c) = packed.dims3()?;
     anyhow::ensure!(h * w == seq, "latent grid {h}x{w} does not hold {seq} tokens");
-    let x = packed
-        .transpose(1, 2)?
-        .contiguous()?
-        .reshape((b, c, h, w))?;
+    let x = packed.transpose(1, 2)?.contiguous()?.reshape((b, c, h, w))?;
     Ok(x)
 }
 
@@ -1170,6 +1095,21 @@ use candle_core::IndexOp;
 mod tests {
 
     #[test]
+    fn row_convolutions_keep_halos_and_image_edges() -> Result<()> {
+        let x = Tensor::arange(0f32, 2.0 * 11.0 * 7.0, &Device::Cpu)?.reshape((1, 2, 11, 7))?;
+        for (k, padding) in [(1, 0), (3, 1)] {
+            let w = (Tensor::ones((3, 2, k, k), DType::F32, &Device::Cpu)? * 0.125)?;
+            let want = x.conv2d(&w, padding, 1, 1, 1)?;
+            for rows in [1, 3, 5, 11, 16] {
+                let got = conv_row_tiles(&x, &w, padding, rows)?;
+                assert_eq!(got.dims(), want.dims());
+                assert_eq!((got - &want)?.abs()?.max_all()?.to_scalar::<f32>()?, 0.0);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn vae_tiling_parses() {
         assert_eq!("auto".parse::<VaeTiling>(), Ok(VaeTiling::Auto));
         assert_eq!("0".parse::<VaeTiling>(), Ok(VaeTiling::Off));
@@ -1190,21 +1130,9 @@ mod tests {
         // 2048² resident needs ~20 GiB -> tiled.
         assert!(!untiled_fits(4 * px, cudnn, 7400 * MIB));
         // Without cuDNN (im2col) or with the f32 decoder 1024² resident tiles.
-        assert!(!untiled_fits(
-            px,
-            decode_bytes_per_pixel(false, false),
-            7400 * MIB
-        ));
-        assert!(!untiled_fits(
-            px,
-            decode_bytes_per_pixel(true, true),
-            7400 * MIB
-        ));
-        assert!(untiled_fits(
-            px,
-            decode_bytes_per_pixel(true, true),
-            22000 * MIB
-        ));
+        assert!(!untiled_fits(px, decode_bytes_per_pixel(false, false), 7400 * MIB));
+        assert!(!untiled_fits(px, decode_bytes_per_pixel(true, true), 7400 * MIB));
+        assert!(untiled_fits(px, decode_bytes_per_pixel(true, true), 22000 * MIB));
         // Overflow saturates instead of wrapping into "fits".
         assert!(!untiled_fits(usize::MAX, cudnn, usize::MAX - 1));
     }
@@ -1217,29 +1145,15 @@ mod tests {
         let dev = Device::Cpu;
         // x = [[3],[4]] over C=2: ||.||=5, normalized=[0.6,0.8], *sqrt(2).
         let x = Tensor::from_slice(&[3f32, 4f32], (1, 2, 1, 1), &dev)?;
-        let n = RmsNorm {
-            gamma: Tensor::ones((1, 2, 1, 1), DType::F32, &dev)?,
-            scale: 2f64.sqrt(),
-            lay: ActLayout::Nchw,
-        };
-        let out = n
-            .forward_nchw_unfused(&x)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
+        let n = RmsNorm { gamma: Tensor::ones((1, 2, 1, 1), DType::F32, &dev)?, scale: 2f64.sqrt(), lay: ActLayout::Nchw };
+        let out = n.forward_nchw_unfused(&x)?.flatten_all()?.to_vec1::<f32>()?;
         let s = 2f32.sqrt();
         assert!((out[0] - 0.6 * s).abs() < 1e-5, "{out:?}");
         assert!((out[1] - 0.8 * s).abs() < 1e-5, "{out:?}");
         // The NHWC layout (candle fallback on CPU) gives the same bits.
-        let nh = RmsNorm {
-            gamma: Tensor::ones((1, 2, 1, 1), DType::F32, &dev)?,
-            scale: 2f64.sqrt(),
-            lay: ActLayout::Nhwc,
-        };
+        let nh = RmsNorm { gamma: Tensor::ones((1, 2, 1, 1), DType::F32, &dev)?, scale: 2f64.sqrt(), lay: ActLayout::Nhwc };
         let xn = x.permute((0, 2, 3, 1))?.contiguous()?;
-        let o2 = nh
-            .forward_silu(&xn, None, false)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
+        let o2 = nh.forward_silu(&xn, None, false)?.flatten_all()?.to_vec1::<f32>()?;
         assert_eq!(out, o2);
         Ok(())
     }
@@ -1259,12 +1173,7 @@ mod tests {
     #[test]
     fn dup_up_gather_formula_matches() -> Result<()> {
         let dev = Device::Cpu;
-        for &(in_c, out_c, ft) in &[
-            (16usize, 16usize, 2usize),
-            (16, 8, 2),
-            (8, 4, 1),
-            (12, 6, 2),
-        ] {
+        for &(in_c, out_c, ft) in &[(16usize, 16usize, 2usize), (16, 8, 2), (8, 4, 1), (12, 6, 2)] {
             let (h, w) = (3usize, 2usize);
             let x = Tensor::randn(0f32, 1f32, (1, in_c, h, w), &dev)?;
             let y = dup_up(&x, in_c, out_c, ft)?;
