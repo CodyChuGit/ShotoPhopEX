@@ -133,22 +133,7 @@ pub struct Embedding {
     pub split_ms: [u64; 3],
 }
 
-/// The node's knobs.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Options {
-    /// `sigmoid(score)` above this keeps a detection (ComfyUI: 0.5).
-    pub threshold: f32,
-    /// Detections kept per text prompt, best first (ComfyUI: 1 unless the prompt says `:N`).
-    pub max_detections: usize,
-    /// Tracker refinement passes (ComfyUI: 2; 0 keeps the detector's masks).
-    pub refine_iterations: usize,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2 }
-    }
-}
+pub use crate::graph::Options;
 
 /// Timings of one request.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

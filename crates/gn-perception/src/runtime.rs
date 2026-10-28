@@ -27,14 +27,7 @@ pub struct RuntimeConfig {
     pub profile_dir: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Device {
-    /// The CUDA execution provider on GPU `ordinal`; falls back to the CPU provider for operators
-    /// CUDA cannot run.
-    Cuda { ordinal: i32 },
-    /// The CPU provider only.
-    Cpu,
-}
+pub use crate::graph::Device;
 
 /// An open runtime: one environment, sessions created from it. Cloning shares the environment.
 #[derive(Clone)]
