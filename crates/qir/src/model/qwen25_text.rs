@@ -131,13 +131,22 @@ impl Qwen25TextEncoder {
         })
     }
 
-    /// Stream blocks for CPU parity; the embedding stays bf16 until its rows are gathered.
+    /// CUDA retains blocks for both prompts; CPU streams them. Embeddings stay bf16 until gathered.
     pub fn from_file(path: impl AsRef<Path>, dtype: DType, device: &Device) -> Result<Self> {
         let config = Qwen25Config::default();
         let file = TensorFile::open(path)?;
         let embedding = Embedding::new(file.tensor("model.embed_tokens.weight", device)?, config.hidden_size);
         let norm = RmsNorm::new(file.tensor("model.norm.weight", device)?.to_dtype(dtype)?, config.rms_norm_eps);
-        Ok(Self { config, embedding, norm, blocks: Blocks::Stream(file), device: device.clone(), dtype })
+        let blocks = if device.is_cuda() {
+            Blocks::Resident(
+                (0..config.num_layers)
+                    .map(|i| Block::load(&config, file.builder(&format!("model.layers.{i}."), dtype, device)?))
+                    .collect::<Result<Vec<_>>>()?,
+            )
+        } else {
+            Blocks::Stream(file)
+        };
+        Ok(Self { config, embedding, norm, blocks, device: device.clone(), dtype })
     }
 
     fn validate_config(c: &Qwen25Config) -> Result<()> {

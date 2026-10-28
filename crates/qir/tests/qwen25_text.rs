@@ -115,6 +115,7 @@ fn legacy_marker_and_scale_mapping() -> anyhow::Result<()> {
         assert_eq!(record["full_precision_matrix_mult"], true);
         let layer = LayeredLinear::load(2, 1, true, false, None, vb)?;
         assert_eq!(layer.forward(&Tensor::from_slice(&[2f32, 3.], (1, 2), &dev)?)?.to_vec2::<f32>()?, [[7f32]]);
+        drop(file);
         // A corrupt offset must be rejected before any tensor is read.
         let mut bytes = std::fs::read(&path)?;
         bytes.pop();

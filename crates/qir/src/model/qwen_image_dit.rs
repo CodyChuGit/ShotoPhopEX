@@ -6,31 +6,14 @@ use candle_nn::{Module, VarBuilder};
 
 use crate::Result;
 
-/// Read individual tensors without mapping or copying the entire 20 GB checkpoint.
-/// Builders retain only the header; callers control block residency by dropping blocks.
+/// Map immutable checkpoints once; keep quantization metadata on the host to avoid upload fences.
 pub fn checkpoint_builder(path: impl AsRef<std::path::Path>, device: &Device) -> Result<VarBuilder<'static>> {
-    use std::io::Read;
-    let path = path.as_ref().to_path_buf();
-    let mut file = std::fs::File::open(&path)?;
-    let mut len = [0; 8];
-    file.read_exact(&mut len)?;
-    let len = u64::from_le_bytes(len);
-    anyhow::ensure!(len < 256 << 20, "oversized safetensors header");
-    let mut header = vec![0; len as usize];
-    file.read_exact(&mut header)?;
-    let header: serde_json::Value = serde_json::from_slice(&header)?;
-    Ok(VarBuilder::from_backend(
-        Box::new(Checkpoint { path, header, offset: len + 8 }),
-        if device.is_cuda() { DType::BF16 } else { DType::F32 },
-        device.clone(),
-    ))
+    // SAFETY: installed checkpoints must not be modified while a split is running.
+    let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(path)? };
+    Ok(VarBuilder::from_backend(Box::new(Checkpoint(tensors)), if device.is_cuda() { DType::BF16 } else { DType::F32 }, device.clone()))
 }
 
-struct Checkpoint {
-    path: std::path::PathBuf,
-    header: serde_json::Value,
-    offset: u64,
-}
+struct Checkpoint(candle_core::safetensors::MmapedSafetensors);
 
 impl candle_nn::var_builder::SimpleBackend for Checkpoint {
     fn get(&self, shape: candle_core::Shape, name: &str, _: candle_nn::Init, dtype: DType, device: &Device) -> candle_core::Result<Tensor> {
@@ -42,32 +25,12 @@ impl candle_nn::var_builder::SimpleBackend for Checkpoint {
     }
 
     fn get_unchecked(&self, name: &str, dtype: DType, device: &Device) -> candle_core::Result<Tensor> {
-        use std::io::{Read, Seek, SeekFrom};
-        let parse = || -> Result<Tensor> {
-            let entry = self.header.get(name).ok_or_else(|| anyhow::anyhow!("missing checkpoint tensor {name}"))?;
-            let shape = serde_json::from_value::<Vec<usize>>(entry["shape"].clone())?;
-            let offsets = serde_json::from_value::<[u64; 2]>(entry["data_offsets"].clone())?;
-            let stored = match entry["dtype"].as_str() {
-                Some("BF16") => DType::BF16,
-                Some("F32") => DType::F32,
-                Some("F16") => DType::F16,
-                Some("F8_E4M3") => DType::F8E4M3,
-                Some("U8") => DType::U8,
-                other => anyhow::bail!("{name}: unsupported stored dtype {other:?}"),
-            };
-            let size = offsets[1].checked_sub(offsets[0]).ok_or_else(|| anyhow::anyhow!("invalid tensor offsets"))?;
-            anyhow::ensure!(size <= 1 << 30, "oversized tensor {name}");
-            let mut file = std::fs::File::open(&self.path)?;
-            file.seek(SeekFrom::Start(self.offset + offsets[0]))?;
-            let mut bytes = vec![0; size as usize];
-            file.read_exact(&mut bytes)?;
-            Ok(Tensor::from_raw_buffer(&bytes, stored, &shape, device)?.to_dtype(dtype)?)
-        };
-        parse().map_err(|e| candle_core::Error::Msg(e.to_string()))
+        let host = name.ends_with(".comfy_quant") || name.ends_with(".weight_scale");
+        self.0.load(name, if host { &Device::Cpu } else { device })?.to_dtype(dtype)
     }
 
     fn contains_tensor(&self, name: &str) -> bool {
-        self.header.get(name).is_some()
+        self.0.get(name).is_ok()
     }
 }
 
@@ -116,7 +79,7 @@ impl LayeredLinear {
             return Ok(l.forward(x)?.broadcast_add(&self.bias)?);
         }
         let y = match (&self.dense, &self.fp8) {
-            (Some(dense), _) => dense.forward(x)?,
+            (Some(dense), _) => crate::profile::scope("layered dense linear", 0.0, x.device(), || Ok(dense.forward(x)?))?,
             (_, Some((weight, scale))) => {
                 // Comfy's eager dequantization casts BOTH operands to the compute dtype.
                 // The shared fp8 reader rounds scales to bf16 even for CPU f32 inputs.
@@ -137,12 +100,29 @@ impl LayeredLinear {
 
 /// Non-affine LayerNorm accumulates in f32, including on CUDA.
 fn layer_norm(x: &Tensor) -> Result<Tensor> {
+    crate::profile::scope("layered layer_norm", 0.0, x.device(), || layer_norm_impl(x))
+}
+
+fn layer_norm_impl(x: &Tensor) -> Result<Tensor> {
+    if x.device().is_cuda() && x.dtype() == DType::BF16 {
+        let n = x.dim(D::Minus1)?;
+        return Ok(candle_nn::ops::layer_norm(x, &Tensor::ones(n, x.dtype(), x.device())?, &Tensor::zeros(n, x.dtype(), x.device())?, 1e-6)?);
+    }
     let f = x.to_dtype(DType::F32)?;
     let centered = f.broadcast_sub(&f.mean_keepdim(D::Minus1)?)?;
     Ok(centered.broadcast_div(&(centered.sqr()?.mean_keepdim(D::Minus1)? + 1e-6)?.sqrt()?)?.to_dtype(x.dtype())?)
 }
 
 fn rms_norm(x: &Tensor, weight: &Tensor) -> Result<Tensor> {
+    crate::profile::scope("layered rms_norm", 0.0, x.device(), || rms_norm_impl(x, weight))
+}
+
+fn rms_norm_impl(x: &Tensor, weight: &Tensor) -> Result<Tensor> {
+    if x.device().is_cuda() && x.dtype() == DType::BF16 {
+        let n = x.dim(D::Minus1)?;
+        let normalized = candle_nn::ops::rms_norm(x, &Tensor::ones(n, x.dtype(), x.device())?, 1e-6)?;
+        return Ok(normalized.broadcast_mul(weight)?);
+    }
     let f = x.to_dtype(DType::F32)?;
     // PyTorch RMSNorm casts the normalized result before multiplying the weight.
     Ok(f.broadcast_div(&(f.sqr()?.mean_keepdim(D::Minus1)? + 1e-6)?.sqrt()?)?.to_dtype(x.dtype())?.broadcast_mul(weight)?)
@@ -150,6 +130,22 @@ fn rms_norm(x: &Tensor, weight: &Tensor) -> Result<Tensor> {
 
 /// Match addcmul's single bf16 rounding at modulation and gated residual boundaries.
 fn add_product(base: &Tensor, left: &Tensor, right: &Tensor) -> Result<Tensor> {
+    crate::profile::scope("layered add_product", 0.0, base.device(), || add_product_impl(base, left, right))
+}
+
+fn add_product_impl(base: &Tensor, left: &Tensor, right: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "fusednorm")]
+    if base.device().is_cuda() && base.dtype() == DType::BF16 && base.rank() == 3 {
+        if left.dim(1)? == 1 {
+            let gate = left.broadcast_as((base.dim(0)?, 1, base.dim(2)?))?;
+            return crate::krea2_fused::gate_add(base, right, &gate, 0);
+        }
+        if right.dim(1)? == 1 {
+            let base = base.broadcast_as(left.shape())?.contiguous()?;
+            let gate = right.broadcast_as((base.dim(0)?, 1, base.dim(2)?))?;
+            return crate::krea2_fused::gate_add(&base, left, &gate, 0);
+        }
+    }
     Ok(left.to_dtype(DType::F32)?.broadcast_mul(&right.to_dtype(DType::F32)?)?.broadcast_add(&base.to_dtype(DType::F32)?)?.to_dtype(base.dtype())?)
 }
 
@@ -226,6 +222,18 @@ impl LayeredRope {
     }
 
     fn apply(&self, x: &Tensor) -> Result<Tensor> {
+        crate::profile::scope("layered rope", 0.0, x.device(), || self.apply_impl(x))
+    }
+
+    fn apply_impl(&self, x: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "cuda")]
+        if x.device().is_cuda() && x.dtype() == DType::BF16 {
+            return Ok(x.apply_op3_no_bwd(&self.cos, &self.sin, &cuda_rope::Rope)?);
+        }
+        self.apply_unfused(x)
+    }
+
+    fn apply_unfused(&self, x: &Tensor) -> Result<Tensor> {
         let (b, h, s, d) = x.dims4()?;
         anyhow::ensure!(d == HEAD_DIM, "Layered RoPE needs 128-wide heads");
         let pairs = x.reshape((b, h, s, 64, 2))?;
@@ -347,6 +355,18 @@ impl LayeredBlock {
     }
 
     pub fn forward(&self, image: &Tensor, text: &Tensor, temb: &Tensor, rope: &LayeredRope) -> Result<(Tensor, Tensor)> {
+        self.forward_masked(image, text, temb, rope, None)
+    }
+
+    /// Mask padded text keys in either CFG lane; padded queries are discarded.
+    pub fn forward_masked(
+        &self,
+        image: &Tensor,
+        text: &Tensor,
+        temb: &Tensor,
+        rope: &LayeredRope,
+        padding: Option<(usize, usize)>,
+    ) -> Result<(Tensor, Tensor)> {
         let activated = candle_nn::ops::silu(temb)?;
         let im = self.image.modulation.forward(&activated)?;
         let tm = self.text.modulation.forward(&activated)?;
@@ -356,26 +376,55 @@ impl LayeredBlock {
         let k = rope.apply(&Tensor::cat(&[tk, ik], 2)?)?;
         let v = Tensor::cat(&[tv, iv], 2)?;
         let (b, _, s, _) = q.dims4()?;
-        let attention = joint_attention(&q, &k, &v)?.reshape((b, s, WIDTH))?;
+        let attention = joint_attention(&q, &k, &v, padding)?.reshape((b, s, WIDTH))?;
         let nt = text.dim(1)?;
         Ok((self.image.finish(image, &attention.narrow(1, nt, image.dim(1)?)?, &im)?, self.text.finish(text, &attention.narrow(1, 0, nt)?, &tm)?))
     }
 }
 
 /// Exact bidirectional attention; cap temporary scores by chunking queries.
-fn joint_attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
+fn joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>) -> Result<Tensor> {
+    crate::profile::scope("layered joint_attention", 0.0, q.device(), || joint_attention_impl(q, k, v, padding))
+}
+
+fn joint_attention_impl(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>) -> Result<Tensor> {
     let scale = 1.0 / (HEAD_DIM as f64).sqrt();
+    if let Some((positive, negative)) = padding {
+        anyhow::ensure!(q.dim(0)? == 2 && positive > 0 && negative > 0 && positive.max(negative) < q.dim(2)?, "invalid CFG padding");
+    }
     #[cfg(feature = "flash")]
     if q.device().is_cuda() && q.dtype() == DType::BF16 {
+        if let Some((positive, negative)) = padding {
+            let tokens = positive.max(negative);
+            let mut lanes = Vec::with_capacity(2);
+            for (lane, valid) in [positive, negative].into_iter().enumerate() {
+                let bias = (valid < tokens).then_some(crate::flash::KeyBias { rows_from: 0, keys: (valid, tokens), log_boost: f32::NEG_INFINITY });
+                lanes.push(crate::flash::attention_biased(&q.narrow(0, lane, 1)?, &k.narrow(0, lane, 1)?, &v.narrow(0, lane, 1)?, scale as f32, bias)?);
+            }
+            return Ok(Tensor::cat(&lanes, 0)?);
+        }
         return crate::flash::attention(q, k, v, scale as f32);
     }
     let keys = k.to_dtype(DType::F32)?.transpose(2, 3)?.contiguous()?;
     let values = v.to_dtype(DType::F32)?.contiguous()?;
     let n = q.dim(2)?;
+    let bias = padding
+        .map(|(positive, negative)| {
+            let tokens = positive.max(negative);
+            let mut bias = vec![0f32; 2 * n];
+            bias[positive..tokens].fill(f32::NEG_INFINITY);
+            bias[n + negative..n + tokens].fill(f32::NEG_INFINITY);
+            Tensor::from_vec(bias, (2, 1, 1, n), q.device())
+        })
+        .transpose()?;
     let mut out = Vec::new();
     for start in (0..n).step_by(128) {
         let query = q.narrow(2, start, 128.min(n - start))?.to_dtype(DType::F32)?.contiguous()?;
         let scores = (query.matmul(&keys)? * scale)?;
+        let scores = match &bias {
+            Some(bias) => scores.broadcast_add(bias)?,
+            None => scores,
+        };
         out.push(candle_nn::ops::softmax_last_dim(&scores)?.matmul(&values)?);
     }
     Ok(Tensor::cat(&out, 2)?.to_dtype(v.dtype())?.transpose(1, 2)?.contiguous()?)
@@ -424,7 +473,7 @@ impl LayeredDit {
     /// Every block resident, read from the checkpoint as `open_streamed` reads it (fp8 kept
     /// until each matmul): about 20 GB on the GPU, for a worker that splits more than once.
     pub fn open_resident(path: impl AsRef<std::path::Path>, device: &Device) -> Result<Self> {
-        Self::load(checkpoint_builder(path, device)?)
+        Self::load(crate::layered_files::TensorFile::open(path)?.resident_builder(if device.is_cuda() { DType::BF16 } else { DType::F32 }, device)?)
     }
 
     /// Keep only one block resident at a time, including when running on CPU.
@@ -444,18 +493,173 @@ impl LayeredDit {
         txt_positions: &Tensor,
         additional_t_cond: Option<&Tensor>,
     ) -> Result<Tensor> {
+        let rope = LayeredRope::new(&Tensor::cat(&[txt_positions, img_positions], 1)?, img_tokens.dtype())?;
+        self.forward_prepared(img_tokens, txt_tokens, timestep, additional_t_cond, &rope, None)
+    }
+
+    /// Reuse split-local RoPE tables and optionally batch positive/negative CFG lanes.
+    pub fn forward_prepared(
+        &self,
+        img_tokens: &Tensor,
+        txt_tokens: &Tensor,
+        timestep: &Tensor,
+        additional_t_cond: Option<&Tensor>,
+        rope: &LayeredRope,
+        padding: Option<(usize, usize)>,
+    ) -> Result<Tensor> {
         let (mut img, mut txt) = self.input.project(img_tokens, txt_tokens)?;
         let temb = self.input.timestep(timestep, additional_t_cond)?;
-        let rope = LayeredRope::new(&Tensor::cat(&[txt_positions, img_positions], 1)?, img.dtype())?;
         for block in &self.blocks {
-            (img, txt) = block.forward(&img, &txt, &temb, &rope)?;
+            (img, txt) = block.forward_masked(&img, &txt, &temb, rope, padding)?;
         }
         if let Some(vb) = &self.streamed {
             for i in 0..BLOCKS {
                 let block = LayeredBlock::load(vb.pp(format!("transformer_blocks.{i}")))?;
-                (img, txt) = block.forward(&img, &txt, &temb, &rope)?;
+                (img, txt) = block.forward_masked(&img, &txt, &temb, rope, padding)?;
             }
         }
         self.output.forward(&img, &temb)
+    }
+}
+
+/// Layered's bf16 first product must round before addcmul, unlike the shared RoPE kernel.
+#[cfg(feature = "cuda")]
+mod cuda_rope {
+    use candle_core::backend::BackendStorage;
+    use candle_core::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+    use candle_core::cuda_backend::cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
+    use candle_core::{CpuStorage, CudaStorage, Layout, Shape};
+    use std::sync::OnceLock;
+
+    pub(super) struct Rope;
+
+    const SOURCE: &str = r#"
+__device__ float bf(unsigned short x) { return __uint_as_float((unsigned int)x << 16); }
+__device__ unsigned short rb(float x) {
+    unsigned short y;
+    asm("cvt.rn.bf16.f32 %0, %1;" : "=h"(y) : "f"(x));
+    return y;
+}
+extern "C" __global__ void layered_rope(const unsigned short *x, const unsigned short *c,
+                                      const unsigned short *s, unsigned short *y,
+                                      unsigned int pairs, unsigned int seq, unsigned int heads,
+                                      unsigned int table_batches) {
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= pairs) return;
+    unsigned int p = i % (seq * 64);
+    if (table_batches > 1) p += (i / (heads * seq * 64)) * seq * 64;
+    float a = bf(x[2*i]), z = bf(x[2*i+1]), cs = bf(c[p]), sn = bf(s[p]);
+    y[2*i] = rb(bf(rb(a * cs)) - z * sn);
+    y[2*i+1] = rb(bf(rb(a * sn)) + z * cs);
+}
+"#;
+
+    impl candle_core::CustomOp3 for Rope {
+        fn name(&self) -> &'static str {
+            "layered-rope"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+            candle_core::bail!("Layered fused RoPE requires CUDA")
+        }
+        fn cuda_fwd(
+            &self,
+            x: &CudaStorage,
+            xl: &Layout,
+            c: &CudaStorage,
+            cl: &Layout,
+            s: &CudaStorage,
+            sl: &Layout,
+        ) -> candle_core::Result<(CudaStorage, Shape)> {
+            let (b, h, seq, d) = xl.shape().dims4()?;
+            let (cb, ch, cs, cd) = cl.shape().dims4()?;
+            if d != 128 || ch != 1 || cs != seq || cd != 64 || (cb != 1 && cb != b) || cl.shape() != sl.shape() {
+                candle_core::bail!("invalid Layered RoPE dimensions");
+            }
+            let dev = x.device().clone();
+            fn view<'a>(storage: &'a CudaStorage, layout: &Layout) -> candle_core::Result<candle_core::cuda_backend::cudarc::driver::CudaView<'a, half::bf16>> {
+                let (a, z) = layout.contiguous_offsets().ok_or_else(|| candle_core::Error::Msg("Layered RoPE requires dense inputs".into()))?;
+                Ok(storage.as_cuda_slice::<half::bf16>()?.slice(a..z))
+            }
+            let (x, c, s) = (view(x, xl)?, view(c, cl)?, view(s, sl)?);
+            // Compile once per process; the device caches the loaded module across steps.
+            static PTX: OnceLock<std::result::Result<String, String>> = OnceLock::new();
+            let ptx = PTX.get_or_init(|| {
+                compile_ptx_with_opts(SOURCE, CompileOptions { arch: Some("compute_80"), fmad: Some(false), ..Default::default() })
+                    .map(|p| p.to_src())
+                    .map_err(|e| e.to_string())
+            });
+            let ptx = ptx.as_ref().map_err(|e| candle_core::Error::Msg(e.clone()))?;
+            let func = dev.get_or_load_custom_func("layered_rope", "layered-rope", ptx)?;
+            let pairs = u32::try_from(b * h * seq * 64).map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+            // SAFETY: the kernel writes each of the allocated output elements exactly once.
+            let out = unsafe { dev.alloc::<half::bf16>(b * h * seq * d)? };
+            let mut builder = func.builder();
+            builder.arg(&x).arg(&c).arg(&s).arg(&out);
+            candle_core::builder_arg!(builder, pairs, seq as u32, h as u32, cb as u32);
+            unsafe { builder.launch(LaunchConfig::for_num_elems(pairs)) }.map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+            Ok((CudaStorage::wrap_cuda_slice(out, dev), xl.shape().clone()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod layered_tests {
+    use super::*;
+
+    fn error(a: &Tensor, b: &Tensor) -> Result<f32> {
+        Ok((a.to_dtype(DType::F32)? - b.to_dtype(DType::F32)?)?.abs()?.max_all()?.to_scalar::<f32>()?)
+    }
+
+    fn padding_check(dev: &Device, dtype: DType) -> Result<()> {
+        let q = Tensor::randn(0f32, 0.5, (2, 2, 11, 128), dev)?.to_dtype(dtype)?;
+        let k = Tensor::randn(0f32, 0.5, (2, 2, 11, 128), dev)?.to_dtype(dtype)?;
+        let v = Tensor::randn(0f32, 0.5, (2, 2, 11, 128), dev)?.to_dtype(dtype)?;
+        for lengths in [(4, 2), (2, 4)] {
+            let actual = joint_attention(&q, &k, &v, Some(lengths))?;
+            for (lane, valid) in [lengths.0, lengths.1].into_iter().enumerate() {
+                let compact = |t: &Tensor| -> Result<Tensor> {
+                    let t = t.narrow(0, lane, 1)?;
+                    Ok(Tensor::cat(&[t.narrow(2, 0, valid)?, t.narrow(2, 4, 7)?], 2)?)
+                };
+                let expected = joint_attention(&q.narrow(0, lane, 1)?, &compact(&k)?, &compact(&v)?, None)?;
+                let err = error(&actual.narrow(0, lane, 1)?, &expected)?;
+                assert!(err < 0.01, "padding lane {lane}: {err}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn padded_cfg_keys_match_separate_attention() -> Result<()> {
+        padding_check(&Device::Cpu, DType::F32)?;
+        #[cfg(feature = "flash")]
+        padding_check(&Device::new_cuda(0)?, DType::BF16)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn fused_rope_and_broadcast_addcmul_preserve_rounding() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        for batch in [1, 2] {
+            let ids = text_positions(batch, 13, 4, 6, &dev)?;
+            let rope = LayeredRope::new(&ids, DType::BF16)?;
+            // Include a nonzero storage offset and both shared and per-lane tables.
+            let x = Tensor::randn(0f32, 1.0, (3, 2, 13, 128), &dev)?.to_dtype(DType::BF16)?.narrow(0, 1, 2)?;
+            assert_eq!(error(&rope.apply(&x)?, &rope.apply_unfused(&x)?)?, 0.0);
+        }
+        let x = Tensor::randn(0f32, 1.0, (2, 19, 128), &dev)?.to_dtype(DType::BF16)?;
+        let gate = Tensor::randn(0f32, 1.0, (1, 1, 128), &dev)?.to_dtype(DType::BF16)?;
+        let value = Tensor::randn(0f32, 1.0, (2, 19, 128), &dev)?.to_dtype(DType::BF16)?;
+        let expected =
+            x.to_dtype(DType::F32)?.broadcast_add(&value.to_dtype(DType::F32)?.broadcast_mul(&gate.to_dtype(DType::F32)?)?)?.to_dtype(DType::BF16)?;
+        assert_eq!(error(&add_product(&x, &gate, &value)?, &expected)?, 0.0);
+        let expected = gate.to_dtype(DType::F32)?.broadcast_add(&x.to_dtype(DType::F32)?.broadcast_mul(&gate.to_dtype(DType::F32)?)?)?.to_dtype(DType::BF16)?;
+        assert_eq!(error(&add_product(&gate, &x, &gate)?, &expected)?, 0.0);
+        let f = x.to_dtype(DType::F32)?;
+        let centered = f.broadcast_sub(&f.mean_keepdim(D::Minus1)?)?;
+        let norm = centered.broadcast_div(&(centered.sqr()?.mean_keepdim(D::Minus1)? + 1e-6)?.sqrt()?)?.to_dtype(DType::BF16)?;
+        assert!(error(&layer_norm(&x)?, &norm)? <= 0.015625);
+        Ok(())
     }
 }
