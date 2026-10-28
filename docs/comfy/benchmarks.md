@@ -61,6 +61,15 @@ vocabulary on the CPU, bounded VAE scratch; outputs within 0.06/255 of before;
 
 (The cold column of this rerun is not comparable: each case started its own worker.)
 
+**Upscale** (2026-10-28 evening): PhotoshopEX `3b6f3ca5` made the app side faster with
+byte-identical output (54.1 → 47.5 s; `research/notes/upscale-native-speed.md`), and genai-native
+`3da83bd` merges a LoRA into the resident INT8 weights once per binding as ComfyUI does (the
+Restore LoRA had cost 14.5 s of side-path GEMMs per six tiles) and runs the DiT prefix through
+the flash kernel; tiles within 0.0036/255 of before, Krea 2 with a LoRA byte-identical
+(`crates/qir/tools/lora_runtime_performance.md`). Native upscale 2× warm through the app:
+**40.6 s** against ComfyUI's 39.0 s with the same Restore LoRA (1.04×; the six model calls are
+faster natively, the remainder is the app's per-tile work).
+
 **Upscale follow-up, 2026-10-28:** [phase report](research/notes/upscale-native-speed.md).
 Small CPU optimizations preserve byte-identical outputs on both routes (seeds 20/21). New
 unprofiled native warm: 47.5 s with default Restore 0.5, versus 30.8 s with that adapter disabled
