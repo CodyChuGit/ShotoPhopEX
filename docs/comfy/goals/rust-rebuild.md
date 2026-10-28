@@ -36,7 +36,7 @@ progress log (newest last). The plan behind it is `docs/comfy/plan-native-engine
    (`plan-native-engine.md` §12.1) or beats it on a measured benchmark, and is at least as
    fast. Tests, clippy, wasm, layers, parity and scorecard gates stay green at every commit.
 
-## 2. Where it stands (2026-10-27)
+## 2. Where it stands (2026-10-28)
 
 | Feature | Default model | Native today | Left to do |
 |---|---|---|---|
@@ -46,13 +46,13 @@ progress log (newest last). The plan behind it is `docs/comfy/plan-native-engine
 | Generative Expand | 2.1 expand | yes | — |
 | Generative Edit | 2.1 edit; Krea 2 edit (General Edit V2) | yes | — |
 | Remove Background (matte) | 2.1 matte | yes | — |
-| Select by text / subject / point, Object Selection | SAM 3.1 | **on candle from ComfyUI's checkpoint** when it is there (since 2026-10-27; the ONNX graphs otherwise) | speed: by text on a new picture 1.7 s against ONNX Runtime's 0.35 s (R1 step 10), then ONNX Runtime out (R5) |
+| Select by text / subject / point, Object Selection | SAM 3.1 | **on candle from ComfyUI's checkpoint**, f16 on the GPU (since 2026-10-28: by text on a new picture 273–278 ms through the app against ONNX Runtime's 249–346 ms); the -Native build has no ONNX Runtime at all | — (the ONNX graphs stay as the fallback of builds without `native-diffusion`) |
 | Prompt rewriter, judge, naming | 2.1's Qwen3-VL 8B as a chat model | yes | — |
 | Fill from a reference | 2.1 edit by instruction (since 2026-10-27; 2511 fill-ref without the opt-in) | yes | — |
 | Image from references | 2.1 image-ref (since 2026-10-27; 2511 image-ref without the opt-in) | yes | — |
 | Generative Angles | 2.1 edit by a camera instruction (since 2026-10-27; 2511 + Multiple Angles LoRA without the opt-in) | yes | compare with 2511 + the LoRA (not installed here) |
 | Krea 2 style reference | Krea 2 + style LoRA | no (ComfyUI) | the Krea 2 reference path exists now; the style LoRA (R2) |
-| Split into layers | Qwen-Image-Layered | yes with `engine = native` (at parity since 2026-10-27) | speed: 86 s against ComfyUI's 58 s, then `auto` |
+| Split into layers | Qwen-Image-Layered | yes, under `auto` (at parity; 57 s against ComfyUI's 58 s at 640 px, 2026-10-27) | speed at the owner's 1 MP 3:4 size (179 s against 140 s; the documentation-pass session's Codex job) |
 | Generative Upscale | 2.1 edit tiles | yes | — |
 
 ## 3. The queue
@@ -66,12 +66,12 @@ time.
 | # | Work | Owner | Gate |
 |---|---|---|---|
 | R0 | Inventory of every Python / ComfyUI / ONNX Runtime dependency at run, build and setup time | Codex (audit), Claude (check) | the table in §2 confirmed with file:line |
-| R1 | **SAM 3.1 on candle** (`gn-perception` without `ort`): the vision backbone, text encoder, geometry encoder, transformer, heads and mask decoder, read from ComfyUI's checkpoint | Codex (porting spec, dump scripts), Claude (port) | masks at IoU ≥ 0.99 against the ONNX route on the harness's `sam` suite; select.byText as fast or faster; `ort` out of the worker |
+| R1 | ✅ 2026-10-28. **SAM 3.1 on candle** (`gn-perception` without `ort`): the vision backbone, text encoder, geometry encoder, transformer, heads and mask decoder, read from ComfyUI's checkpoint | Codex (porting spec, dump scripts), Claude (port) | masks at IoU ≥ 0.99 against the ONNX route on the harness's `sam` suite; select.byText as fast or faster; `ort` out of the worker |
 | R2 | **The 2511 holdouts on native routes**: fill from a reference and image from references (2.1 edit takes nine references; Krea 2 edit LoRAs take two), Generative Angles (Krea 2 + `krea2_anygles`, or 2.1), the Krea 2 style reference | Claude; Codex reviews | each beats or matches its 2511 route on a small benchmark like the swap set; then `auto` sends them native |
-| R3 | **Qwen-Image-Layered native** (`generate.split`) | Codex (porting spec), Claude (port) | the split's layers at the harness's rule against the ComfyUI route |
+| R3 | ✅ at 640 px, 2026-10-27 (1 MP speed open). **Qwen-Image-Layered native** (`generate.split`) | Codex (porting spec), Claude (port) | the split's layers at the harness's rule against the ComfyUI route |
 | R4 | **One models folder in ComfyUI's layout**: the worker resolves each model from `diffusion_models/`, `text_encoders/`, `vae/`, `loras/` by file name (Krea 2 already runs from ComfyUI's fp8 files; 2.1 still wants a diffusers snapshot), the first run defaults to ComfyUI's folder when one exists, a "Get models" page of links | Claude; Codex writes the resolver tests | the walkthrough with `integrations.modelsPath` = ComfyUI's `models` folder and nothing else |
-| R5 | **Packaging**: the runtime folder without ONNX Runtime and cuDNN, the clean-profile install, the walkthrough from the zip | Claude; Codex scripts the clean-profile check | §1.2, §1.4 |
-| R6 | **Native by default**: `integrations.engine` defaults to native when the worker has its folders; the ComfyUI sidecar only when asked; the permissive build's defaults decided with the owner (2.1 is research-only) | Claude, the owner decides the licence question | §1.1 |
+| R5 | ✅ 2026-10-28 (the profile is a fresh one in this account, not a second Windows account). **Packaging**: the runtime folder without ONNX Runtime and cuDNN, the clean-profile install, the walkthrough from the zip | Claude; Codex scripts the clean-profile check | §1.2, §1.4 |
+| R6 | ⏳ waits on the owner's licence decision (`auto` already prefers the worker). **Native by default**: `integrations.engine` defaults to native when the worker has its folders; the ComfyUI sidecar only when asked; the permissive build's defaults decided with the owner (2.1 is research-only) | Claude, the owner decides the licence question | §1.1 |
 
 Order: R0 → R1 and R3 specs in parallel (Codex) while Claude does R2 (no new models needed) →
 R1 port → R4 → R3 port → R5 → R6.
@@ -183,3 +183,44 @@ step, the dev log and roadmap updated.
   pixels and alpha IoU ≥ 0.996 at 1 MP and at the 640 default (480×640), but native is slower
   there (179 s vs 140 s; 44 s vs 36 s). Codex on that. (An earlier metric averaged RGB under
   zero alpha too and reported 14/255; `layered-live.ps1` now counts visible pixels only.)
+- 2026-10-28, overnight (after a PC crash at about 23:47: Kernel-Power 41, bugcheck 0, no GPU
+  driver or WHEA event; my -Native build and the documentation-pass session's 1 MP Layered
+  benchmark were both running, so the cause is not pinned): **R1, R5 done; R6 waits on the
+  owner.**
+  - **The Layered RoPE kernel compiled at build time** (genai-native `b4fe9e7`,
+    `kernels/fusednorm/layered_rope.cu`): Codex's version compiled through NVRTC at run time,
+    and the packaged runtime folder has no nvrtc library. Bit-identical to the unfused path.
+    `c3b1659`: gn-segment's `sam31_f16` example requires `cuda`, so `--all-targets` checks again.
+  - **ONNX Runtime out of the -Native build** (genai-native `d10fafa`, `2849310`; PhotoshopEX
+    `94cbfe7a`): `gn-perception`'s `onnx` feature (default on), PhotoshopEX's `sam-onnx` (the
+    apps' default; the workspace takes `photocraft-genai` without defaults), `package.ps1
+    -Native` builds with `--no-default-features`: `cargo tree` has no `ort` in the -Native graph
+    and still has it in the plain one. A build with neither SAM backend compiles and answers
+    ModelMissing.
+  - **SAM 3.1 in f16 by default** (genai-native `766ecb0` `--sam-precision`; PhotoshopEX
+    `cd33f8bc`, `PHOTOCRAFT_SAM_PRECISION=f32` to go back): `sam-live.ps1` through the app, by
+    text on a new picture **273–278 ms** against ONNX Runtime's 249–346 ms and candle f32's
+    508–515 ms; points 28 ms (ONNX 27–36); masks within 0.3 % of f32's pixels. F16.md: every
+    available mask at IoU ≥ 0.993 against ComfyUI's own f32 node (3 of its 12 pictures have no
+    object to find, so 9 positives back the gate).
+  - **The -Native zip** (`package.ps1 -Arch x64 -Native -NoMsi`, PhotoshopEX `8a05359c`,
+    `14793b47`: `-NoMsi` for a machine without WiX; the CUDA kernels compiled `/MT` because the
+    package links the C runtime statically): **557 MB** with the 581 MB runtime folder
+    (cuBLAS, cuBLASLt, cuRAND, cudart).
+  - **Clean profile** (`clean-profile-native.ps1`, `ed14c8f8` … `ddf59025`): the zip unpacked
+    fresh, APPDATA / LOCALAPPDATA / USERPROFILE / TEMP in a new folder (empty qir cache), a
+    Windows-only PATH, ComfyUI neither running nor configured, engine = native, models from
+    ComfyUI's `models` folder, research models allowed. **11 of 11** cases, each in its own CLI
+    process from cold: image (Krea 2) 21–25 s, by text 2.1–2.3 s, by point 1.4–1.5 s, fill
+    32–34 s, Remove 15 s, edit 13 s, expand 12–13 s, matte 13 s (41 s with an empty cache),
+    angles 13 s, upscale 2× 82–83 s, split 62–63 s. **No python.exe started; the worker loaded
+    63 modules and none of onnxruntime, cudnn, python or torch**; from the zip it loaded only
+    cuBLAS, cuBLASLt and cuRAND.
+  - Found on the way: **Remove Background with an empty prompt** (2.1 matte) kept nothing on 3
+    of 5 random seeds; with "the man" 3 of 3 at 514–515 k pixels. Not a rebuild regression (the
+    route's own behaviour), open for the owner.
+  - **R6**: `integrations.engine` is `auto` by default and `auto` already sends every template
+    the worker serves to it (`native_serving`); the ComfyUI sidecar starts only for a template the
+    worker does not serve. What stays on ComfyUI in the permissive build (research models off,
+    the default): prompted fill, edit, expand, the removals, angles and upscale default to
+    Qwen-Image-Edit-2511 there. Left as it is: the licence decision is the owner's.

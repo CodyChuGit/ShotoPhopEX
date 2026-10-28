@@ -4,6 +4,25 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-28 (overnight): Rust rebuild: no ONNX Runtime, the -Native zip from a clean profile
+
+Details and every commit in `goals/rust-rebuild.md` §5; the morning summary in
+`goals/rust-rebuild-morning.md`.
+- **R1 done**: ONNX Runtime behind `gn-perception`'s `onnx` / PhotoshopEX's `sam-onnx` features,
+  off in `package.ps1 -Native` (no `ort` in that graph). SAM 3.1 runs f16 on the GPU by default
+  (`--sam-precision`; `PHOTOCRAFT_SAM_PRECISION=f32` reverts): by text on a new picture 273–278 ms
+  through the app against ONNX Runtime's 249–346 ms (f32 508–515 ms).
+- **R5 done**: the -Native portable zip (557 MB; `-NoMsi` without WiX; CUDA kernels `/MT` for
+  the static CRT) runs all 11 generative cases from a fresh profile with ComfyUI not
+  configured: no python.exe, no onnxruntime / cudnn / python / torch module in the worker.
+- The Layered RoPE kernel moved from run-time NVRTC to a build-time `.cu` (the package has no
+  nvrtc); gn-segment's f16 example needs `cuda`.
+- Open: Remove Background with an empty prompt (2.1 matte) keeps nothing on about half the
+  seeds; R6's permissive defaults (2511 on ComfyUI) wait on the owner; the split at 1 MP.
+- Pitfalls: a PC crash at 23:47 (Kernel-Power 41, no driver event) with a CPU build and another
+  session's GPU benchmark running; Windows PowerShell 5.1 unrolls `if` returning a one-item
+  array (splat it as `@(if …)`), and turns native stderr into terminating errors under `Stop`.
+
 ## 2026-10-27 (night): Rust rebuild: SAM 3.1 in the worker, the Layered split natively
 
 - **SAM 3.1 on candle in the worker** (genai-native `7619fd6`; PhotoshopEX `41b6d0ef` builds it

@@ -308,10 +308,13 @@ the side-by-side rewriter; learnt from AusBoss's Krea 2 clothing workflow, see
 [`goals/rust-rebuild.md`](goals/rust-rebuild.md)): every generative feature in PhotoshopEX's
 own Rust code, one executable, no Python and no ONNX Runtime; the queue R0–R6 (SAM 3.1 on
 candle, the 2511 holdouts, Qwen-Image-Layered, one models folder, packaging, native by
-default) and its progress log live there. As of 2026-10-27: R0 ✅, R2 ✅ (fill and image from
+default) and its progress log live there. As of 2026-10-28: R0 ✅, R2 ✅ (fill and image from
 references, Angles natively), R4 ✅ for 2.1 and Krea 2 (ComfyUI's folder as it is; ComfyUI's
-int8 repacks open), R1 🟡 (SAM 3.1 on candle in the worker at parity; speed open), R3 🟡
-(encoder and DiT ported; the pipeline next), R5 and R6 ⬜.
+int8 repacks in progress), R1 ✅ (SAM 3.1 on candle, f16 on the GPU, as fast as ONNX Runtime
+through the app; no `ort` in the -Native build), R3 ✅ at 640 px (57 s against ComfyUI's 58 s;
+the 1 MP size slower), R5 ✅ (the -Native zip, 557 MB, runs every generative command from a
+fresh profile with no ComfyUI, no Python and no ONNX Runtime or cuDNN), R6 🟡 (`auto` prefers
+the worker already; the permissive defaults wait on the owner's licence decision).
 
 - A second `GenerativeBackend`: in-process inference for small models (candle or burn, pure
   Rust, feature-gated, native only), starting with matting (BiRefNet-class) and a small
