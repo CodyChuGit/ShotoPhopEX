@@ -21,6 +21,8 @@ pub mod convrot_cache;
 #[cfg(feature = "cudnn")]
 pub mod cudnn_conv;
 pub mod device;
+pub mod edit2511_files;
+pub mod edit2511_prep;
 #[cfg(feature = "flash")]
 pub mod flash;
 pub mod fp8;
