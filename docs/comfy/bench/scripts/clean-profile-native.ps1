@@ -67,7 +67,7 @@ $cases = [ordered]@{
     "remove"     = @{ cmds = @(, @("paint.remove", @{ points = @(@(80, 80), @(200, 80), @(200, 200), @(80, 200), @(80, 80)); size = 40; generative = $true; variations = 1 })) }
     "edit"       = @{ cmds = @(, @("generate.edit", @{ prompt = "Make it winter: snow falling and a wool scarf around his neck."; wholePicture = $true; seed = 14 })) }
     "expand"     = @{ cmds = @(, @("generate.expand", @{ right = 256; prompt = ""; seed = 15 })) }
-    "matte"      = @{ cmds = @(, @("generate.removeBackground", @{ prompt = "" })) }
+    "matte"      = @{ cmds = @(, @("generate.removeBackground", @{ prompt = "the man" })) }
     "angles"     = @{ cmds = @(, @("generate.angles", @{ rotation = 45; seed = 16 })) }
     "upscale"    = @{ cmds = @(, @("generate.upscale", @{ scale = 2; seed = 17 })) }
     "split"      = @{ cmds = @(, @("generate.splitLayers", @{ layers = 3; seed = 7 })) }
