@@ -205,6 +205,7 @@ fn auto_runs_qwen_image_2_1_on_the_worker_instead_of_2511() {
         "qwen-2.1/edit".into(),
         "qwen-2.1/expand".into(),
         "qwen-2.1/image-ref".into(),
+        "qwen-layered/split".into(),
         "enhance/edit".into(),
         "enhance/image".into(),
         "sam3.1/segment".into(),
@@ -248,6 +249,9 @@ fn auto_runs_qwen_image_2_1_on_the_worker_instead_of_2511() {
     // An image from references: 2.1's image-ref template on the worker, not 2511's on ComfyUI.
     let i = s.execute("generate.image", json!({"prompt": "the sweater on a mannequin", "width": 128, "height": 128, "target": "document", "seed": 6, "enhance": false, "references": [{"layer": reference.0}]})).unwrap();
     assert_eq!(i["template"].as_str(), Some("qwen-2.1/image-ref"), "{i}");
+    // Split into Layers on the worker that serves it (Qwen-Image-Layered, Apache-2.0).
+    let l = s.execute("generate.splitLayers", json!({"layers": 2, "seed": 8})).unwrap();
+    assert_eq!(l["template"].as_str(), Some("qwen-layered/split"), "{l}");
     // Generative Angles: the 2.1 edit by a camera instruction, not 2511 with the LoRA.
     let a = s.execute("generate.angles", json!({"rotation": 270, "tilt": 60, "zoom": 10, "seed": 7})).unwrap();
     assert_eq!(a["template"].as_str(), Some("qwen-2.1/edit"), "{a}");

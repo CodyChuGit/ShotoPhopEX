@@ -989,8 +989,10 @@ fn release_thinker(server: &str, purge: &str, thinker: &Arc<dyn GenerativeBacken
 /// against ComfyUI's route, whose fp8 and bf16 routes agree on 20, at 4.0 s a picture through
 /// the app against 4.0–4.7). The worker serves a family only in a build with the
 /// `native-diffusion` feature, and `native_serving` asks it template by template (Krea 2's
-/// style reference stays on ComfyUI: the worker does not list it).
-pub(crate) const NATIVE_AUTO_FAMILIES: [&str; 3] = ["sam3.1", "qwen-image-2.1", "krea2"];
+/// style reference stays on ComfyUI: the worker does not list it). Qwen-Image-Layered's split
+/// since 2026-10-27: 1–3/255 and alpha IoU ≥ 0.994 per layer against ComfyUI's, 57 s against
+/// 58 s at 640 px (genai-native `4fcbfc3`); Apache-2.0, so no research opt-in.
+pub(crate) const NATIVE_AUTO_FAMILIES: [&str; 4] = ["sam3.1", "qwen-image-2.1", "krea2", "qwen-image-layered"];
 
 /// Under `auto`: the native worker, when the preferences give it its folders, the template's
 /// family is in [`NATIVE_AUTO_FAMILIES`] and the worker's index lists the template. A worker
