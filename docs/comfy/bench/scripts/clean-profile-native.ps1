@@ -76,12 +76,14 @@ $cases = [ordered]@{
 # The watcher: python.exe processes that appear during the run, and the modules of the worker
 # (a photocraft process started from the unpacked folder with --engine).
 $flag = Join-Path $Work "watch.stop"
-$watch = Start-Job -ArgumentList $appDir, $flag -ScriptBlock {
-    param($appDir, $flag)
-    $before = @(Get-Process python -ErrorAction SilentlyContinue | ForEach-Object Id)
+# The python.exe processes already running (taken here, by CIM, which sees processes of other
+# integrity levels that Get-Process inside the job missed: a run counted four it did not start).
+$beforePython = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" | ForEach-Object { [int]$_.ProcessId })
+$watch = Start-Job -ArgumentList $appDir, $flag, $beforePython -ScriptBlock {
+    param($appDir, $flag, $before)
     $pythons = @{}; $modules = @{}
     while (-not (Test-Path $flag)) {
-        Get-Process python -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | ForEach-Object { $pythons[$_.Id] = $_.Path }
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $before -notcontains [int]$_.ProcessId } | ForEach-Object { $pythons[[int]$_.ProcessId] = $_.ExecutablePath }
         Get-CimInstance Win32_Process -Filter "Name like 'photocraft%'" | Where-Object { $_.CommandLine -match '--engine' -and $_.ExecutablePath -like "$appDir*" } | ForEach-Object {
             try { (Get-Process -Id $_.ProcessId -Module -ErrorAction Stop) | ForEach-Object { $modules[$_.ModuleName.ToLowerInvariant()] = $_.FileName } } catch {}
         }
