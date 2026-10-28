@@ -84,6 +84,9 @@ pub struct PerceptionEngine {
     /// The directory holding one subdirectory per model (`sam3.1/`), or a ComfyUI `models` folder.
     models_root: PathBuf,
     device: Device,
+    /// SAM 3.1 on candle in f16 on CUDA (`--sam-precision f16`): 1.9x the speed of f32, every
+    /// mask at IoU >= 0.993 against ComfyUI's own f32 node (gn-segment F16.md). f32 otherwise.
+    half: bool,
     #[cfg(feature = "onnx")]
     rt: Option<Runtime>,
     sam: Option<Model>,
@@ -99,12 +102,19 @@ impl PerceptionEngine {
             runtime_dirs,
             models_root,
             device,
+            half: false,
             #[cfg(feature = "onnx")]
             rt: None,
             sam: None,
             cache: None,
             last_error: None,
         }
+    }
+
+    /// SAM 3.1's compute precision on CUDA: f16 when `half`, else f32 (the CPU is always f32).
+    pub fn with_half(mut self, half: bool) -> Self {
+        self.half = half;
+        self
     }
 
     /// The directory among `runtime_dirs` that holds the runtime library.
@@ -141,9 +151,10 @@ impl PerceptionEngine {
                 Device::Cpu => candle_core::Device::Cpu,
             };
             let t0 = Instant::now();
-            let mut sam = gn_segment::sam::Sam31::load(&checkpoint, &device).map_err(candle_error)?;
+            let dtype = if self.half && device.is_cuda() { candle_core::DType::F16 } else { candle_core::DType::F32 };
+            let mut sam = gn_segment::sam::Sam31::load_with_dtype(&checkpoint, &device, dtype).map_err(candle_error)?;
             sam.set_tokenizer(&tokenizer).map_err(candle_error)?;
-            eprintln!("gn-perception: SAM 3.1 on candle ({}) loaded in {:.1} s", checkpoint.display(), t0.elapsed().as_secs_f32());
+            eprintln!("gn-perception: SAM 3.1 on candle in {dtype:?} ({}) loaded in {:.1} s", checkpoint.display(), t0.elapsed().as_secs_f32());
             self.sam = Some(Model::Candle(Box::new(sam)));
         }
         #[cfg(all(feature = "candle", not(feature = "onnx")))]
@@ -474,6 +485,7 @@ impl Engine for PerceptionEngine {
             "backend": if candle_files(&self.models_root).is_some() { "candle" } else { "onnxruntime" },
             "modelsRoot": self.models_root.to_string_lossy(),
             "runtime": self.ort_dir().map(|p| p.to_string_lossy().into_owned()),
+            "samPrecision": if self.half { "f16" } else { "f32" },
             "runtimeDirs": self.runtime_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         })
     }
@@ -485,6 +497,7 @@ pub fn from_args(args: &[String]) -> Option<PerceptionEngine> {
     let mut runtime: Vec<PathBuf> = Vec::new();
     let mut models: Option<PathBuf> = None;
     let mut cpu = false;
+    let mut half = false;
     let mut i = 0;
     while i < args.len() {
         match args.get(i).map(String::as_str) {
@@ -498,6 +511,10 @@ pub fn from_args(args: &[String]) -> Option<PerceptionEngine> {
                 models = args.get(i + 1).filter(|v| !v.trim().is_empty()).map(PathBuf::from);
                 i += 2;
             }
+            Some("--sam-precision") => {
+                half = args.get(i + 1).is_some_and(|v| v.trim().eq_ignore_ascii_case("f16"));
+                i += 2;
+            }
             Some("--cpu") => {
                 cpu = true;
                 i += 1;
@@ -509,7 +526,7 @@ pub fn from_args(args: &[String]) -> Option<PerceptionEngine> {
     if runtime.is_empty() {
         return None;
     }
-    Some(PerceptionEngine::new(runtime, models, cpu))
+    Some(PerceptionEngine::new(runtime, models, cpu).with_half(half))
 }
 
 /// Is `dir` a usable model root (holds at least one model this engine serves)?
@@ -598,6 +615,9 @@ mod tests {
         let e = e.unwrap_or_else(|| panic!("an engine"));
         assert_eq!(e.runtime_dirs, vec![PathBuf::from("a"), PathBuf::from("b"), PathBuf::from("c")]);
         assert_eq!(e.device, Device::Cpu);
+        assert!(!e.half);
+        let half = from_args(&["--runtime".into(), "r".into(), "--models".into(), "m".into(), "--sam-precision".into(), "F16".into()]);
+        assert!(half.is_some_and(|e| e.half));
     }
 
     #[test]
