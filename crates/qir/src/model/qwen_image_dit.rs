@@ -14,10 +14,25 @@ mod cuda_gemm;
 pub fn checkpoint_builder(path: impl AsRef<std::path::Path>, device: &Device) -> Result<VarBuilder<'static>> {
     // SAFETY: installed checkpoints must not be modified while a split is running.
     let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(path)? };
-    Ok(VarBuilder::from_backend(Box::new(Checkpoint(tensors)), if device.is_cuda() { DType::BF16 } else { DType::F32 }, device.clone()))
+    Ok(VarBuilder::from_backend(
+        Box::new(Checkpoint(tensors, std::collections::BTreeMap::new())),
+        if device.is_cuda() { DType::BF16 } else { DType::F32 },
+        device.clone(),
+    ))
 }
 
-struct Checkpoint(candle_core::safetensors::MmapedSafetensors);
+struct Checkpoint(candle_core::safetensors::MmapedSafetensors, std::collections::BTreeMap<String, Tensor>);
+
+/// Overlay a bound CPU FP8 snapshot when staged residency reloads the same adapters.
+pub fn checkpoint_builder_patched(
+    path: impl AsRef<std::path::Path>,
+    device: &Device,
+    patches: std::collections::BTreeMap<String, Tensor>,
+) -> Result<VarBuilder<'static>> {
+    // SAFETY: installed checkpoints remain immutable during inference.
+    let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(path)? };
+    Ok(VarBuilder::from_backend(Box::new(Checkpoint(tensors, patches)), if device.is_cuda() { DType::BF16 } else { DType::F32 }, device.clone()))
+}
 
 impl candle_nn::var_builder::SimpleBackend for Checkpoint {
     fn get(&self, shape: candle_core::Shape, name: &str, _: candle_nn::Init, dtype: DType, device: &Device) -> candle_core::Result<Tensor> {
@@ -30,7 +45,11 @@ impl candle_nn::var_builder::SimpleBackend for Checkpoint {
 
     fn get_unchecked(&self, name: &str, dtype: DType, device: &Device) -> candle_core::Result<Tensor> {
         let host = name.ends_with(".comfy_quant") || name.ends_with(".weight_scale");
-        self.0.load(name, if host { &Device::Cpu } else { device })?.to_dtype(dtype)
+        let device = if host { &Device::Cpu } else { device };
+        if let Some(tensor) = self.1.get(name) {
+            return tensor.to_device(device)?.to_dtype(dtype);
+        }
+        self.0.load(name, device)?.to_dtype(dtype)
     }
 
     fn contains_tensor(&self, name: &str) -> bool {
@@ -52,6 +71,7 @@ struct LayeredLinear {
     /// cast from e4m3), multiplied in bf16 as the file's `full_precision_matrix_mult` asks.
     gpu: Option<crate::fp8::Fp8Linear>,
     bias: Tensor,
+    original: Option<(Tensor, Option<Tensor>)>,
     #[cfg(feature = "cuda")]
     lt: Option<std::sync::Arc<cuda_gemm::Handle>>,
 }
@@ -73,13 +93,21 @@ impl LayeredLinear {
         let gpu = match &fp8 {
             Some((w, s)) if w.device().is_cuda() => {
                 anyhow::ensure!(crate::fp8::supported_on(w.device()), "Layered's fp8 weights on CUDA need the `fp8` feature's kernels");
-                Some(crate::fp8::Fp8Linear::new_full_precision(w.clone(), s)?)
+                Some({
+                    let linear = crate::fp8::Fp8Linear::new_full_precision(w.clone(), s)?;
+                    if vb.contains_tensor("input_scale") {
+                        linear.precise_scale()
+                    } else {
+                        linear
+                    }
+                })
             }
             _ => None,
         };
         #[cfg(feature = "cuda")]
         let lt = if gpu.is_some() && std::env::var("QIR_LAYERED_GEMM").map_or(true, |v| v != "cublas") { Some(cuda_gemm::handle(vb.device())?) } else { None };
         Ok(Self {
+            original: None,
             dense,
             fp8,
             gpu,
@@ -87,6 +115,47 @@ impl LayeredLinear {
             #[cfg(feature = "cuda")]
             lt,
         })
+    }
+
+    fn bind(&mut self, module: &str, pairs: &[crate::lora::LoraPair]) -> Result<()> {
+        if pairs.is_empty() && self.original.is_none() {
+            return Ok(());
+        }
+        let device = self.bias.device();
+        if self.original.is_none() {
+            let (w, scale) = if let Some((w, s)) = &self.fp8 {
+                (w.to_device(&Device::Cpu)?, Some(s.clone()))
+            } else {
+                (self.dense.as_ref().ok_or_else(|| anyhow::anyhow!("missing weight"))?.weight().to_device(&Device::Cpu)?, None)
+            };
+            self.original = Some((w, scale));
+        }
+        let (original, scale) = self.original.as_ref().ok_or_else(|| anyhow::anyhow!("missing original weight"))?;
+        let original = original.to_device(device)?;
+        let mut weight = if let Some(scale) = scale {
+            if device.is_cuda() {
+                crate::fp8::Fp8Linear::new_full_precision(original.clone(), scale)?.precise_scale().dequantized(self.bias.dtype())?
+            } else {
+                original.to_dtype(self.bias.dtype())?.broadcast_mul(&scale.to_dtype(self.bias.dtype())?)?
+            }
+        } else {
+            original.clone()
+        };
+        for pair in pairs {
+            weight = pair.merge_weight(weight)?;
+        }
+        if let Some(scale) = scale {
+            let (w, scale) = if pairs.is_empty() {
+                (original, scale.clone())
+            } else {
+                crate::fp8::requantize_full_precision(&weight, crate::edit2511_pipeline::key_seed(module))?
+            };
+            self.gpu = if device.is_cuda() { Some(crate::fp8::Fp8Linear::new_full_precision(w.clone(), &scale)?.precise_scale()) } else { None };
+            self.fp8 = Some((w, scale));
+        } else {
+            self.dense = Some(candle_nn::Linear::new(weight, None));
+        }
+        Ok(())
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -728,13 +797,78 @@ pub struct LayeredDit {
     blocks: Vec<LayeredBlock>,
     pub output: LayeredOutput,
     streamed: Option<VarBuilder<'static>>,
+    binding: Option<crate::lora::LoraStack>,
 }
 
 impl LayeredDit {
     pub fn load(vb: VarBuilder<'_>) -> Result<Self> {
         let kind = DitKind::detect(&vb)?;
         let blocks = (0..BLOCKS).map(|i| LayeredBlock::load(vb.pp(format!("transformer_blocks.{i}")))).collect::<Result<Vec<_>>>()?;
-        Ok(Self { kind, input: LayeredInput::load(vb.clone())?, blocks, output: LayeredOutput::load(vb)?, streamed: None })
+        Ok(Self { kind, input: LayeredInput::load(vb.clone())?, blocks, output: LayeredOutput::load(vb)?, streamed: None, binding: None })
+    }
+
+    /// Materialize an ordered adapter stack once; rebinding starts from exact CPU originals.
+    pub fn bind_loras(&mut self, stack: &crate::lora::LoraStack) -> Result<()> {
+        anyhow::ensure!(self.kind == DitKind::Edit2511 && self.streamed.is_none(), "2511 LoRAs require a resident edit DiT");
+        if self.binding.as_ref().is_some_and(|old| old.same_adapters(stack)) {
+            return Ok(());
+        }
+        self.binding = None;
+        let mut known = std::collections::BTreeSet::new();
+        for (i, block) in self.blocks.iter_mut().enumerate() {
+            for (text, stream) in [(false, &mut block.image), (true, &mut block.text)] {
+                let prefix = format!("transformer_blocks.{i}");
+                let name = if text { "txt" } else { "img" };
+                for (suffix, linear) in [
+                    (format!("{name}_mod.1"), &mut stream.modulation),
+                    (format!("attn.{}", if text { "add_q_proj" } else { "to_q" }), &mut stream.q),
+                    (format!("attn.{}", if text { "add_k_proj" } else { "to_k" }), &mut stream.k),
+                    (format!("attn.{}", if text { "add_v_proj" } else { "to_v" }), &mut stream.v),
+                    (format!("attn.{}", if text { "to_add_out" } else { "to_out.0" }), &mut stream.out),
+                    (format!("{name}_mlp.net.0.proj"), &mut stream.up),
+                    (format!("{name}_mlp.net.2"), &mut stream.down),
+                ] {
+                    let module = format!("{prefix}.{suffix}");
+                    linear.bind(&module, &stack.pairs(&module)?)?;
+                    known.insert(module);
+                }
+            }
+        }
+        anyhow::ensure!(stack.unmatched(&|m| known.contains(m)).is_empty(), "unmatched 2511 LoRA modules: {:?}", stack.unmatched(&|m| known.contains(m)));
+        self.binding = Some(stack.clone());
+        Ok(())
+    }
+
+    /// Retain only materialized weights on CPU so equal bindings survive stage unloads.
+    pub fn materialized_weights(&self) -> Result<std::collections::BTreeMap<String, Tensor>> {
+        let mut weights = std::collections::BTreeMap::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            for (text, stream) in [(false, &block.image), (true, &block.text)] {
+                let prefix = format!("transformer_blocks.{i}");
+                let name = if text { "txt" } else { "img" };
+                for (suffix, linear) in [
+                    (format!("{name}_mod.1"), &stream.modulation),
+                    (format!("attn.{}", if text { "add_q_proj" } else { "to_q" }), &stream.q),
+                    (format!("attn.{}", if text { "add_k_proj" } else { "to_k" }), &stream.k),
+                    (format!("attn.{}", if text { "add_v_proj" } else { "to_v" }), &stream.v),
+                    (format!("attn.{}", if text { "to_add_out" } else { "to_out.0" }), &stream.out),
+                    (format!("{name}_mlp.net.0.proj"), &stream.up),
+                    (format!("{name}_mlp.net.2"), &stream.down),
+                ] {
+                    if linear.original.is_none() {
+                        continue;
+                    }
+                    let module = format!("{prefix}.{suffix}");
+                    if let Some((weight, scale)) = &linear.fp8 {
+                        weights.insert(format!("{module}.weight"), weight.to_device(&Device::Cpu)?);
+                        weights.insert(format!("{module}.weight_scale"), scale.to_device(&Device::Cpu)?);
+                    } else if let Some(dense) = &linear.dense {
+                        weights.insert(format!("{module}.weight"), dense.weight().to_device(&Device::Cpu)?);
+                    }
+                }
+            }
+        }
+        Ok(weights)
     }
 
     /// Every block resident, read from the checkpoint as `open_streamed` reads it (fp8 kept
@@ -757,6 +891,7 @@ impl LayeredDit {
             blocks: Vec::new(),
             output: LayeredOutput::load(vb.clone())?,
             streamed: Some(vb),
+            binding: None,
         })
     }
 
@@ -1241,6 +1376,32 @@ mod layered_tests {
         let centered = f.broadcast_sub(&f.mean_keepdim(D::Minus1)?)?;
         let norm = centered.broadcast_div(&(centered.sqr()?.mean_keepdim(D::Minus1)? + 1e-6)?.sqrt()?)?.to_dtype(DType::BF16)?;
         assert!(error(&layer_norm(&x)?, &norm)? <= 0.015625);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod edit_lora_tests {
+    use super::*;
+    #[test]
+    fn dense_binding_stacks_and_restores_exact_originals() -> Result<()> {
+        let device = Device::Cpu;
+        let weight = Tensor::from_slice(&[1f32, 2., 3., 4.], (2, 2), &device)?;
+        let bias = Tensor::zeros(2, DType::F32, &device)?;
+        let vb = VarBuilder::from_tensors(std::collections::HashMap::from([("weight".into(), weight.clone()), ("bias".into(), bias)]), DType::F32, &device);
+        let mut linear = LayeredLinear::load(2, 2, vb)?;
+        let a = Tensor::from_slice(&[1f32, 2.], (1, 2), &device)?;
+        let b = Tensor::from_slice(&[3f32, 4.], (2, 1), &device)?;
+        let p = crate::lora::LoraPair::new(&a, &b, 0.5)?;
+        let x = Tensor::from_slice(&[1f32, 1.], (1, 2), &device)?;
+        let original = linear.forward(&x)?.to_vec2::<f32>()?;
+        linear.bind("test", &[p.clone(), p.clone()])?;
+        assert_eq!(linear.forward(&x)?.to_vec2::<f32>()?, vec![vec![12., 19.]]);
+        linear.bind("test", &[p])?;
+        assert_eq!(linear.forward(&x)?.to_vec2::<f32>()?, vec![vec![7.5, 13.]]);
+        linear.bind("test", &[])?;
+        assert_eq!(linear.forward(&x)?.to_vec2::<f32>()?, original);
+        assert_eq!(linear.dense.as_ref().unwrap().weight().to_vec2::<f32>()?, weight.to_vec2::<f32>()?);
         Ok(())
     }
 }

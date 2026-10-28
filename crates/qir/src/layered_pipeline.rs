@@ -316,7 +316,7 @@ impl Drop for LayeredPrefetch {
 
 /// Keep a bounded denoising workspace across step barriers, restoring the caller's pool policy.
 #[cfg(feature = "cuda")]
-struct LayeredPool {
+pub(crate) struct LayeredPool {
     device: candle_core::CudaDevice,
     pool: candle_core::cuda_backend::cudarc::driver::sys::CUmemoryPool,
     previous: u64,
@@ -324,7 +324,7 @@ struct LayeredPool {
 
 #[cfg(feature = "cuda")]
 impl LayeredPool {
-    fn retain(device: &Device) -> Option<Self> {
+    pub(crate) fn retain(device: &Device) -> Option<Self> {
         use candle_core::cuda_backend::cudarc::driver::sys;
         use sys::CUmemPool_attribute as A;
         if std::env::var("QIR_LAYERED_POOL").is_ok_and(|v| v == "0") || std::env::var("QIR_POOL_RETAIN").is_ok_and(|v| v == "0") {

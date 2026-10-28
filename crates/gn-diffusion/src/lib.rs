@@ -29,11 +29,12 @@ use std::sync::Arc;
 use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
 use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
+use qwen_image_rs::edit2511_pipeline::{self, Edit2511Pipeline, Edit2511Request};
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::layered_pipeline::LayeredPipeline;
 use qwen_image_rs::lora::{LoraFile, LoraStack};
-use qwen_image_rs::pipeline::{Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule, is_snapshot};
-use serde_json::{Value, json};
+use qwen_image_rs::pipeline::{is_snapshot, Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule};
+use serde_json::{json, Value};
 
 /// The model root's subdirectory for LoRA files (ComfyUI's `models/loras` layout: one file
 /// each); a request may also name a file by its absolute path.
@@ -88,10 +89,11 @@ pub enum Family {
     QwenImage21,
     Krea2,
     Layered,
+    Edit2511,
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 12] = [
+pub const TEMPLATES: [(&str, &str, Family); 25] = [
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
     (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
@@ -104,6 +106,19 @@ pub const TEMPLATES: [(&str, &str, Family); 12] = [
     (TEMPLATE_CHAT_EDIT, "text", Family::QwenImage21),
     (TEMPLATE_CHAT_IMAGE, "text", Family::QwenImage21),
     (TEMPLATE_LAYERS, "layers", Family::Layered),
+    ("qwen-edit-2511/edit", "edit", Family::Edit2511),
+    ("qwen-edit-2511/edit-lightning-8", "edit", Family::Edit2511),
+    ("qwen-edit-2511/fill", "fill", Family::Edit2511),
+    ("qwen-edit-2511/fill-lightning-4", "fill", Family::Edit2511),
+    ("qwen-edit-2511/fill-lightning-8", "fill", Family::Edit2511),
+    ("qwen-edit-2511/fill-guided", "fill", Family::Edit2511),
+    ("qwen-edit-2511/fill-ref", "fill", Family::Edit2511),
+    ("qwen-edit-2511/fill-ref-lightning-8", "fill", Family::Edit2511),
+    ("qwen-edit-2511/image-ref", "image", Family::Edit2511),
+    ("qwen-edit-2511/expand", "expand", Family::Edit2511),
+    ("qwen-edit-2511/expand-lightning-8", "expand", Family::Edit2511),
+    ("qwen-edit-2511/remove-lightning-8", "fill", Family::Edit2511),
+    ("qwen-edit-2511/angles", "edit", Family::Edit2511),
 ];
 /// The model root's subdirectory for the Qwen-Image-2.1 snapshot.
 pub const MODEL_DIR: &str = "qwen-image-2.1";
@@ -126,6 +141,7 @@ enum Resident {
     Qwen(Pipeline),
     Krea2(Krea2Pipeline),
     Layered(LayeredPipeline),
+    Edit2511(Edit2511Pipeline),
 }
 
 pub struct DiffusionEngine {
@@ -276,6 +292,7 @@ impl DiffusionEngine {
             Resident::Qwen(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Krea2(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Layered(p) => qwen_image_rs::device::trim_pool(p.device()),
+            Resident::Edit2511(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::None => {}
         }
     }
@@ -288,6 +305,7 @@ impl DiffusionEngine {
             Resident::Qwen(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Krea2(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Layered(p) => qwen_image_rs::device::bind_thread(p.device()),
+            Resident::Edit2511(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::None => {}
         }
     }
@@ -302,6 +320,7 @@ impl DiffusionEngine {
         let (dev, dtype) = match &self.resident {
             Resident::Qwen(p) => (p.device().clone(), p.dtype()),
             Resident::Krea2(p) => (p.device().clone(), p.dtype()),
+            Resident::Edit2511(_) => (qwen_image_rs::edit2511_pipeline::cpu_device(), qwen_image_rs::edit2511_pipeline::adapter_dtype()),
             Resident::Layered(_) | Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
         };
         let mut layers = Vec::with_capacity(asks.len());
@@ -338,7 +357,11 @@ impl DiffusionEngine {
     /// it is a ComfyUI `models` folder holding ComfyUI's 2.1 files (R4: no snapshot needed).
     fn qwen21_source(&self) -> Option<PathBuf> {
         let snap = self.snapshot_dir();
-        if is_snapshot(&snap) { Some(snap) } else { qwen_image_rs::comfy_files::find_qwen21(&self.models_root).map(|_| self.models_root.clone()) }
+        if is_snapshot(&snap) {
+            Some(snap)
+        } else {
+            qwen_image_rs::comfy_files::find_qwen21(&self.models_root).map(|_| self.models_root.clone())
+        }
     }
 
     pub fn krea2_dir(&self) -> PathBuf {
@@ -358,7 +381,11 @@ impl DiffusionEngine {
     /// Where Krea 2 loads from, as [`Self::qwen21_source`].
     fn krea2_source(&self) -> Option<PathBuf> {
         let dir = self.krea2_dir();
-        if krea2_pipeline::is_snapshot(&dir) { Some(dir) } else { qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone()) }
+        if krea2_pipeline::is_snapshot(&dir) {
+            Some(dir)
+        } else {
+            qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone())
+        }
     }
 
     fn has_family(&self, family: Family) -> bool {
@@ -366,6 +393,7 @@ impl DiffusionEngine {
             Family::QwenImage21 => self.qwen21_source().is_some(),
             Family::Krea2 => self.krea2_source().is_some(),
             Family::Layered => self.layered_available(),
+            Family::Edit2511 => self.edit2511_available(),
         }
     }
 
@@ -374,10 +402,13 @@ impl DiffusionEngine {
         if self.refused.is_some() {
             return Vec::new();
         }
+        let edit2511 = self.edit2511_available();
         TEMPLATES
             .iter()
             .filter(|(t, _, f)| {
-                self.has_family(*f)
+                (if *f == Family::Edit2511 { edit2511 } else { self.has_family(*f) })
+                    && (*f != Family::Edit2511
+                        || edit2511_defaults(t).is_some_and(|(_, _, names)| names.iter().all(|n| self.models_root.join("loras").join(n).is_file())))
                     && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_KREA2_STYLE
                         || (self.lora_path(KREA2_STYLE_LORA).is_ok_and(|p| p.is_file())
@@ -391,7 +422,10 @@ impl DiffusionEngine {
     fn ensure_loaded(&mut self, family: Family, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
         self.bind();
         match (&self.resident, family) {
-            (Resident::Qwen(_), Family::QwenImage21) | (Resident::Krea2(_), Family::Krea2) | (Resident::Layered(_), Family::Layered) => return Ok(()),
+            (Resident::Qwen(_), Family::QwenImage21)
+            | (Resident::Krea2(_), Family::Krea2)
+            | (Resident::Layered(_), Family::Layered)
+            | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
             (Resident::None, _) => {}
             _ => {
                 progress(0.0, "Unloading the other models");
@@ -447,6 +481,10 @@ impl DiffusionEngine {
                 let opts = Krea2Options { cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false), ..Krea2Options::defaults() };
                 Resident::Krea2(Krea2Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
+            Family::Edit2511 => {
+                report(0.0, "Loading Qwen-Image-Edit-2511");
+                Resident::Edit2511(Edit2511Pipeline::load(&self.models_root).map_err(err)?)
+            }
             Family::Layered => {
                 if !self.layered_available() {
                     return Err(EngineError::new(
@@ -463,6 +501,60 @@ impl DiffusionEngine {
             }
         };
         Ok(())
+    }
+
+    fn edit2511_available(&self) -> bool {
+        qwen_image_rs::edit2511_files::Edit2511Files::resolve(&self.models_root).is_ok()
+            && qwen_image_rs::comfy_files::tokenizer_dir(&self.models_root).is_some()
+    }
+
+    fn edit2511(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        cancel: &AtomicBool,
+        started: Instant,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        let mut ask = edit2511_request(req, blobs)?;
+        let (_, _, names) = edit2511_defaults(&req.model).ok_or_else(|| EngineError::new(ErrorKind::BadRequest, "unknown 2511 template"))?;
+        let mut params = req.params.clone();
+        let mut loras: Vec<Value> = names.iter().map(|n| json!({"file": n, "strength": 1.0})).collect();
+        if let Some(value) = params.get("loras") {
+            let array = value.as_array().ok_or_else(|| EngineError::new(ErrorKind::BadRequest, "loras must be an array"))?;
+            loras.extend(array.iter().cloned());
+        }
+        params.insert("loras".into(), Value::Array(loras));
+        let result = (|| {
+            self.ensure_loaded(Family::Edit2511, progress)?;
+            ask.loras = self.stack_for(&params)?;
+            let Resident::Edit2511(p) = &self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no 2511 pipeline")) };
+            p.generate(&ask, |i, n| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Editing"), cancel).map_err(|e| {
+                if cancel.load(Ordering::SeqCst) {
+                    EngineError::cancelled()
+                } else {
+                    EngineError::new(kind_of(&e), e.to_string())
+                }
+            })
+        })();
+        self.give_back();
+        let rgb = match result {
+            Ok(rgb) => rgb,
+            Err(e) => {
+                exit_if_poisoned(&e.message);
+                if matches!(e.kind, ErrorKind::Internal | ErrorKind::ModelUnreadable) {
+                    self.last_error = Some(e.message.clone());
+                }
+                if e.kind == ErrorKind::OutOfMemory {
+                    self.resident = Resident::None;
+                }
+                return Err(e);
+            }
+        };
+        self.last_error = None;
+        let header = Blob { width: rgb.width(), height: rgb.height(), channels: 4, index: 0 };
+        let rgba = rgb.as_raw().as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+        Ok((DoneInfo { images: vec![header], texts: Vec::new(), seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, vec![rgba]))
     }
 
     /// Qwen-Image-Layered's three files and the Qwen tokenizer under the models root (ComfyUI's
@@ -506,8 +598,13 @@ impl DiffusionEngine {
             self.ensure_loaded(Family::Layered, progress)?;
             let Resident::Layered(p) = &self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no pipeline")) };
             let mut report = |i: usize, n: usize| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Splitting");
-            p.split(&rgba, layers, &req.prompt, req.seed, steps, &mut report, cancel)
-                .map_err(|e| if cancel.load(Ordering::SeqCst) { EngineError::cancelled() } else { EngineError::new(kind_of(&e), e.to_string()) })
+            p.split(&rgba, layers, &req.prompt, req.seed, steps, &mut report, cancel).map_err(|e| {
+                if cancel.load(Ordering::SeqCst) {
+                    EngineError::cancelled()
+                } else {
+                    EngineError::new(kind_of(&e), e.to_string())
+                }
+            })
         })();
         self.give_back();
         let out = match result {
@@ -588,6 +685,102 @@ pub fn family_of(template: &str) -> Option<Family> {
     TEMPLATES.iter().find(|(t, _, _)| *t == template).map(|(_, _, f)| *f)
 }
 
+/// Template adapter order and sampler defaults, independent of the installed files.
+pub fn edit2511_defaults(template: &str) -> Option<(u32, f32, Vec<&'static str>)> {
+    use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
+    let suffix = template.strip_prefix("qwen-edit-2511/")?;
+    Some(match suffix {
+        "edit" | "fill" | "fill-ref" | "expand" => (40, 4., vec![]),
+        "fill-lightning-4" => (4, 1., vec![A[0]]),
+        "angles" => (4, 1., vec![A[3], A[0]]),
+        "remove-lightning-8" => (8, 1., vec![A[1], A[2]]),
+        "edit-lightning-8" | "fill-lightning-8" | "fill-guided" | "fill-ref-lightning-8" | "image-ref" | "expand-lightning-8" => (8, 1., vec![A[1]]),
+        _ => return None,
+    })
+}
+
+/// Resolve graph inputs before loading models so invalid requests fail without touching CUDA.
+fn edit2511_request(req: &RunRequest, blobs: &[Vec<u8>]) -> Result<Edit2511Request, EngineError> {
+    let bad = |message: &str| EngineError::new(ErrorKind::BadRequest, message);
+    let (steps, cfg, _) = edit2511_defaults(&req.model).ok_or_else(|| bad("unknown 2511 template"))?;
+    for (key, expected) in [("sampler", "euler"), ("sampler_name", "euler"), ("scheduler", "simple")] {
+        if req.params.get(key).is_some_and(|v| v.as_str() != Some(expected)) {
+            return Err(bad("2511 supports Euler/simple only"));
+        }
+    }
+    if req.params.get("denoise").is_some_and(|v| v.as_f64() != Some(1.)) {
+        return Err(bad("2511 supports denoise 1 only"));
+    }
+    let rgb = |b: &Blob, what: &str| -> Result<edit2511_pipeline::RgbImage, EngineError> {
+        let r = reference_of(b, blobs, what)?;
+        let bytes = r.rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
+        edit2511_pipeline::RgbImage::from_raw(r.width as u32, r.height as u32, bytes).ok_or_else(|| bad("invalid RGB blob"))
+    };
+    let suffix = req.model.strip_prefix("qwen-edit-2511/").ok_or_else(|| bad("invalid 2511 template"))?;
+    let mut references = Vec::new();
+    let mut target = None;
+    let mask_needed = req.task == "fill" || req.task == "expand";
+    let mask = if mask_needed { Some(rgb(req.mask.as_ref().ok_or_else(|| bad("2511 fill/expand needs the mask"))?, "mask")?) } else { None };
+    if suffix == "image-ref" {
+        if !(1..=3).contains(&req.references.len()) {
+            return Err(bad("2511 image-ref needs one to three references"));
+        }
+        for b in &req.references {
+            references.push(rgb(b, "reference")?);
+        }
+    } else {
+        let picture = rgb(req.image.as_ref().ok_or_else(|| bad("2511 needs the picture"))?, "picture")?;
+        let mut reference = picture.clone();
+        if req.task == "expand" {
+            let number = |key| {
+                req.params.get(key).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()).ok_or_else(|| bad("expand needs ref_x/ref_y/ref_w/ref_h"))
+            };
+            let (x, y, w, h) = (number("ref_x")?, number("ref_y")?, number("ref_w")?, number("ref_h")?);
+            if w == 0 || h == 0 || x.checked_add(w).is_none_or(|v| v > picture.width()) || y.checked_add(h).is_none_or(|v| v > picture.height()) {
+                return Err(bad("expand rectangle lies outside canvas"));
+            }
+            // ImageCrop uses the exact rectangle, without 2.1's token-grid widening or offsets.
+            let mut bytes = Vec::with_capacity(w as usize * h as usize * 3);
+            for row in y..y + h {
+                for col in x..x + w {
+                    bytes.extend_from_slice(&picture.get_pixel(col, row).0);
+                }
+            }
+            reference = edit2511_pipeline::RgbImage::from_raw(w, h, bytes).ok_or_else(|| bad("invalid expand crop"))?;
+        }
+        let scaled = edit2511_pipeline::kontext(&reference).map_err(|e| bad(&e.to_string()))?;
+        target = Some(if suffix == "angles" { scaled.clone() } else { picture });
+        references.push(scaled);
+        if suffix == "fill-guided" {
+            let mask = mask.as_ref().ok_or_else(|| bad("guided fill needs mask"))?;
+            references.push(edit2511_pipeline::kontext(mask).map_err(|e| bad(&e.to_string()))?);
+        }
+        if matches!(suffix, "edit" | "edit-lightning-8" | "fill-ref" | "fill-ref-lightning-8") {
+            if req.references.len() > 2 {
+                return Err(bad("2511 takes at most two additional references"));
+            }
+            for b in &req.references {
+                references.push(rgb(b, "reference")?);
+            }
+        } else if !req.references.is_empty() {
+            return Err(bad("this 2511 template takes no additional references"));
+        }
+    }
+    Ok(Edit2511Request {
+        prompt: req.prompt.clone(),
+        negative: req.negative.clone(),
+        references,
+        target,
+        mask,
+        width: side(req.width),
+        height: side(req.height),
+        seed: req.seed,
+        steps: if req.steps == 0 { steps } else { req.steps } as usize,
+        cfg: if req.guidance > 0. { req.guidance } else { cfg },
+        loras: LoraStack::default(),
+    })
+}
+
 /// A blob's bytes, checked against its header.
 fn bytes_of<'a>(b: &Blob, blobs: &'a [Vec<u8>], what: &str) -> Result<&'a [u8], EngineError> {
     let bytes =
@@ -657,6 +850,7 @@ impl Engine for DiffusionEngine {
             Resident::Qwen(p) => (vec![MODEL_DIR.to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Krea2(p) => (vec![KREA2_DIR.to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Layered(p) => (vec!["qwen-image-layered".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::Edit2511(p) => (vec!["qwen-image-edit-2511".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
         };
         // The card's name where the driver gave one; the free memory only while a pipeline
         // holds the context (asking without one would create it).
@@ -703,6 +897,9 @@ impl Engine for DiffusionEngine {
         }
         if task == "layers" {
             return self.split(req, blobs, progress, cancel, started);
+        }
+        if family == Family::Edit2511 {
+            return self.edit2511(req, blobs, progress, cancel, started);
         }
         // The pictures the model sees in order: image 1 is the picture being edited, then the
         // mask (a fill) or the references (an edit; a matte has none). The target takes image
@@ -758,6 +955,7 @@ impl Engine for DiffusionEngine {
             Family::QwenImage21 => DEFAULT_STEPS,
             Family::Krea2 => KREA2_STEPS,
             Family::Layered => LAYERS_STEPS,
+            Family::Edit2511 => 40,
         };
         let result: Result<Picture, EngineError> = (|| {
             self.ensure_loaded(family, progress)?;
@@ -806,7 +1004,7 @@ impl Engine for DiffusionEngine {
                 Resident::Qwen(p) => p.generate(&ask, &mut report, &stop).map_err(err),
                 Resident::Krea2(p) if req.model == TEMPLATE_KREA2_STYLE => p.generate_style(&ask, &mut report, &stop).map_err(err),
                 Resident::Krea2(p) => p.generate(&ask, &mut report, &stop).map_err(err),
-                Resident::Layered(_) | Resident::None => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
+                Resident::Edit2511(_) | Resident::Layered(_) | Resident::None => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
             }
         })();
         self.give_back();
@@ -876,6 +1074,7 @@ pub fn has_models(dir: &Path) -> bool {
         || qwen_image_rs::comfy_files::find_qwen21(dir).is_some()
         || qwen_image_rs::comfy_files::find_krea2(dir).is_some()
         || qwen_image_rs::layered_files::LayeredFiles::resolve(dir).is_ok()
+        || qwen_image_rs::edit2511_files::Edit2511Files::resolve(dir).is_ok()
 }
 
 #[cfg(test)]
@@ -1080,5 +1279,48 @@ mod tests {
         let mut e = e;
         assert_eq!(e.stack_for(&p(json!([{"file": "a.safetensors"}]))).unwrap_err().kind, ErrorKind::Internal);
         assert!(e.stack_for(&BTreeMap::new()).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod edit2511_tests {
+    use super::*;
+    #[test]
+    fn graph_defaults_order_and_routing() {
+        use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
+        let templates: Vec<_> = TEMPLATES.iter().filter(|(_, _, f)| *f == Family::Edit2511).collect();
+        assert_eq!(templates.len(), 13);
+        for (id, task, _) in templates {
+            assert_eq!(task_of(id), Some(*task));
+            assert!(edit2511_defaults(id).is_some());
+        }
+        assert_eq!(edit2511_defaults("qwen-edit-2511/angles"), Some((4, 1., vec![A[3], A[0]])));
+        assert_eq!(edit2511_defaults("qwen-edit-2511/remove-lightning-8"), Some((8, 1., vec![A[1], A[2]])));
+        assert_eq!(edit2511_defaults("qwen-edit-2511/edit"), Some((40, 4., vec![])));
+    }
+    #[test]
+    fn graph_inputs_preserve_targets_and_prune_reference_slots() -> anyhow::Result<()> {
+        let blob = Blob { width: 32, height: 48, channels: 3, index: 0 };
+        let input = vec![(0..32 * 48 * 3).map(|n| (n % 251) as u8).collect::<Vec<_>>(), vec![128u8; 32 * 48 * 3]];
+        let mut req: RunRequest = serde_json::from_value(json!({"model":"qwen-edit-2511/edit", "task":"edit", "prompt":"sky", "seed":7}))?;
+        req.image = Some(blob.clone());
+        req.references = vec![blob.clone(), blob.clone()];
+        let ask = edit2511_request(&req, &input).map_err(|e| anyhow::anyhow!(e.message))?;
+        assert_eq!(ask.references.len(), 3);
+        assert_eq!((ask.steps, ask.cfg), (40, 4.));
+        assert_eq!(ask.target.as_ref().map(|im| im.dimensions()), Some((32, 48)));
+        req.model = "qwen-edit-2511/angles".into();
+        req.references.clear();
+        let ask = edit2511_request(&req, &input).map_err(|e| anyhow::anyhow!(e.message))?;
+        assert_eq!(ask.target.as_ref(), ask.references.first());
+        req.model = "qwen-edit-2511/fill-guided".into();
+        req.task = "fill".into();
+        req.mask = Some(Blob { index: 1, ..blob });
+        let ask = edit2511_request(&req, &input).map_err(|e| anyhow::anyhow!(e.message))?;
+        assert_eq!(ask.references.len(), 2);
+        assert_eq!(ask.mask.as_ref().map(|im| im.get_pixel(0, 0).0), Some([128, 128, 128]));
+        req.params.insert("sampler".into(), json!("heun"));
+        assert!(edit2511_request(&req, &input).is_err());
+        Ok(())
     }
 }
