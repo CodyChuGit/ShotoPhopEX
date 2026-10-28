@@ -45,6 +45,22 @@ cold than warm (6.0 vs 10.3 s, 5.7 vs 10.1 s): something is recomputed on the se
 The three "different model" rows run 2511 on ComfyUI because `paint.remove`, `generate.angles`
 and a fill with references have no template parameter and ComfyUI's `auto` picks 2511 there.
 
+**After genai-native `03fb72e`** (Codex: the text encoder stays resident instead of being
+reloaded on every picture request, an exact conditioning cache when only the seed changes, the
+vocabulary on the CPU, bounded VAE scratch; outputs within 0.06/255 of before;
+`crates/qir/tools/qwen21_ref_performance.md`), native warm through the app, same cases:
+
+| Feature (864×1152) | native warm before | native warm after | ComfyUI warm | ratio after |
+|---|---|---|---|---|
+| image (2.1), control | 3.9 | 3.9 | 4.2 | 0.93× |
+| fill | 8.2 | **3.2** | 3.3 | 0.97× |
+| image from a ref | 10.3 | **5.2** | 5.6 | 0.93× |
+| edit | 10.1 | **5.1** | 5.6 | 0.91× |
+| remove background | 10.1 | **5.1** | 5.5 | 0.93× |
+| upscale 2× | 79.7 | **54.1** | 40.8 | **1.33×** (open) |
+
+(The cold column of this rerun is not comparable: each case started its own worker.)
+
 ## 1. Fill templates, default server flags, no cache (run 1)
 
 Uploads had unique names, so every run paid the 7 B vision text encoder and the VAE encode;
