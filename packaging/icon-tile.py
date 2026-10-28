@@ -22,7 +22,27 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-FONT = r"C:\Windows\Fonts\segoeuib.ttf"
+def find_font(*candidates):
+    """The first font file that exists (Windows first, then macOS and Linux)."""
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    sys.exit(f"no font found among {candidates}")
+
+
+FONT = find_font(
+    r"C:\Windows\Fonts\segoeuib.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/Library/Fonts/Arial Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+)
+# The cube's letters: a black weight, as SolidWorks' mark.
+BLACK_FONT = find_font(
+    r"C:\Windows\Fonts\ariblk.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Black.ttf",
+    "/Library/Fonts/Arial Black.ttf",
+    FONT,
+)
 SCALE = 8  # render the 512 tile at 4096 px, then downsample
 
 
@@ -88,7 +108,7 @@ def letter_on_face(img, letter, quad, colour, inset=0.14):
     t = 1024
     tex = Image.new("RGBA", (t, t), (0, 0, 0, 0))
     d = ImageDraw.Draw(tex)
-    font = ImageFont.truetype(r"C:\Windows\Fonts\ariblk.ttf", int(t * 0.95))
+    font = ImageFont.truetype(BLACK_FONT, int(t * 0.95))
     bb = d.textbbox((0, 0), letter, font=font)
     lw, lh = bb[2] - bb[0], bb[3] - bb[1]
     sx, sy = t * (1 - 2 * inset) / lw, t * (1 - 2 * inset) / lh
