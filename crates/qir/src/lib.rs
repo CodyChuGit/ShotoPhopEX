@@ -13,6 +13,7 @@
 
 pub mod comfy;
 pub mod comfy_files;
+pub mod comfy_int8;
 pub mod convert;
 #[cfg(feature = "fusednorm")]
 pub mod krea2_fused;
