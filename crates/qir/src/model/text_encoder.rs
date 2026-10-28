@@ -411,6 +411,19 @@ impl QwenTextEncoder {
         Ok(Self { embed_tokens, layers, rope, device: dev })
     }
 
+    /// Keep the vocabulary on the host; only the requested rows need GPU memory.
+    pub fn offload_embedding(&mut self) -> Result<()> {
+        let weight = self.embed_tokens.embeddings();
+        let hidden = weight.dim(1)?;
+        self.embed_tokens = Embedding::new(weight.to_device(&Device::Cpu)?, hidden);
+        Ok(())
+    }
+
+    fn embed(&self, ids: &Tensor) -> Result<Tensor> {
+        let ids = ids.to_device(self.embed_tokens.embeddings().device())?;
+        Ok(self.embed_tokens.forward(&ids)?.to_device(&self.device)?)
+    }
+
     /// Build a causal additive mask `(1, 1, S, S)` (0 on/below diagonal, -inf above).
     fn causal_mask(&self, s: usize, dtype: DType) -> Result<Tensor> {
         let mut data = vec![0f32; s * s];
@@ -426,7 +439,7 @@ impl QwenTextEncoder {
     /// states `(B, S, hidden)`.
     pub fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
         let (_b, s) = input_ids.dims2()?;
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = self.embed(input_ids)?;
         let mask = self.causal_mask(s, xs.dtype())?;
         let rope = self.rope.text_tables(s)?;
         for layer in &self.layers {
@@ -441,7 +454,7 @@ impl QwenTextEncoder {
     /// in `taps`' order. Krea 2 conditions on twelve of them.
     pub fn forward_taps(&self, input_ids: &Tensor, taps: &[usize]) -> Result<Vec<Tensor>> {
         let (_b, s) = input_ids.dims2()?;
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = self.embed(input_ids)?;
         let mask = self.causal_mask(s, xs.dtype())?;
         let rope = self.rope.text_tables(s)?;
         let last = taps.iter().copied().max().unwrap_or(0).min(self.layers.len());
@@ -488,7 +501,8 @@ impl QwenTextEncoder {
             xs = self.add_deepstack(xs, li, &spans, images)?;
             states.push(xs.clone());
         }
-        let out = taps.iter().map(|t| states.get((*t).min(last)).cloned().ok_or_else(|| anyhow::anyhow!("tap {t} past the layers"))).collect::<Result<Vec<_>>>()?;
+        let out =
+            taps.iter().map(|t| states.get((*t).min(last)).cloned().ok_or_else(|| anyhow::anyhow!("tap {t} past the layers"))).collect::<Result<Vec<_>>>()?;
         Ok((out, spans))
     }
 
@@ -513,7 +527,7 @@ impl QwenTextEncoder {
     /// position on all three axes): its pre-final-norm hidden state `(1, hidden)`.
     pub fn step(&self, token: u32, cache: &mut KvCache) -> Result<Tensor> {
         let ids = Tensor::from_vec(vec![token], (1, 1), &self.device)?;
-        let mut xs = self.embed_tokens.forward(&ids)?;
+        let mut xs = self.embed(&ids)?;
         let p = cache.next_pos;
         let rope = self.rope.tables(&[vec![p], vec![p], vec![p]])?;
         for (layer, slot) in self.layers.iter().zip(cache.layers.iter_mut()) {
@@ -544,7 +558,7 @@ impl QwenTextEncoder {
         let placeholders: Vec<usize> = ids.iter().enumerate().filter(|(_, t)| **t == IMAGE_PAD).map(|(i, _)| i).collect();
         anyhow::ensure!(placeholders.len() == images.len(), "{} <|image_pad|> tokens for {} pictures", placeholders.len(), images.len());
         let text = Tensor::from_vec(ids.to_vec(), (1, ids.len()), &self.device)?;
-        let text = self.embed_tokens.forward(&text)?.squeeze(0)?; // (S0, hidden)
+        let text = self.embed(&text)?.squeeze(0)?; // (S0, hidden)
         let dt = text.dtype();
         // Splice: text rows between placeholders, the picture rows at each.
         let mut parts: Vec<Tensor> = Vec::new();
@@ -717,7 +731,16 @@ mod tests {
     /// A two-layer decoder with random weights, the 8B's layout at toy widths.
     fn toy() -> Result<(QwenTextEncoder, Device)> {
         let dev = Device::Cpu;
-        let cfg = TextConfig { hidden_size: 64, intermediate_size: 96, num_layers: 2, num_heads: 4, num_kv_heads: 2, head_dim: 16, vocab_size: IMAGE_PAD as usize + 8, ..TextConfig::default() };
+        let cfg = TextConfig {
+            hidden_size: 64,
+            intermediate_size: 96,
+            num_layers: 2,
+            num_heads: 4,
+            num_kv_heads: 2,
+            head_dim: 16,
+            vocab_size: IMAGE_PAD as usize + 8,
+            ..TextConfig::default()
+        };
         let vm = candle_nn::VarMap::new();
         let vb = VarBuilder::from_varmap(&vm, DType::F32, &dev);
         // RMSNorm weights start at one, linears and the embedding random.

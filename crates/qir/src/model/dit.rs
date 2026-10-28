@@ -104,7 +104,7 @@ fn policy_tag(block: &[&str], tail: &[(&str, usize, usize, bool)]) -> String {
     format!("qir-convrot-v{PREQUANT_FORMAT};group={};block={};tail={}", crate::model::rotation::GROUP, block.join(","), tail.join(","))
 }
 
-use crate::lora::{LoraSlot, LoraStack, with_lora};
+use crate::lora::{with_lora, LoraSlot, LoraStack};
 
 /// Load-time precision switches shared by every DiT linear.
 #[derive(Clone, Copy)]
@@ -612,14 +612,14 @@ impl Attention {
             let sc = scale as f32;
             #[cfg(feature = "sage2")]
             if let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? {
-                use crate::sage2::{Role, attention, quant_v, rope_quant};
+                use crate::sage2::{attention, quant_v, rope_quant, Role};
                 let q = rope_quant(&qh, &cos_t, &sin_t, Role::Query)?;
                 let k = rope_quant(&k_full, cos, sin, Role::Key)?;
                 let v = quant_v(&v_full, accum)?;
                 let o = attention(&q, &k, &v, sc, false)?; // (B,T,H,D)
                 return self.out(&o.reshape((b, t, INNER))?);
             }
-            use crate::sage::{QkRole, rope_quant_bshd, sage_attention_quantized};
+            use crate::sage::{rope_quant_bshd, sage_attention_quantized, QkRole};
             let q = rope_quant_bshd(&qh, &cos_t, &sin_t, QkRole::Query)?;
             let k = rope_quant_bshd(&k_full, cos, sin, QkRole::Key)?;
             sage_attention_quantized(&q, &k, &v_full, sc, false)? // (B,T,H,D)
@@ -967,18 +967,26 @@ impl Block {
         segments: &[Segment],
     ) -> Result<(Tensor, Tensor, (Tensor, Tensor))> {
         let (h, x) = residual_norm_mod(h, pending.map(|y| (&mods.gate2, y)), &mods.scale1, self.eps)?;
-        let (attn, kv) = self.attn.forward_prefix(&x, cos, sin, segments)?;
+        let (attn, kv) = crate::profile::scope("prefix attention + projections", 0.0, x.device(), || self.attn.forward_prefix(&x, cos, sin, segments))?;
         let (h, x) = residual_norm_mod(&h, Some((&mods.gate1, &attn)), &mods.scale2, self.eps)?;
-        let m = self.mlp.forward(&x)?;
+        let m = crate::profile::scope("reference MLP", 0.0, x.device(), || self.mlp.forward(&x))?;
         Ok((h, m, kv))
     }
 
     /// [`Self::forward`] on the target rows alone, attending to the cached prefix.
-    fn forward_cached(&self, h: &Tensor, pending: Option<&Tensor>, mods: &BlockMods, cos: &Tensor, sin: &Tensor, prefix: &(Tensor, Tensor)) -> Result<(Tensor, Tensor)> {
+    fn forward_cached(
+        &self,
+        h: &Tensor,
+        pending: Option<&Tensor>,
+        mods: &BlockMods,
+        cos: &Tensor,
+        sin: &Tensor,
+        prefix: &(Tensor, Tensor),
+    ) -> Result<(Tensor, Tensor)> {
         let (h, x) = residual_norm_mod(h, pending.map(|y| (&mods.gate2, y)), &mods.scale1, self.eps)?;
-        let attn = self.attn.forward_cached(&x, cos, sin, prefix)?;
+        let attn = crate::profile::scope("cached attention + projections", 0.0, x.device(), || self.attn.forward_cached(&x, cos, sin, prefix))?;
         let (h, x) = residual_norm_mod(&h, Some((&mods.gate1, &attn)), &mods.scale2, self.eps)?;
-        let m = self.mlp.forward(&x)?;
+        let m = crate::profile::scope("reference MLP", 0.0, x.device(), || self.mlp.forward(&x))?;
         Ok((h, m))
     }
 }
@@ -1146,7 +1154,15 @@ impl QwenImageDit {
                 return idx.parse::<usize>().is_ok_and(|i| i < n)
                     && matches!(tail, "attn.to_q" | "attn.to_k" | "attn.to_v" | "attn.to_out.0" | "img_mlp.gate_layer" | "img_mlp.proj" | "img_mlp.out");
             }
-            matches!(m, "time_text_embed.timestep_embedder.linear_1" | "time_text_embed.timestep_embedder.linear_2" | "modulation.1" | "img_in" | "norm_out.linear" | "proj_out")
+            matches!(
+                m,
+                "time_text_embed.timestep_embedder.linear_1"
+                    | "time_text_embed.timestep_embedder.linear_2"
+                    | "modulation.1"
+                    | "img_in"
+                    | "norm_out.linear"
+                    | "proj_out"
+            )
         };
         Ok(stack.unmatched(&known).into_iter().map(String::from).collect())
     }
@@ -1270,7 +1286,7 @@ impl QwenImageDit {
         let prefix_len = ids.len() - h * w;
         anyhow::ensure!(prefix_len > 0, "a prefix cache needs text or reference rows");
         let joint = Tensor::cat(&parts, 1)?; // (1, P, INNER)
-        // Every prefix row modulates at t = 0 (both rows of the pair are t = 0 here).
+                                             // Every prefix row modulates at t = 0 (both rows of the pair are t = 0 here).
         let t0 = Tensor::zeros((1,), dtype, &self.device)?;
         let (_, mods) = self.modulation(&t0, dtype, b, 0, prefix_len)?;
         let (cos, sin) = self.rope_from_ids(&ids, dtype)?;
@@ -1313,7 +1329,7 @@ impl QwenImageDit {
         let txt_len = encoder_hidden_states.dim(1)?;
         anyhow::ensure!(slots.len() == refs.len(), "{} slots for {} references", slots.len(), refs.len());
         let txt = self.txt_in.forward(encoder_hidden_states)?; // (1, txt, INNER)
-        // bounds of the text stretches: [0, slot_0, ..., slot_{k-1}, txt_len]
+                                                               // bounds of the text stretches: [0, slot_0, ..., slot_{k-1}, txt_len]
         let mut bounds: Vec<usize> = vec![0];
         bounds.extend(slots.iter().map(|s| (*s).min(txt_len)));
         bounds.push(txt_len);
@@ -1339,10 +1355,9 @@ impl QwenImageDit {
             // token off where its grid has the other parity, or placed at its offset.
             let (hh0, ww0) = match offset {
                 Some((oy, ox)) => (-((h - h / 2) as f32) + oy as f32, -((w - w / 2) as f32) + ox as f32),
-                None => (
-                    -((ih - ih / 2) as f32) + 0.5 * ((ih % 2) as f32 - (h % 2) as f32),
-                    -((iw - iw / 2) as f32) + 0.5 * ((iw % 2) as f32 - (w % 2) as f32),
-                ),
+                None => {
+                    (-((ih - ih / 2) as f32) + 0.5 * ((ih % 2) as f32 - (h % 2) as f32), -((iw - iw / 2) as f32) + 0.5 * ((iw % 2) as f32 - (w % 2) as f32))
+                }
             };
             for r in 0..ih {
                 for c in 0..iw {
@@ -1367,7 +1382,7 @@ impl QwenImageDit {
         let temb = self.time_embed.forward(&ts, dtype)?; // (2, INNER)
         let st = silu(&temb)?;
         let modhad = with_lora(&self.l_modulation, self.modulation.forward(&st)?, &st)?; // (2, 4*INNER)
-        // scale1, gate1, scale2, gate2, each (2, INNER).
+                                                                                         // scale1, gate1, scale2, gate2, each (2, INNER).
         let chunk = |i: usize| -> Result<Modulation> { Modulation::new(modhad.narrow(1, i * INNER, INNER)?, b, prefix_len, img_tokens) };
         Ok((temb, BlockMods { scale1: chunk(0)?, gate1: chunk(1)?, scale2: chunk(2)?, gate2: chunk(3)? }))
     }

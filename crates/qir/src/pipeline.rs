@@ -76,7 +76,7 @@ impl Default for Options {
 /// the target's grid (see [`RefImage::offset`]).
 type PackedLatent = (Tensor, usize, usize, Option<(usize, usize)>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefImage {
     pub width: usize,
     pub height: usize,
@@ -268,8 +268,36 @@ pub struct Pipeline {
     vae: QwenImageVae,
     vision: Option<VisionTower>,
     opts: Options,
+    /// Bounded to one picture conditioning; fresh seeds reuse the encoders as in ComfyUI.
+    conditioning: std::sync::Mutex<Option<(ConditioningKey, Conditioning)>>,
     /// The final norm and language-model head, for [`Pipeline::chat`]; loaded on first use.
     head: std::sync::Mutex<Option<ChatHead>>,
+}
+
+/// One exact conditioning result, independent of noise, schedule, target grid and LoRAs.
+#[derive(Clone)]
+struct Conditioning {
+    latents: Vec<PackedLatent>,
+    positive: Tensor,
+    slots: Vec<usize>,
+    negative: Option<(Tensor, Vec<usize>)>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ConditioningKey {
+    references: Vec<RefImage>,
+    prompt: String,
+    negative: Option<String>,
+}
+
+impl ConditioningKey {
+    fn new(req: &Request) -> Self {
+        Self { references: req.references.clone(), prompt: req.prompt.clone(), negative: (req.guidance > 1.0).then(|| req.negative.clone()) }
+    }
+
+    fn matches(&self, req: &Request) -> bool {
+        self.references == req.references && self.prompt == req.prompt && self.negative.as_deref() == (req.guidance > 1.0).then_some(req.negative.as_str())
+    }
 }
 
 /// The text encoder's last two pieces, which conditioning never uses and a chat does.
@@ -380,7 +408,9 @@ impl Pipeline {
         let t0 = Instant::now();
         let files = match &src {
             Source::Snapshot(d) => crate::convrot_cache::resolve_dit_files(&d.join("transformer"), opts.convrot, &opts.cache)?,
-            Source::Comfy(f) => crate::convrot_cache::resolve_file_set(&f.dit, vec![f.dit.clone()], opts.convrot, &opts.cache, &crate::convrot_cache::Policy::qwen_image_21())?,
+            Source::Comfy(f) => {
+                crate::convrot_cache::resolve_file_set(&f.dit, vec![f.dit.clone()], opts.convrot, &opts.cache, &crate::convrot_cache::Policy::qwen_image_21())?
+            }
         };
         let dit_vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
         let dit = QwenImageDit::load(32, 64, false, opts.convrot, dit_vb)?;
@@ -417,7 +447,20 @@ impl Pipeline {
             None
         };
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, drop, src, te: std::sync::Mutex::new(Some(te)), dit, vae, vision, opts, head: std::sync::Mutex::new(None) })
+        Ok(Self {
+            dev,
+            dtype,
+            tok,
+            drop,
+            src,
+            te: std::sync::Mutex::new(Some(te)),
+            dit,
+            vae,
+            vision,
+            opts,
+            conditioning: std::sync::Mutex::new(None),
+            head: std::sync::Mutex::new(None),
+        })
     }
 
     /// Run `f` on the text encoder, loading it again first if it was evicted.
@@ -450,8 +493,8 @@ impl Pipeline {
         let Some((free, total)) = crate::device::usable_vram(&self.dev) else { return };
         let cache = self.dit.prefix_cache_bytes(prefix_len);
         // The step's working set: the joint keys and values the target attends to (two
-        // copies in flight), the prefix pass's f32 score chunks, and a margin.
-        let working = 4 * (prefix_len + target_len) * dit::INNER * 2 + 3 * dit::HEADS * 1024 * prefix_len * 4 + (1 << 30);
+        // copies in flight), the prefix pass's f32 score chunks, and 512 MiB headroom.
+        let working = 4 * (prefix_len + target_len) * dit::INNER * 2 + 3 * dit::HEADS * 1024 * prefix_len * 4 + (512 << 20);
         let need = cache + working;
         if free >= need {
             return;
@@ -504,8 +547,8 @@ impl Pipeline {
         let mut latents = Vec::with_capacity(refs.len());
         let mut feats = Vec::with_capacity(refs.len());
         for r in refs {
-            let (rgba, rgb, (w, h)) = prepare_ref(r, &self.dev)?;
-            let z = self.vae.encode(&rgba)?; // (1, 64, h/16, w/16) f32
+            let (rgba, rgb, (w, h)) = crate::profile::phase("reference pixels", &self.dev, || prepare_ref(r, &self.dev))?;
+            let z = crate::profile::phase("reference VAE", &self.dev, || self.vae.encode(&rgba))?; // (1, 64, h/16, w/16) f32
             let (lh, lw) = (h / 16, w / 16);
             let packed = z.reshape((1, 64, lh * lw))?.transpose(1, 2)?.contiguous()?.to_dtype(self.dtype)?;
             let offset = match r.offset {
@@ -519,9 +562,46 @@ impl Pipeline {
             let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
             let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
             let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
-            feats.push(tower.forward(&patches, gh, gw)?);
+            tracing::info!(w, h, vw, vh, tokens = gh * gw / 4, "reference dimensions");
+            feats.push(crate::profile::phase("vision", &self.dev, || tower.forward(&patches, gh, gw))?);
         }
         Ok((latents, feats))
+    }
+
+    /// Reuse deterministic picture conditioning across seed changes without retaining vision activations.
+    fn conditioning(&self, req: &Request) -> Result<Conditioning> {
+        let mut slot = self.conditioning.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((key, value)) = slot.as_ref() {
+            if !req.references.is_empty() && key.matches(req) {
+                tracing::info!("picture conditioning cache hit");
+                return Ok(value.clone());
+            }
+        }
+        // Release the old entry before computing another picture's working set.
+        *slot = None;
+        let (latents, feats) = if req.references.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            crate::profile::phase("references", &self.dev, || self.prepare_references(&req.references))?
+        };
+        let encode = |text: &str| {
+            crate::profile::phase("text encode", &self.dev, || {
+                if feats.is_empty() {
+                    Ok((self.encode(text)?, Vec::new()))
+                } else {
+                    self.encode_with_images(text, &feats)
+                }
+            })
+        };
+        let (positive, slots) = encode(&req.prompt)?;
+        let negative = if req.guidance > 1.0 { Some(encode(&req.negative)?) } else { None };
+        let value = Conditioning { latents, positive, slots, negative };
+        // One entry and at most 64 MiB of input pixels/text; oversized requests still work.
+        let bytes = req.references.iter().map(|r| r.rgba.len()).sum::<usize>().saturating_add(req.prompt.len()).saturating_add(req.negative.len());
+        if !req.references.is_empty() && bytes <= 64 * 1024 * 1024 {
+            *slot = Some((ConditioningKey::new(req), value.clone()));
+        }
+        Ok(value)
     }
 
     /// The final norm and the language-model head of the text encoder, loaded on first use
@@ -625,12 +705,8 @@ impl Pipeline {
         // 1. The references (their latents and vision features), then the text.
         check(cancel)?;
         let t0 = Instant::now();
-        let (ref_latents, feats) = if req.references.is_empty() {
-            (Vec::new(), Vec::new())
-        } else {
-            progress(0.0, "Reading the references");
-            self.prepare_references(&req.references)?
-        };
+        progress(0.0, if req.references.is_empty() { "Encoding the prompt" } else { "Reading the references" });
+        let Conditioning { latents: ref_latents, positive: cond, slots, negative: neg } = self.conditioning(req)?;
         // The target: the request's size, or the first reference's when it says nothing.
         let (w, h) = match (req.width, req.height, ref_latents.first()) {
             (0, 0, Some((_, lh, lw, None))) => (lw * 16, lh * 16),
@@ -647,13 +723,6 @@ impl Pipeline {
             }
         }
         check(cancel)?;
-        progress(0.02, "Encoding the prompt");
-        let (cond, slots) = if feats.is_empty() { (self.encode(&req.prompt)?, Vec::new()) } else { self.encode_with_images(&req.prompt, &feats)? };
-        let neg = if req.guidance > 1.0 {
-            Some(if feats.is_empty() { (self.encode(&req.negative)?, Vec::new()) } else { self.encode_with_images(&req.negative, &feats)? })
-        } else {
-            None
-        };
         let refs: Vec<RefLatent> = ref_latents.iter().map(|(t, lh, lw, o)| RefLatent { packed: t, h: *lh, w: *lw, offset: *o }).collect();
         // With references, the prefix (text and reference rows) through the DiT once; each
         // step then runs the target's rows against the cached keys and values.
@@ -663,7 +732,7 @@ impl Pipeline {
             progress(0.03, "Reading the references into the model");
             let prefix_len = cond.dim(1)? + ref_latents.iter().map(|(_, lh, lw, _)| lh * lw).sum::<usize>();
             self.make_room(prefix_len * if neg.is_some() { 2 } else { 1 }, lh * lw);
-            let c = self.dit.prefix_cache(&cond, lh, lw, &refs, &slots)?;
+            let c = crate::profile::phase("DiT prefix", &self.dev, || self.dit.prefix_cache(&cond, lh, lw, &refs, &slots))?;
             let n = match &neg {
                 Some((n, ns)) => Some(self.dit.prefix_cache(n, lh, lw, &refs, ns)?),
                 None => None,
@@ -703,30 +772,34 @@ impl Pipeline {
         for (i, (t, dt)) in tsteps.iter().zip(&dts).enumerate() {
             check(cancel)?;
             let tt = Tensor::from_vec(vec![*t], (1,), &self.dev)?;
-            let v = match &caches {
-                Some((c, n)) => self.velocity_cached(&latents.to_dtype(self.dtype)?, c, n.as_ref(), req.guidance, &tt)?,
-                None => self.velocity(
-                    &latents.to_dtype(self.dtype)?,
-                    (&cond, &slots),
-                    neg.as_ref().map(|(n, s)| (n, s.as_slice())),
-                    req.guidance,
-                    &tt,
-                    (lh, lw),
-                    &refs,
-                )?,
-            };
+            let v = crate::profile::phase(&format!("DiT step {i}"), &self.dev, || {
+                Ok(match &caches {
+                    Some((c, n)) => self.velocity_cached(&latents.to_dtype(self.dtype)?, c, n.as_ref(), req.guidance, &tt)?,
+                    None => self.velocity(
+                        &latents.to_dtype(self.dtype)?,
+                        (&cond, &slots),
+                        neg.as_ref().map(|(n, s)| (n, s.as_slice())),
+                        req.guidance,
+                        &tt,
+                        (lh, lw),
+                        &refs,
+                    )?,
+                })
+            })?;
             latents = (latents + (v * *dt as f64)?)?;
             progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
         }
         self.dev.synchronize()?;
         timings.denoise_s = t0.elapsed().as_secs_f32();
 
+        drop(caches);
         // 3. Pixels.
         check(cancel)?;
         progress(0.92, "Decoding");
         let t0 = Instant::now();
         let z = vae::unpack_latents_hw(&latents, lh, lw)?;
-        let img = self.vae.decode_auto(&z, self.opts.vae_tile)?;
+        let img =
+            if req.references.is_empty() { self.vae.decode_auto(&z, self.opts.vae_tile)? } else { self.vae.decode_auto_bounded(&z, self.opts.vae_tile)? };
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, rgba) = vae::to_rgba_u8(&img)?;
@@ -793,19 +866,59 @@ pub fn load_text_encoder(model: &Path, dev: &Device, dtype: DType, quant_text: b
 /// [`load_text_encoder`] from either source (ComfyUI's single file roots the language model at
 /// `model`).
 fn load_text_from(src: &Source, dev: &Device, dtype: DType, quant_text: bool, text_gguf: Option<&Path>) -> Result<QwenTextEncoder> {
-    if let Some(g) = text_gguf {
+    let mut te = if let Some(g) = text_gguf {
         let qvb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(g, dev)?;
-        QwenTextEncoder::load_gguf(&TextConfig::default(), qvb)
+        QwenTextEncoder::load_gguf(&TextConfig::default(), qvb)?
     } else {
         let files = src.text_files()?;
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
-        QwenTextEncoder::load_at(&TextConfig::default(), quant_text, vb.pp(src.lm_root()))
+        QwenTextEncoder::load_at(&TextConfig::default(), quant_text, vb.pp(src.lm_root()))?
+    };
+    if dev.is_cuda() && std::env::var("QIR_CPU_EMBEDDING").map_or(true, |v| v != "0") {
+        te.offload_embedding()?;
     }
+    Ok(te)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picture_conditioning_reuses_only_encoder_inputs() {
+        let mut req = Request::new("edit image 1");
+        req.references.push(RefImage { width: 32, height: 32, rgba: vec![255; 32 * 32 * 4], offset: None });
+        let key = ConditioningKey::new(&req);
+        req.seed += 1;
+        req.steps += 1;
+        req.width += 32;
+        req.schedule = Schedule::Diffusers;
+        req.negative = "unused at CFG 1".into();
+        assert!(key.matches(&req));
+        let check = |changed: Request| assert!(!key.matches(&changed));
+        let mut changed = req.clone();
+        changed.references[0].rgba[0] -= 1;
+        check(changed);
+        let mut changed = req.clone();
+        changed.references[0].offset = Some((16, 0));
+        check(changed);
+        let mut changed = req.clone();
+        changed.references[0].width += 32;
+        check(changed);
+        let mut changed = req.clone();
+        changed.references.push(changed.references[0].clone());
+        check(changed);
+        let mut changed = req.clone();
+        changed.prompt.push('!');
+        check(changed);
+        req.guidance = 2.0;
+        assert!(!key.matches(&req));
+        let key = ConditioningKey::new(&req);
+        req.guidance = 3.0;
+        assert!(key.matches(&req));
+        req.negative.push('!');
+        assert!(!key.matches(&req));
+    }
 
     #[test]
     fn a_snapshot_needs_its_four_parts() {
