@@ -46,7 +46,7 @@
 > toolset (Generative Fill, Expand, text-to-image, instruction editing, background removal) on top
 > of PhotoCraft, driven by a ComfyUI server running open-weight models such as Krea 2 and
 > Qwen-Image-Edit on your own GPU. The fork's documentation starts at
-> [`docs/comfy/README.md`](docs/comfy/README.md); agents start at [`CLAUDE.md`](CLAUDE.md).
+> [`docs/comfy/README.md`](docs/comfy/README.md).
 > Everything below this note is upstream PhotoCraft's README, kept verbatim.
 
 > [!NOTE]

@@ -1,6 +1,6 @@
 # Generative benchmarks (comfy-photocraft)
 
-Measured 2026-10-09 with [`bench/bench-fill.ps1`](bench/bench-fill.ps1) on the development PC:
+Measured 2026-10-09 with a local bench script (`bench-fill.ps1`, kept out of the repository) on the development PC:
 RTX 5090 (32 GB, driver 617.42), ComfyUI 0.39.0 portable, Python 3.13.14, torch 2.14.0+cu130.
 Same image (the 1024² lighthouse, `q21-image.png`), a 384×320 selection with a 25 % margin (a
 576×512 request), the same prompt. `ms` is `generate.fill`'s own wall time; the breakdown comes

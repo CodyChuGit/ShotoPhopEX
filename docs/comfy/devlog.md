@@ -4,6 +4,16 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-28: the repository is for distribution; local files leave it
+
+The owner's call: the repository carries what ships and its tests, not personal scratch. Untracked
+(still on disk, now in `.gitignore`): `docs/comfy/bench/` (the bench and live-QA scripts, their
+README and prompt files), `packaging/icon-px.py`, `CLAUDE.md` and `docs/comfy/dev-environment-windows.md`.
+Links to them in `README.md`, `ATTRIBUTION.md`, `assets/app-icon/` and the `docs/comfy/` pages now
+name them as local files; older entries below still mention them by path. The Rust tests stay.
+The Ps tile was also scrubbed from the branch's history (the two commits that added and removed
+it were folded into one).
+
 ## 2026-10-27: App Icon: any image, one click (replaces the Ps tile)
 
 The owner: the Ps tile should not live in the repository; the app should take any image, download

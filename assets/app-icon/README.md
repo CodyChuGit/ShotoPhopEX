@@ -20,7 +20,7 @@ icon did, so the packaging scripts need no change.
 
 ## Provenance
 
-Made for this branch on 2026-10-09 with `packaging/icon-px.py` (Pillow, Segoe UI Bold), replacing
+Made for this branch on 2026-10-09 with a local Pillow script, `icon-px.py` (Segoe UI Bold; kept out of the repository), replacing
 the PhotoCraft kitsune (upstream storytold/photocraft, `assets/app-icon/` there). License: see
 `LICENSE.txt`.
 
@@ -40,8 +40,8 @@ packaging scripts read them by name.
 ## Regenerate
 
 ```powershell
-python -I packaging\icon-px.py .
+python -I <path to your icon-px.py> .
 cargo run -q -p xtask -- ico assets\app-icon\photocraft.ico target\icon-px\ico-16.png target\icon-px\ico-20.png target\icon-px\ico-24.png target\icon-px\ico-32.png target\icon-px\ico-40.png target\icon-px\ico-48.png target\icon-px\ico-64.png target\icon-px\ico-128.png target\icon-px\ico-256.png
 ```
 
-Change `LETTERS`, the colours or the font at the top of `icon-px.py`.
+Change `LETTERS`, the colours or the font at the top of `icon-px.py` (a local file, not in the repository).

@@ -10,3 +10,9 @@ target/
 /book/output
 /craft-fonts
 *.log
+
+# Fork: the owner's local files, kept on disk but out of the distributed repository
+/docs/comfy/bench/
+/packaging/icon-px.py
+/CLAUDE.md
+/docs/comfy/dev-environment-windows.md

@@ -2,7 +2,7 @@ PhotoshopEX app icon (photocraft.svg, photocraft-small.svg and every file derive
 this directory: photocraft-1024.png, photocraft.icns, photocraft.ico, hicolor/).
 
 Original artwork made for this branch (2026-10-09): a navy rounded tile with the letters "Px",
-rendered by packaging/icon-px.py from the system's Segoe UI Bold. No third-party material; the
+rendered by a local script from the system's Segoe UI Bold. No third-party material; the
 "Ps" mark and the icon artwork of Adobe Photoshop are Adobe's trademarks and are not reproduced.
 Licensed like the rest of the project, under either of
 
@@ -11,4 +11,4 @@ Licensed like the rest of the project, under either of
 
 at your option.
 
-Regenerate the derived files with packaging/icon-px.py and `cargo xtask ico`.
+Regenerate the derived files with the owner's local generator script and `cargo xtask ico`.

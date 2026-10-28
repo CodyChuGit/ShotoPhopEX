@@ -24,7 +24,7 @@ code map is in [`codebase-orientation.md`](codebase-orientation.md).
 Done 2026-10-08 (see [`devlog.md`](devlog.md)): repository cloned, rustup + MSVC build verified
 (release build 2 min 39 s), `cargo test --workspace` run for a baseline, research on the models
 and the ComfyUI API, the design, and this documentation set. Open item: publish the branch (needs
-`gh auth login`; [`dev-environment-windows.md`](dev-environment-windows.md) › Publishing).
+`gh auth login`; the local `dev-environment-windows.md` › Publishing).
 
 ## Phase 1: Backend crate and headless Generative Fill
 
