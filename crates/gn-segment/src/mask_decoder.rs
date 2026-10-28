@@ -1,9 +1,10 @@
 //! Two-way interactive attention and all four raw SAM mask hypotheses.
 
+use crate::linear::Linear;
 use crate::prompt::{Conv, Loader, PromptEncoder, channel_norm};
 use anyhow::{Result, ensure};
-use candle_core::{DType, Device, Tensor};
-use candle_nn::{LayerNorm, Linear, Module};
+use candle_core::{Device, Tensor};
+use candle_nn::{LayerNorm, Module};
 use std::path::Path;
 
 /// Raw logits and scores before mask selection, object gating or image-size resampling.
@@ -33,7 +34,7 @@ pub struct InteractiveHeads {
     object: Mlp,
 }
 impl InteractiveHeads {
-    /// Read raw tracker keys from an F16 checkpoint and compute with f32 parameters.
+    /// Read raw tracker keys once using the checkpoint compute precision.
     /// Buffered loading avoids unsafe mapping and leaves unrelated model weights on the host.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
         Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
@@ -77,7 +78,7 @@ impl InteractiveHeads {
         for (x, size) in fpn.iter().zip([288, 144, 72]) {
             ensure!(x.dims() == [1, 256, size, size], "FPN must be [1,256,{size},{size}]");
         }
-        let fpn = fpn.map(|x| x.to_dtype(DType::F32)).into_iter().collect::<candle_core::Result<Vec<_>>>()?;
+        let fpn = fpn.map(|x| x.to_dtype(self.tokens.dtype())).into_iter().collect::<candle_core::Result<Vec<_>>>()?;
         let sparse = self.prompt.sparse(points, labels)?;
         let tokens = Tensor::cat(&[&self.tokens, &sparse], 1)?;
         let mut queries = tokens.clone();
@@ -120,8 +121,7 @@ impl Attention {
     fn forward(&self, q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
         let heads = |x: &Tensor, l: &Linear| -> Result<Tensor> { Ok(l.forward(x)?.reshape((1, x.dim(1)?, 8, self.width / 8))?.transpose(1, 2)?.contiguous()?) };
         let (q, k, v) = (heads(q, &self.q)?, heads(k, &self.k)?, heads(v, &self.v)?);
-        let scores = (q.matmul(&k.transpose(2, 3)?)? * (1.0 / ((self.width / 8) as f64).sqrt()))?;
-        let out = candle_nn::ops::softmax_last_dim(&scores)?.matmul(&v)?.transpose(1, 2)?.contiguous()?;
+        let out = crate::attention::attention(&q, &k, &v, None, false, None, 128)?.transpose(1, 2)?.contiguous()?;
         Ok(self.out.forward(&out.reshape((1, q.dim(2)?, self.width))?)?)
     }
 }

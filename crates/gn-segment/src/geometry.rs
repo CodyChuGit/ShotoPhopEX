@@ -1,10 +1,11 @@
 //! Detector box prompts and the image-conditioned geometry CLS token.
 
 use crate::detector::Attention;
+use crate::linear::Linear;
 use crate::prompt::{Loader, channel_norm};
 use anyhow::{Result, ensure};
 use candle_core::{DType, Device, Tensor};
-use candle_nn::{LayerNorm, Linear, Module};
+use candle_nn::{LayerNorm, Module};
 use std::path::Path;
 
 /// Geometry weights shared by box encoding and the separately ordered CLS path.
@@ -22,7 +23,7 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    /// Load raw detector.geometry_encoder F16 weights and perform all math in f32.
+    /// Load geometry weights once using the checkpoint compute precision.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
         Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
     }
@@ -37,7 +38,7 @@ impl Geometry {
             pool: Linear::new(
                 l.get(&format!("{p}.boxes_pool_project.weight"), &[256, 256, 7, 7])?.reshape((256, 256 * 49))?,
                 Some(l.get(&format!("{p}.boxes_pool_project.bias"), &[256])?),
-            ),
+            )?,
             position: l.linear(&format!("{p}.boxes_pos_enc_project"), 258, 256)?,
             positive: l.get(&format!("{p}.label_embed.weight"), &[2, 256])?.narrow(0, 1, 1)?,
             cls_embed: l.get(&format!("{p}.cls_embed.weight"), &[1, 256])?.unsqueeze(0)?,
@@ -53,19 +54,19 @@ impl Geometry {
     /// Coordinates are cx,cy,w,h normalized from original-image pixel corners.
     /// Use detector FPN level 2 and image positions, both `[1,256,72,72]`.
     /// Positions are validated but unused by ComfyUI's box path; outside boxes are not clipped.
-    /// Exact ROIAlign runs on CPU before returning pooled vectors to the input device.
+    /// CUDA pools on the feature device; only the small box metadata is read on the host.
     pub fn boxes(&self, fpn_lowest: &Tensor, image_pos: &Tensor, boxes: &Tensor) -> Result<Tensor> {
-        let (image, _) = image_inputs(fpn_lowest, image_pos)?;
+        let (image, _) = image_inputs(fpn_lowest, image_pos, self.cls_embed.dtype())?;
         let (b, n, c) = boxes.dims3()?;
         ensure!(b == 1 && c == 4 && n > 0, "boxes must be [1,N,4] with N > 0");
-        let boxes = boxes.to_dtype(DType::F32)?;
-        let coords = boxes.to_device(&Device::Cpu)?.reshape((n, 4))?.to_vec2::<f32>()?;
+        let boxes = boxes.to_dtype(self.cls_embed.dtype())?;
+        let coords = boxes.to_dtype(DType::F32)?.to_device(&Device::Cpu)?.reshape((n, 4))?.to_vec2::<f32>()?;
         ensure!(coords.iter().flatten().all(|x| x.is_finite()), "box coordinates must be finite");
         ensure!(coords.iter().all(|x| x[2] >= 0.0 && x[3] >= 0.0), "box sizes must be nonnegative");
         let corners: Vec<_> =
             coords.iter().map(|v| [(v[0] - 0.5 * v[2]) * 72.0, (v[1] - 0.5 * v[3]) * 72.0, (v[0] + 0.5 * v[2]) * 72.0, (v[1] + 0.5 * v[3]) * 72.0]).collect();
-        let normalized = channel_norm(&fpn_lowest.to_dtype(DType::F32)?, &self.img_norm)?;
-        let pooled = crate::ops::roi_align(&normalized.to_device(&Device::Cpu)?, &corners)?.to_device(fpn_lowest.device())?;
+        let normalized = channel_norm(&fpn_lowest.to_dtype(self.cls_embed.dtype())?, &self.img_norm)?;
+        let pooled = crate::ops::roi_align(&normalized, &corners)?;
         let pooled = self.pool.forward(&pooled.reshape((n, 256 * 49))?)?.unsqueeze(0)?;
         let positions = box_positions(&boxes)?;
         let mut geo = (self.direct.forward(&boxes)? + pooled)?;
@@ -79,7 +80,7 @@ impl Geometry {
 
     /// Compute `[1,1,256]` CLS: project before norm, and add image positions only to keys.
     pub fn cls(&self, fpn_lowest: &Tensor, image_pos: &Tensor) -> Result<Tensor> {
-        let (image, positions) = image_inputs(fpn_lowest, image_pos)?;
+        let (image, positions) = image_inputs(fpn_lowest, image_pos, self.cls_embed.dtype())?;
         let keys = (&image + positions)?;
         let mut cls = self.norm.forward(&self.final_proj.forward(&self.cls_embed)?)?;
         for layer in &self.layers {
@@ -89,9 +90,9 @@ impl Geometry {
     }
 }
 
-fn image_inputs(image: &Tensor, positions: &Tensor) -> Result<(Tensor, Tensor)> {
+fn image_inputs(image: &Tensor, positions: &Tensor, dtype: DType) -> Result<(Tensor, Tensor)> {
     ensure!(image.dims() == [1, 256, 72, 72] && positions.dims() == image.dims(), "image and positions must be [1,256,72,72]");
-    let flatten = |x: &Tensor| x.to_dtype(DType::F32)?.flatten_from(2)?.transpose(1, 2)?.contiguous();
+    let flatten = |x: &Tensor| x.to_dtype(dtype)?.flatten_from(2)?.transpose(1, 2)?.contiguous();
     Ok((flatten(image)?, flatten(positions)?))
 }
 
@@ -99,7 +100,7 @@ fn image_inputs(image: &Tensor, positions: &Tensor) -> Result<(Tensor, Tensor)> 
 fn box_positions(boxes: &Tensor) -> Result<Tensor> {
     let device = boxes.device();
     let freqs: Vec<f32> = (0..64).map(|i| 10000_f32.powf((2 * i) as f32 / 128.0)).collect();
-    let freqs = Tensor::from_vec(freqs, (1, 1, 64), device)?;
+    let freqs = Tensor::from_vec(freqs, (1, 1, 64), device)?.to_dtype(boxes.dtype())?;
     let mut parts = Vec::new();
     for coord in [1, 0] {
         let angle = (boxes.narrow(2, coord, 1)? * std::f64::consts::TAU)?.broadcast_div(&freqs)?;

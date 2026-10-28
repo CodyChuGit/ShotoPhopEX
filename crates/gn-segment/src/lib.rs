@@ -15,3 +15,7 @@ pub mod weights;
 
 mod resample;
 pub mod sam;
+
+pub mod profile;
+
+mod linear;
