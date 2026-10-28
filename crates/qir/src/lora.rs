@@ -1,8 +1,8 @@
-//! LoRA adapters as a runtime side path. For a linear `y = W x` an adapter adds `s · B (A x)`
-//! with `A` `(r, in)`, `B` `(out, r)` in the model's dtype and `s = strength · alpha / r`. The
-//! base weights stay as loaded (the INT8 ConvRot ones included), so adapters come and go per
-//! request through a [`LoraSlot`] on each linear, several stack by addition, and a strength is
-//! a number rather than a re-quantisation.
+//! LoRA loading, resident weight patches and side-path fallbacks.
+//! An adapter adds `s · B (A x)`, with `s = strength · alpha / r`.
+//! Qwen materializes floating/ConvRot weights at binding and keeps exact originals on CPU.
+//! Krea preserves its reference projection rounding. Unsupported representations use slots;
+//! shared inputs use one down projection and BF16 outputs can use a GEMM accumulator.
 //!
 //! Files: safetensors in the `lora_A` / `lora_B` layout (PEFT, diffusers, ai-toolkit: AusBoss's,
 //! Viggle's, the BFS and AnyPaint files) or `lora_down` / `lora_up` (Kohya), an optional `alpha`
@@ -26,15 +26,25 @@ pub struct LoraPair {
     a_t: Tensor,
     b_t: Tensor,
     scale: f32,
+    exact: bool,
 }
 
 impl LoraPair {
+    /// Apply the BF16 weight patch used during resident materialization.
+    pub(crate) fn merge_weight(&self, weight: Tensor) -> Result<Tensor> {
+        anyhow::ensure!(weight.dims2()? == (self.out_features(), self.in_features()), "LoRA weight shape mismatch");
+        let a = self.a_t.t()?.to_dtype(weight.dtype())?.to_device(weight.device())?;
+        let b = self.b_t.t()?.to_dtype(weight.dtype())?.to_device(weight.device())?;
+        Ok((weight + (b.matmul(&a)? * f64::from(self.scale))?)?)
+    }
+
     /// From `a` `(r, in)` and `b` `(out, r)`.
     pub fn new(a: &Tensor, b: &Tensor, scale: f32) -> Result<Self> {
-        let (r, _in) = a.dims2()?;
-        let (_out, rb) = b.dims2()?;
+        let (r, input) = a.dims2()?;
+        let (output, rb) = b.dims2()?;
         anyhow::ensure!(r == rb, "a LoRA's A ({r}) and B ({rb}) disagree on the rank");
-        Ok(Self { a_t: a.t()?.contiguous()?, b_t: b.t()?.contiguous()?, scale })
+        anyhow::ensure!(r > 0 && input > 0 && output > 0, "LoRA dimensions must be positive");
+        Ok(Self { a_t: a.contiguous()?.t()?, b_t: b.contiguous()?.t()?, scale, exact: false })
     }
 
     pub fn rank(&self) -> usize {
@@ -56,7 +66,24 @@ impl LoraPair {
         anyhow::ensure!(k == self.in_features(), "a LoRA for {} inputs applied to {k}", self.in_features());
         let m: usize = dims[..dims.len() - 1].iter().product();
         let x2 = x.reshape((m, k))?;
-        let (a_t, b_t) = if x2.dtype() == self.a_t.dtype() { (self.a_t.clone(), self.b_t.clone()) } else { (self.a_t.to_dtype(x2.dtype())?, self.b_t.to_dtype(x2.dtype())?) };
+        #[cfg(feature = "cuda")]
+        if !self.exact
+            && x2.dtype() == DType::BF16
+            && self.a_t.dtype() == DType::BF16
+            && self.b_t.dtype() == DType::BF16
+            && matches!(x2.device(), Device::Cuda(_))
+        {
+            let h = crate::lora_gemm::linear(&x2, &self.a_t.t()?)?;
+            let y = (crate::lora_gemm::linear(&h, &self.b_t.t()?)? * f64::from(self.scale))?;
+            let mut out = dims[..dims.len() - 1].to_vec();
+            out.push(self.out_features());
+            return Ok(y.reshape(out)?);
+        }
+        let (a_t, b_t) = if x2.dtype() == self.a_t.dtype() {
+            (self.a_t.clone(), self.b_t.clone())
+        } else {
+            (self.a_t.to_dtype(x2.dtype())?, self.b_t.to_dtype(x2.dtype())?)
+        };
         let y = (x2.matmul(&a_t)?.matmul(&b_t)? * f64::from(self.scale))?;
         let mut out = dims[..dims.len() - 1].to_vec();
         out.push(self.out_features());
@@ -67,6 +94,83 @@ impl LoraPair {
 /// The adapters on one linear, settable between forwards.
 #[derive(Default, Debug)]
 pub struct LoraSlot(RwLock<Vec<LoraPair>>);
+
+#[derive(Default)]
+struct GroupState {
+    down: Option<Tensor>,
+    pairs: Vec<Vec<(usize, LoraPair)>>,
+}
+
+/// Adapters sharing an input, with one concatenated down projection.
+#[derive(Default)]
+pub struct LoraGroup(RwLock<GroupState>);
+
+impl LoraGroup {
+    pub fn set(&self, slots: &[&LoraSlot]) -> Result<()> {
+        let mut state = GroupState::default();
+        let mut weights = Vec::new();
+        let mut offset = 0;
+        for slot in slots {
+            let pairs = slot.0.read().map_err(|_| anyhow::anyhow!("LoRA slot lock poisoned"))?;
+            let mut group = Vec::new();
+            for pair in pairs.iter() {
+                group.push((offset, pair.clone()));
+                weights.push(pair.a_t.t()?);
+                offset += pair.rank();
+            }
+            state.pairs.push(group);
+        }
+        if !weights.is_empty() {
+            state.down = Some(Tensor::cat(&weights, 0)?.contiguous()?);
+        }
+        *self.0.write().map_err(|_| anyhow::anyhow!("LoRA group lock poisoned"))? = state;
+        Ok(())
+    }
+
+    pub fn add<const N: usize>(&self, x: &Tensor, mut bases: [Tensor; N]) -> Result<[Tensor; N]> {
+        let state = self.0.read().map_err(|_| anyhow::anyhow!("LoRA group lock poisoned"))?;
+        let Some(down) = state.down.as_ref() else { return Ok(bases) };
+        anyhow::ensure!(state.pairs.len() == N, "LoRA group output count mismatch");
+        let k = *x.dims().last().ok_or_else(|| anyhow::anyhow!("a LoRA group needs a vector or wider input"))?;
+        anyhow::ensure!(k > 0 && down.dim(1)? == k, "LoRA group input dimension mismatch");
+        let m = x.elem_count() / k;
+        let x = x.reshape((m, k))?;
+        #[cfg(feature = "cuda")]
+        let hidden = if x.dtype() == DType::BF16 && down.dtype() == DType::BF16 && matches!(x.device(), Device::Cuda(_)) {
+            crate::lora_gemm::linear(&x, down)?
+        } else {
+            x.matmul(&down.to_dtype(x.dtype())?.t()?)?
+        };
+        #[cfg(not(feature = "cuda"))]
+        let hidden = x.matmul(&down.to_dtype(x.dtype())?.t()?)?;
+        for (base, pairs) in bases.iter_mut().zip(&state.pairs) {
+            let mut delta: Option<Tensor> = None;
+            for (offset, p) in pairs {
+                let h = hidden.narrow(1, *offset, p.rank())?.contiguous()?;
+                #[cfg(feature = "cuda")]
+                if pairs.len() == 1
+                    && base.dtype() == DType::BF16
+                    && h.dtype() == DType::BF16
+                    && p.b_t.dtype() == DType::BF16
+                    && matches!(x.device(), Device::Cuda(_))
+                {
+                    let y = crate::lora_gemm::linear_add(&h, &p.b_t.t()?, &base.contiguous()?.reshape((m, p.out_features()))?, p.scale)?;
+                    *base = y.reshape(base.dims())?;
+                    continue;
+                }
+                let d = (h.matmul(&p.b_t.to_dtype(x.dtype())?)? * f64::from(p.scale))?;
+                delta = Some(match delta {
+                    Some(acc) => (acc + d)?,
+                    None => d,
+                });
+            }
+            if let Some(delta) = delta {
+                *base = (base.contiguous()? + delta.reshape(base.dims())?.to_dtype(base.dtype())?)?;
+            }
+        }
+        Ok(bases)
+    }
+}
 
 impl LoraSlot {
     pub fn set(&self, pairs: Vec<LoraPair>) {
@@ -98,10 +202,27 @@ impl LoraSlot {
     /// `base + delta(x)` (`base` as it is without adapters). `base` may be a view: the sum is a
     /// fresh tensor; a dtype of `base` other than `x`'s is kept.
     pub fn add_to(&self, base: Tensor, x: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "cuda")]
+        if base.dtype() == DType::BF16 && x.dtype() == DType::BF16 && matches!(x.device(), Device::Cuda(_)) {
+            let pairs = self.0.read().map_err(|_| anyhow::anyhow!("LoRA slot lock poisoned"))?;
+            if pairs.is_empty() {
+                return Ok(base);
+            }
+            if let [p] = pairs.as_slice() {
+                if !p.exact && p.a_t.dtype() == DType::BF16 && p.b_t.dtype() == DType::BF16 {
+                    anyhow::ensure!(x.dims().last() == Some(&p.in_features()), "LoRA input dimension mismatch");
+                    let m = x.elem_count() / p.in_features();
+                    let h = crate::lora_gemm::linear(&x.reshape((m, p.in_features()))?, &p.a_t.t()?)?;
+                    let y = crate::lora_gemm::linear_add(&h, &p.b_t.t()?, &base.contiguous()?.reshape((m, p.out_features()))?, p.scale)?;
+                    return Ok(y.reshape(base.dims())?);
+                }
+            }
+        }
         match self.delta(x)? {
             Some(d) => {
+                let d = d.reshape(base.dims())?;
                 let d = if d.dtype() == base.dtype() { d } else { d.to_dtype(base.dtype())? };
-                Ok((base + d)?)
+                Ok((base.contiguous()? + d)?)
             }
             None => Ok(base),
         }
@@ -111,14 +232,7 @@ impl LoraSlot {
 /// `base` (any shape with `x`'s leading dims) plus the slot's delta for `x`, reshaped onto
 /// `base`; `base` itself when the slot is empty (a view stays a view).
 pub fn with_lora(slot: &LoraSlot, base: Tensor, x: &Tensor) -> Result<Tensor> {
-    match slot.delta(x)? {
-        None => Ok(base),
-        Some(d) => {
-            let d = d.reshape(base.dims())?;
-            let d = if d.dtype() == base.dtype() { d } else { d.to_dtype(base.dtype())? };
-            Ok((base.contiguous()? + d)?)
-        }
-    }
+    slot.add_to(base, x)
 }
 
 /// One module's adapter as the file holds it.
@@ -241,6 +355,12 @@ impl std::fmt::Debug for LoraStack {
 }
 
 impl LoraStack {
+    /// Same immutable files, order and exact strengths.
+    pub fn same_adapters(&self, other: &Self) -> bool {
+        self.layers.len() == other.layers.len()
+            && self.layers.iter().zip(&other.layers).all(|((a, sa), (b, sb))| Arc::ptr_eq(a, b) && sa.to_bits() == sb.to_bits())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.layers.is_empty()
     }
@@ -250,12 +370,27 @@ impl LoraStack {
     pub fn pairs(&self, module: &str) -> Result<Vec<LoraPair>> {
         let mut out = Vec::new();
         for (file, strength) in &self.layers {
+            // ComfyUI's loader bypasses strength-zero adapters entirely.
+            if *strength == 0.0 {
+                continue;
+            }
             if let Some(e) = file.entries.get(module) {
                 let r = e.rank().max(1) as f32;
                 out.push(LoraPair::new(&e.a, &e.b, strength * e.alpha / r)?);
             }
         }
         Ok(out)
+    }
+
+    /// Preserve the original projection layout and intermediate rounding for sensitive models.
+    pub fn pairs_exact(&self, module: &str) -> Result<Vec<LoraPair>> {
+        let mut pairs = self.pairs(module)?;
+        for pair in &mut pairs {
+            pair.a_t = pair.a_t.contiguous()?;
+            pair.b_t = pair.b_t.contiguous()?;
+            pair.exact = true;
+        }
+        Ok(pairs)
     }
 
     /// The modules the stack names that `known` does not: a file for another model, or a layout
@@ -350,5 +485,57 @@ mod tests {
         assert!(stack.pairs("nowhere").unwrap().is_empty());
         assert_eq!(stack.unmatched(&|m| m.starts_with("transformer_blocks")), vec!["blocks.1.attn.wq"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn binding_identity_includes_file_instance_order_and_strength_bits() {
+        let file = || Arc::new(LoraFile { path: "same.safetensors".into(), entries: BTreeMap::new() });
+        let (a, b) = (file(), file());
+        let stack = LoraStack { layers: vec![(a.clone(), 0.5), (b.clone(), 1.0)] };
+        assert!(stack.same_adapters(&stack.clone()));
+        assert!(LoraStack::default().same_adapters(&LoraStack::default()));
+        for other in [
+            LoraStack { layers: vec![(a.clone(), 1.0), (b.clone(), 1.0)] },
+            LoraStack { layers: vec![(b.clone(), 1.0), (a.clone(), 0.5)] },
+            LoraStack { layers: vec![(file(), 0.5), (b, 1.0)] },
+            LoraStack { layers: vec![(a, 0.5)] },
+            LoraStack::default(),
+        ] {
+            assert!(!stack.same_adapters(&other));
+        }
+    }
+
+    #[test]
+    fn zero_strength_does_not_requantize_a_base_weight() -> Result<()> {
+        let entry = Entry { a: rand((4, 16), 1), b: rand((8, 4), 2), alpha: 4.0 };
+        let file = Arc::new(LoraFile { path: "zero.safetensors".into(), entries: BTreeMap::from([("linear".into(), entry)]) });
+        for strength in [0.0, -0.0] {
+            assert!(LoraStack { layers: vec![(file.clone(), strength)] }.pairs("linear")?.is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn grouped_inputs_preserve_missing_modules_and_stacked_adapters() -> Result<()> {
+        let x = rand((5, 16), 1);
+        let slots = [LoraSlot::default(), LoraSlot::default(), LoraSlot::default()];
+        slots[0].set(vec![LoraPair::new(&rand((4, 16), 2), &rand((8, 4), 3), 0.5)?]);
+        slots[2].set(vec![LoraPair::new(&rand((3, 16), 4), &rand((8, 3), 5), -0.25)?, LoraPair::new(&rand((2, 16), 6), &rand((8, 2), 7), 1.)?]);
+        let bases = [rand((5, 8), 8), rand((5, 8), 9), rand((5, 8), 10)];
+        let group = LoraGroup::default();
+        group.set(&[&slots[0], &slots[1], &slots[2]])?;
+        let got = group.add(&x, bases.clone())?;
+        for i in 0..3 {
+            let want = slots[i].add_to(bases[i].clone(), &x)?;
+            let error = (&got[i] - want)?.abs()?.max_all()?.to_scalar::<f32>()?;
+            assert!(error < 1e-6, "{i}: {error}");
+        }
+        for slot in &slots {
+            slot.clear();
+        }
+        group.set(&[&slots[0], &slots[1], &slots[2]])?;
+        let got = group.add(&x, bases.clone())?;
+        assert_eq!(got[0].to_vec2::<f32>()?, bases[0].to_vec2::<f32>()?);
+        Ok(())
     }
 }

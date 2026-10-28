@@ -104,7 +104,7 @@ fn policy_tag(block: &[&str], tail: &[(&str, usize, usize, bool)]) -> String {
     format!("qir-convrot-v{PREQUANT_FORMAT};group={};block={};tail={}", crate::model::rotation::GROUP, block.join(","), tail.join(","))
 }
 
-use crate::lora::{with_lora, LoraSlot, LoraStack};
+use crate::lora::{with_lora, LoraGroup, LoraSlot, LoraStack};
 
 /// Load-time precision switches shared by every DiT linear.
 #[derive(Clone, Copy)]
@@ -119,10 +119,54 @@ struct LinearOpts<'a> {
 /// W8A8 INT8 (rotated int8 GEMM, `convrot` feature). Every DiT linear is one;
 /// `linear_precision` picks the variant from the weight prefix.
 enum QLinear {
-    Full(Linear),
+    Full(ResidentLinear),
     Quant(QMatMul),
     #[cfg(feature = "convrot")]
     Convrot(crate::convrot::ConvRotLinear),
+}
+
+struct ResidentWeights {
+    linear: Linear,
+    original_cpu: Option<Tensor>,
+    patched: bool,
+}
+
+/// A materialized floating weight, with exact originals off the GPU while patched.
+struct ResidentLinear(std::sync::RwLock<ResidentWeights>);
+
+impl ResidentLinear {
+    fn new(linear: Linear) -> Self {
+        Self(std::sync::RwLock::new(ResidentWeights { linear, original_cpu: None, patched: false }))
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let weights = self.0.read().map_err(|_| anyhow::anyhow!("linear weight lock poisoned"))?;
+        Ok(weights.linear.forward(x)?)
+    }
+
+    fn set_loras(&self, pairs: &[crate::lora::LoraPair]) -> Result<()> {
+        let mut weights = self.0.write().map_err(|_| anyhow::anyhow!("linear weight lock poisoned"))?;
+        if pairs.is_empty() && !weights.patched {
+            return Ok(());
+        }
+        let device = weights.linear.weight().device();
+        let original = if weights.patched {
+            weights.original_cpu.as_ref().ok_or_else(|| anyhow::anyhow!("missing original linear weight"))?.to_device(device)?
+        } else {
+            weights.linear.weight().clone()
+        };
+        let mut patched = original.clone();
+        for pair in pairs {
+            patched = pair.merge_weight(patched)?;
+        }
+        if !pairs.is_empty() && weights.original_cpu.is_none() {
+            weights.original_cpu = Some(original.to_device(&Device::Cpu)?);
+        }
+        let bias = weights.linear.bias().cloned();
+        weights.linear = Linear::new(patched, bias);
+        weights.patched = !pairs.is_empty();
+        Ok(())
+    }
 }
 
 impl QLinear {
@@ -146,7 +190,7 @@ impl QLinear {
                          bf16 layer (run with --convrot, or regenerate it with prequantize-convrot)"
                     );
                 }
-                Ok(QLinear::Full(linear_no_bias(in_c, out_c, vb)?))
+                Ok(QLinear::Full(ResidentLinear::new(linear_no_bias(in_c, out_c, vb)?)))
             }
         }
     }
@@ -182,6 +226,23 @@ impl QLinear {
             return true;
         }
         false
+    }
+
+    fn set_loras(&self, slot: &LoraSlot, stack: &LoraStack, module: &str) -> Result<()> {
+        let pairs = stack.pairs(module)?;
+        if let Self::Full(linear) = self {
+            linear.set_loras(&pairs)?;
+            slot.clear();
+            return Ok(());
+        }
+        #[cfg(feature = "convrot")]
+        if let Self::Convrot(linear) = self {
+            linear.set_loras(&pairs, module)?;
+            slot.clear();
+            return Ok(());
+        }
+        slot.set(pairs);
+        Ok(())
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -418,6 +479,7 @@ struct Attention {
     lk: LoraSlot,
     lv: LoraSlot,
     lo: LoraSlot,
+    qkv_loras: LoraGroup,
 }
 
 impl Attention {
@@ -441,6 +503,7 @@ impl Attention {
             lk: LoraSlot::default(),
             lv: LoraSlot::default(),
             lo: LoraSlot::default(),
+            qkv_loras: LoraGroup::default(),
         })
     }
 
@@ -452,10 +515,26 @@ impl Attention {
 
     /// Set this block's adapters from `stack` under `prefix` (`transformer_blocks.N.attn`).
     fn set_loras(&self, stack: &LoraStack, prefix: &str) -> Result<()> {
-        self.lq.set(stack.pairs(&format!("{prefix}.to_q"))?);
-        self.lk.set(stack.pairs(&format!("{prefix}.to_k"))?);
-        self.lv.set(stack.pairs(&format!("{prefix}.to_v"))?);
-        self.lo.set(stack.pairs(&format!("{prefix}.to_out.0"))?);
+        let q = format!("{prefix}.to_q");
+        let k = format!("{prefix}.to_k");
+        let vkey = format!("{prefix}.to_v");
+        match &self.qkv {
+            #[cfg(feature = "convrot")]
+            QkvProj::Merged { qk, v } => {
+                qk.set_head_loras((&stack.pairs(&q)?, &q), (&stack.pairs(&k)?, &k), HEAD_DIM)?;
+                v.set_loras(&stack.pairs(&vkey)?, &vkey)?;
+                self.lq.clear();
+                self.lk.clear();
+                self.lv.clear();
+            }
+            QkvProj::Separate { to_q, to_k, to_v } => {
+                to_q.set_loras(&self.lq, stack, &q)?;
+                to_k.set_loras(&self.lk, stack, &k)?;
+                to_v.set_loras(&self.lv, stack, &vkey)?;
+            }
+        }
+        self.to_out.set_loras(&self.lo, stack, &format!("{prefix}.to_out.0"))?;
+        self.qkv_loras.set(&[&self.lq, &self.lk, &self.lv])?;
         Ok(())
     }
 
@@ -485,11 +564,9 @@ impl Attention {
                 let (qk_out, v) = Self::merged_qk_v(qk, v, x, v_f16)?;
                 // Rows of [q_h | k_h]: q and k are ld = 2*HEAD_DIM column views.
                 let rows = qk_out.reshape((b * s * HEADS, 2 * HEAD_DIM))?;
-                let qr = with_lora(&self.lq, rows.narrow(1, 0, HEAD_DIM)?, x)?;
-                let kr = with_lora(&self.lk, rows.narrow(1, HEAD_DIM, HEAD_DIM)?, x)?;
+                let [qr, kr, v] = self.qkv_loras.add(x, [rows.narrow(1, 0, HEAD_DIM)?, rows.narrow(1, HEAD_DIM, HEAD_DIM)?, v])?;
                 let qh = self.norm_q.forward(&qr)?.reshape(shape)?;
                 let kh = self.norm_k.forward(&kr)?.reshape(shape)?;
-                let v = with_lora(&self.lv, v, x)?;
                 Ok((qh, kh, v))
             }
         }
@@ -504,8 +581,8 @@ impl Attention {
         let shape = (b, s, HEADS, HEAD_DIM);
         match &self.qkv {
             QkvProj::Separate { to_q, to_k, to_v } => {
-                let q = with_lora(&self.lq, to_q.forward(x)?, x)?.reshape(shape)?;
-                let k = with_lora(&self.lk, to_k.forward(x)?, x)?.reshape(shape)?;
+                let q = to_q.forward(x)?;
+                let k = to_k.forward(x)?;
                 #[cfg(feature = "sage")]
                 let v = if v_f16 { to_v.forward_f16(x)? } else { to_v.forward(x)? };
                 #[cfg(not(feature = "sage"))]
@@ -513,16 +590,14 @@ impl Attention {
                     let _ = v_f16;
                     to_v.forward(x)?
                 };
-                let v = with_lora(&self.lv, v, x)?;
-                Ok((q, k, v.reshape(shape)?))
+                let [q, k, v] = self.qkv_loras.add(x, [q, k, v])?;
+                Ok((q.reshape(shape)?, k.reshape(shape)?, v.reshape(shape)?))
             }
             #[cfg(feature = "convrot")]
             QkvProj::Merged { qk, v } => {
                 let (qk_out, v) = Self::merged_qk_v(qk, v, x, v_f16)?;
                 let qk4 = qk_out.reshape((b, s, HEADS, 2 * HEAD_DIM))?;
-                let q = with_lora(&self.lq, qk4.narrow(3, 0, HEAD_DIM)?, x)?;
-                let k = with_lora(&self.lk, qk4.narrow(3, HEAD_DIM, HEAD_DIM)?, x)?;
-                let v = with_lora(&self.lv, v, x)?;
+                let [q, k, v] = self.qkv_loras.add(x, [qk4.narrow(3, 0, HEAD_DIM)?, qk4.narrow(3, HEAD_DIM, HEAD_DIM)?, v])?;
                 Ok((q, k, v))
             }
         }
@@ -581,6 +656,11 @@ impl Attention {
         for seg in segments {
             let q = qh.narrow(2, seg.start, seg.end - seg.start)?;
             let (k, vals) = (kh.narrow(2, 0, seg.end)?, v.narrow(2, 0, seg.end)?);
+            #[cfg(feature = "flash")]
+            if !seg.causal && q.dtype() == DType::BF16 && matches!(dev, Device::Cuda(_)) {
+                outs.push(crate::flash::attention(&q, &k, &vals.to_dtype(DType::BF16)?, scale as f32)?.to_dtype(vals.dtype())?.transpose(1, 2)?);
+                continue;
+            }
             outs.push(chunked_attention(&q, &k, &vals, seg.causal.then_some(seg.start), scale, dev)?);
         }
         Ok(Tensor::cat(&outs, 2)?.transpose(1, 2)?.contiguous()?) // (B,S,H,D)
@@ -811,6 +891,7 @@ struct SwiGlu {
     /// LoRA side paths on the three linears, empty unless a request sets them.
     lgate: LoraSlot,
     lproj: LoraSlot,
+    input_loras: LoraGroup,
     lout: LoraSlot,
 }
 impl SwiGlu {
@@ -829,7 +910,7 @@ impl SwiGlu {
                 (gate, proj, _) => MlpIn::Separate { proj, gate },
             }
         };
-        Ok(Self { input, out, lgate: LoraSlot::default(), lproj: LoraSlot::default(), lout: LoraSlot::default() })
+        Ok(Self { input, out, lgate: LoraSlot::default(), lproj: LoraSlot::default(), lout: LoraSlot::default(), input_loras: LoraGroup::default() })
     }
 
     /// ComfyUI's single file stores the two input linears as one `img_mlp.gate_up` (the gate's
@@ -847,16 +928,34 @@ impl SwiGlu {
         let w = vb.get((2 * INNER * 3, INNER), "weight")?;
         let half = |i: usize| -> Result<QLinear> {
             let w = w.narrow(0, i * INNER * 3, INNER * 3)?.contiguous()?;
-            Ok(if opts.quant { QLinear::Quant(QMatMul::from_qtensor(QTensor::quantize(&w, GgmlDType::Q8_0)?)?) } else { QLinear::Full(Linear::new(w, None)) })
+            Ok(if opts.quant {
+                QLinear::Quant(QMatMul::from_qtensor(QTensor::quantize(&w, GgmlDType::Q8_0)?)?)
+            } else {
+                QLinear::Full(ResidentLinear::new(Linear::new(w, None)))
+            })
         };
         Ok(MlpIn::Separate { gate: half(0)?, proj: half(1)? })
     }
 
     /// Set this MLP's adapters from `stack` under `prefix` (`transformer_blocks.N.img_mlp`).
     fn set_loras(&self, stack: &LoraStack, prefix: &str) -> Result<()> {
-        self.lgate.set(stack.pairs(&format!("{prefix}.gate_layer"))?);
-        self.lproj.set(stack.pairs(&format!("{prefix}.proj"))?);
-        self.lout.set(stack.pairs(&format!("{prefix}.out"))?);
+        match &self.input {
+            #[cfg(feature = "convrot")]
+            MlpIn::Merged(input) => {
+                input.set_concat_loras(
+                    &[stack.pairs(&format!("{prefix}.gate_layer"))?, stack.pairs(&format!("{prefix}.proj"))?],
+                    &format!("{prefix}.gate_up"),
+                )?;
+                self.lgate.clear();
+                self.lproj.clear();
+            }
+            MlpIn::Separate { gate, proj } => {
+                gate.set_loras(&self.lgate, stack, &format!("{prefix}.gate_layer"))?;
+                proj.set_loras(&self.lproj, stack, &format!("{prefix}.proj"))?;
+            }
+        }
+        self.out.set_loras(&self.lout, stack, &format!("{prefix}.out"))?;
+        self.input_loras.set(&[&self.lgate, &self.lproj])?;
         Ok(())
     }
 
@@ -897,8 +996,7 @@ impl SwiGlu {
                 let n = INNER * 3;
                 let y = gp.forward(x)?.reshape((m, 2 * n))?; // [gate | proj]
                 let x2 = x.reshape((m, INNER))?;
-                let g = with_lora(&self.lgate, y.narrow(1, 0, n)?, &x2)?;
-                let p = with_lora(&self.lproj, y.narrow(1, n, n)?, &x2)?;
+                let [g, p] = self.input_loras.add(&x2, [y.narrow(1, 0, n)?, y.narrow(1, n, n)?])?;
                 let h = out.forward_swiglu(&g, &p, crate::convrot::EpilogueOut::Bf16)?; // (m, INNER)
                 let h = self.out_lora(h, &g, &p)?;
                 let mut out_dims = dims[..dims.len() - 1].to_vec();
@@ -906,8 +1004,7 @@ impl SwiGlu {
                 Ok(h.reshape(out_dims)?)
             }
             MlpIn::Separate { proj, gate } => {
-                let g = with_lora(&self.lgate, gate.forward(x)?, x)?;
-                let p = with_lora(&self.lproj, proj.forward(x)?, x)?;
+                let [g, p] = self.input_loras.add(x, [gate.forward(x)?, proj.forward(x)?])?;
                 #[cfg(feature = "convrot")]
                 if let QLinear::Convrot(out) = &self.out {
                     let h = out.forward_swiglu(&g, &p, crate::convrot::EpilogueOut::Bf16)?;
@@ -1086,6 +1183,7 @@ pub struct QwenImageDit {
     l_img_in: LoraSlot,
     l_norm_out: LoraSlot,
     l_proj_out: LoraSlot,
+    bound_loras: std::sync::Mutex<Option<(LoraStack, Vec<String>)>>,
 }
 
 impl QwenImageDit {
@@ -1124,6 +1222,7 @@ impl QwenImageDit {
             l_img_in: LoraSlot::default(),
             l_norm_out: LoraSlot::default(),
             l_proj_out: LoraSlot::default(),
+            bound_loras: std::sync::Mutex::new(None),
         };
         tracing::info!(
             convrot_linears = dit.convrot_linears(),
@@ -1137,16 +1236,24 @@ impl QwenImageDit {
     /// Returns the modules the stack names that this model has not (a file for another model,
     /// or a layout the loader does not map), for the caller to report.
     pub fn set_loras(&self, stack: &LoraStack) -> Result<Vec<String>> {
+        let mut bound = self.bound_loras.lock().map_err(|_| anyhow::anyhow!("DiT adapter binding lock poisoned"))?;
+        if let Some((previous, unmatched)) = bound.as_ref() {
+            if previous.same_adapters(stack) {
+                return Ok(unmatched.clone());
+            }
+        }
+        // A failed bind must be retried, even if the caller restores the previous stack.
+        *bound = None;
         for (i, b) in self.blocks.iter().enumerate() {
             b.attn.set_loras(stack, &format!("transformer_blocks.{i}.attn"))?;
             b.mlp.set_loras(stack, &format!("transformer_blocks.{i}.img_mlp"))?;
         }
-        self.time_embed.l1.set(stack.pairs("time_text_embed.timestep_embedder.linear_1")?);
-        self.time_embed.l2.set(stack.pairs("time_text_embed.timestep_embedder.linear_2")?);
-        self.l_modulation.set(stack.pairs("modulation.1")?);
-        self.l_img_in.set(stack.pairs("img_in")?);
-        self.l_norm_out.set(stack.pairs("norm_out.linear")?);
-        self.l_proj_out.set(stack.pairs("proj_out")?);
+        self.time_embed.linear1.set_loras(&self.time_embed.l1, stack, "time_text_embed.timestep_embedder.linear_1")?;
+        self.time_embed.linear2.set_loras(&self.time_embed.l2, stack, "time_text_embed.timestep_embedder.linear_2")?;
+        self.modulation.set_loras(&self.l_modulation, stack, "modulation.1")?;
+        self.img_in.set_loras(&self.l_img_in, stack, "img_in")?;
+        self.norm_out_linear.set_loras(&self.l_norm_out, stack, "norm_out.linear")?;
+        self.proj_out.set_loras(&self.l_proj_out, stack, "proj_out")?;
         let n = self.blocks.len();
         let known = |m: &str| -> bool {
             if let Some(rest) = m.strip_prefix("transformer_blocks.") {
@@ -1164,7 +1271,9 @@ impl QwenImageDit {
                     | "proj_out"
             )
         };
-        Ok(stack.unmatched(&known).into_iter().map(String::from).collect())
+        let unmatched: Vec<String> = stack.unmatched(&known).into_iter().map(String::from).collect();
+        *bound = Some((stack.clone(), unmatched.clone()));
+        Ok(unmatched)
     }
 
     /// Patch embedding with its LoRA delta.
@@ -1423,6 +1532,23 @@ fn select_rows(m: &Tensor, txt_len: usize, img_tokens: usize) -> Result<Tensor> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_materialization_reuses_originals_and_restores_exactly() -> Result<()> {
+        let dev = Device::Cpu;
+        let linear = ResidentLinear::new(Linear::new(Tensor::ones((4, 8), DType::F32, &dev)?, None));
+        let x = Tensor::ones((2, 8), DType::F32, &dev)?;
+        let pair = crate::lora::LoraPair::new(&Tensor::full(0.25f32, (2, 8), &dev)?, &Tensor::full(0.5f32, (4, 2), &dev)?, 0.5)?;
+        let values = |layer: &ResidentLinear| -> Result<Vec<Vec<f32>>> { Ok(layer.forward(&x)?.to_vec2::<f32>()?) };
+        let base = values(&linear)?;
+        for _ in 0..2 {
+            linear.set_loras(&[pair.clone()])?;
+            assert_eq!(values(&linear)?, vec![vec![9f32; 4]; 2]);
+        }
+        linear.set_loras(&[])?;
+        assert_eq!(values(&linear)?, base);
+        Ok(())
+    }
 
     /// The candle fallback of the AdaLN step equals the pre-fusion pair
     /// (`h + tanh(gate) * y`, then `norm_no_affine(h') * (scale + 1)`) on the

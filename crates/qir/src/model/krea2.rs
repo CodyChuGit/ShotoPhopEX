@@ -6,13 +6,13 @@
 //! the tokens after the chat template's prefix (the system turn and `<|im_start|>user\n`),
 //! shaped `(tokens, 12, 2560)`; the DiT's `txtfusion` adapter fuses the twelve per token.
 
-use candle_core::{D, DType, Device, IndexOp, Module, Tensor};
-use candle_nn::{Linear, VarBuilder, linear, linear_no_bias};
+use candle_core::{DType, Device, IndexOp, Module, Tensor, D};
+use candle_nn::{linear, linear_no_bias, Linear, VarBuilder};
 
-use crate::Result;
 use crate::fp8::{Fp8Linear, Fp8Plan};
-use crate::lora::{LoraSlot, LoraStack, with_lora};
+use crate::lora::{with_lora, LoraSlot, LoraStack};
 use crate::model::text_encoder::QwenTextEncoder;
+use crate::Result;
 
 /// The hidden states Krea 2 taps (transformers' `hidden_states` indices).
 pub const TAPS: [usize; 12] = [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35];
@@ -35,7 +35,9 @@ pub fn template(prompt: &str) -> String {
 /// comfyui-krea2edit `Krea2EditGroundedEncode` template): the same system turn, the picture's
 /// vision block opening the user turn, then the instruction.
 pub fn edit_template(prompt: &str) -> String {
-    format!("<|im_start|>system\n{SYS_PROMPT}<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>\n<|im_start|>assistant\n")
+    format!(
+        "<|im_start|>system\n{SYS_PROMPT}<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>\n<|im_start|>assistant\n"
+    )
 }
 
 /// [`condition`] with pictures in view: their vision rows spliced in for `<|image_pad|>`, the
@@ -311,9 +313,9 @@ impl SwiGlu {
     }
 
     fn set_loras(&self, stack: &LoraStack, prefix: &str) -> Result<()> {
-        self.lgate.set(stack.pairs(&format!("{prefix}.gate"))?);
-        self.lup.set(stack.pairs(&format!("{prefix}.up"))?);
-        self.ldown.set(stack.pairs(&format!("{prefix}.down"))?);
+        self.lgate.set(stack.pairs_exact(&format!("{prefix}.gate"))?);
+        self.lup.set(stack.pairs_exact(&format!("{prefix}.up"))?);
+        self.ldown.set(stack.pairs_exact(&format!("{prefix}.down"))?);
         Ok(())
     }
 }
@@ -399,11 +401,11 @@ impl Attention {
     }
 
     fn set_loras(&self, stack: &LoraStack, prefix: &str) -> Result<()> {
-        self.lq.set(stack.pairs(&format!("{prefix}.wq"))?);
-        self.lk.set(stack.pairs(&format!("{prefix}.wk"))?);
-        self.lv.set(stack.pairs(&format!("{prefix}.wv"))?);
-        self.lgate.set(stack.pairs(&format!("{prefix}.gate"))?);
-        self.lo.set(stack.pairs(&format!("{prefix}.wo"))?);
+        self.lq.set(stack.pairs_exact(&format!("{prefix}.wq"))?);
+        self.lk.set(stack.pairs_exact(&format!("{prefix}.wk"))?);
+        self.lv.set(stack.pairs_exact(&format!("{prefix}.wv"))?);
+        self.lgate.set(stack.pairs_exact(&format!("{prefix}.gate"))?);
+        self.lo.set(stack.pairs_exact(&format!("{prefix}.wo"))?);
         Ok(())
     }
 
@@ -433,8 +435,18 @@ impl Attention {
                 Some((cos, sin)) => Some(Tensor::stack(&[cos, sin], 0)?),
                 None => None,
             };
-            let q = crate::krea2_fused::head_rope(&with_lora(&self.lq, self.wq.forward(x)?, x)?.reshape((b, s, h, d))?, &self.qnorm.weight, cs.as_ref(), self.qnorm.eps)?;
-            let k = crate::krea2_fused::head_rope(&with_lora(&self.lk, self.wk.forward(x)?, x)?.reshape((b, s, kvh, d))?, &self.knorm.weight, cs.as_ref(), self.knorm.eps)?;
+            let q = crate::krea2_fused::head_rope(
+                &with_lora(&self.lq, self.wq.forward(x)?, x)?.reshape((b, s, h, d))?,
+                &self.qnorm.weight,
+                cs.as_ref(),
+                self.qnorm.eps,
+            )?;
+            let k = crate::krea2_fused::head_rope(
+                &with_lora(&self.lk, self.wk.forward(x)?, x)?.reshape((b, s, kvh, d))?,
+                &self.knorm.weight,
+                cs.as_ref(),
+                self.knorm.eps,
+            )?;
             let v = with_lora(&self.lv, self.wv.forward(x)?, x)?.reshape((b, s, kvh, d))?;
             let flops = 4.0 * (b * h * s * s * d) as f64;
             let out = crate::profile::scope("attention", flops, x.device(), || {
@@ -452,7 +464,7 @@ impl Attention {
         #[cfg(feature = "sage2")]
         if let (Some((cos, sin)), Attn::Sage, None) = (rope, choice, bias) {
             if let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? {
-                use crate::sage2::{Role, attention, quant_v, rope_quant};
+                use crate::sage2::{attention, quant_v, rope_quant, Role};
                 let dt = x.dtype();
                 let (c, sn) = (cos.to_dtype(dt)?, sin.to_dtype(dt)?);
                 let q = rope_quant(&qb.contiguous()?, &c, &sn, Role::Query)?;
@@ -632,6 +644,7 @@ pub struct Krea2Dit {
     last_lin: Linear,
     last_mod: Tensor, // (2, F)
     device: Device,
+    bound_loras: std::sync::Mutex<Option<(LoraStack, Vec<String>)>>,
 }
 
 impl Krea2Dit {
@@ -665,12 +678,17 @@ impl Krea2Dit {
             tmlp: (linear(cfg.timestep_dim, f, vb.pp("tmlp").pp("0"))?, linear(f, f, vb.pp("tmlp").pp("2"))?),
             tproj: linear(f, 6 * f, vb.pp("tproj").pp("1"))?,
             txtfusion: TextFusion::load(cfg, q, vb.pp("txtfusion"))?,
-            txtmlp: (RmsNorm1p::load(cfg.text_dim, cfg.eps, vb.pp("txtmlp").pp("0"))?, linear(cfg.text_dim, f, vb.pp("txtmlp").pp("1"))?, linear(f, f, vb.pp("txtmlp").pp("3"))?),
+            txtmlp: (
+                RmsNorm1p::load(cfg.text_dim, cfg.eps, vb.pp("txtmlp").pp("0"))?,
+                linear(cfg.text_dim, f, vb.pp("txtmlp").pp("1"))?,
+                linear(f, f, vb.pp("txtmlp").pp("3"))?,
+            ),
             blocks,
             last_norm: RmsNorm1p::load(f, cfg.eps, vb.pp("last").pp("norm"))?,
             last_lin: linear(f, p2 * cfg.channels, vb.pp("last").pp("linear"))?,
             last_mod: vb.pp("last").pp("modulation").get((2, f), "lin")?,
             device: vb.device().clone(),
+            bound_loras: std::sync::Mutex::new(None),
         })
     }
 
@@ -682,6 +700,13 @@ impl Krea2Dit {
     /// clears them all); the AnyPaint and outpaint LoRAs address exactly these. Returns the
     /// modules the stack names that this model has not, for the caller to report.
     pub fn set_loras(&self, stack: &LoraStack) -> Result<Vec<String>> {
+        let mut bound = self.bound_loras.lock().map_err(|_| anyhow::anyhow!("Krea adapter binding lock poisoned"))?;
+        if let Some((previous, unmatched)) = bound.as_ref() {
+            if previous.same_adapters(stack) {
+                return Ok(unmatched.clone());
+            }
+        }
+        *bound = None;
         for (i, b) in self.blocks.iter().enumerate() {
             b.attn.set_loras(stack, &format!("blocks.{i}.attn"))?;
             b.mlp.set_loras(stack, &format!("blocks.{i}.mlp"))?;
@@ -707,7 +732,9 @@ impl Krea2Dit {
             }
             false
         };
-        Ok(stack.unmatched(&known).into_iter().map(String::from).collect())
+        let unmatched: Vec<String> = stack.unmatched(&known).into_iter().map(String::from).collect();
+        *bound = Some((stack.clone(), unmatched.clone()));
+        Ok(unmatched)
     }
 
     /// Flux's sinusoidal embedding of `t` (×1000, 256 wide: 128 cosines then 128 sines), f32.
@@ -859,6 +886,8 @@ mod tests {
     #[test]
     fn the_template_is_comfyuis() {
         let t = template("a fox");
-        assert!(t.starts_with("<|im_start|>system\nDescribe the image by detailing") && t.ends_with("<|im_start|>user\na fox<|im_end|>\n<|im_start|>assistant\n"));
+        assert!(
+            t.starts_with("<|im_start|>system\nDescribe the image by detailing") && t.ends_with("<|im_start|>user\na fox<|im_end|>\n<|im_start|>assistant\n")
+        );
     }
 }

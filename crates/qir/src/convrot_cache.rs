@@ -62,12 +62,7 @@ pub struct CacheSpec {
 impl CacheSpec {
     /// From the CLI flags and the process environment.
     pub fn from_cli(dir: Option<&Path>, off: bool, rebuild: bool) -> Self {
-        let root = cache_root(
-            dir,
-            std::env::var_os("QIR_CONVROT_CACHE"),
-            std::env::var_os("XDG_CACHE_HOME"),
-            std::env::var_os("HOME"),
-        );
+        let root = cache_root(dir, std::env::var_os("QIR_CONVROT_CACHE"), std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"));
         let mode = if off {
             CacheMode::Off
         } else if rebuild {
@@ -82,12 +77,7 @@ impl CacheSpec {
 /// Cache root by precedence: flag > `$QIR_CONVROT_CACHE` >
 /// `$XDG_CACHE_HOME/qwen-image-rs/convrot` > `$HOME/.cache/qwen-image-rs/convrot`.
 /// Empty env values count as unset.
-pub fn cache_root(
-    flag: Option<&Path>,
-    env: Option<OsString>,
-    xdg: Option<OsString>,
-    home: Option<OsString>,
-) -> Option<PathBuf> {
+pub fn cache_root(flag: Option<&Path>, env: Option<OsString>, xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let set = |v: Option<OsString>| v.filter(|s| !s.is_empty()).map(PathBuf::from);
     if let Some(f) = flag {
         return Some(f.to_path_buf());
@@ -118,27 +108,11 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 /// (an HF snapshot: the commit hash), else the dir's own name, reduced to
 /// `[A-Za-z0-9._-]`.
 pub fn entry_path(root: &Path, transformer_dir: &Path) -> Result<PathBuf> {
-    let canon = transformer_dir
-        .canonicalize()
-        .with_context(|| format!("canonicalizing {}", transformer_dir.display()))?;
+    let canon = transformer_dir.canonicalize().with_context(|| format!("canonicalizing {}", transformer_dir.display()))?;
     let name_of = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
     let own = name_of(&canon).unwrap_or_default();
-    let raw = if own == "transformer" {
-        canon.parent().and_then(name_of).unwrap_or(own)
-    } else {
-        own
-    };
-    let mut name: String = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "._-".contains(c) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(64)
-        .collect();
+    let raw = if own == "transformer" { canon.parent().and_then(name_of).unwrap_or(own) } else { own };
+    let mut name: String = raw.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).take(64).collect();
     if name.is_empty() || name.chars().all(|c| c == '.') {
         name = "dit".into();
     }
@@ -150,21 +124,12 @@ pub fn entry_path(root: &Path, transformer_dir: &Path) -> Result<PathBuf> {
 /// and, per file (sorted), its name, byte size and mtime (ns). A content
 /// change that keeps size AND mtime is not seen (`--rebuild-convrot-cache`).
 pub fn source_fingerprint(dir: &Path, files: &[PathBuf]) -> Result<String> {
-    let mut key = dir
-        .canonicalize()
-        .with_context(|| format!("canonicalizing {}", dir.display()))?
-        .as_os_str()
-        .as_encoded_bytes()
-        .to_vec();
+    let mut key = dir.canonicalize().with_context(|| format!("canonicalizing {}", dir.display()))?.as_os_str().as_encoded_bytes().to_vec();
     let mut files = files.to_vec();
     files.sort();
     for f in &files {
         let md = std::fs::metadata(f).with_context(|| format!("stat {}", f.display()))?;
-        let mtime = md
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let mtime = md.modified()?.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let name = f.file_name().map(|n| n.as_encoded_bytes()).unwrap_or(&[]);
         key.push(0);
         key.extend_from_slice(name);
@@ -189,21 +154,13 @@ pub fn read_header(path: &Path) -> Result<Header> {
     let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let file_len = f.metadata()?.len();
     let mut n8 = [0u8; 8];
-    f.read_exact(&mut n8)
-        .with_context(|| format!("{}: shorter than a safetensors header", path.display()))?;
+    f.read_exact(&mut n8).with_context(|| format!("{}: shorter than a safetensors header", path.display()))?;
     let n = u64::from_le_bytes(n8);
-    anyhow::ensure!(
-        n <= MAX_HEADER && n <= file_len.saturating_sub(8),
-        "{}: header length {n} exceeds the file or the {MAX_HEADER} B cap",
-        path.display()
-    );
+    anyhow::ensure!(n <= MAX_HEADER && n <= file_len.saturating_sub(8), "{}: header length {n} exceeds the file or the {MAX_HEADER} B cap", path.display());
     let mut buf = vec![0u8; n as usize];
     f.read_exact(&mut buf)?;
-    let json: serde_json::Value = serde_json::from_slice(&buf)
-        .with_context(|| format!("{}: header is not JSON", path.display()))?;
-    let obj = json
-        .as_object()
-        .with_context(|| format!("{}: header is not a JSON object", path.display()))?;
+    let json: serde_json::Value = serde_json::from_slice(&buf).with_context(|| format!("{}: header is not JSON", path.display()))?;
+    let obj = json.as_object().with_context(|| format!("{}: header is not a JSON object", path.display()))?;
     let mut metadata = HashMap::new();
     let mut names = Vec::new();
     let mut data_end = 0u64;
@@ -216,28 +173,18 @@ pub fn read_header(path: &Path) -> Result<Header> {
             }
             continue;
         }
-        let end = v["data_offsets"][1]
-            .as_u64()
-            .with_context(|| format!("{}: tensor {k} has no data_offsets", path.display()))?;
+        let end = v["data_offsets"][1].as_u64().with_context(|| format!("{}: tensor {k} has no data_offsets", path.display()))?;
         data_end = data_end.max(end);
         names.push(k.clone());
     }
-    Ok(Header {
-        metadata,
-        names,
-        expected_len: 8 + n + data_end,
-    })
+    Ok(Header { metadata, names, expected_len: 8 + n + data_end })
 }
 
 /// True when any file already holds a ConvRot INT8 weight (`*.weight_i8`):
 /// an explicit `prequantize-convrot` output, used as-is.
 pub fn files_hold_prequant(files: &[PathBuf]) -> Result<bool> {
     for f in files {
-        if read_header(f)?
-            .names
-            .iter()
-            .any(|n| n.ends_with(".weight_i8"))
-        {
+        if read_header(f)?.names.iter().any(|n| n.ends_with(".weight_i8")) {
             return Ok(true);
         }
     }
@@ -255,10 +202,7 @@ pub fn check_entry(path: &Path, policy: &str, source: &str) -> Option<String> {
     };
     let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if h.expected_len != len {
-        return Some(format!(
-            "torn file: header implies {} B, file is {len} B",
-            h.expected_len
-        ));
+        return Some(format!("torn file: header implies {} B, file is {len} B", h.expected_len));
     }
     if h.metadata.get(META_POLICY).map(String::as_str) != Some(policy) {
         return Some("precision policy changed".into());
@@ -284,8 +228,7 @@ pub fn write_atomic(out: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Resu
         write(&tmp)?;
         // A write handle: on Windows a read-only one cannot be flushed ("Access is denied").
         std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
-        std::fs::rename(&tmp, out)
-            .with_context(|| format!("renaming {} -> {}", tmp.display(), out.display()))?;
+        std::fs::rename(&tmp, out).with_context(|| format!("renaming {} -> {}", tmp.display(), out.display()))?;
         // Persist the rename itself (directory entry).
         if let Ok(d) = std::fs::File::open(dir) {
             let _ = d.sync_all();
@@ -312,12 +255,7 @@ fn sweep_stale_tmps(out: &Path) {
         if !fname.to_string_lossy().starts_with(&prefix) {
             continue;
         }
-        let old = e
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age > STALE_TMP);
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STALE_TMP);
         if old {
             tracing::info!(path = %e.path().display(), "removing stale convrot cache tmp");
             let _ = std::fs::remove_file(e.path());
@@ -388,11 +326,7 @@ fn resolve_entry(dir: &Path, files: &[PathBuf], root: &Path, mode: CacheMode, po
     let is_target = policy.is_target;
     let policy = policy.tag.clone();
     let source = source_fingerprint(dir, files)?;
-    let reason = if mode == CacheMode::Rebuild {
-        Some("--rebuild-convrot-cache".to_string())
-    } else {
-        check_entry(&entry, &policy, &source)
-    };
+    let reason = if mode == CacheMode::Rebuild { Some("--rebuild-convrot-cache".to_string()) } else { check_entry(&entry, &policy, &source) };
     let Some(reason) = reason else {
         tracing::info!(path = %entry.display(), "convrot cache hit");
         return Ok(entry);
@@ -402,10 +336,7 @@ fn resolve_entry(dir: &Path, files: &[PathBuf], root: &Path, mode: CacheMode, po
     std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     tracing::info!(path = %entry.display(), reason, "building the convrot cache (one-time: rotate + INT8-quantize the DiT linears)");
     let t0 = std::time::Instant::now();
-    let meta = HashMap::from([
-        (META_POLICY.to_string(), policy.clone()),
-        (META_SOURCE.to_string(), source.clone()),
-    ]);
+    let meta = HashMap::from([(META_POLICY.to_string(), policy.clone()), (META_SOURCE.to_string(), source.clone())]);
     let n = build_with(files, &entry, meta, is_target)?;
     // Re-check what we just wrote before trusting it.
     if let Some(why) = check_entry(&entry, &policy, &source) {
@@ -439,10 +370,7 @@ pub fn build_with(files: &[PathBuf], out: &Path, metadata: HashMap<String, Strin
     use candle_core::{DType, Device, Tensor};
 
     let dev = crate::device::best_device()?;
-    anyhow::ensure!(
-        matches!(dev, Device::Cuda(_)),
-        "building ConvRot weights needs CUDA (the quantize kernel is CUDA-only)"
-    );
+    anyhow::ensure!(matches!(dev, Device::Cuda(_)), "building ConvRot weights needs CUDA (the quantize kernel is CUDA-only)");
     let st = unsafe { candle_core::safetensors::MmapedSafetensors::multi(files)? };
     let r = crate::model::rotation::regular_hadamard_256(&dev)?;
     let mut names: Vec<String> = st.tensors().into_iter().map(|(n, _)| n).collect();
@@ -456,7 +384,7 @@ pub fn build_with(files: &[PathBuf], out: &Path, metadata: HashMap<String, Strin
         if let Some(base) = base {
             let w = t.to_device(&dev)?.to_dtype(DType::BF16)?; // (N,K) bf16
             let cr = ConvRotLinear::from_weight(&w, &r)?;
-            let (wi8, cs) = cr.export();
+            let (wi8, cs) = cr.export()?;
             outv.push((format!("{base}.weight_i8"), wi8.to_device(&Device::Cpu)?));
             outv.push((format!("{base}.col_scale"), cs.to_device(&Device::Cpu)?));
             n_quant += 1;
@@ -465,8 +393,7 @@ pub fn build_with(files: &[PathBuf], out: &Path, metadata: HashMap<String, Strin
         }
     }
     write_atomic(out, |tmp| {
-        safetensors::serialize_to_file(outv.iter().map(|(k, v)| (k, v)), Some(metadata), tmp)
-            .with_context(|| format!("writing {}", tmp.display()))?;
+        safetensors::serialize_to_file(outv.iter().map(|(k, v)| (k, v)), Some(metadata), tmp).with_context(|| format!("writing {}", tmp.display()))?;
         Ok(())
     })?;
     Ok(n_quant)
@@ -501,10 +428,7 @@ mod tests {
     }
 
     fn meta(policy: &str, source: &str) -> Option<HashMap<String, String>> {
-        Some(HashMap::from([
-            (META_POLICY.to_string(), policy.to_string()),
-            (META_SOURCE.to_string(), source.to_string()),
-        ]))
+        Some(HashMap::from([(META_POLICY.to_string(), policy.to_string()), (META_SOURCE.to_string(), source.to_string())]))
     }
 
     #[test]
@@ -518,22 +442,10 @@ mod tests {
     fn cache_root_precedence() {
         let os = |s: &str| Some(OsString::from(s));
         let flag = Path::new("/f");
-        assert_eq!(
-            cache_root(Some(flag), os("/e"), os("/x"), os("/h")),
-            Some(PathBuf::from("/f"))
-        );
-        assert_eq!(
-            cache_root(None, os("/e"), os("/x"), os("/h")),
-            Some(PathBuf::from("/e"))
-        );
-        assert_eq!(
-            cache_root(None, os(""), os("/x"), os("/h")),
-            Some(PathBuf::from("/x/qwen-image-rs/convrot"))
-        );
-        assert_eq!(
-            cache_root(None, None, os(""), os("/h")),
-            Some(PathBuf::from("/h/.cache/qwen-image-rs/convrot"))
-        );
+        assert_eq!(cache_root(Some(flag), os("/e"), os("/x"), os("/h")), Some(PathBuf::from("/f")));
+        assert_eq!(cache_root(None, os("/e"), os("/x"), os("/h")), Some(PathBuf::from("/e")));
+        assert_eq!(cache_root(None, os(""), os("/x"), os("/h")), Some(PathBuf::from("/x/qwen-image-rs/convrot")));
+        assert_eq!(cache_root(None, None, os(""), os("/h")), Some(PathBuf::from("/h/.cache/qwen-image-rs/convrot")));
         assert_eq!(cache_root(None, None, None, os("")), None);
     }
 
@@ -550,14 +462,7 @@ mod tests {
         let ea = entry_path(root, &a).unwrap();
         let eb = entry_path(root, &b).unwrap();
         let ec = entry_path(root, &c).unwrap();
-        let dname = |e: &Path| {
-            e.parent()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned()
-        };
+        let dname = |e: &Path| e.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
         assert!(dname(&ea).starts_with("b3179ad3_snap-"), "{}", ea.display());
         assert!(dname(&eb).starts_with("other-"));
         assert!(dname(&ec).starts_with("my_dit-"));
@@ -575,23 +480,13 @@ mod tests {
         let f1 = d.join("a.safetensors");
         write_st(&f1, &["x"], None);
         let fp1 = source_fingerprint(&d, std::slice::from_ref(&f1)).unwrap();
-        assert_eq!(
-            fp1,
-            source_fingerprint(&d, std::slice::from_ref(&f1)).unwrap()
-        );
+        assert_eq!(fp1, source_fingerprint(&d, std::slice::from_ref(&f1)).unwrap());
         write_st(&f1, &["x", "y"], None); // bigger file
-        assert_ne!(
-            fp1,
-            source_fingerprint(&d, std::slice::from_ref(&f1)).unwrap()
-        );
+        assert_ne!(fp1, source_fingerprint(&d, std::slice::from_ref(&f1)).unwrap());
         let f2 = d.join("b.safetensors");
         write_st(&f2, &["x"], None);
         let two = source_fingerprint(&d, &[f2.clone(), f1.clone()]).unwrap();
-        assert_eq!(
-            two,
-            source_fingerprint(&d, &[f1, f2]).unwrap(),
-            "order-free"
-        );
+        assert_eq!(two, source_fingerprint(&d, &[f1, f2]).unwrap(), "order-free");
     }
 
     #[test]
@@ -660,11 +555,7 @@ mod tests {
         });
         assert!(r.is_err());
         assert_eq!(std::fs::read(&out).unwrap(), b"one", "old file untouched");
-        let left: Vec<_> = std::fs::read_dir(out.parent().unwrap())
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name())
-            .collect();
+        let left: Vec<_> = std::fs::read_dir(out.parent().unwrap()).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left, vec![OsString::from(CACHE_FILE)], "no tmp left");
     }
 
@@ -674,15 +565,9 @@ mod tests {
         let f = d.join("m.safetensors");
         write_st(&f, &["a.weight"], None);
         let root = d.join("cache");
-        let on = CacheSpec {
-            root: Some(root.clone()),
-            mode: CacheMode::Use,
-        };
+        let on = CacheSpec { root: Some(root.clone()), mode: CacheMode::Use };
         assert_eq!(resolve_dit_files(&d, false, &on).unwrap(), vec![f.clone()]);
-        let off = CacheSpec {
-            root: Some(root.clone()),
-            mode: CacheMode::Off,
-        };
+        let off = CacheSpec { root: Some(root.clone()), mode: CacheMode::Off };
         assert_eq!(resolve_dit_files(&d, true, &off).unwrap(), vec![f.clone()]);
         // An already-prequantized dir is used as-is.
         let p = tmpdir("resolve-pq");
@@ -706,10 +591,7 @@ mod tests {
         let source = source_fingerprint(&src, std::slice::from_ref(&f)).unwrap();
         let policy = crate::model::dit::convrot_policy_tag();
         write_st(&entry, &["a.weight_i8"], meta(&policy, &source));
-        let spec = CacheSpec {
-            root: Some(root),
-            mode: CacheMode::Use,
-        };
+        let spec = CacheSpec { root: Some(root), mode: CacheMode::Use };
         assert_eq!(resolve_dit_files(&src, true, &spec).unwrap(), vec![entry]);
     }
 
@@ -726,10 +608,7 @@ mod tests {
         let f = src.join("m.safetensors");
         write_st(&f, &["a.weight"], None);
         let root = d.join("cache");
-        let spec = CacheSpec {
-            root: Some(root.clone()),
-            mode: CacheMode::Rebuild,
-        };
+        let spec = CacheSpec { root: Some(root.clone()), mode: CacheMode::Rebuild };
         assert_eq!(resolve_dit_files(&src, true, &spec).unwrap(), vec![f]);
         assert!(!root.exists());
     }

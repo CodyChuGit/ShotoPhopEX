@@ -15,9 +15,6 @@ pub mod comfy;
 pub mod comfy_files;
 pub mod comfy_int8;
 pub mod convert;
-#[cfg(feature = "fusednorm")]
-pub mod krea2_fused;
-pub mod krea2_pipeline;
 #[cfg(feature = "convrot")]
 pub mod convrot;
 pub mod convrot_cache;
@@ -30,11 +27,18 @@ pub mod fp8;
 #[cfg(feature = "fusednorm")]
 pub mod fusednorm;
 pub mod gemm_tiles;
+#[cfg(feature = "fusednorm")]
+pub mod krea2_fused;
+pub mod krea2_pipeline;
 pub mod layered_files;
 pub mod layered_pipeline;
 pub mod layout;
 pub mod loader;
 pub mod lora;
+#[cfg(feature = "cuda")]
+mod lora_gemm;
+#[cfg(feature = "convrot")]
+pub mod lora_materialize;
 pub mod model;
 pub mod pipeline;
 pub mod profile;

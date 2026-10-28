@@ -26,6 +26,24 @@ struct Args {
     text_gguf: Option<PathBuf>,
     #[arg(long)]
     keep_text: bool,
+    #[arg(long)]
+    lora: Option<PathBuf>,
+    #[arg(long, default_value_t = 0.5)]
+    lora_strength: f32,
+    #[arg(long)]
+    check_lora_reset: bool,
+}
+
+const RESTORE_PROMPT: &str =
+    "Restore the photo: remove blur, noise and compression artifacts and recover sharp, natural detail, keeping the same composition, people and colors.";
+
+fn upscale_tiles(picture: &RefImage) -> Result<Vec<RefImage>> {
+    let img = image::RgbaImage::from_raw(picture.width as u32, picture.height as u32, picture.rgba.clone()).context("picture bytes")?;
+    let enlarged = image::imageops::resize(&img, 1728, 2304, image::imageops::FilterType::CatmullRom);
+    Ok([(0, 0), (736, 0), (0, 864), (736, 864), (0, 1312), (736, 1312)]
+        .into_iter()
+        .map(|(x, y)| RefImage { width: 992, height: 992, rgba: image::imageops::crop_imm(&enlarged, x, y, 992, 992).to_image().into_raw(), offset: None })
+        .collect())
 }
 
 fn read(path: &PathBuf) -> Result<RefImage> {
@@ -33,6 +51,24 @@ fn read(path: &PathBuf) -> Result<RefImage> {
     let img = image::open(path)?.to_rgba8();
     tracing::info!(seconds = t.elapsed().as_secs_f64(), "request image decode");
     Ok(RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw(), offset: None })
+}
+
+fn memory_report(device: &candle_core::Device) -> Result<()> {
+    #[cfg(feature = "cuda")]
+    if let candle_core::Device::Cuda(dev) = device {
+        use candle_core::cuda_backend::cudarc::driver::sys;
+        let mut pool = std::ptr::null_mut();
+        unsafe { sys::cuDeviceGetDefaultMemPool(&mut pool, dev.cuda_stream().context().cu_device()) }.result()?;
+        let mut used = 0u64;
+        let mut reserved = 0u64;
+        unsafe {
+            sys::cuMemPoolGetAttribute(pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_USED_MEM_HIGH, (&mut used as *mut u64).cast()).result()?;
+            sys::cuMemPoolGetAttribute(pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RESERVED_MEM_HIGH, (&mut reserved as *mut u64).cast()).result()?;
+        }
+        println!("VRAM pool_used_peak_mib={:.3} pool_reserved_peak_mib={:.3}", used as f64 / 1048576., reserved as f64 / 1048576.);
+    }
+    let _ = device;
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -59,6 +95,26 @@ fn main() -> Result<()> {
         ..Options::default()
     };
     let p = Pipeline::load(&args.models, opts, &mut |_, m| tracing::info!(m, "load"))?;
+    let loras = match args.lora {
+        Some(path) => qwen_image_rs::lora::LoraStack {
+            layers: vec![(std::sync::Arc::new(qwen_image_rs::lora::LoraFile::load(&path, p.device(), candle_core::DType::BF16)?), args.lora_strength)],
+        },
+        None => qwen_image_rs::lora::LoraStack::default(),
+    };
+    let tiles = upscale_tiles(&picture)?;
+    let reset_reference = if args.check_lora_reset {
+        anyhow::ensure!(!loras.is_empty(), "--check-lora-reset requires --lora");
+        let mut request = Request::new(RESTORE_PROMPT);
+        request.width = 0;
+        request.height = 0;
+        request.seed = 777;
+        request.references = vec![tiles[0].clone()];
+        let before = p.generate(&request, &mut |_, _| {}, &|| false)?;
+        std::fs::write(args.out.join("reset-before.rgba"), &before.rgba)?;
+        Some((request, before.rgba))
+    } else {
+        None
+    };
     for route in args.routes.split(',') {
         let mut req = Request::new(match route {
             "image" => "a red fox sitting in fresh snow at dawn, 35mm photo",
@@ -66,10 +122,12 @@ fn main() -> Result<()> {
             "fill" => "Edit image 1. Image 2 is a mask of image 1: change only the area that is white in image 2 so that it shows a denim jacket. Keep everything outside that area exactly as it is in image 1, with the same lighting, perspective and style.",
             "edit" | "tiles" => "Make it winter: snow falling and a wool scarf around his neck.",
             "matte" => "Remove the background, keeping only the man, and output a PNG image",
+            "upscale" => RESTORE_PROMPT,
             _ => anyhow::bail!("unknown route {route}"),
         });
         req.width = 0;
         req.height = 0;
+        req.loras = loras.clone();
         req.references = vec![picture.clone()];
         if route == "image" {
             req.width = 864;
@@ -91,9 +149,19 @@ fn main() -> Result<()> {
                 RefImage { width: 768, height: 672, rgba: mask.into_raw(), offset: None },
             ];
         }
-        let repeats = if route == "tiles" && args.tile_repeats > 0 { args.tile_repeats } else { args.repeats };
+        let repeats = if route == "upscale" {
+            args.repeats * 6
+        } else if route == "tiles" && args.tile_repeats > 0 {
+            args.tile_repeats
+        } else {
+            args.repeats
+        };
         for i in 0..repeats {
             req.seed = 42 + i as u64;
+            if route == "upscale" {
+                req.references = vec![tiles[i % 6].clone()];
+                image::save_buffer(args.out.join(format!("input-{}.png", i % 6)), &req.references[0].rgba, 992, 992, image::ColorType::Rgba8)?;
+            }
             // A different picture each tile forces conditioning misses.
             if route == "tiles" {
                 req.references[0].rgba[i % picture.rgba.len()] ^= 1;
@@ -118,5 +186,12 @@ fn main() -> Result<()> {
             qwen_image_rs::device::trim_pool(p.device());
         }
     }
+    if let Some((request, before)) = reset_reference {
+        let after = p.generate(&request, &mut |_, _| {}, &|| false)?;
+        std::fs::write(args.out.join("reset-after.rgba"), &after.rgba)?;
+        anyhow::ensure!(before == after.rgba, "clearing LoRAs changed the original image");
+        println!("RESET byte_identical=true");
+    }
+    memory_report(p.device())?;
     Ok(())
 }
