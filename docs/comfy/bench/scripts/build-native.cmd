@@ -9,5 +9,5 @@ set CUTLASS_DIR=C:\Users\5090\Documents\_eval\cutlass\include
 set CUDA_COMPUTE_CAP=120
 set PATH=C:\Users\5090\scoop\persist\rustup\.cargo\bin;C:\Users\5090\scoop\apps\cuda\current\bin;%PATH%
 if not "%2"=="" set CARGO_TARGET_DIR=%2
-cd /d C:\Users\5090\Documents\PhotoshopEX
+cd /d "%~dp0..\..\..\.."
 cargo build --release -p %1 --features native-diffusion

@@ -14,9 +14,10 @@ use serde_json::{Value, json};
 
 use super::loras::runs_native;
 use super::{
-    DEFAULT_EDIT_TEMPLATE, GenerativeInfo, JobProgress, backend_for, gen_err, loras_of, opt_num, opt_str, plan_common, purge_mode, request_size_within, resize_rgba8,
-    run_switching, set_generative_info, write_rgba8,
+    DEFAULT_EDIT_TEMPLATE, GenerativeInfo, JobProgress, backend_for, gen_err, loras_of, opt_num, opt_str, plan_common, purge_mode, request_size_within,
+    resize_rgba8, run_switching, set_generative_info, write_rgba8,
 };
+use crate::jobs::now_ms;
 use crate::{EngineError, Result, Session};
 
 pub const UPSCALE: &str = "generate.upscale";
@@ -90,9 +91,11 @@ pub(crate) fn colour_matched(out: &Rgba8, src: &Rgba8) -> Rgba8 {
     for c in 0..3 {
         let ((mo, so), (ms, ss)) = (stats(out, c), stats(src, c));
         let gain = if so > 1.0 { ss / so } else { 1.0 };
+        // Byte inputs have only 256 possible corrections; retain the same f64 arithmetic.
+        let lut: [u8; 256] = std::array::from_fn(|v| ((v as f64 - mo) * gain + ms).round().clamp(0.0, 255.0) as u8);
         for p in data.chunks_mut(4) {
             if let Some(v) = p.get_mut(c) {
-                *v = ((f64::from(*v) - mo) * gain + ms).round().clamp(0.0, 255.0) as u8;
+                *v = lut.get(usize::from(*v)).copied().unwrap_or(*v);
             }
         }
     }
@@ -100,6 +103,7 @@ pub(crate) fn colour_matched(out: &Rgba8, src: &Rgba8) -> Rgba8 {
 }
 
 pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
+    let started = now_ms();
     let scale = opt_num(UPSCALE, p, "scale", 1.0, 4.0)?.unwrap_or(2.0);
     let tile_mp = opt_num(UPSCALE, p, "tileMegapixels", 0.25, 2.0)?.unwrap_or(1.0);
     let prompt = opt_str(UPSCALE, p, "prompt", 4000)?.map(str::trim).filter(|t| !t.is_empty()).unwrap_or(RESTORE_PROMPT).to_string();
@@ -133,9 +137,11 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     let (backend, server) = backend_for(s, &common.template.meta.id)?;
     let purge = purge_mode(s);
     let side = ((tile_mp * 1e6).sqrt() as u32 / 16 * 16).max(256);
+    let enlarge = now_ms();
     if (tw, th) != (w, h) {
         s.execute("image.imageSize", json!({"width": tw, "height": th, "resample": "bicubic"}))?;
     }
+    let enlarge_ms = now_ms() - enlarge;
     let label = common.name.clone().unwrap_or_else(|| "Generative Upscale".to_string());
     let template_id = common.template.meta.id.clone();
     let max_pixels = (side as u64) * (side as u64);
@@ -148,22 +154,27 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
         s,
         &label.clone(),
         move |doc, active, ctx| {
+            let render = now_ms();
             let rect = doc.bounds();
             let c = photocraft_compose::render(doc, rect).to_rgba8();
             let big = Rgba8::new(c.width, c.height, c.pixels).map_err(gen_err)?;
             let (bw, bh) = (big.width, big.height);
+            let render_ms = now_ms() - render;
             let grid = tiles(bw, bh, side);
             let n = grid.len();
             let mut acc = vec![0.0f32; bw as usize * bh as usize * 3];
             let mut wsum = vec![0.0f32; bw as usize * bh as usize];
             let mut ms = 0u64;
+            let mut tile_timings = Vec::with_capacity(n);
             for (i, t) in grid.iter().enumerate() {
                 ctx.check()?;
                 let (lo, hi) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
                 ctx.progress(lo, &format!("Tile {}/{n}", i + 1));
+                let crop = now_ms();
                 let src = super::crop_rgba8(&big, *t);
                 let (rw, rh) = request_size_within(src.width, src.height, max_pixels);
                 let sent = if (rw, rh) == (src.width, src.height) { src.clone() } else { resize_rgba8(&src, rw, rh)? };
+                let crop_ms = now_ms() - crop;
                 let req = Request {
                     seed: common.seed.wrapping_add(i as u64) % super::MAX_SEED,
                     steps: common.steps,
@@ -174,12 +185,21 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
                     params: params.clone(),
                     ..Request::new(&template_id, &common.prompt)
                 };
+                let request = now_ms();
                 let resp = run_switching(backend.as_ref(), &server, &req, purge, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
+                let request_ms = now_ms() - request;
                 ms += resp.elapsed_ms;
+                let backend_timings = resp.timings;
+                let align = now_ms();
                 let out = resp.images.into_iter().next().ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;
                 let out = if (out.width, out.height) == (src.width, src.height) { out } else { resize_rgba8(&out, src.width, src.height)? };
                 let d = crate::generate_realign::drift(&out, &src, None, crate::generate_realign::max_shift(out.width, out.height));
-                let out = colour_matched(&crate::generate_realign::shifted(&out, &src, d), &src);
+                let out = crate::generate_realign::shifted(&out, &src, d);
+                let align_ms = now_ms() - align;
+                let colour = now_ms();
+                let out = colour_matched(&out, &src);
+                let colour_ms = now_ms() - colour;
+                let blend = now_ms();
                 let shared = [t.x0 > 0, t.y0 > 0, (t.x1 as u32) < bw, (t.y1 as u32) < bh];
                 for y in t.y0..t.y1 {
                     for x in t.x0..t.x1 {
@@ -197,7 +217,11 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
                         }
                     }
                 }
+                tile_timings.push(json!({"tile": i, "x": t.x0, "y": t.y0, "width": rw, "height": rh,
+                    "cropMs": crop_ms, "requestMs": request_ms, "backend": backend_timings,
+                    "alignMs": align_ms, "colourMs": colour_ms, "blendMs": now_ms() - blend}));
             }
+            let composite = now_ms();
             let mut data = Vec::with_capacity(bw as usize * bh as usize * 4);
             for (g, s) in wsum.iter().enumerate() {
                 for c in 0..3 {
@@ -226,9 +250,11 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
             );
             let id = doc.insert_above(*active, layer);
             *active = Some(id);
-            Ok((id, n, bw, bh, ms, template_id))
+            let timings = json!({"enlargeMs": enlarge_ms, "renderMs": render_ms, "tiles": tile_timings,
+                "compositeMs": now_ms() - composite, "totalMs": now_ms() - started});
+            Ok((id, n, bw, bh, ms, template_id, timings))
         },
-        |(id, n, bw, bh, ms, template)| json!({"layer": id.0, "tiles": n, "width": bw, "height": bh, "elapsedMs": ms, "template": template}),
+        |(id, n, bw, bh, ms, template, timings)| json!({"layer": id.0, "tiles": n, "width": bw, "height": bh, "elapsedMs": ms, "template": template, "timings": timings}),
     )
 }
 
@@ -258,6 +284,10 @@ mod tests {
         let r = s.execute(UPSCALE, json!({"scale": 2, "tileMegapixels": 0.25, "seed": 5})).unwrap();
         // 600×400 in tiles of 496 px: two across (0 and 104), one down.
         assert_eq!((r["tiles"].as_u64(), r["width"].as_u64(), r["height"].as_u64()), (Some(2), Some(600), Some(400)), "{r}");
+        let timings = &r["timings"];
+        assert_eq!(timings["tiles"].as_array().unwrap().len(), 2);
+        assert_eq!(timings["tiles"][0]["width"], 512, "model requests round the 496-pixel source tile to a multiple of 32");
+        assert!(timings["totalMs"].as_f64().unwrap() >= timings["enlargeMs"].as_f64().unwrap());
         let d = s.active().unwrap();
         assert_eq!((d.doc.size.width, d.doc.size.height), (600, 400), "enlarged first");
         assert_eq!(d.doc.layers.len(), layers + 1, "the redraw is one layer above");
@@ -266,6 +296,32 @@ mod tests {
         assert!(st.prompts[0].1.to_string().contains("Restore the photo"), "the restore wording by default");
         drop(st);
         assert!(s.execute(UPSCALE, json!({"scale": 9})).is_err(), "scale 1 to 4");
+    }
+
+    #[test]
+    fn colour_lookup_preserves_every_byte_and_alpha() {
+        let mut source = Vec::new();
+        let mut result = Vec::new();
+        for v in 0..=255u8 {
+            source.extend([v / 2 + 64, v.saturating_mul(2), v / 3, 255]);
+            result.extend([v, 255 - v, 128, v]);
+        }
+        let src = Rgba8::new(256, 1, source).unwrap();
+        let out = Rgba8::new(256, 1, result).unwrap();
+        let mut expected = out.data.clone();
+        for c in 0..3 {
+            let stats = |img: &Rgba8| {
+                let mean = img.data.as_chunks::<4>().0.iter().map(|p| f64::from(p[c])).sum::<f64>() / 256.0;
+                let spread = (img.data.as_chunks::<4>().0.iter().map(|p| (f64::from(p[c]) - mean).powi(2)).sum::<f64>() / 256.0).sqrt();
+                (mean, spread)
+            };
+            let ((mo, so), (ms, ss)) = (stats(&out), stats(&src));
+            let gain = if so > 1.0 { ss / so } else { 1.0 };
+            for pixel in expected.as_chunks_mut::<4>().0 {
+                pixel[c] = ((f64::from(pixel[c]) - mo) * gain + ms).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        assert_eq!(colour_matched(&out, &src).data, expected);
     }
 
     #[test]

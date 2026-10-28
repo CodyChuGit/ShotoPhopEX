@@ -274,7 +274,9 @@ impl NativeBackend {
             let start_error = self.start_error.lock().unwrap_or_else(|e| e.into_inner()).clone();
             return match start_error {
                 Some(e) => NativeStatus { state: "failed".into(), detail: e, ..NativeStatus::default() },
-                None => NativeStatus { state: "stopped".into(), detail: if dead { "the engine stopped".into() } else { String::new() }, ..NativeStatus::default() },
+                None => {
+                    NativeStatus { state: "stopped".into(), detail: if dead { "the engine stopped".into() } else { String::new() }, ..NativeStatus::default() }
+                }
             };
         };
         match c.health() {
@@ -362,6 +364,7 @@ impl GenerativeBackend for NativeBackend {
     }
 
     fn run(&self, req: &Request, progress: &dyn Progress) -> Result<Response> {
+        let encode = std::time::Instant::now();
         let tpl = template::find(&req.template)?;
         let (image, mask, references, bytes) = blobs_of(req);
         let (width, height) = req.size.unwrap_or((0, 0));
@@ -383,6 +386,7 @@ impl GenerativeBackend for NativeBackend {
             params: req.params.clone(),
         };
         let started = std::time::Instant::now();
+        let encode_ms = encode.elapsed().as_millis() as u64;
         self.busy.store(RUNNING, Ordering::SeqCst);
         let _busy = Busy(&self.busy);
         let attempt = || {
@@ -395,6 +399,7 @@ impl GenerativeBackend for NativeBackend {
         // the run tried once more on the fresh one (plan-native-engine §12.2); a worker this
         // process only joined cannot be replaced from here.
         let (info, pictures) = retry_after_stop(!self.attached, progress, attempt)?;
+        let download = std::time::Instant::now();
         let mut images = Vec::with_capacity(info.images.len());
         for (i, b) in info.images.iter().enumerate() {
             let data = pictures.get(i).ok_or_else(|| Error::Protocol(format!("picture {i} missing")))?;
@@ -406,7 +411,9 @@ impl GenerativeBackend for NativeBackend {
             seed: info.seed,
             run_id: format!("native-{}", info.seed),
             elapsed_ms: started.elapsed().as_millis() as u64,
-            timings: Timings { run_ms: info.elapsed_ms, ..Timings::default() },
+            // IPC read/write is interleaved with worker progress; its residual is observable
+            // as elapsed minus run, while download here measures RGBA materialization only.
+            timings: Timings { encode_ms, run_ms: info.elapsed_ms, download_ms: download.elapsed().as_millis() as u64, ..Timings::default() },
         })
     }
 
@@ -571,7 +578,8 @@ pub fn engine_main(args: &[String]) -> i32 {
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let engines = engines_for(args);
     let served = if engines.is_empty() {
-        let mut engine = gn_engine::fake::FakeEngine { step_ms, installed: template::builtin().iter().map(|t| t.meta.id.clone()).collect(), ..Default::default() };
+        let mut engine =
+            gn_engine::fake::FakeEngine { step_ms, installed: template::builtin().iter().map(|t| t.meta.id.clone()).collect(), ..Default::default() };
         gn_engine::server::serve_with(&listener, &token, &mut engine, stay)
     } else {
         let mut engine = gn_engine::Multi::new(engines);

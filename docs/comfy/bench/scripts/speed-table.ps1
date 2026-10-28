@@ -11,11 +11,18 @@ param(
     [string]$Out = "C:\Users\5090\ComfyUI\photocraft-tests\bench\speed",
     [string]$Source = "C:\Users\5090\ComfyUI\photocraft-tests\bench\swap\gen\gen-tshirt.png",
     [string[]]$Only = @(),
-    [string[]]$Routes = @("native", "comfy")
+    [string[]]$Routes = @("native", "comfy"),
+    [switch]$SaveImages,
+    [switch]$ProfileComfy,
+    [ValidateSet("default", "none", "restore")][string]$UpscaleLora = "default"
 )
 $ErrorActionPreference = "Continue"
 $sc = Split-Path -Parent $MyInvocation.MyCommand.Path
-$cli = "C:\Users\5090\Documents\PhotoshopEX\target\release\photocraft-cli.exe"
+$repo = [IO.Path]::GetFullPath((Join-Path $sc "..\..\..\.."))
+$cli = Join-Path $repo "target\release\photocraft-cli.exe"
+if ($env:PHOTOCRAFT_CLI) { $cli = $env:PHOTOCRAFT_CLI }
+# Keep the CLI and the shared worker on the same executable, including in a worktree.
+$env:PHOTOCRAFT_CLI = $cli
 $models = "C:/Users/5090/ComfyUI/ComfyUI_windows_portable/ComfyUI/models"
 New-Item -ItemType Directory -Force $Out | Out-Null
 function Q([object]$v) { (ConvertTo-Json $v -Compress -Depth 8).Replace(' ', '\u0020').Replace('"', '\"') }
@@ -51,6 +58,11 @@ $cases = [ordered]@{
     "upscale 2x"         = @{ cmds = @(, @("generate.upscale", @{ scale = 2; seed = 20; template = "qwen-2.1/edit" })) }
     "split (3 layers)"   = @{ cmds = @(, @("generate.splitLayers", @{ layers = 3; seed = 7; maxPixels = 1000000 })) }
 }
+if ($UpscaleLora -eq "restore") {
+    $cases["upscale 2x"].cmds[0][1]["loras"] = @(@{ file = "qwen-image-2.1-restore.safetensors"; strength = 0.5 })
+} elseif ($UpscaleLora -eq "none") {
+    $cases["upscale 2x"].cmds[0][1]["loras"] = @()
+}
 $prefs = @{
     native = @{ "integrations.engine" = "native"; "integrations.runtimePath" = "C:/Users/5090/scoop/apps/cuda/current/bin/x64"; "integrations.modelsPath" = $models; "integrations.allowResearchModels" = $true; "integrations.enhancePrompts" = $false }
     comfy  = @{ "integrations.engine" = "comfy"; "integrations.comfyServer" = "http://127.0.0.1:8188"; "integrations.allowResearchModels" = $true; "integrations.enhancePrompts" = $false }
@@ -69,9 +81,12 @@ function Run-Case([string]$route, [string]$name, $c, [int]$bump = 0) {
     if ($c.new) { $a.Add("--new"); $a.Add((Q @{ width = 864; height = 1152 })) } else { $a.Add($pic) }
     $a.Add("--cmd"); $a.Add("prefs.set"); $a.Add("--params"); $a.Add((Q @{ values = $prefs[$route] }))
     foreach ($cmd in $c.cmds) { $a.Add("--cmd"); $a.Add($cmd[0]); $a.Add("--params"); $a.Add((Q (Fresh $cmd[1] $bump))) }
+    $tag = ($name -replace '[^a-zA-Z0-9]', '-') + "-$route-$bump"
+    if ($SaveImages) { $a.Add("--out"); $a.Add((Join-Path $Out "$tag.png")) }
     $t0 = Get-Date
     $lines = & $cli run @a 2>&1 | ForEach-Object { "$_" }
     $secs = ((Get-Date) - $t0).TotalSeconds
+    $lines | Set-Content (Join-Path $Out "$tag.log")
     $last = $c.cmds[-1][0]
     $res = $lines | Where-Object { $_ -match ('"command":"' + [regex]::Escape($last) + '"') } | Select-Object -First 1
     $tpl = if ($res -and $res -match '"template":"([^"]+)"') { $Matches[1] } else { "" }
@@ -87,7 +102,12 @@ foreach ($route in $Routes) {
     } else {
         $env:PHOTOCRAFT_NATIVE_ENGINE = $null
         $before = @(Get-Process python -ErrorAction SilentlyContinue | ForEach-Object Id)
-        Start-Process powershell -ArgumentList "-NoProfile", "-File", "C:\Users\5090\ComfyUI\start-comfyui-fast.ps1" -WindowStyle Hidden | Out-Null
+        if ($ProfileComfy) {
+            $portable = "C:\Users\5090\ComfyUI\ComfyUI_windows_portable"
+            Start-Process "$portable\python_embeded\python.exe" -ArgumentList "-s", "$sc\profile-comfy-upscale.py", "--root", "$portable\ComfyUI", "--work", $Out -RedirectStandardOutput "$Out\comfy.log" -RedirectStandardError "$Out\comfy.err" -WindowStyle Hidden | Out-Null
+        } else {
+            Start-Process powershell -ArgumentList "-NoProfile", "-File", "C:\Users\5090\ComfyUI\start-comfyui-fast.ps1" -WindowStyle Hidden | Out-Null
+        }
         $up = $false
         foreach ($k in 1..120) { Start-Sleep -Seconds 2; try { Invoke-WebRequest http://127.0.0.1:8188/system_stats -UseBasicParsing -TimeoutSec 2 | Out-Null; $up = $true; break } catch {} }
         if (-not $up) { "ComfyUI did not come up"; continue }

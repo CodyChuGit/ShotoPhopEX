@@ -8,6 +8,7 @@
 //! back, the strip it leaves at the border taken from the original.
 
 use photocraft_genai::{Gray8, Rgba8};
+use rayon::prelude::*;
 
 /// Mask values below this count as "untouched picture" the alignment may measure on.
 const OUTSIDE: u8 = 16;
@@ -94,9 +95,14 @@ pub(crate) fn drift(result: &Rgba8, original: &Rgba8, mask: Option<&Gray8>, max_
     let min_cells = (outside * 0.25) as usize;
     let Some(c0) = cost(&la, &wa, &lb, cw, ch, 0, 0, min_cells) else { return (0, 0) };
     let mut best = (0i32, 0i32, c0);
-    for dy in -reach..=reach {
-        for dx in -reach..=reach {
-            if let Some(c) = cost(&la, &wa, &lb, cw, ch, dx, dy, min_cells)
+    // Each candidate keeps its original sum order; ordered collection preserves tie breaks.
+    let coarse: Vec<_> = (-reach..=reach)
+        .into_par_iter()
+        .map(|dy| (-reach..=reach).map(|dx| (dx, dy, cost(&la, &wa, &lb, cw, ch, dx, dy, min_cells))).collect::<Vec<_>>())
+        .collect();
+    for row in coarse {
+        for (dx, dy, c) in row {
+            if let Some(c) = c
                 && c < best.2
             {
                 best = (dx, dy, c);
@@ -110,12 +116,18 @@ pub(crate) fn drift(result: &Rgba8, original: &Rgba8, mask: Option<&Gray8>, max_
     let Some(full0) = cost(&fa, &fwa, &fb, fw, fh, 0, 0, min_full) else { return (0, 0) };
     let (cx, cy) = (best.0 * COARSE as i32, best.1 * COARSE as i32);
     let mut fine = (0i32, 0i32, full0);
-    for dy in (cy - COARSE as i32)..=(cy + COARSE as i32) {
-        for dx in (cx - COARSE as i32)..=(cx + COARSE as i32) {
-            if dx.abs() > max_shift as i32 || dy.abs() > max_shift as i32 {
-                continue;
-            }
-            if let Some(c) = cost(&fa, &fwa, &fb, fw, fh, dx, dy, min_full)
+    let fine_rows: Vec<_> = ((cy - COARSE as i32)..=(cy + COARSE as i32))
+        .into_par_iter()
+        .map(|dy| {
+            ((cx - COARSE as i32)..=(cx + COARSE as i32))
+                .filter(|dx| dx.abs() <= max_shift as i32 && dy.abs() <= max_shift as i32)
+                .map(|dx| (dx, dy, cost(&fa, &fwa, &fb, fw, fh, dx, dy, min_full)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for row in fine_rows {
+        for (dx, dy, c) in row {
+            if let Some(c) = c
                 && c < fine.2
             {
                 fine = (dx, dy, c);
@@ -158,6 +170,92 @@ pub(crate) fn max_shift(width: u32, height: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The previous search is the oracle for sum order and equal-cost candidate selection.
+    fn sequential_drift(result: &Rgba8, original: &Rgba8, mask: Option<&Gray8>, max_shift: u32) -> (i32, i32) {
+        if (result.width, result.height) != (original.width, original.height) || result.width < 32 || result.height < 32 {
+            return (0, 0);
+        }
+        if let Some(m) = mask
+            && (m.width, m.height) != (result.width, result.height)
+        {
+            return (0, 0);
+        }
+        let (la, wa, cw, ch) = luma_down(original, mask, COARSE);
+        let (lb, _, _, _) = luma_down(result, None, COARSE);
+        let outside: f32 = wa.iter().sum();
+        if (outside as usize) * COARSE * COARSE < MIN_SAMPLES {
+            return (0, 0);
+        }
+        let reach = (max_shift as i32 / COARSE as i32).max(1);
+        let min_cells = (outside * 0.25) as usize;
+        let Some(c0) = cost(&la, &wa, &lb, cw, ch, 0, 0, min_cells) else { return (0, 0) };
+        let mut best = (0i32, 0i32, c0);
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                if let Some(c) = cost(&la, &wa, &lb, cw, ch, dx, dy, min_cells)
+                    && c < best.2
+                {
+                    best = (dx, dy, c);
+                }
+            }
+        }
+        // Refine at full scale around the coarse answer.
+        let (fa, fwa, fw, fh) = luma_down(original, mask, 1);
+        let (fb, _, _, _) = luma_down(result, None, 1);
+        let min_full = (fwa.iter().sum::<f32>() * 0.25) as usize;
+        let Some(full0) = cost(&fa, &fwa, &fb, fw, fh, 0, 0, min_full) else { return (0, 0) };
+        let (cx, cy) = (best.0 * COARSE as i32, best.1 * COARSE as i32);
+        let mut fine = (0i32, 0i32, full0);
+        for dy in (cy - COARSE as i32)..=(cy + COARSE as i32) {
+            for dx in (cx - COARSE as i32)..=(cx + COARSE as i32) {
+                if dx.abs() > max_shift as i32 || dy.abs() > max_shift as i32 {
+                    continue;
+                }
+                if let Some(c) = cost(&fa, &fwa, &fb, fw, fh, dx, dy, min_full)
+                    && c < fine.2
+                {
+                    fine = (dx, dy, c);
+                }
+            }
+        }
+        // A shift has to be a real improvement, not noise: a tenth off the unshifted cost.
+        if fine.2 < full0 * 0.9 { (fine.0, fine.1) } else { (0, 0) }
+    }
+
+    #[test]
+    fn parallel_search_preserves_the_sequential_alignment() {
+        let original = picture(256, 192);
+        let mut mask = vec![0; 256 * 192];
+        for (i, v) in mask.iter_mut().enumerate() {
+            *v = if i % 7 == 0 { 255 } else { 0 };
+        }
+        let mask = Gray8::new(256, 192, mask).unwrap();
+        for delta in [(0, 0), (7, -5), (-12, 9)] {
+            let result = moved(&original, delta.0, delta.1);
+            for mask in [None, Some(&mask)] {
+                assert_eq!(drift(&result, &original, mask, 16), sequential_drift(&result, &original, mask, 16));
+            }
+        }
+        let flat = Rgba8::new(256, 192, vec![128; 256 * 192 * 4]).unwrap();
+        assert_eq!(drift(&flat, &flat, None, 16), sequential_drift(&flat, &flat, None, 16));
+    }
+
+    #[test]
+    #[ignore = "release CPU timing at tile and 24 MP sizes"]
+    fn alignment_performance() {
+        for (w, h) in [(992, 992), (6000, 4000)] {
+            let original = picture(w, h);
+            let result = moved(&original, 7, -5);
+            let start = std::time::Instant::now();
+            let before = sequential_drift(&result, &original, None, max_shift(w, h));
+            let before_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let start = std::time::Instant::now();
+            let after = drift(&result, &original, None, max_shift(w, h));
+            eprintln!("alignment {w}x{h}: sequential {before_ms:.3} ms, parallel {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(before, after);
+        }
+    }
 
     /// A textured picture: smoothed noise, so that a shift is unambiguous in both directions
     /// (a striped test picture aliased along its stripes).

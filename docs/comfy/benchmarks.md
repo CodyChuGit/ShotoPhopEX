@@ -61,6 +61,13 @@ vocabulary on the CPU, bounded VAE scratch; outputs within 0.06/255 of before;
 
 (The cold column of this rerun is not comparable: each case started its own worker.)
 
+**Upscale follow-up, 2026-10-28:** [phase report](research/notes/upscale-native-speed.md).
+Small CPU optimizations preserve byte-identical outputs on both routes (seeds 20/21). New
+unprofiled native warm: 47.5 s with default Restore 0.5, versus 30.8 s with that adapter disabled
+(diagnostic only). Matched Restore ComfyUI: 39.0 s. The speed target remains open; the native
+worker's runtime adapter path dominates. These new observations do not replace the historical
+measurements above; source state, profiling overhead and full phase data are in the report.
+
 ## 1. Fill templates, default server flags, no cache (run 1)
 
 Uploads had unique names, so every run paid the 7 B vision text encoder and the VAE encode;
