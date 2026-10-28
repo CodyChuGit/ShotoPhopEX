@@ -224,3 +224,7 @@ step, the dev log and roadmap updated.
     worker does not serve. What stays on ComfyUI in the permissive build (research models off,
     the default): prompted fill, edit, expand, the removals, angles and upscale default to
     Qwen-Image-Edit-2511 there. Left as it is: the licence decision is the owner's.
+  - **R6, the part that needs no licence decision** (PhotoshopEX `5d2e848a`): with research
+    models off, a 2511 request with no ComfyUI answering while the worker runs 2.1 says both ways
+    out. The engine, genai and CLI suites: 2 245 passed, 0 failed. Morning summary:
+    [`rust-rebuild-morning.md`](rust-rebuild-morning.md).
