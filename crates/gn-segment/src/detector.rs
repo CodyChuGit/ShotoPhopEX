@@ -1,10 +1,11 @@
 //! SAM 3.1 image/prompt transformer and normalized detector outputs.
 
+use crate::linear::Linear;
 use std::path::Path;
 
 use anyhow::{Result, ensure};
 use candle_core::{DType, Device, Tensor};
-use candle_nn::{LayerNorm, Linear, Module};
+use candle_nn::{LayerNorm, Module};
 
 use crate::{detector_heads::Heads, prompt::Loader, weights::split_qkv};
 
@@ -38,7 +39,7 @@ pub struct Detector {
 }
 
 impl Detector {
-    /// Load selected raw F16 checkpoint keys as f32 without unsafe mapping or cuDNN.
+    /// Load detector weights once using the checkpoint compute precision, without cuDNN.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
         Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
     }
@@ -68,43 +69,70 @@ impl Detector {
     /// Prompt `[1,T,256]` includes resized text, geometry and CLS; validity `[1,T]`
     /// uses one for valid keys. TextEncoder already applies the language resizer.
     pub fn forward(&self, fpn: [&Tensor; 3], image_pos: &Tensor, prompt: &Tensor, prompt_valid: &Tensor) -> Result<DetectorOut> {
-        Ok(self.run(fpn, image_pos, prompt, prompt_valid)?.0)
+        Ok(self.run(fpn, image_pos, prompt, prompt_valid, &mut |_, _| Ok(()))?.0)
     }
 
     /// Also expose the six refined cxcywh references for isolated parity diagnostics.
     pub fn forward_with_references(&self, fpn: [&Tensor; 3], image_pos: &Tensor, prompt: &Tensor, prompt_valid: &Tensor) -> Result<(DetectorOut, Vec<Tensor>)> {
-        self.run(fpn, image_pos, prompt, prompt_valid)
+        self.run(fpn, image_pos, prompt, prompt_valid, &mut |_, _| Ok(()))
     }
 
-    fn run(&self, fpn: [&Tensor; 3], image_pos: &Tensor, prompt: &Tensor, valid: &Tensor) -> Result<(DetectorOut, Vec<Tensor>)> {
+    /// Observe decoder and segmentation boundaries when diagnosing precision changes.
+    pub fn forward_with_observer(
+        &self,
+        fpn: [&Tensor; 3],
+        image_pos: &Tensor,
+        prompt: &Tensor,
+        valid: &Tensor,
+        mut observe: impl FnMut(&str, &Tensor) -> Result<()>,
+    ) -> Result<DetectorOut> {
+        Ok(self.run(fpn, image_pos, prompt, valid, &mut observe)?.0)
+    }
+    fn run(
+        &self,
+        fpn: [&Tensor; 3],
+        image_pos: &Tensor,
+        prompt: &Tensor,
+        valid: &Tensor,
+        observe: &mut impl FnMut(&str, &Tensor) -> Result<()>,
+    ) -> Result<(DetectorOut, Vec<Tensor>)> {
         for (x, size) in fpn.iter().zip([288, 144, 72]) {
             ensure!(x.dims() == [1, 256, size, size], "FPN must be [1,256,{size},{size}]");
         }
         ensure!(image_pos.dims() == [1, 256, 72, 72], "image positions must be [1,256,72,72]");
         let (b, t, c) = prompt.dims3()?;
         ensure!(b == 1 && t > 0 && c == 256 && valid.dims() == [1, t], "prompt must be [1,T,256], validity [1,T], T>0");
-        let prompt = prompt.to_dtype(DType::F32)?;
+        let prompt = prompt.to_dtype(self.queries.dtype())?;
         let valid = valid.ne(0.0)?.to_dtype(DType::U8)?;
-        let pos = image_pos.to_dtype(DType::F32)?.flatten_from(2)?.transpose(1, 2)?.contiguous()?;
-        let mut memory = fpn[2].to_dtype(DType::F32)?.flatten_from(2)?.transpose(1, 2)?.contiguous()?;
-        for layer in &self.encoder {
-            memory = layer.forward(&memory, &pos, &prompt, &valid)?;
-        }
+        let pos = image_pos.to_dtype(self.queries.dtype())?.flatten_from(2)?.transpose(1, 2)?.contiguous()?;
+        let mut memory = fpn[2].to_dtype(self.queries.dtype())?.flatten_from(2)?.transpose(1, 2)?.contiguous()?;
+        crate::profile::measure(self.queries.device(), "detector encoder", || {
+            for layer in &self.encoder {
+                memory = layer.forward(&memory, &pos, &prompt, &valid)?;
+            }
+            Ok(())
+        })?;
+        observe("observe_add_218", &memory)?;
         let mut x = Tensor::cat(&[&self.presence, &self.queries], 1)?;
         let mut refs = candle_nn::ops::sigmoid(&self.references)?;
         let mut references = Vec::with_capacity(6);
-        for layer in &self.decoder {
-            let query_pos = self.ref_head.forward(&sine_embed(&refs)?)?;
-            let qp = Tensor::cat(&[self.presence.zeros_like()?, query_pos], 1)?;
-            let bias = box_bias(&refs, 72, 72, &self.bias_x, &self.bias_y)?;
-            x = layer.forward(&x, &qp, &memory, &pos, &prompt, &valid, &bias)?;
-            let query = self.norm.forward(&x.narrow(1, 1, 200)?)?;
-            refs = candle_nn::ops::sigmoid(&(inverse_sigmoid(&refs)? + self.bbox.forward(&query)?)?)?;
-            references.push(refs.clone());
-        }
+        crate::profile::measure(self.queries.device(), "detector decoder", || {
+            for layer in &self.decoder {
+                let query_pos = self.ref_head.forward(&sine_embed(&refs)?.to_dtype(self.queries.dtype())?)?;
+                let qp = Tensor::cat(&[self.presence.zeros_like()?, query_pos], 1)?;
+                let bias = box_bias(&refs, 72, 72, &self.bias_x, &self.bias_y)?;
+                x = layer.forward(&x, &qp, &memory, &pos, &prompt, &valid, &bias)?;
+                let query = self.norm.forward(&x.narrow(1, 1, 200)?)?;
+                refs = candle_nn::ops::sigmoid(&(inverse_sigmoid(&refs)? + self.bbox.forward(&query)?)?)?;
+                references.push(refs.clone());
+            }
+            Ok(())
+        })?;
         let query = self.norm.forward(&x.narrow(1, 1, 200)?)?;
+        observe("observe_layer_norm_47", &query)?;
         let presence = self.presence_head.forward(&self.presence_norm.forward(&x.narrow(1, 0, 1)?)?)?.squeeze(2)?;
-        let (logits, masks) = self.heads.forward(&query, &memory, fpn, &prompt, &valid)?;
+        let (logits, masks) =
+            crate::profile::measure(self.queries.device(), "detector heads", || self.heads.forward(&query, &memory, fpn, &prompt, &valid, observe))?;
         Ok((DetectorOut { boxes: xyxy(&refs)?, logits, masks, presence }, references))
     }
 }
@@ -120,9 +148,9 @@ impl Attention {
         let (qw, kw, vw) = split_qkv(&l.get(&format!("{p}.in_proj_weight"), &[768, 256])?)?;
         let (qb, kb, vb) = split_qkv(&l.get(&format!("{p}.in_proj_bias"), &[768])?)?;
         Ok(Self {
-            q: Linear::new(qw.contiguous()?, Some(qb)),
-            k: Linear::new(kw.contiguous()?, Some(kb)),
-            v: Linear::new(vw.contiguous()?, Some(vb)),
+            q: Linear::new(qw.contiguous()?, Some(qb))?,
+            k: Linear::new(kw.contiguous()?, Some(kb))?,
+            v: Linear::new(vw.contiguous()?, Some(vb))?,
             out: l.linear(&format!("{p}.out_proj"), 256, 256)?,
         })
     }
@@ -224,17 +252,18 @@ fn sine_embed(refs: &Tensor) -> Result<Tensor> {
     let device = refs.device();
     let freq: Vec<f32> = (0..64).map(|i| 10000_f32.powf((2 * i) as f32 / 128.0)).collect();
     let freq = Tensor::from_vec(freq, (1, 1, 64), device)?;
+    let refs_f32 = refs.to_dtype(DType::F32)?;
     let mut coords = Vec::with_capacity(4);
     for c in 0..4 {
-        let angle = (refs.narrow(2, c, 1)? * std::f64::consts::TAU)?.broadcast_div(&freq)?;
+        let angle = (refs_f32.narrow(2, c, 1)? * std::f64::consts::TAU)?.broadcast_div(&freq)?;
         coords.push(Tensor::stack(&[angle.sin()?, angle.cos()?], 3)?.flatten_from(2)?);
     }
-    Ok(Tensor::cat(&coords, 2)?)
+    Ok(Tensor::cat(&coords, 2)?.to_dtype(refs.dtype())?)
 }
 
 /// Signed-log distances to both edges are learned additive biases, not Q/K rotations.
 fn box_bias(refs: &Tensor, h: usize, w: usize, mx: &Mlp, my: &Mlp) -> Result<Tensor> {
-    let boxes = xyxy(refs)?;
+    let boxes = xyxy(refs)?.to_dtype(DType::F32)?;
     let axis = |size: usize, c: usize, mlp: &Mlp| -> Result<Tensor> {
         let coords = Tensor::arange(0_f32, size as f32, refs.device())?.affine(1.0 / size as f64, 0.0)?.reshape((1, 1, size, 1))?;
         let edges = Tensor::cat(&[boxes.narrow(2, c, 1)?, boxes.narrow(2, c + 2, 1)?], 2)?.unsqueeze(2)?;
@@ -242,10 +271,10 @@ fn box_bias(refs: &Tensor, h: usize, w: usize, mx: &Mlp, my: &Mlp) -> Result<Ten
         // d/(|d|+epsilon) would alter small distances; compare explicitly for exact sign.
         let sign = (d.gt(0.0)?.to_dtype(DType::F32)? - d.lt(0.0)?.to_dtype(DType::F32)?)?;
         let scaled = (sign * (d.abs()? + 1.0)?.log()?)?.affine(1.0 / 8_f64.ln(), 0.0)?;
-        mlp.forward(&scaled)
+        mlp.forward(&scaled.to_dtype(refs.dtype())?)
     };
     let x = axis(w, 0, mx)?;
     let y = axis(h, 1, my)?;
     let bias = y.unsqueeze(3)?.broadcast_add(&x.unsqueeze(2)?)?.reshape((1, 200, h * w, 8))?.permute((0, 3, 1, 2))?.contiguous()?;
-    Ok(Tensor::cat(&[Tensor::zeros((1, 8, 1, h * w), DType::F32, refs.device())?, bias], 2)?)
+    Ok(Tensor::cat(&[Tensor::zeros((1, 8, 1, h * w), refs.dtype(), refs.device())?, bias], 2)?)
 }

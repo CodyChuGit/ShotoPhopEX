@@ -31,7 +31,7 @@ impl Rope2d {
 
     /// Rotate adjacent channel pairs, preserving `[B,H,N,D]` layout.
     pub fn apply(&self, x: &Tensor) -> Result<Tensor> {
-        Ok(candle_nn::rotary_emb::rope_i(&x.contiguous()?, &self.cos, &self.sin)?)
+        Ok(candle_nn::rotary_emb::rope_i(&x.to_dtype(candle_core::DType::F32)?.contiguous()?, &self.cos, &self.sin)?.to_dtype(x.dtype())?)
     }
 }
 

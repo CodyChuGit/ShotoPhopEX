@@ -105,6 +105,7 @@ pub struct Frame {
     pub width: usize,
     pub height: usize,
     rgba: Vec<u8>,
+    device_pixels: Option<Tensor>,
     vision: VisionOut,
     geo_cls: Tensor,
     pub ms: u64,
@@ -130,7 +131,11 @@ fn sigmoid(x: f32) -> f32 {
 impl Sam31 {
     /// Load model parts once. Set a tokenizer JSON path before selecting text.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
-        let ck = Checkpoint::open(path)?;
+        Self::load_with_dtype(path, device, candle_core::DType::F32)
+    }
+    /// Select CUDA compute precision explicitly; F16 remains experimental until its parity gate passes.
+    pub fn load_with_dtype(path: impl AsRef<Path>, device: &Device, dtype: candle_core::DType) -> Result<Self> {
+        let ck = Checkpoint::open(path)?.with_compute_dtype(dtype)?;
         Ok(Self {
             vision: Vision::from_checkpoint(&ck, device)?,
             text: TextEncoder::from_checkpoint(&ck, device)?,
@@ -156,19 +161,33 @@ impl Sam31 {
             ensure!(count.checked_mul(3) == Some(pixels.len()), "expected RGB8 or RGBA8");
             pixels.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect()
         };
-        let input = Tensor::from_vec(planes_of(&rgba, width, [0, 0, width, height]), (1, 3, INPUT, INPUT), &self.device)?;
+        let device_pixels = if self.device.is_cuda() {
+            Some(crate::profile::measure(&self.device, "host transfers", || Ok(Tensor::from_slice(&rgba, (1, height, width, 4), &self.device)?))?)
+        } else {
+            None
+        };
+        let input = if let Some(pixels) = &device_pixels {
+            crate::profile::measure(&self.device, "image preprocessing", || image_input(pixels))?
+        } else {
+            Tensor::from_vec(planes_of(&rgba, width, [0, 0, width, height]), (1, 3, INPUT, INPUT), &self.device)?
+        };
         let vision = self.vision.forward(&input)?;
-        let geo_cls = self.geometry.cls(&vision.detector_fpn[2], &vision.image_pos)?;
-        Ok(Frame { width, height, rgba, vision, geo_cls, ms: t.elapsed().as_millis() as u64 })
+        let geo_cls = crate::profile::measure(&self.device, "geometry", || self.geometry.cls(&vision.detector_fpn[2], &vision.image_pos))?;
+        Ok(Frame { width, height, rgba, device_pixels, vision, geo_cls, ms: t.elapsed().as_millis() as u64 })
     }
     fn run_tracker(&self, planes: Vec<f32>) -> Result<[Tensor; 3]> {
         self.vision.forward_tracker(&Tensor::from_vec(planes, (1, 3, INPUT, INPUT), &self.device)?)
     }
     fn run_heads(&self, trk: &[Tensor; 3], coords: &[[f32; 2]], labels: &[i32], mask: Option<&[f32]>) -> Result<HeadsOut> {
         let mask = mask.filter(|m| m.len() == INPUT * INPUT).map(|m| Tensor::from_slice(m, (1, 1, INPUT, INPUT), &self.device)).transpose()?;
-        let out = self.heads.forward([&trk[0], &trk[1], &trk[2]], coords, labels, mask.as_ref())?;
-        let iou: [f32; 4] = out.iou.flatten_all()?.to_vec1::<f32>()?.try_into().map_err(|_| anyhow::anyhow!("expected four IoUs"))?;
-        Ok(HeadsOut { masks: out.masks.flatten_all()?.to_vec1::<f32>()?, iou, object_score: out.object_score.flatten_all()?.to_vec1::<f32>()?[0] })
+        let out = crate::profile::measure(&self.device, "heads", || self.heads.forward([&trk[0], &trk[1], &trk[2]], coords, labels, mask.as_ref()))?;
+        let iou: [f32; 4] =
+            out.iou.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?.try_into().map_err(|_| anyhow::anyhow!("expected four IoUs"))?;
+        Ok(HeadsOut {
+            masks: out.masks.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?,
+            iou,
+            object_score: out.object_score.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?[0],
+        })
     }
     /// `SAM3Model.forward_segment`: one pass of the tracker heads on a frame, with points, a box
     /// or a mask, answering 1008×1008 logits.
@@ -179,6 +198,29 @@ impl Sam31 {
         Ok(select_head(out, multimask))
     }
 
+    /// Keep selected logits and iterative feedback on CUDA until the final binary mask.
+    fn forward_segment_device(&self, trk: &[Tensor; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&Tensor>) -> Result<Tensor> {
+        let (coords, labels) = crate::prompt::pack_prompts(points, bbox);
+        let out = crate::profile::measure(&self.device, "heads", || self.heads.forward([&trk[0], &trk[1], &trk[2]], &coords, &labels, mask))?;
+        self.choose_head_device(&out, points.len() == 1)
+    }
+    fn choose_head_device(&self, out: &crate::mask_decoder::InteractiveOutput, multimask: bool) -> Result<Tensor> {
+        crate::profile::measure(&self.device, "mask post-processing", || {
+            let low = if multimask {
+                let best = out.iou.narrow(1, 1, 3)?.argmax(1)?;
+                out.masks.narrow(1, 1, 3)?.index_select(&best, 1)?
+            } else {
+                out.masks.narrow(1, 0, 1)?
+            };
+            let logits = low.to_dtype(candle_core::DType::F32)?.upsample_bilinear2d(INPUT, INPUT, false)?;
+            let valid = out.object_score.gt(0.0)?.reshape((1, 1, 1, 1))?.broadcast_as(logits.shape())?;
+            Ok(valid.where_cond(&logits, &Tensor::full(NO_OBJ_SCORE, logits.shape(), &self.device)?)?)
+        })
+    }
+    fn device_mask(&self, logits: &Tensor, width: usize, height: usize) -> Result<Vec<f32>> {
+        let binary = crate::profile::measure(&self.device, "mask post-processing", || Ok(logits.upsample_bilinear2d(height, width, false)?.gt(0.0)?))?;
+        crate::profile::measure(&self.device, "host transfers", || Ok(binary.flatten_all()?.to_vec1::<u8>()?.into_iter().map(f32::from).collect()))
+    }
     /// The node's point route: positives and negatives in picture pixels.
     pub fn segment_points(&self, emb: &Frame, positives: &[[f32; 2]], negatives: &[[f32; 2]], opts: Options) -> Result<(Instance, Timing)> {
         let mut timing = Timing::default();
@@ -187,6 +229,17 @@ impl Sam31 {
         let mut pts: Vec<([f32; 2], i32)> = positives.iter().map(|p| (scale(p), 1)).collect();
         pts.extend(negatives.iter().map(|p| (scale(p), 0)));
         let t = Instant::now();
+        if self.device.is_cuda() {
+            let mut logits = self.forward_segment_device(&emb.vision.interactive_fpn, &pts, None, None)?;
+            for _ in 1..opts.refine_iterations.max(1) {
+                logits = self.forward_segment_device(&emb.vision.interactive_fpn, &[], None, Some(&logits))?;
+            }
+            timing.heads_ms = t.elapsed().as_millis() as u64;
+            let t = Instant::now();
+            let mask = self.device_mask(&logits, emb.width, emb.height)?;
+            timing.post_ms = t.elapsed().as_millis() as u64;
+            return Ok((Instance::from_mask(mask, emb.width, emb.height, 1.0, [0.0; 4]), timing));
+        }
         let mut logit = self.forward_segment(&emb.vision.interactive_fpn, &pts, None, None)?;
         for _ in 1..opts.refine_iterations.max(1) {
             logit = self.forward_segment(&emb.vision.interactive_fpn, &[], None, Some(&logit))?;
@@ -211,6 +264,17 @@ impl Sam31 {
         let s = INPUT as f32;
         let corners = [(cx - bw / 2.0) * s, (cy - bh / 2.0) * s, (cx + bw / 2.0) * s, (cy + bh / 2.0) * s];
         let t = Instant::now();
+        if self.device.is_cuda() {
+            let mut logits = self.forward_segment_device(&emb.vision.interactive_fpn, &[], Some(corners), None)?;
+            for _ in 1..opts.refine_iterations.max(1) {
+                logits = self.forward_segment_device(&emb.vision.interactive_fpn, &[], None, Some(&logits))?;
+            }
+            timing.heads_ms = t.elapsed().as_millis() as u64;
+            let t = Instant::now();
+            let mask = self.device_mask(&logits, emb.width, emb.height)?;
+            timing.post_ms = t.elapsed().as_millis() as u64;
+            return Ok((Instance::from_mask(mask, emb.width, emb.height, 1.0, [0.0; 4]), timing));
+        }
         let mut logit = self.forward_segment(&emb.vision.interactive_fpn, &[], Some(corners), None)?;
         for _ in 1..opts.refine_iterations.max(1) {
             logit = self.forward_segment(&emb.vision.interactive_fpn, &[], None, Some(&logit))?;
@@ -229,8 +293,8 @@ impl Sam31 {
         let t = Instant::now();
         let tokenizer = self.tokenizer.as_ref().ok_or_else(|| anyhow::anyhow!("set_tokenizer requires a local tokenizer.json"))?;
         let (ids, valid) = tokenizer.encode(text)?;
-        let (features, valid) = self.text.encode(&ids, &valid)?;
-        let mut parts = vec![features];
+        let (features, valid) = crate::profile::measure(&self.device, "text", || self.text.encode(&ids, &valid))?;
+        let mut parts = vec![features.to_dtype(emb.geo_cls.dtype())?];
         let mut mask: Vec<u8> = valid.into_iter().map(u8::from).collect();
         if !boxes.is_empty() {
             let flat: Vec<f32> = boxes
@@ -250,21 +314,33 @@ impl Sam31 {
         let f = &emb.vision;
         let out = self.detector.forward([&f.detector_fpn[0], &f.detector_fpn[1], &f.detector_fpn[2]], &f.image_pos, &pf, &pm)?;
         let (_, q, mh, mw) = out.masks.dims4()?;
-        let masks = out.masks.flatten_all()?.to_vec1::<f32>()?;
-        let boxes = out.boxes.flatten_all()?.to_vec1::<f32>()?;
-        let logits = out.logits.flatten_all()?.to_vec1::<f32>()?;
+
+        let boxes =
+            crate::profile::measure(&self.device, "host transfers", || Ok(out.boxes.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?))?;
+        let logits =
+            crate::profile::measure(&self.device, "host transfers", || Ok(out.logits.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?))?;
         timing.decoder_ms = t.elapsed().as_millis() as u64;
         // probs > threshold, best first, at most max_detections.
         let mut ranked: Vec<(usize, f32)> = logits.iter().take(q).enumerate().map(|(i, l)| (i, sigmoid(*l))).filter(|(_, p)| *p > opts.threshold).collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
         ranked.truncate(opts.max_detections);
 
+        let mask_tensor = out.masks;
         let mut out = Vec::with_capacity(ranked.len());
         for (i, score) in ranked {
             let t = Instant::now();
-            let low = masks.get(i * mh * mw..(i + 1) * mh * mw).ok_or_else(|| anyhow::anyhow!("pred_masks shorter than its shape"))?;
+            let b = boxes.get(i * 4..i * 4 + 4).unwrap_or(&[0.0; 4]);
+            let bbox = [b[0] * w as f32, b[1] * h as f32, b[2] * w as f32, b[3] * h as f32];
+            if self.device.is_cuda() {
+                let mask = self.refine_device(emb, &mask_tensor.narrow(1, i, 1)?, bbox, opts.refine_iterations, &mut timing)?;
+                out.push(Instance::from_mask(mask, w, h, score, bbox));
+                continue;
+            }
+            let low = crate::profile::measure(&self.device, "host transfers", || {
+                Ok(mask_tensor.narrow(1, i, 1)?.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?)
+            })?;
             // detector.forward(orig_size=…): masks to the picture size, boxes to pixels.
-            let coarse = bilinear(low, mw, mh, w, h);
+            let coarse = crate::profile::measure(&self.device, "mask post-processing", || Ok(bilinear(&low, mw, mh, w, h)))?;
             let b = boxes.get(i * 4..i * 4 + 4).unwrap_or(&[0.0; 4]);
             let bbox = [b[0] * w as f32, b[1] * h as f32, b[2] * w as f32, b[3] * h as f32];
             timing.post_ms += t.elapsed().as_millis() as u64;
@@ -274,6 +350,55 @@ impl Sam31 {
         Ok((out, timing))
     }
 
+    /// Keep detector logits, crop feedback and the final union on CUDA; download one mask.
+    fn refine_device(&self, emb: &Frame, low: &Tensor, bbox: [f32; 4], iterations: usize, timing: &mut Timing) -> Result<Vec<f32>> {
+        let (w, h) = (emb.width, emb.height);
+        let coarse =
+            crate::profile::measure(&self.device, "mask post-processing", || Ok(low.to_dtype(candle_core::DType::F32)?.upsample_bilinear2d(h, w, false)?))?;
+        let binary = coarse.gt(0.0)?;
+        let finish = |mask: &Tensor| -> Result<Vec<f32>> {
+            crate::profile::measure(&self.device, "host transfers", || Ok(mask.flatten_all()?.to_vec1::<u8>()?.into_iter().map(f32::from).collect()))
+        };
+        if iterations == 0 {
+            return finish(&binary);
+        }
+        let (x1, y1, x2, y2) = (f64::from(bbox[0]), f64::from(bbox[1]), f64::from(bbox[2]), f64::from(bbox[3]));
+        let (bw, bh) = (x2 - x1, y2 - y1);
+        let cx1 = ((x1 - bw * 0.1).trunc() as i64).max(0) as usize;
+        let cy1 = ((y1 - bh * 0.1).trunc() as i64).max(0) as usize;
+        let cx2 = (((x2 + bw * 0.1).trunc() as i64).max(0) as usize).min(w);
+        let cy2 = (((y2 + bh * 0.1).trunc() as i64).max(0) as usize).min(h);
+        if cx2 <= cx1 || cy2 <= cy1 {
+            return finish(&binary);
+        }
+        let mx1 = ((cx1 as f64 / w as f64) * w as f64).trunc() as usize;
+        let my1 = ((cy1 as f64 / h as f64) * h as f64).trunc() as usize;
+        let mx2 = ((cx2 as f64 / w as f64) * w as f64).trunc() as usize;
+        let my2 = ((cy2 as f64 / h as f64) * h as f64).trunc() as usize;
+        if mx2 <= mx1 || my2 <= my1 {
+            return finish(&binary);
+        }
+        let pixels = emb.device_pixels.as_ref().ok_or_else(|| anyhow::anyhow!("CUDA frame has no device pixels"))?;
+        let t = Instant::now();
+        let input =
+            crate::profile::measure(&self.device, "crop preprocessing", || image_input(&pixels.narrow(1, cy1, cy2 - cy1)?.narrow(2, cx1, cx2 - cx1)?))?;
+        let trk = self.vision.forward_tracker(&input)?;
+        timing.crop_ms += t.elapsed().as_millis() as u64;
+        let t = Instant::now();
+        let mut feedback = crate::profile::measure(&self.device, "mask post-processing", || {
+            Ok(coarse.narrow(2, my1, my2 - my1)?.narrow(3, mx1, mx2 - mx1)?.contiguous()?.upsample_bilinear2d(INPUT, INPUT, false)?)
+        })?;
+        for _ in 0..iterations {
+            feedback = self.forward_segment_device(&trk, &[], None, Some(&feedback))?;
+        }
+        timing.heads_ms += t.elapsed().as_millis() as u64;
+        let full = crate::profile::measure(&self.device, "mask post-processing", || {
+            let refined =
+                feedback.upsample_bilinear2d(cy2 - cy1, cx2 - cx1, false)?.gt(0.0)?.pad_with_zeros(2, cy1, h - cy2)?.pad_with_zeros(3, cx1, w - cx2)?;
+            Ok(binary.broadcast_add(&refined)?.gt(0.0)?)
+        })?;
+        finish(&full)
+    }
     /// `_refine_mask`: refine a coarse detector mask through the tracker heads on a crop around
     /// its box, then OR it with the coarse mask.
     fn refine(&self, emb: &Frame, coarse: &[f32], bbox: [f32; 4], iterations: usize, timing: &mut Timing) -> Result<Vec<f32>> {
@@ -360,6 +485,17 @@ impl Sam31 {
             [a[0], a[1], z[0], z[1]]
         });
         let (coords, labels) = crate::prompt::pack_prompts(&pts, bbox);
+        if self.device.is_cuda() {
+            let mask = mask_input.filter(|m| m.len() == INPUT * INPUT).map(|m| Tensor::from_slice(m, (1, 1, INPUT, INPUT), &self.device)).transpose()?;
+            let trk = &frame.vision.interactive_fpn;
+            let out = crate::profile::measure(&self.device, "heads", || self.heads.forward([&trk[0], &trk[1], &trk[2]], &coords, &labels, mask.as_ref()))?;
+            let logits = self.choose_head_device(&out, pts.len() == 1)?;
+            let iou: [f32; 4] =
+                crate::profile::measure(&self.device, "host transfers", || Ok(out.iou.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?))?
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("expected four IoUs"))?;
+            return Ok((self.device_mask(&logits, frame.width, frame.height)?, iou));
+        }
         let out = self.run_heads(&frame.vision.interactive_fpn, &coords, &labels, mask_input)?;
         let iou = out.iou;
         let logits = select_head(out, pts.len() == 1);
@@ -386,6 +522,17 @@ fn select_head(out: HeadsOut, multimask: bool) -> Vec<f32> {
     };
     let low = &out.masks[token * LOW * LOW..(token + 1) * LOW * LOW];
     if out.object_score > 0.0 { bilinear(low, LOW, LOW, INPUT, INPUT) } else { vec![NO_OBJ_SCORE; INPUT * INPUT] }
+}
+
+/// Resize RGB on the device using the worker's half-pixel bilinear convention.
+fn image_input(rgba: &Tensor) -> Result<Tensor> {
+    Ok(rgba
+        .narrow(3, 0, 3)?
+        .permute((0, 3, 1, 2))?
+        .contiguous()?
+        .to_dtype(candle_core::DType::F32)?
+        .affine(1.0 / 255.0, 0.0)?
+        .upsample_bilinear2d(INPUT, INPUT, false)?)
 }
 
 #[cfg(test)]

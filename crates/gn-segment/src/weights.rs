@@ -253,11 +253,21 @@ impl Table {
 /// One buffered checkpoint read shared by every model part, without memory mapping.
 pub struct Checkpoint {
     tensors: candle_core::safetensors::BufferedSafetensors,
+    compute_dtype: candle_core::DType,
 }
 impl Checkpoint {
     /// Read once; selected tensors are copied to the requested device as parts load.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self { tensors: candle_core::safetensors::BufferedSafetensors::new(std::fs::read(path)?)? })
+        Ok(Self { tensors: candle_core::safetensors::BufferedSafetensors::new(std::fs::read(path)?)?, compute_dtype: candle_core::DType::F32 })
+    }
+    /// Opt into a CUDA compute precision; CPU remains f32 for fixture parity.
+    pub fn with_compute_dtype(mut self, dtype: candle_core::DType) -> Result<Self> {
+        ensure!(matches!(dtype, candle_core::DType::F32 | candle_core::DType::F16), "SAM compute dtype must be F32 or F16");
+        self.compute_dtype = dtype;
+        Ok(self)
+    }
+    pub(crate) fn compute_dtype(&self, device: &candle_core::Device) -> candle_core::DType {
+        if device.is_cuda() { self.compute_dtype } else { candle_core::DType::F32 }
     }
     pub(crate) fn get(&self, key: &str, shape: &[usize], device: &candle_core::Device) -> Result<Tensor> {
         let t = self.tensors.load(key, device)?;

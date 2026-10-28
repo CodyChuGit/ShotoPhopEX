@@ -1,10 +1,11 @@
-//! SAM 3.1 CLIP token features, kept in f32 through the language resizer for parity.
+//! SAM 3.1 CLIP in f32, with a resizer following the checkpoint compute precision.
 
+use crate::linear::Linear;
 use std::path::Path;
 
 use anyhow::{Result, ensure};
 use candle_core::{Device, Tensor};
-use candle_nn::{Embedding, LayerNorm, Linear, Module};
+use candle_nn::{Embedding, LayerNorm, Module};
 
 use crate::{prompt::Loader, weights::split_qkv};
 
@@ -14,7 +15,7 @@ const HEADS: usize = 16;
 const HEAD_DIM: usize = 64;
 
 /// The fixed-context CLIP encoder and language projection, without pooled CLIP output.
-/// All parameters and intermediate tensors use f32 on the caller's Candle device.
+/// CLIP stays f32; an explicitly selected F16 CUDA checkpoint also converts the resizer.
 pub struct TextEncoder {
     tokens: Embedding,
     positions: Tensor,
@@ -61,7 +62,7 @@ impl TextEncoder {
         for block in &self.blocks {
             x = block.forward(&x, &bias)?;
         }
-        Ok((self.resizer.forward(&self.final_norm.forward(&x)?)?, *mask))
+        Ok((self.resizer.forward(&self.final_norm.forward(&x)?.to_dtype(self.resizer.weight().dtype())?)?, *mask))
     }
 }
 
@@ -82,9 +83,9 @@ impl Block {
         let (qb, kb, vb) = split_qkv(&loader.get(&format!("{p}.attn.in_proj_bias"), &[3 * WIDTH])?)?;
         Ok(Self {
             norm1: loader.norm(&format!("{p}.ln_1"), WIDTH)?,
-            q: Linear::new(qw.contiguous()?, Some(qb)),
-            k: Linear::new(kw.contiguous()?, Some(kb)),
-            v: Linear::new(vw.contiguous()?, Some(vb)),
+            q: Linear::new(qw.contiguous()?, Some(qb))?,
+            k: Linear::new(kw.contiguous()?, Some(kb))?,
+            v: Linear::new(vw.contiguous()?, Some(vb))?,
             out: loader.linear(&format!("{p}.attn.out_proj"), WIDTH, WIDTH)?,
             norm2: loader.norm(&format!("{p}.ln_2"), WIDTH)?,
             fc1: loader.linear(&format!("{p}.mlp.c_fc"), WIDTH, 4096)?,

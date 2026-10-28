@@ -6,7 +6,7 @@ use crate::{
     position::{Rope2d, image_position},
 };
 use anyhow::{Context, Result, ensure};
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
 use candle_nn::{LayerNorm, Module};
 use std::path::Path;
 
@@ -17,8 +17,7 @@ pub struct VisionOut {
     pub image_pos: Tensor,
 }
 
-/// Fixed 1008² SAM vision encoder. Large parameters remain F16 between operations;
-/// each operation casts its own weights to f32 so CPU execution needs no half kernels.
+/// Fixed SAM vision encoder with compute parameters prepared once at load.
 pub struct Vision {
     patch: Conv,
     positions: Tensor,
@@ -27,6 +26,7 @@ pub struct Vision {
     detector: [Fpn; 3],
     interactive: [Fpn; 3],
     no_mem: Tensor,
+    image_pos: Tensor,
     global_rope: Rope2d,
     window_rope: Rope2d,
 }
@@ -42,7 +42,7 @@ impl Vision {
         let loader = Loader { checkpoint, device };
         let p = "detector.backbone.vision_backbone";
         let t = format!("{p}.trunk");
-        let pos = loader.raw(&format!("{t}.pos_embed"), &[1, 577, 1024])?.to_dtype(DType::F32)?;
+        let pos = loader.get(&format!("{t}.pos_embed"), &[1, 577, 1024])?;
         let pos = pos.narrow(1, 1, 576)?.reshape((1, 24, 24, 1024))?;
         let rows = Tensor::cat(&[&pos, &pos, &pos], 1)?;
         let positions = Tensor::cat(&[&rows, &rows, &rows], 2)?;
@@ -60,7 +60,8 @@ impl Vision {
             blocks: (0..32).map(|i| Block::load(&loader, &format!("{t}.blocks.{i}"), i % 8 == 7)).collect::<Result<_>>()?,
             detector: fpn("convs")?,
             interactive: fpn("interactive_convs")?,
-            no_mem: loader.raw("tracker.model.interactivity_no_mem_embed", &[1, 1, 256])?.to_dtype(DType::F32)?.reshape((1, 256, 1, 1))?,
+            image_pos: image_position(72, 72, device)?.to_dtype(pos.dtype())?,
+            no_mem: loader.raw("tracker.model.interactivity_no_mem_embed", &[1, 1, 256])?.to_dtype(pos.dtype())?.reshape((1, 256, 1, 1))?,
             global_rope: Rope2d::new(72, 72, 64, 24.0 / 72.0, device)?,
             window_rope: Rope2d::new(24, 24, 64, 1.0, device)?,
         })
@@ -73,12 +74,14 @@ impl Vision {
 
     /// Encode refinement crops without computing the unused detector pyramid.
     pub fn forward_tracker(&self, pixels: &Tensor) -> Result<[Tensor; 3]> {
-        let x = self.trunk(pixels, &mut |_, _| Ok(()))?;
-        Ok([self.interactive[0].forward(&x)?, self.interactive[1].forward(&x)?, self.interactive[2].forward(&x)?.broadcast_add(&self.no_mem)?])
+        let x = crate::profile::measure(pixels.device(), "crop trunk", || self.trunk(pixels, &mut |_, _| Ok(())))?;
+        crate::profile::measure(pixels.device(), "crop FPN", || {
+            Ok([self.interactive[0].forward(&x)?, self.interactive[1].forward(&x)?, self.interactive[2].forward(&x)?.broadcast_add(&self.no_mem)?])
+        })
     }
     fn trunk(&self, pixels: &Tensor, observe: &mut impl FnMut(&str, &Tensor) -> Result<()>) -> Result<Tensor> {
         ensure!(pixels.dims() == [1, 3, 1008, 1008], "vision requires [1,3,1008,1008]");
-        let patch = self.patch.forward(&pixels.to_dtype(DType::F32)?)?;
+        let patch = self.patch.forward(&pixels.to_dtype(self.patch.weight.dtype())?)?;
         observe("patch", &patch)?;
         let mut x = self.norm.forward(&patch.permute((0, 2, 3, 1))?.broadcast_add(&self.positions)?.contiguous()?)?;
         for (i, block) in self.blocks.iter().enumerate() {
@@ -94,11 +97,11 @@ impl Vision {
     /// Observe parity boundaries without retaining full intermediate activations.
     /// Trunk blocks use NHWC; patch and pyramid observations use NCHW.
     pub fn forward_with_observer(&self, pixels: &Tensor, mut observe: impl FnMut(&str, &Tensor) -> Result<()>) -> Result<VisionOut> {
-        let x = self.trunk(pixels, &mut observe)?;
+        let x = crate::profile::measure(pixels.device(), "trunk", || self.trunk(pixels, &mut observe))?;
         let mut pyramid = |branches: &[Fpn; 3], name: &str, interactive: bool| -> Result<[Tensor; 3]> {
             let mut outputs = Vec::with_capacity(3);
             for (i, branch) in branches.iter().enumerate() {
-                let mut feature = branch.forward(&x)?;
+                let mut feature = crate::profile::measure(x.device(), &format!("{name} FPN"), || branch.forward(&x))?;
                 if interactive && i == 2 {
                     feature = feature.broadcast_add(&self.no_mem)?;
                 }
@@ -109,7 +112,7 @@ impl Vision {
         };
         let detector_fpn = pyramid(&self.detector, "detector", false)?;
         let interactive_fpn = pyramid(&self.interactive, "interactive", true)?;
-        Ok(VisionOut { detector_fpn, interactive_fpn, image_pos: image_position(72, 72, x.device())? })
+        Ok(VisionOut { detector_fpn, interactive_fpn, image_pos: self.image_pos.clone() })
     }
 }
 
@@ -180,7 +183,8 @@ impl Block {
         let qkv = self.qkv.forward(&input.reshape((b, h * w, 1024))?)?.reshape((b, h * w, 3, 16, 64))?;
         let head = |i| -> Result<Tensor> { Ok(qkv.narrow(2, i, 1)?.squeeze(2)?.transpose(1, 2)?.contiguous()?) };
         let (q, k, v) = (rope.apply(&head(0)?)?, rope.apply(&head(1)?)?, head(2)?);
-        let a = attention(&q, &k, &v, None, false, None, 256)?.transpose(1, 2)?.contiguous()?.reshape((b, h * w, 1024))?;
+        let a = attention(&q, &k, &v, None, false, None, 256)?;
+        let a = a.transpose(1, 2)?.contiguous()?.reshape((b, h * w, 1024))?;
         let a = self.proj.forward(&a)?.reshape((b, h, w, 1024))?;
         let a = if self.global { a } else { window_unpartition(&a, 24, pad, (72, 72))? };
         let x = (x + a)?;
@@ -191,9 +195,13 @@ impl Block {
 struct Linear {
     weight: Tensor,
     bias: Tensor,
+    fused: Option<crate::linear::Linear>,
 }
 impl Linear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        if let Some(fused) = &self.fused {
+            return Ok(fused.forward(x)?);
+        }
         let dims = x.dims().to_vec();
         let input = self.weight.dim(1)?;
         let output = self.weight.dim(0)?;
@@ -201,13 +209,12 @@ impl Linear {
         let last = shape.last_mut().context("linear requires a channel dimension")?;
         ensure!(*last == input, "linear input width mismatch");
         *last = output;
-        Ok(x.reshape((x.elem_count() / input, input))?
-            .matmul(&self.weight.to_dtype(DType::F32)?.t()?)?
-            .broadcast_add(&self.bias.to_dtype(DType::F32)?)?
-            .reshape(shape)?)
+        Ok(x.reshape((x.elem_count() / input, input))?.matmul(&self.weight.t()?)?.broadcast_add(&self.bias)?.reshape(shape)?)
     }
 }
 struct Conv {
+    pointwise: Option<crate::linear::Linear>,
+    fused_weight: Option<Tensor>,
     weight: Tensor,
     bias: Option<Tensor>,
     stride: usize,
@@ -215,8 +222,14 @@ struct Conv {
 }
 impl Conv {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let y = x.conv2d(&self.weight.to_dtype(DType::F32)?, self.padding, self.stride, 1, 1)?;
-        Ok(if let Some(bias) = &self.bias { y.broadcast_add(&bias.to_dtype(DType::F32)?.reshape((1, bias.elem_count(), 1, 1))?)? } else { y })
+        if let Some(pointwise) = &self.pointwise {
+            return Ok(pointwise.forward_channels(x)?);
+        }
+        if let Some(weight) = &self.fused_weight {
+            return Ok(crate::ops::bias_channels(x)?.conv2d(weight, self.padding, self.stride, 1, 1)?);
+        }
+        let y = x.conv2d(&self.weight, self.padding, self.stride, 1, 1)?;
+        Ok(if let Some(bias) = &self.bias { y.broadcast_add(&bias.reshape((1, bias.elem_count(), 1, 1))?)? } else { y })
     }
 }
 
@@ -227,10 +240,9 @@ pub fn transpose_conv2(x: &Tensor, weight: &Tensor, bias: &Tensor) -> Result<Ten
     let (ic, oc, kh, kw) = weight.dims4()?;
     ensure!(c == ic && kh == 2 && kw == 2 && bias.dims() == [oc], "transpose convolution shape mismatch");
     let input = x.permute((0, 2, 3, 1))?.contiguous()?.reshape((b * h * w, c))?;
-    let weight = weight.to_dtype(DType::F32)?.reshape((c, oc * 4))?;
-    let y =
-        input.to_dtype(DType::F32)?.matmul(&weight)?.reshape((b, h, w, oc, 2, 2))?.permute((0, 3, 1, 4, 2, 5))?.contiguous()?.reshape((b, oc, h * 2, w * 2))?;
-    Ok(y.broadcast_add(&bias.to_dtype(DType::F32)?.reshape((1, oc, 1, 1))?)?)
+    let weight = weight.reshape((c, oc * 4))?;
+    let y = input.matmul(&weight)?.reshape((b, h, w, oc, 2, 2))?.permute((0, 3, 1, 4, 2, 5))?.contiguous()?.reshape((b, oc, h * 2, w * 2))?;
+    Ok(y.broadcast_add(&bias.reshape((1, oc, 1, 1))?)?)
 }
 struct Up {
     weight: Tensor,
@@ -250,7 +262,7 @@ impl Fpn {
     fn load(l: &Loader<'_>, p: &str, level: usize) -> Result<Self> {
         let mut up = Vec::new();
         let mut add = |name: &str, ic, oc| -> Result<()> {
-            up.push(Up { weight: l.raw(&format!("{p}.{name}.weight"), &[ic, oc, 2, 2])?, bias: l.raw(&format!("{p}.{name}.bias"), &[oc])? });
+            up.push(Up { weight: l.get(&format!("{p}.{name}.weight"), &[ic, oc, 2, 2])?, bias: l.get(&format!("{p}.{name}.bias"), &[oc])? });
             Ok(())
         };
         if level == 0 {
@@ -278,15 +290,21 @@ impl Fpn {
 }
 impl Loader<'_> {
     fn compact_linear(&self, p: &str, ic: usize, oc: usize) -> Result<Linear> {
-        Ok(Linear { weight: self.raw(&format!("{p}.weight"), &[oc, ic])?, bias: self.raw(&format!("{p}.bias"), &[oc])? })
+        let weight = self.get(&format!("{p}.weight"), &[oc, ic])?;
+        let bias = self.get(&format!("{p}.bias"), &[oc])?;
+        let fused = if self.device.is_cuda() && weight.dtype() == candle_core::DType::F16 {
+            Some(crate::linear::Linear::new(weight.clone(), Some(bias.clone()))?)
+        } else {
+            None
+        };
+        Ok(Linear { weight, bias, fused })
     }
     #[allow(clippy::too_many_arguments)]
     fn vision_conv(&self, p: &str, ic: usize, oc: usize, k: usize, stride: usize, padding: usize, bias: bool) -> Result<Conv> {
-        Ok(Conv {
-            weight: self.raw(&format!("{p}.weight"), &[oc, ic, k, k])?,
-            bias: if bias { Some(self.raw(&format!("{p}.bias"), &[oc])?) } else { None },
-            stride,
-            padding,
-        })
+        let weight = self.get(&format!("{p}.weight"), &[oc, ic, k, k])?;
+        let bias = if bias { Some(self.get(&format!("{p}.bias"), &[oc])?) } else { None };
+        let pointwise = if self.device.is_cuda() && k == 1 { Some(crate::linear::Linear::new(weight.reshape((oc, ic))?, bias.clone())?) } else { None };
+        let fused_weight = if self.device.is_cuda() && k > 1 { bias.as_ref().map(|bias| crate::ops::fuse_conv_bias(&weight, bias)).transpose()? } else { None };
+        Ok(Conv { weight, bias, pointwise, fused_weight, stride, padding })
     }
 }

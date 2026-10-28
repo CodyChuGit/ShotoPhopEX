@@ -1,8 +1,9 @@
 //! Private scoring and two-stage instance segmentation heads.
 
+use crate::linear::Linear;
 use anyhow::Result;
 use candle_core::{DType, Tensor};
-use candle_nn::{LayerNorm, Linear, Module};
+use candle_nn::{LayerNorm, Module};
 
 use crate::{
     detector::{Attention, Mlp},
@@ -47,35 +48,62 @@ impl Heads {
             mask: Mlp::load(l, &format!("{p}.mask_predictor.mask_embed"), &[256, 256, 256, 256])?,
         })
     }
-    pub(crate) fn forward(&self, query: &Tensor, memory: &Tensor, fpn: [&Tensor; 3], prompt: &Tensor, valid: &Tensor) -> Result<(Tensor, Tensor)> {
+    pub(crate) fn forward(
+        &self,
+        query: &Tensor,
+        memory: &Tensor,
+        fpn: [&Tensor; 3],
+        prompt: &Tensor,
+        valid: &Tensor,
+        observe: &mut impl FnMut(&str, &Tensor) -> Result<()>,
+    ) -> Result<(Tensor, Tensor)> {
         let p = self.prompt_norm.forward(&(self.prompt_mlp.forward(prompt)? + prompt)?)?;
-        let weight = valid.to_dtype(DType::F32)?.unsqueeze(2)?;
+        let weight = valid.to_dtype(prompt.dtype())?.unsqueeze(2)?;
         let pooled = p.broadcast_mul(&weight)?.sum(1)?.broadcast_div(&weight.sum(1)?.clamp(1.0, f32::MAX)?)?;
         let logits =
             (self.hs_proj.forward(query)?.matmul(&self.prompt_proj.forward(&pooled)?.unsqueeze(2)?)? * (1.0 / 16.0))?.clamp(-12.0, 12.0)?.squeeze(2)?;
         let cross = self.cross.forward(&self.cross_norm.forward(memory)?, prompt, prompt, Some(valid), None)?;
         let mut pixels = (memory + cross)?.transpose(1, 2)?.contiguous()?.reshape((1, 256, 72, 72))?;
-        for ((conv, norm), feat) in self.stages.iter().zip([fpn[1], fpn[0]]) {
+        for (i, ((conv, norm), feat)) in self.stages.iter().zip([fpn[1], fpn[0]]).enumerate() {
             let (_, _, h, w) = feat.dims4()?;
-            pixels = norm.forward(&conv.forward(&(pixels.upsample_nearest2d(h, w)? + feat.to_dtype(DType::F32)?)?)?)?.relu()?;
+            pixels = conv.forward(&(pixels.upsample_nearest2d(h, w)? + feat.to_dtype(memory.dtype())?)?)?;
+            observe(if i == 0 { "observe_conv2d" } else { "observe_conv2d_1" }, &pixels)?;
+            pixels = norm.forward(&pixels)?;
+            observe(if i == 0 { "observe_group_norm" } else { "observe_group_norm_1" }, &pixels)?;
+            pixels = pixels.relu()?;
         }
         let pixels = self.instance.forward(&pixels)?.flatten_from(2)?;
-        let masks = self.mask.forward(query)?.matmul(&pixels)?.reshape((1, 200, 288, 288))?;
+        observe("observe_conv2d_2", &pixels.reshape((1, 256, 288, 288))?)?;
+        let hyper = self.mask.forward(query)?;
+        observe("observe_linear_211", &hyper)?;
+        let masks = hyper.matmul(&pixels)?.reshape((1, 200, 288, 288))?;
         Ok((logits, masks))
     }
 }
 
 /// Native convolution keeps this head independent of cuDNN.
 struct Conv {
+    pointwise: Option<Linear>,
+    fused_weight: Option<Tensor>,
     weight: Tensor,
     bias: Tensor,
     padding: usize,
 }
 impl Conv {
     fn load(l: &Loader<'_>, p: &str, k: usize) -> Result<Self> {
-        Ok(Self { weight: l.get(&format!("{p}.weight"), &[256, 256, k, k])?, bias: l.get(&format!("{p}.bias"), &[256])?, padding: k / 2 })
+        let weight = l.get(&format!("{p}.weight"), &[256, 256, k, k])?;
+        let bias = l.get(&format!("{p}.bias"), &[256])?;
+        let pointwise = if l.device.is_cuda() && k == 1 { Some(Linear::new(weight.reshape((256, 256))?, Some(bias.clone()))?) } else { None };
+        let fused_weight = if l.device.is_cuda() && k > 1 { Some(crate::ops::fuse_conv_bias(&weight, &bias)?) } else { None };
+        Ok(Self { weight, bias, pointwise, fused_weight, padding: k / 2 })
     }
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        if let Some(pointwise) = &self.pointwise {
+            return Ok(pointwise.forward_channels(x)?);
+        }
+        if let Some(weight) = &self.fused_weight {
+            return Ok(crate::ops::bias_channels(x)?.conv2d(weight, self.padding, 1, 1, 1)?);
+        }
         Ok(x.conv2d(&self.weight, self.padding, 1, 1, 1)?.broadcast_add(&self.bias.reshape((1, 256, 1, 1))?)?)
     }
 }
@@ -92,12 +120,12 @@ impl SpatialGroupNorm {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let (b, c, h, w) = x.dims4()?;
         let n = c / 8 * h * w;
-        let groups = x.reshape((b, 8, n))?;
+        let groups = x.to_dtype(DType::F32)?.reshape((b, 8, n))?;
         let mean = spatial_mean(&groups)?;
         let centered = groups.broadcast_sub(&mean)?;
         let variance = spatial_mean(&centered.sqr()?)?;
         let normalized = centered.broadcast_div(&(variance + 1e-5)?.sqrt()?)?.reshape((b, c, h, w))?;
-        Ok(normalized.broadcast_mul(&self.weight.reshape((1, c, 1, 1))?)?.broadcast_add(&self.bias.reshape((1, c, 1, 1))?)?)
+        Ok(normalized.to_dtype(x.dtype())?.broadcast_mul(&self.weight.reshape((1, c, 1, 1))?)?.broadcast_add(&self.bias.reshape((1, c, 1, 1))?)?)
     }
 }
 fn spatial_mean(x: &Tensor) -> Result<Tensor> {
