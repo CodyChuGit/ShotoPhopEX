@@ -13,9 +13,9 @@ $prefs = @{
     comfy = @{ "integrations.engine" = "comfy"; "integrations.comfyServer" = "http://127.0.0.1:8188"; "integrations.enhancePrompts" = $false }
 }
 function Split-Run([string]$route) {
-    # The split adds its layers above the background (id 1): ids 2.. in order, background first.
+    # The split adds its layers as ids 3.. (1 is the picture; 2 is taken), background first; the result line names them.
     $args2 = @($Picture, "--cmd", "prefs.set", "--params", (Q @{ values = $prefs[($route -replace "-warm", "")] }), "--cmd", "generate.splitLayers", "--params", (Q @{ layers = $Layers; seed = $Seed }))
-    foreach ($i in 1..$Layers) { $args2 += "--cmd", "layer.exportAs", "--params", (Q @{ layer = $i + 1; path = (("$Out\$route-$i.png") -replace '\\', '/') }) }
+    foreach ($i in 1..$Layers) { $args2 += "--cmd", "layer.exportAs", "--params", (Q @{ layer = $i + 2; path = (("$Out\$route-$i.png") -replace '\\', '/') }) }
     $t0 = Get-Date
     $lines = & $cli run @args2 2>&1
     $res = $lines | Where-Object { "$_" -match '"command":"generate\.splitLayers"' } | Select-Object -First 1
