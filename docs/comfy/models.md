@@ -34,6 +34,12 @@ Licence classes used in this document:
 | Role here | Default **Generate Image** model and the style-reference path. Best open text-to-image quality at 2K in 8 steps. |
 | Style LoRA here | `loras/krea2_style_reference.safetensors` from [ostris/krea2_turbo_style_reference](https://huggingface.co/ostris/krea2_turbo_style_reference) (not gated; 457 111 760 bytes; SHA-256 `f50df5a9…13daa82b8`, equal to the repo's LFS hash), downloaded 2026-10-28 on the owner's go for the native style-reference port. Not shipped (BYOM). |
 
+Also downloaded 2026-10-28 on the owner's go, for the native 2511 port's Angles benchmark: fal's
+Multiple Angles LoRA, `loras/qwen-image-edit-2511-multiple-angles-lora.safetensors` from
+[fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA](https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA)
+(not gated; Apache-2.0 per the model card; 295 140 688 bytes; SHA-256 `42426ded…155bb6765`, equal
+to the repo's LFS hash). Not shipped (BYOM).
+
 Sources: [Krea 2 open-source page](https://www.krea.ai/krea-2-open-source) · [krea/Krea-2-Turbo model card](https://huggingface.co/krea/Krea-2-Turbo) · [ComfyUI Krea-2 workflow docs](https://docs.comfy.org/tutorials/image/krea/krea-2) · [krea-ai/krea-2 inference code](https://github.com/krea-ai/krea-2) · [Krea 2 local guide (third party)](https://localaimaster.com/blog/krea-2-local-guide) · [Krea 2 open weights write-up](https://www.computeleap.com/blog/krea-2-open-weights-image-model-frontier-2026/).
 
 ### Krea 2 Raw (base model for fine-tuning)
