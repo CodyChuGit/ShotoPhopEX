@@ -67,11 +67,7 @@ fn full_precision_layers(json: &str) -> Vec<String> {
     let Some(layers) = v.get("layers").and_then(|l| l.as_object()) else {
         return Vec::new();
     };
-    layers
-        .iter()
-        .filter(|(_, conf)| conf.get("full_precision_matrix_mult").and_then(|b| b.as_bool()).unwrap_or(false))
-        .map(|(name, _)| name.clone())
-        .collect()
+    layers.iter().filter(|(_, conf)| conf.get("full_precision_matrix_mult").and_then(|b| b.as_bool()).unwrap_or(false)).map(|(name, _)| name.clone()).collect()
 }
 
 /// A safetensors header: tensor names and `__metadata__`.
@@ -90,7 +86,8 @@ fn header(path: &Path) -> Result<Header> {
     let v: serde_json::Value = serde_json::from_slice(&buf)?;
     let obj = v.as_object().ok_or_else(|| anyhow::anyhow!("{}: the header is not an object", path.display()))?;
     let names = obj.keys().filter(|k| *k != "__metadata__").cloned().collect();
-    let meta = obj.get("__metadata__").and_then(|m| m.as_object()).map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect());
+    let meta =
+        obj.get("__metadata__").and_then(|m| m.as_object()).map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect());
     Ok((names, meta))
 }
 
@@ -144,9 +141,19 @@ impl Fp8Linear {
     /// From the file's e4m3 `weight` and f32 `weight_scale`.
     pub fn new(w: Tensor, weight_scale: &Tensor, full: bool) -> Result<Self> {
         anyhow::ensure!(w.dtype() == DType::F8E4M3, "an fp8 linear's weight must be e4m3, got {:?}", w.dtype());
-        let scale = weight_scale.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?.first().copied().ok_or_else(|| anyhow::anyhow!("an empty weight_scale"))?;
+        let scale =
+            weight_scale.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?.first().copied().ok_or_else(|| anyhow::anyhow!("an empty weight_scale"))?;
         let scales = Tensor::new(&[scale, 1.0f32], w.device())?;
         Ok(Self { w, scale, scales, full })
+    }
+
+    /// Full-precision callers never use cuBLASLt scale pointers; keep them on the host.
+    pub fn new_full_precision(w: Tensor, weight_scale: &Tensor) -> Result<Self> {
+        anyhow::ensure!(w.dtype() == DType::F8E4M3, "an fp8 linear's weight must be e4m3, got {:?}", w.dtype());
+        let scale =
+            weight_scale.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?.first().copied().ok_or_else(|| anyhow::anyhow!("an empty weight_scale"))?;
+        let scales = Tensor::new(&[scale, 1.0f32], &candle_core::Device::Cpu)?;
+        Ok(Self { w, scale, scales, full: true })
     }
 
     /// This layer multiplying in bf16 whatever its file asked.
@@ -278,7 +285,11 @@ mod cuda {
     /// A dense view whose start the vector kernels can read (16-byte aligned), copying if not.
     fn aligned(t: &Tensor, elem: usize) -> candle_core::Result<Tensor> {
         let t = t.contiguous()?;
-        if (t.layout().start_offset() * elem).is_multiple_of(16) { Ok(t) } else { t.copy() }
+        if (t.layout().start_offset() * elem).is_multiple_of(16) {
+            Ok(t)
+        } else {
+            t.copy()
+        }
     }
 
     pub(super) fn dequant(w: &Tensor, scale: f32) -> crate::Result<Tensor> {
@@ -336,7 +347,15 @@ mod cuda {
             candle_core::bail!("fp8-gemm is CUDA-only")
         }
 
-        fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, w: &CudaStorage, w_l: &Layout, s: &CudaStorage, s_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+        fn cuda_fwd(
+            &self,
+            x: &CudaStorage,
+            x_l: &Layout,
+            w: &CudaStorage,
+            w_l: &Layout,
+            s: &CudaStorage,
+            s_l: &Layout,
+        ) -> candle_core::Result<(CudaStorage, Shape)> {
             let dev = x.device().clone();
             let (m, k) = x_l.shape().dims2()?;
             let (n, k2) = w_l.shape().dims2()?;
@@ -374,7 +393,8 @@ mod cuda {
                 }
                 let Some(state) = guard.as_mut() else { candle_core::bail!("fp8-gemm: no cuBLASLt handle") };
 
-                let mm = lt::create_matmul_desc(sys::cublasComputeType_t::CUBLAS_COMPUTE_32F, sys::cudaDataType::CUDA_R_32F).map_err(|e| err("matmul desc", e))?;
+                let mm =
+                    lt::create_matmul_desc(sys::cublasComputeType_t::CUBLAS_COMPUTE_32F, sys::cudaDataType::CUDA_R_32F).map_err(|e| err("matmul desc", e))?;
                 let mut desc = Desc { mm, layouts: Vec::new(), pref: None };
                 // cublasOperation_t: CUBLAS_OP_N = 0, CUBLAS_OP_T = 1.
                 let (t, nn): (i32, i32) = (1, 0);
@@ -383,11 +403,24 @@ mod cuda {
                     let set = |attr, p: *const c_void, size: usize| lt::set_matmul_desc_attribute(desc.mm, attr, p, size).map_err(|e| err("desc attribute", e));
                     set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_TRANSA, &t as *const _ as *const c_void, std::mem::size_of_val(&t))?;
                     set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_TRANSB, &nn as *const _ as *const c_void, std::mem::size_of_val(&nn))?;
-                    set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale as *const _ as *const c_void, std::mem::size_of_val(&a_scale))?;
-                    set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale as *const _ as *const c_void, std::mem::size_of_val(&b_scale))?;
-                    set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_FAST_ACCUM, &fast_accum as *const _ as *const c_void, std::mem::size_of_val(&fast_accum))?;
+                    set(
+                        sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_A_SCALE_POINTER,
+                        &a_scale as *const _ as *const c_void,
+                        std::mem::size_of_val(&a_scale),
+                    )?;
+                    set(
+                        sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,
+                        &b_scale as *const _ as *const c_void,
+                        std::mem::size_of_val(&b_scale),
+                    )?;
+                    set(
+                        sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_FAST_ACCUM,
+                        &fast_accum as *const _ as *const c_void,
+                        std::mem::size_of_val(&fast_accum),
+                    )?;
                 }
-                let layout = |ty, rows: usize, cols: usize, ld: usize| lt::create_matrix_layout(ty, rows as u64, cols as u64, ld as i64).map_err(|e| err("layout", e));
+                let layout =
+                    |ty, rows: usize, cols: usize, ld: usize| lt::create_matrix_layout(ty, rows as u64, cols as u64, ld as i64).map_err(|e| err("layout", e));
                 let a_l = layout(sys::cudaDataType::CUDA_R_8F_E4M3, k, n, k)?;
                 desc.layouts.push(a_l);
                 let b_l = layout(sys::cudaDataType::CUDA_R_8F_E4M3, k, m, k)?;
@@ -402,9 +435,16 @@ mod cuda {
                         desc.pref = Some(pref);
                         let ws = WORKSPACE;
                         unsafe {
-                            lt::set_matmul_pref_attribute(pref, sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ws as *const _ as *const c_void, std::mem::size_of_val(&ws)).map_err(|e| err("preference attribute", e))?;
+                            lt::set_matmul_pref_attribute(
+                                pref,
+                                sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+                                &ws as *const _ as *const c_void,
+                                std::mem::size_of_val(&ws),
+                            )
+                            .map_err(|e| err("preference attribute", e))?;
                         }
-                        let h = unsafe { lt::get_matmul_algo_heuristic(state.handle, desc.mm, a_l, b_l, d_l, d_l, pref) }.map_err(|e| err("no algorithm for this shape", e))?;
+                        let h = unsafe { lt::get_matmul_algo_heuristic(state.handle, desc.mm, a_l, b_l, d_l, d_l, pref) }
+                            .map_err(|e| err("no algorithm for this shape", e))?;
                         state.algos.insert((m, n, k), h.algo);
                         h.algo
                     }
@@ -460,6 +500,20 @@ mod tests {
         let x = Tensor::new(&[[[1.0f32, 1.0]]], &dev)?;
         let y = l.forward(&x)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
         assert_eq!(y, vec![-0.5, 2.25]);
+        Ok(())
+    }
+    #[test]
+    #[cfg(feature = "fp8")]
+    fn host_only_scales_preserve_full_precision_cuda() -> Result<()> {
+        let dev = candle_core::Device::new_cuda(0)?;
+        let w = Tensor::randn(0f32, 0.5, (128, 128), &candle_core::Device::Cpu)?.to_dtype(DType::F8E4M3)?.to_device(&dev)?;
+        let scale = Tensor::new(&[0.321f32], &candle_core::Device::Cpu)?;
+        let old = Fp8Linear::new(w.clone(), &scale, true)?;
+        let new = Fp8Linear::new_full_precision(w, &scale)?;
+        assert!(new.scales.device().is_cpu());
+        let x = Tensor::randn(0f32, 0.5, (2, 37, 128), &dev)?.to_dtype(DType::BF16)?;
+        let diff = (old.forward(&x)?.to_dtype(DType::F32)? - new.forward(&x)?.to_dtype(DType::F32)?)?.abs()?.max_all()?.to_scalar::<f32>()?;
+        assert_eq!(diff, 0.0);
         Ok(())
     }
 }

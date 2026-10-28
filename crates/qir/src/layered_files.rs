@@ -140,6 +140,18 @@ impl TensorFile {
         Ok(Self { path: path.to_path_buf(), start: 8 + len, tensors, map })
     }
 
+    /// Resolve mapping faults while the VAE and text encoder use the GPU.
+    pub(crate) fn prefetch(&self, stop: &std::sync::atomic::AtomicBool) {
+        let mut touched = 0u8;
+        for page in self.map.chunks(4096) {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            touched ^= page[0];
+        }
+        std::hint::black_box(touched);
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.tensors.contains_key(name)
     }
@@ -303,7 +315,7 @@ impl LayeredLinear {
                 let fp8 = if key == "weight_scale" {
                     crate::fp8::load_linear(input, output, plan, &vb)?.ok_or_else(|| anyhow::anyhow!("missing FP8 layer"))?
                 } else {
-                    Fp8Linear::new(w, &scale, true)?
+                    Fp8Linear::new_full_precision(w, &scale)?
                 };
                 Weight::Scalar(if full { fp8.full_precision() } else { fp8 })
             } else {

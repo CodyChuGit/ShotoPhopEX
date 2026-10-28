@@ -6,6 +6,10 @@ use candle_nn::{Module, VarBuilder};
 
 use crate::Result;
 
+#[cfg(feature = "cuda")]
+#[path = "layered_gemm.rs"]
+mod cuda_gemm;
+
 /// Map immutable checkpoints once; keep quantization metadata on the host to avoid upload fences.
 pub fn checkpoint_builder(path: impl AsRef<std::path::Path>, device: &Device) -> Result<VarBuilder<'static>> {
     // SAFETY: installed checkpoints must not be modified while a split is running.
@@ -48,6 +52,8 @@ struct LayeredLinear {
     /// cast from e4m3), multiplied in bf16 as the file's `full_precision_matrix_mult` asks.
     gpu: Option<crate::fp8::Fp8Linear>,
     bias: Tensor,
+    #[cfg(feature = "cuda")]
+    lt: Option<std::sync::Arc<cuda_gemm::Handle>>,
 }
 
 impl LayeredLinear {
@@ -67,16 +73,42 @@ impl LayeredLinear {
         let gpu = match &fp8 {
             Some((w, s)) if w.device().is_cuda() => {
                 anyhow::ensure!(crate::fp8::supported_on(w.device()), "Layered's fp8 weights on CUDA need the `fp8` feature's kernels");
-                Some(crate::fp8::Fp8Linear::new(w.clone(), s, true)?)
+                Some(crate::fp8::Fp8Linear::new_full_precision(w.clone(), s)?)
             }
             _ => None,
         };
-        Ok(Self { dense, fp8, gpu, bias: vb.get(output, "bias")? })
+        #[cfg(feature = "cuda")]
+        let lt = if gpu.is_some() && std::env::var("QIR_LAYERED_GEMM").map_or(true, |v| v != "cublas") { Some(cuda_gemm::handle(vb.device())?) } else { None };
+        Ok(Self {
+            dense,
+            fp8,
+            gpu,
+            bias: vb.get(output, "bias")?,
+            #[cfg(feature = "cuda")]
+            lt,
+        })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        self.forward_impl(x, false)
+    }
+
+    fn forward_gelu(&self, x: &Tensor) -> Result<Tensor> {
+        self.forward_impl(x, true)
+    }
+
+    fn forward_impl(&self, x: &Tensor, gelu: bool) -> Result<Tensor> {
         if let Some(l) = &self.gpu {
-            return Ok(l.forward(x)?.broadcast_add(&self.bias)?);
+            #[cfg(feature = "cuda")]
+            if let Some(lt) = &self.lt {
+                let k = x.dim(D::Minus1)?;
+                if x.dtype() == DType::BF16 && x.elem_count() / k >= 1024 {
+                    let flops = 2.0 * x.elem_count() as f64 * self.bias.elem_count() as f64;
+                    let y = crate::profile::scope("layered bf16 Lt", flops, x.device(), || cuda_gemm::forward(x, &l.dequantized(x.dtype())?, lt))?;
+                    return linear_bias(y, &self.bias, gelu);
+                }
+            }
+            return linear_bias(l.forward(x)?, &self.bias, gelu);
         }
         let y = match (&self.dense, &self.fp8) {
             (Some(dense), _) => crate::profile::scope("layered dense linear", 0.0, x.device(), || Ok(dense.forward(x)?))?,
@@ -94,8 +126,19 @@ impl LayeredLinear {
             }
             _ => anyhow::bail!("missing Layered linear weight"),
         };
-        Ok(y.broadcast_add(&self.bias)?)
+        linear_bias(y, &self.bias, gelu)
     }
+}
+
+/// Reuse a fresh GEMM allocation; preserve separate bf16 GEMM/bias rounding.
+fn linear_bias(y: Tensor, bias: &Tensor, gelu: bool) -> Result<Tensor> {
+    #[cfg(feature = "fusednorm")]
+    if y.device().is_cuda() && y.dtype() == DType::BF16 {
+        crate::profile::scope("layered bias", 0.0, y.device(), || Ok(y.inplace_op2(bias, &cuda_ops::Bias { gelu })?))?;
+        return Ok(y);
+    }
+    let y = y.broadcast_add(bias)?;
+    Ok(if gelu { y.gelu()? } else { y })
 }
 
 /// Non-affine LayerNorm accumulates in f32, including on CUDA.
@@ -228,7 +271,7 @@ impl LayeredRope {
     fn apply_impl(&self, x: &Tensor) -> Result<Tensor> {
         #[cfg(feature = "fusednorm")]
         if x.device().is_cuda() && x.dtype() == DType::BF16 {
-            return Ok(x.apply_op3_no_bwd(&self.cos, &self.sin, &cuda_rope::Rope)?);
+            return Ok(x.apply_op3_no_bwd(&self.cos, &self.sin, &cuda_ops::Rope)?);
         }
         self.apply_unfused(x)
     }
@@ -323,12 +366,30 @@ impl Stream {
     }
 
     fn modulate(x: &Tensor, params: &Tensor, offset: usize) -> Result<Tensor> {
+        #[cfg(feature = "fusednorm")]
+        if x.device().is_cuda() && x.dtype() == DType::BF16 {
+            return crate::profile::scope("layered modulate", 0.0, x.device(), || {
+                Ok(x.apply_op2_no_bwd(params, &cuda_ops::Modulate { shift: offset, scale: offset + 1 })?)
+            });
+        }
         let shift = params.narrow(1, offset * WIDTH, WIDTH)?.unsqueeze(1)?;
         let scale = (params.narrow(1, (offset + 1) * WIDTH, WIDTH)? + 1.0)?.unsqueeze(1)?;
         add_product(&shift, &layer_norm(x)?, &scale)
     }
 
     fn qkv(&self, x: &Tensor) -> Result<(Tensor, Tensor, Tensor)> {
+        #[cfg(feature = "fusednorm")]
+        if x.device().is_cuda() && x.dtype() == DType::BF16 {
+            let norm = |x: Tensor, w: &Tensor| -> Result<Tensor> {
+                crate::profile::scope("layered head_norm", 0.0, x.device(), || Ok(x.apply_op2_no_bwd(w, &cuda_ops::HeadNorm)?))
+            };
+            let (b, s, _) = x.dims3()?;
+            return Ok((
+                norm(self.q.forward(x)?, &self.q_norm)?,
+                norm(self.k.forward(x)?, &self.k_norm)?,
+                self.v.forward(x)?.reshape((b, s, HEADS, HEAD_DIM))?.transpose(1, 2)?.contiguous()?,
+            ));
+        }
         let (b, s, _) = x.dims3()?;
         let heads = |x: Tensor| -> Result<Tensor> { Ok(x.reshape((b, s, HEADS, HEAD_DIM))?.transpose(1, 2)?.contiguous()?) };
         Ok((rms_norm(&heads(self.q.forward(x)?)?, &self.q_norm)?, rms_norm(&heads(self.k.forward(x)?)?, &self.k_norm)?, heads(self.v.forward(x)?)?))
@@ -338,7 +399,7 @@ impl Stream {
         let projected = self.out.forward(attention)?;
         let gate = params.narrow(1, 2 * WIDTH, WIDTH)?.unsqueeze(1)?;
         let x = if self.image { add_product(x, &gate, &projected)? } else { (x + projected.broadcast_mul(&gate)?)? };
-        let mlp = self.down.forward(&self.up.forward(&Self::modulate(&x, params, 3)?)?.gelu()?)?;
+        let mlp = self.down.forward(&self.up.forward_gelu(&Self::modulate(&x, params, 3)?)?)?;
         add_product(&x, &params.narrow(1, 5 * WIDTH, WIDTH)?.unsqueeze(1)?, &mlp)
     }
 }
@@ -399,11 +460,11 @@ fn joint_attention_impl(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usi
             let mut lanes = Vec::with_capacity(2);
             for (lane, valid) in [positive, negative].into_iter().enumerate() {
                 let bias = (valid < tokens).then_some(crate::flash::KeyBias { rows_from: 0, keys: (valid, tokens), log_boost: f32::NEG_INFINITY });
-                lanes.push(crate::flash::attention_biased(&q.narrow(0, lane, 1)?, &k.narrow(0, lane, 1)?, &v.narrow(0, lane, 1)?, scale as f32, bias)?);
+                lanes.push(crate::flash::layered_attention(&q.narrow(0, lane, 1)?, &k.narrow(0, lane, 1)?, &v.narrow(0, lane, 1)?, scale as f32, bias)?);
             }
             return Ok(Tensor::cat(&lanes, 0)?);
         }
-        return crate::flash::attention(q, k, v, scale as f32);
+        return crate::flash::layered_attention(q, k, v, scale as f32, None);
     }
     let keys = k.to_dtype(DType::F32)?.transpose(2, 3)?.contiguous()?;
     let values = v.to_dtype(DType::F32)?.contiguous()?;
@@ -446,6 +507,12 @@ impl LayeredOutput {
 
     pub fn normalize(&self, image: &Tensor, temb: &Tensor) -> Result<Tensor> {
         let modulation = self.modulation.forward(&candle_nn::ops::silu(temb)?)?;
+        #[cfg(feature = "fusednorm")]
+        if image.device().is_cuda() && image.dtype() == DType::BF16 {
+            return crate::profile::scope("layered modulate", 0.0, image.device(), || {
+                Ok(image.apply_op2_no_bwd(&modulation, &cuda_ops::Modulate { shift: 1, scale: 0 })?)
+            });
+        }
         let scale = (modulation.narrow(1, 0, WIDTH)? + 1.0)?.unsqueeze(1)?;
         let shift = modulation.narrow(1, WIDTH, WIDTH)?.unsqueeze(1)?;
         add_product(&shift, &layer_norm(image)?, &scale)
@@ -473,7 +540,12 @@ impl LayeredDit {
     /// Every block resident, read from the checkpoint as `open_streamed` reads it (fp8 kept
     /// until each matmul): about 20 GB on the GPU, for a worker that splits more than once.
     pub fn open_resident(path: impl AsRef<std::path::Path>, device: &Device) -> Result<Self> {
-        Self::load(crate::layered_files::TensorFile::open(path)?.resident_builder(if device.is_cuda() { DType::BF16 } else { DType::F32 }, device)?)
+        Self::from_resident_file(crate::layered_files::TensorFile::open(path)?, device)
+    }
+
+    /// Reuse a prefaulted mapping so uploading weights does not repeat page faults.
+    pub(crate) fn from_resident_file(file: crate::layered_files::TensorFile, device: &Device) -> Result<Self> {
+        Self::load(file.resident_builder(if device.is_cuda() { DType::BF16 } else { DType::F32 }, device)?)
     }
 
     /// Keep only one block resident at a time, including when running on CPU.
@@ -522,21 +594,190 @@ impl LayeredDit {
     }
 }
 
-/// Layered's bf16 first product must round before addcmul, unlike the shared RoPE kernel
-/// (kernels/fusednorm/layered_rope.cu, compiled at build time: no NVRTC in the worker).
+/// Layered-only fusions preserve bf16 boundaries and compile at build time.
 #[cfg(feature = "fusednorm")]
-mod cuda_rope {
+mod cuda_ops {
     use std::ffi::c_void;
 
     use candle_core::backend::BackendStorage;
-    use candle_core::cuda_backend::cudarc::driver::DevicePtr;
+    use candle_core::cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut};
     use candle_core::{CpuStorage, CudaStorage, Layout, Shape};
 
     use crate::layout::dense_byte_offset;
 
     extern "C" {
         #[allow(clippy::too_many_arguments)]
-        fn qir_layered_rope(y: *mut c_void, x: *const c_void, c: *const c_void, s: *const c_void, pairs: u32, seq: u32, heads: u32, table_batches: u32, stream: *mut c_void) -> i32;
+        fn qir_layered_rope(
+            y: *mut c_void,
+            x: *const c_void,
+            c: *const c_void,
+            s: *const c_void,
+            pairs: u32,
+            seq: u32,
+            heads: u32,
+            table_batches: u32,
+            stream: *mut c_void,
+        ) -> i32;
+    }
+
+    extern "C" {
+        fn qir_layered_head_norm(y: *mut c_void, x: *const c_void, w: *const c_void, rows: u32, seq: u32, heads: u32, stream: *mut c_void) -> i32;
+    }
+
+    extern "C" {
+        #[allow(clippy::too_many_arguments)]
+        fn qir_layered_modulate(
+            y: *mut c_void,
+            x: *const c_void,
+            params: *const c_void,
+            rows: u32,
+            seq: u32,
+            width: u32,
+            param_width: u32,
+            param_batches: u32,
+            shift: u32,
+            scale: u32,
+            stream: *mut c_void,
+        ) -> i32;
+    }
+
+    pub(super) struct Modulate {
+        pub shift: usize,
+        pub scale: usize,
+    }
+
+    impl candle_core::CustomOp2 for Modulate {
+        fn name(&self) -> &'static str {
+            "layered-modulate"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+            candle_core::bail!("Layered modulation requires CUDA")
+        }
+        fn cuda_fwd(&self, x: &CudaStorage, xl: &Layout, p: &CudaStorage, pl: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+            let (b, seq, width) = xl.shape().dims3()?;
+            let (pb, pw) = pl.shape().dims2()?;
+            if width != super::WIDTH || (pb != 1 && pb != b) || self.shift.max(self.scale) >= pw / width || pw % width != 0 {
+                candle_core::bail!("invalid Layered modulation dimensions");
+            }
+            let narrow = |n| u32::try_from(n).map_err(candle_core::Error::wrap);
+            let rows = narrow(b * seq)?;
+            let dev = x.device().clone();
+            let stream = dev.cuda_stream();
+            // SAFETY: the kernel writes every dense output element exactly once.
+            let out = unsafe { dev.alloc::<half::bf16>(b * seq * width)? };
+            {
+                let xv = x.as_cuda_slice::<half::bf16>()?;
+                let pv = p.as_cuda_slice::<half::bf16>()?;
+                let ((xp, _gx), (pp, _gp), (op, _go)) = (xv.device_ptr(&stream), pv.device_ptr(&stream), out.device_ptr(&stream));
+                let xp = xp + dense_byte_offset::<half::bf16>(xl, "modulate x")?;
+                let pp = pp + dense_byte_offset::<half::bf16>(pl, "modulate params")?;
+                // SAFETY: validated dense inputs and parameter bounds on this stream.
+                let rc = unsafe {
+                    qir_layered_modulate(
+                        op as *mut c_void,
+                        xp as *const c_void,
+                        pp as *const c_void,
+                        rows,
+                        narrow(seq)?,
+                        narrow(width)?,
+                        narrow(pw)?,
+                        narrow(pb)?,
+                        narrow(self.shift)?,
+                        narrow(self.scale)?,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                };
+                if rc != 0 {
+                    candle_core::bail!("Layered modulation failed, rc={rc}");
+                }
+            }
+            Ok((CudaStorage::wrap_cuda_slice(out, dev), xl.shape().clone()))
+        }
+    }
+
+    extern "C" {
+        fn qir_layered_bias(x: *mut c_void, bias: *const c_void, elements: usize, width: u32, gelu: bool, stream: *mut c_void) -> i32;
+    }
+
+    pub(super) struct Bias {
+        pub gelu: bool,
+    }
+
+    impl candle_core::InplaceOp2 for Bias {
+        fn name(&self) -> &'static str {
+            "layered-bias"
+        }
+        fn cpu_fwd(&self, _: &mut CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<()> {
+            candle_core::bail!("Layered bias requires CUDA")
+        }
+        fn cuda_fwd(&self, x: &mut CudaStorage, xl: &Layout, b: &CudaStorage, bl: &Layout) -> candle_core::Result<()> {
+            let width = bl.shape().dims1()?;
+            if xl.shape().dims().last() != Some(&width) || width % 8 != 0 {
+                candle_core::bail!("invalid Layered bias dimensions");
+            }
+            let dev = x.device().clone();
+            let stream = dev.cuda_stream();
+            let xv = x.as_cuda_slice_mut::<half::bf16>()?;
+            let bv = b.as_cuda_slice::<half::bf16>()?;
+            let ((xp, _gx), (bp, _gb)) = (xv.device_ptr_mut(&stream), bv.device_ptr(&stream));
+            let xp = xp + dense_byte_offset::<half::bf16>(xl, "bias output")?;
+            let bp = bp + dense_byte_offset::<half::bf16>(bl, "bias values")?;
+            let width = u32::try_from(width).map_err(candle_core::Error::wrap)?;
+            // SAFETY: only fresh GEMM outputs are mutated, with no live aliases.
+            let rc = unsafe {
+                qir_layered_bias(xp as *mut c_void, bp as *const c_void, xl.shape().elem_count(), width, self.gelu, stream.cu_stream() as *mut c_void)
+            };
+            if rc != 0 {
+                candle_core::bail!("Layered bias failed, rc={rc}");
+            }
+            Ok(())
+        }
+    }
+
+    pub(super) struct HeadNorm;
+
+    impl candle_core::CustomOp2 for HeadNorm {
+        fn name(&self) -> &'static str {
+            "layered-head-norm"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+            candle_core::bail!("Layered head norm requires CUDA")
+        }
+        fn cuda_fwd(&self, x: &CudaStorage, xl: &Layout, w: &CudaStorage, wl: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+            let (b, seq, width) = xl.shape().dims3()?;
+            if width != super::WIDTH || wl.shape().dims1()? != 128 {
+                candle_core::bail!("invalid Layered head norm dimensions");
+            }
+            let heads = width / 128;
+            let rows = u32::try_from(b * seq * heads).map_err(candle_core::Error::wrap)?;
+            let dev = x.device().clone();
+            let stream = dev.cuda_stream();
+            // SAFETY: the kernel writes one value for every dense output element.
+            let out = unsafe { dev.alloc::<half::bf16>(b * seq * width)? };
+            {
+                let xv = x.as_cuda_slice::<half::bf16>()?;
+                let wv = w.as_cuda_slice::<half::bf16>()?;
+                let ((xp, _gx), (wp, _gw), (op, _go)) = (xv.device_ptr(&stream), wv.device_ptr(&stream), out.device_ptr(&stream));
+                let xp = xp + dense_byte_offset::<half::bf16>(xl, "head norm x")?;
+                let wp = wp + dense_byte_offset::<half::bf16>(wl, "head norm w")?;
+                // SAFETY: validated dense input and weight, with stream-ordered lifetimes.
+                let rc = unsafe {
+                    qir_layered_head_norm(
+                        op as *mut c_void,
+                        xp as *const c_void,
+                        wp as *const c_void,
+                        rows,
+                        seq as u32,
+                        heads as u32,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                };
+                if rc != 0 {
+                    candle_core::bail!("Layered head norm failed, rc={rc}");
+                }
+            }
+            Ok((CudaStorage::wrap_cuda_slice(out, dev), (b, heads, seq, 128).into()))
+        }
     }
 
     pub(super) struct Rope;
@@ -582,7 +823,17 @@ mod cuda_rope {
                 let (op, _go) = out.device_ptr(&stream);
                 // SAFETY: dense bf16 views of the shapes checked above, on this stream.
                 let rc = unsafe {
-                    qir_layered_rope(op as *mut c_void, xp as *const c_void, cp as *const c_void, sp as *const c_void, pairs, narrow(seq)?, narrow(h)?, narrow(cb)?, stream.cu_stream() as *mut c_void)
+                    qir_layered_rope(
+                        op as *mut c_void,
+                        xp as *const c_void,
+                        cp as *const c_void,
+                        sp as *const c_void,
+                        pairs,
+                        narrow(seq)?,
+                        narrow(h)?,
+                        narrow(cb)?,
+                        stream.cu_stream() as *mut c_void,
+                    )
                 };
                 if rc != 0 {
                     candle_core::bail!("layered rope failed, rc={rc}");
@@ -599,6 +850,112 @@ mod layered_tests {
 
     fn error(a: &Tensor, b: &Tensor) -> Result<f32> {
         Ok((a.to_dtype(DType::F32)? - b.to_dtype(DType::F32)?)?.abs()?.max_all()?.to_scalar::<f32>()?)
+    }
+
+    #[test]
+    #[cfg(feature = "fusednorm")]
+    fn layered_head_norm_matches_candle_rounding() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        let x = Tensor::randn(0f32, 2.0, (3, 17, WIDTH), &dev)?.to_dtype(DType::BF16)?.narrow(0, 1, 2)?;
+        let w = Tensor::randn(0f32, 0.5, 256, &dev)?.to_dtype(DType::BF16)?.narrow(0, 128, 128)?;
+        let old = rms_norm(&x.reshape((2, 17, HEADS, HEAD_DIM))?.transpose(1, 2)?.contiguous()?, &w)?;
+        let new = x.apply_op2_no_bwd(&w, &cuda_ops::HeadNorm)?;
+        assert_eq!(error(&old, &new)?, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "fusednorm")]
+    fn layered_modulation_matches_candle_rounding() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        let x = Tensor::randn(0f32, 2.0, (3, 17, WIDTH), &dev)?.to_dtype(DType::BF16)?.narrow(0, 1, 2)?;
+        for pb in [1, 2] {
+            let p = Tensor::randn(0f32, 0.5, (pb + 1, WIDTH * 6), &dev)?.to_dtype(DType::BF16)?.narrow(0, 1, pb)?;
+            for (shift, scale) in [(0, 1), (3, 4), (1, 0)] {
+                let a = p.narrow(1, shift * WIDTH, WIDTH)?.unsqueeze(1)?;
+                let b = (p.narrow(1, scale * WIDTH, WIDTH)? + 1.0)?.unsqueeze(1)?;
+                let old = add_product(&a, &layer_norm(&x)?, &b)?;
+                let new = x.apply_op2_no_bwd(&p, &cuda_ops::Modulate { shift, scale })?;
+                assert_eq!(error(&old, &new)?, 0.0);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "fusednorm")]
+    fn layered_bias_gelu_matches_candle_rounding() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        for gelu in [false, true] {
+            let x = Tensor::randn(0f32, 4.0, (3, 17, WIDTH), &dev)?.to_dtype(DType::BF16)?.narrow(0, 1, 2)?;
+            let bias = Tensor::randn(0f32, 0.5, WIDTH * 2, &dev)?.to_dtype(DType::BF16)?.narrow(0, WIDTH, WIDTH)?;
+            let old = x.broadcast_add(&bias)?;
+            let old = if gelu { old.gelu()? } else { old };
+            dev.synchronize()?;
+            let new = linear_bias(x, &bias, gelu)?;
+            assert_eq!(error(&old, &new)?, 0.0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "exclusive CUDA GEMM benchmark"]
+    #[cfg(feature = "cuda")]
+    fn layered_gemm_shapes() -> Result<()> {
+        use candle_core::{
+            cuda_backend::cudarc::cublaslt::{CudaBlasLT, Matmul, MatmulConfig},
+            Storage,
+        };
+        let dev = Device::new_cuda(0)?;
+        let Device::Cuda(d) = &dev else { unreachable!() };
+        let lt = CudaBlasLT::new(d.cuda_stream())?;
+        for m in [12000, 38880] {
+            for (k, n) in [(3072, 3072), (3072, 12288), (12288, 3072)] {
+                let x = Tensor::randn(0f32, 0.1, (m, k), &dev)?.to_dtype(DType::BF16)?;
+                let w = Tensor::randn(0f32, 0.1, (n, k), &dev)?.to_dtype(DType::BF16)?;
+                let (xs, _) = x.storage_and_layout();
+                let (ws, _) = w.storage_and_layout();
+                let Storage::Cuda(xs) = &*xs else { unreachable!() };
+                let Storage::Cuda(ws) = &*ws else { unreachable!() };
+                let xs = xs.as_cuda_slice::<half::bf16>()?;
+                let ws = ws.as_cuda_slice::<half::bf16>()?;
+                let mut out = unsafe { d.alloc::<half::bf16>(m * n)? };
+                let cfg = MatmulConfig {
+                    transa: true,
+                    transb: false,
+                    transc: false,
+                    m: n as u64,
+                    n: m as u64,
+                    k: k as u64,
+                    alpha: 1.,
+                    beta: 0.,
+                    lda: k as i64,
+                    ldb: k as i64,
+                    ldc: n as i64,
+                    stride_a: None,
+                    stride_b: None,
+                    stride_c: None,
+                    stride_bias: None,
+                    batch_size: None,
+                };
+                for use_lt in [false, true, false, true] {
+                    dev.synchronize()?;
+                    let start = std::time::Instant::now();
+                    for _ in 0..5 {
+                        if use_lt {
+                            unsafe {
+                                lt.matmul(cfg, &ws.slice(..), &xs.slice(..), &mut out, None, None)?;
+                            }
+                        } else {
+                            let _ = x.matmul(&w.t()?)?;
+                        }
+                    }
+                    dev.synchronize()?;
+                    eprintln!("GEMM m={m} k={k} n={n} lt={use_lt}: {:.3} ms", start.elapsed().as_secs_f64() * 200.);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn padding_check(dev: &Device, dtype: DType) -> Result<()> {

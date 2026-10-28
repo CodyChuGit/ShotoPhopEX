@@ -6,5 +6,5 @@ set CUDARC_CUDA_VERSION=13030
 set CUDA_COMPUTE_CAP=120
 set CUTLASS_DIR=C:\Users\5090\Documents\_eval\cutlass\include
 set PATH=C:\Users\5090\scoop\persist\rustup\.cargo\bin;C:\Users\5090\scoop\apps\cuda\current\bin;%PATH%
-set CARGO_TARGET_DIR=%CD%\target\layered-perf
+if not defined CARGO_TARGET_DIR set CARGO_TARGET_DIR=%CD%\target\layered-perf
 cargo %*
