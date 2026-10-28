@@ -214,3 +214,126 @@ fn comfy_cpu_encoder_parity() -> anyhow::Result<()> {
     eprintln!("encoder parity total: {:.3}s", start.elapsed().as_secs_f64());
     Ok(())
 }
+
+fn edit_metadata() -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::from_str(include_str!("fixtures/qwen25_edit.json"))?)
+}
+
+#[test]
+fn edit_token_spans_and_three_axis_positions() -> anyhow::Result<()> {
+    use qwen_image_rs::model::qwen25_text::{edit_layout, edit_prompt_template};
+    let meta = edit_metadata()?;
+    let path = tokenizer_path();
+    let tok = if path.exists() { Some(load_tokenizer(path)?) } else { None };
+    for name in ["one", "two"] {
+        let case = &meta["prompts"][name];
+        let ids: Vec<u32> = serde_json::from_value(case["ids"].clone())?;
+        let count = case["pictures"].as_u64().unwrap() as usize;
+        let grids = (0..count).map(|i| serde_json::from_value(meta[format!("picture{i}")]["grid"].clone())).collect::<Result<Vec<[usize; 3]>, _>>()?;
+        let (expanded, spans, positions) = edit_layout(&ids, &grids)?;
+        assert_eq!(serde_json::to_value(expanded)?, case["expanded_ids"]);
+        assert_eq!(serde_json::to_value(spans)?, case["spans"]);
+        assert_eq!(serde_json::to_value(positions)?, case["positions"]);
+        assert_eq!(prefix_cut(&ids), case["prefix_cut"].as_u64().unwrap() as usize);
+        if let Some(tok) = &tok {
+            let text = edit_prompt_template(case["text"].as_str().unwrap(), count)?;
+            let actual = tok.encode(text, false).map_err(|e| anyhow::anyhow!("tokenize edit: {e}"))?;
+            assert_eq!(actual.get_ids(), ids);
+        }
+    }
+    assert!(edit_prompt_template("x", 4).is_err());
+    assert!(edit_layout(&[151655], &[[1, 3, 4]]).is_err());
+    assert!(edit_layout(&[1], &[[1, 4, 4]]).is_err());
+    // Three pictures and t>1 exercise Qwen25's unusual height repetition exactly.
+    let (ids, spans, pos) = edit_layout(&[7, 151655, 8, 151655, 9, 151655, 10], &[[1, 4, 6], [2, 4, 2], [1, 2, 2]])?;
+    assert_eq!(spans, [(1, 6), (8, 4), (13, 1)]);
+    assert_eq!(&pos[1][8..12], [5, 5, 6, 6]);
+    assert_eq!(pos[0][14], 9);
+    assert_eq!(ids.len(), 15);
+    // A pad token masks following text; image spans remain attended and text positions compact.
+    let (_, _, pos) = edit_layout(&[7, 151655, 151643, 8], &[[1, 4, 4]])?;
+    assert_eq!(&pos[0][5..], [1, 1]);
+    Ok(())
+}
+
+#[test]
+#[ignore = "streams the installed 7B encoder on CPU; regenerate qwen25_edit_full.safetensors with tools/qir_qwen25_edit_fixtures.py first"]
+fn comfy_cpu_edit_encoder_parity() -> anyhow::Result<()> {
+    let dev = Device::Cpu;
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen25_edit_full.safetensors");
+    let full = candle_core::safetensors::load(&fixture_path, &dev)?;
+    let samples = candle_core::safetensors::load_buffer(include_bytes!("fixtures/qwen25_edit.safetensors"), &dev)?;
+    let meta = edit_metadata()?;
+    let tok = load_tokenizer(tokenizer_path())?;
+    let model = Qwen25TextEncoder::from_file(root().join("text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"), DType::F32, &dev)?;
+    let mut passed = true;
+    for name in ["one", "two"] {
+        let case = &meta["prompts"][name];
+        let count = case["pictures"].as_u64().unwrap() as usize;
+        let pictures = (0..count)
+            .map(|i| -> anyhow::Result<_> {
+                Ok((full[&format!("picture{i}")].clone(), serde_json::from_value::<[usize; 3]>(meta[format!("picture{i}")]["grid"].clone())?))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let input = model.prepare_edit(&tok, case["text"].as_str().unwrap(), &pictures)?;
+        assert_eq!(serde_json::to_value(&input.ids)?, case["expanded_ids"]);
+        assert_eq!(serde_json::to_value(&input.spans)?, case["spans"]);
+        assert_eq!(serde_json::to_value(&input.positions)?, case["positions"]);
+        assert_eq!(
+            serde_json::to_value(input.mask.flatten_all()?.to_vec1::<f32>()?)?,
+            serde_json::to_value(serde_json::from_value::<Vec<f32>>(case["mask"].clone())?)?
+        );
+        // `absolute`: the conditioning's gate (max abs 0.02, its values reach ~120); the LM taps
+        // reach 200-1,925, so they are held to a max abs of 1e-4 of their own peak instead. Both
+        // keep the relative RMS gate of 5e-5.
+        let check = |stage: &str, tensor: &Tensor, absolute: bool| -> anyhow::Result<bool> {
+            let key = format!("{name}.{stage}");
+            let reference = &full[&key];
+            assert_eq!(tensor.dims(), reference.dims());
+            let delta = (tensor - reference)?;
+            let abs = delta.abs()?.max_all()?.to_scalar::<f32>()?;
+            let relative = delta.sqr()?.mean_all()?.to_scalar::<f32>()?.sqrt() / reference.sqr()?.mean_all()?.to_scalar::<f32>()?.sqrt().max(1e-12);
+            let cap = if absolute { 0.02 } else { 1e-4 * reference.abs()?.max_all()?.to_scalar::<f32>()? };
+            eprintln!("{key} (full): max abs {abs:.9} (cap {cap:.6}), relative RMS {relative:.9}");
+            let peak = delta.abs()?.flatten_all()?.argmax(0)?.to_scalar::<u32>()? as usize;
+            eprintln!("  peak row {}, channel {}", peak / 3584, peak % 3584);
+            compare(&format!("{key} (checked-in samples)"), tensor, &samples[&key], &meta[&key])?;
+            Ok(abs <= cap && relative <= 5e-5)
+        };
+        passed &= check("embeddings", &input.embeddings, true)?;
+        let out = model.forward_edit_taps(&input, &[0, 13, 27])?;
+        for (i, tensor) in out.taps {
+            passed &= check(&format!("layer{i}"), &tensor, false)?;
+        }
+        passed &= check("conditioning", &out.conditioning, true)?;
+        let mask = input.mask.narrow(1, input.cut, input.ids.len() - input.cut)?;
+        assert_eq!((&mask - &full[&format!("{name}.mask")])?.abs()?.max_all()?.to_scalar::<f32>()?, 0.0);
+        assert_eq!(mask.dims(), &out.conditioning.dims()[..2]);
+    }
+    assert!(passed, "full edit tensors exceed max abs 0.02 or relative RMS 5e-5");
+    Ok(())
+}
+
+#[test]
+fn edit_cpu_rms_reference_without_installed_model() -> anyhow::Result<()> {
+    use qwen_image_rs::model::qwen25_text::Qwen25EditInput;
+    let dev = Device::Cpu;
+    let fixtures = candle_core::safetensors::load_buffer(include_bytes!("fixtures/qwen25_edit.safetensors"), &dev)?;
+    let mut weights = HashMap::new();
+    weights.insert("embed_tokens.weight".into(), Tensor::zeros((8, 3584), DType::F32, &dev)?);
+    weights.insert("norm.weight".into(), fixtures["rms.weight"].clone());
+    let config = Qwen25Config { num_layers: 0, vocab_size: 8, ..Qwen25Config::default() };
+    let model = Qwen25TextEncoder::load(config, VarBuilder::from_tensors(weights, DType::F32, &dev))?;
+    let input = Qwen25EditInput {
+        ids: vec![1; 8],
+        spans: vec![],
+        positions: std::array::from_fn(|_| (0..8).collect()),
+        embeddings: fixtures["rms.input"].clone(),
+        mask: Tensor::ones((1, 8), DType::F32, &dev)?,
+        cut: 0,
+    };
+    let actual = model.forward_edit_taps(&input, &[])?.conditioning;
+    let abs = (&actual - &fixtures["rms.output"])?.abs()?.max_all()?.to_scalar::<f32>()?;
+    assert!(abs < 2e-6, "ComfyUI RMSNorm max abs {abs}");
+    Ok(())
+}
