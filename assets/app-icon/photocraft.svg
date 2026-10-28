@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- PhotoshopEX app icon: a Photoshop-style tile with the letters "Px". The PNGs are
-       rendered by packaging/icon-px.py (Segoe UI Bold); this SVG is the editable master. -->
+  <!-- photocraft app icon for local builds: an Adobe-style tile with "Ps"; rendered by
+       packaging/icon-tile.py (Segoe UI Bold). Not for a published build. -->
   <rect width="512" height="512" rx="112" fill="#001E36"/>
   <text x="256" y="356" text-anchor="middle" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif"
-        font-weight="700" font-size="287" fill="#31A8FF">Px</text>
+        font-weight="700" font-size="287" fill="#31A8FF">Ps</text>
 </svg>

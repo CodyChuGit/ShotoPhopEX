@@ -1,8 +1,11 @@
 # PhotoshopEX app icon
 
-A **Photoshop-style tile**: a dark navy rounded square with the letters "Px" in light blue, the
-look of the Adobe application tiles, with PhotoshopEX's own letters (Adobe's "Ps" mark and its
-icon artwork are Adobe's trademarks; nothing of theirs is copied here).
+A **Photoshop-style tile**: a dark navy rounded square with the letters "Ps" in light blue, the
+look of the Adobe application tiles. Since 2026-10-27 the owner's personal builds show "Ps"
+everywhere (the exe already did, `ps/`), drawn with `packaging/icon-tile.py`, which also draws
+the sister apps' tiles (VectorCraft "Ai", PdfCraft "Ac", SolidCraft "SW"). The "Ps" mark is
+Adobe's trademark: **before any published build, regenerate the "Px" tile**
+(`python -I packaging\icon-px.py .`), per the brand checklist in `docs/comfy/upstream.md`.
 
 ## Palette
 
