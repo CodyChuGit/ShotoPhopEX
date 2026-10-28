@@ -44,6 +44,10 @@ enum Model {
     Ort(Box<Sam31>),
     #[cfg(feature = "candle")]
     Candle(Box<gn_segment::sam::Sam31>),
+    /// A build with neither backend never opens a model (every request is ModelMissing).
+    #[cfg(not(any(feature = "onnx", feature = "candle")))]
+    #[allow(dead_code)]
+    None(std::convert::Infallible),
 }
 
 /// A picture's embedding, from the backend that made it.
@@ -52,6 +56,9 @@ enum Emb {
     Ort(Embedding),
     #[cfg(feature = "candle")]
     Candle(Box<gn_segment::sam::Frame>),
+    #[cfg(not(any(feature = "onnx", feature = "candle")))]
+    #[allow(dead_code)]
+    None(std::convert::Infallible),
 }
 
 /// The candle backend's files under a models root: the checkpoint and the CLIP tokenizer (the
@@ -124,6 +131,7 @@ impl PerceptionEngine {
 
     /// Open SAM 3.1 if it is not open yet: on candle when its checkpoint is there, else the
     /// runtime and the ONNX graphs.
+    #[cfg_attr(not(any(feature = "onnx", feature = "candle")), allow(unused_variables, unreachable_code))]
     fn ensure_sam(&mut self, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
         #[cfg(feature = "candle")]
         if let Some((checkpoint, tokenizer)) = candle_files(&self.models_root).filter(|_| self.sam.is_none()) {
@@ -138,13 +146,15 @@ impl PerceptionEngine {
             eprintln!("gn-perception: SAM 3.1 on candle ({}) loaded in {:.1} s", checkpoint.display(), t0.elapsed().as_secs_f32());
             self.sam = Some(Model::Candle(Box::new(sam)));
         }
-        #[cfg(not(feature = "onnx"))]
+        #[cfg(all(feature = "candle", not(feature = "onnx")))]
         if self.sam.is_none() {
             return Err(EngineError::new(
                 ErrorKind::ModelMissing,
                 format!("no SAM 3.1 in {}: ComfyUI's checkpoints/{SAM31_CHECKPOINT} is missing", self.models_root.display()),
             ));
         }
+        #[cfg(not(any(feature = "onnx", feature = "candle")))]
+        return Err(EngineError::new(ErrorKind::ModelMissing, "this build has no SAM 3.1 backend (neither `candle` nor `onnx`)"));
         #[cfg(feature = "onnx")]
         if self.sam.is_none() {
             let dir = self.models_root.join(SAM31_DIR);
@@ -198,6 +208,7 @@ fn mismatched() -> EngineError {
 }
 
 /// The three routes on whichever backend is resident.
+#[cfg_attr(not(any(feature = "onnx", feature = "candle")), allow(unused_variables))]
 impl Model {
     fn embed(&mut self, rgba: &[u8], w: usize, h: usize) -> Result<Emb, EngineError> {
         match self {
@@ -205,6 +216,8 @@ impl Model {
             Model::Ort(s) => s.embed(rgba, w, h).map(Emb::Ort).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
             #[cfg(feature = "candle")]
             Model::Candle(s) => s.encode(rgba, w, h).map(|f| Emb::Candle(Box::new(f))).map_err(candle_error),
+            #[cfg(not(any(feature = "onnx", feature = "candle")))]
+            Model::None(n) => match *n {},
         }
     }
 
@@ -218,6 +231,8 @@ impl Model {
             }
             #[cfg(all(feature = "candle", feature = "onnx"))]
             _ => Err(mismatched()),
+            #[cfg(not(any(feature = "onnx", feature = "candle")))]
+            (Model::None(n), _) => match *n {},
         }
     }
 
@@ -231,6 +246,8 @@ impl Model {
             (Model::Candle(s), Emb::Candle(f)) => s.segment_points(f, positives, negatives, candle_opts(opts)).map(|r| from_candle(r.0)).map_err(candle_error),
             #[cfg(all(feature = "candle", feature = "onnx"))]
             _ => Err(mismatched()),
+            #[cfg(not(any(feature = "onnx", feature = "candle")))]
+            (Model::None(n), _) => match *n {},
         }
     }
 
@@ -242,6 +259,8 @@ impl Model {
             (Model::Candle(s), Emb::Candle(f)) => s.segment_box(f, bbox, candle_opts(opts)).map(|r| from_candle(r.0)).map_err(candle_error),
             #[cfg(all(feature = "candle", feature = "onnx"))]
             _ => Err(mismatched()),
+            #[cfg(not(any(feature = "onnx", feature = "candle")))]
+            (Model::None(n), _) => match *n {},
         }
     }
 }

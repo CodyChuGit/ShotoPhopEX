@@ -8,9 +8,6 @@
 //! `onnx` feature the crate has no `ort` at all (Rust rebuild R1).
 #![cfg_attr(test, allow(clippy::panic, clippy::unwrap_used, clippy::expect_used))]
 
-#[cfg(all(feature = "engine", not(any(feature = "onnx", feature = "candle"))))]
-compile_error!("the perception engine needs a backend: the `onnx` feature, `candle`, or both");
-
 #[cfg(feature = "engine")]
 pub mod engine;
 pub mod graph;
