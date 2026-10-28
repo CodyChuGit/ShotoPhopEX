@@ -57,6 +57,10 @@ pub const TEMPLATE_MATTE: &str = "qwen-2.1/matte";
 pub const TEMPLATE_IMAGE_REF: &str = "qwen-2.1/image-ref";
 /// Krea 2 Turbo text to image.
 pub const TEMPLATE_KREA2: &str = "krea2-turbo/image";
+/// Krea 2 Turbo generation in the style of one or two reference pictures.
+pub const TEMPLATE_KREA2_STYLE: &str = "krea2-turbo/image-style";
+/// Ostris's style adapter, required for the style template.
+pub const KREA2_STYLE_LORA: &str = "krea2_style_reference.safetensors";
 /// Krea 2 Turbo editing a picture by instruction: the picture as in-context tokens and in the
 /// encoder's view, with the community krea2_edit General Edit V2 LoRA (conradlocke; personal
 /// and non-commercial use, BYOM). Served when that file is under the model root's `loras/`.
@@ -87,7 +91,7 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 11] = [
+pub const TEMPLATES: [(&str, &str, Family); 12] = [
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
     (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
@@ -96,6 +100,7 @@ pub const TEMPLATES: [(&str, &str, Family); 11] = [
     (TEMPLATE_EXPAND, "expand", Family::QwenImage21),
     (TEMPLATE_MATTE, "matte", Family::QwenImage21),
     (TEMPLATE_KREA2, "image", Family::Krea2),
+    (TEMPLATE_KREA2_STYLE, "image", Family::Krea2),
     (TEMPLATE_CHAT_EDIT, "text", Family::QwenImage21),
     (TEMPLATE_CHAT_IMAGE, "text", Family::QwenImage21),
     (TEMPLATE_LAYERS, "layers", Family::Layered),
@@ -167,6 +172,25 @@ fn with_edit_lora(params: &std::collections::BTreeMap<String, Value>) -> std::co
     }
     out.insert("loras".into(), Value::Array(list));
     out
+}
+
+/// The template model slot is always applied at strength one before user adapters.
+fn with_style_lora(params: &std::collections::BTreeMap<String, Value>) -> Result<std::collections::BTreeMap<String, Value>, EngineError> {
+    let slot = params.get("models").and_then(|v| v.get("lora")).or_else(|| params.get("lora"));
+    let file = match slot {
+        Some(v) => v
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::new(ErrorKind::BadRequest, "the lora model slot needs a file name"))?,
+        None => KREA2_STYLE_LORA,
+    };
+    let mut list = lora_asks(params)?;
+    list.retain(|(name, _)| name != file);
+    list.insert(0, (file.to_string(), 1.0));
+    let mut out = params.clone();
+    out.insert("loras".into(), Value::Array(list.into_iter().map(|(file, strength)| json!({"file":file,"strength":strength})).collect()));
+    Ok(out)
 }
 
 /// One LoRA a request asks for: `{"file": "name-or-path.safetensors", "strength": 1.0}`.
@@ -352,7 +376,13 @@ impl DiffusionEngine {
         }
         TEMPLATES
             .iter()
-            .filter(|(t, _, f)| self.has_family(*f) && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file())))
+            .filter(|(t, _, f)| {
+                self.has_family(*f)
+                    && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file()))
+                    && (*t != TEMPLATE_KREA2_STYLE
+                        || (self.lora_path(KREA2_STYLE_LORA).is_ok_and(|p| p.is_file())
+                            && self.krea2_source().is_some_and(|p| krea2_pipeline::is_snapshot(&p) || p.join("vae/qwen_image_vae.safetensors").is_file())))
+            })
             .map(|(t, _, _)| *t)
             .collect()
     }
@@ -707,7 +737,7 @@ impl Engine for DiffusionEngine {
                 }
             }
             // An image from references: the references alone, the target at the asked size.
-            "image" if req.model == TEMPLATE_IMAGE_REF => {
+            "image" if req.model == TEMPLATE_IMAGE_REF || req.model == TEMPLATE_KREA2_STYLE => {
                 if req.references.is_empty() {
                     return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs at least one reference", req.model)));
                 }
@@ -720,6 +750,9 @@ impl Engine for DiffusionEngine {
                 canvas = Some((side(req.width), side(req.height)));
             }
             _ => {}
+        }
+        if req.model == TEMPLATE_KREA2_STYLE && (req.width == 0 || req.height == 0 || !(1..=2).contains(&references.len())) {
+            return Err(EngineError::new(ErrorKind::BadRequest, "Krea style needs explicit width/height and one or two references"));
         }
         let default_steps = match family {
             Family::QwenImage21 => DEFAULT_STEPS,
@@ -739,7 +772,13 @@ impl Engine for DiffusionEngine {
             // A Krea 2 edit runs with its edit LoRA first (unless the request names it) and the
             // card's `ref_boost` unless the request gives one.
             let krea2_edit = req.model == TEMPLATE_KREA2_EDIT;
-            let params = if krea2_edit { with_edit_lora(&req.params) } else { req.params.clone() };
+            let params = if krea2_edit {
+                with_edit_lora(&req.params)
+            } else if req.model == TEMPLATE_KREA2_STYLE {
+                with_style_lora(&req.params)?
+            } else {
+                req.params.clone()
+            };
             let loras = self.stack_for(&params)?;
             let ref_boost = match req.params.get("ref_boost").and_then(Value::as_f64) {
                 Some(b) if b.is_finite() && (0.0..=100.0).contains(&b) => b as f32,
@@ -765,6 +804,7 @@ impl Engine for DiffusionEngine {
             let err = |e: anyhow::Error| EngineError::new(kind_of(&e), e.to_string());
             match &self.resident {
                 Resident::Qwen(p) => p.generate(&ask, &mut report, &stop).map_err(err),
+                Resident::Krea2(p) if req.model == TEMPLATE_KREA2_STYLE => p.generate_style(&ask, &mut report, &stop).map_err(err),
                 Resident::Krea2(p) => p.generate(&ask, &mut report, &stop).map_err(err),
                 Resident::Layered(_) | Resident::None => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
             }
@@ -893,6 +933,41 @@ mod tests {
         let r = e.run(&m, &[vec![0; 8]], &mut |_, _| {}, &AtomicBool::new(false));
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
         assert!(!has_models(Path::new("Z:/nowhere")));
+    }
+
+    #[test]
+    fn style_template_slot_and_availability() -> anyhow::Result<()> {
+        assert_eq!(task_of(TEMPLATE_KREA2_STYLE), Some("image"));
+        assert_eq!(family_of(TEMPLATE_KREA2_STYLE), Some(Family::Krea2));
+        let mut params = BTreeMap::new();
+        assert_eq!(with_style_lora(&params).and_then(|p| lora_asks(&p)), Ok(vec![(KREA2_STYLE_LORA.to_string(), 1.0)]));
+        params.insert("models".into(), json!({"lora":"another.safetensors"}));
+        params.insert("loras".into(), json!([{"file":"another.safetensors","strength":0.2},{"file":"extra.safetensors","strength":0.5}]));
+        assert_eq!(with_style_lora(&params).and_then(|p| lora_asks(&p)), Ok(vec![("another.safetensors".into(), 1.0), ("extra.safetensors".into(), 0.5)]));
+        let root = std::env::temp_dir().join(format!("gn-krea-style-{}", std::process::id()));
+        let snapshot = root.join(KREA2_DIR);
+        for dir in ["tokenizer", "text_encoder", "transformer", "vae"] {
+            std::fs::create_dir_all(snapshot.join(dir))?;
+        }
+        std::fs::write(snapshot.join("tokenizer/tokenizer.json"), "{}")?;
+        let mut engine = DiffusionEngine::new(root.clone(), false);
+        engine.refused = None;
+        let installed = engine.index("")["installed"].to_string();
+        assert!(installed.contains(TEMPLATE_KREA2));
+        assert!(!installed.contains(TEMPLATE_KREA2_STYLE));
+        std::fs::create_dir_all(root.join(LORA_DIR))?;
+        std::fs::write(root.join(LORA_DIR).join(KREA2_STYLE_LORA), [])?;
+        assert!(engine.index("")["installed"].to_string().contains(TEMPLATE_KREA2_STYLE));
+        // Only this test's explicitly created temporary directory is removed.
+        std::fs::remove_file(root.join(LORA_DIR).join(KREA2_STYLE_LORA))?;
+        std::fs::remove_file(snapshot.join("tokenizer/tokenizer.json"))?;
+        for dir in ["tokenizer", "text_encoder", "transformer", "vae"] {
+            std::fs::remove_dir(snapshot.join(dir))?;
+        }
+        std::fs::remove_dir(snapshot)?;
+        std::fs::remove_dir(root.join(LORA_DIR))?;
+        std::fs::remove_dir(root)?;
+        Ok(())
     }
 
     /// A Krea 2 edit runs with its edit LoRA in front of the request's own, once.

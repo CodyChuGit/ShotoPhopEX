@@ -40,6 +40,12 @@ pub fn edit_template(prompt: &str) -> String {
     )
 }
 
+/// Stock EditPlus overrides the encoder's default template and numbers each picture.
+pub fn style_template(prompt: &str, pictures: usize) -> String {
+    let labels: String = (1..=pictures).map(|i| format!("Picture {i}: <|vision_start|><|image_pad|><|vision_end|>")).collect();
+    format!("<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n{labels}{prompt}<|im_end|>\n<|im_start|>assistant\n")
+}
+
 /// [`condition`] with pictures in view: their vision rows spliced in for `<|image_pad|>`, the
 /// twelve taps kept from the end of the template's prefix (the pictures come after it, so the
 /// prefix is the same rows as in `ids`), the picture rows kept as ComfyUI keeps them.
@@ -620,6 +626,29 @@ impl Block {
         let h = self.postnorm.modulated(&x, &mods, 3, 4)?;
         gate_add(&x, &self.mlp.forward(&h)?, &mods, 5)
     }
+
+    /// Split modulation at the reference boundary while retaining joint attention.
+    fn forward_zero(&self, x: &Tensor, tvec: &Tensor, zero: &Tensor, split: usize, rope: &(Tensor, Tensor)) -> Result<Tensor> {
+        let mods = tvec.broadcast_add(&self.lin)?;
+        let refs = zero.broadcast_add(&self.lin)?;
+        let n = x.dim(1)? - split;
+        let normalize = |norm: &RmsNorm1p, x: &Tensor, scale, shift| -> Result<Tensor> {
+            Ok(Tensor::cat(&[norm.modulated(&x.narrow(1, 0, split)?, &mods, scale, shift)?, norm.modulated(&x.narrow(1, split, n)?, &refs, scale, shift)?], 1)?)
+        };
+        let residual = |x: &Tensor, h: &Tensor, gate| -> Result<Tensor> {
+            Ok(Tensor::cat(
+                &[
+                    gate_add(&x.narrow(1, 0, split)?, &h.narrow(1, 0, split)?, &mods, gate)?,
+                    gate_add(&x.narrow(1, split, n)?, &h.narrow(1, split, n)?, &refs, gate)?,
+                ],
+                1,
+            )?)
+        };
+        let h = normalize(&self.prenorm, x, 0, 1)?;
+        let x = residual(x, &self.attn.forward(&h, Some(rope), None)?, 2)?;
+        let h = normalize(&self.postnorm, &x, 3, 4)?;
+        residual(&x, &self.mlp.forward(&h)?, 5)
+    }
 }
 
 /// An edit's reference for [`Krea2Dit::forward_edit`]: the picture's clean latent in the
@@ -792,6 +821,91 @@ impl Krea2Dit {
     /// conditioning `ctx` `(B, seq, 12, 2560)`.
     pub fn forward(&self, x: &Tensor, t: f32, ctx: &Tensor) -> Result<Tensor> {
         self.forward_edit(x, t, ctx, None)
+    }
+
+    /// Stock Krea multi-reference conditioning: target first, positive frame indices,
+    /// independent spatial grids, and timestep-zero modulation for reference tokens.
+    pub fn forward_style(&self, x: &Tensor, t: f32, ctx: &Tensor, references: &[Tensor]) -> Result<Tensor> {
+        self.style_forward(x, t, ctx, references, None)
+    }
+
+    /// CPU parity runner: load one DiT block at a time to bound checkpoint residency.
+    /// Load this model with zero blocks; `weights` supplies the original block prefixes.
+    pub fn forward_style_streamed(
+        &self,
+        x: &Tensor,
+        t: f32,
+        ctx: &Tensor,
+        references: &[Tensor],
+        layers: usize,
+        weights: &VarBuilder<'_>,
+        loras: &LoraStack,
+    ) -> Result<Tensor> {
+        anyhow::ensure!(x.device().is_cpu() && self.blocks.is_empty(), "streaming requires a CPU model loaded with zero blocks");
+        self.style_forward(x, t, ctx, references, Some((layers, weights, loras)))
+    }
+
+    fn style_forward(&self, x: &Tensor, t: f32, ctx: &Tensor, references: &[Tensor], streamed: Option<(usize, &VarBuilder<'_>, &LoraStack)>) -> Result<Tensor> {
+        anyhow::ensure!(!references.is_empty() && references.len() <= 2, "style needs one or two references");
+        let dt = x.dtype();
+        let (target, h, w) = self.patchify(x)?;
+        let context = self.txtfusion.forward(&ctx.to_dtype(dt)?)?;
+        let context = self.txtmlp.2.forward(&gelu_tanh(&self.txtmlp.1.forward(&self.txtmlp.0.forward(&context)?)?)?)?;
+        let seq = context.dim(1)?;
+        let mut ids = vec![[0.0; 3]; seq];
+        let mut parts = vec![context, self.first.forward(&target)?];
+        for r in 0..h {
+            for c in 0..w {
+                ids.push([0.0, r as f32, c as f32]);
+            }
+        }
+        let split = ids.len();
+        for (i, reference) in references.iter().enumerate() {
+            // Comfy pads odd reference grids circularly before patchification.
+            let mut reference = reference.to_dtype(dt)?;
+            for axis in [2, 3] {
+                let len = reference.dim(axis)?;
+                let pad = (self.cfg.patch - len % self.cfg.patch) % self.cfg.patch;
+                if pad > 0 {
+                    reference = Tensor::cat(&[&reference, &reference.narrow(axis, 0, pad)?], axis)?;
+                }
+            }
+            let (tokens, rh, rw) = self.patchify(&reference)?;
+            anyhow::ensure!(tokens.dim(0)? == x.dim(0)?, "reference batch differs from target");
+            for r in 0..rh {
+                for c in 0..rw {
+                    ids.push([(i + 1) as f32, r as f32, c as f32]);
+                }
+            }
+            parts.push(self.first.forward(&tokens)?);
+        }
+        let embedding =
+            |time| -> Result<Tensor> { Ok(self.tmlp.1.forward(&gelu_tanh(&self.tmlp.0.forward(&self.timestep_embedding(time)?.to_dtype(dt)?)?)?)?) };
+        let temb = embedding(t)?;
+        let tvec = self.tproj.forward(&gelu_tanh(&temb)?)?;
+        let zero = self.tproj.forward(&gelu_tanh(&embedding(0.0)?)?)?;
+        let rope = self.rope_tables(&ids)?;
+        let mut xs = Tensor::cat(&parts, 1)?;
+        if let Some((layers, weights, loras)) = streamed {
+            for i in 0..layers {
+                let prefix = format!("blocks.{i}");
+                let block = Block::load(&self.cfg, Quant { rot: None, fp8: None }, weights.pp(&prefix))?;
+                block.attn.set_loras(loras, &format!("{prefix}.attn"))?;
+                block.mlp.set_loras(loras, &format!("{prefix}.mlp"))?;
+                xs = block.forward_zero(&xs, &tvec, &zero, split, &rope)?;
+                tracing::info!(block = i, "streamed Krea style block");
+            }
+        } else {
+            for block in &self.blocks {
+                xs = block.forward_zero(&xs, &tvec, &zero, split, &rope)?;
+            }
+        }
+        let xs = xs.narrow(1, seq, h * w)?;
+        let lm = self.last_mod.to_dtype(dt)?;
+        let scale = temb.broadcast_add(&lm.i(0)?)?;
+        let shift = temb.broadcast_add(&lm.i(1)?)?;
+        let out = self.last_norm.forward(&xs)?.broadcast_mul(&(scale + 1.0)?)?.broadcast_add(&shift)?;
+        self.unpatchify(&self.last_lin.forward(&out)?, h, w)
     }
 
     /// [`Self::forward`] with an edit's reference ([`EditRef`]): the sequence is

@@ -192,13 +192,33 @@ fn rotary(cfg: &VisionConfig, gh: usize, gw: usize, dev: &Device) -> Result<(Ten
 
 /// The learned 48×48 position table bilinearly resampled to the `gh × gw` patch grid, in the
 /// merge token order (`fast_pos_embed_interpolate`).
+#[cfg(test)]
 fn pos_embed(table: &Tensor, cfg: &VisionConfig, gh: usize, gw: usize) -> Result<Tensor> {
+    pos_embed_grid(table, cfg, gh, gw, false)
+}
+
+fn pos_embed_grid(table: &Tensor, cfg: &VisionConfig, gh: usize, gw: usize, torch_grid: bool) -> Result<Tensor> {
     let side = (cfg.num_position_embeddings as f64).sqrt() as usize; // 48
     let lin = |n: usize| -> Vec<f32> {
         if n == 1 {
             vec![0.0]
         } else {
-            (0..n).map(|i| (side - 1) as f32 * i as f32 / (n - 1) as f32).collect()
+            let end = (side - 1) as f32;
+            let step = end / (n - 1) as f32;
+            (0..n)
+                .map(|i| {
+                    if torch_grid {
+                        // torch.linspace evaluates the second half backwards from the endpoint.
+                        if i < n / 2 {
+                            step * i as f32
+                        } else {
+                            end - step * (n - i - 1) as f32
+                        }
+                    } else {
+                        end * i as f32 / (n - 1) as f32
+                    }
+                })
+                .collect()
         }
     };
     let (hs, ws) = (lin(gh), lin(gw));
@@ -368,12 +388,21 @@ impl VisionTower {
 
     /// Run the tower on `patches (N, 1536)` of a `gh × gw` patch grid.
     pub fn forward(&self, patches: &Tensor, gh: usize, gw: usize) -> Result<VisionFeatures> {
+        self.forward_grid(patches, gh, gw, false)
+    }
+
+    /// Stock EditPlus uses torch.linspace's symmetric position grid; keep legacy edits stable.
+    pub fn forward_editplus(&self, patches: &Tensor, gh: usize, gw: usize) -> Result<VisionFeatures> {
+        self.forward_grid(patches, gh, gw, true)
+    }
+
+    fn forward_grid(&self, patches: &Tensor, gh: usize, gw: usize, torch_grid: bool) -> Result<VisionFeatures> {
         let cfg = &self.cfg;
         let n = gh * gw;
         anyhow::ensure!(patches.dims2()? == (n, cfg.patch_dim()), "patches {:?} for a {gh}x{gw} grid", patches.dims());
         let x = patches.to_dtype(self.patch_weight.dtype())?.to_device(&self.device)?;
         let x = x.matmul(&self.patch_weight.t()?)?.broadcast_add(&self.patch_bias)?;
-        let pos = pos_embed(&self.pos_table, cfg, gh, gw)?.to_dtype(x.dtype())?;
+        let pos = pos_embed_grid(&self.pos_table, cfg, gh, gw, torch_grid)?.to_dtype(x.dtype())?;
         let x = (x + pos)?;
         let (cos, sin) = rotary(cfg, gh, gw, &self.device)?;
         let mut x = x;
