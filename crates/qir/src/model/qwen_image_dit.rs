@@ -81,6 +81,9 @@ pub const BLOCKS: usize = 60;
 struct LayeredLinear {
     dense: Option<candle_nn::Linear>,
     fp8: Option<(Tensor, Tensor)>,
+    /// On CUDA, the same fp8 weight through qir's own dequantization kernel (candle has no CUDA
+    /// cast from e4m3), multiplied in bf16 as the file's `full_precision_matrix_mult` asks.
+    gpu: Option<crate::fp8::Fp8Linear>,
     bias: Tensor,
 }
 
@@ -98,10 +101,20 @@ impl LayeredLinear {
             None
         };
         let dense = if fp8.is_none() { Some(candle_nn::linear_no_bias(input, output, vb.clone())?) } else { None };
-        Ok(Self { dense, fp8, bias: vb.get(output, "bias")? })
+        let gpu = match &fp8 {
+            Some((w, s)) if w.device().is_cuda() => {
+                anyhow::ensure!(crate::fp8::supported_on(w.device()), "Layered's fp8 weights on CUDA need the `fp8` feature's kernels");
+                Some(crate::fp8::Fp8Linear::new(w.clone(), s, true)?)
+            }
+            _ => None,
+        };
+        Ok(Self { dense, fp8, gpu, bias: vb.get(output, "bias")? })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        if let Some(l) = &self.gpu {
+            return Ok(l.forward(x)?.broadcast_add(&self.bias)?);
+        }
         let y = match (&self.dense, &self.fp8) {
             (Some(dense), _) => dense.forward(x)?,
             (_, Some((weight, scale))) => {
