@@ -31,7 +31,9 @@ param(
   [ValidateSet('x64', 'x86', 'arm64')] [string] $Arch = 'x64',
   [switch] $SkipBuild,
   [switch] $Native,
-  [string] $Runtime
+  [string] $Runtime,
+  # Fork: the portable zip only, for a machine without WiX (the clean-profile check needs no MSI).
+  [switch] $NoMsi
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -74,7 +76,7 @@ if (-not $SkipBuild) {
   $env:PHOTOCRAFT_REQUIRE_WINRES = '1'
   $Features = if ($Native) { 'heif,photocraft/alerts,photocraft/native-diffusion,photocraft-cli/native-diffusion' } else { 'heif,photocraft/alerts' }
   # -Native leaves out the apps' default `sam-onnx`: SAM 3.1 runs on candle, no ONNX Runtime in the worker.
-  $NoDefault = if ($Native) { @('--no-default-features') } else { @() }
+  $NoDefault = @(if ($Native) { '--no-default-features' })
   Invoke-Native "cargo build ($Target)" { cargo build --release --locked -p photocraft -p photocraft-cli @NoDefault --features $Features --target $Target }
 }
 if ($Native) {
@@ -148,6 +150,7 @@ New-InstallerArt (Join-Path $Root 'assets\app-icon\hicolor\256x256\apps\ai.story
 
 $Msi = Join-Path $Dist "photocraft-$Version-windows-$Arch.msi"
 & (Join-Path $PSScriptRoot 'check-icons.ps1')
+if (-not $NoMsi) {
 Invoke-Native 'wix build' {
   wix build (Join-Path $PSScriptRoot 'photocraft.wxs') -arch $Arch `
     -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
@@ -162,6 +165,7 @@ Invoke-Native 'MSI shortcut icon validation (ICE50)' {
 # wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
 Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
 & (Join-Path $PSScriptRoot 'sign.ps1') $Msi
+}
 
 # ---- portable zip ------------------------------------------------------------------------------
 $Portable = Join-Path $TargetDir "windows-package\photocraft-$Version-windows-$Arch-portable"
@@ -197,4 +201,4 @@ if ($Arch -ne 'arm64' -or $HostArch -eq 'arm64') {
 } else {
   Write-Output "skipping photocraft-cli --version: an $Arch build doesn't run on this $HostArch machine"
 }
-Get-Item $Msi, $Zip | Format-Table Name, Length
+Get-Item $(if ($NoMsi) { @($Zip) } else { @($Msi, $Zip) }) | Format-Table Name, Length

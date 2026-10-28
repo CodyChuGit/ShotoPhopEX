@@ -25,7 +25,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path "$PSScriptRoot\..\..\..\..").Path
 if (-not $Zip) {
-    $Zip = Get-ChildItem (Join-Path $root "target\windows-package"), (Join-Path $root "dist") -Filter "photocraft-*-windows-x64-portable.zip" -ErrorAction SilentlyContinue |
+    $Zip = Get-ChildItem (Join-Path $root "target\windows-package"), (Join-Path $root "dist") -Filter "photocraft-*-windows-x64-native-portable.zip" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
 }
 if (-not $Zip -or -not (Test-Path $Zip)) { throw "no portable zip (build one with packaging/windows/package.ps1 -Arch x64 -Native, or pass -Zip)" }
