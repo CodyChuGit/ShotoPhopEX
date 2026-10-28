@@ -223,6 +223,20 @@ def main():
         f'        font-weight="700" font-size="287" fill="{fg_hex}">{letters}</text>\n'
         '</svg>\n'
     )
+    if letters.startswith("@"):
+        # The drawn marks have no text form: the SVG carries the 512 px render.
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        full.resize((512, 512), Image.LANCZOS).save(buf, "PNG", optimize=True)
+        data = base64.b64encode(buf.getvalue()).decode("ascii")
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
+            f'  <!-- {name} app icon for local builds, drawn by packaging/icon-tile.py ({letters}). Not for a published build. -->\n'
+            f'  <image width="512" height="512" href="data:image/png;base64,{data}"/>\n'
+            '</svg>\n'
+        )
     for f_name in (f"{name}.svg", f"{name}-small.svg"):
         with open(os.path.join(out, f_name), "w", encoding="utf-8", newline="\n") as f:
             f.write(svg)
