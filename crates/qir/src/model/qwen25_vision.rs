@@ -145,7 +145,10 @@ struct Block {
 }
 impl Block {
     fn load(vb: VarBuilder) -> Result<Self> {
-        let linear = |i, o, name| LayeredLinear::load(i, o, true, true, None, vb.pp(name));
+        let linear = |i, o, name| -> Result<LayeredLinear> {
+            let linear = LayeredLinear::load(i, o, true, true, None, vb.pp(name))?;
+            Ok(if vb.device().is_cuda() { linear.precise_scale() } else { linear })
+        };
         Ok(Self {
             norm1: candle_nn::rms_norm(WIDTH, 1e-6, vb.pp("norm1"))?,
             norm2: candle_nn::rms_norm(WIDTH, 1e-6, vb.pp("norm2"))?,
@@ -160,8 +163,8 @@ impl Block {
         let n = x.dim(0)?;
         let qkv = self.qkv.forward(&self.norm1.forward(x)?)?.reshape((n, 3, HEADS, HEAD_DIM))?;
         let get = |i| -> Result<Tensor> { Ok(qkv.narrow(1, i, 1)?.squeeze(1)?.transpose(0, 1)?.unsqueeze(0)?.contiguous()?) };
-        let q = candle_nn::rotary_emb::rope(&get(0)?, cos, sin)?;
-        let k = candle_nn::rotary_emb::rope(&get(1)?, cos, sin)?;
+        let q = candle_nn::rotary_emb::rope(&get(0)?.to_dtype(DType::F32)?, cos, sin)?.to_dtype(x.dtype())?;
+        let k = candle_nn::rotary_emb::rope(&get(1)?.to_dtype(DType::F32)?, cos, sin)?.to_dtype(x.dtype())?;
         let v = get(2)?;
         let mut attended = Vec::new();
         for bounds in cu.windows(2) {
@@ -176,7 +179,7 @@ impl Block {
     }
 }
 
-/// Streams CPU f32 blocks from the unmodified ComfyUI scaled-fp8 checkpoint.
+/// Streams vision blocks so the language decoder need not share their residency.
 pub struct Qwen25Vision {
     file: TensorFile,
 }
@@ -192,16 +195,21 @@ impl Qwen25Vision {
 
     /// Accept HWC float RGB, including the fractional output of `resize_editplus`.
     pub fn encode_pixels(&self, pixels: &Tensor) -> Result<(Tensor, [usize; 3])> {
-        self.run(pixels, |_, _| Ok(()))
+        self.run(pixels, &Device::Cpu, |_, _| Ok(()))
     }
 
-    fn run(&self, pixels: &Tensor, mut tap: impl FnMut(&str, &Tensor) -> Result<()>) -> Result<(Tensor, [usize; 3])> {
-        let device = &Device::Cpu;
+    /// CUDA stages use bf16; the existing CPU parity route retains f32.
+    pub fn encode_pixels_on_device(&self, pixels: &Tensor, device: &Device) -> Result<(Tensor, [usize; 3])> {
+        self.run(pixels, device, |_, _| Ok(()))
+    }
+
+    fn run(&self, pixels: &Tensor, device: &Device, mut tap: impl FnMut(&str, &Tensor) -> Result<()>) -> Result<(Tensor, [usize; 3])> {
+        let dtype = if device.is_cuda() { DType::BF16 } else { DType::F32 };
         let (patches, grid) = preprocess(pixels)?;
-        let patches = patches.to_device(device)?;
+        let patches = patches.to_device(device)?.to_dtype(dtype)?;
         tap("patches", &patches)?;
         let n = patches.dim(0)?;
-        let weight = self.file.tensor("visual.patch_embed.proj.weight", device)?.to_dtype(DType::F32)?.reshape((WIDTH, PATCH_WIDTH))?;
+        let weight = self.file.tensor("visual.patch_embed.proj.weight", device)?.to_dtype(dtype)?.reshape((WIDTH, PATCH_WIDTH))?;
         let mut x = patches.matmul(&weight.t()?)?;
         tap("patch_embed", &x)?;
         let (indices, cu) = window_index(grid)?;
@@ -225,15 +233,15 @@ impl Qwen25Vision {
         let angles = Tensor::from_vec(angles, (n, HEAD_DIM / 2), device)?;
         let (cos, sin) = (angles.cos()?, angles.sin()?);
         for i in 0..32 {
-            let block = Block::load(self.file.builder(&format!("visual.blocks.{i}."), DType::F32, device)?)?;
+            let block = Block::load(self.file.builder(&format!("visual.blocks.{i}."), dtype, device)?)?;
             let full = [0, n];
             x = block.forward(&x, &cos, &sin, if [7, 15, 23, 31].contains(&i) { &full } else { &cu })?;
             tap(&format!("block{i}"), &x)?;
         }
-        let vb = self.file.builder("visual.merger.", DType::F32, device)?;
+        let vb = self.file.builder("visual.merger.", dtype, device)?;
         x = candle_nn::rms_norm(WIDTH, 1e-6, vb.pp("ln_q"))?.forward(&x)?.reshape((n / 4, WIDTH * 4))?;
-        x = LayeredLinear::load(WIDTH * 4, WIDTH * 4, true, true, None, vb.pp("mlp.0"))?.forward(&x)?.gelu_erf()?;
-        x = LayeredLinear::load(WIDTH * 4, 3584, true, true, None, vb.pp("mlp.2"))?.forward(&x)?;
+        x = LayeredLinear::load(WIDTH * 4, WIDTH * 4, true, true, None, vb.pp("mlp.0"))?.precise_scale().forward(&x)?.gelu_erf()?;
+        x = LayeredLinear::load(WIDTH * 4, 3584, true, true, None, vb.pp("mlp.2"))?.precise_scale().forward(&x)?;
         let mut inverse = vec![0u32; indices.len()];
         for (i, &j) in indices.iter().enumerate() {
             inverse[j as usize] = i as u32;
@@ -245,6 +253,6 @@ impl Qwen25Vision {
 
     /// Visit complete stage tensors without retaining every block's activation.
     pub fn encode_with_taps(&self, pixels: &Tensor, tap: impl FnMut(&str, &Tensor) -> Result<()>) -> Result<(Tensor, [usize; 3])> {
-        self.run(pixels, tap)
+        self.run(pixels, &Device::Cpu, tap)
     }
 }

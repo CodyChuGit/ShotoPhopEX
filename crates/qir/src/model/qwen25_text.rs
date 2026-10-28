@@ -266,6 +266,19 @@ impl Qwen25TextEncoder {
         Ok(Self { config, embedding, norm, blocks, device: device.clone(), dtype })
     }
 
+    /// Edit CUDA uses the installed quantized-tensor scale arithmetic; Layered stays unchanged.
+    pub fn from_edit_file(path: impl AsRef<Path>, dtype: DType, device: &Device) -> Result<Self> {
+        let mut encoder = Self::from_file(path, dtype, device)?;
+        if let Blocks::Resident(blocks) = &mut encoder.blocks {
+            for block in blocks {
+                for linear in [&mut block.q, &mut block.k, &mut block.v, &mut block.o, &mut block.gate, &mut block.up, &mut block.down] {
+                    linear.precise_scale_mut();
+                }
+            }
+        }
+        Ok(encoder)
+    }
+
     fn validate_config(c: &Qwen25Config) -> Result<()> {
         anyhow::ensure!(
             c.num_kv_heads > 0 && c.num_heads.is_multiple_of(c.num_kv_heads) && c.head_dim > 0 && c.head_dim.is_multiple_of(2),

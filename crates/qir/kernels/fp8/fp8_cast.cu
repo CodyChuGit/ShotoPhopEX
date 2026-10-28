@@ -69,3 +69,51 @@ extern "C" int qir_bf16_quant_fp8(void* out, const void* x, size_t n, void* stre
     quant_kernel<<<grid_for(n), 256, 0, (cudaStream_t)stream>>>((__nv_fp8_e4m3*)out, (const __nv_bfloat16*)x, n);
     return (int)cudaGetLastError();
 }
+
+// PyTorch CUDA randint uses Philox subsequences per launch thread, four outputs per call.
+#include <curand_kernel.h>
+__global__ void patch_quant_kernel(__nv_fp8_e4m3* out, const __nv_bfloat16* x, size_t n, unsigned long long seed) {
+    size_t idx = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    size_t stride = size_t(blockDim.x) * gridDim.x;
+    curandStatePhilox4_32_10_t state;
+    curand_init(seed, idx, 0, &state);
+    for (size_t base = idx; base < n; base += stride * 4) {
+        uint4 r = curand4(&state);
+        for (int j = 0; j < 4; ++j) {
+            size_t i = base + stride * j;
+            if (i >= n) continue;
+            float v = __bfloat162float(x[i]);
+            float a = fabsf(v);
+            float e = fminf(fmaxf(floorf(log2f(a)) + 7.f, 0.f), 15.f);
+            float step = exp2f(e == 0.f ? -9.f : e - 10.f);
+            // Kitchen's stochastic kernel performs the mantissa arithmetic in fp16.
+            float bias = e == 0.f ? 0.f : 8.f;
+            float m = __half2float(__float2half(a / step - bias));
+            float u = float((&r.x)[j] & 255) * (1.f / 256.f);
+            m = __half2float(__float2half(m + u));
+            float y = v == 0.f ? 0.f : copysignf((floorf(m) + bias) * step, v);
+            out[i] = __nv_fp8_e4m3(fminf(fmaxf(y, -448.f), 448.f));
+        }
+    }
+}
+extern "C" int qir_bf16_patch_quant_fp8(void* out, const void* x, size_t n, unsigned long long seed, void* stream) {
+    int device, sms, threads;
+    cudaError_t err = cudaGetDevice(&device);
+    if (err != cudaSuccess) return int(err);
+    cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
+    cudaDeviceGetAttribute(&threads, cudaDevAttrMaxThreadsPerMultiProcessor, device);
+    unsigned grid = unsigned((n + 255) / 256);
+    unsigned limit = unsigned(sms * (threads / 256));
+    if (grid > limit) grid = limit;
+    patch_quant_kernel<<<grid, 256, 0, (cudaStream_t)stream>>>((__nv_fp8_e4m3*)out, (const __nv_bfloat16*)x, n, seed);
+    return int(cudaGetLastError());
+}
+
+__global__ void dequant_f32_scale_kernel(__nv_bfloat16* out, const __nv_fp8_e4m3* q, float scale, size_t n) {
+    for (size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x; i < n; i += size_t(blockDim.x) * gridDim.x)
+        out[i] = __float2bfloat16(float(q[i]) * scale);
+}
+extern "C" int qir_fp8_dequant_f32_scale(void* out, const void* q, float scale, size_t n, void* stream) {
+    dequant_f32_scale_kernel<<<grid_for(n),256,0,(cudaStream_t)stream>>>((__nv_bfloat16*)out,(const __nv_fp8_e4m3*)q,scale,n);
+    return int(cudaGetLastError());
+}

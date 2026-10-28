@@ -129,6 +129,7 @@ pub struct Fp8Linear {
     /// `fp8` kernels every layer does.
     #[cfg_attr(not(feature = "fp8"), allow(dead_code))]
     full: bool,
+    precise_scale: bool,
 }
 
 /// Whether this build can run e4m3 weights on `dev` (the `fp8` feature's kernels on CUDA; the
@@ -144,7 +145,7 @@ impl Fp8Linear {
         let scale =
             weight_scale.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?.first().copied().ok_or_else(|| anyhow::anyhow!("an empty weight_scale"))?;
         let scales = Tensor::new(&[scale, 1.0f32], w.device())?;
-        Ok(Self { w, scale, scales, full })
+        Ok(Self { w, scale, scales, full, precise_scale: false })
     }
 
     /// Full-precision callers never use cuBLASLt scale pointers; keep them on the host.
@@ -153,7 +154,16 @@ impl Fp8Linear {
         let scale =
             weight_scale.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?.first().copied().ok_or_else(|| anyhow::anyhow!("an empty weight_scale"))?;
         let scales = Tensor::new(&[scale, 1.0f32], &candle_core::Device::Cpu)?;
-        Ok(Self { w, scale, scales, full: true })
+        Ok(Self { w, scale, scales, full: true, precise_scale: false })
+    }
+
+    pub(crate) fn precise_scale_mut(&mut self) {
+        self.precise_scale = true;
+    }
+
+    /// Installed 2511 CUDA quantized tensors multiply by the f32 scale before bf16 casting.
+    pub fn precise_scale(self) -> Self {
+        Self { precise_scale: true, ..self }
     }
 
     /// This layer multiplying in bf16 whatever its file asked.
@@ -165,7 +175,7 @@ impl Fp8Linear {
     pub fn dequantized(&self, dtype: DType) -> Result<Tensor> {
         #[cfg(feature = "fp8")]
         if self.w.device().is_cuda() {
-            return Ok(cuda::dequant(&self.w, self.scale)?.to_dtype(dtype)?);
+            return Ok(cuda::dequant(&self.w, self.scale, self.precise_scale)?.to_dtype(dtype)?);
         }
         let s = half::bf16::from_f32(self.scale).to_f64();
         Ok(self.w.to_dtype(DType::F32)?.to_dtype(DType::BF16)?.affine(s, 0.0)?.to_dtype(dtype)?)
@@ -216,12 +226,14 @@ mod cuda {
     const WORKSPACE: usize = 32 << 20;
 
     extern "C" {
+        fn qir_fp8_dequant_f32_scale(out: *mut c_void, q: *const c_void, scale: f32, n: usize, stream: *mut c_void) -> i32;
         fn qir_fp8_dequant_bf16(out: *mut c_void, q: *const c_void, scale: f32, n: usize, stream: *mut c_void) -> i32;
+        fn qir_bf16_patch_quant_fp8(out: *mut c_void, x: *const c_void, n: usize, seed: u64, stream: *mut c_void) -> i32;
         fn qir_bf16_quant_fp8(out: *mut c_void, x: *const c_void, n: usize, stream: *mut c_void) -> i32;
     }
 
     /// e4m3 → bf16 times the scale.
-    struct Dequant(f32);
+    struct Dequant(f32, bool);
 
     impl candle_core::CustomOp1 for Dequant {
         fn name(&self) -> &'static str {
@@ -242,7 +254,15 @@ mod cuda {
             {
                 let (qp, _gq) = qs.device_ptr(&stream);
                 let (op, _go) = out.device_ptr(&stream);
-                let rc = unsafe { qir_fp8_dequant_bf16(op as *mut c_void, (qp + qo) as *const c_void, self.0, n, stream.cu_stream() as *mut c_void) };
+                let rc = unsafe {
+                    (if self.1 { qir_fp8_dequant_f32_scale } else { qir_fp8_dequant_bf16 })(
+                        op as *mut c_void,
+                        (qp + qo) as *const c_void,
+                        self.0,
+                        n,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                };
                 if rc != 0 {
                     candle_core::bail!("fp8-dequant failed, rc={rc}");
                 }
@@ -252,7 +272,7 @@ mod cuda {
     }
 
     /// bf16 → e4m3, clamped to ±448.
-    struct Quant;
+    struct Quant(Option<u64>);
 
     impl candle_core::CustomOp1 for Quant {
         fn name(&self) -> &'static str {
@@ -273,7 +293,12 @@ mod cuda {
             {
                 let (xp, _gx) = xs.device_ptr(&stream);
                 let (op, _go) = out.device_ptr(&stream);
-                let rc = unsafe { qir_bf16_quant_fp8(op as *mut c_void, (xp + xo) as *const c_void, n, stream.cu_stream() as *mut c_void) };
+                let rc = unsafe {
+                    match self.0 {
+                        Some(seed) => qir_bf16_patch_quant_fp8(op as *mut c_void, (xp + xo) as *const c_void, n, seed, stream.cu_stream() as *mut c_void),
+                        None => qir_bf16_quant_fp8(op as *mut c_void, (xp + xo) as *const c_void, n, stream.cu_stream() as *mut c_void),
+                    }
+                };
                 if rc != 0 {
                     candle_core::bail!("fp8-quant failed, rc={rc}");
                 }
@@ -292,8 +317,12 @@ mod cuda {
         }
     }
 
-    pub(super) fn dequant(w: &Tensor, scale: f32) -> crate::Result<Tensor> {
-        Ok(aligned(w, 1)?.apply_op1_no_bwd(&Dequant(scale))?)
+    pub(super) fn dequant(w: &Tensor, scale: f32, precise: bool) -> crate::Result<Tensor> {
+        Ok(aligned(w, 1)?.apply_op1_no_bwd(&Dequant(scale, precise))?)
+    }
+
+    pub(super) fn quant(x: &Tensor, seed: u64) -> crate::Result<Tensor> {
+        Ok(aligned(x, 2)?.apply_op1_no_bwd(&Quant(Some(seed)))?)
     }
 
     /// The process's cuBLASLt handle and the algorithm chosen per `(m, n, k)`.
@@ -307,7 +336,7 @@ mod cuda {
     static LT: Mutex<Option<Lt>> = Mutex::new(None);
 
     pub(super) fn fp8_matmul(x: &Tensor, w: &Tensor, scales: &Tensor) -> crate::Result<Tensor> {
-        let xq = aligned(x, 2)?.apply_op1_no_bwd(&Quant)?;
+        let xq = aligned(x, 2)?.apply_op1_no_bwd(&Quant(None))?;
         Ok(xq.apply_op3(&w.contiguous()?, scales, Fp8Gemm)?)
     }
 
@@ -516,4 +545,17 @@ mod tests {
         assert_eq!(diff, 0.0);
         Ok(())
     }
+}
+
+/// Comfy FP8 patches recalculate the f32 scale and use module-seeded stochastic rounding.
+pub fn requantize_full_precision(weight: &Tensor, seed: u64) -> Result<(Tensor, Tensor)> {
+    let scale = (weight.abs()?.flatten_all()?.max(0)?.to_dtype(DType::F32)? / 448.0)?;
+    let inverse = scale.recip()?.to_dtype(weight.dtype())?;
+    let scaled = weight.broadcast_mul(&inverse)?.clamp(-448.0, 448.0)?;
+    #[cfg(feature = "fp8")]
+    if weight.device().is_cuda() {
+        return Ok((cuda::quant(&scaled, seed)?, scale.to_device(&candle_core::Device::Cpu)?));
+    }
+    let _ = (scaled, seed);
+    anyhow::bail!("2511 stochastic FP8 weight materialization requires the fp8 CUDA feature")
 }

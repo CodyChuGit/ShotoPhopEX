@@ -25,3 +25,4 @@ __pycache__/
 *.plan
 *.engine
 timing.cache
+!tests/fixtures/edit2511_sampler.safetensors

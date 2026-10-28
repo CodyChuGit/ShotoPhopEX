@@ -328,6 +328,20 @@ impl LayeredLinear {
         Ok(Self { weight, bias: if bias { Some(vb.get(output, "bias")?) } else { None } })
     }
 
+    pub(crate) fn precise_scale_mut(&mut self) {
+        if let Weight::Scalar(w) = &mut self.weight {
+            w.precise_scale_mut();
+        }
+    }
+
+    /// Select 2511's CUDA dequantization without changing Layered's established path.
+    pub fn precise_scale(mut self) -> Self {
+        if let Weight::Scalar(w) = self.weight {
+            self.weight = Weight::Scalar(w.precise_scale());
+        }
+        self
+    }
+
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let y = match &self.weight {
             Weight::Scalar(w) => w.forward(x)?,
