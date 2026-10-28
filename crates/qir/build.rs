@@ -38,12 +38,7 @@ fn main() {
 
     #[cfg(feature = "convrot")]
     {
-        let cutlass = std::env::var("CUTLASS_DIR").unwrap_or_else(|_| {
-            format!(
-                "{}/dev_tmp/cutlass/include",
-                std::env::var("HOME").unwrap_or_default()
-            )
-        });
+        let cutlass = std::env::var("CUTLASS_DIR").unwrap_or_else(|_| format!("{}/dev_tmp/cutlass/include", std::env::var("HOME").unwrap_or_default()));
         nvcc()
             .flag("--expt-extended-lambda") // EVT epilogue visitors use device lambdas
             .include(&cutlass)
@@ -96,12 +91,7 @@ fn main() {
         println!("cargo:rerun-if-changed=kernels/sage/sage2_ffi.cu");
         println!("cargo:rerun-if-changed=kernels/fusednorm/head_rmsnorm.cuh");
         println!("cargo:rerun-if-changed=kernels/sage/vendor/qattn/qk_int_sv_f8_sm89.cuh");
-        nvcc()
-            .flag("--expt-extended-lambda")
-            .flag("-diag-suppress=177")
-            .include("kernels/sage")
-            .file("kernels/sage/sage2_ffi.cu")
-            .compile("sage2_attn");
+        nvcc().flag("--expt-extended-lambda").flag("-diag-suppress=177").include("kernels/sage").file("kernels/sage/sage2_ffi.cu").compile("sage2_attn");
         println!("cargo:rustc-link-lib=dylib=cudart");
     }
 
@@ -117,7 +107,8 @@ fn main() {
     {
         // Exact bf16 attention (src/flash.rs), no external deps.
         println!("cargo:rerun-if-changed=kernels/flash/flash_fwd.cu");
-        nvcc().file("kernels/flash/flash_fwd.cu").compile("qir_flash");
+        println!("cargo:rerun-if-changed=kernels/flash/layered_flash_fwd.cu");
+        nvcc().file("kernels/flash/flash_fwd.cu").file("kernels/flash/layered_flash_fwd.cu").compile("qir_flash");
         println!("cargo:rustc-link-lib=dylib=cudart");
     }
 
@@ -130,12 +121,7 @@ fn main() {
         // LD_LIBRARY_PATH. Override the dir with QIR_CUDNN_LIB. (Windows: the
         // import library lives in NVIDIA's cuDNN zip, not in the wheel.)
         println!("cargo:rerun-if-env-changed=QIR_CUDNN_LIB");
-        let lib = std::env::var("QIR_CUDNN_LIB").unwrap_or_else(|_| {
-            format!(
-                "{}/dev_tmp/cudnn/py/nvidia/cudnn/lib",
-                std::env::var("HOME").unwrap_or_default()
-            )
-        });
+        let lib = std::env::var("QIR_CUDNN_LIB").unwrap_or_else(|_| format!("{}/dev_tmp/cudnn/py/nvidia/cudnn/lib", std::env::var("HOME").unwrap_or_default()));
         println!("cargo:rustc-link-search=native={lib}");
         if !cfg!(target_os = "windows") {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{lib}");

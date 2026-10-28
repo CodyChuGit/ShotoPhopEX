@@ -36,6 +36,26 @@ extern "C" {
         bias: f32,
         stream: *mut c_void,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn qir_layered_flash_fwd_bias(
+        o: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        b: i32,
+        h: i32,
+        kvh: i32,
+        s: i32,
+        skv: i32,
+        head_dim: i32,
+        strides: *const std::ffi::c_long,
+        scale: f32,
+        bias_row: i32,
+        bias_k0: i32,
+        bias_k1: i32,
+        bias: f32,
+        stream: *mut c_void,
+    ) -> i32;
 }
 
 /// A `(B, heads, rows, 128)` view's batch, head and row strides and its start, in elements:
@@ -59,6 +79,7 @@ pub struct KeyBias {
 }
 
 struct Flash {
+    layered: bool,
     scale: f32,
     bias: Option<KeyBias>,
 }
@@ -72,7 +93,15 @@ impl candle_core::CustomOp3 for Flash {
         candle_core::bail!("flash-attention is CUDA-only")
     }
 
-    fn cuda_fwd(&self, q: &CudaStorage, q_l: &Layout, k: &CudaStorage, k_l: &Layout, v: &CudaStorage, v_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(
+        &self,
+        q: &CudaStorage,
+        q_l: &Layout,
+        k: &CudaStorage,
+        k_l: &Layout,
+        v: &CudaStorage,
+        v_l: &Layout,
+    ) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = q.device().clone();
         let (b, h, s, d) = q_l.shape().dims4()?;
         let (kb, kvh, skv, kd) = k_l.shape().dims4()?;
@@ -97,7 +126,8 @@ impl candle_core::CustomOp3 for Flash {
                 None => (0, 0, 0, 0.0),
             };
             let rc = unsafe {
-                qir_flash_fwd_bias(
+                let launch = if self.layered { qir_layered_flash_fwd_bias } else { qir_flash_fwd_bias };
+                launch(
                     op as *mut c_void,
                     (qp + qo) as *const c_void,
                     (kp + ko) as *const c_void,
@@ -136,7 +166,14 @@ pub fn attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Result<Tenso
 pub fn attention_biased(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, bias: Option<KeyBias>) -> Result<Tensor> {
     anyhow::ensure!(q.dtype() == DType::BF16 && k.dtype() == DType::BF16 && v.dtype() == DType::BF16, "flash-attention takes bf16");
     let dense_rows = |t: &Tensor| -> Result<Tensor> { Ok(if t.stride().last() == Some(&1) { t.clone() } else { t.contiguous()? }) };
-    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { scale, bias })?)
+    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: false, scale, bias })?)
+}
+
+/// Layered-only shared-memory reuse; shared callers retain their original kernel.
+pub(crate) fn layered_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, bias: Option<KeyBias>) -> Result<Tensor> {
+    anyhow::ensure!(q.dtype() == DType::BF16 && k.dtype() == DType::BF16 && v.dtype() == DType::BF16, "Layered attention takes bf16");
+    let dense_rows = |t: &Tensor| -> Result<Tensor> { Ok(if t.stride().last() == Some(&1) { t.clone() } else { t.contiguous()? }) };
+    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: true, scale, bias })?)
 }
 
 #[cfg(test)]
@@ -160,6 +197,8 @@ mod tests {
         let (qf, kf, vf) = (q.contiguous()?.to_dtype(DType::F32)?, rep(&k)?, rep(&v)?);
         let p = candle_nn::ops::softmax_last_dim(&(qf.matmul(&kf.t()?)? * f64::from(scale))?)?;
         let want = p.matmul(&vf)?.transpose(1, 2)?; // (B,S,H,D)
+        let layered = layered_attention(&q, &k, &v, scale, None)?.to_dtype(DType::F32)?;
+        assert_eq!((&layered - &got)?.abs()?.max_all()?.to_scalar::<f32>()?, 0.0);
         let err = (got - want)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
         eprintln!("flash attention: max abs error {err} against the f32 reference");
         assert!(err < 0.02, "max abs error {err}");
@@ -189,8 +228,38 @@ mod tests {
         let add = Tensor::from_vec(add, (1, 1, s, s), &dev)?;
         let p = candle_nn::ops::softmax_last_dim(&(qf.matmul(&kf.t()?)? * f64::from(scale))?.broadcast_add(&add)?)?;
         let want = p.matmul(&vf)?.transpose(1, 2)?;
+        let layered = layered_attention(&q, &k, &v, scale, Some(bias))?.to_dtype(DType::F32)?;
+        assert_eq!((&layered - &got)?.abs()?.max_all()?.to_scalar::<f32>()?, 0.0);
         let err = (got - want)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
         assert!(err < 0.02, "max abs error {err}");
+        Ok(())
+    }
+    /// Compare both exact kernels at Layered sequence lengths, including a masked ragged tail.
+    #[test]
+    #[ignore = "exclusive CUDA attention benchmark"]
+    fn layered_tiles_match_and_time() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        for s in [6027, 19467] {
+            let q = Tensor::randn(0f32, 1.0, (1, 24, s, HEAD_DIM), &dev)?.to_dtype(DType::BF16)?;
+            let k = Tensor::randn(0f32, 1.0, (1, 24, s, HEAD_DIM), &dev)?.to_dtype(DType::BF16)?;
+            let v = Tensor::randn(0f32, 1.0, (1, 24, s, HEAD_DIM), &dev)?.to_dtype(DType::BF16)?;
+            let bias = Some(KeyBias { rows_from: 0, keys: (9, 27), log_boost: f32::NEG_INFINITY });
+            let scale = 1.0 / (HEAD_DIM as f32).sqrt();
+            let old = attention_biased(&q, &k, &v, scale, bias)?;
+            let new = layered_attention(&q, &k, &v, scale, bias)?;
+            let err = (old.to_dtype(DType::F32)? - new.to_dtype(DType::F32)?)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+            eprintln!("Layered tiles s={s}: max abs {err}");
+            assert_eq!(err, 0.0);
+            for layered in [false, true, false, true] {
+                dev.synchronize()?;
+                let start = std::time::Instant::now();
+                for _ in 0..5 {
+                    let _ = q.apply_op3_no_bwd(&k, &v, &Flash { layered, scale, bias })?;
+                }
+                dev.synchronize()?;
+                eprintln!("Layered tiles s={s} layered={layered}: {:.3} ms", start.elapsed().as_secs_f64() * 200.0);
+            }
+        }
         Ok(())
     }
 }

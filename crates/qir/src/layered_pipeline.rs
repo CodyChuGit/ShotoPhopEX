@@ -150,6 +150,11 @@ impl LayeredPipeline {
             }
             Ok(())
         };
+        let prefetch = if self.device.is_cuda() && std::env::var("QIR_LAYERED_PREFETCH").map_or(true, |v| v != "0") {
+            LayeredPrefetch::start(self.files.diffusion.clone())
+        } else {
+            None
+        };
         // LoadImage supplies RGB to VAEEncode; alpha is a separate, unused mask in this graph.
         let rgb: Vec<f32> = picture.pixels().flat_map(|p| p.0[..3].iter().map(|v| (*v as f32 / 255.0) * 2.0 - 1.0)).collect();
         let pixels = Tensor::from_vec(rgb, (1, h, w, 3), &self.device)?.permute((0, 3, 1, 2))?.contiguous()?;
@@ -199,7 +204,10 @@ impl LayeredPipeline {
             // On CUDA the whole DiT goes on the device for the split's forwards (the encoder is
             // gone by now: the two do not fit 32 GB together), else one block at a time.
             let dit = if self.device.is_cuda() {
-                LayeredDit::open_resident(&self.files.diffusion, &self.device)?
+                match prefetch {
+                    Some(prefetch) => LayeredDit::from_resident_file(prefetch.finish()?, &self.device)?,
+                    None => LayeredDit::open_resident(&self.files.diffusion, &self.device)?,
+                }
             } else {
                 LayeredDit::open_streamed(&self.files.diffusion, &self.device)?
             };
@@ -264,6 +272,45 @@ impl LayeredPipeline {
         }
         mark("decode")?;
         Ok(images)
+    }
+}
+
+/// Fault checkpoint pages concurrently with conditioning; cancel and join on every exit.
+struct LayeredPrefetch {
+    task: Option<std::thread::JoinHandle<Result<TensorFile>>>,
+    stop: std::sync::Arc<AtomicBool>,
+}
+
+impl LayeredPrefetch {
+    fn start(path: std::path::PathBuf) -> Option<Self> {
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let cancelled = stop.clone();
+        let task = std::thread::Builder::new()
+            .name("layered-prefetch".into())
+            .spawn(move || {
+                let file = TensorFile::open(path)?;
+                file.prefetch(&cancelled);
+                Ok(file)
+            })
+            .ok()?;
+        Some(Self { task: Some(task), stop })
+    }
+
+    fn finish(mut self) -> Result<TensorFile> {
+        self.task
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("missing Layered prefetch task"))?
+            .join()
+            .map_err(|_| anyhow::anyhow!("Layered checkpoint prefetch thread failed"))?
+    }
+}
+
+impl Drop for LayeredPrefetch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(task) = self.task.take() {
+            let _ = task.join();
+        }
     }
 }
 
@@ -341,6 +388,33 @@ mod layered_pool_tests {
         };
         assert!(attempt().is_err());
         assert_eq!(threshold()?, before);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod layered_prefetch_tests {
+    use super::*;
+
+    #[test]
+    fn prefetch_propagates_io_errors_and_joins_on_cancel() -> Result<()> {
+        let missing = std::env::temp_dir().join(format!("qir-missing-checkpoint-{}.safetensors", std::process::id()));
+        let task = LayeredPrefetch::start(missing).ok_or_else(|| anyhow::anyhow!("prefetch worker unavailable"))?;
+        assert!(task.finish().is_err());
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stopped = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_stopped = stopped.clone();
+        let task = std::thread::spawn(move || -> Result<TensorFile> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            while !worker_stop.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            worker_stopped.store(worker_stop.load(Ordering::Relaxed), Ordering::Relaxed);
+            anyhow::bail!("cancelled test worker")
+        });
+        drop(LayeredPrefetch { task: Some(task), stop });
+        assert!(stopped.load(Ordering::Relaxed), "drop must stop and join the worker");
         Ok(())
     }
 }

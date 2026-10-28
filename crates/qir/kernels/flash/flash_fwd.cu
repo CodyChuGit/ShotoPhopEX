@@ -25,7 +25,12 @@ constexpr int BR = 64;
 constexpr int BC = 64;
 constexpr int LD = D + 8;
 constexpr int THREADS = 128;
+#ifdef QIR_FLASH_REUSE_QUERY_SMEM
+// Q is entirely in registers before the key loop's first CTA barrier.
+constexpr int SMEM_BYTES = 2 * BC * LD * 2;
+#else
 constexpr int SMEM_BYTES = (BR + 2 * BC) * LD * 2;
+#endif
 
 __device__ __forceinline__ uint32_t smem_addr(const void* p) {
     return static_cast<uint32_t>(__cvta_generic_to_shared(p));
@@ -117,7 +122,11 @@ __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __rest
                                                      int bias_k1, float bias_s) {
     extern __shared__ __align__(16) unsigned char smem[];
     __nv_bfloat16* sQ = reinterpret_cast<__nv_bfloat16*>(smem);
+#ifdef QIR_FLASH_REUSE_QUERY_SMEM
+    __nv_bfloat16* sK = sQ;
+#else
     __nv_bfloat16* sK = sQ + BR * LD;
+#endif
     __nv_bfloat16* sV = sK + BC * LD;
 
     const int h = blockIdx.y;

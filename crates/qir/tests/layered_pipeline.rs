@@ -105,7 +105,10 @@ fn installed_benchmark() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\photocraft-tests\bench\swap\gen\gen-tshirt.png"));
     let picture = image::open(input)?.into_rgba8();
-    let picture = layered_resize::resize(&picture, 640, 640);
+    let dimension = |key: &str, default: u32| -> anyhow::Result<u32> { Ok(std::env::var(key).ok().map(|v| v.parse()).transpose()?.unwrap_or(default)) };
+    let picture = layered_resize::resize(&picture, dimension("QIR_LAYERED_WIDTH", 640)?, dimension("QIR_LAYERED_HEIGHT", 640)?);
+    let export_width = dimension("QIR_LAYERED_EXPORT_WIDTH", 1024)?;
+    let export_height = dimension("QIR_LAYERED_EXPORT_HEIGHT", 1024)?;
     let cancel = AtomicBool::new(false);
     let steps = std::env::var("QIR_LAYERED_STEPS").ok().map(|v| v.parse()).transpose()?.unwrap_or(20);
     let repeat = std::env::var("QIR_LAYERED_REPEAT").ok().map(|v| v.parse()).transpose()?.unwrap_or(1);
@@ -117,6 +120,7 @@ fn installed_benchmark() -> anyhow::Result<()> {
         eprintln!("benchmark run {}", run + 1);
         let sync_steps = std::env::var("QIR_LAYERED_SYNC_STEPS").is_ok_and(|v| v == "1");
         let mut last = Instant::now();
+        let split_started = Instant::now();
         let images = pipeline.split(
             &picture,
             3,
@@ -135,6 +139,7 @@ fn installed_benchmark() -> anyhow::Result<()> {
             &cancel,
         )?;
         device.synchronize()?;
+        eprintln!("benchmark pipeline split: {:.3}s", split_started.elapsed().as_secs_f64());
         eprintln!("benchmark split end-to-end: {:.3}s", started.elapsed().as_secs_f64());
         if let Some(previous) = previous {
             assert_eq!(images, previous, "repeat output bytes");
@@ -144,7 +149,7 @@ fn installed_benchmark() -> anyhow::Result<()> {
         std::fs::create_dir_all(&out)?;
         for (i, image) in images.iter().enumerate() {
             image.save(out.join(format!("raw-{}.png", i + 1)))?;
-            let mut image = layered_resize::resize(image, 1024, 1024);
+            let mut image = layered_resize::resize(image, export_width, export_height);
             // Document export clears color at zero alpha; match the saved ComfyUI files.
             for pixel in image.pixels_mut() {
                 if pixel[3] == 0 {

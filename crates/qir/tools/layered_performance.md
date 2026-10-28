@@ -192,3 +192,4 @@ Changed files (all uncommitted):
 - `crates/qir/tools/layered_compare.py`
 - `crates/qir/tools/layered_performance.md`
 
+The 2026-10-28 864x1152 and 480x640 follow-up, including ComfyUI execution details and matched parity gates, is in [layered_size_performance.md](layered_size_performance.md).
