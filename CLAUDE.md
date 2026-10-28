@@ -77,7 +77,10 @@ Integrations › Engine = Native routes generative commands to it.
   change. Workflow templates are JSON files in `crates/genai/workflows/`, taken from ComfyUI's
   official templates and verified against a live server's `/object_info` before they ship.
 - Model and licence facts go in [`docs/comfy/models.md`](docs/comfy/models.md) with a source and a
-  date; research-only models are never defaults.
+  date; research-only models are never defaults in a build for others. PhotoshopEX (this
+  owner's version) is the exception since 2026-10-28, on the owner's call: engine `native` and
+  "Allow Research-Only Models" on by default, so Qwen-Image-2.1 and Krea 2 serve everything
+  with no ComfyUI. Turn both back before publishing (the checklist in `upstream.md`).
 - Keep the fork MIT OR Apache-2.0; ship no model weights. Before any published build, follow the
   brand checklist in [`docs/comfy/upstream.md`](docs/comfy/upstream.md).
 - Tests for anything that talks to ComfyUI run against an in-process fake server; one `#[ignore]`

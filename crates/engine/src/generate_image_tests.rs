@@ -19,7 +19,7 @@ fn session(url: &str) -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = url.to_string());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
     s
 }
 
@@ -67,7 +67,7 @@ fn image_lands_as_a_layer_covering_the_canvas() {
 fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
     let fake = FakeComfy::start().unwrap();
     let mut s = Session::new();
-    s.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     assert!(s.is_enabled(IMAGE), "no document needed");
     let r = s.execute(IMAGE, json!({"prompt": "a poster", "width": 128, "height": 96})).unwrap();
     assert_eq!(r["document"], 0);
@@ -91,7 +91,7 @@ fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
 fn sizes_default_round_and_validate() {
     let fake = FakeComfy::start().unwrap();
     let mut s = Session::new();
-    s.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     // 1000×700 rounds down to the 16-pixel grid.
     let r = s.execute(IMAGE, json!({"prompt": "x", "width": 1000, "height": 700})).unwrap();
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(992), Some(688)));
@@ -112,7 +112,7 @@ fn sizes_default_round_and_validate() {
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(1024), Some(1024)), "auto with a document open: a layer over its canvas");
     assert_eq!(fake.state().prompts.last().unwrap().1["7"]["inputs"]["steps"], 8, "0 steps = the template default");
     let mut empty = Session::new();
-    empty.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    empty.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     let e = empty.execute(IMAGE, json!({"prompt": "x", "target": "layer"})).unwrap_err();
     assert!(e.to_string().contains("open or create a document"), "{e}");
 }
@@ -139,7 +139,7 @@ fn image_runs_as_a_background_job() {
 
     // A new document from a background job too.
     let mut empty = Session::new();
-    empty.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    empty.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     let id = match empty.start(IMAGE, json!({"prompt": "x", "width": 64, "height": 64})).unwrap() {
         Started::Job(id) => id,
         Started::Done(v) => panic!("ran inline: {v}"),

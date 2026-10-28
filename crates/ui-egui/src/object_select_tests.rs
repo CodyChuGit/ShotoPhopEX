@@ -11,7 +11,7 @@ fn app(url: &str) -> PhotocraftApp {
     let mut a = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     a.run("file.new", json!({"width": 100, "height": 60})).unwrap();
     a.run("layer.new.layer", json!({})).unwrap();
-    a.session.edit_prefs(|p| p.integrations.comfy_server = url.to_string());
+    a.session.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
     a.ui.tool = Tool::ObjectSelection;
     // The new, empty layer is active: the classical rectangle wants pixels under it.
     a.ui.tool_options.sample_all.object_selection = true;
@@ -147,7 +147,7 @@ fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
     assert!(h.state().ui.object_select.hover.is_none());
     // Nothing under the pointer: the finder remembers the spot and asks again only after a move.
     let empty = FakeComfy::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
-    h.state_mut().session.edit_prefs(|p| p.integrations.comfy_server = empty.url.clone());
+    h.state_mut().session.edit_prefs(|p| p.integrations.set_comfy_route(empty.url.clone()));
     h.state_mut().ui.object_select = Default::default();
     h.state_mut().ui.tool = Tool::ObjectSelection;
     let far = xf.to_screen(80.0, 50.0);
@@ -187,11 +187,11 @@ fn without_a_server_the_tool_is_the_classical_rectangle_and_select_subject_falls
     crate::menus::invoke(&mut a, &ctx, "select.subject", json!({})).unwrap();
     assert_eq!(last_params(&a).0, "select.subject");
     let fake = FakeComfy::start().unwrap();
-    a.session.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    a.session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     crate::menus::invoke(&mut a, &ctx, "select.subject", json!({})).unwrap();
     let (id, p) = last_params(&a);
     assert_eq!((id.as_str(), p["refine"].as_bool()), ("select.subjectML", Some(true)));
     assert!(online(&mut a, 2.0), "a new server: checked afresh");
-    a.session.edit_prefs(|p| p.integrations.comfy_server = "http://127.0.0.1:9".into());
+    a.session.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
     assert!(!online(&mut a, 3.0), "and a dead one is seen as such at once, not from the cache");
 }

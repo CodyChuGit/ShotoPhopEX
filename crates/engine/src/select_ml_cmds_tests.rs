@@ -9,7 +9,7 @@ fn session(url: &str) -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = url.to_string());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
     s
 }
 
@@ -197,7 +197,7 @@ fn a_probe_is_kept_for_the_click_that_follows_and_goes_stale_with_an_edit() {
     // Probes of big pictures go out small.
     let mut big = Session::new();
     big.execute("file.new", json!({"width": 2400, "height": 1800})).unwrap();
-    big.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    big.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     let r = big.execute(PROBE, json!({"x": 1200, "y": 900})).unwrap();
     assert!(r["width"].as_u64().unwrap() * r["height"].as_u64().unwrap() <= 768 * 768, "{r}");
     let sent = photocraft_genai::png::decode_rgba8(&fake.state().uploads.last().unwrap().1).unwrap();
@@ -317,7 +317,7 @@ fn big_canvases_are_sent_downscaled_and_the_masks_come_back_at_canvas_size() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 2400, "height": 1800})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     let r = s.execute(BY_TEXT, json!({"prompt": "the lighthouse"})).unwrap();
     assert_eq!(r["count"], 1);
     let sent = photocraft_genai::png::decode_rgba8(&fake.state().uploads[0].1).unwrap();

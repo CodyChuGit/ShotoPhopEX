@@ -13,7 +13,7 @@ fn session(url: &str) -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = url.to_string());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
     s
 }
 
@@ -92,6 +92,6 @@ fn split_sizes_validates_and_has_no_similar() {
     let e = s.execute(SIMILAR, json!({"layer": id.0})).unwrap_err().to_string();
     assert!(e.contains("split"), "{e}");
     let mut empty = Session::new();
-    empty.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    empty.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     assert!(!empty.is_enabled(SPLIT));
 }

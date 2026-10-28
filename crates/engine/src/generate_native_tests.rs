@@ -29,6 +29,10 @@ fn the_engine_preference_routes_to_the_native_worker() {
     .unwrap();
     set_native_backend(Arc::new(photocraft_genai::native::NativeBackend::attached(port, &token).unwrap()));
     let mut s = Session::new();
+    // Native and research-on by default since 2026-10-28 (the owner: no ComfyUI by default).
+    assert_eq!(engine_mode(&s), "native");
+    assert!(s.prefs().integrations.allow_research_models);
+    s.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
     assert_eq!(engine_mode(&s), "auto");
     assert!(s.execute("prefs.set", json!({"path": "integrations.engine", "value": "warp"})).is_err(), "only the listed engines");
     s.execute("prefs.set", json!({"path": "integrations.engine", "value": "native"})).unwrap();
@@ -221,6 +225,7 @@ fn auto_runs_qwen_image_2_1_on_the_worker_instead_of_2511() {
         p.integrations.runtime_path = "runtime".into();
         p.integrations.models_path = "models".into();
         p.integrations.comfy_server = comfy.url.clone();
+        p.integrations.allow_research_models = false;
     });
     let m = s.execute("generate.models", json!({"probe": false})).unwrap();
     assert!(m["autoEdit"].is_null() && m["autoRemove"].is_null(), "no opt-in: the server's order, unknown offline: {m}");
@@ -290,8 +295,9 @@ fn a_2511_request_without_comfyui_names_the_native_alternative() {
         p.integrations.engine = "auto".into();
         p.integrations.runtime_path = "runtime".into();
         p.integrations.models_path = "models".into();
-        // A port nothing listens on.
+        // A port nothing listens on; research-only models off (the ComfyUI route's setting).
         p.integrations.comfy_server = "http://127.0.0.1:9".into();
+        p.integrations.allow_research_models = false;
     });
     let err = s.execute("generate.edit", json!({"prompt": "make it winter", "template": "qwen-edit-2511/edit", "seed": 1})).unwrap_err().to_string();
     assert!(err.contains("Allow Research-Only Models") && err.contains("start ComfyUI"), "{err}");

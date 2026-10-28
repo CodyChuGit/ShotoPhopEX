@@ -886,7 +886,7 @@ mod tests {
         assert!(!app.ui.status_error, "{}", app.ui.status);
         assert!(app.session.active().unwrap().doc.selection.is_none());
         // A server: the click goes to the detector's point prompt and its mask becomes the selection.
-        app.session.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+        app.session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
         tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 30.0, pressure: 1.0 }, none);
         tool_event(&mut app, ToolEvent::Up { x: 40.0, y: 30.0 }, none);
         {
@@ -929,7 +929,7 @@ mod tests {
         select_subject(&mut app).unwrap();
         assert_eq!(fake.state().prompts.len(), 5);
         assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.subject"));
-        app.session.edit_prefs(|p| p.integrations.comfy_server = "http://127.0.0.1:9".into());
+        app.session.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
         tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 30.0, pressure: 1.0 }, none);
         tool_event(&mut app, ToolEvent::Up { x: 40.0, y: 30.0 }, none);
         assert_ne!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.byPoint"), "a server that is down: no point prompt");
@@ -960,7 +960,7 @@ mod tests {
         assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.quick"));
         assert!(fake.state().prompts.is_empty());
         // A server: the stroke's spots become the detector's positive points, mode add.
-        app.session.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+        app.session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
         app.ui.tool_options.enhance_edge = true;
         stroke(&mut app, none);
         let (id, p) = app.session.journal.last().map(|(id, p)| (id.clone(), p.clone())).unwrap();
@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(app.session.journal.last().map(|(_, p)| p["mode"].as_str()), Some(Some("subtract")));
         assert_eq!(fake.state().prompts.len(), 2);
         // A server that is down: the classical path again, quietly.
-        app.session.edit_prefs(|p| p.integrations.comfy_server = "http://127.0.0.1:9".into());
+        app.session.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
         stroke(&mut app, none);
         assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.quick"));
     }

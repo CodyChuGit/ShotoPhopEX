@@ -1730,7 +1730,7 @@ mod tests {
         // to generate.expand (the model paints it); with it off, the canvas just grows.
         let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
         let mut app = app(SampleType::U8);
-        app.session.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+        app.session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
         app.ui.tool_options.crop_generative = true;
         app.crop.default_frame = false;
         app.ui.crop_rect = Some([0.0, 0.0, 264.0, 100.0]);

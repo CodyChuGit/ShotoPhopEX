@@ -20,7 +20,7 @@ fn app(url: &str) -> (PhotocraftApp, u64, u64) {
     s.execute("select.deselect", json!({})).unwrap();
     let hat = s.active().unwrap().active_layer.unwrap().0;
     s.execute("layer.select", json!({"layer": base})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = url.to_string());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     app.sync_views();
     load_catalog(&mut app);

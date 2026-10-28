@@ -908,7 +908,9 @@ pub struct Integrations {
     pub default_image_template: String,
     /// Seconds a generation may take before it is interrupted.
     pub generative_timeout_secs: u32,
-    /// Offer models whose licence allows research use only (never pre-selected).
+    /// Offer models whose licence allows research use only (Qwen-Image-2.1). On by default in
+    /// PhotoshopEX since 2026-10-28 (the owner's call: 2.1 and Krea 2 run everything natively, no
+    /// ComfyUI); a build for others must turn it off again (`docs/comfy/upstream.md` checklist).
     pub allow_research_models: bool,
     /// When the generative task bar (the Generate panel's compact form) shows under a
     /// selection: `auto` = while the Generate panel is collapsed or hidden, `always`, `never`.
@@ -964,9 +966,10 @@ pub struct Integrations {
     pub engine_start_on_launch: bool,
     /// Stop the engine the app started when the app quits.
     pub engine_stop_on_quit: bool,
-    /// Which engine runs generative requests: `auto` (today the ComfyUI route; the native engine
-    /// takes a model over when it is faster at parity), `native` (the in-process worker,
-    /// `photocraft --engine`), `comfy` (the ComfyUI server). See `generate_cmds::backend`.
+    /// Which engine runs generative requests: `native` (the in-process worker, `photocraft
+    /// --engine`; the default since 2026-10-28, the Rust rebuild's R6), `auto` (the worker for what
+    /// it serves, the ComfyUI server otherwise), `comfy` (the ComfyUI server; an explicit opt-in).
+    /// See `generate_cmds::backend`.
     pub engine: String,
     /// The native worker's runtime folders, `;`-separated: where ONNX Runtime
     /// (`onnxruntime.dll` / `libonnxruntime.so` and its providers) and the CUDA and cuDNN
@@ -992,7 +995,7 @@ impl Default for Integrations {
             default_fill_template: "auto".into(),
             default_image_template: "krea2-turbo/image".into(),
             generative_timeout_secs: 600,
-            allow_research_models: false,
+            allow_research_models: true,
             show_generative_bar: "auto".into(),
             enter_to_generate: false,
             group_models_by_family: true,
@@ -1008,7 +1011,7 @@ impl Default for Integrations {
             comfy_args: "--fast fp8_matrix_mult".into(),
             engine_start_on_launch: false,
             engine_stop_on_quit: true,
-            engine: "auto".into(),
+            engine: "native".into(),
             runtime_path: String::new(),
             models_path: String::new(),
         }
@@ -1034,6 +1037,16 @@ impl Integrations {
             return p.to_string();
         }
         comfy_models(self.comfy_path.trim()).unwrap_or_default()
+    }
+
+    /// The ComfyUI route at `url`, as the defaults were before 2026-10-28: engine `auto` (the
+    /// worker only for what it serves) and research-only models off. The defaults are native and
+    /// research-on since the owner's call that day (no ComfyUI by default); tests of the ComfyUI
+    /// route and anyone opting into it start here.
+    pub fn set_comfy_route(&mut self, url: impl Into<String>) {
+        self.comfy_server = url.into();
+        self.engine = "auto".into();
+        self.allow_research_models = false;
     }
 
     /// Whether the native worker can serve models: runtime folders and a model root.

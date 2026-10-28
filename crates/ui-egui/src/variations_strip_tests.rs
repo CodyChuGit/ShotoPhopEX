@@ -14,7 +14,7 @@ fn app(url: &str) -> PhotocraftApp {
     s.execute("file.new", json!({"width": 256, "height": 192})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 40, "y": 30, "width": 120, "height": 90})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = url.to_string());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     app.sync_views();
     app

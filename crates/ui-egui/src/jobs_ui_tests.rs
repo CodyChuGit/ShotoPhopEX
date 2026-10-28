@@ -194,7 +194,7 @@ fn filters_from_the_ui_run_in_the_background() {
 fn the_model_pickers_background_check_leaves_the_status_line_alone() {
     let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
     let mut h = app_harness();
-    h.state_mut().session.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    h.state_mut().session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     h.state_mut().ui.status = "Gaussian Blur".into();
     crate::generate_panel::load_catalog(h.state_mut());
     assert!(!h.state().session.has_jobs(), "loading the catalogue stays offline");

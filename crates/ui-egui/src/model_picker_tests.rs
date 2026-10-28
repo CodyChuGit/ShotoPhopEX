@@ -83,7 +83,7 @@ fn the_panel_lists_the_pages_templates_with_estimates_and_the_probe_marks_missin
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("select.rect", json!({"x": 4, "y": 4, "width": 20, "height": 20})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     crate::generate_panel::load_catalog(&mut app);
     // Loading the catalogue stays offline (the panel is on screen from startup).

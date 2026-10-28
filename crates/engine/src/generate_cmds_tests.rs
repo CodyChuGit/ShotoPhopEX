@@ -19,7 +19,7 @@ fn session(url: &str) -> Session {
     texture(&mut s);
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
     s.edit_prefs(|p| {
-        p.integrations.comfy_server = url.to_string();
+        p.integrations.set_comfy_route(url.to_string());
         // These tests pin the Lightning `auto` tier: Quality `balanced` (the default is `best`).
         p.integrations.quality = "balanced".into();
     });
@@ -294,7 +294,7 @@ fn a_sixteen_bit_document_gets_a_sixteen_bit_layer() {
     texture(&mut s);
     s.execute("select.rect", json!({"x": 8, "y": 8, "width": 8, "height": 8})).unwrap();
     s.edit_prefs(|p| {
-        p.integrations.comfy_server = fake.url.clone();
+        p.integrations.set_comfy_route(fake.url.clone());
         p.integrations.quality = "balanced".into();
     });
     let r = s.execute(FILL, json!({"prompt": "x", "margin": 0})).unwrap();
@@ -347,7 +347,7 @@ fn the_quality_preference_decides_what_auto_picks_and_whether_nvfp4_applies() {
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
     let r = s.execute(FILL, json!({"prompt": "a kite", "seed": 1})).unwrap();
     assert_eq!(r["template"], DEFAULT_FILL_TEMPLATE, "best: the 40-step base template");
     assert_eq!(fake.state().prompts[0].1["2"]["inputs"]["clip_name"], "qwen_2.5_vl_7b_fp8_scaled.safetensors", "no NVFP4 under best");
@@ -615,7 +615,7 @@ fn purge_generative_models_asks_the_server_to_free() {
     let fake = FakeComfy::start().unwrap();
     let mut s = Session::new();
     s.edit_prefs(|p| {
-        p.integrations.comfy_server = fake.url.clone();
+        p.integrations.set_comfy_route(fake.url.clone());
         p.integrations.quality = "balanced".into();
     });
     assert!(s.is_enabled(FREE), "no document needed");
@@ -624,7 +624,7 @@ fn purge_generative_models_asks_the_server_to_free() {
     assert!(fake.state().requests.iter().any(|r| r == "POST /free"), "{:?}", fake.state().requests);
     assert_eq!(s.journal.iter().filter(|(id, _)| id.as_str() == FREE).count(), 0, "not journaled");
     // No server configured: a clear error.
-    s.edit_prefs(|p| p.integrations.comfy_server = String::new());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(String::new()));
     assert!(s.execute(FREE, json!({})).unwrap_err().to_string().contains("no generative server"));
 }
 
@@ -659,7 +659,7 @@ fn large_areas_are_sent_at_one_megapixel_and_come_back_full_size() {
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 100, "y": 100, "width": 1400, "height": 1000})).unwrap();
     s.edit_prefs(|p| {
-        p.integrations.comfy_server = fake.url.clone();
+        p.integrations.set_comfy_route(fake.url.clone());
         p.integrations.quality = "balanced".into();
     });
     let r = s.execute(FILL, json!({"prompt": "x", "margin": 0})).unwrap();

@@ -253,7 +253,7 @@ mod tests {
         let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
         let mut s = Session::new();
         s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
-        s.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+        s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
         let layers = s.active().unwrap().doc.layers.len();
         let r = s.execute(UPSCALE, json!({"scale": 2, "tileMegapixels": 0.25, "seed": 5})).unwrap();
         // 600×400 in tiles of 496 px: two across (0 and 104), one down.

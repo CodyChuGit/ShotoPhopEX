@@ -19,7 +19,7 @@ fn app(url: &str, dir: &std::path::Path) -> PhotocraftApp {
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = url.to_string());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     app.sync_views();
     app
@@ -229,7 +229,7 @@ fn a_short_group_shows_the_compact_strip_with_every_kind_of_row() {
     let dir = temp_dir("compact");
     let mut first = app(&fake.url, &dir);
     first.run("generate.fill", json!({"prompt": "a kite", "seed": 1})).unwrap();
-    first.session.edit_prefs(|p| p.integrations.comfy_server = "http://127.0.0.1:9".into());
+    first.session.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
     assert!(first.run("generate.fill", json!({"prompt": "a boat"})).is_err());
     // The group at its compact height: 80 pt minus the tab strip.
     let mut h = Harness::builder().with_size(vec2(300.0, 52.0)).build_ui_state(

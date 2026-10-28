@@ -332,7 +332,7 @@ mod tests {
         tick(&mut app, &ctx);
         assert_eq!(state(&app), "unconfigured");
         assert_eq!(native_state(&app), "unconfigured");
-        assert!(!follows_native(&app), "auto without folders: the ComfyUI dot");
+        assert!(follows_native(&app), "native by default (2026-10-28): the worker's dot, even unconfigured");
         on_quit(&mut app);
     }
 

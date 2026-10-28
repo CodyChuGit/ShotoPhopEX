@@ -34,7 +34,7 @@ fn session(url: &str) -> (Session, LayerId, LayerId) {
     let hat = s.active().unwrap().active_layer.unwrap();
     s.execute("layer.select", json!({"layer": base.0})).unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    s.edit_prefs(|p| p.integrations.comfy_server = url.to_string());
+    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
     (s, base, hat)
 }
 

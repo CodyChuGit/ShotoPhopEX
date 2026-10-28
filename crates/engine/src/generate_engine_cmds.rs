@@ -257,7 +257,7 @@ mod tests {
     fn engine_commands_follow_the_preferences() {
         let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
         let mut s = Session::new();
-        s.edit_prefs(|p| p.integrations.comfy_server = fake.url.clone());
+        s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
         let st = s.execute(STATUS, json!({})).unwrap();
         assert_eq!(st["state"], "unconfigured");
         assert!(s.execute(START, json!({})).is_err(), "start needs a folder");
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(l.args, vec!["--fast", "fp8_matrix_mult", "--lowvram"]);
         assert_eq!(l.url, fake.url);
         // A closed port and a folder that is no install: a sentence, nothing spawned.
-        s.edit_prefs(|p| p.integrations.comfy_server = "http://127.0.0.1:9".into());
+        s.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
         assert_eq!(s.execute(STATUS, json!({})).unwrap()["state"], "stopped");
         let e = s.execute(START, json!({})).unwrap_err().to_string();
         assert!(e.contains("not a ComfyUI install"), "{e}");
@@ -284,7 +284,7 @@ mod tests {
         std::fs::write(d.join("main.py"), "").unwrap();
         s.edit_prefs(|p| {
             p.integrations.comfy_path = d.to_string_lossy().into_owned();
-            p.integrations.comfy_server = fake.url.clone();
+            p.integrations.set_comfy_route(fake.url.clone());
         });
         let st = s.execute(START, json!({})).unwrap();
         assert_eq!((st["state"].as_str(), st["pid"].is_null()), (Some("external"), true), "{st}");

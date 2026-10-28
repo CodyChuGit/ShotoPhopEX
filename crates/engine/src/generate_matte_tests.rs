@@ -31,7 +31,7 @@ fn session(url: &str) -> Session {
     })
     .unwrap();
     s.edit_prefs(|p| {
-        p.integrations.comfy_server = url.to_string();
+        p.integrations.set_comfy_route(url.to_string());
         p.integrations.allow_research_models = true;
     });
     s
