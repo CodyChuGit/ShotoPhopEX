@@ -4,6 +4,22 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-27 (night): Rust rebuild: SAM 3.1 in the worker, the Layered split natively
+
+- **SAM 3.1 on candle in the worker** (genai-native `7619fd6`; PhotoshopEX `41b6d0ef` builds it
+  with `native-diffusion`): the perception engine runs it whenever the checkpoint is there
+  (ComfyUI's `checkpoints/`), the ONNX graphs otherwise; CLIP tokenizer from ComfyUI's
+  `sd1_tokenizer`. GPU speed pass (`7eefc85`, Codex): by text on a new picture 515 ms f32 (f16
+  opt-in 260 ms; ONNX Runtime 200 ms), points 9–13 ms. Candle equals ComfyUI's own f32 SAM 3.1
+  on the picture where it disagreed with ONNX (`8404ffd`): the exported graphs drift.
+- **Split into Layers natively** (`ec668ba` pipeline by Codex, `3056cda` serving, `7f5abb8` fp8
+  on CUDA through qir's kernels): at parity with ComfyUI through the app (1–3/255, alpha IoU
+  ≥ 0.994), 86 s against 58 s, so `engine = native` only for now (PhotoshopEX `29308319`).
+- Models folder empty → the ComfyUI install's `models` (`8872dbcf`); `runtime.ps1` without
+  ONNX Runtime and cuDNN (581 MB, `130e4b1b`).
+- Pitfall: a `$env:CARGO_TARGET_DIR` set earlier in the same PowerShell command sends
+  `build-native.cmd`'s build into that folder, and the old `photocraft-cli.exe` keeps running.
+
 ## 2026-10-27 (evening, later): Rust rebuild: SAM 3.1 on candle, models from ComfyUI's folder
 
 Task file `docs/comfy/goals/rust-rebuild.md` (progress log there). Codex wrote the model ports in

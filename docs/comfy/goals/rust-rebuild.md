@@ -52,7 +52,7 @@ progress log (newest last). The plan behind it is `docs/comfy/plan-native-engine
 | Image from references | 2.1 image-ref (since 2026-10-27; 2511 image-ref without the opt-in) | yes | — |
 | Generative Angles | 2.1 edit by a camera instruction (since 2026-10-27; 2511 + Multiple Angles LoRA without the opt-in) | yes | compare with 2511 + the LoRA (not installed here) |
 | Krea 2 style reference | Krea 2 + style LoRA | no (ComfyUI) | the Krea 2 reference path exists now; the style LoRA (R2) |
-| Split into layers | Qwen-Image-Layered | no (ComfyUI) | port (R3) |
+| Split into layers | Qwen-Image-Layered | yes with `engine = native` (at parity since 2026-10-27) | speed: 86 s against ComfyUI's 58 s, then `auto` |
 | Generative Upscale | 2.1 edit tiles | yes | — |
 
 ## 3. The queue
@@ -165,3 +165,15 @@ step, the dev log and roadmap updated.
   same bounds as the ONNX route, pixel counts within 1%, points 30 ms on both, by text on a
   new picture 1.7–1.9 s against 0.3–0.4 s. Codex on step 10 (GPU speed: weights cast once,
   bf16, no host round trips) and on R3 steps 5–6 (the Layered noise, schedule and pipeline).
+- 2026-10-27, night: **R1 step 10, first pass** (`7eefc85`, Codex): select by text on a new
+  picture 515 ms in f32 on the 5090 (1.7 s before), 260 ms with an opt-in f16 path, ONNX
+  Runtime 190–210 ms; points 9–13 ms (ONNX 15–24). **The parity reference is ComfyUI's node**
+  (`8404ffd`, CUP.md): on the one picture that disagreed, candle equals ComfyUI's f32 SAM 3.1
+  exactly; the ONNX graphs' mixed precision drifts. Codex now measures f16 against ComfyUI on
+  12 pictures. **R3 end to end**: the Layered pipeline (`ec668ba`, Codex) and the worker's
+  `qwen-layered/split` (`3056cda`; `7f5abb8` routes its fp8 linears through qir's kernels on
+  CUDA): through the app on 640×640, 3 layers, against ComfyUI's split, mean RGB difference
+  1–3/255 and alpha IoU 0.994–1.000 per layer; **86 s against ComfyUI's 58 s**, so it serves
+  `engine = native` (PhotoshopEX `29308319`) and joins `auto` when it is at least as fast.
+  **R4 app side** (`8872dbcf`): Models folder empty means the ComfyUI install's `models`.
+  **R5**: `runtime.ps1` without ONNX Runtime and cuDNN, 581 MB (`130e4b1b`).
