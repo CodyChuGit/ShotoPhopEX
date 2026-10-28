@@ -73,7 +73,9 @@ if (-not $SkipBuild) {
   # Fail the build (rather than warn) if the icon/VERSIONINFO can't be embedded.
   $env:PHOTOCRAFT_REQUIRE_WINRES = '1'
   $Features = if ($Native) { 'heif,photocraft/alerts,photocraft/native-diffusion,photocraft-cli/native-diffusion' } else { 'heif,photocraft/alerts' }
-  Invoke-Native "cargo build ($Target)" { cargo build --release --locked -p photocraft -p photocraft-cli --features $Features --target $Target }
+  # -Native leaves out the apps' default `sam-onnx`: SAM 3.1 runs on candle, no ONNX Runtime in the worker.
+  $NoDefault = if ($Native) { @('--no-default-features') } else { @() }
+  Invoke-Native "cargo build ($Target)" { cargo build --release --locked -p photocraft -p photocraft-cli @NoDefault --features $Features --target $Target }
 }
 if ($Native) {
   if ($Arch -ne 'x64') { throw '-Native is x64 only (CUDA)' }
