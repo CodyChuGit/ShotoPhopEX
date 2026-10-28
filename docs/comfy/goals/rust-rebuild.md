@@ -228,3 +228,16 @@ step, the dev log and roadmap updated.
     models off, a 2511 request with no ComfyUI answering while the worker runs 2.1 says both ways
     out. The engine, genai and CLI suites: 2 245 passed, 0 failed. Morning summary:
     [`rust-rebuild-morning.md`](rust-rebuild-morning.md).
+- 2026-10-28, day: **R6 decided by the owner** ("no comfy UI, the goal is full rust rebuild"):
+  engine `native` and research models on by default (PhotoshopEX `df40a2bb`; the ComfyUI engine
+  an opt-in, `Integrations::set_comfy_route`; turn both back before a build for others).
+  Remove Background with no prompt names the subject first (`49ecf6d3`). Two new goals from the
+  owner: **2511 natively as a benchmark alternative** (spec genai-native `90e005a`, the
+  Qwen2.5-VL vision tower `7049357`; the text encoder's image splicing in review; the DiT step,
+  pipeline and worker next) and **every native feature at least as fast as ComfyUI** at 1 MP
+  (`speed-table.ps1`, `benchmarks.md` §0): the split now level (`f66aeb6`: 175 → 130 s at
+  864×1152, layers byte-identical), text to image and SAM level or faster; the 2.1 routes with
+  a picture 1.8–2.5× slower (fill 8.2 vs 3.3 s, edit 10.1 vs 5.6 s): Codex D on it. The Krea 2
+  style reference natively (Codex C3, Ostris's LoRA downloaded on the owner's go): every CPU gate
+  but the conditioning's 0.02 absolute cap (0.031; relative RMS passes), GPU comparison next.
+  fal's Multiple Angles LoRA downloaded for the 2511 Angles benchmark.
