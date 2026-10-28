@@ -226,7 +226,7 @@ impl LayeredRope {
     }
 
     fn apply_impl(&self, x: &Tensor) -> Result<Tensor> {
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "fusednorm")]
         if x.device().is_cuda() && x.dtype() == DType::BF16 {
             return Ok(x.apply_op3_no_bwd(&self.cos, &self.sin, &cuda_rope::Rope)?);
         }
@@ -522,37 +522,24 @@ impl LayeredDit {
     }
 }
 
-/// Layered's bf16 first product must round before addcmul, unlike the shared RoPE kernel.
-#[cfg(feature = "cuda")]
+/// Layered's bf16 first product must round before addcmul, unlike the shared RoPE kernel
+/// (kernels/fusednorm/layered_rope.cu, compiled at build time: no NVRTC in the worker).
+#[cfg(feature = "fusednorm")]
 mod cuda_rope {
+    use std::ffi::c_void;
+
     use candle_core::backend::BackendStorage;
-    use candle_core::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-    use candle_core::cuda_backend::cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
+    use candle_core::cuda_backend::cudarc::driver::DevicePtr;
     use candle_core::{CpuStorage, CudaStorage, Layout, Shape};
-    use std::sync::OnceLock;
+
+    use crate::layout::dense_byte_offset;
+
+    extern "C" {
+        #[allow(clippy::too_many_arguments)]
+        fn qir_layered_rope(y: *mut c_void, x: *const c_void, c: *const c_void, s: *const c_void, pairs: u32, seq: u32, heads: u32, table_batches: u32, stream: *mut c_void) -> i32;
+    }
 
     pub(super) struct Rope;
-
-    const SOURCE: &str = r#"
-__device__ float bf(unsigned short x) { return __uint_as_float((unsigned int)x << 16); }
-__device__ unsigned short rb(float x) {
-    unsigned short y;
-    asm("cvt.rn.bf16.f32 %0, %1;" : "=h"(y) : "f"(x));
-    return y;
-}
-extern "C" __global__ void layered_rope(const unsigned short *x, const unsigned short *c,
-                                      const unsigned short *s, unsigned short *y,
-                                      unsigned int pairs, unsigned int seq, unsigned int heads,
-                                      unsigned int table_batches) {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= pairs) return;
-    unsigned int p = i % (seq * 64);
-    if (table_batches > 1) p += (i / (heads * seq * 64)) * seq * 64;
-    float a = bf(x[2*i]), z = bf(x[2*i+1]), cs = bf(c[p]), sn = bf(s[p]);
-    y[2*i] = rb(bf(rb(a * cs)) - z * sn);
-    y[2*i+1] = rb(bf(rb(a * sn)) + z * cs);
-}
-"#;
 
     impl candle_core::CustomOp3 for Rope {
         fn name(&self) -> &'static str {
@@ -575,28 +562,32 @@ extern "C" __global__ void layered_rope(const unsigned short *x, const unsigned 
             if d != 128 || ch != 1 || cs != seq || cd != 64 || (cb != 1 && cb != b) || cl.shape() != sl.shape() {
                 candle_core::bail!("invalid Layered RoPE dimensions");
             }
-            let dev = x.device().clone();
-            fn view<'a>(storage: &'a CudaStorage, layout: &Layout) -> candle_core::Result<candle_core::cuda_backend::cudarc::driver::CudaView<'a, half::bf16>> {
-                let (a, z) = layout.contiguous_offsets().ok_or_else(|| candle_core::Error::Msg("Layered RoPE requires dense inputs".into()))?;
-                Ok(storage.as_cuda_slice::<half::bf16>()?.slice(a..z))
+            for l in [xl, cl, sl] {
+                if !l.is_contiguous() {
+                    candle_core::bail!("Layered RoPE requires dense inputs");
+                }
             }
-            let (x, c, s) = (view(x, xl)?, view(c, cl)?, view(s, sl)?);
-            // Compile once per process; the device caches the loaded module across steps.
-            static PTX: OnceLock<std::result::Result<String, String>> = OnceLock::new();
-            let ptx = PTX.get_or_init(|| {
-                compile_ptx_with_opts(SOURCE, CompileOptions { arch: Some("compute_80"), fmad: Some(false), ..Default::default() })
-                    .map(|p| p.to_src())
-                    .map_err(|e| e.to_string())
-            });
-            let ptx = ptx.as_ref().map_err(|e| candle_core::Error::Msg(e.clone()))?;
-            let func = dev.get_or_load_custom_func("layered_rope", "layered-rope", ptx)?;
-            let pairs = u32::try_from(b * h * seq * 64).map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+            let narrow = |v: usize| u32::try_from(v).map_err(|e| candle_core::Error::Msg(e.to_string()));
+            let pairs = narrow(b * h * seq * 64)?;
+            let dev = x.device().clone();
+            let stream = dev.cuda_stream();
             // SAFETY: the kernel writes each of the allocated output elements exactly once.
             let out = unsafe { dev.alloc::<half::bf16>(b * h * seq * d)? };
-            let mut builder = func.builder();
-            builder.arg(&x).arg(&c).arg(&s).arg(&out);
-            candle_core::builder_arg!(builder, pairs, seq as u32, h as u32, cb as u32);
-            unsafe { builder.launch(LaunchConfig::for_num_elems(pairs)) }.map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+            {
+                let (xv, cv, sv) = (x.as_cuda_slice::<half::bf16>()?, c.as_cuda_slice::<half::bf16>()?, s.as_cuda_slice::<half::bf16>()?);
+                let ((xp, _gx), (cp, _gc), (sp, _gs)) = (xv.device_ptr(&stream), cv.device_ptr(&stream), sv.device_ptr(&stream));
+                let xp = xp + dense_byte_offset::<half::bf16>(xl, "rope x")?;
+                let cp = cp + dense_byte_offset::<half::bf16>(cl, "rope cos")?;
+                let sp = sp + dense_byte_offset::<half::bf16>(sl, "rope sin")?;
+                let (op, _go) = out.device_ptr(&stream);
+                // SAFETY: dense bf16 views of the shapes checked above, on this stream.
+                let rc = unsafe {
+                    qir_layered_rope(op as *mut c_void, xp as *const c_void, cp as *const c_void, sp as *const c_void, pairs, narrow(seq)?, narrow(h)?, narrow(cb)?, stream.cu_stream() as *mut c_void)
+                };
+                if rc != 0 {
+                    candle_core::bail!("layered rope failed, rc={rc}");
+                }
+            }
             Ok((CudaStorage::wrap_cuda_slice(out, dev), xl.shape().clone()))
         }
     }

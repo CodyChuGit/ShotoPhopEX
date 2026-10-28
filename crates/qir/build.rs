@@ -61,11 +61,13 @@ fn main() {
         println!("cargo:rerun-if-changed=kernels/fusednorm/vae_nhwc.cu");
         println!("cargo:rerun-if-changed=kernels/fusednorm/krea2_fused.cu");
         println!("cargo:rerun-if-changed=kernels/fusednorm/head_rmsnorm.cuh");
+        println!("cargo:rerun-if-changed=kernels/fusednorm/layered_rope.cu");
         nvcc()
             .file("kernels/fusednorm/fused_norm.cu")
             .file("kernels/fusednorm/vae_norm.cu")
             .file("kernels/fusednorm/vae_nhwc.cu")
             .file("kernels/fusednorm/krea2_fused.cu")
+            .file("kernels/fusednorm/layered_rope.cu")
             .compile("fused_norm");
         println!("cargo:rustc-link-lib=dylib=cudart");
     }
