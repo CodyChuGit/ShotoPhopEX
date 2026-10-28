@@ -63,8 +63,11 @@ pub fn crop_vae_target(pixels: &Tensor) -> Result<Tensor> {
     Ok(pixels.narrow(0, (h % 8) / 2, h / 8 * 8)?.narrow(1, (w % 8) / 2, w / 8 * 8)?.contiguous()?)
 }
 
+/// [`kontext_geometry`]'s result: the chosen (height, width) and the crop (x, y, width, height).
+pub type KontextGeometry = ((usize, usize), (usize, usize, usize, usize));
+
 /// Chosen size and symmetric crop (x, y, width, height), including Python's tie rounding.
-pub fn kontext_geometry(h: usize, w: usize) -> Result<((usize, usize), (usize, usize, usize, usize))> {
+pub fn kontext_geometry(h: usize, w: usize) -> Result<KontextGeometry> {
     anyhow::ensure!(h > 0 && w > 0, "empty Kontext image");
     let aspect = w as f64 / h as f64;
     let &(ow, oh) = KONTEXT_RESOLUTIONS
