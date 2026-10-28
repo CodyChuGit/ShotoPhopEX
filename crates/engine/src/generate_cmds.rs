@@ -307,7 +307,15 @@ pub(crate) enum EnhanceKind {
     Edit,
     /// Text to image: no picture.
     Image,
+    /// A picture: name its main subject (Remove Background with no prompt).
+    Subject,
 }
+
+/// The system turn of [`EnhanceKind::Subject`]: a short noun phrase the matte can follow.
+const ENHANCE_SUBJECT_SYSTEM: &str = "You see a picture. Reply with one noun phrase of three to eight words naming its main subject as the picture shows it, for example \"the man in a white t-shirt\" or \"the red vintage car\". Reply with the phrase only: no sentence, no quotes, no full stop.";
+
+/// The user turn of [`EnhanceKind::Subject`].
+const ENHANCE_SUBJECT_REQUEST: &str = "Name the main subject of this picture.";
 
 /// Where a region sits on a canvas, in words ("upper-left part", "centre", "right part").
 pub(crate) fn place_in_words(region: Rect, canvas: Rect) -> String {
@@ -392,6 +400,7 @@ pub(crate) fn enhance_prompt(
         EnhanceKind::Judge => ENHANCE_JUDGE_SYSTEM.to_string(),
         EnhanceKind::Presence => ENHANCE_PRESENCE_SYSTEM.to_string(),
         EnhanceKind::FillRef => ENHANCE_FILL_REF_SYSTEM.to_string(),
+        EnhanceKind::Subject => ENHANCE_SUBJECT_SYSTEM.to_string(),
     };
     let mut params = BTreeMap::new();
     params.insert("system".to_string(), Value::String(system));
@@ -4092,6 +4101,7 @@ pub(crate) fn matte_request_size(w: u32, h: u32) -> (u32, u32) {
 fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_remove_bg(s, p)?;
     let (backend, server) = backend_for(s, &plan.common.template.meta.id)?;
+    let thinker = thinker_for(s, &backend, &server);
     let MattePlan { common, layer: id, as_selection, mode, all_layers, subject, auto, segment, refine } = plan;
     let Common { template, negative, seed, steps, guidance, models, .. } = common;
     let purge = purge_mode(s);
@@ -4110,11 +4120,6 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 (t, seg, if seg { Vec::new() } else { models })
             } else {
                 (template_id, segment, models)
-            };
-            let prompt = match (segment, subject.is_empty()) {
-                (true, true) => SUBJECT_PROMPT.to_string(),
-                (false, true) => MATTE_DEFAULT_PROMPT.to_string(),
-                (_, false) => subject.clone(),
             };
             let area = doc.bounds();
             let (w, h) = (area.width(), area.height());
@@ -4142,6 +4147,22 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
             let image = Rgba8::new(w, h, rgba8).map_err(gen_err)?;
             let (rw, rh) = if segment { fit_pixels(w, h, MAX_SEGMENT_REQUEST_PIXELS) } else { matte_request_size(w, h) };
             let image = if (rw, rh) == (w, h) { image } else { resize_rgba8(&image, rw, rh)? };
+            // No subject named: the vision-language model names it first. 2.1's matte with its
+            // generic instruction kept nothing on 3 of 5 seeds through the app (2026-10-28) and
+            // on 0 of 3 once "the man" was named; the generic instruction stays the fallback.
+            let named = if !segment && subject.is_empty() {
+                let said = enhance_prompt(thinker.as_ref(), EnhanceKind::Subject, ENHANCE_SUBJECT_REQUEST, Some(&image), None, seed, &JobProgress::span(ctx, 0.0, 0.05));
+                release_thinker(&server, purge, &thinker, &backend);
+                said.ok().flatten().map(|n| n.trim_end_matches(['.', '!']).trim().to_string())
+            } else {
+                None
+            };
+            let prompt = match (segment, subject.is_empty(), named) {
+                (true, true, _) => SUBJECT_PROMPT.to_string(),
+                (false, true, Some(n)) => n,
+                (false, true, None) => MATTE_DEFAULT_PROMPT.to_string(),
+                (_, false, _) => subject.clone(),
+            };
             let mut params = BTreeMap::new();
             if segment {
                 params.insert("threshold".to_string(), json!(0.5));

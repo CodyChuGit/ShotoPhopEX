@@ -75,15 +75,18 @@ fn remove_background_masks_the_layer_with_the_models_alpha_and_keeps_its_pixels(
     assert_eq!(m.surface.read_region(Rect::new(2, 2, 3, 3))[0], 0.0, "the background is hidden");
     assert_eq!(m.surface.read_region(Rect::new(32, 44, 33, 45))[0], 0.0);
     assert!(d.doc.selection.is_none(), "like the Quick Action, the selection is dropped");
-    // What the server got: the 2.1 edit graph with the picture as image_1 at its own size and
-    // the official instruction, since no subject was named.
+    // What the server got: first the question naming the subject (no prompt given; the fake
+    // answers "Enhanced: <question>"), then the 2.1 edit graph with the picture as image_1 at
+    // its own size and that name wrapped into the instruction.
     let st = fake.state();
-    let g = &st.prompts[0].1;
+    assert!(st.prompts.len() >= 2, "the naming question, then the matte");
+    let g = &st.prompts.last().unwrap().1;
     assert_eq!(g["6"]["class_type"], "TextEncodeQwenImage21");
     assert_eq!(g["6"]["inputs"]["resolution"], 0);
     assert_eq!(g["6"]["inputs"]["images.image_1"], json!(["4", 0]));
     assert!(g["6"]["inputs"].get("images.image_2").is_none(), "no mask image");
-    assert_eq!(g["6"]["inputs"]["prompt"], MATTE_DEFAULT_PROMPT);
+    let instruction = g["6"]["inputs"]["prompt"].as_str().unwrap_or("");
+    assert!(instruction.starts_with("Remove the background, keeping only Enhanced:") && instruction != MATTE_DEFAULT_PROMPT, "{instruction}");
     assert_eq!(g["10"]["inputs"]["seed"], 4);
     assert_eq!(g["10"]["inputs"]["steps"], 25);
     let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
