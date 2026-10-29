@@ -1,19 +1,12 @@
-//! Small shared pieces for graphs run through ONNX Runtime: copying outputs out of a run, the
-//! error type, and mask bookkeeping. The device, the node's knobs and the found objects are
-//! shared with the candle backend, so they build without the `onnx` feature too.
-
-use std::path::PathBuf;
-
-#[cfg(feature = "onnx")]
-use crate::runtime::RuntimeError;
+//! Small shared pieces of the perception engine: the device, the node's knobs, and the found
+//! objects with their mask bookkeeping.
 
 /// The device a backend runs on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Device {
-    /// The CUDA execution provider on GPU `ordinal`; falls back to the CPU provider for operators
-    /// CUDA cannot run.
+    /// CUDA GPU `ordinal`.
     Cuda { ordinal: i32 },
-    /// The CPU provider only.
+    /// The CPU only.
     Cpu,
 }
 
@@ -32,74 +25,6 @@ impl Default for Options {
     fn default() -> Self {
         Options { threshold: 0.5, max_detections: 1, refine_iterations: 2 }
     }
-}
-
-/// A tensor copied out of a run: its shape and its data.
-pub type Feat = (Vec<i64>, Vec<f32>);
-
-/// A missing file, a runtime failure, or a graph that is not what a module expects.
-#[derive(Debug)]
-pub enum Error {
-    Missing(PathBuf),
-    #[cfg(feature = "onnx")]
-    Runtime(RuntimeError),
-    /// A graph output did not have the shape or type the module relies on.
-    Shape(String),
-    Tokenizer(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Missing(p) => write!(f, "model file missing: {}", p.display()),
-            #[cfg(feature = "onnx")]
-            Error::Runtime(e) => write!(f, "{e}"),
-            Error::Shape(s) => write!(f, "unexpected graph output: {s}"),
-            Error::Tokenizer(s) => write!(f, "tokenizer: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-#[cfg(feature = "onnx")]
-impl From<RuntimeError> for Error {
-    fn from(e: RuntimeError) -> Self {
-        Error::Runtime(e)
-    }
-}
-
-#[cfg(feature = "onnx")]
-impl From<ort::Error> for Error {
-    fn from(e: ort::Error) -> Self {
-        Error::Runtime(RuntimeError::Ort(e.to_string()))
-    }
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-pub fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
-}
-
-/// Copy a named `f32` output out of a run.
-#[cfg(feature = "onnx")]
-pub fn take_f32(outputs: &ort::session::SessionOutputs<'_>, name: &str) -> Result<Feat> {
-    let v = outputs.get(name).ok_or_else(|| Error::Shape(format!("no output `{name}`")))?;
-    let (shape, data) = v.try_extract_tensor::<f32>().map_err(|e| Error::Shape(format!("`{name}`: {e}")))?;
-    Ok((shape.to_vec(), data.to_vec()))
-}
-
-#[cfg(feature = "onnx")]
-pub fn take_bool(outputs: &ort::session::SessionOutputs<'_>, name: &str) -> Result<(Vec<i64>, Vec<bool>)> {
-    let v = outputs.get(name).ok_or_else(|| Error::Shape(format!("no output `{name}`")))?;
-    let (shape, data) = v.try_extract_tensor::<bool>().map_err(|e| Error::Shape(format!("`{name}`: {e}")))?;
-    Ok((shape.to_vec(), data.to_vec()))
-}
-
-/// One dimension of a shape, or a readable error.
-pub fn dim(shape: &[i64], i: usize, what: &str) -> Result<usize> {
-    shape.get(i).and_then(|d| usize::try_from(*d).ok()).ok_or_else(|| Error::Shape(format!("{what}: shape {shape:?} has no dimension {i}")))
 }
 
 /// One found object, at picture resolution.
@@ -156,11 +81,7 @@ mod tests {
         m[10] = 1.0;
         assert_eq!(coverage_bounds(&m, 4, 4), ([1, 1, 2, 2], 3));
         assert_eq!(coverage_bounds(&[0.0; 4], 2, 2), ([0; 4], 0));
-    }
-
-    #[test]
-    fn sigmoid_is_sane() {
-        assert!((sigmoid(0.0) - 0.5).abs() < 1e-6);
-        assert!(sigmoid(10.0) > 0.99 && sigmoid(-10.0) < 0.01);
+        let inst = Instance::from_mask(m, 4, 4, 0.9, [0.0; 4]);
+        assert_eq!((inst.bounds, inst.pixels), ([1, 1, 2, 2], 3));
     }
 }

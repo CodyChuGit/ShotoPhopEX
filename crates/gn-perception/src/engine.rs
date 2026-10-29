@@ -7,13 +7,12 @@
 //! `points` / `negatives` as JSON strings of `{x, y}` pixel coordinates in the request picture,
 //! `bx by bw bh` as pixels. Every instance comes back as a 1-channel coverage blob.
 //!
-//! The runtime and the models load on the first request and stay resident; the last picture's
+//! The model loads on the first request and stays resident; the last picture's
 //! embedding is cached by content, so the probe that follows the pointer pays only the prompt.
 //!
-//! Two backends answer the same requests. With the `candle` feature and SAM 3.1's own
-//! checkpoint on disk (ComfyUI's `checkpoints/sam3.1_multiplex_fp16.safetensors`, or one in
-//! `sam3.1/`), `gn-segment` runs it on candle: no ONNX Runtime, no cuDNN, no exported graphs
-//! (Rust rebuild R1). Otherwise the exported ONNX graphs run through ONNX Runtime.
+//! With the `candle` feature and SAM 3.1's own checkpoint on disk (ComfyUI's
+//! `checkpoints/sam3.1_multiplex_fp16.safetensors`, or one in `sam3.1/`), `gn-segment` runs it
+//! on candle (Rust rebuild R1). A build without `candle` answers every request ModelMissing.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,13 +22,7 @@ use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
 use gn_engine::server::{Engine, EngineError};
 use serde_json::{Value, json};
 
-#[cfg(feature = "onnx")]
-use crate::graph::Error;
 use crate::graph::{Device, Instance, Options};
-#[cfg(feature = "onnx")]
-use crate::runtime::{Runtime, RuntimeConfig, library_name};
-#[cfg(feature = "onnx")]
-use crate::sam31::{Embedding, Sam31};
 
 /// The template ids this engine answers, as PhotoshopEX names them.
 pub const TEMPLATES: [&str; 3] = ["sam3.1/segment", "sam3.1/segment-point", "sam3.1/segment-box"];
@@ -38,32 +31,28 @@ pub const SAM31_DIR: &str = "sam3.1";
 /// SAM 3.1's checkpoint as ComfyUI names it.
 pub const SAM31_CHECKPOINT: &str = "sam3.1_multiplex_fp16.safetensors";
 
-/// The resident model: the candle port or the ONNX graphs.
+/// The resident model: SAM 3.1 on candle.
 enum Model {
-    #[cfg(feature = "onnx")]
-    Ort(Box<Sam31>),
     #[cfg(feature = "candle")]
     Candle(Box<gn_segment::sam::Sam31>),
-    /// A build with neither backend never opens a model (every request is ModelMissing).
-    #[cfg(not(any(feature = "onnx", feature = "candle")))]
+    /// A build without `candle` never opens a model (every request is ModelMissing).
+    #[cfg(not(feature = "candle"))]
     #[allow(dead_code)]
     None(std::convert::Infallible),
 }
 
-/// A picture's embedding, from the backend that made it.
+/// A picture's embedding.
 enum Emb {
-    #[cfg(feature = "onnx")]
-    Ort(Embedding),
     #[cfg(feature = "candle")]
     Candle(Box<gn_segment::sam::Frame>),
-    #[cfg(not(any(feature = "onnx", feature = "candle")))]
+    #[cfg(not(feature = "candle"))]
     #[allow(dead_code)]
     None(std::convert::Infallible),
 }
 
-/// The candle backend's files under a models root: the checkpoint and the CLIP tokenizer (the
-/// ONNX folder's tokenizer.json, else ComfyUI's `comfy/sd1_tokenizer` beside a ComfyUI
-/// `models` folder).
+/// The candle backend's files under a models root: the checkpoint and the CLIP tokenizer
+/// (`sam3.1/tokenizer.json`, else ComfyUI's `comfy/sd1_tokenizer` beside a ComfyUI `models`
+/// folder).
 #[cfg(feature = "candle")]
 fn candle_files(root: &Path) -> Option<(PathBuf, PathBuf)> {
     let checkpoint = [root.join("checkpoints").join(SAM31_CHECKPOINT), root.join(SAM31_DIR).join(SAM31_CHECKPOINT)].into_iter().find(|p| p.is_file())?;
@@ -79,7 +68,7 @@ fn candle_files(_: &Path) -> Option<(PathBuf, PathBuf)> {
 }
 
 pub struct PerceptionEngine {
-    /// Directories searched for ONNX Runtime and the CUDA / cuDNN libraries.
+    /// The native runtime folders (the CUDA libraries the worker finds on its `PATH`), as given.
     runtime_dirs: Vec<PathBuf>,
     /// The directory holding one subdirectory per model (`sam3.1/`), or a ComfyUI `models` folder.
     models_root: PathBuf,
@@ -87,8 +76,6 @@ pub struct PerceptionEngine {
     /// SAM 3.1 on candle in f16 on CUDA (`--sam-precision f16`): 1.9x the speed of f32, every
     /// mask at IoU >= 0.993 against ComfyUI's own f32 node (gn-segment F16.md). f32 otherwise.
     half: bool,
-    #[cfg(feature = "onnx")]
-    rt: Option<Runtime>,
     sam: Option<Model>,
     /// The last picture embedded: a content hash and its embedding.
     cache: Option<(u64, Emb)>,
@@ -98,17 +85,7 @@ pub struct PerceptionEngine {
 impl PerceptionEngine {
     pub fn new(runtime_dirs: Vec<PathBuf>, models_root: PathBuf, cpu: bool) -> Self {
         let device = if cpu { Device::Cpu } else { Device::Cuda { ordinal: 0 } };
-        PerceptionEngine {
-            runtime_dirs,
-            models_root,
-            device,
-            half: false,
-            #[cfg(feature = "onnx")]
-            rt: None,
-            sam: None,
-            cache: None,
-            last_error: None,
-        }
+        PerceptionEngine { runtime_dirs, models_root, device, half: false, sam: None, cache: None, last_error: None }
     }
 
     /// SAM 3.1's compute precision on CUDA: f16 when `half`, else f32 (the CPU is always f32).
@@ -117,31 +94,13 @@ impl PerceptionEngine {
         self
     }
 
-    /// The directory among `runtime_dirs` that holds the runtime library.
-    #[cfg(feature = "onnx")]
-    fn ort_dir(&self) -> Option<PathBuf> {
-        self.runtime_dirs.iter().find(|d| d.join(library_name()).is_file()).cloned()
-    }
-
-    /// Built without ONNX Runtime: never one.
-    #[cfg(not(feature = "onnx"))]
-    fn ort_dir(&self) -> Option<PathBuf> {
-        None
-    }
-
-    /// Is a backend's model on disk (the checkpoint for candle, the graphs for ONNX Runtime)?
+    /// Is SAM 3.1's checkpoint (and a tokenizer) on disk for a build that can run it?
     fn has_model(&self) -> bool {
         has_models(&self.models_root)
     }
 
-    /// Can a backend run (candle needs no runtime library; the ONNX graphs need ONNX Runtime)?
-    fn ready(&self) -> bool {
-        candle_files(&self.models_root).is_some() || (onnx_layout(&self.models_root) && self.ort_dir().is_some())
-    }
-
-    /// Open SAM 3.1 if it is not open yet: on candle when its checkpoint is there, else the
-    /// runtime and the ONNX graphs.
-    #[cfg_attr(not(any(feature = "onnx", feature = "candle")), allow(unused_variables, unreachable_code))]
+    /// Open SAM 3.1 on candle if it is not open yet.
+    #[cfg_attr(not(feature = "candle"), allow(unused_variables))]
     fn ensure_sam(&mut self, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
         #[cfg(feature = "candle")]
         if let Some((checkpoint, tokenizer)) = candle_files(&self.models_root).filter(|_| self.sam.is_none()) {
@@ -157,44 +116,14 @@ impl PerceptionEngine {
             eprintln!("gn-perception: SAM 3.1 on candle in {dtype:?} ({}) loaded in {:.1} s", checkpoint.display(), t0.elapsed().as_secs_f32());
             self.sam = Some(Model::Candle(Box::new(sam)));
         }
-        #[cfg(all(feature = "candle", not(feature = "onnx")))]
-        if self.sam.is_none() {
-            return Err(EngineError::new(
-                ErrorKind::ModelMissing,
-                format!("no SAM 3.1 in {}: ComfyUI's checkpoints/{SAM31_CHECKPOINT} is missing", self.models_root.display()),
-            ));
+        if self.sam.is_some() {
+            return Ok(());
         }
-        #[cfg(not(any(feature = "onnx", feature = "candle")))]
-        return Err(EngineError::new(ErrorKind::ModelMissing, "this build has no SAM 3.1 backend (neither `candle` nor `onnx`)"));
-        #[cfg(feature = "onnx")]
-        if self.sam.is_none() {
-            let dir = self.models_root.join(SAM31_DIR);
-            if !Sam31::is_layout(&dir) {
-                return Err(EngineError::new(
-                    ErrorKind::ModelMissing,
-                    format!(
-                        "no SAM 3.1 in {}: neither ComfyUI's checkpoints/{SAM31_CHECKPOINT} nor ONNX graphs in {}",
-                        self.models_root.display(),
-                        dir.display()
-                    ),
-                ));
-            }
-            if self.rt.is_none() {
-                let Some(ort_dir) = self.ort_dir() else {
-                    return Err(EngineError::new(
-                        ErrorKind::ModelUnreadable,
-                        format!("no {} in the runtime directories {:?}", library_name(), self.runtime_dirs),
-                    ));
-                };
-                progress(0.0, "Loading the runtime");
-                let cfg = RuntimeConfig { ort_dir, library_dirs: self.runtime_dirs.clone(), device: self.device, profile_dir: None };
-                self.rt = Some(Runtime::open(cfg).map_err(|e| EngineError::new(ErrorKind::ModelUnreadable, e.to_string()))?);
-            }
-            let Some(rt) = self.rt.as_ref() else { return Err(EngineError::new(ErrorKind::Internal, "no runtime")) };
-            progress(0.0, "Loading SAM 3.1");
-            self.sam = Some(Model::Ort(Box::new(Sam31::open(rt, &dir).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?)));
-        }
-        Ok(())
+        #[cfg(feature = "candle")]
+        let why = format!("no SAM 3.1 in {}: ComfyUI's checkpoints/{SAM31_CHECKPOINT} is missing", self.models_root.display());
+        #[cfg(not(feature = "candle"))]
+        let why = String::from("this build has no SAM 3.1 backend (built without `candle`)");
+        Err(EngineError::new(ErrorKind::ModelMissing, why))
     }
 }
 
@@ -213,74 +142,45 @@ fn from_candle(i: gn_segment::sam::Instance) -> Instance {
     Instance { score: i.score, bbox: i.bbox, mask: i.mask, bounds: i.bounds, pixels: i.pixels }
 }
 
-#[cfg(all(feature = "candle", feature = "onnx"))]
-fn mismatched() -> EngineError {
-    EngineError::new(ErrorKind::Internal, "the cached picture came from the other backend")
-}
-
-/// The three routes on whichever backend is resident.
-#[cfg_attr(not(any(feature = "onnx", feature = "candle")), allow(unused_variables))]
+/// The three routes on the resident model.
+#[cfg_attr(not(feature = "candle"), allow(unused_variables))]
 impl Model {
     fn embed(&mut self, rgba: &[u8], w: usize, h: usize) -> Result<Emb, EngineError> {
         match self {
-            #[cfg(feature = "onnx")]
-            Model::Ort(s) => s.embed(rgba, w, h).map(Emb::Ort).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
             #[cfg(feature = "candle")]
             Model::Candle(s) => s.encode(rgba, w, h).map(|f| Emb::Candle(Box::new(f))).map_err(candle_error),
-            #[cfg(not(any(feature = "onnx", feature = "candle")))]
+            #[cfg(not(feature = "candle"))]
             Model::None(n) => match *n {},
         }
     }
 
     fn detect_text(&mut self, emb: &Emb, prompt: &str, boxes: &[[f32; 4]], opts: Options) -> Result<Vec<Instance>, EngineError> {
         match (self, emb) {
-            #[cfg(feature = "onnx")]
-            (Model::Ort(s), Emb::Ort(e)) => s.detect_text(e, prompt, boxes, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
             #[cfg(feature = "candle")]
             (Model::Candle(s), Emb::Candle(f)) => {
                 s.detect_text(f, prompt, boxes, candle_opts(opts)).map(|r| r.0.into_iter().map(from_candle).collect()).map_err(candle_error)
             }
-            #[cfg(all(feature = "candle", feature = "onnx"))]
-            _ => Err(mismatched()),
-            #[cfg(not(any(feature = "onnx", feature = "candle")))]
+            #[cfg(not(feature = "candle"))]
             (Model::None(n), _) => match *n {},
         }
     }
 
     fn segment_points(&mut self, emb: &Emb, positives: &[[f32; 2]], negatives: &[[f32; 2]], opts: Options) -> Result<Instance, EngineError> {
         match (self, emb) {
-            #[cfg(feature = "onnx")]
-            (Model::Ort(s), Emb::Ort(e)) => {
-                s.segment_points(e, positives, negatives, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))
-            }
             #[cfg(feature = "candle")]
             (Model::Candle(s), Emb::Candle(f)) => s.segment_points(f, positives, negatives, candle_opts(opts)).map(|r| from_candle(r.0)).map_err(candle_error),
-            #[cfg(all(feature = "candle", feature = "onnx"))]
-            _ => Err(mismatched()),
-            #[cfg(not(any(feature = "onnx", feature = "candle")))]
+            #[cfg(not(feature = "candle"))]
             (Model::None(n), _) => match *n {},
         }
     }
 
     fn segment_box(&mut self, emb: &Emb, bbox: [f32; 4], opts: Options) -> Result<Instance, EngineError> {
         match (self, emb) {
-            #[cfg(feature = "onnx")]
-            (Model::Ort(s), Emb::Ort(e)) => s.segment_box(e, bbox, opts).map(|r| r.0).map_err(|e| EngineError::new(kind_of(&e), e.to_string())),
             #[cfg(feature = "candle")]
             (Model::Candle(s), Emb::Candle(f)) => s.segment_box(f, bbox, candle_opts(opts)).map(|r| from_candle(r.0)).map_err(candle_error),
-            #[cfg(all(feature = "candle", feature = "onnx"))]
-            _ => Err(mismatched()),
-            #[cfg(not(any(feature = "onnx", feature = "candle")))]
+            #[cfg(not(feature = "candle"))]
             (Model::None(n), _) => match *n {},
         }
-    }
-}
-
-#[cfg(feature = "onnx")]
-fn kind_of(e: &Error) -> ErrorKind {
-    match e {
-        Error::Missing(_) => ErrorKind::ModelMissing,
-        Error::Runtime(_) | Error::Shape(_) | Error::Tokenizer(_) => ErrorKind::ModelUnreadable,
     }
 }
 
@@ -351,7 +251,7 @@ impl Engine for PerceptionEngine {
         if self.sam.is_some() {
             resident.push("sam3.1".to_string());
         }
-        let ready = self.ready();
+        let ready = self.has_model();
         Health {
             ok: ready && self.last_error.is_none(),
             engine: "perception".into(),
@@ -471,7 +371,7 @@ impl Engine for PerceptionEngine {
         self.sam = None;
     }
 
-    /// SAM 3.1's sessions load again in about a second; the diffusion engine beside it in the
+    /// SAM 3.1 loads again in seconds; the diffusion engine beside it in the
     /// worker needs the device more.
     fn yields(&self) -> bool {
         true
@@ -482,9 +382,8 @@ impl Engine for PerceptionEngine {
         json!({
             "dir": dir,
             "installed": installed,
-            "backend": if candle_files(&self.models_root).is_some() { "candle" } else { "onnxruntime" },
+            "backend": if cfg!(feature = "candle") { "candle" } else { "none" },
             "modelsRoot": self.models_root.to_string_lossy(),
-            "runtime": self.ort_dir().map(|p| p.to_string_lossy().into_owned()),
             "samPrecision": if self.half { "f16" } else { "f32" },
             "runtimeDirs": self.runtime_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         })
@@ -531,18 +430,7 @@ pub fn from_args(args: &[String]) -> Option<PerceptionEngine> {
 
 /// Is `dir` a usable model root (holds at least one model this engine serves)?
 pub fn has_models(dir: &Path) -> bool {
-    candle_files(dir).is_some() || onnx_layout(dir)
-}
-
-/// Are SAM 3.1's exported graphs under the model root (and can this build run them)?
-#[cfg(feature = "onnx")]
-fn onnx_layout(root: &Path) -> bool {
-    Sam31::is_layout(&root.join(SAM31_DIR))
-}
-
-#[cfg(not(feature = "onnx"))]
-fn onnx_layout(_: &Path) -> bool {
-    false
+    candle_files(dir).is_some()
 }
 
 #[cfg(test)]
