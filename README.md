@@ -58,7 +58,7 @@ on.
     </td>
     <td width="25%" valign="top">
       <h3>⚡ Faster than ComfyUI</h3>
-      Our own int8 kernels, a resident text encoder and merged LoRAs. Upscale 2× runs in 30.8 s where ComfyUI takes 44.1 s.
+      Our own int8 kernels, a resident text encoder and merged LoRAs. Upscale 2× runs in 24.2 s where ComfyUI takes 44.1 s.
     </td>
     <td width="25%" valign="top">
       <h3>🔒 Local and private</h3>
@@ -84,14 +84,15 @@ on.
 | **Generative Expand** | Grow the canvas and continue the scene | Qwen-Image-2.1 | 10.0 s |
 | **Remove Background** | A soft alpha matte from the model's own RGBA output, as a layer mask | Qwen-Image-2.1 | **5.1 s** |
 | **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-2.1 edit | 10.1 s |
-| **Generative Upscale 2×** | Enlarge with new detail, tile by tile, staying on the original | Qwen-Image-2.1 edit + Restore LoRA | **30.8 s** |
-| **Split into Layers** | Decompose a flat picture into separate RGBA layers | Qwen-Image-Layered | 125 s (3 layers) |
+| **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying on the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
+| **Split into Layers** | Decompose a flat picture into separate RGBA layers | Qwen-Image-Layered | **92.6 s** (3 layers) |
 | **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", or a click | SAM 3.1 | **0.3 s** |
 | **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
 Times are warm, through the app, at 864×1152 (about 1 MP). Bold rows are faster than ComfyUI on
 the same GPU. Every feature also takes **LoRAs** from your models folder, and Qwen-Image-Edit-2511
-is selectable for Fill, Edit, Remove, Expand and Angles at 4.4–8.3 s with its Lightning LoRAs.
+is selectable for Fill, Edit, Remove, Expand and Angles at 4.4–7.3 s with its Lightning LoRAs. With warm-up on (the default), the
+first image right after launch takes 3.6 s (Krea 2) or 3.7 s (2.1) instead of 12.6–15.3 s.
 
 **How it feels in the app**
 
@@ -112,7 +113,7 @@ is selectable for Fill, Edit, Remove, Expand and Angles at 4.4–8.3 s with its 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/genai/bench-5090-dark.svg">
-    <img alt="Bar chart of warm seconds per result on an RTX 5090, native engine against ComfyUI. Select by text 0.3 vs 0.6 s, Generative Fill 3.2 vs 3.3, Krea 2 text to image 3.8 vs 4.0, Qwen-Image-2.1 text to image 3.9 vs 4.2, Edit 5.1 vs 5.6, Remove Background 5.1 vs 5.5, Image from a reference 5.2 vs 5.6, 2511 edit 8.3 vs 8.4, Upscale 2x 30.8 vs 44.1." src="docs/images/genai/bench-5090-light.svg" width="100%">
+    <img alt="Bar chart of warm seconds per result on an RTX 5090, native engine against ComfyUI. Select by text 0.3 vs 0.6 s, Generative Fill 3.2 vs 3.3, Krea 2 text to image 3.8 vs 4.0, Qwen-Image-2.1 text to image 3.9 vs 4.2, Edit 5.1 vs 5.6, Remove Background 5.1 vs 5.5, Image from a reference 5.2 vs 5.6, 2511 edit 7.3 vs 8.4, Upscale 2x 24.2 vs 44.1." src="docs/images/genai/bench-5090-light.svg" width="100%">
   </picture>
 </p>
 
@@ -130,14 +131,15 @@ repeated request would hit ComfyUI's cache). ComfyUI ran with `--fast fp8_matrix
 | Remove Background (2.1 matte) | **5.1 s** | 5.5 s | 1.08× | pending |
 | Image from a reference (2.1) | **5.2 s** | 5.6 s | 1.08× | pending |
 | 2511 Angles (4 steps) | **4.4 s** | 4.5 s | 1.02× | pending |
-| 2511 edit / fill (Lightning, 8 steps) | **8.3 s** | 8.4 / 8.8 s | 1.01–1.06× | pending |
-| 2511 full-quality edit (40 steps) | **78.2 s** | 81.9 s | 1.05× | pending |
-| Generative Upscale 2× (6 tiles) | **30.8 s** | 44.1 s | 1.43× | pending |
-| Split into Layers (3 layers, Qwen-Image-Layered) | 125.0 s | 124.8 s | 1.00× | pending |
+| 2511 edit (Lightning, 8 steps) | **7.25 s** | 8.4 s | 1.16× | pending |
+| 2511 full-quality edit (40 steps, CFG 4) | 86.8 s | 81.9 s | 0.94× | pending |
+| Generative Upscale 2× | **24.2 s** | 44.1 s | 1.82× | pending |
+| Split into Layers (3 layers, Qwen-Image-Layered) | **92.6 s** | 124.8 s | 1.35× | pending |
 | MOSS-Image (1024², 50 steps, in progress) | 11.0 s | 10.8 s | 0.98× | pending |
 
 **RTX 5090:** 32 GB, Windows 11, measured 2026-10-28 and 2026-10-29. Upscale was measured
-against ComfyUI 0.43 with the same Restore LoRA at 0.5. **RTX 3090:** the 24 GB tier is next on
+against ComfyUI 0.43 with the same Restore LoRA at 0.5; natively it now runs 2×2 tiles of up to
+1.15 MP by default, where the ComfyUI route runs six square tiles. **RTX 3090:** the 24 GB tier is next on
 the [roadmap](#-roadmap); no numbers have been measured on one yet, so none are shown. Every run,
 its script and the raw reading are in [`docs/comfy/benchmarks.md`](docs/comfy/benchmarks.md).
 
@@ -145,7 +147,8 @@ What made it fast: Qwen-Image-2.1 runs as an int8 ConvRot DiT built once from th
 and cached, through our own kernels and a flash-attention path. The text encoder stays resident
 between requests, the conditioning is cached when only the seed changes, LoRAs are merged into
 the resident int8 weights once instead of costing a side path every step, and the 20 GB 2511 DiT
-stays resident between requests. Outputs were checked against the ComfyUI route at every step
+stays resident between requests. Qwen-Image-Layered and 2511 run SageAttention2 (INT8
+attention) on every block where it holds the picture, and Upscale works on fewer, larger tiles. Outputs were checked against the ComfyUI route at every step
 (within 0.06/255, or byte-identical).
 
 ## 🚀 Install
