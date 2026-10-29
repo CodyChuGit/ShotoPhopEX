@@ -51,13 +51,13 @@
 <path d="M250,345 h65.7 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-65.7 z" fill="#d95926"/>
 <text x="325.7" y="355" font-size="11" fill="#c3c2b7">5.6 s</text>
 <text x="238" y="388.0" font-size="13" fill="#f0efec" text-anchor="end">2511 edit, 8 steps</text>
-<path d="M250,372 h99.3 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-99.3 z" fill="#3987e5"/>
-<text x="359.3" y="382" font-size="11" fill="#c3c2b7">8.3 s</text>
+<path d="M250,372 h86.2 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-86.2 z" fill="#3987e5"/>
+<text x="346.2" y="382" font-size="11" fill="#c3c2b7">7.25 s</text>
 <path d="M250,385 h100.5 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-100.5 z" fill="#d95926"/>
 <text x="360.5" y="395" font-size="11" fill="#c3c2b7">8.4 s</text>
 <text x="238" y="428.0" font-size="13" fill="#f0efec" text-anchor="end">Upscale 2×</text>
-<path d="M250,412 h379.3 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-379.3 z" fill="#3987e5"/>
-<text x="639.3" y="422" font-size="11" fill="#c3c2b7">30.8 s</text>
+<path d="M250,412 h297.2 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-297.2 z" fill="#3987e5"/>
+<text x="557.2" y="422" font-size="11" fill="#c3c2b7">24.2 s</text>
 <path d="M250,425 h544.8 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-544.8 z" fill="#d95926"/>
 <text x="804.8" y="435" font-size="11" fill="#c3c2b7">44.1 s</text>
 </svg>
