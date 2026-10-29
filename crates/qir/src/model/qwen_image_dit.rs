@@ -70,6 +70,9 @@ struct LayeredLinear {
     /// On CUDA, the same fp8 weight through qir's own dequantization kernel (candle has no CUDA
     /// cast from e4m3), multiplied in bf16 as the file's `full_precision_matrix_mult` asks.
     gpu: Option<crate::fp8::Fp8Linear>,
+    /// `QIR_LAYERED_FP8_GEMM=1` (an experiment, off by default): the same weight through the
+    /// e4m3 × e4m3 tensor-core GEMM instead of the file's full-precision bf16 multiply.
+    fast: Option<crate::fp8::Fp8Linear>,
     bias: Tensor,
     original: Option<(Tensor, Option<Tensor>)>,
     #[cfg(feature = "cuda")]
@@ -106,11 +109,13 @@ impl LayeredLinear {
         };
         #[cfg(feature = "cuda")]
         let lt = if gpu.is_some() && std::env::var("QIR_LAYERED_GEMM").map_or(true, |v| v != "cublas") { Some(cuda_gemm::handle(vb.device())?) } else { None };
+        let fast = fast_fp8(&fp8)?;
         Ok(Self {
             original: None,
             dense,
             fp8,
             gpu,
+            fast,
             bias: vb.get(output, "bias")?,
             #[cfg(feature = "cuda")]
             lt,
@@ -152,6 +157,7 @@ impl LayeredLinear {
             };
             self.gpu = if device.is_cuda() { Some(crate::fp8::Fp8Linear::new_full_precision(w.clone(), &scale)?.precise_scale()) } else { None };
             self.fp8 = Some((w, scale));
+            self.fast = fast_fp8(&self.fp8)?;
         } else {
             self.dense = Some(candle_nn::Linear::new(weight, None));
         }
@@ -193,6 +199,12 @@ impl LayeredLinear {
     }
 
     fn forward_impl(&self, x: &Tensor, gelu: bool) -> Result<Tensor> {
+        if let Some(f) = &self.fast {
+            let k = x.dim(D::Minus1)?;
+            if x.dtype() == DType::BF16 && x.elem_count() / k >= 1024 {
+                return linear_bias(f.forward(x)?, &self.bias, gelu);
+            }
+        }
         if let Some(l) = &self.gpu {
             #[cfg(feature = "cuda")]
             if let Some(lt) = &self.lt {
@@ -222,6 +234,16 @@ impl LayeredLinear {
             _ => anyhow::bail!("missing Layered linear weight"),
         };
         linear_bias(y, &self.bias, gelu)
+    }
+}
+
+/// The e4m3 tensor-core linear for a CUDA fp8 weight when `QIR_LAYERED_FP8_GEMM=1`.
+fn fast_fp8(fp8: &Option<(Tensor, Tensor)>) -> Result<Option<crate::fp8::Fp8Linear>> {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| std::env::var("QIR_LAYERED_FP8_GEMM").is_ok_and(|v| v.trim() == "1"));
+    match fp8 {
+        Some((w, s)) if on && w.device().is_cuda() && cfg!(feature = "fp8") => Ok(Some(crate::fp8::Fp8Linear::new(w.clone(), s, false)?)),
+        _ => Ok(None),
     }
 }
 
@@ -669,6 +691,58 @@ impl LayeredBlock {
     }
 }
 
+/// The largest |V| the f16 conversion for SA2 may see (headroom under f16's 65504).
+#[cfg(feature = "sage2")]
+const V_F16_RANGE: f64 = 16384.0;
+
+/// SageAttention2 for the Layered DiT with `QIR_LAYERED_SAGE=1` (an experiment, off by default:
+/// 2026-10-29, the 3-layer split at 864x1152 lost detail in its background layer, 12.4 dB from
+/// the bf16 flash kernel's, and the per-call V range check made it slower, 167 s against 134).
+#[cfg(feature = "sage2")]
+fn layered_sage() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("QIR_LAYERED_SAGE").is_ok_and(|v| v.trim() == "1"))
+}
+
+/// The joint attention with SageAttention2 (INT8 QK, FP8 PV). `q,k,v` are `(B,H,S,D)` with RoPE
+/// already applied; SA2 quantizes `(B,S,H,D)` views and fuses a RoPE, given here as the identity.
+/// A CFG lane whose text is shorter than the batch's drops its padded keys (the flash path masks
+/// them) so they take no share of the softmax. Returns `(B,S,H,D)` bf16.
+#[cfg(feature = "sage2")]
+fn sage2_joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>, scale: f32, accum: crate::sage2::PvAccum) -> Result<Tensor> {
+    use crate::sage2::{attention, quant_v, rope_quant, Role};
+    let identity = |n: usize| -> Result<(Tensor, Tensor)> {
+        Ok((Tensor::ones((n, HEAD_DIM / 2), DType::BF16, q.device())?, Tensor::zeros((n, HEAD_DIM / 2), DType::BF16, q.device())?))
+    };
+    let lane = |q: &Tensor, k: &Tensor, v: &Tensor| -> Result<Tensor> {
+        let (q, k) = (q.transpose(1, 2)?, k.transpose(1, 2)?);
+        // SA2 takes V in f16, and Qwen-Image's values outgrow f16's range (65504) where bf16
+        // holds them: scale V into range first and the output back (attention is linear in V).
+        let range = (v.abs()?.flatten_all()?.max(0)?.to_dtype(DType::F32)? / V_F16_RANGE)?.maximum(1f64)?;
+        let v = v.broadcast_div(&range.to_dtype(v.dtype())?)?.to_dtype(DType::F16)?.transpose(1, 2)?;
+        let (qc, qs) = identity(q.dim(1)?)?;
+        let (kc, ks) = identity(k.dim(1)?)?;
+        let q = rope_quant(&q, &qc, &qs, Role::Query)?;
+        let k = rope_quant(&k, &kc, &ks, Role::Key)?;
+        let v = quant_v(&v, accum)?;
+        Ok(attention(&q, &k, &v, scale, false)?.broadcast_mul(&range.to_dtype(DType::BF16)?)?)
+    };
+    let Some((positive, negative)) = padding else { return lane(q, k, v) };
+    let tokens = positive.max(negative);
+    let mut lanes = Vec::with_capacity(2);
+    for (i, valid) in [positive, negative].into_iter().enumerate() {
+        let (q, k, v) = (q.narrow(0, i, 1)?, k.narrow(0, i, 1)?, v.narrow(0, i, 1)?);
+        lanes.push(if valid < tokens {
+            let n = k.dim(2)?;
+            let keep = |x: &Tensor| -> Result<Tensor> { Ok(Tensor::cat(&[x.narrow(2, 0, valid)?, x.narrow(2, tokens, n - tokens)?], 2)?) };
+            lane(&q, &keep(&k)?, &keep(&v)?)?
+        } else {
+            lane(&q, &k, &v)?
+        });
+    }
+    Ok(Tensor::cat(&lanes, 0)?)
+}
+
 /// Exact bidirectional attention; cap temporary scores by chunking queries.
 fn joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>) -> Result<Tensor> {
     crate::profile::scope("layered joint_attention", 0.0, q.device(), || joint_attention_impl(q, k, v, padding))
@@ -678,6 +752,12 @@ fn joint_attention_impl(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usi
     let scale = 1.0 / (HEAD_DIM as f64).sqrt();
     if let Some((positive, negative)) = padding {
         anyhow::ensure!(q.dim(0)? == 2 && positive > 0 && negative > 0 && positive.max(negative) < q.dim(2)?, "invalid CFG padding");
+    }
+    #[cfg(feature = "sage2")]
+    if q.device().is_cuda() && q.dtype() == DType::BF16 && layered_sage() {
+        if let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? {
+            return sage2_joint_attention(q, k, v, padding, scale as f32, accum);
+        }
     }
     #[cfg(feature = "flash")]
     if q.device().is_cuda() && q.dtype() == DType::BF16 {
@@ -1533,6 +1613,25 @@ mod layered_tests {
                 let err = error(&actual.narrow(0, lane, 1)?, &expected)?;
                 assert!(err < 0.01, "padding lane {lane}: {err}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "sage2")]
+    fn sage2_joint_attention_tracks_the_exact_attention() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        let q = Tensor::randn(0f32, 1.0, (2, 3, 300, 128), &dev)?.to_dtype(DType::BF16)?;
+        let k = Tensor::randn(0f32, 1.0, (2, 3, 300, 128), &dev)?.to_dtype(DType::BF16)?;
+        let cpu = |t: &Tensor| t.to_device(&Device::Cpu)?.to_dtype(DType::F32);
+        // Values past f16's range too (Qwen-Image's activations reach them; bf16 holds them).
+        for (v_scale, padding) in [(1.0, None), (1.0, Some((40, 25))), (2.0e5, None), (2.0e5, Some((40, 25)))] {
+            let v = Tensor::randn(0f32, v_scale, (2, 3, 300, 128), &dev)?.to_dtype(DType::BF16)?;
+            let actual = joint_attention(&q, &k, &v, padding)?.to_device(&Device::Cpu)?.to_dtype(DType::F32)?.flatten_all()?;
+            let expected = joint_attention(&cpu(&q)?, &cpu(&k)?, &cpu(&v)?, padding)?.flatten_all()?;
+            let dot = (&actual * &expected)?.sum_all()?.to_scalar::<f32>()?;
+            let norms = actual.sqr()?.sum_all()?.to_scalar::<f32>()?.sqrt() * expected.sqr()?.sum_all()?.to_scalar::<f32>()?.sqrt();
+            assert!(dot / norms > 0.995, "V x{v_scale}, {padding:?}: cosine {}", dot / norms);
         }
         Ok(())
     }
