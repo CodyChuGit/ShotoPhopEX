@@ -295,11 +295,14 @@ enum Part {
     Alpha,
 }
 
+/// One module's pieces as a LoRA file's tensors arrive: down, up and alpha.
+type LoraParts = (Option<Tensor>, Option<Tensor>, Option<f32>);
+
 impl LoraFile {
     /// Read `path` onto `dev` in `dtype`; tensors that are not a LoRA's are ignored.
     pub fn load(path: &Path, dev: &Device, dtype: DType) -> Result<Self> {
         let raw = candle_core::safetensors::load(path, dev).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        let mut parts: BTreeMap<String, (Option<Tensor>, Option<Tensor>, Option<f32>)> = BTreeMap::new();
+        let mut parts: BTreeMap<String, LoraParts> = BTreeMap::new();
         for (name, t) in raw {
             let Some((module, part)) = classify(strip_prefix(&name)) else { continue };
             let e = parts.entry(module.to_string()).or_default();

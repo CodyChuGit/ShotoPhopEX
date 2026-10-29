@@ -506,6 +506,19 @@ mod cuda {
     }
 }
 
+/// Comfy FP8 patches recalculate the f32 scale and use module-seeded stochastic rounding.
+pub fn requantize_full_precision(weight: &Tensor, seed: u64) -> Result<(Tensor, Tensor)> {
+    let scale = (weight.abs()?.flatten_all()?.max(0)?.to_dtype(DType::F32)? / 448.0)?;
+    let inverse = scale.recip()?.to_dtype(weight.dtype())?;
+    let scaled = weight.broadcast_mul(&inverse)?.clamp(-448.0, 448.0)?;
+    #[cfg(feature = "fp8")]
+    if weight.device().is_cuda() {
+        return Ok((cuda::quant(&scaled, seed)?, scale.to_device(&candle_core::Device::Cpu)?));
+    }
+    let _ = (scaled, seed);
+    anyhow::bail!("2511 stochastic FP8 weight materialization requires the fp8 CUDA feature")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,17 +558,4 @@ mod tests {
         assert_eq!(diff, 0.0);
         Ok(())
     }
-}
-
-/// Comfy FP8 patches recalculate the f32 scale and use module-seeded stochastic rounding.
-pub fn requantize_full_precision(weight: &Tensor, seed: u64) -> Result<(Tensor, Tensor)> {
-    let scale = (weight.abs()?.flatten_all()?.max(0)?.to_dtype(DType::F32)? / 448.0)?;
-    let inverse = scale.recip()?.to_dtype(weight.dtype())?;
-    let scaled = weight.broadcast_mul(&inverse)?.clamp(-448.0, 448.0)?;
-    #[cfg(feature = "fp8")]
-    if weight.device().is_cuda() {
-        return Ok((cuda::quant(&scaled, seed)?, scale.to_device(&candle_core::Device::Cpu)?));
-    }
-    let _ = (scaled, seed);
-    anyhow::bail!("2511 stochastic FP8 weight materialization requires the fp8 CUDA feature")
 }

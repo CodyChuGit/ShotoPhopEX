@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
 use qwen_image_rs::{
     edit2511_pipeline::{denoised_cfg, edit2511_schedule, masked_replace},
     Result,

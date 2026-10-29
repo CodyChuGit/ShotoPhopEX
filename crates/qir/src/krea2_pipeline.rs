@@ -256,7 +256,7 @@ impl Krea2Pipeline {
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "vision tower loaded");
         }
         let tower = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no vision tower"))?;
-        let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
+        let (patches, gh, gw) = vision::patchify(rgb, tower.config())?;
         if editplus {
             tower.forward_editplus(&patches, gh, gw)
         } else {

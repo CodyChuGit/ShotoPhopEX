@@ -1542,7 +1542,7 @@ mod tests {
         let values = |layer: &ResidentLinear| -> Result<Vec<Vec<f32>>> { Ok(layer.forward(&x)?.to_vec2::<f32>()?) };
         let base = values(&linear)?;
         for _ in 0..2 {
-            linear.set_loras(&[pair.clone()])?;
+            linear.set_loras(std::slice::from_ref(&pair))?;
             assert_eq!(values(&linear)?, vec![vec![9f32; 4]; 2]);
         }
         linear.set_loras(&[])?;
