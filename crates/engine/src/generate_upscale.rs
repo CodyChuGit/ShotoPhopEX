@@ -134,6 +134,7 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     {
         loras.push((RESTORE_LORA.to_string(), restore_strength));
     }
+    let batch = common.template.meta.family == "qwen-image-2.1" && runs_native(s, &common.template.meta.id);
     let (backend, _server) = backend_for(s, &common.template.meta.id)?;
     let side = ((tile_mp * 1e6).sqrt() as u32 / 16 * 16).max(256);
     let enlarge = now_ms();
@@ -161,36 +162,69 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
             let render_ms = now_ms() - render;
             let grid = tiles(bw, bh, side);
             let n = grid.len();
-            let mut acc = vec![0.0f32; bw as usize * bh as usize * 3];
-            let mut wsum = vec![0.0f32; bw as usize * bh as usize];
-            let mut ms = 0u64;
-            let mut tile_timings = Vec::with_capacity(n);
-            for (i, t) in grid.iter().enumerate() {
-                ctx.check()?;
-                let (lo, hi) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
-                ctx.progress(lo, &format!("Tile {}/{n}", i + 1));
+            // Every tile cut first: each comes from the enlarged picture alone.
+            let mut cut = Vec::with_capacity(n);
+            for t in &grid {
                 let crop = now_ms();
                 let src = super::crop_rgba8(&big, *t);
                 let (rw, rh) = request_size_within(src.width, src.height, max_pixels);
                 let sent = if (rw, rh) == (src.width, src.height) { src.clone() } else { resize_rgba8(&src, rw, rh)? };
-                let crop_ms = now_ms() - crop;
-                let req = Request {
-                    seed: common.seed.wrapping_add(i as u64) % super::MAX_SEED,
-                    steps: common.steps,
-                    guidance: common.guidance,
-                    negative: common.negative.clone(),
-                    image: Some(sent),
-                    models: common.models.clone(),
-                    params: params.clone(),
-                    ..Request::new(&template_id, &common.prompt)
-                };
+                cut.push((src, sent, now_ms() - crop));
+            }
+            let request_of = |i: usize, image: Rgba8, references: Vec<Rgba8>, params: BTreeMap<String, Value>| Request {
+                seed: common.seed.wrapping_add(i as u64) % super::MAX_SEED,
+                steps: common.steps,
+                guidance: common.guidance,
+                negative: common.negative.clone(),
+                image: Some(image),
+                references,
+                models: common.models.clone(),
+                params,
+                ..Request::new(&template_id, &common.prompt)
+            };
+            // The native 2.1 edit takes every tile in one request (`batch`: each tile's seed),
+            // the pictures encoded together; each tile comes back as its own request would
+            // make it. A worker that does not take the batch is asked tile by tile.
+            let mut batched: Vec<Option<Rgba8>> = Vec::new();
+            let mut batch_ms = None;
+            let mut ms = 0u64;
+            if batch && n > 1 {
+                ctx.check()?;
+                ctx.progress(0.0, &format!("{n} tiles"));
+                let mut bp = params.clone();
+                bp.insert("batch".into(), json!((0..n).map(|i| common.seed.wrapping_add(i as u64) % super::MAX_SEED).collect::<Vec<_>>()));
+                let req = request_of(0, cut[0].1.clone(), cut[1..].iter().map(|c| c.1.clone()).collect(), bp);
                 let request = now_ms();
-                let resp = backend.as_ref().run(&req, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
+                match backend.as_ref().run(&req, &JobProgress::span(ctx, 0.0, 1.0)) {
+                    Ok(resp) if resp.images.len() == n => {
+                        ms += resp.elapsed_ms;
+                        batch_ms = Some(now_ms() - request);
+                        batched = resp.images.into_iter().map(Some).collect();
+                    }
+                    Err(e @ (photocraft_genai::Error::Cancelled | photocraft_genai::Error::Timeout(_))) => return Err(gen_err(e)),
+                    Ok(_) | Err(_) => {}
+                }
+            }
+            let mut acc = vec![0.0f32; bw as usize * bh as usize * 3];
+            let mut wsum = vec![0.0f32; bw as usize * bh as usize];
+            let mut tile_timings = Vec::with_capacity(n);
+            for (i, (t, (src, sent, crop_ms))) in grid.iter().zip(cut).enumerate() {
+                ctx.check()?;
+                let (lo, hi) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+                let (rw, rh) = (sent.width, sent.height);
+                let request = now_ms();
+                let (out, backend_timings) = match batched.get_mut(i).and_then(Option::take) {
+                    Some(out) => (out, None),
+                    None => {
+                        ctx.progress(lo, &format!("Tile {}/{n}", i + 1));
+                        let resp = backend.as_ref().run(&request_of(i, sent, Vec::new(), params.clone()), &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
+                        ms += resp.elapsed_ms;
+                        let out = resp.images.into_iter().next().ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;
+                        (out, Some(resp.timings))
+                    }
+                };
                 let request_ms = now_ms() - request;
-                ms += resp.elapsed_ms;
-                let backend_timings = resp.timings;
                 let align = now_ms();
-                let out = resp.images.into_iter().next().ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;
                 let out = if (out.width, out.height) == (src.width, src.height) { out } else { resize_rgba8(&out, src.width, src.height)? };
                 let d = crate::generate_realign::drift(&out, &src, None, crate::generate_realign::max_shift(out.width, out.height));
                 let out = crate::generate_realign::shifted(&out, &src, d);
@@ -249,7 +283,7 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
             );
             let id = doc.insert_above(*active, layer);
             *active = Some(id);
-            let timings = json!({"enlargeMs": enlarge_ms, "renderMs": render_ms, "tiles": tile_timings,
+            let timings = json!({"enlargeMs": enlarge_ms, "renderMs": render_ms, "batchMs": batch_ms, "tiles": tile_timings,
                 "compositeMs": now_ms() - composite, "totalMs": now_ms() - started});
             Ok((id, n, bw, bh, ms, template_id, timings))
         },
@@ -299,6 +333,105 @@ mod tests {
         assert!(st.runs[0].request.to_string().contains("Restore the photo"), "the restore wording by default");
         drop(st);
         assert!(s.execute(UPSCALE, json!({"scale": 9})).is_err(), "scale 1 to 4");
+    }
+
+    /// The native 2.1 edit takes the tiles as one batch; a worker that answers it with one
+    /// picture is asked tile by tile, and both redraw the same pixels.
+    #[test]
+    fn a_native_21_upscale_sends_its_tiles_as_one_batch() {
+        let upscale = |no_batch: bool| {
+            let fake = photocraft_genai::fake::FakeNative::start_with(photocraft_genai::fake::Options { echo: true, no_batch, ..Default::default() }).unwrap();
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
+            s.execute("filter.addNoise", json!({"amount": 40, "seed": 3})).ok();
+            s.edit_prefs(|p| {
+                p.integrations.models_path = fake.url.clone();
+                p.integrations.runtime_path = "fake".into();
+                p.integrations.allow_research_models = true;
+            });
+            let r = s.execute(UPSCALE, json!({"scale": 2, "tileMegapixels": 0.25, "seed": 5, "template": "qwen-2.1/edit"})).unwrap();
+            assert_eq!(r["tiles"].as_u64(), Some(2), "{r}");
+            let d = s.active().unwrap();
+            let pixels = photocraft_compose::render(&d.doc, d.doc.bounds()).to_rgba8().pixels;
+            let st = fake.state();
+            let runs: Vec<_> = st.runs.iter().map(|r| (r.run.seed, r.run.references.len(), r.run.params.get("batch").cloned())).collect();
+            (runs, pixels)
+        };
+        let (runs, batched) = upscale(false);
+        assert_eq!(runs, vec![(5, 1, Some(json!([5, 6])))], "one request: tile 0 the picture, tile 1 its reference, a seed each");
+        let (runs, tiled) = upscale(true);
+        assert_eq!(runs, vec![(5, 1, Some(json!([5, 6]))), (5, 0, None), (6, 0, None)], "the batch refused, then a request per tile");
+        assert!(batched == tiled, "the same redraw either way");
+    }
+
+    /// A batched Upscale reports the worker's progress while it runs, and a cancel stops the
+    /// batch at once and leaves the document as a cancelled tile-by-tile Upscale does: no
+    /// layer, and no tile asked again.
+    #[test]
+    fn a_batched_upscale_reports_progress_and_cancels_like_tile_by_tile() {
+        use std::time::{Duration, Instant};
+        let fake = photocraft_genai::fake::FakeNative::start_with(photocraft_genai::fake::Options { delay_ms: 20_000, progress_steps: 200, ..Default::default() })
+            .unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
+        s.edit_prefs(|p| {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = true;
+        });
+        let layers = s.active().unwrap().doc.layers.len();
+        let id = match s.start(UPSCALE, json!({"scale": 2, "tileMegapixels": 0.25, "seed": 5, "template": "qwen-2.1/edit"})).unwrap() {
+            crate::jobs::Started::Job(id) => id,
+            crate::jobs::Started::Done(v) => panic!("ran inline: {v}"),
+        };
+        let t = Instant::now();
+        let progress = || s.jobs_with_recent().into_iter().find(|j| j.id == id).map_or(0.0, |j| j.progress);
+        while progress() <= 0.0 {
+            assert!(t.elapsed() < Duration::from_secs(10), "no progress from the batch");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(progress() < 1.0);
+        let t = Instant::now();
+        assert!(s.cancel_job(id));
+        s.join_cancelled_jobs();
+        assert!(t.elapsed() < Duration::from_secs(5), "cancel took {:?}", t.elapsed());
+        assert_eq!(s.active().unwrap().doc.layers.len(), layers, "no redraw layer");
+        let st = fake.state();
+        assert_eq!(st.cancellations, 1, "the worker was told to stop");
+        assert_eq!(st.runs.len(), 1, "the batch alone: a cancel is not a refusal to fall back from");
+    }
+
+    /// Run in the background, an Upscale records as one step, as inline: its Image Size is not
+    /// recorded as well (a replay would enlarge twice).
+    #[test]
+    fn a_background_upscale_records_one_step() {
+        use std::time::{Duration, Instant};
+        let fake = photocraft_genai::fake::FakeNative::start_with(photocraft_genai::fake::Options { delay_ms: 50, ..Default::default() }).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
+        s.edit_prefs(|p| {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = true;
+        });
+        let action = s.execute("actions.record", json!({"name": "A"})).unwrap()["index"].as_u64().unwrap() as usize;
+        let id = match s.start(UPSCALE, json!({"scale": 2, "tileMegapixels": 0.25, "seed": 5, "template": "qwen-2.1/edit"})).unwrap() {
+            crate::jobs::Started::Job(id) => id,
+            crate::jobs::Started::Done(v) => panic!("ran inline: {v}"),
+        };
+        let t = Instant::now();
+        let e = loop {
+            if let Some(e) = s.poll_jobs().into_iter().find(|e| e.id == id) {
+                break e;
+            }
+            assert!(t.elapsed() < Duration::from_secs(30), "job did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(matches!(e.outcome, crate::jobs::JobOutcome::Done(_)), "{e:?}");
+        s.execute("actions.stop", json!({})).unwrap();
+        let ids: Vec<&str> = s.actions.list[action].steps.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, [UPSCALE]);
+        assert_eq!(s.journal.iter().filter(|(id, _)| id == "image.imageSize").count(), 0);
     }
 
     #[test]

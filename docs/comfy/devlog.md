@@ -4,6 +4,31 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29 (late afternoon): Upscale in one batched request; Upscale back in the background
+
+Branches: genai-native `perf/upscale-batch` (`dce1ce3`, on `perf/gemm-plan-5090`) and PhotoshopEX
+`perf/upscale-batch` (pinned to it, on `perf/vae-decode`).
+- 1A: the app sends all of Upscale's tiles in one request to the native 2.1 edit (`params.batch`,
+  each tile's seed). `Pipeline::generate_batch` encodes every tile first, with the transient vision
+  tower loaded once instead of per tile, then samples each one. The result is byte-identical, warm
+  32.5 to 30.8 s and cold 33.8 to 31.8 s, measured in interleaved ABCCBA order with cooldowns
+  (benchmarks.md §0). It falls back to tile by tile when a worker refuses the batch or answers with
+  another count. Cancel and timeout are not retried. The time limit covers each tile.
+- Found along the way: Upscale had always run inline (blocking the UI) because its nested
+  `image.imageSize` reset `jobs.spawn`. `Session::dispatch` now restores the caller's flag. An
+  audit found no other command that runs a nested command before its job. A background job also
+  drops its pre-job nested journal entries on apply, so a recorded action replays Upscale once, not
+  Image Size first as well. The re-apply recipe is in commit `bfa7c493`'s message, since the
+  v0.17.0 merge moved those lines to 844/863.
+- The sm120 GEMM plan (boundary fixed in `a84ab70`) is byte-identical but not a consistent win
+  across three slots, so it stays opt-in.
+- Bench gotcha: dot-sourcing `native-worker.ps1 -Stop` resets its `$Models` default in the
+  caller's scope, and PowerShell names are case-insensitive, so name the caller's variable
+  something else (`$modelRoot`).
+
+Next (the owner's "try both"): `perf/upscale-tiles` (4 or 5 larger tiles, seam crops for the
+owner first) and `feat/warmup` (warm up the AI models at launch).
+
 ## 2026-10-29: README around the generative features; the app icon reads "Pc"
 
 The owner asked for "Pc" in place of "Ps" (trademark), and for a README about the generative
