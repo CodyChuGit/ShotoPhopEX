@@ -26,7 +26,7 @@
       {
         "placeholder": "vae",
         "folder": "vae",
-        "default": "qwen_image_vae.safetensors"
+        "default": "wan_2.1_vae.safetensors"
       },
       {
         "placeholder": "lora",
