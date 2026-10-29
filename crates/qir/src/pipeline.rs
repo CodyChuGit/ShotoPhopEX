@@ -274,6 +274,9 @@ pub struct Pipeline {
     /// requests on a full card left the next sampling to Windows' paging (2026-10-29: a cold
     /// Upscale's first tiles took 29 s to denoise instead of 3.5).
     vision_transient: std::sync::atomic::AtomicBool,
+    /// Set while [`Pipeline::generate_batch`] encodes its pictures: a transient tower stays
+    /// for the whole batch and is dropped once after it.
+    hold_vision: std::sync::atomic::AtomicBool,
     opts: Options,
     /// Bounded to one picture conditioning; fresh seeds reuse the encoders as in ComfyUI.
     conditioning: std::sync::Mutex<Option<(ConditioningKey, Conditioning)>>,
@@ -463,6 +466,7 @@ impl Pipeline {
             vae,
             vision: std::sync::Mutex::new(vision),
             vision_transient: std::sync::atomic::AtomicBool::new(false),
+            hold_vision: std::sync::atomic::AtomicBool::new(false),
             opts,
             conditioning: std::sync::Mutex::new(None),
             head: std::sync::Mutex::new(None),
@@ -500,7 +504,8 @@ impl Pipeline {
 
     /// After a request's pictures are encoded: drop the vision tower when it is transient.
     fn release_vision(&self) {
-        if self.vision_transient.load(std::sync::atomic::Ordering::Relaxed) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if self.vision_transient.load(Relaxed) && !self.hold_vision.load(Relaxed) {
             *self.vision.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
@@ -733,6 +738,44 @@ impl Pipeline {
     /// true answer ends the run with [`Cancelled`].
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
         crate::device::bind_thread(&self.dev);
+        self.generate_with(req, None, progress, cancel)
+    }
+
+    /// Make one picture per request, the batch's pictures encoded first: each request's
+    /// references through the VAE and the vision tower, a transient tower loaded once for the
+    /// batch instead of once a picture, then each request sampled and decoded in order. Every
+    /// picture is the one [`Self::generate`] makes from its request (Upscale's tiles: the
+    /// encoders' outputs do not depend on what else is resident).
+    pub fn generate_batch(&self, reqs: &[Request], progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Vec<Picture>> {
+        use std::sync::atomic::Ordering::Relaxed;
+        crate::device::bind_thread(&self.dev);
+        anyhow::ensure!(reqs.iter().all(|r| r.steps > 0), "at least one step");
+        let n = reqs.len().max(1) as f32;
+        self.hold_vision.store(true, Relaxed);
+        let conds: Result<Vec<Conditioning>> = reqs
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                if cancel() {
+                    return Err(Cancelled.into());
+                }
+                progress(0.1 * i as f32 / n, "Reading the references");
+                self.conditioning(r)
+            })
+            .collect();
+        self.hold_vision.store(false, Relaxed);
+        self.release_vision();
+        let conds = conds?;
+        let mut out = Vec::with_capacity(reqs.len());
+        for (i, (r, c)) in reqs.iter().zip(conds).enumerate() {
+            let mut report = |f: f32, m: &str| progress(0.1 + 0.9 * (i as f32 + f) / n, &format!("Tile {}/{}: {m}", i + 1, reqs.len()));
+            out.push(self.generate_with(r, Some(c), &mut report, cancel)?);
+        }
+        Ok(out)
+    }
+
+    /// [`Self::generate`] with the request's conditioning already computed, or computed here.
+    fn generate_with(&self, req: &Request, cond: Option<Conditioning>, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
         if req.steps == 0 {
             anyhow::bail!("at least one step");
         }
@@ -754,7 +797,11 @@ impl Pipeline {
         check(cancel)?;
         let t0 = Instant::now();
         progress(0.0, if req.references.is_empty() { "Encoding the prompt" } else { "Reading the references" });
-        let Conditioning { latents: ref_latents, positive: cond, slots, negative: neg } = self.conditioning(req)?;
+        let cond = match cond {
+            Some(c) => c,
+            None => self.conditioning(req)?,
+        };
+        let Conditioning { latents: ref_latents, positive: cond, slots, negative: neg } = cond;
         // The target: the request's size, or the first reference's when it says nothing.
         let (w, h) = match (req.width, req.height, ref_latents.first()) {
             (0, 0, Some((_, lh, lw, None))) => (lw * 16, lh * 16),
