@@ -117,6 +117,25 @@ stays the low-VRAM option.
 
 **Qwen-Image-Edit-2511 with SageAttention2, 2026-10-29** (genai-native `e9a4ea1`, the same flash blocks as Layered after its own survey: 0 at |728|, 58 at |79|, 52 at |53|): Lightning-8 edit **8.09 to 7.25 s** warm (cold 43.3 to 33.0 s), the 40-step CFG 4 edit **94.4 to 86.8 s**; same seed against flash 26.8 / 35.8 dB (the snowflakes placed differently, composition, scarf and face alike) where a second seed is 14.9 / 14.5 dB.
 
+**Upscale's tiles in one batched request, 2026-10-29** (genai-native `perf/upscale-batch`
+`dce1ce3`, PhotoshopEX `perf/upscale-batch`: `params.batch` carries each tile's seed, and the
+worker encodes all six tiles with the transient vision tower loaded once instead of once per tile,
+then samples each tile as its own request would). The workers ran in ABCCBA order with a 45 s cooldown
+before each worker, edit and upscale cold plus 2 warm each, 864x1152 x2, Restore 0.5. Per-tile
+(the old CLI) **32.88 / 32.11 s** warm against batched **30.85 / 30.77 s** (about 5 %); cold
+33.8 against 31.8 s. Vision reloads fell from 24 to 4 per worker, and per-tile denoise is the
+same 3.71 s; Edit is unchanged (4.84 s). Every output is **byte-identical** to the per-tile path,
+cold and warm. A worker that refuses the batch is asked tile by tile. The same PhotoshopEX branch
+also fixes Upscale to run as a background job: a nested `image.imageSize` used to switch the job
+off, so Upscale ran inline on the UI thread.
+
+**The 5090 GEMM plan, rerun under the fixed boundary (a84ab70), 2026-10-29:** byte-identical to
+sm89 every time, but not a consistent win. In ABCCBA order the first sm120 worker gave Edit 4.81 s
+and Upscale 31.26 s, a tie and a loss against sm89's 4.83 / 30.81; the last gave 4.54 / 29.05,
+starting from a different idle clock (487 MHz against ~1,100). Two earlier back-to-back slots
+disagreed with each other as well. It stays opt-in (`QIR_GEMM_PLAN=sm120`), with sm89 as the
+default.
+
 **Checked and not landed, 2026-10-29 afternoon.** The card runs **power-capped** under load (575 W default limit; SW Power Cap in 98 of 105 busy samples at 200 ms, mean 523 W, SM 2,653 MHz of 3,090, 61 C): compare only within one session. **CUDA graphs**: GPU utilisation averages 96.8 % while a 2.1 step runs, so launch and sync gaps are ~3 %. **The 5090 INT8 GEMM plan** (genai-native `perf/gemm-plan-5090`, `QIR_GEMM_PLAN=sm120`, opt-in): 3–11 % per GEMM in `tests/convrot_shapes.rs`, but end to end 2.1 text to image 3.56 -> 3.50 s and Edit 4.22 -> 4.39 s (byte-identical), within noise. **INT8 ConvRot for Layered** (parked): ConvRotLinear is 2.2–2.6x the bf16 matmul at M 8272 and 40000, but the split already peaks at 28.1 GB with bf16 linears; with INT8 it reached 31.97 GB and Windows paged it (both splits past the 600 s timeout).
 
 **Upscale rerun, 2026-10-29** (`speed-table.ps1 -Only "upscale 2x" -UpscaleLora restore`, the
