@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use gn_engine::client::{ClientError, EngineClient, new_token, rgba_blob};
-use gn_engine::protocol::{ErrorKind, RunRequest};
+use gn_engine::protocol::{ErrorKind, PreviewMode, RunRequest};
 
 fn exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_gn-engine"))
@@ -30,7 +30,27 @@ fn request(model: &str, task: &str, steps: u32) -> RunRequest {
         mask: None,
         references: Vec::new(),
         params: BTreeMap::new(),
+        preview: PreviewMode::Off,
     }
+}
+
+#[test]
+fn previews_arrive_only_when_asked_and_leave_the_result_alone() {
+    let token = new_token();
+    let mut c = EngineClient::spawn(&exe(), &["--serve".into(), "--step-ms".into(), "1".into()], &token).unwrap_or_else(|e| panic!("{e}"));
+    let mut off = Vec::new();
+    let plain = c.run_previewed(&request("fake/image", "image", 4), &[], &mut |_, _| {}, &mut |p| off.push(p), &|| false).unwrap_or_else(|e| panic!("{e}"));
+    assert!(off.is_empty(), "no previews without asking");
+    let mut req = request("fake/image", "image", 4);
+    req.preview = PreviewMode::Fast;
+    let mut seen = Vec::new();
+    let shown = c.run_previewed(&req, &[], &mut |_, _| {}, &mut |p| seen.push(p), &|| false).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(seen.iter().map(|p| p.step).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    assert!(seen.iter().all(|p| (p.width, p.height, p.steps, p.rgba.len()) == (8, 4, 4, 8 * 4 * 4)));
+    assert_eq!(plain.1, shown.1, "the pictures are the same with previews");
+    // `run` (an editor that knows no previews) ignores the replies of a run that asked anyway.
+    assert!(c.run(&req, &[], &mut |_, _| {}, &|| false).is_ok());
+    c.quit();
 }
 
 #[test]

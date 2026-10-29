@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::protocol::{self, Blob, DoneInfo, ErrorKind, Framed, Health, Reply, Request, RunRequest, write_json};
+use crate::protocol::{self, Blob, DoneInfo, ErrorKind, Framed, Health, Preview, Reply, Request, RunRequest, write_json};
 
 /// Why a call failed on the editor's side.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -272,6 +272,19 @@ impl EngineClient {
         progress: &mut dyn FnMut(f32, &str),
         cancel: &dyn Fn() -> bool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), ClientError> {
+        self.run_previewed(req, blobs, progress, &mut |_| {}, cancel)
+    }
+
+    /// [`Self::run`], and `preview` gets the pictures of the run in progress when the request
+    /// asks for them (`req.preview`). A preview whose bytes do not match its size is dropped.
+    pub fn run_previewed(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        preview: &mut dyn FnMut(Preview),
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), ClientError> {
         protocol::check_blobs(&req.blob_refs(), blobs).map_err(|m| ClientError::Engine { kind: ErrorKind::BadRequest, message: m })?;
         {
             let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
@@ -290,6 +303,16 @@ impl EngineClient {
             match self.frames.poll::<Reply>(&mut self.reader) {
                 Ok(Polled::Message(f)) => match f.message {
                     Reply::Progress { fraction, message } => progress(fraction, &message),
+                    Reply::Preview(info) => {
+                        let mut blobs = f.blobs;
+                        if info.image.channels == 4
+                            && protocol::check_blobs(&[&info.image], &blobs).is_ok()
+                            && let Some(bytes) = blobs.get_mut(info.image.index as usize)
+                        {
+                            let rgba = std::mem::take(bytes);
+                            preview(Preview { step: info.step, steps: info.steps, output: info.output, width: info.image.width, height: info.image.height, rgba });
+                        }
+                    }
                     Reply::Done(info) => break Ok((info, f.blobs)),
                     Reply::Error { kind, message } => break Err(ClientError::Engine { kind, message }),
                     other => break Err(ClientError::Protocol(format!("{other:?}"))),

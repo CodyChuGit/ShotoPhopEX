@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::protocol::{self, Blob, DoneInfo, ErrorKind, Framed, Health, Reply, Request, RunRequest, write_json};
+use crate::protocol::{self, Blob, DoneInfo, ErrorKind, Framed, Health, Preview, PreviewInfo, Reply, Request, RunRequest, write_json};
 
 /// A failed run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +42,20 @@ pub trait Engine: Send {
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError>;
+    /// [`Self::run`] for a request that asked for previews (`req.preview`): `preview` takes
+    /// pictures of the run in progress. It must never change what the run produces. An engine
+    /// without previews keeps this default and the run shows none.
+    fn run_previewed(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        preview: &mut dyn FnMut(Preview),
+        cancel: &AtomicBool,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        let _ = preview;
+        self.run(req, blobs, progress, cancel)
+    }
     /// Unload everything.
     fn free(&mut self);
     /// A light engine (its models load again in a second or two, the perception engine's) that
@@ -199,7 +213,15 @@ fn serve_connection(stream: TcpStream, token: &str, engine: &mut dyn Engine) -> 
                         let mut progress = |fraction: f32, message: &str| {
                             let _ = send(&w, &Reply::Progress { fraction, message: message.to_string() });
                         };
-                        engine.run(&req, &f.blobs, &mut progress, &cancel)
+                        if req.preview.is_off() {
+                            engine.run(&req, &f.blobs, &mut progress, &cancel)
+                        } else {
+                            let w = Arc::clone(&writer);
+                            let mut preview = |p: Preview| {
+                                let _ = send_preview(&w, p);
+                            };
+                            engine.run_previewed(&req, &f.blobs, &mut progress, &mut preview, &cancel)
+                        }
                     }
                 };
                 match reply {
@@ -236,6 +258,19 @@ fn serve_connection(stream: TcpStream, token: &str, engine: &mut dyn Engine) -> 
 fn send(writer: &Arc<Mutex<TcpStream>>, reply: &Reply) -> std::io::Result<()> {
     let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
     write_json(&mut *w, reply)?;
+    w.flush()
+}
+
+/// A preview as its blob frame and the message naming it; one with the wrong byte count is
+/// dropped (a preview never fails a run).
+fn send_preview(writer: &Arc<Mutex<TcpStream>>, p: Preview) -> std::io::Result<()> {
+    let image = Blob { width: p.width, height: p.height, channels: 4, index: 0 };
+    if p.rgba.len() != image.byte_len() || p.rgba.is_empty() {
+        return Ok(());
+    }
+    let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+    protocol::write_frame(&mut *w, protocol::TAG_BLOB, &p.rgba)?;
+    write_json(&mut *w, &Reply::Preview(PreviewInfo { step: p.step, steps: p.steps, output: p.output, image }))?;
     w.flush()
 }
 

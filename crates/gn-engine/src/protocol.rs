@@ -65,6 +65,76 @@ pub struct RunRequest {
     pub references: Vec<Blob>,
     #[serde(default)]
     pub params: BTreeMap<String, Value>,
+    /// Pictures of the run while it samples ([`Reply::Preview`]). Left out of the JSON when off,
+    /// so a worker from before previews reads the same request.
+    #[serde(default, skip_serializing_if = "PreviewMode::is_off")]
+    pub preview: PreviewMode,
+}
+
+/// How a run shows itself while it samples.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PreviewMode {
+    /// No pictures until the result.
+    #[default]
+    Off,
+    /// The denoised estimate through a linear latent-to-RGB map: small (the latent's grid),
+    /// next to free.
+    Fast,
+    /// The denoised estimate through a tiny decoder at the picture's size, every few steps;
+    /// `Fast` where the model has no tiny decoder or the card has no room.
+    Sharp,
+}
+
+impl PreviewMode {
+    pub fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+
+    /// `off`, `fast` or `sharp` (any case); `None` otherwise.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "fast" => Some(Self::Fast),
+            "sharp" => Some(Self::Sharp),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Fast => "fast",
+            Self::Sharp => "sharp",
+        }
+    }
+}
+
+/// A picture of a run in progress, as an engine hands it to the server (and the client to its
+/// caller): straight RGBA8, row-major, `width * height * 4` bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preview {
+    /// Steps finished, of `steps`.
+    pub step: u32,
+    pub steps: u32,
+    /// Which result it shows: a split's layer (0 = the background), 0 for a single picture.
+    pub output: u32,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// [`Reply::Preview`]: the picture travels as the blob frame before the message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewInfo {
+    pub step: u32,
+    pub steps: u32,
+    #[serde(default)]
+    pub output: u32,
+    /// RGBA (`channels` 4) at the size the engine chose: the latent's grid for `Fast`, the
+    /// picture's size (or half) for `Sharp`. The editor scales it over the result's place.
+    pub image: Blob,
 }
 
 /// What the editor sends.
@@ -130,6 +200,9 @@ pub enum Reply {
     Hello { version: u32, engine: String },
     Health(Health),
     Progress { fraction: f32, message: String },
+    /// Sent only for a run that asked for previews (`RunRequest::preview`), so an editor from
+    /// before them never sees one.
+    Preview(PreviewInfo),
     Done(DoneInfo),
     Error { kind: ErrorKind, message: String },
     Freed,
@@ -236,6 +309,7 @@ mod tests {
             mask: None,
             references: Vec::new(),
             params: BTreeMap::new(),
+            preview: PreviewMode::Off,
         });
         write_json(&mut buf, &req).unwrap();
         let mut r = &buf[..];
@@ -251,5 +325,31 @@ mod tests {
         let mut big = (MAX_FRAME + 1).to_le_bytes().to_vec();
         big.push(TAG_JSON);
         assert!(read_frame(&mut &big[..]).is_err());
+    }
+
+    #[test]
+    fn previews_keep_old_peers_working() {
+        // A request from an editor before previews (no `preview` key) reads as Off ...
+        let old = r#"{"type":"run","model":"m","task":"image","prompt":"p","seed":1}"#;
+        let Request::Run(r) = serde_json::from_str::<Request>(old).unwrap() else { panic!("not a run") };
+        assert_eq!(r.preview, PreviewMode::Off);
+        // ... and Off is not written, so a worker before previews reads the same JSON.
+        let json = serde_json::to_string(&Request::Run(r.clone())).unwrap();
+        assert!(!json.contains("preview"), "{json}");
+        let mut sharp = r;
+        sharp.preview = PreviewMode::Sharp;
+        let json = serde_json::to_string(&Request::Run(sharp.clone())).unwrap();
+        assert!(json.contains(r#""preview":"sharp""#), "{json}");
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), Request::Run(sharp));
+        assert_eq!(PreviewMode::parse(" Fast "), Some(PreviewMode::Fast));
+        assert_eq!(PreviewMode::parse("blurry"), None);
+        // The preview reply round-trips with its blob.
+        let mut buf = Vec::new();
+        write_frame(&mut buf, TAG_BLOB, &[7u8; 8]).unwrap();
+        let reply = Reply::Preview(PreviewInfo { step: 3, steps: 8, output: 1, image: Blob { width: 2, height: 1, channels: 4, index: 0 } });
+        write_json(&mut buf, &reply).unwrap();
+        let f: Framed<Reply> = read_message(&mut &buf[..]).unwrap().unwrap();
+        assert_eq!(f.message, reply);
+        assert_eq!(f.blobs, vec![vec![7u8; 8]]);
     }
 }
