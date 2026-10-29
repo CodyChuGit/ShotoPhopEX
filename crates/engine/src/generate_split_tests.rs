@@ -1,8 +1,8 @@
 //! `generate.splitLayers` (a picture decomposed into RGBA layers) against the fake server, which
-//! answers a layered-latent graph with one image per layer, opaque in its own horizontal band.
+//! answers a layers request with one image per layer, opaque in its own horizontal band.
 
 use photocraft_doc::LayerId;
-use photocraft_genai::fake::FakeComfy;
+use photocraft_genai::fake::FakeNative;
 use photocraft_geom::Rect;
 use serde_json::json;
 
@@ -13,7 +13,11 @@ fn session(url: &str) -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     s
 }
 
@@ -24,7 +28,7 @@ fn alpha_at(s: &Session, id: LayerId, x: i32, y: i32) -> f32 {
 
 #[test]
 fn split_lays_the_models_layers_above_the_active_one_background_first() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let (before, active, steps) = {
         let d = s.active().unwrap();
@@ -56,17 +60,15 @@ fn split_lays_the_models_layers_above_the_active_one_background_first() {
     assert_eq!(info.seed, 5);
     // What the server got.
     let st = fake.state();
-    let g = &st.prompts[0].1;
-    assert_eq!(g["11"]["class_type"], "EmptyQwenImageLayeredLatentImage");
-    assert_eq!(g["11"]["inputs"]["layers"], 3);
-    assert_eq!((g["11"]["inputs"]["width"].as_u64(), g["11"]["inputs"]["height"].as_u64()), (Some(64), Some(48)));
-    assert_eq!(g["13"]["class_type"], "LatentCut");
-    assert_eq!(g["13"]["inputs"]["index"], 1, "slice 0 (the whole picture) is dropped");
-    assert_eq!(g["6"]["inputs"]["text"], SPLIT_DEFAULT_PROMPT);
-    assert_eq!(g["12"]["inputs"]["steps"], 20);
-    assert_eq!(g["12"]["inputs"]["cfg"], 2.5);
-    assert_eq!(g["1"]["inputs"]["unet_name"], "qwen_image_layered_fp8mixed.safetensors");
-    assert_eq!(st.uploads.len(), 1);
+    let g = &st.runs[0].request;
+    assert_eq!(g["params"]["layers"], 3);
+    assert_eq!((g["width"].as_u64(), g["height"].as_u64()), (Some(64), Some(48)));
+    assert_eq!(g["task"], "layers");
+    assert_eq!(g["prompt"], SPLIT_DEFAULT_PROMPT);
+    assert_eq!(g["steps"], 20);
+    assert_eq!(g["guidance"], 2.5);
+    assert_eq!(g["params"]["models"]["unet"], "qwen_image_layered_fp8mixed.safetensors");
+    assert_eq!(st.pictures.len(), 1);
     drop(st);
     assert!(s.undo());
     assert_eq!(s.active().unwrap().doc.layers.len(), before);
@@ -79,7 +81,7 @@ fn split_sizes_validates_and_has_no_similar() {
     assert_eq!(layered_request_size(300, 200, None), (288, 192), "small pictures only snap to the grid");
     assert_eq!(layered_request_size(832, 1109, Some(1_000_000)), (864, 1152), "1 MP at 3:4");
     assert_eq!(layered_request_size(3000, 4000, Some(1_000_000)), (864, 1152), "down to 1 MP");
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     for p in [json!({"layers": 0}), json!({"layers": 9}), json!({"layers": 2.5}), json!({"sampleAllLayers": "no"}), json!({"template": "qwen-edit-2511/fill"})]
     {
@@ -88,10 +90,14 @@ fn split_sizes_validates_and_has_no_similar() {
     let r = s.execute(SPLIT, json!({"layers": 2, "prompt": "a lighthouse on rocks", "name": "Scene"})).unwrap();
     let id = LayerId(r["layers"][0].as_u64().unwrap());
     assert_eq!(s.active().unwrap().doc.layer(id).unwrap().name, "Scene 1/2");
-    assert_eq!(fake.state().prompts[0].1["6"]["inputs"]["text"], "a lighthouse on rocks");
+    assert_eq!(fake.state().runs[0].request["prompt"], "a lighthouse on rocks");
     let e = s.execute(SIMILAR, json!({"layer": id.0})).unwrap_err().to_string();
     assert!(e.contains("split"), "{e}");
     let mut empty = Session::new();
-    empty.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    empty.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     assert!(!empty.is_enabled(SPLIT));
 }

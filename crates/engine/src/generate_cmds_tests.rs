@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, LayerId, Size};
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use photocraft_geom::Rect;
 use serde_json::json;
 
@@ -19,7 +19,11 @@ fn session(url: &str) -> Session {
     texture(&mut s);
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
     s.edit_prefs(|p| {
-        p.integrations.set_comfy_route(url.to_string());
+        {
+            p.integrations.models_path = url.to_string();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        };
         // These tests pin the Lightning `auto` tier: Quality `balanced` (the default is `best`).
         p.integrations.quality = "balanced".into();
     });
@@ -69,7 +73,7 @@ fn wait(s: &mut Session, id: crate::jobs::JobId) -> crate::jobs::JobEvent {
 
 #[test]
 fn fill_adds_a_masked_layer_above_the_active_one() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let before = composite(&s);
     let (layers, steps, journal) = {
@@ -112,17 +116,17 @@ fn fill_adds_a_masked_layer_above_the_active_one() {
 
     // What the server received: the composite crop and a mask that is white only in the selection.
     let st = fake.state();
-    assert_eq!(st.uploads.len(), 2);
-    let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
+    assert_eq!(st.pictures.len(), 2);
+    let sent = st.pictures[0].clone();
     // The 30×26 rect (selection + 5 px margin) is grown to the 16-px grid, 32×32 from (5, 3),
     // and a request that small goes out upscaled to 512 px (the model samples at that size).
     assert_eq!((sent.width, sent.height), (512, 512));
     assert_eq!((r["requestWidth"].as_u64(), r["requestHeight"].as_u64()), (Some(512), Some(512)));
-    let mask_png = photocraft_genai::png::decode_rgba8(&st.uploads[1].1).unwrap();
+    let mask_png = st.pictures[1].clone();
     // Request pixel (x, y) is document (5 + x / 16, 3 + y / 16): (88, 88) is inside the selection.
     assert_eq!(mask_png.get(88, 88).map(|p| p[0]), Some(255), "document (10,8) is selected");
     assert!(mask_png.get(8, 8).map(|p| p[0]) < Some(128), "document (5,3) is margin: at most the outward feather's tail");
-    let prompt = st.prompts[0].1["6"]["inputs"]["prompt"].as_str().unwrap_or_default().to_string();
+    let prompt = st.runs[0].request["prompt"].as_str().unwrap_or_default().to_string();
     assert!(prompt.starts_with("Add a red bicycle to this image"), "the description is wrapped as an edit instruction: {prompt}");
     drop(st);
 
@@ -133,7 +137,7 @@ fn fill_adds_a_masked_layer_above_the_active_one() {
 
 #[test]
 fn fill_runs_as_a_background_job_with_the_same_result() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut inline = session(&fake.url);
     inline.execute(FILL, json!({"prompt": "moss", "seed": 9})).unwrap();
 
@@ -157,7 +161,7 @@ fn fill_runs_as_a_background_job_with_the_same_result() {
 
 #[test]
 fn cancelling_a_fill_leaves_the_document_alone_and_interrupts_the_server() {
-    let fake = FakeComfy::start_with(Options { delay_ms: 20_000, progress_steps: 2, ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options { delay_ms: 20_000, progress_steps: 2, ..Options::default() }).unwrap();
     let mut s = session(&fake.url);
     let before = composite(&s);
     let layers = s.active().unwrap().doc.layers.len();
@@ -167,7 +171,7 @@ fn cancelling_a_fill_leaves_the_document_alone_and_interrupts_the_server() {
     };
     // Let it reach the waiting loop.
     let t = Instant::now();
-    while fake.state().prompts.is_empty() {
+    while fake.state().runs.is_empty() {
         assert!(t.elapsed() < Duration::from_secs(10));
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -177,13 +181,13 @@ fn cancelling_a_fill_leaves_the_document_alone_and_interrupts_the_server() {
     assert!(t.elapsed() < Duration::from_secs(5), "cancel took {:?}", t.elapsed());
     assert_eq!(s.active().unwrap().doc.layers.len(), layers);
     assert_eq!(composite(&s).px, before.px);
-    assert_eq!(fake.state().interrupts, 1, "the server was told to stop");
+    assert_eq!(fake.state().cancellations, 1, "the server was told to stop");
     assert!(s.jobs().is_empty());
 }
 
 #[test]
 fn a_server_failure_is_an_error_and_changes_nothing() {
-    let fake = FakeComfy::start_with(Options { fail: Some("CUDA out of memory".into()), ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options { fail: Some("CUDA out of memory".into()), ..Options::default() }).unwrap();
     let mut s = session(&fake.url);
     let before = composite(&s);
     let steps = s.active().unwrap().history.past_len();
@@ -197,7 +201,7 @@ fn a_server_failure_is_an_error_and_changes_nothing() {
 fn an_unreachable_server_is_a_clear_error() {
     let mut s = session("http://127.0.0.1:1");
     let e = s.execute(FILL, json!({"prompt": "x"})).unwrap_err();
-    assert!(e.to_string().contains("cannot reach the ComfyUI server"), "{e}");
+    assert!(e.to_string().contains("native test worker"), "{e}");
     let h = s.execute(HEALTH, json!({})).unwrap();
     assert_eq!(h["ok"], false);
     assert!(h["error"].as_str().is_some_and(|m| m.contains("127.0.0.1:1")));
@@ -208,12 +212,12 @@ fn an_unreachable_server_is_a_clear_error() {
 
 #[test]
 fn health_and_models_report_the_server() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let h = s.execute(HEALTH, json!({})).unwrap();
     assert_eq!(h["ok"], true);
-    assert_eq!(h["version"], "0.39.0");
-    assert_eq!(h["vramTotal"], 32_000_000_000u64);
+    assert_eq!(h["backend"], "native/fake");
+    assert!(h["vramTotal"].is_null());
     let m = s.execute(MODELS, json!({})).unwrap();
     assert_eq!(m["server"]["ok"], true);
     let t = &m["templates"][0];
@@ -226,7 +230,7 @@ fn health_and_models_report_the_server() {
 
 #[test]
 fn parameters_are_validated_before_anything_runs() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     for p in [
         json!({}),
@@ -251,12 +255,12 @@ fn parameters_are_validated_before_anything_runs() {
         let e = s.execute(FILL, p.clone()).unwrap_err();
         assert!(matches!(e, EngineError::BadParams { .. }), "{p}: {e}");
     }
-    assert!(fake.state().requests.is_empty(), "no request reached the server");
+    assert!(fake.state().runs.is_empty(), "no request reached the server");
 }
 
 #[test]
 fn fill_needs_a_selection_and_a_document() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.execute("select.deselect", json!({})).unwrap();
     assert!(matches!(s.execute(FILL, json!({"prompt": "x"})), Err(EngineError::Disabled(..))));
@@ -268,17 +272,17 @@ fn fill_needs_a_selection_and_a_document() {
 
 #[test]
 fn the_model_preference_and_param_override_the_template() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.edit_prefs(|p| p.integrations.default_edit_model = "qwen_image_edit_2511_bf16.safetensors".into());
     s.execute(FILL, json!({"prompt": "x", "seed": 1})).unwrap();
     s.execute(FILL, json!({"prompt": "x", "seed": 1, "model": "custom.safetensors", "steps": 4, "guidance": 1, "negative": "blurry", "name": "Bike"})).unwrap();
     let st = fake.state();
-    assert_eq!(st.prompts[0].1["1"]["inputs"]["unet_name"], "qwen_image_edit_2511_bf16.safetensors", "the preference");
-    assert_eq!(st.prompts[1].1["1"]["inputs"]["unet_name"], "custom.safetensors", "the param wins");
-    assert_eq!(st.prompts[1].1["14"]["inputs"]["steps"], 4);
-    assert_eq!(st.prompts[1].1["14"]["inputs"]["cfg"], 1.0);
-    assert_eq!(st.prompts[1].1["7"]["inputs"]["prompt"], "blurry");
+    assert_eq!(st.runs[0].request["params"]["models"]["unet"], "qwen_image_edit_2511_bf16.safetensors", "the preference");
+    assert_eq!(st.runs[1].request["params"]["models"]["unet"], "custom.safetensors", "the param wins");
+    assert_eq!(st.runs[1].request["steps"], 4);
+    assert_eq!(st.runs[1].request["guidance"], 1.0);
+    assert_eq!(st.runs[1].request["negative"], "blurry");
     drop(st);
     let d = s.active().unwrap();
     assert_eq!(d.doc.layer(d.active_layer.unwrap()).unwrap().name, "Bike");
@@ -286,7 +290,7 @@ fn the_model_preference_and_param_override_the_template() {
 
 #[test]
 fn a_sixteen_bit_document_gets_a_sixteen_bit_layer() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = Session::new();
     let doc = Document::new("deep", Size::new(32, 32), ColorMode::Rgb, SampleType::U16);
     s.add_document(doc, None);
@@ -294,7 +298,11 @@ fn a_sixteen_bit_document_gets_a_sixteen_bit_layer() {
     texture(&mut s);
     s.execute("select.rect", json!({"x": 8, "y": 8, "width": 8, "height": 8})).unwrap();
     s.edit_prefs(|p| {
-        p.integrations.set_comfy_route(fake.url.clone());
+        {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        };
         p.integrations.quality = "balanced".into();
     });
     let r = s.execute(FILL, json!({"prompt": "x", "margin": 0})).unwrap();
@@ -329,7 +337,7 @@ fn results_of_another_size_are_resampled_to_the_request() {
 }
 
 #[test]
-fn the_quality_preference_decides_what_auto_picks_and_whether_nvfp4_applies() {
+fn the_quality_preference_decides_what_auto_picks() {
     // The default is `best`: the full-step base templates, no 4-bit weights under `auto`.
     let fresh = Session::new();
     assert_eq!(quality(&fresh), "best");
@@ -340,22 +348,22 @@ fn the_quality_preference_decides_what_auto_picks_and_whether_nvfp4_applies() {
     assert_eq!(auto_order(EXPAND, "fast"), AUTO_EXPAND_ORDER, "no 4-step expand: fast is balanced");
     assert_eq!(likely_auto(FILL, "best"), DEFAULT_FILL_TEMPLATE);
     assert_eq!(likely_auto(FILL, "nonsense"), "qwen-edit-2511/fill-lightning-8", "unknown reads as balanced in the order");
-    // A Blackwell server with the NVFP4 encoder installed: `auto` precision leaves it alone
-    // under `best`, takes it under `balanced`.
-    let fake = FakeComfy::start_with(Options { device: "NVIDIA GeForce RTX 5090".into(), ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options::default()).unwrap();
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let r = s.execute(FILL, json!({"prompt": "a kite", "seed": 1})).unwrap();
     assert_eq!(r["template"], DEFAULT_FILL_TEMPLATE, "best: the 40-step base template");
-    assert_eq!(fake.state().prompts[0].1["2"]["inputs"]["clip_name"], "qwen_2.5_vl_7b_fp8_scaled.safetensors", "no NVFP4 under best");
     assert_eq!(s.execute("generate.models", json!({})).unwrap()["quality"], "best");
     s.execute("prefs.set", json!({"path": "integrations.quality", "value": "balanced"})).unwrap();
     let r = s.execute(FILL, json!({"prompt": "a kite", "seed": 1})).unwrap();
     assert_eq!(r["template"], "qwen-edit-2511/fill-lightning-8");
-    assert_eq!(fake.state().prompts[1].1["2"]["inputs"]["clip_name"], "qwen_2.5_vl_7b_nvfp4.safetensors", "auto precision on Blackwell");
     assert!(s.execute("prefs.set", json!({"path": "integrations.quality", "value": "ultra"})).is_err());
     let v = s.execute("generate.models", json!({})).unwrap();
     assert_eq!((v["quality"].as_str(), v["autoFill"].as_str()), (Some("balanced"), Some("qwen-edit-2511/fill-lightning-8")));
@@ -363,7 +371,7 @@ fn the_quality_preference_decides_what_auto_picks_and_whether_nvfp4_applies() {
 
 #[test]
 fn variations_are_hidden_siblings_and_the_variation_command_switches_them() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let (layers, steps) = {
         let d = s.active().unwrap();
@@ -374,7 +382,7 @@ fn variations_are_hidden_siblings_and_the_variation_command_switches_them() {
     assert_eq!(ids.len(), 3);
     assert_eq!(r["layer"], ids[0].0, "the visible result is the primary one");
     assert_eq!(r["seeds"], json!([40, 41, 42]), "consecutive seeds");
-    assert_eq!(fake.state().prompts.len(), 3, "one backend run per variation");
+    assert_eq!(fake.state().runs.len(), 3, "one backend run per variation");
     {
         let d = s.active().unwrap();
         assert_eq!(d.doc.layers.len(), layers + 3);
@@ -408,17 +416,14 @@ fn variations_are_hidden_siblings_and_the_variation_command_switches_them() {
         assert!(matches!(s.execute(VARIATION, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
     // (`Session::execute` explains a missing layer with the document's listing.)
-    assert!(matches!(
-        s.execute(VARIATION, json!({"layers": [999_999], "index": 1})),
-        Err(EngineError::NoLayer(_) | EngineError::UnknownLayer { .. })
-    ));
+    assert!(matches!(s.execute(VARIATION, json!({"layers": [999_999], "index": 1})), Err(EngineError::NoLayer(_) | EngineError::UnknownLayer { .. })));
     let twice = json!({"layers": [ids[0].0, ids[0].0], "index": 1});
     assert!(matches!(s.execute(VARIATION, twice), Err(EngineError::BadParams { .. })));
 }
 
 #[test]
 fn dropping_and_keeping_variations_are_one_undo_step_each() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let r = s.execute(FILL, json!({"prompt": "a kite", "seed": 7, "variations": 4})).unwrap();
     let ids: Vec<u64> = r["layers"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
@@ -471,20 +476,16 @@ fn dropping_and_keeping_variations_are_one_undo_step_each() {
 
 #[test]
 fn auto_takes_the_lightning_tier_when_its_lora_is_installed_and_the_base_otherwise() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     assert_eq!(s.prefs().integrations.default_fill_template, AUTO_TEMPLATE, "the shipped default");
     let r = s.execute(FILL, json!({"prompt": "x", "seed": 1, "template": "auto"})).unwrap();
     assert_eq!(r["template"], "qwen-edit-2511/fill-lightning-8");
     let st = fake.state();
-    let g = &st.prompts[0].1;
-    assert_eq!(g["19"]["class_type"], "LoraLoaderModelOnly");
-    assert_eq!(g["19"]["inputs"]["lora_name"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
-    assert_eq!(g["14"]["inputs"]["steps"], 8, "the tier's default steps");
-    assert_eq!(g["14"]["inputs"]["cfg"], 1.0);
-    assert_eq!(g["9"]["class_type"], "CFGNorm");
-    assert_eq!(g["17"]["inputs"]["reference_latents_method"], "index_timestep_zero");
-    assert!(st.requests.iter().any(|r| r == "GET /models/loras"), "{:?}", st.requests);
+    let g = &st.runs[0].request;
+    assert_eq!(g["params"]["models"]["lora"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
+    assert_eq!(g["steps"], 8, "the tier's default steps");
+    assert_eq!(g["guidance"], 1.0);
     drop(st);
     let m = s.execute(MODELS, json!({})).unwrap();
     assert_eq!(m["autoFill"], "qwen-edit-2511/fill-lightning-8");
@@ -492,14 +493,13 @@ fn auto_takes_the_lightning_tier_when_its_lora_is_installed_and_the_base_otherwi
 
     // Without the LoRA on the server, auto falls back to the 40-step base template.
     let bare =
-        FakeComfy::start_with(Options { missing_files: vec!["Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors".into()], ..Options::default() })
+        FakeNative::start_with(Options { missing_files: vec!["Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors".into()], ..Options::default() })
             .unwrap();
     let mut s = session(&bare.url);
     let r = s.execute(FILL, json!({"prompt": "x", "seed": 1})).unwrap();
     assert_eq!(r["template"], DEFAULT_FILL_TEMPLATE);
     let st = bare.state();
-    assert!(st.prompts[0].1.get("19").is_none(), "no LoRA node");
-    assert_eq!(st.prompts[0].1["14"]["inputs"]["steps"], 40);
+    assert_eq!(st.runs[0].request["steps"], 40);
     drop(st);
     let m = s.execute(MODELS, json!({})).unwrap();
     assert_eq!(m["autoFill"], DEFAULT_FILL_TEMPLATE);
@@ -510,7 +510,7 @@ fn auto_takes_the_lightning_tier_when_its_lora_is_installed_and_the_base_otherwi
 
 #[test]
 fn expand_grows_the_canvas_and_paints_the_added_area_in_one_step() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.execute("select.deselect", json!({})).unwrap();
     let before = composite(&s);
@@ -541,18 +541,15 @@ fn expand_grows_the_canvas_and_paints_the_added_area_in_one_step() {
     // corner), nothing transparent in it, and the default prompt as an instruction.
     let st = fake.state();
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(96), Some(64)));
-    let g = &st.prompts[0].1;
-    let prompt = g["6"]["inputs"]["prompt"].as_str().unwrap_or_default().to_string();
+    let g = &st.runs[0].request;
+    let prompt = g["prompt"].as_str().unwrap_or_default().to_string();
     assert!(prompt.starts_with("extend the scene beyond its original edges"), "{prompt}");
     // The model's reference is the picture alone: the 64×48 picture at (0, 0) of the 96×64
     // request, in the request's upscaled pixels (512 wide → ×5.33).
-    assert_eq!(g["21"]["class_type"], "ImageCrop");
-    assert_eq!((g["21"]["inputs"]["x"].as_u64(), g["21"]["inputs"]["y"].as_u64()), (Some(0), Some(0)));
-    let (cw, ch) = (g["21"]["inputs"]["width"].as_u64().unwrap(), g["21"]["inputs"]["height"].as_u64().unwrap());
+    assert_eq!((g["params"]["ref_x"].as_u64(), g["params"]["ref_y"].as_u64()), (Some(0), Some(0)));
+    let (cw, ch) = (g["params"]["ref_w"].as_u64().unwrap(), g["params"]["ref_h"].as_u64().unwrap());
     assert!((330..=352).contains(&cw) && (240..=264).contains(&ch), "{cw}×{ch}");
-    assert_eq!(g["5"]["inputs"]["image"], json!(["21", 0]), "the crop feeds the text encoder's scale");
-    assert_eq!(g["10"]["inputs"]["pixels"], json!(["4", 0]), "the padded canvas is the latent");
-    let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
+    let sent = st.pictures[0].clone();
     assert!(sent.data.as_chunks::<4>().0.iter().all(|p| p[3] == 255), "no transparent pixels reach the model");
     // The added canvas reaches the model continuing the picture's edge pixels (the 96×64 rect
     // goes out at 512 px wide), not as a wall of grey.
@@ -572,7 +569,7 @@ fn expand_grows_the_canvas_and_paints_the_added_area_in_one_step() {
 
 #[test]
 fn expand_takes_a_target_size_with_an_anchor_and_validates() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let r = s.execute(EXPAND, json!({"width": 96, "anchor": "right", "prompt": "more sea", "seed": 2})).unwrap();
     assert_eq!(r["canvas"], json!([96, 48]));
@@ -585,14 +582,13 @@ fn expand_takes_a_target_size_with_an_anchor_and_validates() {
     // (One lock on the fake's state at a time: a second `fake.state()` while a guard lives
     // would deadlock the test.)
     let st = fake.state();
-    let g = &st.prompts[0].1;
-    let prompt = g["6"]["inputs"]["prompt"].as_str().unwrap_or_default().to_string();
+    let g = &st.runs[0].request;
+    let prompt = g["prompt"].as_str().unwrap_or_default().to_string();
     assert!(prompt.starts_with("Extend this image beyond its current edges with more sea"), "{prompt}");
     // The picture sits at x 32..96 of the 96×48 canvas; the request is x 0..64 (left pad + a
     // 24 px margin, aligned) at 512 px wide, so the reference crop starts at 32 × 8 = 256.
-    assert_eq!(g["21"]["inputs"]["x"], json!(256));
-    assert_eq!(g["21"]["inputs"]["width"], json!(256));
-    assert_eq!(st.requests.iter().filter(|r| r.as_str() == "GET /models/loras").count(), 1, "auto looked the LoRA up once");
+    assert_eq!(g["params"]["ref_x"], json!(256));
+    assert_eq!(g["params"]["ref_w"], json!(256));
     drop(st);
     for p in [
         json!({}),
@@ -612,20 +608,28 @@ fn expand_takes_a_target_size_with_an_anchor_and_validates() {
 
 #[test]
 fn purge_generative_models_asks_the_server_to_free() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = Session::new();
     s.edit_prefs(|p| {
-        p.integrations.set_comfy_route(fake.url.clone());
+        {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        };
         p.integrations.quality = "balanced".into();
     });
     assert!(s.is_enabled(FREE), "no document needed");
     let r = s.execute(FREE, json!({})).unwrap();
     assert_eq!(r["freed"], true);
-    assert!(fake.state().requests.iter().any(|r| r == "POST /free"), "{:?}", fake.state().requests);
+    assert_eq!(fake.state().frees, 1);
     assert_eq!(s.journal.iter().filter(|(id, _)| id.as_str() == FREE).count(), 0, "not journaled");
     // No server configured: a clear error.
-    s.edit_prefs(|p| p.integrations.set_comfy_route(String::new()));
-    assert!(s.execute(FREE, json!({})).unwrap_err().to_string().contains("no generative server"));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = String::new();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
+    assert!(s.execute(FREE, json!({})).unwrap_err().to_string().contains("Models folders"));
 }
 
 #[test]
@@ -653,13 +657,17 @@ fn large_areas_are_sent_at_one_megapixel_and_come_back_full_size() {
     let (w, h) = request_size(20_000, 64);
     assert!(h == 64 && w < 20_000 && w % 16 == 0, "the short side never drops below 64: {w}×{h}");
 
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 1600, "height": 1200})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 100, "y": 100, "width": 1400, "height": 1000})).unwrap();
     s.edit_prefs(|p| {
-        p.integrations.set_comfy_route(fake.url.clone());
+        {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        };
         p.integrations.quality = "balanced".into();
     });
     let r = s.execute(FILL, json!({"prompt": "x", "margin": 0})).unwrap();
@@ -668,9 +676,9 @@ fn large_areas_are_sent_at_one_megapixel_and_come_back_full_size() {
     let (rw, rh) = (r["requestWidth"].as_u64().unwrap(), r["requestHeight"].as_u64().unwrap());
     assert!(rw * rh <= 1024 * 1024 && rw % 16 == 0 && rh % 16 == 0, "{rw}×{rh}");
     let st = fake.state();
-    let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
+    let sent = st.pictures[0].clone();
     assert_eq!((u64::from(sent.width), u64::from(sent.height)), (rw, rh), "the upload is the downscaled request");
-    let mask = photocraft_genai::png::decode_rgba8(&st.uploads[1].1).unwrap();
+    let mask = st.pictures[1].clone();
     assert_eq!((mask.width, mask.height), (sent.width, sent.height));
     drop(st);
     let d = s.active().unwrap();
@@ -703,11 +711,11 @@ fn the_request_mask_is_feathered_outward_and_the_layer_mask_is_not() {
 
     // End to end: the uploaded mask is soft outside the selection; the layer mask is the same
     // soft band, dithered, or the selection exactly for a hard edge.
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let r = s.execute(FILL, json!({"prompt": "x", "margin": 0.5, "seed": 3})).unwrap();
     let st = fake.state();
-    let sent = photocraft_genai::png::decode_rgba8(&st.uploads[1].1).unwrap();
+    let sent = st.pictures[1].clone();
     // The selection is x 10..30, y 8..24 on the canvas; a 50 % margin of the longer side (10 px)
     // makes the request rect (0, 0)..(40, 34), grown to the grid as (0, 0)..(48, 48) and sent
     // upscaled to 512×512 (scale 10.67), so the selection sits at x 107..320, y 85..256 of it.
@@ -793,7 +801,7 @@ fn resampling_is_lanczos_for_pixels_and_tent_for_masks() {
 #[test]
 fn research_templates_are_gated_by_the_preference() {
     // No research-only template ships yet; the gate is exercised through its message path.
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let s = session(&fake.url);
     assert!(!s.prefs().integrations.allow_research_models);
     let t = template::find(DEFAULT_FILL_TEMPLATE).unwrap();

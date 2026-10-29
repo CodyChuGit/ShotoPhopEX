@@ -1728,9 +1728,13 @@ mod tests {
     fn generative_expand_paints_a_frame_dragged_beyond_the_canvas() {
         // comfy-photocraft: the Crop tool's expand state. With the option on, the overhang goes
         // to generate.expand (the model paints it); with it off, the canvas just grows.
-        let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
+        let fake = photocraft_genai::fake::FakeNative::start().unwrap();
         let mut app = app(SampleType::U8);
-        app.session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+        app.session.edit_prefs(|p| {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        });
         app.ui.tool_options.crop_generative = true;
         app.crop.default_frame = false;
         app.ui.crop_rect = Some([0.0, 0.0, 264.0, 100.0]);
@@ -1738,20 +1742,20 @@ mod tests {
         let doc = &app.session.active().unwrap().doc;
         assert_eq!((doc.size.width, doc.size.height), (264, 100));
         assert_eq!(doc.layers.last().unwrap().name, "Generative Expand");
-        assert_eq!(fake.state().prompts.len(), 1);
-        assert_eq!(fake.state().prompts[0].1["21"]["class_type"], "ImageCrop", "the expand template");
+        assert_eq!(fake.state().runs.len(), 1);
+        assert_eq!(fake.state().runs[0].run.task, "expand", "the expand request");
         // Part inside, part beyond: crop to the inside first, then expand by the overhang.
         app.ui.crop_rect = Some([64.0, 0.0, 328.0, 100.0]);
         crate::canvas::commit_crop(&mut app);
         let doc = &app.session.active().unwrap().doc;
         assert_eq!((doc.size.width, doc.size.height), (264, 100), "200 inside + 64 beyond");
-        assert_eq!(fake.state().prompts.len(), 2);
+        assert_eq!(fake.state().runs.len(), 2);
         // Option off: a plain crop, nothing generated.
         app.ui.tool_options.crop_generative = false;
         app.ui.crop_rect = Some([0.0, 0.0, 300.0, 100.0]);
         crate::canvas::commit_crop(&mut app);
         assert_eq!(app.session.active().unwrap().doc.size.width, 300);
-        assert_eq!(fake.state().prompts.len(), 2);
+        assert_eq!(fake.state().runs.len(), 2);
     }
 
     #[test]

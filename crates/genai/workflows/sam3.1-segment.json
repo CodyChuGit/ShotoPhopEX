@@ -6,31 +6,37 @@
     "task": "segment",
     "license": "community",
     "licenseNote": "SAM 3.1 (Meta, 2026-03-27) ships under the SAM License: research and commercial use allowed with no thresholds; military, nuclear, espionage and weapons uses banned; the licence travels with any redistribution; Meta may change the terms. The app ships no weights.",
-    "minComfyVersion": "0.39.0",
-    "saveNode": "6",
     "needsImage": true,
     "needsMask": false,
-    "defaults": { "steps": 1, "guidance": 0.0 },
-    "placeholders": {
-      "prompt": "string", "image": "string", "prefix": "string", "threshold": "float", "ckpt": "string"
+    "defaults": {
+      "steps": 1,
+      "guidance": 0.0
     },
     "models": [
-      { "placeholder": "ckpt", "folder": "checkpoints", "default": "sam3.1_multiplex_fp16.safetensors" }
+      {
+        "placeholder": "ckpt",
+        "folder": "checkpoints",
+        "default": "sam3.1_multiplex_fp16.safetensors"
+      }
     ],
     "notes": "Node names follow ComfyUI's official 'Image Segment (SAM3)' template (utility_image_segment_sam3.json): CheckpointLoaderSimple loads the SAM 3.1 checkpoint (MODEL + CLIP), CLIPTextEncode on that CLIP turns the phrase into conditioning (≤ 32 tokens; comma-separated terms; 'term:N' caps instances), SAM3_Detect returns one mask per instance (individual_masks true) after 2 decoder refinement passes. MaskToImage + SaveImage write one PNG per instance; PhotoCraft reads each as coverage, picks an instance or unions them, and combines with the current selection.",
     "creator": "Meta",
     "description": "Finds the objects a phrase names",
     "badges": [],
-    "counts": {"max": 1, "default": 1},
-    "estimatedSeconds": {"base": 1.5, "perMegapixel": 0},
-    "pages": ["select", "matte"]
-  },
-  "graph": {
-    "1": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "{{ckpt}}" } },
-    "2": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "3": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["1", 1], "text": "{{prompt}}" } },
-    "4": { "class_type": "SAM3_Detect", "inputs": { "model": ["1", 0], "image": ["2", 0], "conditioning": ["3", 0], "threshold": "{{threshold}}", "refine_iterations": 2, "individual_masks": true } },
-    "5": { "class_type": "MaskToImage", "inputs": { "mask": ["4", 0] } },
-    "6": { "class_type": "SaveImage", "inputs": { "images": ["5", 0], "filename_prefix": "{{prefix}}" } }
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1.5,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "select",
+      "matte"
+    ],
+    "parameters": [
+      "threshold"
+    ]
   }
 }

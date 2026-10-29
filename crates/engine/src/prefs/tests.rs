@@ -991,25 +991,29 @@ fn a_wrongly_typed_section_or_colour_setting_resets_only_that_part() {
     assert!(s.load_prefs_json(r#"{"interface": {"theme": 3, "uiScale": [1]}, "workspaces": {"x": 1}, "menus": 1}"#).is_ok());
 }
 
-/// With Models folder empty, the native worker reads the ComfyUI install's `models` folder (the
-/// portable build's `ComfyUI\models`, or a checkout's `models`); a set folder always wins.
 #[test]
-fn the_models_root_falls_back_to_comfyuis_models_folder() {
-    let d = std::env::temp_dir().join(format!("px-models-root-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    let portable = d.join("portable");
-    std::fs::create_dir_all(portable.join("ComfyUI").join("models")).unwrap();
-    let checkout = d.join("checkout");
-    std::fs::create_dir_all(checkout.join("models")).unwrap();
-    let mut i = Integrations::default();
-    assert_eq!(i.models_root(), "", "nothing set, no ComfyUI");
-    i.comfy_path = portable.to_string_lossy().into_owned();
-    assert_eq!(i.models_root(), portable.join("ComfyUI").join("models").to_string_lossy());
-    i.comfy_path = checkout.to_string_lossy().into_owned();
-    assert_eq!(i.models_root(), checkout.join("models").to_string_lossy());
-    i.comfy_path = d.join("missing").to_string_lossy().into_owned();
-    assert_eq!(i.models_root(), "");
-    i.models_path = " C:/models ".into();
-    assert_eq!(i.models_root(), "C:/models", "a set folder wins");
-    let _ = std::fs::remove_dir_all(&d);
+fn old_comfy_preferences_are_ignored_and_other_values_survive() {
+    let mut s = Session::new();
+    let invalid = s
+        .load_prefs_json(
+            r#"{"integrations":{
+        "comfyServer":"http://localhost:8188","comfyPath":"C:/old","comfyArgs":"--fast",
+        "engine":"comfy","engineStartOnLaunch":true,"engineStopOnQuit":false,
+        "purgeModels":"switch","modelPrecision":"nvfp4",
+        "modelsPath":" C:/weights ","runtimePath":"C:/runtime","quality":"fast","allowResearchModels":false
+    },"fileHandling":{"recentFileCount":17}}"#,
+        )
+        .unwrap();
+    assert!(invalid.is_empty(), "{invalid:?}");
+    let i = &s.prefs().integrations;
+    assert_eq!(i.models_root(), "C:/weights");
+    assert_eq!(i.runtime_path, "C:/runtime");
+    assert_eq!(i.quality, "fast");
+    assert!(!i.allow_research_models);
+    assert_eq!(s.prefs().file_handling.recent_file_count, 17);
+    let v = s.prefs().to_json();
+    for k in ["comfyServer", "comfyPath", "comfyArgs", "engine", "engineStartOnLaunch", "engineStopOnQuit", "purgeModels", "modelPrecision"] {
+        assert!(v["integrations"].get(k).is_none());
+    }
+    assert_eq!(Integrations::default().models_root(), "", "Models folder is required");
 }

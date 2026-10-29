@@ -3971,7 +3971,6 @@ curves	Smooth	Згладити
 	Generate Image…	Згенерувати зображення…
 	Select by Text…	Виділити за текстом…
 	Allow research models	Дозволити дослідницькі моделі
-	ComfyUI server	Сервер ComfyUI
 	Default edit model	Модель редагування за замовчуванням
 	Default fill template	Шаблон заповнення за замовчуванням
 	Default generate model	Модель генерації за замовчуванням
@@ -3998,8 +3997,6 @@ curves	Smooth	Згладити
 	Enhance prompt	Покращити запит
 	Enhancing…	Покращення…
 	The model could not improve this prompt	Модель не змогла покращити цей запит
-	Model precision	Точність моделі
-	NVFP4 (Blackwell GPUs)	NVFP4 (графічні процесори Blackwell)
 	Select by text…	Виділити за текстом…
 	Click an object, or drag a rectangle around it	Клацніть об’єкт або обведіть його прямокутником
 	Select by Point	Виділити за точкою
@@ -4089,7 +4086,7 @@ curves	Smooth	Згладити
 	Not in this build yet	Ще немає в цій збірці
 	Open a picture first	Спочатку відкрийте зображення
 	Generative Features	Генеративні функції
-	Runs on your own ComfyUI server with the models you installed.	Працює на вашому власному сервері ComfyUI з установленими вами моделями.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	НЕЗАБАРОМ
 	Split into Layers	Розділити на шари
 	Angles	Ракурси
@@ -4106,7 +4103,7 @@ curves	Smooth	Згладити
 	front	спереду
 	Camera	Камера
 	Generative Angles	Генеративні ракурси
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	Потрібен qwen-image-edit-2511-multiple-angles-lora.safetensors у ComfyUI/models/loras (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	вид спереду
 	front-right quarter view	вид спереду справа на три чверті
 	right side view	вид справа
@@ -4145,20 +4142,14 @@ curves	Smooth	Згладити
 	Engine: running outside the app	Рушій: працює поза застосунком
 	Engine: failed	Рушій: помилка
 	Engine: stopped	Рушій: зупинено
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Укажіть теку ComfyUI у Параметри › Інтеграції ШІ, щоб застосунок міг його запускати
 	Start engine	Запустити рушій
 	Stop engine	Зупинити рушій
 	Restart engine	Перезапустити рушій
 	Show log	Показати журнал
-	ComfyUI folder	Тека ComfyUI
-	ComfyUI launch flags	Параметри запуску ComfyUI
-	Engine start on launch	Запускати рушій при старті
-	Engine stop on quit	Зупиняти рушій при виході
 	Engine	Рушій
 	Native	Вбудований
-	ComfyUI	ComfyUI
 	Native runtime folders	Теки вбудованого середовища виконання
-	Native models folder	Тека вбудованих моделей
+	Models folder	Тека вбудованих моделей
 	Instance	Екземпляр
 	Intersect	Перетин
 	Prompt	Запит
@@ -4174,7 +4165,7 @@ curves	Smooth	Згладити
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Генеративно
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Заповнити генеративною моделлю: повільніше, але набагато краще на текстурах і візерунках (потрібен сервер ComfyUI або вбудований рушій)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Попередній перегляд показує класичне заповнення; OK і Застосувати запускають модель на новому шарі.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -4182,9 +4173,6 @@ curves	Smooth	Згладити
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Створює два варіанти й показує той, що виглядає неторканим; вимкнено: один варіант, приблизно вдвічі швидше
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Вивантажувати моделі між завданнями
-	When any model file changes	Коли змінюється будь-який файл моделі
-	When the diffusion model changes	Коли змінюється дифузійна модель
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Адаптери з підпапки loras папки моделей, які застосовує вбудований рушій
 	Generative Upscale	Генеративне масштабування

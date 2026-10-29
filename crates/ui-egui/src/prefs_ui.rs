@@ -1146,29 +1146,17 @@ fn humanize(key: &str) -> String {
     if key == "webpQuality" {
         return "Quality".into();
     }
-    // AI Integrations (the ComfyUI backend): keys whose humanized form reads badly.
-    if key == "comfyServer" {
-        return "ComfyUI server".into();
-    }
+    // AI Integrations: keys whose humanized form reads badly.
     if key == "generativeTimeoutSecs" {
         return "Generative timeout (seconds)".into();
     }
-    if key == "purgeModels" {
-        return "Unload models between tasks".into();
-    }
     // The app-managed engine (plan-native-engine §5.4).
-    if key == "comfyPath" {
-        return "ComfyUI folder".into();
-    }
-    if key == "comfyArgs" {
-        return "ComfyUI launch flags".into();
-    }
     // The native worker (plan-native-engine Phase 1).
     if key == "runtimePath" {
         return "Native runtime folders".into();
     }
     if key == "modelsPath" {
-        return "Native models folder".into();
+        return "Models folder".into();
     }
     // The auto-hide notice settings read best with their own labels (Interface › Notification, #2022).
     if key == "notificationAutoHide" {
@@ -1221,10 +1209,6 @@ fn choice_label(v: &str) -> String {
         "metal" => "Metal".into(),
         "gl" => "OpenGL".into(),
         "cpu" => "CPU (no GPU acceleration)".into(),
-        "nvfp4" => "NVFP4 (Blackwell GPUs)".into(),
-        "comfy" => "ComfyUI".into(),
-        "switch" => "When any model file changes".into(),
-        "heavy" => "When the diffusion model changes".into(),
         v => humanize(v),
     }
 }
@@ -3701,7 +3685,7 @@ mod tests {
         assert!(!has_visible_fields(&values, "scratchDisks"));
         // AI Integrations shows the engine settings (PhotoshopEX); agent control is still hidden.
         assert!(has_visible_fields(&values, "integrations"));
-        assert!(!prefs::is_hidden("integrations.comfyServer"));
+        assert!(!prefs::is_hidden("integrations.modelsPath"));
         assert!(prefs::is_hidden("integrations.allowAgentControl"));
         // "Fill new type layers with placeholder text" and "Use Escape to Commit" are live; other Type rows stay hidden.
         assert!(has_visible_fields(&values, "type"));

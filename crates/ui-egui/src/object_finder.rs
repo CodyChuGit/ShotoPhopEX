@@ -224,7 +224,7 @@ mod tests {
         // PhotoshopEX: no generative server, so the finder stays classical here even with a
         // ComfyUI running on the development PC.
         s.edit_prefs(|p| {
-            p.integrations.comfy_server.clear();
+            p.integrations.models_path.clear();
             p.integrations.runtime_path.clear();
             p.integrations.models_path.clear();
         });

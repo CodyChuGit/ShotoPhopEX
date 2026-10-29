@@ -192,9 +192,13 @@ fn filters_from_the_ui_run_in_the_background() {
 
 #[test]
 fn the_model_pickers_background_check_leaves_the_status_line_alone() {
-    let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
+    let fake = photocraft_genai::fake::FakeNative::start().unwrap();
     let mut h = app_harness();
-    h.state_mut().session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    h.state_mut().session.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     h.state_mut().ui.status = "Gaussian Blur".into();
     crate::generate_panel::load_catalog(h.state_mut());
     assert!(!h.state().session.has_jobs(), "loading the catalogue stays offline");

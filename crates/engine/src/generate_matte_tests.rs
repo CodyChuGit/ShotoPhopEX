@@ -2,7 +2,7 @@
 //! transparent option of `generate.image`, against the in-process fake server.
 
 use photocraft_doc::LayerId;
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use photocraft_geom::Rect;
 use serde_json::json;
 
@@ -31,7 +31,11 @@ fn session(url: &str) -> Session {
     })
     .unwrap();
     s.edit_prefs(|p| {
-        p.integrations.set_comfy_route(url.to_string());
+        {
+            p.integrations.models_path = url.to_string();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        };
         p.integrations.allow_research_models = true;
     });
     s
@@ -39,8 +43,8 @@ fn session(url: &str) -> Session {
 
 /// The fake answers with alpha 255 inside the middle half of the image (x 16..48, y 12..36 on
 /// the canvas), 0 outside.
-fn matte_server() -> FakeComfy {
-    FakeComfy::start_with(Options { matte: Some([0.25, 0.25, 0.75, 0.75]), ..Options::default() }).unwrap()
+fn matte_server() -> FakeNative {
+    FakeNative::start_with(Options { matte: Some([0.25, 0.25, 0.75, 0.75]), ..Options::default() }).unwrap()
 }
 
 fn mask_at(s: &Session, id: LayerId, x: i32, y: i32) -> f32 {
@@ -79,17 +83,15 @@ fn remove_background_masks_the_layer_with_the_models_alpha_and_keeps_its_pixels(
     // answers "Enhanced: <question>"), then the 2.1 edit graph with the picture as image_1 at
     // its own size and that name wrapped into the instruction.
     let st = fake.state();
-    assert!(st.prompts.len() >= 2, "the naming question, then the matte");
-    let g = &st.prompts.last().unwrap().1;
-    assert_eq!(g["6"]["class_type"], "TextEncodeQwenImage21");
-    assert_eq!(g["6"]["inputs"]["resolution"], 0);
-    assert_eq!(g["6"]["inputs"]["images.image_1"], json!(["4", 0]));
-    assert!(g["6"]["inputs"].get("images.image_2").is_none(), "no mask image");
-    let instruction = g["6"]["inputs"]["prompt"].as_str().unwrap_or("");
+    assert!(st.runs.len() >= 2, "the naming question, then the matte");
+    let g = &st.runs.last().unwrap().request;
+    assert!(g["mask"].is_null());
+    assert!(g["references"].as_array().unwrap().is_empty());
+    let instruction = g["prompt"].as_str().unwrap_or("");
     assert!(instruction.starts_with("Remove the background, keeping only Enhanced:") && instruction != MATTE_DEFAULT_PROMPT, "{instruction}");
-    assert_eq!(g["10"]["inputs"]["seed"], 4);
-    assert_eq!(g["10"]["inputs"]["steps"], 25);
-    let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
+    assert_eq!(g["seed"], 4);
+    assert_eq!(g["steps"], 25);
+    let sent = st.pictures[0].clone();
     assert_eq!((sent.width, sent.height), (64, 32));
     drop(st);
     assert!(s.undo());
@@ -109,8 +111,8 @@ fn naming_the_subject_wraps_it_into_the_instruction_and_the_background_becomes_a
     assert!(l.mask.is_some());
     assert_ne!(l.name, "Background");
     assert_eq!(mask_at(&s, bg, 32, 24), 1.0);
-    let g = &fake.state().prompts[0].1;
-    assert_eq!(g["6"]["inputs"]["prompt"], "Remove the background, keeping only the lighthouse, and output a PNG image");
+    let g = &fake.state().runs[0].request;
+    assert_eq!(g["prompt"], "Remove the background, keeping only the lighthouse, and output a PNG image");
 }
 
 #[test]
@@ -150,7 +152,7 @@ fn remove_background_validates_and_is_gated_like_the_other_research_templates() 
     assert!(e.contains("research-only"), "{e}");
     s.edit_prefs(|p| p.integrations.allow_research_models = true);
     // A fully transparent answer: the model "kept nothing", and nothing changes.
-    let empty = FakeComfy::start_with(Options { matte: Some([0.0, 0.0, 0.0, 0.0]), ..Options::default() }).unwrap();
+    let empty = FakeNative::start_with(Options { matte: Some([0.0, 0.0, 0.0, 0.0]), ..Options::default() }).unwrap();
     let mut s = session(&empty.url);
     let e = s.execute(REMOVE_BG, json!({})).unwrap_err().to_string();
     assert!(e.contains("kept nothing"), "{e}");
@@ -160,7 +162,7 @@ fn remove_background_validates_and_is_gated_like_the_other_research_templates() 
 #[test]
 fn without_the_research_opt_in_remove_background_uses_the_permissive_detector() {
     // The fake detector "finds" the centre quarter: x 16..48, y 12..36 on 64×48.
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.edit_prefs(|p| p.integrations.allow_research_models = false);
     let id = s.active().unwrap().active_layer.unwrap();
@@ -180,18 +182,17 @@ fn without_the_research_opt_in_remove_background_uses_the_permissive_detector() 
     assert!(edge.iter().any(|v| *v > 0.0 && *v < 1.0), "partial coverage across the edge: {edge:?}");
     {
         let st = fake.state();
-        let g = &st.prompts[0].1;
-        assert_eq!(g["4"]["class_type"], "SAM3_Detect");
-        assert_eq!(g["3"]["inputs"]["text"], "the boat");
-        assert_eq!(g["4"]["inputs"]["threshold"], 0.5);
+        let g = &st.runs[0].request;
+        assert_eq!(g["prompt"], "the boat");
+        assert_eq!(g["params"]["threshold"], 0.5);
     }
     // No subject named: the detector is asked for the main subject. As a selection, too.
     let r = s.execute(REMOVE_BG, json!({"asSelection": true})).unwrap();
     assert_eq!(r["selection"], true);
     assert!(s.active().unwrap().doc.selection.is_some());
-    assert_eq!(fake.state().prompts[2].1["3"]["inputs"]["text"], "the main subject");
+    assert_eq!(fake.state().runs[2].request["prompt"], "the main subject");
     // Research allowed but the 2.1 files missing: `auto` still falls back to the detector.
-    let bare = FakeComfy::start_with(Options { missing_files: vec!["qwen_image_2.1_int8_convrot.safetensors".into()], ..Options::default() }).unwrap();
+    let bare = FakeNative::start_with(Options { missing_files: vec!["qwen_image_2.1_int8_convrot.safetensors".into()], ..Options::default() }).unwrap();
     let mut s = session(&bare.url);
     let r = s.execute(REMOVE_BG, json!({"prompt": "the boat"})).unwrap();
     assert_eq!(r["template"], "sam3.1/segment");
@@ -217,8 +218,8 @@ fn a_transparent_generate_image_asks_the_template_for_it_and_keeps_the_alpha() {
     let surf = l.surface().unwrap();
     assert_eq!(surf.read_region(Rect::new(32, 24, 33, 25))[3], 1.0, "the subject is opaque");
     assert_eq!(surf.read_region(Rect::new(2, 2, 3, 3))[3], 0.0, "the background is transparent in the pixels themselves");
-    let g = &fake.state().prompts[0].1;
-    assert_eq!(g["5"]["inputs"]["prompt"], "a red rowing boat, isolated on a transparent background, output a PNG image");
+    let g = &fake.state().runs[0].request;
+    assert_eq!(g["prompt"], "a red rowing boat, isolated on a transparent background, output a PNG image");
     // A template whose model cannot output transparency refuses.
     let e = s.execute(IMAGE, json!({"prompt": "x", "transparent": true})).unwrap_err();
     assert!(matches!(e, EngineError::BadParams { .. }) && e.to_string().contains("transparency"), "{e}");

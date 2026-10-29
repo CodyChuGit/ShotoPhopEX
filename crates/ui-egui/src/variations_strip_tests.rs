@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use egui::vec2;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use serde_json::json;
 
 use super::*;
@@ -14,7 +14,11 @@ fn app(url: &str) -> PhotocraftApp {
     s.execute("file.new", json!({"width": 256, "height": 192})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 40, "y": 30, "width": 120, "height": 90})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     app.sync_views();
     app
@@ -47,7 +51,7 @@ fn steps(h: &Harness<'_, PhotocraftApp>) -> usize {
 
 #[test]
 fn three_variations_are_three_tiles_and_clicks_switch_drop_and_keep_in_one_step_each() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut a = app(&fake.url);
     a.run("generate.fill", json!({"prompt": "a kite", "variations": 3})).unwrap();
     let mut h = harness(a);
@@ -87,7 +91,7 @@ fn three_variations_are_three_tiles_and_clicks_switch_drop_and_keep_in_one_step_
 
 #[test]
 fn a_running_job_shows_placeholders_then_its_tiles_and_a_failed_one_offers_retry() {
-    let fake = FakeComfy::start_with(Options { delay_ms: 300, ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options { delay_ms: 300, ..Options::default() }).unwrap();
     let mut a = app(&fake.url);
     a.background_jobs = true;
     let r = a.run("generate.fill", json!({"prompt": "a kite", "variations": 2})).unwrap();
@@ -111,7 +115,7 @@ fn a_running_job_shows_placeholders_then_its_tiles_and_a_failed_one_offers_retry
     assert_eq!((v["runs"][0]["status"].as_str(), v["runs"][0]["tiles"].as_array().map(Vec::len)), (Some("done"), Some(2)), "{v}");
 
     // A failure: a red tile with the reason, Retry (generate.recreate) and Dismiss.
-    let bad = FakeComfy::start_with(Options { fail: Some("CUDA out of memory".into()), ..Options::default() }).unwrap();
+    let bad = FakeNative::start_with(Options { fail: Some("CUDA out of memory".into()), ..Options::default() }).unwrap();
     let mut a = app(&bad.url);
     assert!(a.run("generate.fill", json!({"prompt": "a kite"})).is_err());
     let mut h = harness(a);
@@ -122,10 +126,10 @@ fn a_running_job_shows_placeholders_then_its_tiles_and_a_failed_one_offers_retry
         (Some("failed"), Some("outOfMemory"), Some(1)),
         "{run}"
     );
-    let prompts = bad.state().prompts.len();
+    let prompts = bad.state().runs.len();
     h.get_by_label("Retry").click();
     h.run_steps(3);
-    assert!(bad.state().prompts.len() > prompts, "Retry ran the request again");
+    assert!(bad.state().runs.len() > prompts, "Retry ran the request again");
     assert_eq!(bundles(h.state()).len(), 2, "the retry failed too: a second failed run");
     h.get_all_by_label("Dismiss").next().unwrap().click();
     h.run_steps(3);
@@ -134,7 +138,7 @@ fn a_running_job_shows_placeholders_then_its_tiles_and_a_failed_one_offers_retry
 
 #[test]
 fn the_preference_moves_the_strip_to_the_bottom_or_hides_it() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut a = app(&fake.url);
     a.run("generate.fill", json!({"prompt": "a kite", "variations": 2})).unwrap();
     a.session.edit_prefs(|p| p.integrations.variations_strip = "bottom".into());
@@ -153,7 +157,7 @@ fn the_preference_moves_the_strip_to_the_bottom_or_hides_it() {
 
 #[test]
 fn in_the_whole_app_a_tile_click_reaches_only_the_strip() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let url = fake.url.clone();
     let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_max_steps(8).build_eframe(move |cc| {
         PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
@@ -174,14 +178,14 @@ fn in_the_whole_app_a_tile_click_reaches_only_the_strip() {
 
 #[test]
 fn similar_adds_a_run_and_other_commands_stay_out() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut a = app(&fake.url);
     a.run("generate.fill", json!({"prompt": "a kite", "variations": 2})).unwrap();
     let mut h = harness(a);
-    let prompts = fake.state().prompts.len();
+    let prompts = fake.state().runs.len();
     h.get_by_label("Generate Similar").click();
     h.run_steps(3);
-    assert_eq!(fake.state().prompts.len(), prompts + 2, "as many as the run had");
+    assert_eq!(fake.state().runs.len(), prompts + 2, "as many as the run had");
     let b = bundles(h.state());
     assert_eq!((b.len(), b[0].command.as_str(), b[0].layers.len()), (2, "generate.fill", 2), "{b:?}");
     // A model-backed selection is in the library but is not a run of variations.

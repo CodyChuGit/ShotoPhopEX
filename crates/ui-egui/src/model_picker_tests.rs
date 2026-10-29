@@ -1,6 +1,6 @@
 use egui::vec2;
 use egui_kittest::Harness;
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use serde_json::json;
 
 use super::*;
@@ -78,12 +78,16 @@ fn every_shipped_family_has_a_glyph() {
 fn the_panel_lists_the_pages_templates_with_estimates_and_the_probe_marks_missing_files() {
     // The fake leaves the Lightning 8 LoRA out: those templates are "not installed".
     let fake =
-        FakeComfy::start_with(Options { missing_files: vec!["Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors".into()], ..Options::default() })
+        FakeNative::start_with(Options { missing_files: vec!["Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors".into()], ..Options::default() })
             .unwrap();
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("select.rect", json!({"x": 4, "y": 4, "width": 20, "height": 20})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     crate::generate_panel::load_catalog(&mut app);
     // Loading the catalogue stays offline (the panel is on screen from startup).

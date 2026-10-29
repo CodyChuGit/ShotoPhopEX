@@ -1379,9 +1379,13 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             });
             // PhotoshopEX: OK runs the fill model instead of the patch fill.
             widgets::checkbox(ui, &mut w.opts.generative, tl!("Generative"))
-                .on_hover_text(tl!("Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)"));
+                .on_hover_text(tl!("Fill from the generative model: slower, far better on textures and patterns (needs the native worker)"));
             if w.opts.generative {
-                ui.label(egui::RichText::new(tl!("The preview shows the classical fill; OK and Apply run the model onto a new layer.")).size(11.0).color(t.text_faint));
+                ui.label(
+                    egui::RichText::new(tl!("The preview shows the classical fill; OK and Apply run the model onto a new layer."))
+                        .size(11.0)
+                        .color(t.text_faint),
+                );
             }
             widgets::hairline(ui);
             widgets::section_label(ui, tl!("Output Settings"));

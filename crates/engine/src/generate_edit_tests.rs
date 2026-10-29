@@ -2,7 +2,7 @@
 //! purge before a run whose model files differ from the last run's, against the fake server.
 
 use photocraft_doc::LayerId;
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use photocraft_geom::Rect;
 use serde_json::json;
 
@@ -34,7 +34,11 @@ fn session(url: &str) -> Session {
     .unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
     s.edit_prefs(|p| {
-        p.integrations.set_comfy_route(url.to_string());
+        {
+            p.integrations.models_path = url.to_string();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        };
         p.integrations.quality = "balanced".into();
     });
     s
@@ -51,7 +55,7 @@ fn mask_at(s: &Session, id: LayerId, x: i32, y: i32) -> f32 {
 
 #[test]
 fn edit_re_renders_the_whole_canvas_into_a_layer_and_sends_no_mask() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.execute("select.deselect", json!({})).unwrap();
     let (layers, steps) = {
@@ -73,23 +77,22 @@ fn edit_re_renders_the_whole_canvas_into_a_layer_and_sends_no_mask() {
     assert_eq!(mask_at(&s, id, 1, 1), 1.0, "no selection: everything shows");
     assert_eq!(mask_at(&s, id, 62, 46), 1.0);
     let st = fake.state();
-    assert_eq!(st.uploads.len(), 1, "the picture alone, no mask upload");
-    let g = &st.prompts[0].1;
-    assert!(g.get("13").is_none() && g.get("11").is_none(), "no noise mask in the graph");
-    assert_eq!(g["14"]["inputs"]["latent_image"], json!(["10", 0]), "the picture's own latent is sampled");
-    assert_eq!(g["19"]["inputs"]["lora_name"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
-    assert_eq!(g["14"]["inputs"]["steps"], 8);
-    assert_eq!(g["6"]["inputs"]["prompt"], "make the sky stormy. Keep everything else exactly as it is.");
+    assert_eq!(st.pictures.len(), 1, "the picture alone, no mask upload");
+    let g = &st.runs[0].request;
+    assert!(g["mask"].is_null() && g["task"] == "edit", "an edit has no input mask");
+    assert_eq!(g["params"]["models"]["lora"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
+    assert_eq!(g["steps"], 8);
+    assert_eq!(g["prompt"], "make the sky stormy. Keep everything else exactly as it is.");
     drop(st);
     // A description is turned into an instruction.
     s.execute(EDIT, json!({"prompt": "a stormy sky", "seed": 4})).unwrap();
-    let g = &fake.state().prompts[1].1;
-    assert_eq!(g["6"]["inputs"]["prompt"], "Change this image so that it shows a stormy sky, keeping everything else exactly as it is.");
+    let g = &fake.state().runs[1].request;
+    assert_eq!(g["prompt"], "Change this image so that it shows a stormy sky, keeping everything else exactly as it is.");
 }
 
 #[test]
 fn a_selection_confines_what_of_the_edit_shows() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let r = s.execute(EDIT, json!({"prompt": "turn the boat blue", "seed": 3})).unwrap();
     let id = LayerId(r["layer"].as_u64().unwrap());
@@ -97,7 +100,7 @@ fn a_selection_confines_what_of_the_edit_shows() {
     assert_eq!(mask_at(&s, id, 62, 46), 0.0, "far outside");
     let band = mask_at(&s, id, 8, 16);
     assert!(band > 0.0 && band < 1.0, "a soft, dithered band around it: {band}");
-    assert_eq!(fake.state().uploads.len(), 1, "still no mask upload: the selection is the layer mask only");
+    assert_eq!(fake.state().pictures.len(), 1, "still no mask upload: the selection is the layer mask only");
     let r = s.execute(EDIT, json!({"prompt": "turn the boat blue", "seed": 3, "edge": "hard"})).unwrap();
     let id = LayerId(r["layer"].as_u64().unwrap());
     assert_eq!(mask_at(&s, id, 8, 16), 0.0, "hard = exactly the selection");
@@ -105,8 +108,8 @@ fn a_selection_confines_what_of_the_edit_shows() {
 }
 
 #[test]
-fn angles_runs_the_multiple_angles_graph_with_the_loras_words_over_the_whole_picture() {
-    let fake = FakeComfy::start().unwrap();
+fn angles_sends_the_loras_words_over_the_whole_picture() {
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     // A selection is there, but a camera move is not confined by it.
     let r = s.execute(ANGLES, json!({"rotation": 135, "tilt": 60, "zoom": 5, "seed": 9, "variations": 2})).unwrap();
@@ -117,11 +120,11 @@ fn angles_runs_the_multiple_angles_graph_with_the_loras_words_over_the_whole_pic
     let name = s.active().unwrap().doc.layer(ids[0]).unwrap().name.clone();
     assert!(name.starts_with("Angles: back-right quarter view high-angle shot medium shot"), "{name}");
     let st = fake.state();
-    let g = &st.prompts[0].1;
-    assert_eq!(g["6"]["inputs"]["prompt"], "<sks> back-right quarter view high-angle shot medium shot", "the LoRA's words, no format");
-    assert_eq!(g["19"]["inputs"]["lora_name"], "qwen-image-edit-2511-multiple-angles-lora.safetensors");
-    assert_eq!(g["20"]["inputs"]["lora_name"], "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors");
-    assert_eq!((g["14"]["inputs"]["steps"].as_u64(), g["14"]["inputs"]["cfg"].as_f64()), (Some(4), Some(1.0)));
+    let g = &st.runs[0].request;
+    assert_eq!(g["prompt"], "<sks> back-right quarter view high-angle shot medium shot", "the LoRA's words, no format");
+    assert_eq!(g["params"]["models"]["lora"], "qwen-image-edit-2511-multiple-angles-lora.safetensors");
+    assert_eq!(g["params"]["models"]["lightning"], "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors");
+    assert_eq!((g["steps"].as_u64(), g["guidance"].as_f64()), (Some(4), Some(1.0)));
     drop(st);
     // The layer remembers an edit, so Generate Similar and Recreate run it again.
     let info = generative_info(s.active().unwrap().doc.layer(ids[0]).unwrap()).unwrap();
@@ -140,7 +143,7 @@ fn angles_runs_the_multiple_angles_graph_with_the_loras_words_over_the_whole_pic
 #[test]
 fn auto_falls_back_to_the_base_edit_template_and_params_are_validated() {
     let bare =
-        FakeComfy::start_with(Options { missing_files: vec!["Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors".into()], ..Options::default() })
+        FakeNative::start_with(Options { missing_files: vec!["Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors".into()], ..Options::default() })
             .unwrap();
     let mut s = session(&bare.url);
     let r = s.execute(EDIT, json!({"prompt": "x", "seed": 1})).unwrap();
@@ -148,9 +151,8 @@ fn auto_falls_back_to_the_base_edit_template_and_params_are_validated() {
     {
         // One guard, dropped before the next request (the fake's state lock is not reentrant).
         let st = bare.state();
-        let g = &st.prompts[0].1;
-        assert!(g.get("19").is_none(), "no LoRA node");
-        assert_eq!(g["14"]["inputs"]["steps"], 40);
+        let g = &st.runs[0].request;
+        assert_eq!(g["steps"], 40);
     }
     for p in [
         json!({}),
@@ -163,74 +165,14 @@ fn auto_falls_back_to_the_base_edit_template_and_params_are_validated() {
     }
     let mut empty = Session::new();
     empty.edit_prefs(|p| {
-        p.integrations.set_comfy_route(bare.url.clone());
+        {
+            p.integrations.models_path = bare.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        };
         p.integrations.quality = "balanced".into();
     });
     assert!(!empty.is_enabled(EDIT), "needs a document");
     let m = s.execute(MODELS, json!({})).unwrap();
     assert_eq!(m["autoEdit"], DEFAULT_EDIT_TEMPLATE, "what auto would pick without the LoRA");
-}
-
-#[test]
-fn under_heavy_only_a_change_of_the_diffusion_model_purges_and_never_never_does() {
-    // `heavy` (the default): the 40-step base after the Lightning tier drops a LoRA under the
-    // same 20 GB model, no purge; Krea 2 after 2511 is another diffusion model, a purge.
-    let fake = FakeComfy::start().unwrap();
-    let mut s = session(&fake.url);
-    let frees = |fake: &FakeComfy| fake.state().requests.iter().filter(|r| r.as_str() == "POST /free").count();
-    assert_eq!(s.prefs().integrations.purge_models, "heavy");
-    s.execute(FILL, json!({"prompt": "x", "seed": 1})).unwrap();
-    s.execute(EDIT, json!({"prompt": "x", "seed": 1, "template": "qwen-edit-2511/edit"})).unwrap();
-    assert_eq!(frees(&fake), 0, "a LoRA dropped under the same model: no purge");
-    s.execute("select.deselect", json!({})).unwrap();
-    s.execute(IMAGE, json!({"prompt": "a fox", "seed": 1, "target": "layer"})).unwrap();
-    assert_eq!(frees(&fake), 1, "another diffusion model: purged once");
-    s.execute(IMAGE, json!({"prompt": "a fox", "seed": 2, "target": "layer"})).unwrap();
-    assert_eq!(frees(&fake), 1);
-    // `never`: back to 2511, no purge at all.
-    s.edit_prefs(|p| p.integrations.purge_models = "never".into());
-    s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    s.execute(FILL, json!({"prompt": "y", "seed": 3})).unwrap();
-    assert_eq!(frees(&fake), 1, "never: the model changed and nothing was purged");
-}
-
-#[test]
-fn the_server_is_purged_before_a_run_whose_model_files_differ_from_the_last() {
-    let fake = FakeComfy::start().unwrap();
-    let mut s = session(&fake.url);
-    // The `switch` rule of 2026-10-09, kept as a preference; the default is `heavy` (below).
-    s.edit_prefs(|p| p.integrations.purge_models = "switch".into());
-    let frees = |fake: &FakeComfy| fake.state().requests.iter().filter(|r| r.as_str() == "POST /free").count();
-    // The first run on a server never purges; a second with the same files does not either.
-    s.execute(FILL, json!({"prompt": "x", "seed": 1})).unwrap();
-    s.execute(FILL, json!({"prompt": "y", "seed": 2})).unwrap();
-    assert_eq!(frees(&fake), 0);
-    // An edit with the Lightning tier loads the same four files: no purge.
-    s.execute(EDIT, json!({"prompt": "x", "seed": 1})).unwrap();
-    assert_eq!(frees(&fake), 0);
-    // The 40-step base drops the LoRA: a different set, purged once, then steady.
-    s.execute(EDIT, json!({"prompt": "x", "seed": 1, "template": "qwen-edit-2511/edit"})).unwrap();
-    assert_eq!(frees(&fake), 1);
-    s.execute(EDIT, json!({"prompt": "x", "seed": 2, "template": "qwen-edit-2511/edit"})).unwrap();
-    assert_eq!(frees(&fake), 1);
-    // The purge precedes the prompt it serves.
-    let reqs = fake.state().requests.clone();
-    let free_at = reqs.iter().position(|r| r == "POST /free").unwrap();
-    let prompts: Vec<usize> = reqs.iter().enumerate().filter(|(_, r)| r.as_str() == "POST /prompt").map(|(i, _)| i).collect();
-    assert_eq!(prompts.iter().filter(|i| **i < free_at).count(), 3, "three runs before the purge, {reqs:?}");
-    // Back to the Lightning tier: another switch.
-    s.execute(FILL, json!({"prompt": "z", "seed": 3})).unwrap();
-    assert_eq!(frees(&fake), 2);
-    // A server another process left nearly full (2 GB of 32 free): the first run of this
-    // process purges before loading, once.
-    let full = FakeComfy::start_with(Options { vram_free: 2_000_000_000, ..Options::default() }).unwrap();
-    let mut s = session(&full.url);
-    s.execute(FILL, json!({"prompt": "x", "seed": 1})).unwrap();
-    assert_eq!(frees(&full), 1);
-    let reqs = full.state().requests.clone();
-    let free_at = reqs.iter().position(|r| r == "POST /free").unwrap();
-    let prompt_at = reqs.iter().position(|r| r == "POST /prompt").unwrap();
-    assert!(free_at < prompt_at, "{reqs:?}");
-    s.execute(FILL, json!({"prompt": "y", "seed": 2})).unwrap();
-    assert_eq!(frees(&full), 1, "known state afterwards: no more purges");
 }

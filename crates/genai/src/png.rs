@@ -1,5 +1,5 @@
 //! PNG in and out, through `photocraft-codecs`. Images cross the server boundary as PNG because
-//! every ComfyUI loader and saver speaks it losslessly.
+//! used for saved results and thumbnails.
 
 use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, PngCompression, SampleType};
 

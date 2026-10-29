@@ -3998,7 +3998,6 @@ cameraData	Lens	Lens
 	Generative Fill…	Üretken Doldurma…
 	Generate Image…	Görüntü Oluştur…
 	Allow research models	Araştırma modellerine izin ver
-	ComfyUI server	ComfyUI sunucusu
 	Default edit model	Varsayılan düzenleme modeli
 	Default fill template	Varsayılan doldurma şablonu
 	Default generate model	Varsayılan oluşturma modeli
@@ -4025,8 +4024,6 @@ cameraData	Lens	Lens
 	Enhance prompt	İstemi iyileştir
 	Enhancing…	İyileştiriliyor…
 	The model could not improve this prompt	Model bu istemi iyileştiremedi
-	Model precision	Model hassasiyeti
-	NVFP4 (Blackwell GPUs)	NVFP4 (Blackwell GPU’lar)
 	Select by text…	Metinle seç…
 	Click an object, or drag a rectangle around it	Bir nesneye tıklayın veya çevresine dikdörtgen sürükleyin
 	Select by Point	Noktayla Seç
@@ -4113,7 +4110,7 @@ cameraData	Lens	Lens
 	Not in this build yet	Bu sürümde henüz yok
 	Open a picture first	Önce bir resim açın
 	Generative Features	Üretken Özellikler
-	Runs on your own ComfyUI server with the models you installed.	Yüklediğiniz modellerle kendi ComfyUI sunucunuzda çalışır.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	YAKINDA
 	Split into Layers	Katmanlara Ayır
 	Angles	Açılar
@@ -4130,7 +4127,7 @@ cameraData	Lens	Lens
 	front	ön
 	Camera	Kamera
 	Generative Angles	Üretken Açılar
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	ComfyUI/models/loras içinde qwen-image-edit-2511-multiple-angles-lora.safetensors gerekir (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	ön görünüm
 	front-right quarter view	ön sağ çeyrek görünüm
 	right side view	sağ yan görünüm
@@ -4169,20 +4166,14 @@ cameraData	Lens	Lens
 	Engine: running outside the app	Motor: uygulama dışında çalışıyor
 	Engine: failed	Motor: başarısız
 	Engine: stopped	Motor: durduruldu
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Uygulamanın başlatabilmesi için Tercihler › Yapay Zekâ Entegrasyonları’nda ComfyUI klasörünü ayarlayın
 	Start engine	Motoru başlat
 	Stop engine	Motoru durdur
 	Restart engine	Motoru yeniden başlat
 	Show log	Günlüğü göster
-	ComfyUI folder	ComfyUI klasörü
-	ComfyUI launch flags	ComfyUI başlatma bayrakları
-	Engine start on launch	Açılışta motoru başlat
-	Engine stop on quit	Çıkışta motoru durdur
 	Engine	Motor
 	Native	Yerleşik
-	ComfyUI	ComfyUI
 	Native runtime folders	Yerleşik çalışma zamanı klasörleri
-	Native models folder	Yerleşik modeller klasörü
+	Models folder	Yerleşik modeller klasörü
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Widen	Genişlet
@@ -4194,7 +4185,7 @@ cameraData	Lens	Lens
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Üretken
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Üretken modelle doldur: daha yavaş, doku ve desenlerde çok daha iyi (ComfyUI sunucusu veya yerleşik motor gerekir)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Önizleme klasik doldurmayı gösterir; Tamam ve Uygula, modeli yeni bir katmana çalıştırır.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -4202,9 +4193,6 @@ cameraData	Lens	Lens
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	İki aday üretir ve dokunulmamış görüneni gösterir; kapalıyken tek aday, yaklaşık yarı süre
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Görevler arasında modelleri boşalt
-	When any model file changes	Herhangi bir model dosyası değiştiğinde
-	When the diffusion model changes	Difüzyon modeli değiştiğinde
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Modeller klasörünün loras alt klasöründeki bağdaştırıcılar, yerel motor tarafından uygulanır
 	Generative Upscale	Üretken Büyütme

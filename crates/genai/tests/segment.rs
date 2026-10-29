@@ -2,10 +2,8 @@
 //! parameters bound from `Request::params`.
 #![cfg(all(feature = "fake-server", not(target_arch = "wasm32")))]
 
-use std::time::Duration;
-
-use photocraft_genai::comfy::ComfyBackend;
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
+use photocraft_genai::native::test_backend;
 use photocraft_genai::{Error, GenerativeBackend, NoProgress, Request, Rgba8};
 use serde_json::json;
 
@@ -19,8 +17,8 @@ fn request() -> Request {
 #[test]
 fn a_detector_run_returns_one_mask_per_instance() {
     let fake =
-        FakeComfy::start_with(Options { segments: vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.5, 1.0, 1.0]], ..Options::default() }).unwrap_or_else(|e| panic!("{e}"));
-    let b = ComfyBackend::new(&fake.url, Duration::from_secs(20)).unwrap_or_else(|e| panic!("{e}"));
+        FakeNative::start_with(Options { segments: vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.5, 1.0, 1.0]], ..Options::default() }).unwrap_or_else(|e| panic!("{e}"));
+    let b = test_backend(&fake.url).unwrap().unwrap();
     let resp = b.run(&request(), &NoProgress).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(resp.images.len(), 2);
     let first = &resp.images[0];
@@ -29,26 +27,26 @@ fn a_detector_run_returns_one_mask_per_instance() {
     assert_eq!(first.get(30, 5).map(|p| p[0]), Some(0), "outside it");
     assert_eq!(resp.images[1].get(30, 20).map(|p| p[0]), Some(255));
     let st = fake.state();
-    let g = &st.prompts[0].1;
-    assert_eq!(g["4"]["class_type"], "SAM3_Detect");
-    assert_eq!(g["4"]["inputs"]["threshold"], 0.4, "bound from Request::params");
-    assert_eq!(g["3"]["inputs"]["text"], "the lighthouse");
-    assert_eq!(st.uploads.len(), 1);
+    let g = &st.runs[0].request;
+    assert_eq!(g["task"], "segment");
+    assert_eq!(g["params"]["threshold"], 0.4, "bound from Request::params");
+    assert_eq!(g["prompt"], "the lighthouse");
+    assert_eq!(st.runs[0].blobs.len(), 1);
 }
 
 #[test]
 fn nothing_found_is_no_output() {
-    let fake = FakeComfy::start_with(Options { segments: vec![], ..Options::default() }).unwrap_or_else(|e| panic!("{e}"));
-    let b = ComfyBackend::new(&fake.url, Duration::from_secs(20)).unwrap_or_else(|e| panic!("{e}"));
+    let fake = FakeNative::start_with(Options { segments: vec![], ..Options::default() }).unwrap_or_else(|e| panic!("{e}"));
+    let b = test_backend(&fake.url).unwrap().unwrap();
     assert!(matches!(b.run(&request(), &NoProgress), Err(Error::NoOutput(_))));
 }
 
 #[test]
 fn standard_bindings_win_over_params() {
-    let fake = FakeComfy::start().unwrap_or_else(|e| panic!("{e}"));
-    let b = ComfyBackend::new(&fake.url, Duration::from_secs(20)).unwrap_or_else(|e| panic!("{e}"));
+    let fake = FakeNative::start().unwrap_or_else(|e| panic!("{e}"));
+    let b = test_backend(&fake.url).unwrap().unwrap();
     let mut r = request();
     r.params.insert("prompt".into(), json!("not this"));
     b.run(&r, &NoProgress).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(fake.state().prompts[0].1["3"]["inputs"]["text"], "the lighthouse");
+    assert_eq!(fake.state().runs[0].request["prompt"], "the lighthouse");
 }

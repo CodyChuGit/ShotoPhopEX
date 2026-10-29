@@ -1,6 +1,6 @@
 use egui::vec2;
 use egui_kittest::Harness;
-use photocraft_genai::fake::FakeComfy;
+use photocraft_genai::fake::FakeNative;
 use serde_json::json;
 
 use super::*;
@@ -19,7 +19,11 @@ fn app(url: &str, dir: &std::path::Path) -> PhotocraftApp {
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     app.sync_views();
     app
@@ -51,7 +55,7 @@ fn draw(app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
 
 #[test]
 fn a_fill_shows_as_completed_with_its_thumbnail_and_opens_again_after_its_document_closed() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("completed");
     let mut app = app(&fake.url, &dir);
     let r = app.run("generate.fill", json!({"prompt": "a kite", "seed": 3})).unwrap();
@@ -86,7 +90,7 @@ fn a_fill_shows_as_completed_with_its_thumbnail_and_opens_again_after_its_docume
 #[test]
 fn select_mode_saves_the_picked_results_into_the_preferred_folder_under_its_naming() {
     use egui_kittest::kittest::Queryable;
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("select");
     let out = temp_dir("select-out");
     let mut a = app(&fake.url, &dir);
@@ -173,7 +177,7 @@ fn the_window_menu_toggles_the_panel_and_ui_set_switches_its_view() {
 
 #[test]
 fn a_background_result_that_lands_while_the_panel_is_hidden_is_unread_until_it_is_drawn() {
-    let fake = FakeComfy::start_with(photocraft_genai::fake::Options { delay_ms: 100, ..Default::default() }).unwrap();
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options { delay_ms: 100, ..Default::default() }).unwrap();
     let dir = temp_dir("unread");
     let mut app = app(&fake.url, &dir);
     app.background_jobs = true;
@@ -214,8 +218,8 @@ fn the_alerts_preference_picks_the_blip_for_each_ending() {
         let _ = std::fs::remove_dir_all(&dir);
         app.ui.generations.last_alert
     };
-    let ok = FakeComfy::start().unwrap();
-    let bad = FakeComfy::start_with(photocraft_genai::fake::Options { fail: Some("CUDA out of memory".into()), ..Default::default() }).unwrap();
+    let ok = FakeNative::start().unwrap();
+    let bad = FakeNative::start_with(photocraft_genai::fake::Options { fail: Some("CUDA out of memory".into()), ..Default::default() }).unwrap();
     assert_eq!(run(&ok.url, "off", "a boat"), None, "off by default");
     assert_eq!(run(&ok.url, "done", "a boat"), Some("done"));
     assert_eq!(run(&bad.url, "done", "a boat!"), None, "failures stay quiet under done");
@@ -225,11 +229,15 @@ fn the_alerts_preference_picks_the_blip_for_each_ending() {
 
 #[test]
 fn a_short_group_shows_the_compact_strip_with_every_kind_of_row() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("compact");
     let mut first = app(&fake.url, &dir);
     first.run("generate.fill", json!({"prompt": "a kite", "seed": 1})).unwrap();
-    first.session.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
+    first.session.edit_prefs(|p| {
+        p.integrations.models_path = "http://127.0.0.1:9".into();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     assert!(first.run("generate.fill", json!({"prompt": "a boat"})).is_err());
     // The group at its compact height: 80 pt minus the tab strip.
     let mut h = Harness::builder().with_size(vec2(300.0, 52.0)).build_ui_state(
@@ -260,7 +268,7 @@ fn a_short_group_shows_the_compact_strip_with_every_kind_of_row() {
 #[test]
 #[ignore]
 fn bench_generations_panel_with_200_rows() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("bench");
     let mut app = app(&fake.url, &dir);
     let t = std::time::Instant::now();
@@ -313,7 +321,7 @@ fn bench_generations_panel_with_200_rows() {
 
 #[test]
 fn many_rows_draw_fast_and_only_a_few_thumbnails_decode_per_frame() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("many");
     let mut app = app(&fake.url, &dir);
     for seed in 0..10 {

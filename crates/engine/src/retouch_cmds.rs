@@ -857,7 +857,21 @@ fn spot_healing(s: &mut Session, p: &Value) -> Result<Value> {
             let variations = crate::generate_cmds::removal_variations(p);
             let seed = p.get("seed").and_then(Value::as_u64);
             let tuning = crate::generate_cmds::Tuning::from_params(CMD, p)?;
-            return crate::generate_cmds::generative_remove(s, "Spot Healing Brush", bounds, cov, 0, false, true, object, flag(p, "enhance", true), variations, seed, flag(p, "prefill", true), tuning);
+            return crate::generate_cmds::generative_remove(
+                s,
+                "Spot Healing Brush",
+                bounds,
+                cov,
+                0,
+                false,
+                true,
+                object,
+                flag(p, "enhance", true),
+                variations,
+                seed,
+                flag(p, "prefill", true),
+                tuning,
+            );
         }
         "generative" => SpotType::ContentAware,
         o => return Err(bad(CMD, format!("unknown type `{o}` (contentAware|createTexture|proximityMatch|generative)"))),
@@ -1354,7 +1368,9 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Spot Healing Brush",
             menu: &[],
             shortcut: None,
-            params: brush_params!(r#","type":"contentAware|createTexture|proximityMatch|generative"="contentAware","sampleAllLayers":bool=false,"wholeObject":bool=true,"enhance":bool=true,"variations":1..4=2,"prefill":bool=true,"keepObject":bool=false,"shadow":bool=true,"removeMargin":0..1=0.25,"nameShadow":bool=false,"loras":{[{"file":name,"strength":-4..4=1}]?} (generative: variations = seeds run, the result that looks most natural to the vision-language model shown and the others hidden variations; prefill = the hole smoothed over in the picture the model sees, so it has nothing to copy, which lifted the removals on real photographs from 27 to 35 of 48; keepObject = what was removed kept as its own masked layer above the fill, named after it (the result's objectLayer); loras = LoRA files for the native engine, as generate.fill; the stroke healed through the generative fill model with an instruction to remove what is there and continue the surroundings, as a masked layer above the target, the hole widened by 15 % of its size; wholeObject = the object the segmentation model finds under the stroke goes with it when the stroke covers at least a quarter of it, since the fill model redraws an object part of which stays in view; enhance = the vision-language model names the object first ("remove the gold necklace…"), which removes what the generic wording leaves, and the segmentation model is asked again for it by that name, so a thin object goes whole from a stroke over part of it; Content-Aware when no ComfyUI server or native engine is configured)"#),
+            params: brush_params!(
+                r#","type":"contentAware|createTexture|proximityMatch|generative"="contentAware","sampleAllLayers":bool=false,"wholeObject":bool=true,"enhance":bool=true,"variations":1..4=2,"prefill":bool=true,"keepObject":bool=false,"shadow":bool=true,"removeMargin":0..1=0.25,"nameShadow":bool=false,"loras":{[{"file":name,"strength":-4..4=1}]?} (generative: variations = seeds run, the result that looks most natural to the vision-language model shown and the others hidden variations; prefill = the hole smoothed over in the picture the model sees, so it has nothing to copy, which lifted the removals on real photographs from 27 to 35 of 48; keepObject = what was removed kept as its own masked layer above the fill, named after it (the result's objectLayer); loras = LoRA files for the native engine, as generate.fill; the stroke healed through the generative fill model with an instruction to remove what is there and continue the surroundings, as a masked layer above the target, the hole widened by 15 % of its size; wholeObject = the object the segmentation model finds under the stroke goes with it when the stroke covers at least a quarter of it, since the fill model redraws an object part of which stays in view; enhance = the vision-language model names the object first ("remove the gold necklace…"), which removes what the generic wording leaves, and the segmentation model is asked again for it by that name, so a thin object goes whole from a stroke over part of it; Content-Aware when the native worker is not configured)"#
+            ),
             enabled: has_pixel_layer,
             run: spot_healing,
             journal: true,
@@ -1385,7 +1401,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","strokes":[[[x,y,pressure?],…],…]? (several strokes removed together, as one job and one undo step; else "points"),"closeLoops":bool=true (a stroke around an object removes what it encloses),"sampleAllLayers":bool=false,"newLayer":bool=false (the fill goes to a new layer above the target, which stays as it was),"generative":bool=false,"wholeObject":bool=true,"enhance":bool=true,"variations":1..4=2,"prefill":bool=true,"keepObject":bool=false,"shadow":bool=true,"removeMargin":0..1=0.25,"nameShadow":bool=false,"loras":{[{"file":name,"strength":-4..4=1}]?} (PhotoshopEX: variations = seeds run, the result that looks most natural to the vision-language model shown and the others hidden variations; prefill = the hole smoothed over in the picture the model sees, so it has nothing to copy; keepObject = what was removed kept as its own masked layer above the fill, named after it (the result's objectLayer); loras = LoRA files for the native engine, as generate.fill; the hole filled through the generative fill model with an instruction to remove what is there and continue the surroundings, always as a masked layer above the target, the hole widened by 15 % of its size; wholeObject = the object the segmentation model finds under the stroke goes with it when the stroke covers at least a quarter of it; enhance = the vision-language model names the object first and the segmentation model is asked again for it by that name; the classical fill when no ComfyUI server or native engine is configured) → {"damage","layer"?} (a background job)"#
+                r#","strokes":[[[x,y,pressure?],…],…]? (several strokes removed together, as one job and one undo step; else "points"),"closeLoops":bool=true (a stroke around an object removes what it encloses),"sampleAllLayers":bool=false,"newLayer":bool=false (the fill goes to a new layer above the target, which stays as it was),"generative":bool=false,"wholeObject":bool=true,"enhance":bool=true,"variations":1..4=2,"prefill":bool=true,"keepObject":bool=false,"shadow":bool=true,"removeMargin":0..1=0.25,"nameShadow":bool=false,"loras":{[{"file":name,"strength":-4..4=1}]?} (PhotoshopEX: variations = seeds run, the result that looks most natural to the vision-language model shown and the others hidden variations; prefill = the hole smoothed over in the picture the model sees, so it has nothing to copy; keepObject = what was removed kept as its own masked layer above the fill, named after it (the result's objectLayer); loras = LoRA files for the native engine, as generate.fill; the hole filled through the generative fill model with an instruction to remove what is there and continue the surroundings, always as a masked layer above the target, the hole widened by 15 % of its size; wholeObject = the object the segmentation model finds under the stroke goes with it when the stroke covers at least a quarter of it; enhance = the vision-language model names the object first and the segmentation model is asked again for it by that name; the classical fill when the native worker is not configured) → {"damage","layer"?} (a background job)"#
             ),
             enabled: has_pixel_layer,
             run: remove::remove,

@@ -6,28 +6,36 @@
     "task": "text",
     "license": "permissive",
     "licenseNote": "Qwen3-VL-4B is Apache-2.0 (Alibaba Qwen, 2025-10); the file is the one Krea 2's templates use as their text encoder. The app ships no weights.",
-    "minComfyVersion": "0.39.0",
-    "saveNode": "4",
     "needsImage": false,
     "needsMask": false,
-    "defaults": { "steps": 0, "guidance": 0.0 },
-    "placeholders": {
-      "prompt": "string", "system": "string", "seed": "int", "prefix": "string", "clip": "string"
+    "defaults": {
+      "steps": 0,
+      "guidance": 0.0
     },
     "models": [
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen3vl_4b_fp8_scaled.safetensors" }
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_4b_fp8_scaled.safetensors"
+      }
     ],
     "notes": "Prompt expansion without a picture, as ComfyUI's official Krea 2 template does it: TextGenerate on the Qwen3-VL 4B encoder with the engine's instructions as the system turn (`system`) and the user's idea as the user turn (`prompt`), temperature 0.3, at most 220 tokens (about 1.5–2 s on the 5090). PreviewAny reports the paragraph in the history. `thinking` is true on purpose (see enhance/edit: the node's thinking=false appends an empty <think> block this non-thinking Instruct model cannot follow). The engine also uses this graph to rewrite an edit instruction blind when no picture is given.",
     "creator": "Alibaba Qwen",
     "description": "Expands an idea into a detailed prompt with the Qwen3-VL 4B encoder",
     "badges": [],
-    "counts": {"max": 1, "default": 1},
-    "estimatedSeconds": {"base": 1, "perMegapixel": 0},
-    "pages": ["enhance"]
-  },
-  "graph": {
-    "1": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "krea2", "device": "default" } },
-    "3": { "class_type": "TextGenerate", "inputs": { "clip": ["1", 0], "prompt": "{{prompt}}", "system_prompt": "{{system}}", "max_length": 220, "sampling_mode": "on", "sampling_mode.temperature": 0.3, "sampling_mode.top_k": 40, "sampling_mode.top_p": 0.9, "sampling_mode.min_p": 0.05, "sampling_mode.repetition_penalty": 1.05, "sampling_mode.seed": "{{seed}}", "thinking": true, "use_default_template": true } },
-    "4": { "class_type": "PreviewAny", "inputs": { "source": ["3", 0] } }
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "enhance"
+    ],
+    "parameters": [
+      "system"
+    ]
   }
 }

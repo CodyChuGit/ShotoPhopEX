@@ -1,7 +1,7 @@
 //! The Generations library (`generate.jobs` and friends) against the fake ComfyUI server.
 
 use photocraft_doc::LayerId;
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use serde_json::json;
 
 use super::*;
@@ -42,7 +42,11 @@ fn session(url: &str, dir: Option<&Path>) -> Session {
     })
     .unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     s
 }
 
@@ -52,7 +56,7 @@ fn jobs(s: &mut Session) -> Vec<Value> {
 
 #[test]
 fn an_inline_fill_is_recorded_with_its_result_and_thumbnail_and_survives_a_restart() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("inline");
     let mut s = session(&fake.url, Some(&dir));
     assert!(jobs(&mut s).is_empty());
@@ -100,7 +104,7 @@ fn an_inline_fill_is_recorded_with_its_result_and_thumbnail_and_survives_a_resta
 
 #[test]
 fn a_background_job_shows_as_running_then_done_with_its_files_written_off_thread() {
-    let fake = FakeComfy::start_with(Options { delay_ms: 150, ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options { delay_ms: 150, ..Options::default() }).unwrap();
     let dir = temp_dir("background");
     let mut s = session(&fake.url, Some(&dir));
     let Started::Job(job) = s.start(FILL, json!({"prompt": "a boat", "seed": 1, "variations": 2})).unwrap() else { panic!("a background job") };
@@ -146,14 +150,14 @@ fn failures_are_recorded_with_a_kind_the_user_can_act_on_and_refused_requests_ar
     assert_eq!(jobs(&mut s).len(), 1);
 
     // Out of memory on the server.
-    let fake = FakeComfy::start_with(Options { fail: Some("torch.OutOfMemoryError: CUDA out of memory".into()), ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options { fail: Some("torch.OutOfMemoryError: CUDA out of memory".into()), ..Options::default() }).unwrap();
     let mut s = session(&fake.url, None);
     assert!(s.execute(FILL, json!({"prompt": "a kite"})).is_err());
     assert_eq!(jobs(&mut s)[0]["failure"]["kind"], "outOfMemory");
 
     // A model file the graph names is not installed (ComfyUI's validation error).
-    let fake = FakeComfy::start_with(Options {
-        reject_prompt: Some("Prompt outputs failed validation: UNETLoader: Value not in list: unet_name: 'x.safetensors' not in []".into()),
+    let fake = FakeNative::start_with(Options {
+        fail: Some("Prompt outputs failed validation: UNETLoader: Value not in list: unet_name: 'x.safetensors' not in []".into()),
         ..Options::default()
     })
     .unwrap();
@@ -183,7 +187,7 @@ fn failure_messages_are_classified() {
 
 #[test]
 fn a_selection_command_is_recorded_as_a_selection() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url, None);
     s.execute("select.byText", json!({"prompt": "the kite"})).unwrap();
     let j = &jobs(&mut s)[0];
@@ -214,7 +218,7 @@ fn rows_left_running_by_a_closed_process_become_interrupted() {
 
 #[test]
 fn dismiss_hides_pin_protects_and_the_caps_drop_the_oldest_unpinned_results() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("caps");
     let mut s = session(&fake.url, Some(&dir));
     s.generations.set_caps(Caps { max_results: 2, max_bytes: MAX_BYTES });
@@ -253,7 +257,7 @@ fn dismiss_hides_pin_protects_and_the_caps_drop_the_oldest_unpinned_results() {
 
 #[test]
 fn place_brings_a_result_back_after_its_document_closed() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("place");
     let mut s = session(&fake.url, Some(&dir));
     let r = s.execute(FILL, json!({"prompt": "a kite", "seed": 5})).unwrap();
@@ -286,7 +290,7 @@ fn place_brings_a_result_back_after_its_document_closed() {
 
 #[test]
 fn recreate_varies_in_place_while_the_layer_exists_and_falls_back_to_an_image_when_the_document_closed() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("recreate");
     let mut s = session(&fake.url, Some(&dir));
     s.execute(FILL, json!({"prompt": "a kite", "seed": 5})).unwrap();
@@ -311,7 +315,7 @@ fn recreate_varies_in_place_while_the_layer_exists_and_falls_back_to_an_image_wh
     assert_eq!(list[0]["prompt"], "a kite");
     assert_eq!(list[0]["seed"], 7);
     let st = fake.state();
-    assert_eq!(st.prompts.len(), 3);
+    assert_eq!(st.runs.len(), 3);
     drop(st);
     // An image whose layer is open varies in place too; once closed it runs as an image again.
     let img_id = list[0]["id"].as_u64().unwrap();
@@ -329,7 +333,7 @@ fn recreate_varies_in_place_while_the_layer_exists_and_falls_back_to_an_image_wh
 
 #[test]
 fn recreate_of_an_expand_needs_its_document_and_of_an_edit_falls_back() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url, None);
     s.execute("select.deselect", json!({})).unwrap();
     s.execute(EXPAND, json!({"right": 16, "seed": 1})).unwrap();
@@ -347,7 +351,7 @@ fn recreate_of_an_expand_needs_its_document_and_of_an_edit_falls_back() {
 
 #[test]
 fn export_names_files_from_the_pattern_and_never_replaces_one() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("export");
     let out = temp_dir("export-out");
     let mut s = session(&fake.url, Some(&dir));
@@ -425,7 +429,7 @@ fn date_stamps_are_utc() {
 
 #[test]
 fn two_processes_share_the_index_and_keep_each_others_rows() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let dir = temp_dir("merge");
     let mut a = session(&fake.url, Some(&dir));
     a.execute(FILL, json!({"prompt": "a kite"})).unwrap();
@@ -454,7 +458,7 @@ fn two_processes_share_the_index_and_keep_each_others_rows() {
 
 #[test]
 fn without_a_folder_the_library_lives_in_memory() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url, None);
     s.execute(FILL, json!({"prompt": "a kite"})).unwrap();
     let j = &jobs(&mut s)[0];

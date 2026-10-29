@@ -4051,7 +4051,6 @@ layerLabel	No Color	Sem cor
 	Generate Image…	Gerar imagem…
 	Select by Text…	Selecionar por texto…
 	Allow research models	Permitir modelos de pesquisa
-	ComfyUI server	Servidor ComfyUI
 	Default edit model	Modelo de edição padrão
 	Default fill template	Modelo de preenchimento padrão
 	Default generate model	Modelo de geração padrão
@@ -4078,8 +4077,6 @@ layerLabel	No Color	Sem cor
 	Enhance prompt	Aprimorar prompt
 	Enhancing…	Aprimorando…
 	The model could not improve this prompt	O modelo não conseguiu aprimorar este prompt
-	Model precision	Precisão dos modelos
-	NVFP4 (Blackwell GPUs)	NVFP4 (GPUs Blackwell)
 	Select by text…	Selecionar por texto…
 	Click an object, or drag a rectangle around it	Clique em um objeto ou arraste um retângulo ao redor dele
 	Select by Point	Selecionar por ponto
@@ -4166,7 +4163,7 @@ layerLabel	No Color	Sem cor
 	Not in this build yet	Ainda não está nesta versão
 	Open a picture first	Abra uma imagem primeiro
 	Generative Features	Recursos generativos
-	Runs on your own ComfyUI server with the models you installed.	Funciona no seu próprio servidor ComfyUI com os modelos que você instalou.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	EM BREVE
 	Split into Layers	Dividir em camadas
 	Angles	Ângulos
@@ -4183,7 +4180,7 @@ layerLabel	No Color	Sem cor
 	front	frente
 	Camera	Câmera
 	Generative Angles	Ângulos generativos
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	Requer qwen-image-edit-2511-multiple-angles-lora.safetensors em ComfyUI/models/loras (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	vista frontal
 	front-right quarter view	vista três quartos frontal direita
 	right side view	vista lateral direita
@@ -4222,20 +4219,14 @@ layerLabel	No Color	Sem cor
 	Engine: running outside the app	Motor: em execução fora do app
 	Engine: failed	Motor: falhou
 	Engine: stopped	Motor: parado
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Defina a pasta do ComfyUI em Preferências › Integrações de IA para que o app possa iniciá-lo
 	Start engine	Iniciar motor
 	Stop engine	Parar motor
 	Restart engine	Reiniciar motor
 	Show log	Mostrar registro
-	ComfyUI folder	Pasta do ComfyUI
-	ComfyUI launch flags	Opções de inicialização do ComfyUI
-	Engine start on launch	Iniciar motor ao abrir
-	Engine stop on quit	Parar motor ao sair
 	Engine	Motor
 	Native	Nativo
-	ComfyUI	ComfyUI
 	Native runtime folders	Pastas do runtime nativo
-	Native models folder	Pasta de modelos nativos
+	Models folder	Pasta de modelos nativos
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Instance	Instância
@@ -4253,7 +4244,7 @@ layerLabel	No Color	Sem cor
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Generativo
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Preencher com o modelo generativo: mais lento, muito melhor em texturas e padrões (precisa de um servidor ComfyUI ou do mecanismo nativo)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	A pré-visualização mostra o preenchimento clássico; OK e Aplicar executam o modelo em uma nova camada.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -4261,9 +4252,6 @@ layerLabel	No Color	Sem cor
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Gera dois candidatos e mostra o que parece intocado; desativado: um candidato, cerca de metade do tempo
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Descarregar modelos entre tarefas
-	When any model file changes	Quando qualquer arquivo de modelo mudar
-	When the diffusion model changes	Quando o modelo de difusão mudar
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Adaptadores na subpasta loras da pasta de modelos, aplicados pelo mecanismo nativo
 	Generative Upscale	Ampliação generativa

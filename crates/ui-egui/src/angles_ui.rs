@@ -158,9 +158,11 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         });
         if missing {
             ui.label(
-                egui::RichText::new(tl!("Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)"))
-                    .small()
-                    .color(t.warning),
+                egui::RichText::new(tl!(
+                    "Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)"
+                ))
+                .small()
+                .color(t.warning),
             );
         }
         ui.add_space(2.0);

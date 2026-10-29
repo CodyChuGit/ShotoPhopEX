@@ -6,49 +6,66 @@
     "task": "image",
     "license": "community",
     "licenseNote": "Krea 2 Community License (Krea.ai, 2026-06-22) for the base model; Ostris's krea2_turbo_style_reference LoRA lists the same krea-2-community-license on Hugging Face (checked 2026-10-11). Commercial use is allowed with conditions; read krea.ai/krea-2-licensing.",
-    "minComfyVersion": "0.26.0",
-    "saveNode": "19",
     "needsImage": false,
     "needsMask": false,
-    "defaults": { "steps": 8, "guidance": 1.0 },
-    "placeholders": {
-      "prompt": "string", "seed": "int", "steps": "int", "cfg": "float",
-      "width": "int", "height": "int", "image1": "string", "image2": "string", "prefix": "string",
-      "unet": "string", "clip": "string", "vae": "string", "lora": "string"
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
     },
     "models": [
-      { "placeholder": "unet", "folder": "diffusion_models", "default": "krea2_turbo_fp8_scaled.safetensors", "nvfp4": "krea2_turbo_nvfp4.safetensors" },
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen3vl_4b_fp8_scaled.safetensors" },
-      { "placeholder": "vae", "folder": "vae", "default": "qwen_image_vae.safetensors" },
-      { "placeholder": "lora", "folder": "loras", "default": "krea2_style_reference.safetensors" }
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "krea2_turbo_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_4b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "krea2_style_reference.safetensors"
+      }
     ],
     "notes": "Node names and settings follow ComfyUI's official 'Image Style Reference (Krea-2 Turbo)' template (image_krea2_turbo_int8_image_style_reference.json): UNETLoader → LoraLoaderModelOnly (Ostris's krea2_style_reference, strength 1) → ModelSamplingFlux (max_shift 1.15, base_shift 0.5, the output size), CLIPLoader type krea2, TextEncodeQwenImageEditPlus with the references on image1/image2 → FluxKontextMultiReferenceLatentMethod (index_timestep_zero), ConditioningZeroOut as the negative, CFGGuider at CFG 1, SamplerCustomAdvanced with RandomNoise, KSamplerSelect euler and BasicScheduler simple 8 steps, EmptyLatentImage, VAEDecode. The official graph's optional prompt-enhance switch (TextGenerate) is left out (PhotoCraft's own enhancer covers it) and its int8 checkpoint is swapped for the fp8 one the plain Krea 2 template uses. The LoRA was trained for one or two references (model card), so two slots. Verified against a live server's /object_info on 2026-10-11; not run live (the LoRA is not installed on the development PC).",
     "creator": "Krea",
     "description": "Text to image in the style of one or two reference images",
-    "badges": ["style"],
-    "references": {"max": 2, "min": 1, "placeholders": ["image1", "image2"], "nodes": {"image1": ["10"], "image2": ["11"]}},
-    "sizes": {"aspects": ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], "min": 512, "max": 2048, "step": 16},
-    "estimatedSeconds": {"base": 3, "perMegapixel": 6, "perReference": 3},
-    "pages": ["image"]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "krea2", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["1", 0], "lora_name": "{{lora}}", "strength_model": 1.0 } },
-    "5": { "class_type": "ModelSamplingFlux", "inputs": { "model": ["4", 0], "max_shift": 1.15, "base_shift": 0.5, "width": "{{width}}", "height": "{{height}}" } },
-    "10": { "class_type": "LoadImage", "inputs": { "image": "{{image1}}", "upload": "image" } },
-    "11": { "class_type": "LoadImage", "inputs": { "image": "{{image2}}", "upload": "image" } },
-    "6": { "class_type": "TextEncodeQwenImageEditPlus", "inputs": { "clip": ["2", 0], "prompt": "{{prompt}}", "vae": ["3", 0], "image1": ["10", 0], "image2": ["11", 0] } },
-    "7": { "class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": { "conditioning": ["6", 0], "reference_latents_method": "index_timestep_zero" } },
-    "8": { "class_type": "ConditioningZeroOut", "inputs": { "conditioning": ["7", 0] } },
-    "9": { "class_type": "EmptyLatentImage", "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 } },
-    "13": { "class_type": "RandomNoise", "inputs": { "noise_seed": "{{seed}}" } },
-    "14": { "class_type": "KSamplerSelect", "inputs": { "sampler_name": "euler" } },
-    "15": { "class_type": "BasicScheduler", "inputs": { "model": ["5", 0], "scheduler": "simple", "steps": "{{steps}}", "denoise": 1.0 } },
-    "16": { "class_type": "CFGGuider", "inputs": { "model": ["5", 0], "positive": ["7", 0], "negative": ["8", 0], "cfg": "{{cfg}}" } },
-    "17": { "class_type": "SamplerCustomAdvanced", "inputs": { "noise": ["13", 0], "guider": ["16", 0], "sampler": ["14", 0], "sigmas": ["15", 0], "latent_image": ["9", 0] } },
-    "18": { "class_type": "VAEDecode", "inputs": { "samples": ["17", 0], "vae": ["3", 0] } },
-    "19": { "class_type": "SaveImage", "inputs": { "images": ["18", 0], "filename_prefix": "{{prefix}}" } }
+    "badges": [
+      "style"
+    ],
+    "references": {
+      "max": 2,
+      "min": 1
+    },
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 3,
+      "perMegapixel": 6,
+      "perReference": 3
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
   }
 }

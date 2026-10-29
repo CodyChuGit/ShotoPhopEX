@@ -893,8 +893,6 @@ pub struct Integrations {
     pub allow_agent_control: bool,
     /// Default control port (0 = only when `--control` is given).
     pub control_port: u32,
-    /// The local ComfyUI server the `generate.*` commands talk to (`http://127.0.0.1:8188`).
-    pub comfy_server: String,
     /// Diffusion model file for the edit templates (empty = each template's default).
     pub default_edit_model: String,
     /// Diffusion model file for the text-to-image templates (empty = each template's default).
@@ -926,18 +924,10 @@ pub struct Integrations {
     /// Where the Variations strip (the candidates of the active document's recent generative
     /// runs) sits over the canvas: `right`, `bottom` or `off`.
     pub variations_strip: String,
-    /// What `auto` optimises for: `best` = the full-step base templates and no 4-bit weights
-    /// (the default), `balanced` = the 8-step Lightning tier, `fast` = the 4-step tier where one
+    /// What `auto` optimises for: `best` = the full-step base templates (the default),
+    /// `balanced` = the 8-step Lightning tier, `fast` = the 4-step tier where one
     /// exists. A chosen template is never changed by this; see `generate_cmds::auto_order`.
     pub quality: String,
-    /// When a generative run asks the server to unload its models first: `switch` = whenever
-    /// the run's model files differ from the last run's (the rule of 2026-10-09: a partially
-    /// loaded set streams weights every step), `heavy` = only when the diffusion model or
-    /// checkpoint differs (a LoRA, an encoder or a VAE swapped under the same model loads
-    /// beside it: a removal's adapter and plain fill share the 20 GB model; the default since
-    /// 2026-10-23, 8 % off a removal stroke), `never` (10 % off, at the risk the purge was made
-    /// for). See `generate_cmds::purge_mode`.
-    pub purge_models: String,
     /// The folder the Generations panel's Save writes results into (`generate.export` without
     /// `dir`); empty = ask each time.
     pub save_results_dir: String,
@@ -950,27 +940,6 @@ pub struct Integrations {
     /// `enhance`): names what the picture shows instead of "this", adds the detail the image
     /// models want. The bar's Enhance button does it on demand when this is off.
     pub enhance_prompts: bool,
-    /// Which weights to load for model slots that have an NVFP4 alternative: `auto` = the NVFP4
-    /// file on a Blackwell GPU when it is installed (smaller, a little faster, the output
-    /// alike), `default` = the templates' default files, `nvfp4` = the NVFP4 file whenever it
-    /// is installed (for testing; slow or failing on other GPUs).
-    pub model_precision: String,
-    /// The ComfyUI install the app starts itself (the sidecar, `generate.engine.*`): the Windows
-    /// portable build's folder or a checkout. Empty = the server at `comfyServer` is started by
-    /// hand.
-    pub comfy_path: String,
-    /// Extra flags for that server after `--listen` and `--port` (`benchmarks.md`'s measured
-    /// defaults).
-    pub comfy_args: String,
-    /// Start the engine when the app starts (otherwise on the first generative command).
-    pub engine_start_on_launch: bool,
-    /// Stop the engine the app started when the app quits.
-    pub engine_stop_on_quit: bool,
-    /// Which engine runs generative requests: `native` (the in-process worker, `photocraft
-    /// --engine`; the default since 2026-10-28, the Rust rebuild's R6), `auto` (the worker for what
-    /// it serves, the ComfyUI server otherwise), `comfy` (the ComfyUI server; an explicit opt-in).
-    /// See `generate_cmds::backend`.
-    pub engine: String,
     /// The native worker's runtime folders, `;`-separated: where ONNX Runtime
     /// (`onnxruntime.dll` / `libonnxruntime.so` and its providers) and the CUDA and cuDNN
     /// libraries live. Nothing is read from `PATH`. Empty = the `runtime` folder beside the
@@ -979,8 +948,7 @@ pub struct Integrations {
     pub runtime_path: String,
     /// The native worker's model root: a ComfyUI `models` folder (read as it is: its
     /// `diffusion_models/`, `text_encoders/`, `vae/`, `loras/`, `checkpoints/`), or the worker's
-    /// own folders (one subfolder per model). Empty = the `models` folder of the ComfyUI install
-    /// at [`Self::comfy_path`] ([`Integrations::models_root`]), else no native model.
+    /// own folders (one subfolder per model). This folder must be set explicitly.
     pub models_path: String,
 }
 
@@ -989,7 +957,6 @@ impl Default for Integrations {
         Self {
             allow_agent_control: true,
             control_port: 0,
-            comfy_server: "http://127.0.0.1:8188".into(),
             default_edit_model: String::new(),
             default_generate_model: String::new(),
             default_fill_template: "auto".into(),
@@ -1001,17 +968,10 @@ impl Default for Integrations {
             group_models_by_family: true,
             variations_strip: "right".into(),
             quality: "best".into(),
-            purge_models: "heavy".into(),
             save_results_dir: String::new(),
             save_results_naming: "{model}_{date}_{seed}".into(),
             alerts: "off".into(),
             enhance_prompts: false,
-            model_precision: "auto".into(),
-            comfy_path: String::new(),
-            comfy_args: "--fast fp8_matrix_mult".into(),
-            engine_start_on_launch: false,
-            engine_stop_on_quit: true,
-            engine: "native".into(),
             runtime_path: String::new(),
             models_path: String::new(),
         }
@@ -1027,49 +987,14 @@ impl Integrations {
         if p.is_empty() { bundled_runtime().unwrap_or_default() } else { p.to_string() }
     }
 
-    /// The native worker's model root: [`Self::models_path`], or when that is empty the `models`
-    /// folder of the ComfyUI install at [`Self::comfy_path`] (the portable build's
-    /// `ComfyUI\models`, or a checkout's `models`), so one folder serves both engines (Rust
-    /// rebuild R4). Empty when there is neither.
+    /// The required Models folder, using the existing weights layout.
     pub fn models_root(&self) -> String {
-        let p = self.models_path.trim();
-        if !p.is_empty() {
-            return p.to_string();
-        }
-        comfy_models(self.comfy_path.trim()).unwrap_or_default()
-    }
-
-    /// The ComfyUI route at `url`, as the defaults were before 2026-10-28: engine `auto` (the
-    /// worker only for what it serves) and research-only models off. The defaults are native and
-    /// research-on since the owner's call that day (no ComfyUI by default); tests of the ComfyUI
-    /// route and anyone opting into it start here.
-    pub fn set_comfy_route(&mut self, url: impl Into<String>) {
-        self.comfy_server = url.into();
-        self.engine = "auto".into();
-        self.allow_research_models = false;
+        self.models_path.trim().to_string()
     }
 
     /// Whether the native worker can serve models: runtime folders and a model root.
     pub fn native_configured(&self) -> bool {
         !self.runtime_folders().is_empty() && !self.models_root().is_empty()
-    }
-}
-
-/// The `models` folder of a ComfyUI install: `<dir>/ComfyUI/models` (the Windows portable
-/// build) or `<dir>/models` (a checkout), when it is a folder.
-fn comfy_models(dir: &str) -> Option<String> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if dir.is_empty() {
-            return None;
-        }
-        let d = std::path::Path::new(dir);
-        [d.join("ComfyUI").join("models"), d.join("models")].into_iter().find(|p| p.is_dir()).map(|p| p.to_string_lossy().into_owned())
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = dir;
-        None
     }
 }
 
@@ -1087,9 +1012,6 @@ fn bundled_runtime() -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     None
 }
-
-/// `integrations.engine`: see [`Integrations::engine`].
-pub const ENGINE_MODES: &[&str] = &["auto", "native", "comfy"];
 
 /// `integrations.showGenerativeBar`: see [`Integrations::show_generative_bar`].
 pub const GENERATIVE_BAR_MODES: &[&str] = &["auto", "always", "never"];
@@ -1281,11 +1203,6 @@ pub const HIDDEN_UNTIL_IMPLEMENTED: &[&str] = &[
     "integrations.controlPort",
 ];
 
-/// `integrations.modelPrecision`: see [`Integrations::model_precision`].
-pub const MODEL_PRECISIONS: &[&str] = &["auto", "default", "nvfp4"];
-/// `integrations.purgeModels`: see [`Integrations::purge_models`].
-pub const PURGE_MODES: &[&str] = &["switch", "heavy", "never"];
-
 /// Is the preference at `path` (`"section.key"`) hidden from the Preferences dialog?
 pub fn is_hidden(path: &str) -> bool {
     HIDDEN_UNTIL_IMPLEMENTED.contains(&path) || (!cfg!(target_os = "linux") && LINUX_ONLY.contains(&path))
@@ -1340,13 +1257,10 @@ pub fn choices(path: &str) -> Option<&'static [&'static str]> {
         "performance.gpuBackend" => GpuBackend::NAMES,
         "performance.linuxDisplayServer" => LinuxDisplayServer::NAMES,
         "performance.renderingMode" => RenderingMode::NAMES,
-        "integrations.modelPrecision" => MODEL_PRECISIONS,
-        "integrations.purgeModels" => PURGE_MODES,
         "integrations.showGenerativeBar" => GENERATIVE_BAR_MODES,
         "integrations.variationsStrip" => VARIATIONS_STRIP_PLACES,
         "integrations.quality" => QUALITY_MODES,
         "integrations.alerts" => ALERT_MODES,
-        "integrations.engine" => ENGINE_MODES,
         _ => return None,
     })
 }
@@ -1484,16 +1398,6 @@ fn check_value(path: &str, v: &Value) -> std::result::Result<(), String> {
         let ok = v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
         if !ok {
             return Err("`interface.language` must be `auto` or a language code such as `en` or `ja`".into());
-        }
-    }
-    if path == "integrations.comfyServer" {
-        let ok = v.as_str().is_some_and(|s| {
-            let s = s.trim();
-            s.is_empty()
-                || ((s.starts_with("http://") || s.starts_with("https://")) && s.len() <= 512 && !s.chars().any(|c| c.is_whitespace() || c.is_control()))
-        });
-        if !ok {
-            return Err("`integrations.comfyServer` must be an http:// or https:// URL such as http://127.0.0.1:8188 (or empty to disable)".into());
         }
     }
     if path == "integrations.defaultEditModel" || path == "integrations.defaultGenerateModel" {
@@ -2071,6 +1975,12 @@ impl Session {
             interface.insert("appearanceMode".into(), json!(mode));
             // A partially migrated file may already contain a newer theme selection (#5139).
             interface.entry(slot).or_insert_with(|| json!(theme.name()));
+        }
+        // Retired ComfyUI preferences are intentionally ignored during migration.
+        if let Some(i) = v.get_mut("integrations").and_then(Value::as_object_mut) {
+            for key in ["comfyServer", "comfyPath", "comfyArgs", "engine", "engineStartOnLaunch", "engineStopOnQuit", "purgeModels", "modelPrecision"] {
+                i.remove(key);
+            }
         }
         let color = v.as_object_mut().and_then(|m| m.remove("colorSettings"));
         let presets = v.as_object_mut().and_then(|m| m.remove("presets"));

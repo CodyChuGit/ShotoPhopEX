@@ -3257,7 +3257,6 @@ curves	Smooth	Haluskan
 	Generate Image…	Hasilkan Gambar…
 	Select by Text…	Pilih Berdasarkan Teks…
 	Allow research models	Izinkan model riset
-	ComfyUI server	Server ComfyUI
 	Default edit model	Model edit default
 	Default fill template	Templat isian default
 	Default generate model	Model generasi default
@@ -3284,8 +3283,6 @@ curves	Smooth	Haluskan
 	Enhance prompt	Sempurnakan prompt
 	Enhancing…	Menyempurnakan…
 	The model could not improve this prompt	Model tidak dapat menyempurnakan prompt ini
-	Model precision	Presisi model
-	NVFP4 (Blackwell GPUs)	NVFP4 (GPU Blackwell)
 	Select by text…	Pilih berdasarkan teks…
 	Click an object, or drag a rectangle around it	Klik objek, atau seret persegi panjang di sekitarnya
 	Select by Point	Pilih berdasarkan titik
@@ -3377,7 +3374,7 @@ curves	Smooth	Haluskan
 	Not in this build yet	Belum ada di build ini
 	Open a picture first	Buka gambar terlebih dahulu
 	Generative Features	Fitur generatif
-	Runs on your own ComfyUI server with the models you installed.	Berjalan di server ComfyUI Anda sendiri dengan model yang Anda pasang.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	SEGERA
 	Split into Layers	Pisahkan ke layer
 	Angles	Sudut
@@ -3394,7 +3391,7 @@ curves	Smooth	Haluskan
 	front	depan
 	Camera	Kamera
 	Generative Angles	Sudut generatif
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	Memerlukan qwen-image-edit-2511-multiple-angles-lora.safetensors di ComfyUI/models/loras (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	tampak depan
 	front-right quarter view	tampak tiga perempat depan kanan
 	right side view	tampak samping kanan
@@ -3434,20 +3431,14 @@ curves	Smooth	Haluskan
 	Engine: running outside the app	Mesin: berjalan di luar aplikasi
 	Engine: failed	Mesin: gagal
 	Engine: stopped	Mesin: berhenti
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Atur folder ComfyUI di Preferensi › Integrasi AI agar aplikasi dapat memulainya
 	Start engine	Mulai mesin
 	Stop engine	Hentikan mesin
 	Restart engine	Mulai ulang mesin
 	Show log	Tampilkan log
-	ComfyUI folder	Folder ComfyUI
-	ComfyUI launch flags	Opsi peluncuran ComfyUI
-	Engine start on launch	Mulai mesin saat aplikasi dibuka
-	Engine stop on quit	Hentikan mesin saat keluar
 	Engine	Mesin
 	Native	Native
-	ComfyUI	ComfyUI
 	Native runtime folders	Folder runtime native
-	Native models folder	Folder model native
+	Models folder	Folder model native
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Instance	Instans
@@ -3465,7 +3456,7 @@ curves	Smooth	Haluskan
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Generatif
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Isi dengan model generatif: lebih lambat, jauh lebih baik untuk tekstur dan pola (perlu server ComfyUI atau mesin native)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Pratinjau menampilkan isian klasik; OK dan Terapkan menjalankan model ke layer baru.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -3473,9 +3464,6 @@ curves	Smooth	Haluskan
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Menjalankan dua kandidat dan menampilkan yang tampak tak tersentuh; nonaktif: satu kandidat, sekitar separuh waktu
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Bongkar model di antara tugas
-	When any model file changes	Saat berkas model mana pun berubah
-	When the diffusion model changes	Saat model difusi berubah
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Adaptor di subfolder loras pada folder model, diterapkan oleh mesin native
 	Strength	Kekuatan

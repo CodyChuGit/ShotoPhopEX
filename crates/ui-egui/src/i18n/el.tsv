@@ -3968,7 +3968,6 @@ curves	Smooth	Εξομάλυνση
 	Generative Fill…	Παραγωγικό γέμισμα…
 	Generate Image…	Δημιουργία εικόνας…
 	Allow research models	Να επιτρέπονται ερευνητικά μοντέλα
-	ComfyUI server	Διακομιστής ComfyUI
 	Default edit model	Προεπιλεγμένο μοντέλο επεξεργασίας
 	Default fill template	Προεπιλεγμένο πρότυπο γεμίσματος
 	Default generate model	Προεπιλεγμένο μοντέλο δημιουργίας
@@ -3995,8 +3994,6 @@ curves	Smooth	Εξομάλυνση
 	Enhance prompt	Βελτίωση προτροπής
 	Enhancing…	Βελτίωση…
 	The model could not improve this prompt	Το μοντέλο δεν μπόρεσε να βελτιώσει αυτήν την προτροπή
-	Model precision	Ακρίβεια μοντέλου
-	NVFP4 (Blackwell GPUs)	NVFP4 (κάρτες γραφικών Blackwell)
 	Select by text…	Επιλογή βάσει κειμένου…
 	Click an object, or drag a rectangle around it	Κάντε κλικ σε ένα αντικείμενο ή σύρετε ένα ορθογώνιο γύρω του
 	Select by Point	Επιλογή βάσει σημείου
@@ -4083,7 +4080,7 @@ curves	Smooth	Εξομάλυνση
 	Not in this build yet	Δεν υπάρχει ακόμη σε αυτήν την έκδοση
 	Open a picture first	Ανοίξτε πρώτα μια εικόνα
 	Generative Features	Παραγωγικές λειτουργίες
-	Runs on your own ComfyUI server with the models you installed.	Εκτελείται στον δικό σας διακομιστή ComfyUI με τα μοντέλα που εγκαταστήσατε.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	ΣΥΝΤΟΜΑ
 	Split into Layers	Διαχωρισμός σε επίπεδα
 	Angles	Γωνίες
@@ -4100,7 +4097,7 @@ curves	Smooth	Εξομάλυνση
 	front	μπροστά
 	Camera	Κάμερα
 	Generative Angles	Παραγωγικές γωνίες
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	Απαιτεί το qwen-image-edit-2511-multiple-angles-lora.safetensors στο ComfyUI/models/loras (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	μπροστινή όψη
 	front-right quarter view	όψη τριών τετάρτων μπροστά δεξιά
 	right side view	δεξιά πλάγια όψη
@@ -4139,20 +4136,14 @@ curves	Smooth	Εξομάλυνση
 	Engine: running outside the app	Μηχανή: εκτελείται εκτός εφαρμογής
 	Engine: failed	Μηχανή: απέτυχε
 	Engine: stopped	Μηχανή: σταμάτησε
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Ορίστε τον φάκελο ComfyUI στις Προτιμήσεις › Ενσωματώσεις AI για να τον εκκινεί η εφαρμογή
 	Start engine	Εκκίνηση μηχανής
 	Stop engine	Διακοπή μηχανής
 	Restart engine	Επανεκκίνηση μηχανής
 	Show log	Εμφάνιση αρχείου καταγραφής
-	ComfyUI folder	Φάκελος ComfyUI
-	ComfyUI launch flags	Παράμετροι εκκίνησης ComfyUI
-	Engine start on launch	Εκκίνηση μηχανής με την εφαρμογή
-	Engine stop on quit	Διακοπή μηχανής κατά την έξοδο
 	Engine	Μηχανή
 	Native	Ενσωματωμένη
-	ComfyUI	ComfyUI
 	Native runtime folders	Φάκελοι ενσωματωμένου περιβάλλοντος εκτέλεσης
-	Native models folder	Φάκελος ενσωματωμένων μοντέλων
+	Models folder	Φάκελος ενσωματωμένων μοντέλων
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Best	Βέλτιστη
@@ -4167,7 +4158,7 @@ curves	Smooth	Εξομάλυνση
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Παραγωγικό
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Γέμισμα από το παραγωγικό μοντέλο: πιο αργό, πολύ καλύτερο σε υφές και μοτίβα (χρειάζεται διακομιστή ComfyUI ή την ενσωματωμένη μηχανή)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Η προεπισκόπηση δείχνει το κλασικό γέμισμα· τα OK και Εφαρμογή τρέχουν το μοντέλο σε νέο επίπεδο.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -4175,9 +4166,6 @@ curves	Smooth	Εξομάλυνση
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Εκτελεί δύο υποψήφια και δείχνει αυτό που μοιάζει ανέγγιχτο· ανενεργό: ένα υποψήφιο, περίπου ο μισός χρόνος
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Εκφόρτωση μοντέλων μεταξύ εργασιών
-	When any model file changes	Όταν αλλάζει οποιοδήποτε αρχείο μοντέλου
-	When the diffusion model changes	Όταν αλλάζει το μοντέλο διάχυσης
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Προσαρμογείς στον υποφάκελο loras του φακέλου μοντέλων, που εφαρμόζονται από την εγγενή μηχανή
 	Generative Upscale	Παραγωγική μεγέθυνση

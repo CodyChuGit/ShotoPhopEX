@@ -6,47 +6,52 @@
     "task": "edit",
     "license": "permissive",
     "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Multiple Angles LoRA is Apache-2.0 (fal, huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA, read 2026-10-12); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
-    "minComfyVersion": "0.4.0",
-    "saveNode": "16",
     "needsImage": true,
     "needsMask": false,
-    "defaults": { "steps": 4, "guidance": 1.0 },
-    "placeholders": {
-      "prompt": "string", "negative": "string", "seed": "int", "steps": "int", "cfg": "float",
-      "image": "string", "prefix": "string",
-      "unet": "string", "clip": "string", "vae": "string", "lora": "string", "lightning": "string"
+    "defaults": {
+      "steps": 4,
+      "guidance": 1.0
     },
     "models": [
-      { "placeholder": "unet", "folder": "diffusion_models", "default": "qwen_image_edit_2511_fp8mixed.safetensors" },
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "nvfp4": "qwen_2.5_vl_7b_nvfp4.safetensors" },
-      { "placeholder": "vae", "folder": "vae", "default": "qwen_image_vae.safetensors" },
-      { "placeholder": "lora", "folder": "loras", "default": "qwen-image-edit-2511-multiple-angles-lora.safetensors" },
-      { "placeholder": "lightning", "folder": "loras", "default": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors" }
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "qwen-image-edit-2511-multiple-angles-lora.safetensors"
+      },
+      {
+        "placeholder": "lightning",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+      }
     ],
     "notes": "The LoRA authors' own ComfyUI graph (comfyui-workflow-multiple-angles.json in the model repo, read 2026-10-12): the Multiple Angles LoRA then the 4-step Lightning LoRA on the model (both at strength 1), ModelSamplingAuraFlow 3.1, CFGNorm, the picture scaled by FluxKontextImageScale into both TextEncodeQwenImageEditPlus encoders and VAE-encoded as the latent, 4 steps euler/simple at CFG 1. The prompt is the LoRA's fixed vocabulary, `<sks> [azimuth] [elevation] [distance]` (8 × 4 × 3 = 96 cameras), built by `generate.angles` from rotation, tilt and zoom, so it gets no prompt format. Needs `qwen-image-edit-2511-multiple-angles-lora.safetensors` in ComfyUI/models/loras (the app ships no weights).",
     "creator": "fal (LoRA), Alibaba Qwen",
     "description": "Moves the camera around the subject: 8 directions, 4 heights, 3 distances",
-    "badges": ["fast"],
-    "estimatedSeconds": {"base": 5.5, "perMegapixel": 3.5},
-    "pages": ["angles"]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "qwen_image", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "5": { "class_type": "FluxKontextImageScale", "inputs": { "image": ["4", 0] } },
-    "6": { "class_type": "TextEncodeQwenImageEditPlus", "inputs": { "clip": ["2", 0], "prompt": "{{prompt}}", "vae": ["3", 0], "image1": ["5", 0] } },
-    "7": { "class_type": "TextEncodeQwenImageEditPlus", "inputs": { "clip": ["2", 0], "prompt": "{{negative}}", "vae": ["3", 0], "image1": ["5", 0] } },
-    "19": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["1", 0], "lora_name": "{{lora}}", "strength_model": 1.0 } },
-    "20": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["19", 0], "lora_name": "{{lightning}}", "strength_model": 1.0 } },
-    "8": { "class_type": "ModelSamplingAuraFlow", "inputs": { "model": ["20", 0], "shift": 3.1 } },
-    "9": { "class_type": "CFGNorm", "inputs": { "model": ["8", 0], "strength": 1.0 } },
-    "10": { "class_type": "VAEEncode", "inputs": { "pixels": ["5", 0], "vae": ["3", 0] } },
-    "17": { "class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": { "conditioning": ["6", 0], "reference_latents_method": "index_timestep_zero" } },
-    "18": { "class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": { "conditioning": ["7", 0], "reference_latents_method": "index_timestep_zero" } },
-    "14": { "class_type": "KSampler", "inputs": { "model": ["9", 0], "positive": ["17", 0], "negative": ["18", 0], "latent_image": ["10", 0], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
-    "15": { "class_type": "VAEDecode", "inputs": { "samples": ["14", 0], "vae": ["3", 0] } },
-    "16": { "class_type": "SaveImage", "inputs": { "images": ["15", 0], "filename_prefix": "{{prefix}}" } }
+    "badges": [
+      "fast"
+    ],
+    "estimatedSeconds": {
+      "base": 5.5,
+      "perMegapixel": 3.5
+    },
+    "pages": [
+      "angles"
+    ],
+    "parameters": []
   }
 }

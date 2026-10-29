@@ -3756,7 +3756,6 @@ curves	Smooth	Làm mượt
 	Generative Fill…	Tô sinh tạo…
 	Generate Image…	Tạo ảnh…
 	Allow research models	Cho phép mô hình nghiên cứu
-	ComfyUI server	Máy chủ ComfyUI
 	Default edit model	Mô hình chỉnh sửa mặc định
 	Default fill template	Mẫu tô mặc định
 	Default generate model	Mô hình tạo mặc định
@@ -3783,8 +3782,6 @@ curves	Smooth	Làm mượt
 	Enhance prompt	Cải thiện lời nhắc
 	Enhancing…	Đang cải thiện…
 	The model could not improve this prompt	Mô hình không thể cải thiện lời nhắc này
-	Model precision	Độ chính xác mô hình
-	NVFP4 (Blackwell GPUs)	NVFP4 (GPU Blackwell)
 	Select by text…	Chọn theo văn bản…
 	Click an object, or drag a rectangle around it	Nhấp vào một đối tượng hoặc kéo một hình chữ nhật quanh nó
 	Select by Point	Chọn theo điểm
@@ -3874,7 +3871,7 @@ curves	Smooth	Làm mượt
 	Not in this build yet	Chưa có trong bản dựng này
 	Open a picture first	Hãy mở một ảnh trước
 	Generative Features	Tính năng sinh tạo
-	Runs on your own ComfyUI server with the models you installed.	Chạy trên máy chủ ComfyUI của riêng bạn với các mô hình bạn đã cài.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	SẮP CÓ
 	Split into Layers	Tách thành lớp
 	Angles	Góc nhìn
@@ -3891,7 +3888,7 @@ curves	Smooth	Làm mượt
 	front	phía trước
 	Camera	Máy ảnh
 	Generative Angles	Góc nhìn sinh tạo
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	Cần qwen-image-edit-2511-multiple-angles-lora.safetensors trong ComfyUI/models/loras (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	góc nhìn phía trước
 	front-right quarter view	góc nhìn chéo trước bên phải
 	right side view	góc nhìn bên phải
@@ -3930,20 +3927,14 @@ curves	Smooth	Làm mượt
 	Engine: running outside the app	Bộ máy: đang chạy ngoài ứng dụng
 	Engine: failed	Bộ máy: lỗi
 	Engine: stopped	Bộ máy: đã dừng
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Đặt thư mục ComfyUI trong Tùy chọn › Tích hợp AI để ứng dụng có thể khởi động nó
 	Start engine	Khởi động bộ máy
 	Stop engine	Dừng bộ máy
 	Restart engine	Khởi động lại bộ máy
 	Show log	Hiện nhật ký
-	ComfyUI folder	Thư mục ComfyUI
-	ComfyUI launch flags	Tham số khởi chạy ComfyUI
-	Engine start on launch	Khởi động bộ máy khi mở ứng dụng
-	Engine stop on quit	Dừng bộ máy khi thoát
 	Engine	Bộ máy
 	Native	Tích hợp sẵn
-	ComfyUI	ComfyUI
 	Native runtime folders	Thư mục môi trường chạy tích hợp
-	Native models folder	Thư mục mô hình tích hợp
+	Models folder	Thư mục mô hình tích hợp
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Widen	Mở rộng
@@ -3955,7 +3946,7 @@ curves	Smooth	Làm mượt
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Sinh tạo
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Tô bằng mô hình sinh tạo: chậm hơn nhưng tốt hơn nhiều với kết cấu và hoa văn (cần máy chủ ComfyUI hoặc bộ máy tích hợp)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Bản xem trước hiển thị cách tô cổ điển; OK và Áp dụng chạy mô hình lên một lớp mới.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -3963,9 +3954,6 @@ curves	Smooth	Làm mượt
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Tạo hai ứng viên và hiển thị ứng viên trông như chưa chỉnh sửa; tắt: một ứng viên, khoảng một nửa thời gian
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Gỡ mô hình giữa các tác vụ
-	When any model file changes	Khi bất kỳ tệp mô hình nào thay đổi
-	When the diffusion model changes	Khi mô hình khuếch tán thay đổi
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Các bộ điều hợp trong thư mục con loras của thư mục mô hình, do engine gốc áp dụng
 	Generative Upscale	Phóng to tạo sinh

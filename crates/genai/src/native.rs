@@ -10,13 +10,13 @@
 //! Qwen-Image-2.1 text to image from the snapshot under the model root (plan Phase 2), the two
 //! behind one `gn_engine::Multi`. Without them it serves `gn-engine`'s fake engine, which is
 //! enough to route a request end to end (and to test the editor without a GPU). Pixels cross as
-//! binary frames; everything else is the same `Request`/`Response` the ComfyUI backend speaks.
+//! binary frames; other values use the editor’s `Request`/`Response` types.
 //! The runtime folders go on the worker's `PATH` too: the CUDA libraries the diffusion engine
 //! links are found there, as the ONNX Runtime ones are.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use gn_engine::client::{ClientError, EngineClient};
 use gn_engine::protocol::{Blob, ErrorKind, RunRequest};
@@ -42,6 +42,7 @@ pub struct NativeBackend {
     busy: AtomicU8,
     /// Why the last start failed, until one succeeds.
     start_error: Mutex<Option<String>>,
+    timeout_ms: AtomicU64,
 }
 
 const IDLE: u8 = 0;
@@ -84,6 +85,29 @@ impl std::fmt::Debug for NativeBackend {
 /// The argument that turns this executable into the engine worker.
 pub const ENGINE_FLAG: &str = "--engine";
 
+/// Cooperative deadline: the protocol polls cancellation while waiting for worker replies.
+struct Deadline<'a> {
+    progress: &'a dyn Progress,
+    started: std::time::Instant,
+    timeout: std::time::Duration,
+    expired: std::cell::Cell<bool>,
+}
+impl Progress for Deadline<'_> {
+    fn report(&self, fraction: f32, message: &str) {
+        self.progress.report(fraction, message);
+    }
+    fn cancelled(&self) -> bool {
+        if self.progress.cancelled() {
+            return true;
+        }
+        if self.started.elapsed() >= self.timeout {
+            self.expired.set(true);
+            return true;
+        }
+        false
+    }
+}
+
 /// How a run that lost its worker mid-way begins its error.
 const STOPPED: &str = "the engine stopped";
 
@@ -112,7 +136,13 @@ impl NativeBackend {
             log: None,
             busy: AtomicU8::new(IDLE),
             start_error: Mutex::new(None),
+            timeout_ms: AtomicU64::new(600_000),
         }
+    }
+
+    /// Change the generation deadline without unloading the worker’s models.
+    pub fn set_timeout(&self, timeout: std::time::Duration) {
+        self.timeout_ms.store(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
     /// Write the worker's stderr to `path` (truncated at each start), with `RUST_LOG=info`
@@ -328,7 +358,7 @@ fn blobs_of(req: &Request) -> (Option<Blob>, Option<Blob>, Vec<Blob>, Vec<Vec<u8
 }
 
 /// A returned blob as the editor's RGBA (coverage comes back as grey with full alpha, the way
-/// the ComfyUI route delivers a detector's masks).
+/// detector masks are represented in the editor).
 fn picture_of(b: &Blob, bytes: &[u8]) -> Result<Rgba8> {
     match b.channels {
         4 => Rgba8::new(b.width, b.height, bytes.to_vec()),
@@ -368,42 +398,52 @@ impl GenerativeBackend for NativeBackend {
         let tpl = template::find(&req.template)?;
         let (image, mask, references, bytes) = blobs_of(req);
         let (width, height) = req.size.unwrap_or((0, 0));
+        let mut params = req.params.clone();
+        params.insert("models".into(), serde_json::to_value(tpl.model_bindings(&req.models)?).map_err(|e| Error::Request(e.to_string()))?);
         let rr = RunRequest {
             model: req.template.clone(),
             task: task_name(tpl.meta.task),
-            // The prompt as the model should see it, wrapped the way the ComfyUI route wraps it
-            // (a fill's `promptFormat` names the mask image).
+            // The template’s prompt wrapper names the mask image for a fill.
             prompt: tpl.format_prompt(&req.prompt),
             negative: req.negative.clone(),
             seed: req.seed,
-            steps: req.steps,
-            guidance: req.guidance,
+            steps: if req.steps == 0 { tpl.meta.defaults.steps } else { req.steps },
+            guidance: if req.guidance == 0.0 { tpl.meta.defaults.guidance } else { req.guidance },
             width,
             height,
             image,
             mask,
             references,
-            params: req.params.clone(),
+            params,
         };
         let started = std::time::Instant::now();
         let encode_ms = encode.elapsed().as_millis() as u64;
+        let timeout = std::time::Duration::from_millis(self.timeout_ms.load(Ordering::Relaxed));
+        let deadline = Deadline { progress, started, timeout, expired: std::cell::Cell::new(false) };
         self.busy.store(RUNNING, Ordering::SeqCst);
         let _busy = Busy(&self.busy);
         let attempt = || {
             self.with_client(|c| {
-                let mut report = |f: f32, m: &str| progress.report(f, m);
-                c.run(&rr, &bytes, &mut report, &|| progress.cancelled())
+                let mut report = |f: f32, m: &str| deadline.report(f, m);
+                c.run(&rr, &bytes, &mut report, &|| deadline.cancelled())
             })
         };
         // A worker that stopped mid-run (it exits on a poisoned CUDA context) is replaced and
         // the run tried once more on the fresh one (plan-native-engine §12.2); a worker this
         // process only joined cannot be replaced from here.
-        let (info, pictures) = retry_after_stop(!self.attached, progress, attempt)?;
+        let result = retry_after_stop(!self.attached, &deadline, attempt);
+        if deadline.expired.get() {
+            return Err(Error::Timeout(timeout.as_secs()));
+        }
+        let (info, pictures) = result?;
         let download = std::time::Instant::now();
         let mut images = Vec::with_capacity(info.images.len());
         for (i, b) in info.images.iter().enumerate() {
             let data = pictures.get(i).ok_or_else(|| Error::Protocol(format!("picture {i} missing")))?;
             images.push(picture_of(b, data)?);
+        }
+        if images.is_empty() && info.texts.is_empty() {
+            return Err(Error::NoOutput(req.template.clone()));
         }
         Ok(Response {
             images,
@@ -490,8 +530,7 @@ fn search_dirs() -> Vec<PathBuf> {
 }
 
 /// The diffusion engine's place when its runtime is missing: it serves nothing and its health
-/// carries the sentence, so the editor's engine page shows it (the editor falls back to
-/// ComfyUI under `auto` as before).
+/// carries the reason, so the editor’s engine page can report it.
 #[cfg(feature = "native-diffusion")]
 struct Refused(String);
 
@@ -607,6 +646,22 @@ pub fn serve_fake(installed: Vec<String>, step_ms: u64) -> Result<(u16, String)>
         let _ = gn_engine::server::serve(&listener, &t, &mut engine);
     });
     Ok((port, token))
+}
+
+/// A fixture worker registered by the `fake-server` feature. Production builds have none.
+#[doc(hidden)]
+pub fn test_backend(key: &str) -> Result<Option<std::sync::Arc<NativeBackend>>> {
+    #[cfg(feature = "fake-server")]
+    {
+        if let Some(b) = crate::fake::backend(key) {
+            return Ok(Some(b));
+        }
+        if key.starts_with("fake-native:") || key.starts_with("http://") {
+            return Err(Error::Unavailable(format!("native test worker at {key} is not available")));
+        }
+    }
+    let _ = key;
+    Ok(None)
 }
 
 #[cfg(test)]

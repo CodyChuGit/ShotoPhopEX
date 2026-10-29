@@ -1,7 +1,7 @@
 //! Generative layer metadata (`generate.info`) and `generate.similar`, against the fake server.
 
 use photocraft_doc::LayerId;
-use photocraft_genai::fake::FakeComfy;
+use photocraft_genai::fake::FakeNative;
 use photocraft_geom::Rect;
 use serde_json::json;
 
@@ -31,7 +31,11 @@ fn session(url: &str) -> Session {
     .unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
     s.edit_prefs(|p| {
-        p.integrations.set_comfy_route(url.to_string());
+        {
+            p.integrations.models_path = url.to_string();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        };
         p.integrations.quality = "balanced".into();
     });
     s
@@ -44,7 +48,7 @@ fn mask_at(s: &Session, id: LayerId, x: i32, y: i32) -> f32 {
 
 #[test]
 fn fill_layers_remember_their_run_and_generate_similar_re_rolls_them_in_place() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     assert!(!s.is_enabled(SIMILAR), "a textured layer was not generated");
     let r = s.execute(FILL, json!({"prompt": "a kite", "seed": 5})).unwrap();
@@ -84,9 +88,9 @@ fn fill_layers_remember_their_run_and_generate_similar_re_rolls_them_in_place() 
     assert_eq!(g2["generative"]["seed"], 6);
     assert_eq!(g2["generative"]["prompt"], "a kite");
     let st = fake.state();
-    assert_eq!(st.prompts.len(), 2);
-    assert_eq!(st.prompts[1].1["14"]["inputs"]["seed"], 6);
-    assert_eq!(st.prompts[1].1["6"]["inputs"]["prompt"], st.prompts[0].1["6"]["inputs"]["prompt"], "the same wrapped prompt");
+    assert_eq!(st.runs.len(), 2);
+    assert_eq!(st.runs[1].request["seed"], 6);
+    assert_eq!(st.runs[1].request["prompt"], st.runs[0].request["prompt"], "the same wrapped prompt");
     drop(st);
     // Not a generative layer: a clear error. A bad seed: a parameter error.
     let bg = s.active().unwrap().doc.layers[0].id;
@@ -97,7 +101,7 @@ fn fill_layers_remember_their_run_and_generate_similar_re_rolls_them_in_place() 
 
 #[test]
 fn generated_images_and_expanded_areas_have_their_own_similar() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.execute("select.deselect", json!({})).unwrap();
     let r = s.execute(IMAGE, json!({"prompt": "a lighthouse", "seed": 2})).unwrap();
@@ -113,8 +117,8 @@ fn generated_images_and_expanded_areas_have_their_own_similar() {
     assert_eq!(pos(id2), pos(id) + 1);
     assert_eq!(d.doc.layer(id2).unwrap().name, "Generated: a lighthouse");
     let st = fake.state();
-    assert_eq!(st.prompts[1].1["4"]["inputs"]["text"], "a lighthouse");
-    assert_eq!(st.prompts[1].1["7"]["inputs"]["seed"], 3);
+    assert_eq!(st.runs[1].request["prompt"], "a lighthouse");
+    assert_eq!(st.runs[1].request["seed"], 3);
     drop(st);
 
     // An expand: its canvas is already there, so "similar" fills the added area again with the
@@ -125,9 +129,9 @@ fn generated_images_and_expanded_areas_have_their_own_similar() {
     let r3 = s.execute(SIMILAR, json!({"layer": eid.0, "seed": 10})).unwrap();
     assert_eq!(r3["template"], AUTO_FILL_ORDER[0]);
     let st = fake.state();
-    let g = &st.prompts.last().unwrap().1;
-    assert!(g.get("21").is_none() && g.get("13").is_some(), "a fill graph");
-    assert!(g["6"]["inputs"]["prompt"].as_str().unwrap().contains("extend the scene"), "{}", g["6"]["inputs"]["prompt"]);
+    let g = &st.runs.last().unwrap().request;
+    assert!(g["task"] == "fill" && !g["mask"].is_null(), "a fill request");
+    assert!(g["prompt"].as_str().unwrap().contains("extend the scene"), "{}", g["prompt"]);
     drop(st);
     let d = s.active().unwrap();
     let nid = LayerId(r3["layer"].as_u64().unwrap());

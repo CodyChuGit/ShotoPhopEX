@@ -2,7 +2,7 @@
 
 fn main() {
     // comfy-photocraft: `photocraft-cli --engine …` is the native engine's worker process, so a
-    // headless session's `integrations.engine = native` has a worker next to it too.
+    // headless session has a worker next to it too.
     if std::env::args_os().nth(1).is_some_and(|a| a == photocraft_genai::native::ENGINE_FLAG) {
         let args: Vec<String> = std::env::args_os().skip(2).map(|a| a.to_string_lossy().into_owned()).collect();
         std::process::exit(photocraft_genai::native::engine_main(&args));

@@ -3869,7 +3869,6 @@ navigator	Zoom	Zvětšení
 	Generate Image…	Generovat obrázek…
 	Select by Text…	Vybrat podle textu…
 	Allow research models	Povolit výzkumné modely
-	ComfyUI server	Server ComfyUI
 	Default edit model	Výchozí model pro úpravy
 	Default fill template	Výchozí šablona výplně
 	Default generate model	Výchozí model pro generování
@@ -3896,8 +3895,6 @@ navigator	Zoom	Zvětšení
 	Enhance prompt	Vylepšit výzvu
 	Enhancing…	Vylepšuje se…
 	The model could not improve this prompt	Model tuto výzvu nedokázal vylepšit
-	Model precision	Přesnost modelů
-	NVFP4 (Blackwell GPUs)	NVFP4 (GPU Blackwell)
 	Select by text…	Vybrat podle textu…
 	Click an object, or drag a rectangle around it	Klikněte na objekt nebo kolem něj natáhněte obdélník
 	Select by Point	Vybrat bodem
@@ -3984,7 +3981,7 @@ navigator	Zoom	Zvětšení
 	Not in this build yet	V této verzi zatím není
 	Open a picture first	Nejprve otevřete obrázek
 	Generative Features	Generativní funkce
-	Runs on your own ComfyUI server with the models you installed.	Běží na vašem vlastním serveru ComfyUI s modely, které jste nainstalovali.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	BRZY
 	Split into Layers	Rozdělit do vrstev
 	Angles	Úhly
@@ -4001,7 +3998,7 @@ navigator	Zoom	Zvětšení
 	front	zepředu
 	Camera	Kamera
 	Generative Angles	Generativní úhly
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	Vyžaduje qwen-image-edit-2511-multiple-angles-lora.safetensors v ComfyUI/models/loras (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	pohled zepředu
 	front-right quarter view	čtvrtpohled zepředu zprava
 	right side view	pohled z pravé strany
@@ -4040,20 +4037,14 @@ navigator	Zoom	Zvětšení
 	Engine: running outside the app	Engine: běží mimo aplikaci
 	Engine: failed	Engine: selhal
 	Engine: stopped	Engine: zastaven
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Nastavte složku ComfyUI v Předvolby › Integrace AI, aby ji aplikace mohla spouštět
 	Start engine	Spustit engine
 	Stop engine	Zastavit engine
 	Restart engine	Restartovat engine
 	Show log	Zobrazit protokol
-	ComfyUI folder	Složka ComfyUI
-	ComfyUI launch flags	Parametry spuštění ComfyUI
-	Engine start on launch	Spustit engine při startu
-	Engine stop on quit	Zastavit engine při ukončení
 	Engine	Engine
 	Native	Nativní
-	ComfyUI	ComfyUI
 	Native runtime folders	Složky nativního běhového prostředí
-	Native models folder	Složka nativních modelů
+	Models folder	Složka nativních modelů
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Instance	Instance
@@ -4071,7 +4062,7 @@ navigator	Zoom	Zvětšení
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Generativní
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Vyplnit generativním modelem: pomalejší, mnohem lepší na textury a vzory (vyžaduje server ComfyUI nebo nativní engine)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Náhled ukazuje klasickou výplň; OK a Použít spustí model do nové vrstvy.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -4079,9 +4070,6 @@ navigator	Zoom	Zvětšení
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Spustí dva kandidáty a zobrazí ten, který vypadá nedotčeně; vypnuto: jeden kandidát, zhruba poloviční čas
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Uvolnit modely mezi úlohami
-	When any model file changes	Když se změní kterýkoli soubor modelu
-	When the diffusion model changes	Když se změní difuzní model
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Adaptéry v podsložce loras složky modelů, použité nativním enginem
 	Generative Upscale	Generativní zvětšení

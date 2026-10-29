@@ -465,7 +465,9 @@ fn is_input(p: &Path) -> bool {
 /// The desktop app's Generations library, when `ids` has a generative or detector step (those
 /// runs land in it; other runs never touch it).
 fn generations_dir_for<'a>(mut ids: impl Iterator<Item = &'a str>) -> Option<PathBuf> {
-    ids.any(|id| id.starts_with("generate.") || id.starts_with("select.by") || id == "select.subjectML").then(photocraft_engine::generate_jobs::default_dir).flatten()
+    ids.any(|id| id.starts_with("generate.") || id.starts_with("select.by") || id == "select.subjectML")
+        .then(photocraft_engine::generate_jobs::default_dir)
+        .flatten()
 }
 
 fn batch(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
@@ -495,7 +497,8 @@ fn batch(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
     let format = a.get("--format").map(|f| f.strip_prefix('.').unwrap_or(f));
     // Generative steps (a `generate.*` or detector command in the action, or in one it plays)
     // record their runs in the Generations library, as `run` does.
-    let generations_dir = generations_dir_for(actions.iter().map(|(id, _)| id.as_str()).chain(set.iter().flat_map(|a| a.steps.iter().map(|(id, _)| id.as_str()))));
+    let generations_dir =
+        generations_dir_for(actions.iter().map(|(id, _)| id.as_str()).chain(set.iter().flat_map(|a| a.steps.iter().map(|(id, _)| id.as_str()))));
     for input in &inputs {
         let ext = format.map(str::to_owned).or_else(|| input.extension().map(|e| e.to_string_lossy().into_owned())).unwrap_or_else(|| "png".into());
         let stem = input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -787,8 +790,8 @@ mod batch_action_set_tests {
     /// matte is opaque in the middle half of the picture: the saved PNGs are transparent outside it.
     #[test]
     fn batch_runs_a_generative_step_on_every_file() {
-        use photocraft_genai::fake::{FakeComfy, Options};
-        let fake = FakeComfy::start_with(Options { matte: Some([0.25, 0.25, 0.75, 0.75]), ..Options::default() }).unwrap();
+        use photocraft_genai::fake::{FakeNative, Options};
+        let fake = FakeNative::start_with(Options { matte: Some([0.25, 0.25, 0.75, 0.75]), ..Options::default() }).unwrap();
         let dir = std::env::temp_dir().join(format!("photocraft-cli-batch-generative-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = |name: &str| dir.join(name).to_string_lossy().to_string();
@@ -800,7 +803,7 @@ mod batch_action_set_tests {
         // The server is a preference, set by a step of the action (the CLI loads no preferences
         // of its own); the matte model is research-licensed, so the step allows it.
         let set = json!({"version": 1, "actions": [{"name": "Cut out", "steps": [
-            ["prefs.set", {"values": {"integrations.comfyServer": fake.url, "integrations.engine": "comfy", "integrations.allowResearchModels": true}}],
+            ["prefs.set", {"values": {"integrations.modelsPath": fake.url, "integrations.runtimePath": "fake", "integrations.allowResearchModels": true}}],
             ["generate.removeBackground", {}],
         ]}]});
         std::fs::write(dir.join("actions.json"), set.to_string()).unwrap();
@@ -814,7 +817,7 @@ mod batch_action_set_tests {
             assert_eq!(img.get(32, 24).map(|p| p[3]), Some(255), "{name}: the subject stays");
             assert_eq!(img.get(2, 2).map(|p| p[3]), Some(0), "{name}: the background is cut out");
         }
-        assert_eq!(fake.state().prompts.len(), 2, "one run per file");
+        assert_eq!(fake.state().runs.iter().filter(|r| r.run.task == "matte").count(), 2, "one matte run per file; naming questions use the same worker");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

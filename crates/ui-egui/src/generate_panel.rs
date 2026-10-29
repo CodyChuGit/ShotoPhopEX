@@ -181,10 +181,9 @@ pub fn refresh_loras(app: &mut PhotocraftApp, template: &str) {
 fn chosen_loras(app: &PhotocraftApp, mode: &str) -> Vec<Value> {
     let p = &app.ui.generate;
     match &p.lora_list {
-        Some((t, true, files)) if matches!(mode, "image" | "edit" | "fill") && *t == effective_template(app, mode) => files
-            .iter()
-            .filter_map(|f| p.loras.get(f).filter(|(on, _)| *on).map(|(_, s)| json!({"file": f, "strength": s})))
-            .collect(),
+        Some((t, true, files)) if matches!(mode, "image" | "edit" | "fill") && *t == effective_template(app, mode) => {
+            files.iter().filter_map(|f| p.loras.get(f).filter(|(on, _)| *on).map(|(_, s)| json!({"file": f, "strength": s}))).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -1204,7 +1203,25 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
 pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
     let Some(v) = p.get("generatePanel") else { return Ok(()) };
     let o = v.as_object().ok_or("generatePanel must be an object")?;
-    let known = ["mode", "into", "prompt", "negative", "template", "aspect", "size", "width", "height", "count", "enhance", "references", "expand", "grow", "focus", "loras", "denoise"];
+    let known = [
+        "mode",
+        "into",
+        "prompt",
+        "negative",
+        "template",
+        "aspect",
+        "size",
+        "width",
+        "height",
+        "count",
+        "enhance",
+        "references",
+        "expand",
+        "grow",
+        "focus",
+        "loras",
+        "denoise",
+    ];
     if let Some(k) = o.keys().find(|k| !known.contains(&k.as_str())) {
         return Err(format!("generatePanel has no field `{k}`"));
     }

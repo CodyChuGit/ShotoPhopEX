@@ -1,6 +1,6 @@
 use egui::vec2;
 use egui_kittest::Harness;
-use photocraft_genai::fake::FakeComfy;
+use photocraft_genai::fake::FakeNative;
 use serde_json::json;
 
 use super::*;
@@ -20,7 +20,11 @@ fn app(url: &str) -> (PhotocraftApp, u64, u64) {
     s.execute("select.deselect", json!({})).unwrap();
     let hat = s.active().unwrap().active_layer.unwrap().0;
     s.execute("layer.select", json!({"layer": base})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     app.sync_views();
     load_catalog(&mut app);
@@ -37,7 +41,7 @@ fn control(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: V
 
 #[test]
 fn image_mode_with_layer_references_runs_the_reference_template_into_a_new_document() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut app, base, hat) = app(&fake.url);
     app.ui.generate.prompt = "a portrait wearing the hat from image 1".into();
     add_reference(&mut app, json!({"layer": hat}));
@@ -53,17 +57,14 @@ fn image_mode_with_layer_references_runs_the_reference_template_into_a_new_docum
     assert_eq!(r["template"], "qwen-edit-2511/image-ref");
     assert_eq!(app.session.documents().len(), docs + 1, "a new document");
     let st = fake.state();
-    assert_eq!(st.uploads.len(), 2, "the two references (no picture in image mode)");
-    let g = &st.prompts[0].1;
-    assert_eq!(g["4"]["inputs"]["image"], st.uploads[0].0);
-    assert_eq!(g["20"]["inputs"]["image"], st.uploads[1].0);
-    assert!(g.get("21").is_none(), "the third slot pruned");
-    assert_eq!((g["10"]["inputs"]["width"].as_u64(), g["10"]["inputs"]["height"].as_u64()), (Some(1024), Some(1024)), "1:1 at 1K");
+    assert_eq!(st.pictures.len(), 2, "the two references (no picture in image mode)");
+    let g = &st.runs[0].request;
+    assert_eq!((g["width"].as_u64(), g["height"].as_u64()), (Some(1024), Some(1024)), "1:1 at 1K");
 }
 
 #[test]
 fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut app, _, hat) = app(&fake.url);
     app.ui.generate.prompt = "make it night".into();
     app.ui.generate.mode = "fill".into();
@@ -83,7 +84,7 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
     assert_eq!(request(&app).unwrap().1["grow"], 6);
     let r = generate(&mut app).unwrap();
     assert_eq!(r["template"], want);
-    assert_eq!(fake.state().uploads.len(), 3, "the picture, its mask and the reference");
+    assert_eq!(fake.state().pictures.len(), 3, "the picture, its mask and the reference");
     app.ui.generate.grow = 0;
     app.ui.generate.references.clear();
     app.ui.generate.mode = "edit".into();
@@ -92,7 +93,7 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
     let (cmd, q) = request(&app).unwrap();
     assert_eq!((cmd, q["references"].as_array().map(Vec::len)), ("generate.edit", Some(1)));
     generate(&mut app).unwrap();
-    assert_eq!(fake.state().uploads.len(), 5, "the picture and the reference, after the fill's three");
+    assert_eq!(fake.state().pictures.len(), 5, "the picture and the reference, after the fill's three");
     // The limit: a third and fourth are refused with a status message.
     add_reference(&mut app, json!({"layer": 1}));
     add_reference(&mut app, json!({"layer": 2}));
@@ -113,7 +114,7 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
 
 #[test]
 fn the_button_shows_the_formula_estimate() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut app, _, _) = app(&fake.url);
     app.ui.generate.mode = "image".into();
     app.ui.generate.template.insert("image".into(), "krea2-turbo/image".into());
@@ -143,7 +144,7 @@ fn the_button_shows_the_formula_estimate() {
 
 #[test]
 fn ui_set_and_inspect_drive_the_panel_and_share_the_prompt_with_the_bar() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut app, _, hat) = app(&fake.url);
     let ctx = egui::Context::default();
     let ok = control(
@@ -200,7 +201,7 @@ fn harness(app: PhotocraftApp, height: f32) -> Harness<'static, PhotocraftApp> {
 
 #[test]
 fn enter_generates_only_when_the_preference_says_so_and_ctrl_enter_always() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut a, _, _) = app(&fake.url);
     a.ui.generate.mode = "image".into();
     a.ui.generate.into = "layer".into();
@@ -211,21 +212,21 @@ fn enter_generates_only_when_the_preference_says_so_and_ctrl_enter_always() {
     assert!(!h.state().ui.generate.compact);
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
-    assert!(fake.state().prompts.is_empty(), "Enter is a new line by default");
+    assert!(fake.state().runs.is_empty(), "Enter is a new line by default");
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
     h.run_steps(2);
-    assert_eq!(fake.state().prompts.len(), 1, "Ctrl+Enter generates");
+    assert_eq!(fake.state().runs.len(), 1, "Ctrl+Enter generates");
     h.state_mut().session.edit_prefs(|p| p.integrations.enter_to_generate = true);
     h.state_mut().ui.generate.prompt = "a boat".into();
     h.run_steps(1);
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
-    assert_eq!(fake.state().prompts.len(), 2, "Enter generates with the preference on");
+    assert_eq!(fake.state().runs.len(), 2, "Enter generates with the preference on");
 }
 
 #[test]
 fn a_short_group_shows_one_row_and_drops_land_in_the_deck() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (a, _, _) = app(&fake.url);
     let h = harness(a, 60.0);
     assert!(h.state().ui.generate.compact, "one row");
@@ -246,7 +247,8 @@ fn a_short_group_shows_one_row_and_drops_land_in_the_deck() {
 
 /// A safetensors file with these tensor names (one f32 each), for the LoRA list.
 fn fake_lora(path: &std::path::Path, names: &[&str]) {
-    let header: serde_json::Map<String, Value> = names.iter().enumerate().map(|(i, n)| (n.to_string(), json!({"dtype": "F32", "shape": [1], "data_offsets": [i * 4, i * 4 + 4]}))).collect();
+    let header: serde_json::Map<String, Value> =
+        names.iter().enumerate().map(|(i, n)| (n.to_string(), json!({"dtype": "F32", "shape": [1], "data_offsets": [i * 4, i * 4 + 4]}))).collect();
     let h = serde_json::to_vec(&Value::Object(header)).unwrap();
     let mut bytes = (h.len() as u64).to_le_bytes().to_vec();
     bytes.extend(h);
@@ -257,14 +259,16 @@ fn fake_lora(path: &std::path::Path, names: &[&str]) {
 #[test]
 fn the_lora_rows_list_the_templates_family_and_a_run_sends_the_ones_switched_on() {
     use egui_kittest::kittest::Queryable;
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut a, _, _) = app(&fake.url);
     let models = std::env::temp_dir().join(format!("pcx-loras-{}", std::process::id()));
     std::fs::create_dir_all(models.join("loras")).unwrap();
-    fake_lora(&models.join("loras").join("restore.safetensors"), &["diffusion_model.transformer_blocks.0.attn.to_k.lora_A.weight", "diffusion_model.transformer_blocks.31.attn.to_k.lora_B.weight"]);
+    fake_lora(
+        &models.join("loras").join("restore.safetensors"),
+        &["diffusion_model.transformer_blocks.0.attn.to_k.lora_A.weight", "diffusion_model.transformer_blocks.31.attn.to_k.lora_B.weight"],
+    );
     fake_lora(&models.join("loras").join("anypaint.safetensors"), &["diffusion_model.blocks.0.attn.gate.lora_A.weight"]);
     a.session.edit_prefs(|p| {
-        p.integrations.engine = "native".into();
         p.integrations.runtime_path = "C:/runtime".into();
         p.integrations.models_path = models.to_string_lossy().into_owned();
         p.integrations.allow_research_models = true;
@@ -282,18 +286,12 @@ fn the_lora_rows_list_the_templates_family_and_a_run_sends_the_ones_switched_on(
     let v = inspect(h.state());
     assert_eq!(v["loras"]["files"], json!(["restore.safetensors"]));
     assert_eq!(v["params"]["loras"], json!([{"file": "restore.safetensors", "strength": 1.0}]), "{v}");
-    // The ComfyUI route applies none: no rows, and the run sends none.
-    let app = h.state_mut();
-    app.session.edit_prefs(|p| p.integrations.engine = "comfy".into());
-    app.ui.generate.lora_list = None;
-    refresh_loras(app, "qwen-2.1/edit");
-    assert!(request(app).unwrap().1.get("loras").is_none());
     let _ = std::fs::remove_dir_all(&models);
 }
 
 #[test]
 fn denoise_goes_with_a_2511_fill_and_never_with_the_2_1_one() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut a, _, _) = app(&fake.url);
     a.session.edit_prefs(|p| p.integrations.allow_research_models = true);
     a.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 24, "height": 16})).unwrap();

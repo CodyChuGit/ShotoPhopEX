@@ -57,7 +57,7 @@ winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"]
 photocraft-ipp = { workspace = true }
 
 [dev-dependencies]
-# The in-process fake ComfyUI server behind the `generate.*` command tests.
+# The in-process fake native worker behind the `generate.*` command tests.
 photocraft-genai = { workspace = true, features = ["fake-server"] }
 photocraft-affinity = { workspace = true, features = ["synth"] }
 # Synthetic camera raw files for the open tests.

@@ -110,7 +110,7 @@ pub fn online(app: &mut PhotocraftApp, now: f64) -> bool {
     }
     // The answer is for one configuration: the engine and whatever it needs to be reached.
     let i = &app.session.prefs().integrations;
-    let url = format!("{}|{}|{}|{}", i.engine.trim(), i.comfy_server.trim(), i.runtime_folders(), i.models_root());
+    let url = format!("{}|{}", i.runtime_folders(), i.models_root());
     if let Some((u, ok, at)) = &app.ui.object_select.online
         && *u == url
         && now - at < ONLINE_RECHECK

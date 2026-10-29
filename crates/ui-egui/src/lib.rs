@@ -154,10 +154,10 @@ pub mod new_doc_ui;
 pub mod new_guide_ui;
 pub mod new_layer_ui;
 pub mod notices;
-pub mod object_select;
 pub mod nudge_bundle;
 mod numeric_expression;
 pub mod object_finder;
+pub mod object_select;
 mod opacity_keys;
 pub mod open_prompt;
 pub mod outline;
@@ -1062,8 +1062,6 @@ impl PhotocraftApp {
         };
         // Saved preferences are in place before the first frame; recovery starts in upkeep.
         prefs_ui::load(&mut app);
-        // comfy-photocraft: the app-managed ComfyUI starts now when the preference says so.
-        engine_ui::on_launch(&mut app);
         // After the saved preferences, which say whether the set was already offered.
         kys_import::offer_import(&mut app);
         notices::wayland_file_drop_guidance(&mut app);

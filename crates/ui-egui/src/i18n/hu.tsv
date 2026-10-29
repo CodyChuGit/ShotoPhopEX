@@ -4187,7 +4187,6 @@ cameraRaw	Yellow	Sárga
 	Generative Fill…	Generatív kitöltés…
 	Generate Image…	Kép generálása…
 	Allow research models	Kutatási modellek engedélyezése
-	ComfyUI server	ComfyUI-kiszolgáló
 	Default edit model	Alapértelmezett szerkesztési modell
 	Default fill template	Alapértelmezett kitöltési sablon
 	Default generate model	Alapértelmezett generálási modell
@@ -4214,8 +4213,6 @@ cameraRaw	Yellow	Sárga
 	Enhance prompt	Utasítás javítása
 	Enhancing…	Javítás…
 	The model could not improve this prompt	A modell nem tudta javítani ezt az utasítást
-	Model precision	Modellpontosság
-	NVFP4 (Blackwell GPUs)	NVFP4 (Blackwell GPU-k)
 	Select by text…	Kijelölés szöveg alapján…
 	Click an object, or drag a rectangle around it	Kattintson egy objektumra, vagy húzzon köré téglalapot
 	Select by Point	Kijelölés pont alapján
@@ -4302,7 +4299,7 @@ cameraRaw	Yellow	Sárga
 	Not in this build yet	Ebben a buildben még nincs
 	Open a picture first	Először nyisson meg egy képet
 	Generative Features	Generatív funkciók
-	Runs on your own ComfyUI server with the models you installed.	A saját ComfyUI-kiszolgálóján fut a telepített modelljeivel.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	HAMAROSAN
 	Split into Layers	Felosztás rétegekre
 	Angles	Nézőszögek
@@ -4319,7 +4316,7 @@ cameraRaw	Yellow	Sárga
 	front	elöl
 	Camera	Kamera
 	Generative Angles	Generatív nézőszögek
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	Szükséges: qwen-image-edit-2511-multiple-angles-lora.safetensors a ComfyUI/models/loras mappában (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	elölnézet
 	front-right quarter view	elöl-jobb háromnegyed nézet
 	right side view	jobb oldalnézet
@@ -4358,20 +4355,14 @@ cameraRaw	Yellow	Sárga
 	Engine: running outside the app	Motor: az alkalmazáson kívül fut
 	Engine: failed	Motor: hiba
 	Engine: stopped	Motor: leállítva
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Állítsa be a ComfyUI mappát a Beállítások › AI-integrációk alatt, hogy az alkalmazás el tudja indítani
 	Start engine	Motor indítása
 	Stop engine	Motor leállítása
 	Restart engine	Motor újraindítása
 	Show log	Napló megjelenítése
-	ComfyUI folder	ComfyUI mappa
-	ComfyUI launch flags	ComfyUI indítási paraméterek
-	Engine start on launch	Motor indítása induláskor
-	Engine stop on quit	Motor leállítása kilépéskor
 	Engine	Motor
 	Native	Beépített
-	ComfyUI	ComfyUI
 	Native runtime folders	Beépített futtatókörnyezet mappái
-	Native models folder	Beépített modellek mappája
+	Models folder	Beépített modellek mappája
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Widen	Szélesítés
@@ -4383,7 +4374,7 @@ cameraRaw	Yellow	Sárga
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Generatív
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Kitöltés a generatív modellel: lassabb, textúrákon és mintákon sokkal jobb (ComfyUI-kiszolgáló vagy a beépített motor kell hozzá)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Az előnézet a klasszikus kitöltést mutatja; az OK és az Alkalmaz a modellt futtatja egy új rétegre.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -4391,9 +4382,6 @@ cameraRaw	Yellow	Sárga
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Két jelöltet készít, és az érintetlennek tűnőt mutatja; kikapcsolva: egy jelölt, körülbelül fele idő
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Modellek kirakása feladatok között
-	When any model file changes	Ha bármelyik modellfájl változik
-	When the diffusion model changes	Ha a diffúziós modell változik
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Adapterek a modellmappa loras almappájában, a natív motor alkalmazza őket
 	Generative Upscale	Generatív felskálázás

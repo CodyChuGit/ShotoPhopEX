@@ -64,7 +64,7 @@ winsafe = { version = "=0.0.29", default-features = false, features = ["kernel",
 egui = { workspace = true, features = ["default_fonts"] }
 # Synthetic raw files for the open-time Camera Raw dialog tests.
 photocraft-raw = { workspace = true, features = ["testgen"] }
-# The in-process ComfyUI stand-in for the generative task bar tests (comfy-photocraft).
+# The in-process native worker for the generative task bar tests.
 photocraft-genai = { workspace = true, features = ["fake-server"] }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot", "eframe"] }
 # Benchmark helpers for the `--json` benches `cargo xtask perf` runs (in-process RSS, percentiles).

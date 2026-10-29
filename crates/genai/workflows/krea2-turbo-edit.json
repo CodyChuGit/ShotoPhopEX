@@ -6,25 +6,11 @@
     "task": "edit",
     "license": "community",
     "licenseNote": "Krea 2 Turbo: Krea 2 Community License (Krea.ai, 2026-06-22; commercial use with conditions). The General Edit V2 LoRA (conradlocke, 2026-10-16): free for personal and non-commercial use, a commercial licence from its author otherwise (Krea 2 Identity Edit V2 License). Bring your own files; never a default.",
-    "minComfyVersion": "0.26.0",
-    "saveNode": "12",
     "needsImage": true,
     "needsMask": false,
     "defaults": {
       "steps": 8,
       "guidance": 1.0
-    },
-    "placeholders": {
-      "prompt": "string",
-      "seed": "int",
-      "steps": "int",
-      "cfg": "float",
-      "image": "string",
-      "prefix": "string",
-      "unet": "string",
-      "clip": "string",
-      "vae": "string",
-      "lora": "string"
     },
     "models": [
       {
@@ -60,50 +46,7 @@
     },
     "pages": [
       "edit"
-    ]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "krea2", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["1", 0], "lora_name": "{{lora}}", "strength_model": 1.0 } },
-    "5": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "6": { "class_type": "VAEEncode", "inputs": { "pixels": ["5", 0], "vae": ["3", 0] } },
-    "7": { "class_type": "GetImageSize", "inputs": { "image": ["5", 0] } },
-    "8": { "class_type": "EmptySD3LatentImage", "inputs": { "width": ["7", 0], "height": ["7", 1], "batch_size": 1 } },
-    "9": {
-      "class_type": "Krea2EditModelPatch",
-      "inputs": {
-        "model": ["4", 0],
-        "source_latent": ["6", 0],
-        "ref_boost": 4.0,
-        "ref_boost_a": 1.0,
-        "fit_mode": "fit",
-        "vae": ["3", 0],
-        "source_image": ["5", 0],
-        "target_latent": ["8", 0],
-        "ref_position": "aligned (trained)",
-        "ref_position_a": "aligned (trained)"
-      }
-    },
-    "13": { "class_type": "Krea2EditGroundedEncode", "inputs": { "clip": ["2", 0], "prompt": "{{prompt}}", "image": ["5", 0], "grounding_px": 768, "system_prompt": "" } },
-    "14": { "class_type": "Krea2EditGroundedEncode", "inputs": { "clip": ["2", 0], "prompt": "", "image": ["5", 0], "grounding_px": 768, "system_prompt": "" } },
-    "10": {
-      "class_type": "KSampler",
-      "inputs": {
-        "model": ["9", 0],
-        "positive": ["13", 0],
-        "negative": ["14", 0],
-        "latent_image": ["8", 0],
-        "seed": "{{seed}}",
-        "steps": "{{steps}}",
-        "cfg": "{{cfg}}",
-        "sampler_name": "euler",
-        "scheduler": "simple",
-        "denoise": 1.0
-      }
-    },
-    "11": { "class_type": "VAEDecode", "inputs": { "samples": ["10", 0], "vae": ["3", 0] } },
-    "12": { "class_type": "SaveImage", "inputs": { "images": ["11", 0], "filename_prefix": "{{prefix}}" } }
+    ],
+    "parameters": []
   }
 }

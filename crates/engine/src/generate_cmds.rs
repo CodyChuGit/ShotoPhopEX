@@ -1,20 +1,19 @@
 //! `generate.*` commands: generative edits through a local backend (`photocraft-genai`).
 //!
 //! `generate.fill` is Generative Fill. The flattened composite around the selection and the
-//! selection's coverage go to the backend (a ComfyUI server, Preferences › AI Integrations), and
+//! selection's coverage go to the native worker, and
 //! the result comes back as a **new raster layer above the active one, masked to the selection**.
 //! The original pixels never change. The command is a background job (`jobs::edit_job`): progress
 //! comes from the server, Esc cancels and interrupts it, and the edit lands as one undo step.
 //! `generate.health` and `generate.models` are queries for the UI, the CLI and agents.
 //!
-//! Preferences read here: `integrations.comfyServer`, `integrations.defaultEditModel`,
+//! Preferences read here: `integrations.defaultEditModel`,
 //! `integrations.generativeTimeoutSecs`, `integrations.allowResearchModels`,
 //! `integrations.enhancePrompts` (the default of the fill, edit and image commands' `enhance`),
-//! `integrations.modelPrecision` (the backend's NVFP4 policy, see `backend`).
+//! The native worker manages model precision and residency.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use photocraft_algo::selection::{self as sel, SelectionMode};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
@@ -84,10 +83,7 @@ pub(crate) struct Tuning {
     pub max_pixels: u64,
     /// LoRA adapters on the model for this request, `(file name, strength)`, in order
     /// (`loras` on the fill, edit, image and removal commands). The native engine applies them
-    /// as side paths on its resident model (plan-native-engine §9: AnyPaint, AusBoss's
-    /// Consistency, Outpaint, Restore and Outfit Swap, the BFS swaps); the ComfyUI route chains
-    /// a `LoraLoaderModelOnly` per file after the template's model loader (`comfy::with_loras`),
-    /// so the file must be in that server's `models/loras`.
+    /// as side paths on its resident model. Files live under the Models folder’s `loras/`.
     pub loras: Vec<(String, f32)>,
     /// A removal keeps what it removed: the object's pixels (the detector's silhouette, or
     /// the stroke's) as their own masked layer above the fill (`keepObject`), the two the same
@@ -117,7 +113,7 @@ pub(crate) struct Tuning {
 /// Whether `template`'s sampler takes a `denoise` (the 2511 fill templates; Qwen-Image-2.1's
 /// edit-style fill and the native engine redraw from noise and ignore it).
 pub fn takes_denoise(template: &str) -> bool {
-    template::find(template).is_ok_and(|t| t.meta.placeholders.contains_key("denoise"))
+    template::find(template).is_ok_and(|t| t.meta.parameters.iter().any(|p| p == "denoise"))
 }
 
 /// [`Tuning::remove_margin`] unless given.
@@ -127,7 +123,17 @@ const NAME_SHADOW: bool = false;
 
 impl Default for Tuning {
     fn default() -> Self {
-        Self { sampler: None, scheduler: None, max_pixels: MAX_FILL_REQUEST_PIXELS, loras: Vec::new(), keep_object: false, shadow: true, remove_margin: REMOVE_MARGIN, name_shadow: NAME_SHADOW, denoise: None }
+        Self {
+            sampler: None,
+            scheduler: None,
+            max_pixels: MAX_FILL_REQUEST_PIXELS,
+            loras: Vec::new(),
+            keep_object: false,
+            shadow: true,
+            remove_margin: REMOVE_MARGIN,
+            name_shadow: NAME_SHADOW,
+            denoise: None,
+        }
     }
 }
 
@@ -144,7 +150,7 @@ impl Tuning {
             match opt_str(cmd, p, key, 40)?.map(str::trim).filter(|s| !s.is_empty()) {
                 None => Ok(None),
                 Some(s) if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => Ok(Some(s.to_string())),
-                Some(_) => Err(bad(cmd, format!("`{key}` must be a ComfyUI sampler or scheduler name (letters, digits and underscores)"))),
+                Some(_) => Err(bad(cmd, format!("`{key}` must be a sampler or scheduler name (letters, digits and underscores)"))),
             }
         };
         let max_pixels = opt_num(cmd, p, "maxPixels", 65_536.0, MAX_REQUEST_PIXELS as f64)?.map_or(MAX_FILL_REQUEST_PIXELS, |v| v as u64);
@@ -158,7 +164,17 @@ impl Tuning {
         let (keep_object, shadow, name_shadow) = (flag("keepObject", false)?, flag("shadow", true)?, flag("nameShadow", NAME_SHADOW)?);
         let remove_margin = opt_num(cmd, p, "removeMargin", 0.0, 1.0)?.unwrap_or(REMOVE_MARGIN);
         let denoise = opt_num(cmd, p, "denoise", 0.05, 1.0)?;
-        Ok(Tuning { sampler: name("sampler")?, scheduler: name("scheduler")?, max_pixels, loras: loras_of(cmd, p)?, keep_object, shadow, remove_margin, name_shadow, denoise })
+        Ok(Tuning {
+            sampler: name("sampler")?,
+            scheduler: name("scheduler")?,
+            max_pixels,
+            loras: loras_of(cmd, p)?,
+            keep_object,
+            shadow,
+            remove_margin,
+            name_shadow,
+            denoise,
+        })
     }
 
     /// The `loras` request parameter for the worker, or nothing.
@@ -182,7 +198,9 @@ pub(crate) fn loras_of(cmd: &str, p: &Value) -> Result<Vec<(String, f32)>> {
         }
         let strength = match it.get("strength") {
             None | Some(Value::Null) => 1.0,
-            Some(s) => s.as_f64().filter(|v| v.is_finite() && (-4.0..=4.0).contains(v)).ok_or_else(|| bad(cmd, "a LoRA `strength` is a number from -4 to 4"))? as f32,
+            Some(s) => {
+                s.as_f64().filter(|v| v.is_finite() && (-4.0..=4.0).contains(v)).ok_or_else(|| bad(cmd, "a LoRA `strength` is a number from -4 to 4"))? as f32
+            }
         };
         out.push((file.to_string(), strength));
     }
@@ -521,7 +539,7 @@ pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
 
 /// The template `generate.angles` runs: under `auto` with the research opt-in and the native
 /// worker, the Qwen-Image-2.1 edit by instruction ([`angle_instruction`], about 6 s on the
-/// worker), else 2511 with the Multiple Angles LoRA on ComfyUI.
+/// worker), else 2511 with the Multiple Angles LoRA on the same worker.
 pub fn angles_template(s: &Session) -> &'static str {
     native21_auto(s, EDIT, false).unwrap_or(ANGLES_TEMPLATE)
 }
@@ -623,140 +641,6 @@ pub fn auto_order(command: &str, quality: &str) -> &'static [&'static str] {
     }
 }
 
-/// The model files (`folder/file`) the last run on each server loaded, for [`run_switching`].
-/// Mirrored to a small file in the temp directory so the app, the CLI and MCP agree on what
-/// a server holds across processes (each is otherwise a fresh process).
-static LAST_MODELS: Mutex<BTreeMap<String, BTreeSet<String>>> = Mutex::new(BTreeMap::new());
-
-/// Where [`LAST_MODELS`] is mirrored: `{server: [files]}` JSON.
-fn last_models_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("photocraft-genai-last-models.json")
-}
-
-/// What the last run on `server` loaded, from this process's memory or the mirror file.
-fn last_models(server: &str) -> Option<BTreeSet<String>> {
-    if let Some(set) = LAST_MODELS.lock().unwrap_or_else(PoisonError::into_inner).get(server) {
-        return Some(set.clone());
-    }
-    let text = std::fs::read_to_string(last_models_path()).ok()?;
-    let all: BTreeMap<String, BTreeSet<String>> = serde_json::from_str(&text).ok()?;
-    all.get(server).cloned()
-}
-
-/// Remember what `server` holds now, in memory and in the mirror file (best effort).
-fn remember_models(server: &str, set: BTreeSet<String>) {
-    let mut mem = LAST_MODELS.lock().unwrap_or_else(PoisonError::into_inner);
-    mem.insert(server.to_string(), set);
-    let path = last_models_path();
-    let mut all: BTreeMap<String, BTreeSet<String>> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    for (k, v) in mem.iter() {
-        all.insert(k.clone(), v.clone());
-    }
-    // Test servers come and go on random ports: keep the file small.
-    if all.len() > 32 {
-        all.retain(|k, _| mem.contains_key(k));
-    }
-    if let Ok(text) = serde_json::to_string(&all) {
-        let _ = std::fs::write(path, text);
-    }
-}
-
-/// After a purge nothing is loaded: forget what `server` held (in memory and in the mirror).
-fn forget_models(server: &str) {
-    LAST_MODELS.lock().unwrap_or_else(PoisonError::into_inner).remove(server);
-    let path = last_models_path();
-    if let Some(mut all) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<BTreeMap<String, BTreeSet<String>>>(&t).ok())
-        && all.remove(server).is_some()
-        && let Ok(text) = serde_json::to_string(&all)
-    {
-        let _ = std::fs::write(path, text);
-    }
-}
-
-/// The server a session's generative requests go to: the key of [`LAST_MODELS`].
-pub(crate) fn server_key(s: &Session) -> String {
-    s.prefs().integrations.comfy_server.trim().to_string()
-}
-
-/// The model files (`folder/file`) a request loads: the template's slots with the request's
-/// overrides.
-fn model_set(req: &Request) -> BTreeSet<String> {
-    let Ok(t) = template::find(&req.template) else { return BTreeSet::new() };
-    let bound = t.model_bindings(&req.models).unwrap_or_default();
-    t.meta.models.iter().map(|slot| format!("{}/{}", slot.folder, bound.get(&slot.placeholder).and_then(Value::as_str).unwrap_or(&slot.default))).collect()
-}
-
-/// `integrations.purgeModels`: when a run asks the server to unload what it holds first.
-pub const PURGE_SWITCH: &str = "switch";
-pub const PURGE_HEAVY: &str = "heavy";
-pub const PURGE_NEVER: &str = "never";
-
-/// Preferences › AI Integrations › Purge models, normalised (`switch` unless it says `heavy`
-/// or `never`).
-pub fn purge_mode(s: &Session) -> &'static str {
-    match s.prefs().integrations.purge_models.trim() {
-        "heavy" => PURGE_HEAVY,
-        "never" => PURGE_NEVER,
-        _ => PURGE_SWITCH,
-    }
-}
-
-/// The diffusion models and checkpoints of a model set (`folder/file` entries): what a purge
-/// under `heavy` is decided on.
-fn heavy_files(set: &BTreeSet<String>) -> BTreeSet<String> {
-    set.iter().filter(|f| f.starts_with("diffusion_models/") || f.starts_with("unet/") || f.starts_with("checkpoints/")).cloned().collect()
-}
-
-/// Run `req` on `backend`, first asking the server to unload its models when the request's
-/// model files differ from what the previous run on `server` loaded (`purge`, see
-/// [`purge_mode`]). ComfyUI keeps the earlier
-/// models resident and, short of memory for the new set, loads it partially and streams the
-/// rest on every step: the first run after a switch between the 2511 base and its Lightning
-/// tier, or from 2511 to Qwen-Image-2.1, took 31–131 s on the 32 GB card against 13–20 s for
-/// the runs after it. A purge costs one reload instead. The first run on a server never purges.
-pub(crate) fn run_switching(
-    backend: &dyn GenerativeBackend,
-    server: &str,
-    req: &Request,
-    purge: &str,
-    progress: &JobProgress,
-) -> photocraft_genai::Result<photocraft_genai::Response> {
-    // The files the backend will load (its precision policy may swap in NVFP4 ones).
-    let prepared = backend.prepare(req);
-    let req = &prepared;
-    let set = model_set(req);
-    // The native worker keeps its own residency (one diffusion family at a time, the detector
-    // beside it): a purge there dropped the resident 2.1 pipeline whenever a removal's detector
-    // ran between two fills, and the next fill loaded everything again (measured 2026-10-26).
-    let switch = server != NATIVE_SERVER_KEY
-        && !set.is_empty()
-        && purge != PURGE_NEVER
-        && match last_models(server) {
-            // `heavy`: only a change of the diffusion model or checkpoint purges; a LoRA, an
-            // encoder or a VAE swapped under the same model loads beside it.
-            Some(prev) if purge == PURGE_HEAVY => heavy_files(&prev) != heavy_files(&set),
-            Some(prev) => prev != set,
-            // Nothing known about this server (no PhotoCraft process has run on it): something
-            // else may have left it full of other models, and a card with less than a quarter
-            // of its memory free would load the new set partially and stream the rest every
-            // step.
-            None => {
-                let h = backend.health();
-                matches!((h.vram_total, h.vram_free), (Some(total), Some(free)) if total > 0 && free.saturating_mul(4) < total)
-            }
-        };
-    if switch {
-        photocraft_genai::Progress::report(progress, 0.0, "Unloading the previous models");
-        // A server that cannot purge just runs as before.
-        let _ = backend.free();
-    }
-    let resp = backend.run(req, progress)?;
-    if !set.is_empty() {
-        remember_models(server, set);
-    }
-    Ok(resp)
-}
-
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
@@ -768,25 +652,12 @@ pub(crate) fn gen_err(e: photocraft_genai::Error) -> EngineError {
     }
 }
 
-/// `integrations.engine`, normalised: `auto`, `native` or `comfy` (anything else is `auto`).
-pub fn engine_mode(s: &Session) -> &'static str {
-    match s.prefs().integrations.engine.trim() {
-        "native" => "native",
-        "comfy" => "comfy",
-        _ => "auto",
-    }
-}
-
 /// The native engine's backend for this process: one worker (`photocraft --engine …`), started
 /// on first use, shared by every command (plan-native-engine §3.4). A change of the runtime or
 /// model folders (`integrations.runtimePath`, `integrations.modelsPath`) stops the worker so the
 /// next call starts one with the new flags.
 #[cfg(not(target_arch = "wasm32"))]
 static NATIVE: std::sync::OnceLock<std::sync::Mutex<Option<Arc<photocraft_genai::native::NativeBackend>>>> = std::sync::OnceLock::new();
-
-/// Tests: what `native` routes to instead (a fake engine served in-process).
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static NATIVE_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<Arc<photocraft_genai::native::NativeBackend>>>> = std::sync::OnceLock::new();
 
 /// SAM 3.1's precision on the worker's GPU: `f16` (1.9x the speed of f32; select by text on a
 /// new picture 273–278 ms through the app against ONNX Runtime's 249–346 ms, every mask at an
@@ -802,12 +673,33 @@ fn sam_precision() -> &'static str {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> {
-    #[cfg(test)]
-    if let Some(b) = NATIVE_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        return Ok(Arc::clone(b) as Arc<dyn GenerativeBackend>);
+fn native_endpoint(spec: &str) -> Result<(u16, String)> {
+    let invalid = || EngineError::Other("PHOTOCRAFT_NATIVE_ENGINE must be port:token (a nonzero port and nonempty token)".into());
+    let (port, token) = spec.trim().split_once(':').ok_or_else(invalid)?;
+    let port = port.trim().parse::<u16>().ok().filter(|p| *p != 0).ok_or_else(invalid)?;
+    let token = token.trim();
+    if token.is_empty() || token.len() > 512 {
+        return Err(invalid());
     }
+    Ok((port, token.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> {
     let integrations = &s.prefs().integrations;
+    let timeout = std::time::Duration::from_secs(u64::from(integrations.generative_timeout_secs.max(5)));
+    if let Some(b) = photocraft_genai::native::test_backend(&integrations.models_root()).map_err(gen_err)? {
+        b.set_timeout(timeout);
+        return Ok(b);
+    }
+    let endpoint = match std::env::var("PHOTOCRAFT_NATIVE_ENGINE") {
+        Ok(spec) => Some(native_endpoint(&spec)?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err(EngineError::Other("PHOTOCRAFT_NATIVE_ENGINE must be valid Unicode port:token".into())),
+    };
+    if !integrations.native_configured() && endpoint.is_none() {
+        return Err(EngineError::Other("set the runtime and Models folders in Preferences › AI Integrations first".into()));
+    }
     let mut wanted = photocraft_genai::native::worker_args(&integrations.runtime_folders(), &integrations.models_root());
     if !wanted.is_empty() {
         wanted.extend(["--sam-precision".to_string(), sam_precision().to_string()]);
@@ -818,6 +710,7 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
         // The flags after `--engine` are the preferences; a change restarts the worker. A
         // worker this process joined rather than started is kept as it is.
         if b.is_attached() || b.args().get(1..).unwrap_or(&[]) == wanted.as_slice() {
+            b.set_timeout(timeout);
             return Ok(Arc::clone(b) as Arc<dyn GenerativeBackend>);
         }
         b.stop();
@@ -826,47 +719,42 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
     // `PHOTOCRAFT_NATIVE_ENGINE=port:token` joins a worker already running (one started by
     // hand with `photocraft-cli --engine …` and `GN_ENGINE_TOKEN`), so a bench of many CLI
     // processes shares one resident set of models instead of loading them in every process.
-    if let Ok(spec) = std::env::var("PHOTOCRAFT_NATIVE_ENGINE")
-        && let Some((port, token)) = spec.split_once(':')
-        && let Ok(port) = port.trim().parse::<u16>()
-    {
-        let b = Arc::new(photocraft_genai::native::NativeBackend::attached(port, token.trim()).map_err(gen_err)?);
+    if let Some((port, token)) = endpoint {
+        let b = Arc::new(photocraft_genai::native::NativeBackend::attached(port, &token).map_err(gen_err)?);
+        b.set_timeout(timeout);
         *g = Some(Arc::clone(&b));
         return Ok(b);
     }
     let dirs = photocraft_genai::native::runtime_dirs(&integrations.runtime_folders());
     let b = photocraft_genai::native::NativeBackend::this_executable(&wanted).map_err(gen_err)?.with_path_dirs(dirs);
     let b = Arc::new(b.with_log(crate::generate_engine_cmds::native_log_path()));
+    b.set_timeout(timeout);
     *g = Some(Arc::clone(&b));
     Ok(b)
 }
 
 /// The worker this process holds now, if any (never starts one).
 #[cfg(not(target_arch = "wasm32"))]
-fn native_current() -> Option<Arc<photocraft_genai::native::NativeBackend>> {
-    #[cfg(test)]
-    if let Some(b) = NATIVE_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        return Some(Arc::clone(b));
+fn native_current(s: &Session) -> Option<Arc<photocraft_genai::native::NativeBackend>> {
+    if let Ok(Some(b)) = photocraft_genai::native::test_backend(&s.prefs().integrations.models_root()) {
+        return Some(b);
     }
     NATIVE.get().and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).clone())
 }
 
-/// `generate.engine.status`'s `native`: `off` under `integrations.engine = comfy`,
+/// The native worker status:
 /// `unconfigured` without a runtime and a model folder, else the worker's own state
 /// (`NativeBackend::status`: stopped / starting / running / ready / failed), without waiting
 /// and without starting one.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn native_status(s: &Session) -> Value {
     let log = crate::generate_engine_cmds::native_log_path().to_string_lossy().into_owned();
-    let mode = engine_mode(s);
+    let mode = "native";
     let state = |st: &str| json!({"state": st, "mode": mode, "log": log});
-    if mode == "comfy" {
-        return state("off");
-    }
-    if !s.prefs().integrations.native_configured() && native_current().is_none_or(|b| !b.is_attached()) {
+    if !s.prefs().integrations.native_configured() && native_current(s).is_none_or(|b| !b.is_attached()) {
         return state("unconfigured");
     }
-    let st = native_current().map(|b| b.status()).unwrap_or_else(|| photocraft_genai::native::NativeStatus { state: "stopped".into(), ..Default::default() });
+    let st = native_current(s).map(|b| b.status()).unwrap_or_else(|| photocraft_genai::native::NativeStatus { state: "stopped".into(), ..Default::default() });
     let mut v = serde_json::to_value(st).unwrap_or_else(|_| json!({"state": "failed"}));
     v["mode"] = json!(mode);
     v["log"] = json!(log);
@@ -889,176 +777,35 @@ pub(crate) fn native_start(s: &Session) -> Result<()> {
 
 /// Stop the worker this process started (the next generative command starts a fresh one).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_stop() {
-    if let Some(b) = native_current() {
+pub(crate) fn native_stop(s: &Session) {
+    if let Some(b) = native_current(s) {
         b.stop();
     }
 }
 
 /// Unload the worker's models, if it runs.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_purge() -> Result<()> {
-    match native_current() {
+pub(crate) fn native_purge(s: &Session) -> Result<()> {
+    match native_current(s) {
         Some(b) => b.purge().map_err(gen_err),
         None => Ok(()),
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) fn set_native_backend(b: Arc<photocraft_genai::native::NativeBackend>) {
-    let slot = NATIVE_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None));
-    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(b);
-}
-
-/// The backend the preferences point at: the native worker under `integrations.engine =
-/// native`, the ComfyUI server otherwise (`auto` is the ComfyUI route until a native model is
-/// faster at parity; plan-native-engine §3.3). The web build has none yet.
+/// The native worker is the only backend. The web build has none yet.
 pub(crate) fn backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> {
     #[cfg(not(target_arch = "wasm32"))]
-    if engine_mode(s) == "native" {
-        return native_backend(s);
-    }
-    let integrations = &s.prefs().integrations;
-    let url = integrations.comfy_server.trim();
-    if url.is_empty() {
-        return Err(EngineError::Other("no generative server is configured (Preferences › AI Integrations › ComfyUI Server)".into()));
-    }
-    let timeout = Duration::from_secs(u64::from(integrations.generative_timeout_secs.max(5)));
-    // Quality `best` keeps `auto` precision off the 4-bit files; an explicit `nvfp4` still wins.
-    let precision = match photocraft_genai::Precision::from_name(&integrations.model_precision) {
-        photocraft_genai::Precision::Auto if quality(s) == "best" => photocraft_genai::Precision::Default,
-        p => p,
-    };
-    #[cfg(not(target_arch = "wasm32"))]
     {
-        let b = photocraft_genai::comfy::ComfyBackend::new(url, timeout)
-            .map_err(gen_err)?
-            .with_precision(precision)
-            .with_sidecar(crate::generate_engine_cmds::launch_from_prefs(s));
-        Ok(Arc::new(b))
+        native_backend(s)
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (timeout, precision);
+        let _ = s;
         Err(EngineError::Other("generative features are not available in the web build yet".into()))
     }
 }
-
-/// The model-set key of the native worker's runs (`run_switching`): its own, so a native run
-/// never counts as a model switch on the ComfyUI server.
-pub(crate) const NATIVE_SERVER_KEY: &str = "native";
-
-/// The backend one template's request goes to, with the key its model set is remembered under:
-/// `native` and `comfy` as the preference says; under `auto`, the native worker when it serves
-/// this template and the ComfyUI server otherwise (plan-native-engine §3.3: a model moves under
-/// `auto` once the native route beats its row at parity, which SAM 3.1 did on 2026-10-19).
-/// Every generative command asks here with its planned template (`generate.image`, `fill`,
-/// `expand`, `edit`, the selection commands); a job whose `auto` template is resolved later
-/// (`resolve_auto`) keeps the backend chosen for the default.
-pub(crate) fn backend_for(s: &Session, template: &str) -> Result<(Arc<dyn GenerativeBackend>, String)> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if engine_mode(s) == "native" {
-            return Ok((native_backend(s)?, NATIVE_SERVER_KEY.to_string()));
-        }
-        if engine_mode(s) == "auto"
-            && let Some(b) = native_serving(s, template)
-        {
-            return Ok((b, NATIVE_SERVER_KEY.to_string()));
-        }
-    }
-    let b = backend(s)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(hint) = research_hint(s, template)
-        && !b.health().ok
-    {
-        return Err(EngineError::Other(hint));
-    }
-    Ok((b, server_key(s)))
-}
-
-/// Under `auto` with research-only models off (the permissive default), a Qwen-Image-Edit-2511
-/// template goes to ComfyUI even when the native worker is set up and runs Qwen-Image-2.1. When
-/// no ComfyUI answers and none is started by the app, the request would fail with "cannot
-/// reach the ComfyUI server" alone; this says both ways out instead (Rust rebuild R6: the
-/// licence choice stays the user's). `None` when it does not apply.
-#[cfg(not(target_arch = "wasm32"))]
-fn research_hint(s: &Session, template: &str) -> Option<String> {
-    let i = &s.prefs().integrations;
-    let is_2511 = template::find(template).is_ok_and(|t| t.meta.family == "qwen-image-edit-2511");
-    if engine_mode(s) != "auto" || !is_2511 || i.allow_research_models || !i.comfy_path.trim().is_empty() || !i.native_configured() {
-        return None;
-    }
-    let serves_21 = native_backend(s).ok()?.model_files("").ok()?.iter().any(|m| m.starts_with("qwen-2.1/"));
-    serves_21.then(|| {
-        format!(
-            "this runs Qwen-Image-Edit-2511 on a ComfyUI server, and none answers at {}. The native engine can run it with Qwen-Image-2.1 instead: turn on Allow Research-Only Models in Preferences › AI Integrations (its licence is for research and personal use, not commercial work). Or start ComfyUI, or name its folder there so the app starts it.",
-            i.comfy_server.trim()
-        )
-    })
-}
-
-/// The backend for the vision-language questions a job asks (the rewriter, the judge, the
-/// presence check). A job on the native worker asks the worker itself when it serves the
-/// enhancer template (its Qwen-Image-2.1 text encoder answers as Qwen3-VL 8B, genai-native
-/// `Pipeline::chat`): no second model on the card. Otherwise the backend serving the enhancer
-/// template (the ComfyUI route); when no such route is configured, the job's own backend, which
-/// then answers or declines as before.
-pub(crate) fn thinker_for(s: &Session, own: &Arc<dyn GenerativeBackend>, server: &str) -> Arc<dyn GenerativeBackend> {
-    // `PHOTOCRAFT_THINKER=comfy` keeps the questions on the ComfyUI route even for a native
-    // job (a bench comparing the two rewriters; not a preference).
-    let comfy_only = std::env::var("PHOTOCRAFT_THINKER").is_ok_and(|v| v.trim() == "comfy");
-    if !comfy_only && server == NATIVE_SERVER_KEY && own.model_files("").is_ok_and(|m| m.iter().any(|t| t == ENHANCE_EDIT_TEMPLATE)) {
-        return Arc::clone(own);
-    }
-    backend_for(s, ENHANCE_EDIT_TEMPLATE).map(|(b, _)| b).unwrap_or_else(|_| Arc::clone(own))
-}
-
-/// Whether two handles are the same backend (a job's questions answered by its own worker).
-fn same_backend(a: &Arc<dyn GenerativeBackend>, b: &Arc<dyn GenerativeBackend>) -> bool {
-    Arc::as_ptr(a) as *const () == Arc::as_ptr(b) as *const ()
-}
-
-/// On the native route a ComfyUI server answering the job's questions (the rewriter, the
-/// judge) holds only the vision-language model: it leaves after each answer unless purges are
-/// off, so the worker's resident models have the card. Measured 2026-10-26: with the 5 GB model
-/// kept resident beside the worker's 2.1 set and the card's other tenants, a native stroke
-/// paged for minutes; ComfyUI loads it again in two seconds for the next question. A worker
-/// answering its own questions is never told to unload.
-fn release_thinker(server: &str, purge: &str, thinker: &Arc<dyn GenerativeBackend>, own: &Arc<dyn GenerativeBackend>) {
-    if server == NATIVE_SERVER_KEY && purge != "never" && !same_backend(thinker, own) {
-        let _ = thinker.free();
-    }
-}
-
-/// The model families `auto` sends to the native worker when it serves them: those whose native
-/// route beat their ComfyUI row at parity (plan-native-engine §3.3, §12.1). SAM 3.1 since
-/// 2026-10-19; Qwen-Image-2.1 text to image since 2026-10-20 (ComfyUI's noise, schedule and
-/// prompt reproduced: the same seed gives the same picture, 40 dB on the fox, and the resident
-/// worker is faster than the ComfyUI route per picture; dev log), its edit and fill templates
-/// since the same day (the references through the native vision tower and VAE encoder, the
-/// fox's winter edit at 40 dB); Krea 2 text to image since 2026-10-27 (ComfyUI's own fp8 files
-/// on its fp8 recipe, exact attention, fused small ops: 19 of 28 pictures at the parity gate
-/// against ComfyUI's route, whose fp8 and bf16 routes agree on 20, at 4.0 s a picture through
-/// the app against 4.0–4.7). The worker serves a family only in a build with the
-/// `native-diffusion` feature, and `native_serving` asks it template by template (Krea 2's
-/// style reference stays on ComfyUI: the worker does not list it). Qwen-Image-Layered's split
-/// since 2026-10-27: 1–3/255 and alpha IoU ≥ 0.994 per layer against ComfyUI's, 57 s against
-/// 58 s at 640 px (genai-native `4fcbfc3`); Apache-2.0, so no research opt-in.
-pub(crate) const NATIVE_AUTO_FAMILIES: [&str; 4] = ["sam3.1", "qwen-image-2.1", "krea2", "qwen-image-layered"];
-
-/// Under `auto`: the native worker, when the preferences give it its folders, the template's
-/// family is in [`NATIVE_AUTO_FAMILIES`] and the worker's index lists the template. A worker
-/// that cannot start or does not serve the template is `None`, and the ComfyUI route stands.
-#[cfg(not(target_arch = "wasm32"))]
-fn native_serving(s: &Session, template: &str) -> Option<Arc<dyn GenerativeBackend>> {
-    let i = &s.prefs().integrations;
-    let configured = i.native_configured();
-    if !configured || !template::find(template).is_ok_and(|t| NATIVE_AUTO_FAMILIES.contains(&t.meta.family.as_str())) {
-        return None;
-    }
-    let b = native_backend(s).ok()?;
-    b.model_files("").ok()?.iter().any(|m| m == template).then_some(b)
+pub(crate) fn backend_for(s: &Session, _template: &str) -> Result<(Arc<dyn GenerativeBackend>, String)> {
+    Ok((backend(s)?, "native".to_string()))
 }
 
 pub(crate) fn web_unavailable() -> std::result::Result<(), String> {
@@ -1328,17 +1075,11 @@ fn dump_views(seen: &Rgba8) {
     let _ = std::fs::write(std::path::Path::new(dir.trim()).join(format!("views-{stamp}.png")), png);
 }
 
-/// Is a generative backend set up: a ComfyUI server, or the native worker's folders? The
+/// Are the native worker's folders set? The
 /// classical tools go through the model only then, and fall back to their own algorithms
 /// otherwise (a server that is set up but down is reported by the job instead).
 pub fn generative_configured(s: &Session) -> bool {
-    let i = &s.prefs().integrations;
-    let native = i.native_configured();
-    match i.engine.trim() {
-        "native" => native,
-        "comfy" => !i.comfy_server.trim().is_empty(),
-        _ => native || !i.comfy_server.trim().is_empty(),
-    }
+    s.prefs().integrations.native_configured()
 }
 
 /// `cov` (one value per pixel of `bounds`) laid over `rect`, zero elsewhere.
@@ -1391,7 +1132,10 @@ const MAX_REMOVAL_VARIATIONS: u32 = 4;
 
 /// `variations` for a removal: [`DEFAULT_REMOVAL_VARIATIONS`] unless given, 1 to 4.
 pub(crate) fn removal_variations(p: &Value) -> u32 {
-    p.get("variations").and_then(Value::as_f64).filter(|v| v.is_finite()).map_or(DEFAULT_REMOVAL_VARIATIONS, |v| (v.round() as i64).clamp(1, i64::from(MAX_REMOVAL_VARIATIONS)) as u32)
+    p.get("variations")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .map_or(DEFAULT_REMOVAL_VARIATIONS, |v| (v.round() as i64).clamp(1, i64::from(MAX_REMOVAL_VARIATIONS)) as u32)
 }
 
 /// A removal's request is at least this many pixels on a side (where the canvas allows), so
@@ -1497,8 +1241,33 @@ pub(crate) fn named_object(rewritten: &str) -> Option<String> {
     let t = rewritten.trim();
     let rest = ["Remove the ", "remove the ", "Remove ", "remove "].iter().find_map(|p| t.strip_prefix(p))?;
     let cut = [
-        ", ", " and replace", " and fill", " from ", " with ", " so ", ".", ";", " replacing", " completely", " entirely", " to ", " in the ", " on the ", " perched", " sitting",
-        " standing", " lying", " hanging", " taped", " mounted", " parked", " walking", " resting", " placed", " attached", " leaning",
+        ", ",
+        " and replace",
+        " and fill",
+        " from ",
+        " with ",
+        " so ",
+        ".",
+        ";",
+        " replacing",
+        " completely",
+        " entirely",
+        " to ",
+        " in the ",
+        " on the ",
+        " perched",
+        " sitting",
+        " standing",
+        " lying",
+        " hanging",
+        " taped",
+        " mounted",
+        " parked",
+        " walking",
+        " resting",
+        " placed",
+        " attached",
+        " leaning",
     ]
     .iter()
     // A word after an article describes the next thing rather than ending the name: "the
@@ -1511,9 +1280,29 @@ pub(crate) fn named_object(rewritten: &str) -> Option<String> {
     // "the painted-over area", "the selected region": the rewriter naming the selection
     // instead of what is in it (measured); the generic wording does better than that.
     let lower = name.to_lowercase();
-    let not_a_thing = ["area", "region", "part", "selection", "selected", "painted", "marked", "outlined", "view", "section", "spot", "portion", "object", "item", "thing", "element", "border", "frame", "edge"]
-        .iter()
-        .any(|w| lower.split(|c: char| !c.is_alphanumeric()).any(|t| t == *w));
+    let not_a_thing = [
+        "area",
+        "region",
+        "part",
+        "selection",
+        "selected",
+        "painted",
+        "marked",
+        "outlined",
+        "view",
+        "section",
+        "spot",
+        "portion",
+        "object",
+        "item",
+        "thing",
+        "element",
+        "border",
+        "frame",
+        "edge",
+    ]
+    .iter()
+    .any(|w| lower.split(|c: char| !c.is_alphanumeric()).any(|t| t == *w));
     (!name.is_empty() && !not_a_thing && name.split_whitespace().count() <= 6).then(|| name.to_string())
 }
 
@@ -1605,12 +1394,10 @@ pub(crate) fn generative_remove(
     let as_edit = template::find(&base).map(|t| t.meta.task == Task::Edit).unwrap_or(false);
     let Common { template, prompt, negative, seed, steps, guidance, models, .. } =
         plan_common(s, FILL, &json!({"prompt": REMOVE_PROMPT, "seed": seed}), &base, if as_edit { Task::Edit } else { Task::Fill }, &default_model)?;
-    let (backend, server) = backend_for(s, &template.meta.id)?;
-    let purge = purge_mode(s);
+    let backend = backend(s)?;
     let job = FillJob {
-        thinker: thinker_for(s, &backend, &server),
+        thinker: Arc::clone(&backend),
         backend,
-        server,
         command: if as_edit { EDIT } else { FILL },
         template_id: template.meta.id.clone(),
         auto,
@@ -1633,7 +1420,6 @@ pub(crate) fn generative_remove(
         prefill,
         tuning,
         object: None,
-        purge,
     };
     let label_kept = label.to_string();
     crate::jobs::edit_job(
@@ -1655,7 +1441,7 @@ pub(crate) fn generative_remove(
             if job.enhance {
                 ctx.progress(0.0, "Naming the object");
                 let (hole, _) = crate::select_ml_cmds::coverage_bounds(&coverage, area);
-                let by_worker = job.server == NATIVE_SERVER_KEY && same_backend(&job.thinker, &job.backend);
+                let by_worker = true;
                 let (wide_rect, close_rect) = naming_views(hole, canvas, by_worker)?;
                 let crop = |r: Rect| -> Result<Rgba8> {
                     let c = photocraft_compose::render(doc, r).to_rgba8();
@@ -1670,9 +1456,15 @@ pub(crate) fn generative_remove(
                 // rewriter's own closing clauses listed the scene's neighbours and the model
                 // painted them: a rock for the boat, the table over a wrist).
                 dump_views(&seen);
-                if let Ok(Some(p)) =
-                    enhance_prompt(job.thinker.as_ref(), EnhanceKind::Remove, &job.prompt, Some(&seen), Some(&place), job.seed, &JobProgress::span(ctx, 0.01, 0.04))
-                    && let Some(name) = named_object(&p)
+                if let Ok(Some(p)) = enhance_prompt(
+                    job.thinker.as_ref(),
+                    EnhanceKind::Remove,
+                    &job.prompt,
+                    Some(&seen),
+                    Some(&place),
+                    job.seed,
+                    &JobProgress::span(ctx, 0.01, 0.04),
+                ) && let Some(name) = named_object(&p)
                 {
                     job.rewritten = Some(removal_prompt(&name));
                     job.object = Some(name.clone());
@@ -1722,7 +1514,6 @@ pub(crate) fn generative_remove(
                 }
                 // Named or not, the fill's prompt is settled here.
                 job.enhance = false;
-                release_thinker(&job.server, job.purge, &job.thinker, &job.backend);
                 ctx.check()?;
             }
             if !taken && let Some(finder) = &object {
@@ -1808,7 +1599,10 @@ fn plan_fill(s: &Session, p: &Value) -> Result<FillPlan> {
     // a bench) on 3 of 15 swaps, where the fill template with its own rewriter swapped all but
     // the watch (`benchmarks.md`, 2026-10-27).
     let mut as_edit = false;
-    if auto && ref_specs.is_empty() && let Some(t) = native21_auto(s, FILL, false) {
+    if auto
+        && ref_specs.is_empty()
+        && let Some(t) = native21_auto(s, FILL, false)
+    {
         as_edit = opt_bool(FILL, p, "fillAsEdit", false)?;
         base = if as_edit { native21_auto(s, EDIT, false).unwrap_or(t).to_string() } else { t.to_string() };
         auto = false;
@@ -1816,7 +1610,11 @@ fn plan_fill(s: &Session, p: &Value) -> Result<FillPlan> {
     // A fill from references on the native worker: the 2.1 edit template, which takes nine
     // references beside the picture, instead of 2511's fill-ref on ComfyUI (the Rust rebuild,
     // `goals/rust-rebuild.md` R2): "Replace the <thing> with <prompt> as image 2 shows it".
-    if auto && !ref_specs.is_empty() && native21_auto(s, FILL, false).is_some() && let Some(t) = native21_auto(s, EDIT, false) {
+    if auto
+        && !ref_specs.is_empty()
+        && native21_auto(s, FILL, false).is_some()
+        && let Some(t) = native21_auto(s, EDIT, false)
+    {
         as_edit = true;
         base = t.to_string();
         auto = false;
@@ -2349,10 +2147,8 @@ fn image_enabled(_: &Session) -> std::result::Result<(), String> {
 fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_image(s, p)?;
     // Per template: under `auto` the native worker takes the families it serves at parity.
-    let (backend, server) = backend_for(s, &plan.template.meta.id)?;
-    let thinker = thinker_for(s, &backend, &server);
-    let server_doc = server.clone();
-    let purge = purge_mode(s);
+    let backend = backend(s)?;
+    let thinker = Arc::clone(&backend);
     let ImagePlan {
         template,
         prompt,
@@ -2375,7 +2171,8 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
     } = plan;
     let label = name.clone();
     let tid = template.meta.id.clone();
-    let params: BTreeMap<String, Value> = Tuning { loras, ..Tuning::default() }.loras_param().map(|l| BTreeMap::from([("loras".to_string(), l)])).unwrap_or_default();
+    let params: BTreeMap<String, Value> =
+        Tuning { loras, ..Tuning::default() }.loras_param().map(|l| BTreeMap::from([("loras".to_string(), l)])).unwrap_or_default();
     // What the result layer remembers (`generate.similar` re-runs it).
     let info = GenerativeInfo {
         command: IMAGE.to_string(),
@@ -2419,7 +2216,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
                 let (prompt, enhanced) = image_prompt(thinker.as_ref(), ctx, enhance, &typed, req.prompt, &wrap, seed);
                 req.prompt = prompt;
                 ctx.check()?;
-                let resps = run_variations(backend.as_ref(), &server_doc, &mut req, n, seed, purge, ctx)?;
+                let resps = run_variations(backend.as_ref(), &mut req, n, seed, ctx)?;
                 Ok((resps, enhanced))
             },
             move |s, (resps, enhanced): (Vec<photocraft_genai::Response>, String)| {
@@ -2459,7 +2256,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
             let (prompt, enhanced) = image_prompt(backend.as_ref(), ctx, enhance, &typed, req.prompt, &wrap, seed);
             req.prompt = prompt;
             ctx.check()?;
-            let resps = run_variations(backend.as_ref(), &server, &mut req, n, seed, purge, ctx)?;
+            let resps = run_variations(backend.as_ref(), &mut req, n, seed, ctx)?;
             let canvas = doc.bounds();
             let (w, h) = (canvas.width(), canvas.height());
             ctx.progress(0.96, "Placing");
@@ -2495,15 +2292,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// `n` backend runs of `req` with consecutive seeds from `seed`, each its slice of the job's
 /// progress.
-fn run_variations(
-    backend: &dyn GenerativeBackend,
-    server: &str,
-    req: &mut Request,
-    n: u32,
-    seed: u64,
-    purge: &str,
-    ctx: &JobCtx,
-) -> Result<Vec<photocraft_genai::Response>> {
+fn run_variations(backend: &dyn GenerativeBackend, req: &mut Request, n: u32, seed: u64, ctx: &JobCtx) -> Result<Vec<photocraft_genai::Response>> {
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
         req.seed = seed.wrapping_add(u64::from(i)) % MAX_SEED;
@@ -2511,7 +2300,7 @@ fn run_variations(
         if n > 1 {
             ctx.progress(lo, &format!("Variation {}/{n}", i + 1));
         }
-        out.push(run_switching(backend, server, req, purge, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?);
+        out.push(backend.run(req, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?);
         ctx.check()?;
     }
     Ok(out)
@@ -2520,12 +2309,9 @@ fn run_variations(
 /// What a fill or expand job needs once its plan is made and the backend is in hand.
 struct FillJob {
     backend: Arc<dyn GenerativeBackend>,
-    /// The backend that answers the vision-language questions (the rewriter, the judge, the
-    /// presence check): the one serving the enhancer template, which is the ComfyUI route
-    /// while the native worker runs the fill itself ([`thinker_for`]).
+    /// The same native worker answers vision-language questions: rewriting, judging and
+    /// checking whether an object is still present.
     thinker: Arc<dyn GenerativeBackend>,
-    /// The server's key for [`run_switching`].
-    server: String,
     /// The command the layers remember ([`GenerativeInfo::command`]).
     command: &'static str,
     template_id: String,
@@ -2569,8 +2355,6 @@ struct FillJob {
     tuning: Tuning,
     /// A removal: what the rewriter named ("gold necklace"), for the judge.
     object: Option<String>,
-    /// When a run purges the server first ([`purge_mode`]).
-    purge: &'static str,
 }
 
 /// The layers a job made: (id, seed, run id, ms, timings), the primary one first.
@@ -2601,7 +2385,7 @@ fn name_selected(doc: &Document, job: &FillJob, area: Rect, coverage: &[f32], ct
     if hole.is_empty() {
         return Ok(None);
     }
-    let by_worker = job.server == NATIVE_SERVER_KEY && same_backend(&job.thinker, &job.backend);
+    let by_worker = true;
     let (wide_rect, close_rect) = naming_views(hole, canvas, by_worker)?;
     let crop = |r: Rect| -> Result<Rgba8> {
         let c = photocraft_compose::render(doc, r).to_rgba8();
@@ -2611,7 +2395,8 @@ fn name_selected(doc: &Document, job: &FillJob, area: Rect, coverage: &[f32], ct
     let (rw, rh) = request_size(seen.width, seen.height);
     let seen = if (rw, rh) == (seen.width, seen.height) { seen } else { resize_rgba8(&seen, rw, rh)? };
     let place = place_in_words(hole, wide_rect);
-    let said = enhance_prompt(job.thinker.as_ref(), EnhanceKind::Remove, REMOVE_PROMPT, Some(&seen), Some(&place), job.seed, &JobProgress::span(ctx, 0.01, 0.04));
+    let said =
+        enhance_prompt(job.thinker.as_ref(), EnhanceKind::Remove, REMOVE_PROMPT, Some(&seen), Some(&place), job.seed, &JobProgress::span(ctx, 0.01, 0.04));
     Ok(said.ok().flatten().and_then(|p| named_object(&p)))
 }
 
@@ -2657,7 +2442,6 @@ fn fill_region(
     let FillJob {
         backend,
         thinker,
-        server,
         command,
         template_id,
         auto,
@@ -2680,7 +2464,6 @@ fn fill_region(
         prefill,
         tuning,
         object,
-        purge,
     } = job;
     // `grow`: the selection widened, so the repainted area (and the result's mask) takes in a
     // band of the old object's surroundings; a bulkier replacement then has room. A removal
@@ -2783,7 +2566,6 @@ fn fill_region(
         prompt
     };
     ctx.check()?;
-    release_thinker(&server, purge, &thinker, &backend);
     // An expand template crops the model's reference to the picture: its rectangle inside the
     // request, in the request's (possibly resampled) pixels.
     let mut params = BTreeMap::new();
@@ -2857,7 +2639,7 @@ fn fill_region(
         req.prompt = run_prompt.clone();
         req.mask = wants_mask(&run_template).then(|| run_mask.clone());
         let run_enhanced = if run_prompt == typed { String::new() } else { run_prompt.clone() };
-        let resp = run_switching(backend.as_ref(), &server, &req, purge, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
+        let resp = backend.as_ref().run(&req, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
         ctx.check()?;
         let out = resp.images.into_iter().next().ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;
         let out = if realign && (out.width, out.height) == (image_plain.width, image_plain.height) {
@@ -2953,7 +2735,10 @@ fn fill_region(
                 let presence = match (object.as_deref().filter(|_| PRESENCE_CHECK), judged.get(best), judged.get(i)) {
                     (Some(name), Some(a), Some(b)) => {
                         let span = JobProgress::span(ctx, 0.96, 0.97);
-                        match (still_there(thinker.as_ref(), a, name, seed.wrapping_add(200 + i as u64), &span), still_there(thinker.as_ref(), b, name, seed.wrapping_add(300 + i as u64), &span)) {
+                        match (
+                            still_there(thinker.as_ref(), a, name, seed.wrapping_add(200 + i as u64), &span),
+                            still_there(thinker.as_ref(), b, name, seed.wrapping_add(300 + i as u64), &span),
+                        ) {
                             (Some(false), Some(true)) => Some(true),
                             (Some(true), Some(false)) => Some(false),
                             _ => None,
@@ -2962,7 +2747,9 @@ fn fill_region(
                     _ => None,
                 };
                 presence.or_else(|| match (judged.get(best), judged.get(i)) {
-                    (Some(a), Some(b)) => judge_pair(thinker.as_ref(), a, b, object.as_deref(), seed.wrapping_add(100 + i as u64), &JobProgress::span(ctx, 0.96, 0.97)),
+                    (Some(a), Some(b)) => {
+                        judge_pair(thinker.as_ref(), a, b, object.as_deref(), seed.wrapping_add(100 + i as u64), &JobProgress::span(ctx, 0.96, 0.97))
+                    }
                     _ => None,
                 })
             };
@@ -2971,7 +2758,6 @@ fn fill_region(
                 best = i;
             }
         }
-        release_thinker(&server, purge, &thinker, &backend);
         if best > 0 {
             let chosen = made.remove(best);
             made.insert(0, chosen);
@@ -3095,11 +2881,14 @@ fn tone_matched(result: &Rgba8, original: &Rgba8, mask: &Gray8) -> Rgba8 {
         return result.clone();
     }
     // A one-pixel unmasked margin keeps the problem Dirichlet (see `seamless_clone`).
-    let hole: Vec<bool> = mask.data.iter().enumerate().map(|(i, m)| *m >= TONE_MATCH_INSIDE && i % w > 0 && i % w < w - 1 && i / w > 0 && i / w < h - 1).collect();
+    let hole: Vec<bool> =
+        mask.data.iter().enumerate().map(|(i, m)| *m >= TONE_MATCH_INSIDE && i % w > 0 && i % w < w - 1 && i / w > 0 && i / w < h - 1).collect();
     if !hole.iter().any(|h| *h) {
         return result.clone();
     }
-    let rgb = |img: &Rgba8| -> Vec<f32> { img.data.as_chunks::<4>().0.iter().flat_map(|p| [f32::from(p[0]) / 255.0, f32::from(p[1]) / 255.0, f32::from(p[2]) / 255.0]).collect() };
+    let rgb = |img: &Rgba8| -> Vec<f32> {
+        img.data.as_chunks::<4>().0.iter().flat_map(|p| [f32::from(p[0]) / 255.0, f32::from(p[1]) / 255.0, f32::from(p[2]) / 255.0]).collect()
+    };
     let matched = photocraft_algo::poisson::seamless_clone(w, h, 3, &rgb(result), &rgb(original), &hole);
     let mut data = Vec::with_capacity(w * h * 4);
     for (px, src) in result.data.as_chunks::<4>().0.iter().zip(matched.as_chunks::<3>().0) {
@@ -3308,7 +3097,9 @@ fn highlight_covered(img: &Rgba8, mask: &Gray8, colour: &str) -> Rgba8 {
     }
     let mut data = img.data.clone();
     for (i, m) in mask.data.iter().enumerate() {
-        if *m >= SMOOTH_INSIDE && let Some(px) = data.get_mut(i * 4..i * 4 + 4) {
+        if *m >= SMOOTH_INSIDE
+            && let Some(px) = data.get_mut(i * 4..i * 4 + 4)
+        {
             px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
         }
     }
@@ -3491,16 +3282,14 @@ fn prefill_outside(img: &mut Rgba8, inner: Rect) {
 
 fn run_fill(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_fill(s, p)?;
-    let (backend, server) = backend_for(s, &plan.template.meta.id)?;
+    let backend = backend(s)?;
     let FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow, erase, tuning } = plan;
     let label = name.clone();
-    let purge = purge_mode(s);
     // A fill planned on an edit template (`fillAsEdit`) runs as an edit by instruction.
     let as_edit = template.meta.task == Task::Edit;
     let job = FillJob {
-        thinker: thinker_for(s, &backend, &server),
+        thinker: Arc::clone(&backend),
         backend,
-        server,
         command: if as_edit { EDIT } else { FILL },
         template_id: template.meta.id.clone(),
         auto,
@@ -3523,7 +3312,6 @@ fn run_fill(s: &mut Session, p: &Value) -> Result<Value> {
         prefill: false,
         tuning,
         object: None,
-        purge,
     };
     crate::jobs::edit_job(
         s,
@@ -3716,14 +3504,12 @@ fn expand_enabled(s: &Session) -> std::result::Result<(), String> {
 /// `generate.expand`: grow the canvas and have the model paint the new area, as one undo step.
 fn run_expand(s: &mut Session, p: &Value) -> Result<Value> {
     let (plan, pads, (nw, nh)) = plan_expand(s, p)?;
-    let (backend, server) = backend_for(s, &plan.template.meta.id)?;
+    let backend = backend(s)?;
     let FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow, erase, tuning } = plan;
     let label = name.clone();
-    let purge = purge_mode(s);
     let job = FillJob {
-        thinker: thinker_for(s, &backend, &server),
+        thinker: Arc::clone(&backend),
         backend,
-        server,
         command: EXPAND,
         template_id: template.meta.id.clone(),
         auto,
@@ -3746,7 +3532,6 @@ fn run_expand(s: &mut Session, p: &Value) -> Result<Value> {
         prefill: false,
         tuning,
         object: None,
-        purge,
     };
     crate::jobs::edit_job(
         s,
@@ -3932,16 +3717,14 @@ fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
 
 fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_edit(s, p)?;
-    let (backend, server) = backend_for(s, &plan.template.meta.id)?;
+    let backend = backend(s)?;
     let FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow, erase, tuning } = plan;
     let label = name.clone();
     // `wholePicture` (Generative Angles): the selection does not confine the result.
     let whole = opt_bool(EDIT, p, "wholePicture", false)?;
-    let purge = purge_mode(s);
     let job = FillJob {
-        thinker: thinker_for(s, &backend, &server),
+        thinker: Arc::clone(&backend),
         backend,
-        server,
         command: EDIT,
         template_id: template.meta.id.clone(),
         auto,
@@ -3964,7 +3747,6 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
         prefill: false,
         tuning,
         object: None,
-        purge,
     };
     crate::jobs::edit_job(
         s,
@@ -4100,11 +3882,10 @@ pub(crate) fn matte_request_size(w: u32, h: u32) -> (u32, u32) {
 /// model's re-rendering and are never used: the layer keeps its own.
 fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_remove_bg(s, p)?;
-    let (backend, server) = backend_for(s, &plan.common.template.meta.id)?;
-    let thinker = thinker_for(s, &backend, &server);
+    let backend = backend(s)?;
+    let thinker = Arc::clone(&backend);
     let MattePlan { common, layer: id, as_selection, mode, all_layers, subject, auto, segment, refine } = plan;
     let Common { template, negative, seed, steps, guidance, models, .. } = common;
-    let purge = purge_mode(s);
     let template_id = template.meta.id.clone();
     let label = if as_selection { "Select Subject (Generative)" } else { "Remove Background (Generative)" };
     crate::jobs::edit_job(
@@ -4151,8 +3932,15 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
             // generic instruction kept nothing on 3 of 5 seeds through the app (2026-10-28) and
             // on 0 of 3 once "the man" was named; the generic instruction stays the fallback.
             let named = if !segment && subject.is_empty() {
-                let said = enhance_prompt(thinker.as_ref(), EnhanceKind::Subject, ENHANCE_SUBJECT_REQUEST, Some(&image), None, seed, &JobProgress::span(ctx, 0.0, 0.05));
-                release_thinker(&server, purge, &thinker, &backend);
+                let said = enhance_prompt(
+                    thinker.as_ref(),
+                    EnhanceKind::Subject,
+                    ENHANCE_SUBJECT_REQUEST,
+                    Some(&image),
+                    None,
+                    seed,
+                    &JobProgress::span(ctx, 0.0, 0.05),
+                );
                 said.ok().flatten().map(|n| n.trim_end_matches(['.', '!']).trim().to_string())
             } else {
                 None
@@ -4181,7 +3969,7 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 params,
                 references: Vec::new(),
             };
-            let resp = match run_switching(backend.as_ref(), &server, &req, purge, &JobProgress::new(ctx)) {
+            let resp = match backend.as_ref().run(&req, &JobProgress::new(ctx)) {
                 Ok(r) => r,
                 Err(photocraft_genai::Error::NoOutput(_)) if segment => {
                     return Err(EngineError::Other("the detector found no subject: name it in the prompt".into()));
@@ -4320,10 +4108,9 @@ fn split_enabled(s: &Session) -> std::result::Result<(), String> {
 fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_split(s, p)?;
     // The worker serves it when it has the files (Qwen-Image-Layered is Apache-2.0: no opt-in).
-    let (backend, server) = backend_for(s, &plan.common.template.meta.id)?;
+    let backend = backend(s)?;
     let SplitPlan { common, layers, all_layers, max_pixels } = plan;
     let Common { template, prompt, negative, seed, steps, guidance, models, name } = common;
-    let purge = purge_mode(s);
     let tid = template.meta.id.clone();
     let tid_out = tid.clone();
     let base = name.unwrap_or_else(|| "Split Layer".to_string());
@@ -4370,7 +4157,7 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
                 params,
                 references: Vec::new(),
             };
-            let resp = run_switching(backend.as_ref(), &server, &req, purge, &JobProgress::new(ctx)).map_err(gen_err)?;
+            let resp = backend.as_ref().run(&req, &JobProgress::new(ctx)).map_err(gen_err)?;
             ctx.check()?;
             ctx.progress(0.95, "Placing");
             if resp.images.is_empty() {
@@ -4419,7 +4206,6 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
 /// (2 GB of VRAM free, fills three times slower); this resets it, at the price of one reload.
 fn run_free(s: &mut Session, _p: &Value) -> Result<Value> {
     backend(s)?.free().map_err(gen_err)?;
-    forget_models(&server_key(s));
     Ok(json!({"freed": true}))
 }
 
@@ -4432,7 +4218,7 @@ fn run_health(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let h = match chosen {
         Ok(b) => b.health(),
-        Err(e) => Health { backend: "comfyui".into(), url: s.prefs().integrations.comfy_server.clone(), error: Some(e.to_string()), ..Health::default() },
+        Err(e) => Health { backend: "native".into(), error: Some(e.to_string()), ..Health::default() },
     };
     serde_json::to_value(&h).map_err(|e| EngineError::Other(e.to_string()))
 }
@@ -4540,13 +4326,7 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
                 None
             };
             let installed = files.as_ref().map(|f| f.iter().any(|x| x == &slot.default));
-            let mut v = json!({"placeholder": slot.placeholder, "folder": slot.folder, "file": slot.default, "installed": installed});
-            // The NVFP4 alternative, and whether the server has it (the policy picks it on a
-            // Blackwell GPU, see `generate.models`'s `blackwell`).
-            if let (Some(alt), Some(o)) = (&slot.nvfp4, v.as_object_mut()) {
-                o.insert("nvfp4".into(), json!(alt));
-                o.insert("nvfp4Installed".into(), json!(files.as_ref().map(|f| f.iter().any(|x| x == alt))));
-            }
+            let v = json!({"placeholder": slot.placeholder, "folder": slot.folder, "file": slot.default, "installed": installed});
             slots.push(v);
         }
         let eta = eta_for.and_then(|(w, h, c, r)| estimate_seconds(&m.id, w, h, c, r));
@@ -4573,7 +4353,7 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
     let device = health.as_ref().map(|h| h.device.clone()).unwrap_or_default();
     json!({
         "server": health, "templates": templates,
-        "device": device, "blackwell": photocraft_genai::is_blackwell(&device),
+        "device": device,
         "quality": q,
         "autoFill": auto(auto_order(FILL, q), DEFAULT_FILL_TEMPLATE),
         "autoExpand": auto(auto_order(EXPAND, q), DEFAULT_EXPAND_TEMPLATE),
@@ -4652,12 +4432,10 @@ fn run_similar(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let refs = crate::generate_refs::Refs { images: crate::generate_refs::resolve(s, &info.references)?, specs: info.references.clone() };
     // The engine that serves the template (the native worker under `auto` for 2.1 and SAM).
-    let (backend, server) = backend_for(s, &template_id)?;
-    let purge = purge_mode(s);
+    let backend = backend(s)?;
     let job = FillJob {
-        thinker: thinker_for(s, &backend, &server),
+        thinker: Arc::clone(&backend),
         backend,
-        server,
         command,
         template_id,
         auto,
@@ -4681,7 +4459,6 @@ fn run_similar(s: &mut Session, p: &Value) -> Result<Value> {
         prefill: false,
         tuning: Tuning::default(),
         object: None,
-        purge,
     };
     let label = format!("Generate Similar: {}", short(&info.prompt));
     crate::jobs::edit_job(
@@ -4718,8 +4495,7 @@ fn always(_: &Session) -> std::result::Result<(), String> {
 /// otherwise the preferences' backend.
 fn enhancer_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> {
     #[cfg(not(target_arch = "wasm32"))]
-    if engine_mode(s) == "auto"
-        && s.prefs().integrations.native_configured()
+    if s.prefs().integrations.native_configured()
         && let Ok(b) = native_backend(s)
         && b.model_files("").is_ok_and(|m| m.iter().any(|t| t == ENHANCE_EDIT_TEMPLATE))
     {
@@ -4788,7 +4564,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generative Fill…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"margin":0..1=0.25,"grow":0..512=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?=Preferences › Default Fill Template; "auto" = the fastest permissive tier whose files the server has},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"fillAsEdit":bool=false,"erase":{bool?=the template's},"sampler":{str?=euler},"scheduler":{str?=simple},"maxPixels":{int?=1048576},"denoise":{0.05..1?} (the 2511 fill templates: how much of the selection is redrawn, 1 replaces it; measured on the 40-step template, 0.9 keeps the old sheen and 0.8 little changes, the 8-step tier hardly moves below 1),"loras":{[{"file":name,"strength":-4..4=1}]?},"references":{[{"layer":id} | {"path":"…"} | {"job":id,"index":0}]?},"name":{str?}} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings":[{"encodeMs","uploadMs","queueMs","runMs","downloadMs"}]} (steps and guidance 0 = the template's defaults; loras = LoRA files from the LoRA folder (the native model root's loras/), applied by the native engine as side paths on its resident model, up to 8; on the ComfyUI route each becomes a LoraLoaderModelOnly after the template's model loader, the file in that server's models/loras; fillAsEdit = when auto runs Qwen-Image-2.1 on the native worker, fill by instruction (measured weaker than the fill template with its rewriter: the namer can pick a neighbour) on its edit template: the rewriter names what the selection holds and the description becomes "Replace the <thing> with <prompt>" (an instruction such as "replace the cup with a vase" goes as it is; nothing named: the fill template); enhance = rewrite the prompt first with the vision-language model, the picture and the selection's place in view (generate.enhancePrompt), the layer remembering both; margin = context around the selection as a fraction of its larger side; grow = widen the selection by that many pixels first, so a bulkier replacement has room; edge soft = the result's layer mask fades across the band the model re-rendered around the selection (4 % of its size), dithered with grain so there is no visible line; hard = the mask is exactly the selection; references = up to two reference images: with no template named the run switches to the fill-from-reference template, which flattens the selection to grey in the request so the model paints what the references show there (erase; `erase: true` does the same on any fill, `false` keeps the pixels); variations 1..4 = results with consecutive seeds, each a layer, only the first visible; sampler and scheduler = the KSampler's, ComfyUI names; maxPixels = the request is downscaled to at most this many pixels (the model's working size); areas over 1 megapixel are sent downscaled and come back resampled; a background job: the result is a new layer above the active one; needs a ComfyUI server, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"margin":0..1=0.25,"grow":0..512=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?=Preferences › Default Fill Template; "auto" = the fastest permissive tier whose files the server has},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"fillAsEdit":bool=false,"erase":{bool?=the template's},"sampler":{str?=euler},"scheduler":{str?=simple},"maxPixels":{int?=1048576},"denoise":{0.05..1?} (the 2511 fill templates: how much of the selection is redrawn, 1 replaces it; measured on the 40-step template, 0.9 keeps the old sheen and 0.8 little changes, the 8-step tier hardly moves below 1),"loras":{[{"file":name,"strength":-4..4=1}]?},"references":{[{"layer":id} | {"path":"…"} | {"job":id,"index":0}]?},"name":{str?}} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings":[{"encodeMs","uploadMs","queueMs","runMs","downloadMs"}]} (steps and guidance 0 = the template's defaults; loras = LoRA files from the LoRA folder (the native model root's loras/), applied by the native engine as side paths on its resident model, up to 8; on the ComfyUI route each becomes a LoraLoaderModelOnly after the template's model loader, the file in that server's models/loras; fillAsEdit = when auto runs Qwen-Image-2.1 on the native worker, fill by instruction (measured weaker than the fill template with its rewriter: the namer can pick a neighbour) on its edit template: the rewriter names what the selection holds and the description becomes "Replace the <thing> with <prompt>" (an instruction such as "replace the cup with a vase" goes as it is; nothing named: the fill template); enhance = rewrite the prompt first with the vision-language model, the picture and the selection's place in view (generate.enhancePrompt), the layer remembering both; margin = context around the selection as a fraction of its larger side; grow = widen the selection by that many pixels first, so a bulkier replacement has room; edge soft = the result's layer mask fades across the band the model re-rendered around the selection (4 % of its size), dithered with grain so there is no visible line; hard = the mask is exactly the selection; references = up to two reference images: with no template named the run switches to the fill-from-reference template, which flattens the selection to grey in the request so the model paints what the references show there (erase; `erase: true` does the same on any fill, `false` keeps the pixels); variations 1..4 = results with consecutive seeds, each a layer, only the first visible; sampler and scheduler = the KSampler's, ComfyUI names; maxPixels = the request is downscaled to at most this many pixels (the model's working size); areas over 1 megapixel are sent downscaled and come back resampled; a background job: the result is a new layer above the active one; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: fill_enabled,
             run: run_fill,
             journal: true,
@@ -4798,7 +4574,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generate Image…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs a ComfyUI server, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: image_enabled,
             run: run_image,
             journal: true,
@@ -4809,7 +4585,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"left":int=0,"top":int=0,"right":int=0,"bottom":int=0,"width":int=0,"height":int=0,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"margin":{0..1=0.25},"anchor":{str?=center},"seed":{u64?=random},"template":{id?="auto": the Lightning expand tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"name":{str?}} → {"layer","layers":[id],"seed","seeds":[u64],"template","canvas":[w,h],"offset":[x,y],"width","height","requestWidth","requestHeight","ms","timings"} (adds canvas (left/top/right/bottom in pixels, or a larger width/height placed by anchor: topLeft, top, topRight, left, center, right, bottomLeft, bottom, bottomRight) and has the model paint it, as one undo step: the picture moves by the left/top pads, the result is a new layer over the added area; edge soft = its mask fades across the re-rendered band just inside the old edge (8 % of the picture's longer side), dithered; hard = exactly the added area; an empty prompt continues the scene; otherwise as generate.fill; needs a ComfyUI server)"#,
+            params: r#"{"prompt":text,"left":int=0,"top":int=0,"right":int=0,"bottom":int=0,"width":int=0,"height":int=0,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"margin":{0..1=0.25},"anchor":{str?=center},"seed":{u64?=random},"template":{id?="auto": the Lightning expand tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"name":{str?}} → {"layer","layers":[id],"seed","seeds":[u64],"template","canvas":[w,h],"offset":[x,y],"width","height","requestWidth","requestHeight","ms","timings"} (adds canvas (left/top/right/bottom in pixels, or a larger width/height placed by anchor: topLeft, top, topRight, left, center, right, bottomLeft, bottom, bottomRight) and has the model paint it, as one undo step: the picture moves by the left/top pads, the result is a new layer over the added area; edge soft = its mask fades across the re-rendered band just inside the old edge (8 % of the picture's longer side), dithered; hard = exactly the added area; an empty prompt continues the scene; otherwise as generate.fill; needs the native worker)"#,
             enabled: expand_enabled,
             run: run_expand,
             journal: true,
@@ -4820,7 +4596,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; a background job; needs a ComfyUI server)"#,
+            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; a background job; needs the native worker)"#,
             enabled: edit_enabled,
             run: run_edit,
             journal: true,
@@ -4831,7 +4607,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit; the app opens its orbit dialog.
             menu: &[],
             shortcut: None,
-            params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in ComfyUI/models/loras; a selection does not confine it)"#,
+            params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it)"#,
             enabled: edit_enabled,
             run: run_angles,
             journal: true,
@@ -4842,7 +4618,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"asSelection":bool=false,"sampleAllLayers":bool=false,"refine":bool=true,"mode":"replace|add|subtract|intersect","layer":{id?=active},"seed":{u64?=random},"steps":{0..250=0},"guidance":{0..30=0},"template":{id?="auto": qwen-2.1/matte (a soft matte from Qwen-Image-2.1's alpha output; research licence, Preferences › AI Integrations › Allow Research-Only Models) when allowed and installed, else sam3.1/segment (the permissive detector)},"model":{file?}} → {"layer","selection","bounds":[x,y,w,h],"pixels","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (prompt = what to keep, e.g. "the lighthouse", empty = the model's own reading of the subject; the matte becomes the layer's mask (the Background becomes a normal layer; the pixels are never changed) or, with asSelection, the selection combined by mode; sampleAllLayers sends the composite instead of the layer alone; refine = soften the detector's hard mask with the classical edge refinement, as the Quick Action does; images over one megapixel are sent downscaled and the matte comes back resampled; a background job; needs a ComfyUI server; the classical Quick Action layer.removeBackground needs none)"#,
+            params: r#"{"prompt":text,"asSelection":bool=false,"sampleAllLayers":bool=false,"refine":bool=true,"mode":"replace|add|subtract|intersect","layer":{id?=active},"seed":{u64?=random},"steps":{0..250=0},"guidance":{0..30=0},"template":{id?="auto": qwen-2.1/matte (a soft matte from Qwen-Image-2.1's alpha output; research licence, Preferences › AI Integrations › Allow Research-Only Models) when allowed and installed, else sam3.1/segment (the permissive detector)},"model":{file?}} → {"layer","selection","bounds":[x,y,w,h],"pixels","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (prompt = what to keep, e.g. "the lighthouse", empty = the model's own reading of the subject; the matte becomes the layer's mask (the Background becomes a normal layer; the pixels are never changed) or, with asSelection, the selection combined by mode; sampleAllLayers sends the composite instead of the layer alone; refine = soften the detector's hard mask with the classical edge refinement, as the Quick Action does; images over one megapixel are sent downscaled and the matte comes back resampled; a background job; needs the native worker; the classical Quick Action layer.removeBackground needs none)"#,
             enabled: remove_bg_enabled,
             run: run_remove_bg,
             journal: true,
@@ -4853,7 +4629,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"layer":{id?=active},"seed":{u64?=random},"variations":int=1} → as the command that made the layer (runs it again with a new seed in the same place: the layer's mask is the area, the result is a new layer above it; a generated image is generated again as a layer; an expanded area is filled again with its prompt; needs a ComfyUI server)"#,
+            params: r#"{"layer":{id?=active},"seed":{u64?=random},"variations":int=1} → as the command that made the layer (runs it again with a new seed in the same place: the layer's mask is the area, the result is a new layer above it; a generated image is generated again as a layer; an expanded area is filled again with its prompt; needs the native worker)"#,
             enabled: similar_enabled,
             run: run_similar,
             journal: true,
@@ -4864,7 +4640,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"layers":int=3,"prompt":text,"negative":text,"sampleAllLayers":bool=true,"maxPixels":4096..4194304?,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=qwen-layered/split},"model":{file?},"name":{str?}} → {"layers":[id],"count","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (a layered model (Qwen-Image-Layered, Apache-2.0) decomposes the picture into `layers` RGBA layers, the background first, each a new layer above the active one with the alpha the model gave it; prompt = a description of the picture, empty = a generic instruction; sampleAllLayers false sends the active layer alone; the picture goes out at 640 px on its longer side, or at maxPixels pixels (1000000 = 864x1152 at 3:4), and the layers come back resampled; a background job; needs a ComfyUI server with the layered model's files)"#,
+            params: r#"{"layers":int=3,"prompt":text,"negative":text,"sampleAllLayers":bool=true,"maxPixels":4096..4194304?,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=qwen-layered/split},"model":{file?},"name":{str?}} → {"layers":[id],"count","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (a layered model (Qwen-Image-Layered, Apache-2.0) decomposes the picture into `layers` RGBA layers, the background first, each a new layer above the active one with the alpha the model gave it; prompt = a description of the picture, empty = a generic instruction; sampleAllLayers false sends the active layer alone; the picture goes out at 640 px on its longer side, or at maxPixels pixels (1000000 = 864x1152 at 3:4), and the layers come back resampled; a background job; needs the native worker with the layered model's files)"#,
             enabled: split_enabled,
             run: run_split,
             journal: true,
@@ -4884,7 +4660,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Enhance Prompt",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"task":"fill|edit|image","useImage":bool=true,"seed":{u64?=random}} → {"prompt","enhanced"} (rewrites a prompt the way the image models want it, with the Qwen3-VL 4B encoder the Krea 2 templates install run as a vision-language model (ComfyUI's TextGenerate): a fill or edit instruction becomes one sentence that leads with the verb, names what the picture shows instead of "this" or "it", says what the result looks like and what stays unchanged; an image idea becomes a paragraph of 60–120 words (subject, materials, pose, lighting, setting, style) keeping every subject, colour and medium given; useImage = the rewriter sees the composite (a fill is also told where the selection sits); enhanced false = the model said nothing usable and the prompt comes back as typed; a background job; the fill, edit and image commands take "enhance":true to do this on the way, and Preferences › AI Integrations › Enhance prompts makes it their default; needs a ComfyUI server with the Krea 2 text encoder)"#,
+            params: r#"{"prompt":text,"task":"fill|edit|image","useImage":bool=true,"seed":{u64?=random}} → {"prompt","enhanced"} (rewrites a prompt the way the image models want it, with the native worker’s vision-language model: a fill or edit instruction becomes one sentence that leads with the verb, names what the picture shows instead of "this" or "it", says what the result looks like and what stays unchanged; an image idea becomes a paragraph of 60–120 words (subject, materials, pose, lighting, setting, style) keeping every subject, colour and medium given; useImage = the rewriter sees the composite (a fill is also told where the selection sits); enhanced false = the model said nothing usable and the prompt comes back as typed; a background job; the fill, edit and image commands take "enhance":true to do this on the way, and Preferences › AI Integrations › Enhance prompts makes it their default; needs the native worker’s chat model)"#,
             enabled: |_| web_unavailable(),
             run: run_enhance,
             journal: false,
@@ -4945,7 +4721,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "List Generative Models",
             menu: &[],
             shortcut: None,
-            params: r#"{"probe":bool=true,"width":{int?},"height":{int?},"count":int=1,"references":int=0} → {"server","device","blackwell","templates":[{"id","name","family","task","license","allowed","defaults","models":[{"placeholder","folder","file","installed","nvfp4"?,"nvfp4Installed"?}],"creator","description","badges","references":{"max","min","placeholders","nodes"},"sizes":{"aspects","min","max","step"},"counts":{"max","default"},"estimatedSeconds":{"base","perMegapixel","perReference"},"pages","eta"}],"autoFill","autoExpand","autoEdit","autoRemove","autoMatte"} (autoFill / autoExpand / autoEdit / autoRemove = the template `auto` runs for Generative Fill, Expand, Edit and the removals (Content-Aware Fill, Remove, Spot Healing): Qwen-Image-2.1 on the native worker when research-only models are allowed and the worker runs that family, else the server's Qwen-Image-Edit-2511 order; the capabilities drive the Generate panel: pages = where a template is offered (image, fill, edit, expand, matte, split, select, enhance), references = how many reference images it takes, sizes = an image template's aspects and side limits; with width and height every template reports eta = (base + perMegapixel × megapixels + perReference × extra references) × count seconds on a warm server, fills and edits at the size they are sent at (a reference-driven text to image's first reference is in base); probe false = list the templates without contacting the server: no server status, installed unknown; nvfp4 = the slot's NVFP4 alternative, which Preferences › AI Integrations › Model precision "auto" loads instead of file on a Blackwell GPU (blackwell true) when the server has it)"#,
+            params: r#"{"probe":bool=true,"width":int?,"height":int?,"count":int=1,"references":int=0} → {server,device,templates:[{id,name,family,task,license,allowed,defaults,models,creator,description,badges,references,sizes,counts,estimatedSeconds,pages,eta}],autoFill,autoExpand,autoEdit,autoRemove,autoMatte}; native worker capabilities; probe false lists metadata without starting or contacting a worker"#,
             enabled: always,
             run: run_models,
             journal: false,
@@ -5014,7 +4790,3 @@ mod split_tests;
 #[cfg(test)]
 #[path = "generate_enhance_tests.rs"]
 mod enhance_tests;
-
-#[cfg(test)]
-#[path = "generate_precision_tests.rs"]
-mod precision_tests;

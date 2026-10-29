@@ -6,30 +6,38 @@
     "task": "segment",
     "license": "community",
     "licenseNote": "SAM 3.1 (Meta, 2026-03-27) ships under the SAM License: research and commercial use allowed with no thresholds; military, nuclear, espionage and weapons uses banned; the licence travels with any redistribution; Meta may change the terms. The app ships no weights.",
-    "minComfyVersion": "0.39.0",
-    "saveNode": "6",
     "needsImage": true,
     "needsMask": false,
-    "defaults": { "steps": 1, "guidance": 0.0 },
-    "placeholders": {
-      "prompt": "string", "image": "string", "prefix": "string", "threshold": "float", "points": "string", "negatives": "string", "ckpt": "string"
+    "defaults": {
+      "steps": 1,
+      "guidance": 0.0
     },
     "models": [
-      { "placeholder": "ckpt", "folder": "checkpoints", "default": "sam3.1_multiplex_fp16.safetensors" }
+      {
+        "placeholder": "ckpt",
+        "folder": "checkpoints",
+        "default": "sam3.1_multiplex_fp16.safetensors"
+      }
     ],
     "notes": "The `sam3.1/segment` graph prompted with points instead of text: SAM3_Detect's positive_coords and negative_coords take JSON lists of pixel coordinates in the request's own pixels (the engine scales the canvas points to the request size; '[]' when there are none, which the node accepts, checked live 2026-10-16); no conditioning, so the detector segments whatever object the positive points land on and keeps clear of the negative ones (individual_masks true, 2 refinement passes). The prompt placeholder is bound but unused (the backend requires one).",
     "creator": "Meta",
     "description": "Finds the object under a click, clear of the spots marked to exclude",
     "badges": [],
-    "counts": {"max": 1, "default": 1},
-    "estimatedSeconds": {"base": 1.5, "perMegapixel": 0},
-    "pages": ["select"]
-  },
-  "graph": {
-    "1": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "{{ckpt}}" } },
-    "2": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "4": { "class_type": "SAM3_Detect", "inputs": { "model": ["1", 0], "image": ["2", 0], "positive_coords": "{{points}}", "negative_coords": "{{negatives}}", "threshold": "{{threshold}}", "refine_iterations": 2, "individual_masks": true } },
-    "5": { "class_type": "MaskToImage", "inputs": { "mask": ["4", 0] } },
-    "6": { "class_type": "SaveImage", "inputs": { "images": ["5", 0], "filename_prefix": "{{prefix}}" } }
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1.5,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "select"
+    ],
+    "parameters": [
+      "threshold",
+      "points",
+      "negatives"
+    ]
   }
 }

@@ -118,8 +118,6 @@ struct Plan {
     fill_holes: bool,
     /// …and soften its edge with a feather of this radius.
     soften: f32,
-    /// When the run purges the server first (`generate_cmds::purge_mode`).
-    purge: &'static str,
 }
 
 /// Most pixels a detector mask may be widened or shrunk by.
@@ -273,7 +271,7 @@ fn plan(s: &Session, cmd: &str, p: &Value) -> Result<Plan> {
     let grow = opt_num(cmd, p, "grow", -MAX_GROW, MAX_GROW)?.unwrap_or(0.0) as f32;
     let fill_holes = opt_bool(cmd, p, "fillHoles", false)?;
     let soften = opt_num(cmd, p, "soften", 0.0, MAX_SOFTEN)?.unwrap_or(0.0) as f32;
-    Ok(Plan { common, mode, instance, threshold, all_layers, points, negatives, bbox, refine, probe, grow, fill_holes, soften, purge: generate_cmds::purge_mode(s) })
+    Ok(Plan { common, mode, instance, threshold, all_layers, points, negatives, bbox, refine, probe, grow, fill_holes, soften })
 }
 
 /// Bounding box of the pixels with coverage ≥ 0.5, in document coordinates, and their count.
@@ -327,14 +325,12 @@ struct Prompting {
     points: Vec<[f64; 2]>,
     negatives: Vec<[f64; 2]>,
     bbox: Option<Rect>,
-    /// When the run purges the server first (`generate_cmds::purge_mode`).
-    purge: &'static str,
 }
 
 /// Ask the detector: the masks it returned, at the request size.
 fn detect(
     backend: &dyn photocraft_genai::GenerativeBackend,
-    server: &str,
+    _server: &str,
     image: Rgba8,
     canvas: Rect,
     pr: &Prompting,
@@ -386,7 +382,7 @@ fn detect(
         references: Vec::new(),
     };
     let shown = pr.prompt.clone();
-    let resp = match generate_cmds::run_switching(backend, server, &req, pr.purge, &JobProgress::new(ctx)) {
+    let resp = match backend.run(&req, &JobProgress::new(ctx)) {
         Ok(r) => r,
         Err(photocraft_genai::Error::NoOutput(_)) => return Err(EngineError::Other(format!("nothing matching \"{shown}\" was found"))),
         // No instance at all: the official graph's SaveImage then gets an empty mask batch and
@@ -517,12 +513,11 @@ fn prompting(plan: &Plan) -> Prompting {
         template_id: template.meta.id.clone(),
         prompt: prompt.clone(),
         models: models.clone(),
-        declared: template.meta.placeholders.keys().cloned().collect(),
+        declared: template.meta.parameters.iter().cloned().collect(),
         threshold: plan.threshold,
         points: plan.points.clone(),
         negatives: plan.negatives.clone(),
         bbox: plan.bbox,
-        purge: plan.purge,
     }
 }
 
@@ -764,12 +759,11 @@ fn prompting_for(s: &Session, cmd: &str, template: &str, prompt: &str) -> Option
         template_id: template.meta.id.clone(),
         prompt,
         models,
-        declared: template.meta.placeholders.keys().cloned().collect(),
+        declared: template.meta.parameters.iter().cloned().collect(),
         threshold: 0.5,
         points: Vec::new(),
         negatives: Vec::new(),
         bbox: None,
-        purge: generate_cmds::purge_mode(s),
     };
     Some((backend, server, prompting))
 }
@@ -857,7 +851,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Not a Photoshop menu item: listed after Photoshop's Select items (menus.rs "extra").
             menu: &["Select"],
             shortcut: None,
-            params: r#"{"prompt":text,"mode":"replace|add|subtract|intersect","threshold":0..1=0.5,"sampleAllLayers":bool=true,"instance":{1..?=all},"refine":bool=false,"grow":-256..256=0,"fillHoles":bool=false,"soften":0..64=0,"template":{id?="sam3.1/segment"},"model":{file?}} → {"selected","count","instances":[{"index","bounds":[x,y,w,h],"pixels"}],"ms"} (prompt: a short phrase such as "the dog", "red car" or "eye:2", comma-separated terms allowed; instance picks one of the found instances, default all; refine softens the detector's hard edge with the classical refinement; grow widens the mask by that many pixels (negative shrinks it), fillHoles fills the gaps it encloses, soften feathers its edge by that radius, in that order after refine; a background job; needs a ComfyUI server with the SAM 3.1 checkpoint, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"mode":"replace|add|subtract|intersect","threshold":0..1=0.5,"sampleAllLayers":bool=true,"instance":{1..?=all},"refine":bool=false,"grow":-256..256=0,"fillHoles":bool=false,"soften":0..64=0,"template":{id?="sam3.1/segment"},"model":{file?}} → {"selected","count","instances":[{"index","bounds":[x,y,w,h],"pixels"}],"ms"} (prompt: a short phrase such as "the dog", "red car" or "eye:2", comma-separated terms allowed; instance picks one of the found instances, default all; refine softens the detector's hard edge with the classical refinement; grow widens the mask by that many pixels (negative shrinks it), fillHoles fills the gaps it encloses, soften feathers its edge by that radius, in that order after refine; a background job; needs the native worker with the SAM 3.1 checkpoint, see Preferences › AI Integrations)"#,
             enabled,
             run: run_by_text,
             journal: true,
@@ -867,7 +861,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Select by Point",
             menu: &[],
             shortcut: None,
-            params: r#"{"x":int?,"y":int?,"points":[[x,y]]?,"negativePoints":[[x,y]]?,"box":[x,y,w,h]?,"mode":"replace|add|subtract|intersect","threshold":0..1=0.5,"sampleAllLayers":bool=true,"refine":bool=false,"grow":-256..256=0,"fillHoles":bool=false,"soften":0..64=0,"probe":{u64?},"template":{id?="sam3.1/segment-point", "sam3.1/segment-box" with a box},"model":{file?}} → {"selected","count","instances":[{"index","bounds":[x,y,w,h],"pixels"}],"ms","probe"?} (the object under the point(s) (x/y or points, up to 64), kept clear of negativePoints and searched for inside box, through SAM 3.1's prompts; probe = apply a mask select.probe kept for this document instead of asking the server (stale or unknown probes are ignored and the server asked); refine softens the hard edge; grow widens the mask by that many pixels (negative shrinks it), fillHoles fills the gaps it encloses, soften feathers its edge, in that order; a background job; needs a ComfyUI server with the SAM 3.1 checkpoint)"#,
+            params: r#"{"x":int?,"y":int?,"points":[[x,y]]?,"negativePoints":[[x,y]]?,"box":[x,y,w,h]?,"mode":"replace|add|subtract|intersect","threshold":0..1=0.5,"sampleAllLayers":bool=true,"refine":bool=false,"grow":-256..256=0,"fillHoles":bool=false,"soften":0..64=0,"probe":{u64?},"template":{id?="sam3.1/segment-point", "sam3.1/segment-box" with a box},"model":{file?}} → {"selected","count","instances":[{"index","bounds":[x,y,w,h],"pixels"}],"ms","probe"?} (the object under the point(s) (x/y or points, up to 64), kept clear of negativePoints and searched for inside box, through SAM 3.1's prompts; probe = apply a mask select.probe kept for this document instead of asking the server (stale or unknown probes are ignored and the server asked); refine softens the hard edge; grow widens the mask by that many pixels (negative shrinks it), fillHoles fills the gaps it encloses, soften feathers its edge, in that order; a background job; needs the native worker with the SAM 3.1 checkpoint)"#,
             enabled,
             run: run_by_point,
             journal: true,
@@ -877,7 +871,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Object Finder",
             menu: &[],
             shortcut: None,
-            params: r#"{"x":int?,"y":int?,"points":[[x,y]]?,"negativePoints":[[x,y]]?,"box":[x,y,w,h]?,"threshold":0..1=0.5,"sampleAllLayers":bool=true} → {"probe","width","height","bounds":[x,y,w,h],"mask":base64,"ms"} (what select.byPoint would select for these prompts, as a grayscale mask of width × height (base64, row-major, 255 = selected) over the whole canvas, kept as probe for a select.byPoint that follows on this document before its next edit; selects nothing, journals nothing, locks nothing: the Object Selection tool runs it when the pointer rests; needs a ComfyUI server with the SAM 3.1 checkpoint)"#,
+            params: r#"{"x":int?,"y":int?,"points":[[x,y]]?,"negativePoints":[[x,y]]?,"box":[x,y,w,h]?,"threshold":0..1=0.5,"sampleAllLayers":bool=true} → {"probe","width","height","bounds":[x,y,w,h],"mask":base64,"ms"} (what select.byPoint would select for these prompts, as a grayscale mask of width × height (base64, row-major, 255 = selected) over the whole canvas, kept as probe for a select.byPoint that follows on this document before its next edit; selects nothing, journals nothing, locks nothing: the Object Selection tool runs it when the pointer rests; needs the native worker with the SAM 3.1 checkpoint)"#,
             enabled,
             run: run_probe,
             journal: false,

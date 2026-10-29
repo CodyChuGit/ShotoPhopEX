@@ -6,50 +6,53 @@
     "task": "edit",
     "license": "permissive",
     "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
-    "minComfyVersion": "0.4.0",
-    "saveNode": "16",
     "needsImage": true,
     "needsMask": false,
-    "defaults": { "steps": 8, "guidance": 1.0 },
-    "placeholders": {
-      "prompt": "string", "negative": "string", "seed": "int", "steps": "int", "cfg": "float",
-      "image": "string", "image2": "string", "image3": "string", "prefix": "string",
-      "unet": "string", "clip": "string", "vae": "string", "lora": "string"
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
     },
     "models": [
-      { "placeholder": "unet", "folder": "diffusion_models", "default": "qwen_image_edit_2511_fp8mixed.safetensors" },
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "nvfp4": "qwen_2.5_vl_7b_nvfp4.safetensors" },
-      { "placeholder": "vae", "folder": "vae", "default": "qwen_image_vae.safetensors" },
-      { "placeholder": "lora", "folder": "loras", "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors" }
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
+      }
     ],
     "promptFormat": "Change this image so that it shows {prompt}, keeping everything else exactly as it is.",
     "promptFormatImperative": "{prompt}. Keep everything else exactly as it is.",
     "notes": "ComfyUI's official 'Image Edit (Qwen-Image 2511)' graph as the model is meant to be used: the whole picture is the reference and the latent, no noise mask, the instruction decides what changes. The 8-step Lightning LoRA (LoraLoaderModelOnly after CFGNorm) as in `fill-lightning-8`. The engine masks the result layer to the selection when there is one, so a local edit shows only where the user wants it while the model still sees the whole scene. Reference images (the Generate panel's deck, `references` on generate.edit) bind `image2` and `image3` of both encoders straight from LoadImage, as the official graph wires them (the encoder scales them itself); the prompt calls them image 2 and image 3. A reference not given is pruned with its node (meta.references).",
     "creator": "Alibaba Qwen",
     "description": "Changes the picture by instruction in 8 steps; up to two reference images",
-    "badges": ["fast"],
-    "references": {"max": 2, "placeholders": ["image2", "image3"], "nodes": {"image2": ["20"], "image3": ["21"]}},
-    "estimatedSeconds": {"base": 7.5, "perMegapixel": 5.5, "perReference": 9},
-    "pages": ["edit"]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "qwen_image", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "20": { "class_type": "LoadImage", "inputs": { "image": "{{image2}}", "upload": "image" } },
-    "21": { "class_type": "LoadImage", "inputs": { "image": "{{image3}}", "upload": "image" } },
-    "5": { "class_type": "FluxKontextImageScale", "inputs": { "image": ["4", 0] } },
-    "6": { "class_type": "TextEncodeQwenImageEditPlus", "inputs": { "clip": ["2", 0], "prompt": "{{prompt}}", "vae": ["3", 0], "image1": ["5", 0], "image2": ["20", 0], "image3": ["21", 0] } },
-    "7": { "class_type": "TextEncodeQwenImageEditPlus", "inputs": { "clip": ["2", 0], "prompt": "{{negative}}", "vae": ["3", 0], "image1": ["5", 0], "image2": ["20", 0], "image3": ["21", 0] } },
-    "8": { "class_type": "ModelSamplingAuraFlow", "inputs": { "model": ["1", 0], "shift": 3.1 } },
-    "9": { "class_type": "CFGNorm", "inputs": { "model": ["8", 0], "strength": 1.0 } },
-    "19": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["9", 0], "lora_name": "{{lora}}", "strength_model": 1.0 } },
-    "10": { "class_type": "VAEEncode", "inputs": { "pixels": ["4", 0], "vae": ["3", 0] } },
-    "17": { "class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": { "conditioning": ["6", 0], "reference_latents_method": "index_timestep_zero" } },
-    "18": { "class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": { "conditioning": ["7", 0], "reference_latents_method": "index_timestep_zero" } },
-    "14": { "class_type": "KSampler", "inputs": { "model": ["19", 0], "positive": ["17", 0], "negative": ["18", 0], "latent_image": ["10", 0], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
-    "15": { "class_type": "VAEDecode", "inputs": { "samples": ["14", 0], "vae": ["3", 0] } },
-    "16": { "class_type": "SaveImage", "inputs": { "images": ["15", 0], "filename_prefix": "{{prefix}}" } }
+    "badges": [
+      "fast"
+    ],
+    "references": {
+      "max": 2
+    },
+    "estimatedSeconds": {
+      "base": 7.5,
+      "perMegapixel": 5.5,
+      "perReference": 9
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
   }
 }

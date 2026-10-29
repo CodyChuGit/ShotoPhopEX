@@ -26,7 +26,7 @@ fn app(pick: Option<&str>) -> PhotocraftApp {
     };
     let mut s = photocraft_engine::Session::new();
     // No server: opening the Angles window must not reach a real ComfyUI from a test.
-    s.edit_prefs(|p| p.integrations.comfy_server.clear());
+    s.edit_prefs(|p| p.integrations.models_path.clear());
     let mut app = PhotocraftApp::new(s, services);
     app.ui.panels.generate = false;
     app

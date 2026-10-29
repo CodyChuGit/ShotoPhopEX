@@ -174,7 +174,7 @@ fn load_templates(app: &mut PhotocraftApp) {
 /// No server configured: the badges stay unknown. The answer marks both the bar's list and the
 /// Generate panel's catalogue (the model picker's `not installed`).
 pub(crate) fn probe_installed(app: &mut PhotocraftApp) {
-    if app.ui.generative_bar.probe_job.is_none() && !app.session.prefs().integrations.comfy_server.trim().is_empty() {
+    if app.ui.generative_bar.probe_job.is_none() && app.session.prefs().integrations.native_configured() {
         app.ui.generate.probed = true;
         match app.run("generate.models", json!({"probe": true, "async": true})) {
             Ok(v) if v.get("pending").and_then(Value::as_bool) == Some(true) => app.ui.generative_bar.probe_job = v.get("job").and_then(Value::as_u64),

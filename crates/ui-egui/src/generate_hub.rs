@@ -272,7 +272,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let width = 3.0 * 150.0 + 2.0 * GAP;
         ui.set_width(width);
         ui.label(egui::RichText::new(tl!("Generative Features")).font(crate::theme::semibold(16.0)).color(t.text));
-        ui.label(egui::RichText::new(tl!("Runs on your own ComfyUI server with the models you installed.")).small().color(t.text_dim));
+        ui.label(egui::RichText::new(tl!("Runs on the native worker with the models you installed.")).small().color(t.text_dim));
         ui.add_space(6.0);
         chosen = section(ui, width);
         ui.add_space(6.0);

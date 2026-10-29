@@ -1,6 +1,6 @@
 use egui::vec2;
 use egui_kittest::Harness;
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use serde_json::json;
 
 use super::*;
@@ -11,7 +11,11 @@ fn app(url: &str) -> PhotocraftApp {
     let mut a = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     a.run("file.new", json!({"width": 100, "height": 60})).unwrap();
     a.run("layer.new.layer", json!({})).unwrap();
-    a.session.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    a.session.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     a.ui.tool = Tool::ObjectSelection;
     // The new, empty layer is active: the classical rectangle wants pixels under it.
     a.ui.tool_options.sample_all.object_selection = true;
@@ -35,7 +39,7 @@ fn last_params(app: &PhotocraftApp) -> (String, serde_json::Value) {
 
 #[test]
 fn a_drag_is_a_box_prompt_and_ctrl_clicks_refine_the_last_object() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut a = app(&fake.url);
     let none = egui::Modifiers::NONE;
     // A box around the object: the box template, refine on by default.
@@ -44,7 +48,6 @@ fn a_drag_is_a_box_prompt_and_ctrl_clicks_refine_the_last_object() {
     tool_event(&mut a, ToolEvent::Up { x: 60.0, y: 50.0 }, none);
     let (id, p) = last_params(&a);
     assert_eq!((id.as_str(), p["box"].clone(), p["refine"].clone()), ("select.byPoint", json!([10.0, 10.0, 50.0, 40.0]), json!(true)));
-    assert_eq!(fake.state().prompts[0].1["7"]["class_type"], "PrimitiveBoundingBox");
     assert!(selection_bounds(&a).is_some());
     let steps = a.session.active().unwrap().history.past_len();
     // Refine mode, ⌥-click: the same query again with the spot excluded, replacing its result
@@ -56,8 +59,8 @@ fn a_drag_is_a_box_prompt_and_ctrl_clicks_refine_the_last_object() {
     assert_eq!(p["negativePoints"], json!([[20.0, 20.0]]));
     assert_eq!(p["box"], json!([10.0, 10.0, 50.0, 40.0]), "the box stays");
     assert_eq!(a.session.active().unwrap().history.past_len(), steps, "undo + redo = the same depth");
-    assert_eq!(fake.state().prompts.len(), 2);
-    assert_eq!(fake.state().prompts[1].1["4"]["inputs"]["negative_coords"], r#"[{"x":20,"y":20}]"#);
+    assert_eq!(fake.state().runs.len(), 2);
+    assert_eq!(fake.state().runs[1].request["params"]["negatives"], r#"[{"x":20,"y":20}]"#);
     // A plain click in Refine mode adds a spot the object must include.
     click(&mut a, 40.0, 30.0, none);
     let (_, p) = last_params(&a);
@@ -98,7 +101,7 @@ fn a_drag_is_a_box_prompt_and_ctrl_clicks_refine_the_last_object() {
 
 #[test]
 fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut a = app(&fake.url);
     let mut h = Harness::builder().with_size(vec2(700.0, 500.0)).build_ui_state(
         |ui, app: &mut PhotocraftApp| {
@@ -124,7 +127,7 @@ fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
     let v = inspect(h.state());
     assert_eq!(v["probesAsked"], 1, "{v}");
     assert_eq!(v["probe"]["bounds"], json!([25, 15, 50, 30]), "the fake's centre quarter of 100×60");
-    assert_eq!(fake.state().prompts.len(), 1);
+    assert_eq!(fake.state().runs.len(), 1);
     assert!(crate::jobs_ui::job_in_view(h.state()).is_none());
     // Resting on: no second ask. A nudge inside the same cell: none either.
     h.run_steps(3);
@@ -132,12 +135,12 @@ fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
     h.run_steps(3);
     assert_eq!(h.state().ui.object_select.probes_asked, 1);
     // The click applies the probe: no new detection, the selection is the probe's mask.
-    let before = fake.state().prompts.len();
+    let before = fake.state().runs.len();
     h.drag_at(at);
     h.run();
     h.drop_at(at);
     h.run_steps(3);
-    assert_eq!(fake.state().prompts.len(), before, "the kept probe, no round trip");
+    assert_eq!(fake.state().runs.len(), before, "the kept probe, no round trip");
     assert_eq!(selection_bounds(h.state()), Some(photocraft_geom::Rect::new(25, 15, 75, 45)));
     assert!(last_params(h.state()).1["probe"].as_u64().is_some(), "the click named the probe");
     assert!(h.state().ui.object_select.probe.is_none(), "forgotten with the click");
@@ -146,8 +149,12 @@ fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
     h.run_steps(2);
     assert!(h.state().ui.object_select.hover.is_none());
     // Nothing under the pointer: the finder remembers the spot and asks again only after a move.
-    let empty = FakeComfy::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
-    h.state_mut().session.edit_prefs(|p| p.integrations.set_comfy_route(empty.url.clone()));
+    let empty = FakeNative::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
+    h.state_mut().session.edit_prefs(|p| {
+        p.integrations.models_path = empty.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     h.state_mut().ui.object_select = Default::default();
     h.state_mut().ui.tool = Tool::ObjectSelection;
     let far = xf.to_screen(80.0, 50.0);
@@ -186,12 +193,20 @@ fn without_a_server_the_tool_is_the_classical_rectangle_and_select_subject_falls
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut a, &ctx, "select.subject", json!({})).unwrap();
     assert_eq!(last_params(&a).0, "select.subject");
-    let fake = FakeComfy::start().unwrap();
-    a.session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    let fake = FakeNative::start().unwrap();
+    a.session.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     crate::menus::invoke(&mut a, &ctx, "select.subject", json!({})).unwrap();
     let (id, p) = last_params(&a);
     assert_eq!((id.as_str(), p["refine"].as_bool()), ("select.subjectML", Some(true)));
     assert!(online(&mut a, 2.0), "a new server: checked afresh");
-    a.session.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
+    a.session.edit_prefs(|p| {
+        p.integrations.models_path = "http://127.0.0.1:9".into();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     assert!(!online(&mut a, 3.0), "and a dead one is seen as such at once, not from the cache");
 }

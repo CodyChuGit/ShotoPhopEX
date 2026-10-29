@@ -6,40 +6,46 @@
     "task": "matte",
     "license": "research",
     "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
-    "minComfyVersion": "0.37.0",
-    "saveNode": "12",
     "needsImage": true,
     "needsMask": false,
-    "defaults": { "steps": 25, "guidance": 1.0 },
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
+    },
     "promptFormat": "Remove the background, keeping only {prompt}, and output a PNG image",
     "promptFormatImperative": "{prompt}",
-    "placeholders": {
-      "prompt": "string", "negative": "string", "seed": "int", "steps": "int", "cfg": "float",
-      "image": "string", "prefix": "string",
-      "unet": "string", "clip": "string", "vae": "string"
-    },
     "models": [
-      { "placeholder": "unet", "folder": "diffusion_models", "default": "qwen_image_2.1_int8_convrot.safetensors" },
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen3vl_8b_int8_convrot.safetensors" },
-      { "placeholder": "vae", "folder": "vae", "default": "qwen_image_2.1_vae_bf16.safetensors" }
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
     ],
     "notes": "ComfyUI's official 'Background Removal (Qwen Image 2.1)' template (image_qwen_image_2_1_background_removal.json): the 2.1 edit graph with the picture as image_1 at its own size (resolution 0) and the instruction 'Remove the background, and output a PNG image'. The 2.1 VAE decodes RGBA, so the saved PNG carries the subject's matte in its alpha channel (verified live 2026-10-09: colour type 6, soft edges). The engine sends that exact instruction when the prompt is empty (it starts with an imperative verb, so promptFormatImperative passes it through) and 'Remove the background, keeping only {prompt}, …' when the prompt names the subject to keep; it uses the alpha as a layer mask or selection and never the re-rendered pixels.",
     "creator": "Alibaba Qwen",
     "description": "Cuts the subject out with real alpha",
     "badges": [],
-    "counts": {"max": 1, "default": 1},
-    "estimatedSeconds": {"base": 4, "perMegapixel": 10},
-    "pages": ["matte"]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "qwen_image", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "5": { "class_type": "QwenImage21Cache", "inputs": { "model": ["1", 0], "device": "auto", "dtype": "default" } },
-    "6": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": ["2", 0], "vae": ["3", 0], "prompt": "{{prompt}}", "negative_prompt": "{{negative}}", "resolution": 0, "images.image_1": ["4", 0] } },
-    "10": { "class_type": "KSampler", "inputs": { "model": ["5", 0], "positive": ["6", 0], "negative": ["6", 1], "latent_image": ["6", 2], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
-    "11": { "class_type": "VAEDecode", "inputs": { "samples": ["10", 0], "vae": ["3", 0] } },
-    "12": { "class_type": "SaveImage", "inputs": { "images": ["11", 0], "filename_prefix": "{{prefix}}" } }
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 4,
+      "perMegapixel": 10
+    },
+    "pages": [
+      "matte"
+    ],
+    "parameters": []
   }
 }

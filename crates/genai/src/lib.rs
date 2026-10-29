@@ -1,30 +1,12 @@
-//! Local generative backends for PhotoCraft.
-//!
-//! The engine's `generate.*` commands turn a document, a selection and a prompt into a
-//! [`Request`] and hand it to a [`GenerativeBackend`]. The first backend is a locally running
-//! [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server ([`comfy`]), driven through
-//! API-format workflow [`template`]s with placeholders. Pixels cross the boundary as straight-alpha
-//! RGBA8 ([`Rgba8`]) and 8-bit coverage masks ([`Gray8`]); the engine does every conversion from
-//! and to the document's own depth and colour model, so this crate never sees a `Document`.
-//!
-//! Everything a server can do wrong (unreachable, slow, wrong version, malformed JSON, a failed
-//! workflow) is an [`Error`]; nothing here panics. Cancellation is cooperative: the backend polls
-//! [`Progress::cancelled`] between steps and interrupts the server.
-//!
-//! The web build compiles this crate without the client ([`comfy`] is native only); the engine
-//! reports generative commands as unsupported there.
+//! Native worker protocol and model metadata for PhotoCraft.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-#[cfg(not(target_arch = "wasm32"))]
-pub mod comfy;
 #[cfg(all(feature = "fake-server", not(target_arch = "wasm32")))]
 pub mod fake;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 pub mod png;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod sidecar;
 pub mod template;
 
 use serde::{Deserialize, Serialize};
@@ -38,7 +20,7 @@ pub enum Error {
     /// The server answered, but not in the shape the protocol promises.
     #[error("the generative server answered unexpectedly: {0}")]
     Protocol(String),
-    /// The server ran the request and reported a failure (a missing node, a model file, …).
+    /// The server ran the request and reported a failure (a missing model file or runtime failure).
     #[error("the generative server reported an error: {0}")]
     Server(String),
     #[error("workflow template: {0}")]
@@ -167,8 +149,8 @@ pub struct Request {
     /// Template-specific placeholder values (`threshold`, …). The standard bindings win on a
     /// name clash.
     pub params: std::collections::BTreeMap<String, serde_json::Value>,
-    /// Reference images, bound in order to the template's `references.placeholders` (at most
-    /// `references.max`, at least `references.min`).
+    /// Reference images in native request order (at most `references.max`, at least
+    /// `references.min`).
     pub references: Vec<Rgba8>,
 }
 
@@ -197,10 +179,10 @@ impl Request {
 pub struct Response {
     /// The result images, in the order the server produced them (empty for a text template).
     pub images: Vec<Rgba8>,
-    /// Text the graph produced (a `PreviewAny` of a `TextGenerate`); empty for image templates.
+    /// Chat texts returned by the worker; empty for image templates.
     pub texts: Vec<String>,
     pub seed: u64,
-    /// The server's id for the run (ComfyUI's `prompt_id`), for logs and reproduction.
+    /// The worker's id for the run, for logs and reproduction.
     pub run_id: String,
     pub elapsed_ms: u64,
     /// Where the time went (benchmarks, `generate.*` results).
@@ -256,64 +238,7 @@ pub struct Health {
     pub error: Option<String>,
 }
 
-/// Which weights a backend loads for a model slot that has an NVFP4 alternative
-/// ([`template::ModelSlot::nvfp4`]): the preference `integrations.modelPrecision`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Precision {
-    /// The NVFP4 file when the server's GPU is a Blackwell part (the 4-bit tensor cores that
-    /// run it natively) and the file is installed; the default file otherwise.
-    #[default]
-    Auto,
-    /// Always the template's default file.
-    Default,
-    /// The NVFP4 file whenever it is installed, whatever the GPU (slow or failing elsewhere;
-    /// for testing).
-    Nvfp4,
-}
-
-impl Precision {
-    /// The preference's names: `auto`, `default`, `nvfp4`; anything else is `Auto`.
-    pub fn from_name(name: &str) -> Self {
-        match name.trim() {
-            "default" => Self::Default,
-            "nvfp4" => Self::Nvfp4,
-            _ => Self::Auto,
-        }
-    }
-}
-
-/// Is `device` (a server's GPU name) a Blackwell part? The names ComfyUI reports: the GeForce
-/// RTX 50 series, the RTX PRO Blackwell workstation cards, the B100/B200/B300 and GB200/GB300
-/// data-centre parts and the GB10 (DGX Spark). Anything else, including an empty name, is not.
-pub fn is_blackwell(device: &str) -> bool {
-    let d = device.to_ascii_uppercase();
-    let has = |needle: &str| d.contains(needle);
-    // "RTX 5000 Ada Generation" and "RTX 500 Ada" are Ada parts; every Blackwell name lacks
-    // the generation word.
-    if has("ADA") || has("AMPERE") || has("TURING") || has("HOPPER") {
-        return false;
-    }
-    let rtx50 = d.split("RTX 50").nth(1).is_some_and(|rest| {
-        let mut c = rest.chars();
-        c.next().is_some_and(|c| c.is_ascii_digit()) && c.next().is_some_and(|c| c.is_ascii_digit())
-    });
-    rtx50
-        || (has("RTX PRO") && has("BLACKWELL"))
-        || has("RTX PRO 6000")
-        || has("RTX PRO 5000")
-        || has("RTX PRO 4500")
-        || has("RTX PRO 4000")
-        || has("B100")
-        || has("B200")
-        || has("B300")
-        || has("GB200")
-        || has("GB300")
-        || has("GB10")
-        || has("DGX SPARK")
-}
-
-/// A generative engine. ComfyUI is the first implementation; an in-process runtime could be
-/// another. Implementations are shared between the UI thread and job workers.
+/// A generative engine. Implementations are shared between the UI thread and job workers.
 pub trait GenerativeBackend: Send + Sync {
     /// Reachability and resources; never an `Err` (the answer carries the error).
     fn health(&self) -> Health;
@@ -321,13 +246,6 @@ pub trait GenerativeBackend: Send + Sync {
     fn run(&self, req: &Request, progress: &dyn Progress) -> Result<Response>;
     /// Model files the server has in `folder` (`diffusion_models`, `text_encoders`, `vae`, …).
     fn model_files(&self, folder: &str) -> Result<Vec<String>>;
-    /// The request as [`GenerativeBackend::run`] will run it: model slots the backend's precision
-    /// policy resolves to another file (NVFP4) are bound in `models`. Callers that reason about
-    /// which files a run loads (the purge on a model-set change) ask this first. Backends
-    /// without a policy return the request as it is.
-    fn prepare(&self, req: &Request) -> Request {
-        req.clone()
-    }
     /// Ask the server to unload its models and free their memory (the next run reloads them).
     /// Backends without resident models do nothing.
     fn free(&self) -> Result<()> {
@@ -362,13 +280,6 @@ pub fn random_seed() -> u64 {
     u64::from_le_bytes(b) & ((1u64 << 53) - 1)
 }
 
-/// 32 hex characters (a WebSocket `client_id`, upload names).
-pub fn random_id() -> String {
-    let mut b = [0u8; 16];
-    random_bytes(&mut b);
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +301,5 @@ mod tests {
         for _ in 0..100 {
             assert!(random_seed() < (1u64 << 53));
         }
-        assert_eq!(random_id().len(), 32);
     }
 }

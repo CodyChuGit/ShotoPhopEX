@@ -7,7 +7,7 @@
 
 use serde_json::{Value, json};
 
-use super::{NATIVE_AUTO_FAMILIES, engine_mode, opt_str};
+use super::opt_str;
 use crate::{Result, Session};
 
 pub const LORAS: &str = "generate.loras";
@@ -56,14 +56,8 @@ fn tensor_names(path: &std::path::Path) -> Option<Vec<String>> {
 
 /// Whether `template` would run on the native engine: `engine` native, or `auto` with the
 /// native folders set and the template's family one `auto` sends there.
-pub(crate) fn runs_native(s: &Session, template: &str) -> bool {
-    let i = &s.prefs().integrations;
-    let configured = i.native_configured();
-    match engine_mode(s) {
-        "native" => configured,
-        "auto" => configured && photocraft_genai::template::find(template).is_ok_and(|t| NATIVE_AUTO_FAMILIES.contains(&t.meta.family.as_str())),
-        _ => false,
-    }
+pub(crate) fn runs_native(s: &Session, _template: &str) -> bool {
+    s.prefs().integrations.native_configured()
 }
 
 pub(crate) fn run_loras(s: &mut Session, p: &Value) -> Result<Value> {
@@ -75,7 +69,8 @@ pub(crate) fn run_loras(s: &mut Session, p: &Value) -> Result<Value> {
     if !folder.is_empty()
         && let Ok(dir) = std::fs::read_dir(&folder)
     {
-        let mut files: Vec<std::path::PathBuf> = dir.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("safetensors"))).collect();
+        let mut files: Vec<std::path::PathBuf> =
+            dir.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("safetensors"))).collect();
         files.sort();
         for path in files {
             let Some(file) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };

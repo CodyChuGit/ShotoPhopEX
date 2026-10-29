@@ -3939,7 +3939,6 @@ curves	Smooth	スムーズ
 	Generate Image…	画像を生成…
 	Select by Text…	テキストで選択…
 	Allow research models	研究用モデルを許可
-	ComfyUI server	ComfyUI サーバー
 	Default edit model	既定の編集モデル
 	Default fill template	既定の塗りつぶしテンプレート
 	Default generate model	既定の生成モデル
@@ -3966,8 +3965,6 @@ curves	Smooth	スムーズ
 	Enhance prompt	プロンプトを強化
 	Enhancing…	強化中…
 	The model could not improve this prompt	モデルはこのプロンプトを改善できませんでした
-	Model precision	モデルの精度
-	NVFP4 (Blackwell GPUs)	NVFP4（Blackwell GPU）
 	Select by text…	テキストで選択…
 	Click an object, or drag a rectangle around it	オブジェクトをクリックするか、周囲を矩形で囲んでください
 	Select by Point	ポイントで選択
@@ -4057,7 +4054,7 @@ curves	Smooth	スムーズ
 	Not in this build yet	このビルドにはまだありません
 	Open a picture first	まず画像を開いてください
 	Generative Features	生成機能
-	Runs on your own ComfyUI server with the models you installed.	インストールしたモデルを使い、あなた自身の ComfyUI サーバーで動作します。
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	近日
 	Split into Layers	レイヤーに分割
 	Angles	アングル
@@ -4074,7 +4071,7 @@ curves	Smooth	スムーズ
 	front	正面
 	Camera	カメラ
 	Generative Angles	生成アングル
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	ComfyUI/models/loras に qwen-image-edit-2511-multiple-angles-lora.safetensors が必要です（fal、Apache-2.0）
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	正面ビュー
 	front-right quarter view	右前方斜めビュー
 	right side view	右側面ビュー
@@ -4113,20 +4110,14 @@ curves	Smooth	スムーズ
 	Engine: running outside the app	エンジン: アプリ外で実行中
 	Engine: failed	エンジン: 失敗
 	Engine: stopped	エンジン: 停止
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	環境設定 › AI 連携で ComfyUI フォルダーを設定すると、アプリが起動できます
 	Start engine	エンジンを起動
 	Stop engine	エンジンを停止
 	Restart engine	エンジンを再起動
 	Show log	ログを表示
-	ComfyUI folder	ComfyUI フォルダー
-	ComfyUI launch flags	ComfyUI 起動フラグ
-	Engine start on launch	起動時にエンジンを開始
-	Engine stop on quit	終了時にエンジンを停止
 	Engine	エンジン
 	Native	ネイティブ
-	ComfyUI	ComfyUI
 	Native runtime folders	ネイティブ ランタイム フォルダー
-	Native models folder	ネイティブ モデル フォルダー
+	Models folder	ネイティブ モデル フォルダー
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Instance	インスタンス
@@ -4144,7 +4135,7 @@ curves	Smooth	スムーズ
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	生成
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	生成モデルで塗りつぶします。時間はかかりますが、テクスチャや模様にはるかに強いです（ComfyUI サーバーまたはネイティブエンジンが必要）
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	プレビューは従来の塗りつぶしです。OK と適用はモデルを新しいレイヤーに実行します。
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -4152,9 +4143,6 @@ curves	Smooth	スムーズ
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	候補を2つ生成し、手を加えていないように見える方を表示します。オフにすると候補は1つで、所要時間は約半分です
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	タスク間でモデルを解放
-	When any model file changes	いずれかのモデルファイルが変わったとき
-	When the diffusion model changes	拡散モデルが変わったとき
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	モデルフォルダーの loras サブフォルダーにあるアダプター。ネイティブエンジンが適用します
 	Generative Upscale	生成アップスケール

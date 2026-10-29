@@ -15,7 +15,7 @@ fn fresh() -> Session {
     let mut s = Session::new();
     // Generative commands must fail on bad params, not run on whatever ComfyUI the machine has
     // (the default URL is the local server; a real Split into Layers takes a minute).
-    s.edit_prefs(|p| p.integrations.comfy_server = String::new());
+    s.edit_prefs(|p| p.integrations.models_path = String::new());
     s.execute("file.new", json!({"width": 24, "height": 16})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 1, "y": 1, "width": 6, "height": 5})).unwrap();

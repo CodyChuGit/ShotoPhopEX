@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use photocraft_doc::LayerId;
-use photocraft_genai::fake::FakeComfy;
+use photocraft_genai::fake::FakeNative;
 use photocraft_geom::Rect;
 use serde_json::json;
 
@@ -19,13 +19,17 @@ fn session(url: &str) -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     s
 }
 
 #[test]
 fn image_lands_as_a_layer_covering_the_canvas() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let (layers, steps) = {
         let d = s.active().unwrap();
@@ -47,16 +51,15 @@ fn image_lands_as_a_layer_covering_the_canvas() {
     assert!(close(&surf.read_region(Rect::new(30, 20, 31, 21)), FAKE_COLOR));
 
     let st = fake.state();
-    assert!(st.uploads.is_empty(), "text to image uploads nothing");
-    let g = &st.prompts[0].1;
-    assert_eq!(g["4"]["inputs"]["text"], "a lighthouse at dusk");
-    assert_eq!(g["6"]["inputs"]["width"], 64);
-    assert_eq!(g["6"]["inputs"]["height"], 64, "48 is below the 64-pixel minimum side; the result is resampled back to the canvas");
-    assert_eq!(g["7"]["inputs"]["steps"], 8, "Krea 2 Turbo default");
-    assert_eq!(g["7"]["inputs"]["cfg"], 1.0);
-    assert_eq!(g["7"]["inputs"]["seed"], 3);
-    assert_eq!(g["1"]["inputs"]["unet_name"], "krea2_turbo_fp8_scaled.safetensors");
-    assert_eq!(g["2"]["inputs"]["type"], "krea2");
+    assert!(st.pictures.is_empty(), "text to image uploads nothing");
+    let g = &st.runs[0].request;
+    assert_eq!(g["prompt"], "a lighthouse at dusk");
+    assert_eq!(g["width"], 64);
+    assert_eq!(g["height"], 64, "48 is below the 64-pixel minimum side; the result is resampled back to the canvas");
+    assert_eq!(g["steps"], 8, "Krea 2 Turbo default");
+    assert_eq!(g["guidance"], 1.0);
+    assert_eq!(g["seed"], 3);
+    assert_eq!(g["params"]["models"]["unet"], "krea2_turbo_fp8_scaled.safetensors");
     drop(st);
 
     assert!(s.undo());
@@ -65,9 +68,13 @@ fn image_lands_as_a_layer_covering_the_canvas() {
 
 #[test]
 fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = Session::new();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     assert!(s.is_enabled(IMAGE), "no document needed");
     let r = s.execute(IMAGE, json!({"prompt": "a poster", "width": 128, "height": 96})).unwrap();
     assert_eq!(r["document"], 0);
@@ -89,13 +96,17 @@ fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
 
 #[test]
 fn sizes_default_round_and_validate() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = Session::new();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     // 1000×700 rounds down to the 16-pixel grid.
     let r = s.execute(IMAGE, json!({"prompt": "x", "width": 1000, "height": 700})).unwrap();
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(992), Some(688)));
-    assert_eq!(fake.state().prompts[0].1["6"]["inputs"]["width"], 992);
+    assert_eq!(fake.state().runs[0].request["width"], 992);
     // Without a size and without a document: 1024².
     let r = s.execute(IMAGE, json!({"prompt": "x", "target": "document"})).unwrap();
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(1024), Some(1024)));
@@ -110,16 +121,20 @@ fn sizes_default_round_and_validate() {
     // The generated dialog sends 0 for "default" sizes and steps, and "auto" for the target.
     let r = s.execute(IMAGE, json!({"prompt": "x", "width": 0, "height": 0, "target": "auto", "steps": 0, "guidance": 0})).unwrap();
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(1024), Some(1024)), "auto with a document open: a layer over its canvas");
-    assert_eq!(fake.state().prompts.last().unwrap().1["7"]["inputs"]["steps"], 8, "0 steps = the template default");
+    assert_eq!(fake.state().runs.last().unwrap().request["steps"], 8, "0 steps = the template default");
     let mut empty = Session::new();
-    empty.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    empty.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let e = empty.execute(IMAGE, json!({"prompt": "x", "target": "layer"})).unwrap_err();
     assert!(e.to_string().contains("open or create a document"), "{e}");
 }
 
 #[test]
 fn image_runs_as_a_background_job() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let layers = s.active().unwrap().doc.layers.len();
     let id = match s.start(IMAGE, json!({"prompt": "x"})).unwrap() {
@@ -139,7 +154,11 @@ fn image_runs_as_a_background_job() {
 
     // A new document from a background job too.
     let mut empty = Session::new();
-    empty.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    empty.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let id = match empty.start(IMAGE, json!({"prompt": "x", "width": 64, "height": 64})).unwrap() {
         Started::Job(id) => id,
         Started::Done(v) => panic!("ran inline: {v}"),
@@ -151,7 +170,7 @@ fn image_runs_as_a_background_job() {
 
 #[test]
 fn templates_are_checked_against_the_task() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     assert!(matches!(s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-edit-2511/fill"})), Err(EngineError::BadParams { .. })));
     s.execute("select.rect", json!({"x": 1, "y": 1, "width": 8, "height": 8})).unwrap();
@@ -167,12 +186,12 @@ fn templates_are_checked_against_the_task() {
 
 #[test]
 fn the_generate_model_preference_overrides_the_template() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.edit_prefs(|p| p.integrations.default_generate_model = "krea2_turbo_bf16.safetensors".into());
     s.execute(IMAGE, json!({"prompt": "x"})).unwrap();
     s.execute(IMAGE, json!({"prompt": "x", "model": "krea2_turbo_nvfp4.safetensors"})).unwrap();
     let st = fake.state();
-    assert_eq!(st.prompts[0].1["1"]["inputs"]["unet_name"], "krea2_turbo_bf16.safetensors");
-    assert_eq!(st.prompts[1].1["1"]["inputs"]["unet_name"], "krea2_turbo_nvfp4.safetensors");
+    assert_eq!(st.runs[0].request["params"]["models"]["unet"], "krea2_turbo_bf16.safetensors");
+    assert_eq!(st.runs[1].request["params"]["models"]["unet"], "krea2_turbo_nvfp4.safetensors");
 }

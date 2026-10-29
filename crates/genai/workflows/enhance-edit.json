@@ -6,29 +6,36 @@
     "task": "text",
     "license": "permissive",
     "licenseNote": "Qwen3-VL-4B is Apache-2.0 (Alibaba Qwen, 2025-10); the file is the one Krea 2's templates use as their text encoder. The app ships no weights.",
-    "minComfyVersion": "0.39.0",
-    "saveNode": "4",
     "needsImage": true,
     "needsMask": false,
-    "defaults": { "steps": 0, "guidance": 0.0 },
-    "placeholders": {
-      "prompt": "string", "system": "string", "seed": "int", "image": "string", "prefix": "string", "clip": "string"
+    "defaults": {
+      "steps": 0,
+      "guidance": 0.0
     },
     "models": [
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen3vl_4b_fp8_scaled.safetensors" }
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_4b_fp8_scaled.safetensors"
+      }
     ],
     "notes": "Prompt rewriting with the picture in view: ComfyUI's TextGenerate runs the Qwen3-VL 4B encoder (loaded as Krea 2 loads it, CLIPLoader type krea2, the one encoder on the server that TextGenerate can generate with; the 2511 encoder cannot) as a vision-language model and PreviewAny reports the text in the history. The engine's instructions go in as a real system turn (`system`), the user's instruction as the user turn (`prompt`); temperature 0.3, at most 120 tokens: about 1 s on the 5090. `thinking` is true on purpose: the node's thinking=false appends an empty <think> block after the assistant turn, which this non-thinking Instruct model answers with nothing or with a stray 'assistant' (7 empty + 5 echoes of 12 runs, 2026-10-09); with thinking=true the chat template ends at the plain assistant turn and 26 of 26 runs answered cleanly. Found the same day: a 10 KB system prompt (the one shipped for Qwen-Image-2.1's enhancer) overwhelms the 4B model; a short one works.",
     "creator": "Alibaba Qwen",
     "description": "Rewrites an edit or fill prompt with the Qwen3-VL 4B encoder",
     "badges": [],
-    "counts": {"max": 1, "default": 1},
-    "estimatedSeconds": {"base": 1, "perMegapixel": 0},
-    "pages": ["enhance"]
-  },
-  "graph": {
-    "1": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "krea2", "device": "default" } },
-    "2": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "3": { "class_type": "TextGenerate", "inputs": { "clip": ["1", 0], "prompt": "{{prompt}}", "system_prompt": "{{system}}", "max_length": 120, "sampling_mode": "on", "sampling_mode.temperature": 0.3, "sampling_mode.top_k": 40, "sampling_mode.top_p": 0.9, "sampling_mode.min_p": 0.05, "sampling_mode.repetition_penalty": 1.05, "sampling_mode.seed": "{{seed}}", "image": ["2", 0], "thinking": true, "use_default_template": true } },
-    "4": { "class_type": "PreviewAny", "inputs": { "source": ["3", 0] } }
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "enhance"
+    ],
+    "parameters": [
+      "system"
+    ]
   }
 }

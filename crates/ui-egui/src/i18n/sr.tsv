@@ -4341,7 +4341,6 @@ shape	Appearance	Izgled
 	Generative Fill…	Generativna popuna…
 	Generate Image…	Generiši sliku…
 	Allow research models	Dozvoli istraživačke modele
-	ComfyUI server	ComfyUI server
 	Default edit model	Podrazumevani model za izmenu
 	Default fill template	Podrazumevani šablon za popunu
 	Default generate model	Podrazumevani model za generisanje
@@ -4368,8 +4367,6 @@ shape	Appearance	Izgled
 	Enhance prompt	Poboljšaj upit
 	Enhancing…	Poboljšavanje…
 	The model could not improve this prompt	Model nije mogao da poboljša ovaj upit
-	Model precision	Preciznost modela
-	NVFP4 (Blackwell GPUs)	NVFP4 (Blackwell grafičke kartice)
 	Select by text…	Izaberi po tekstu…
 	Click an object, or drag a rectangle around it	Kliknite objekat ili prevucite pravougaonik oko njega
 	Select by Point	Izaberi po tački
@@ -4456,7 +4453,7 @@ shape	Appearance	Izgled
 	Not in this build yet	Još nije u ovoj verziji
 	Open a picture first	Prvo otvorite sliku
 	Generative Features	Generativne funkcije
-	Runs on your own ComfyUI server with the models you installed.	Radi na vašem sopstvenom ComfyUI serveru sa modelima koje ste instalirali.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	USKORO
 	Split into Layers	Podeli na slojeve
 	Angles	Uglovi
@@ -4473,7 +4470,7 @@ shape	Appearance	Izgled
 	front	spreda
 	Camera	Kamera
 	Generative Angles	Generativni uglovi
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	Zahteva qwen-image-edit-2511-multiple-angles-lora.safetensors u ComfyUI/models/loras (fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	pogled spreda
 	front-right quarter view	pogled spreda zdesna pod uglom
 	right side view	pogled zdesna
@@ -4512,20 +4509,14 @@ shape	Appearance	Izgled
 	Engine: running outside the app	Mašina: radi van aplikacije
 	Engine: failed	Mašina: neuspeh
 	Engine: stopped	Mašina: zaustavljena
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	Podesite ComfyUI fasciklu u Podešavanja › AI integracije da bi je aplikacija pokretala
 	Start engine	Pokreni mašinu
 	Stop engine	Zaustavi mašinu
 	Restart engine	Ponovo pokreni mašinu
 	Show log	Prikaži dnevnik
-	ComfyUI folder	ComfyUI fascikla
-	ComfyUI launch flags	Parametri pokretanja ComfyUI
-	Engine start on launch	Pokreni mašinu pri pokretanju
-	Engine stop on quit	Zaustavi mašinu pri izlasku
 	Engine	Mašina
 	Native	Ugrađeno
-	ComfyUI	ComfyUI
 	Native runtime folders	Fascikle ugrađenog izvršnog okruženja
-	Native models folder	Fascikla ugrađenih modela
+	Models folder	Fascikla ugrađenih modela
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Widen	Proširi
@@ -4537,7 +4528,7 @@ shape	Appearance	Izgled
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	Generativno
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	Popuna generativnim modelom: sporije, mnogo bolje na teksturama i šarama (zahteva ComfyUI server ili ugrađenu mašinu)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Pregled prikazuje klasičnu popunu; OK i Primeni pokreću model na novom sloju.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -4545,9 +4536,6 @@ shape	Appearance	Izgled
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Pravi dva kandidata i prikazuje onaj koji izgleda netaknuto; isključeno: jedan kandidat, otprilike pola vremena
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	Istovari modele između zadataka
-	When any model file changes	Kada se promeni bilo koja datoteka modela
-	When the diffusion model changes	Kada se promeni difuzioni model
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	Adapteri u podfascikli loras fascikle modela, koje primenjuje izvorni mehanizam
 	Generative Upscale	Generativno uvećanje

@@ -6,38 +6,56 @@
     "task": "image",
     "license": "community",
     "licenseNote": "Krea 2 Community License (Krea.ai, 2026-06-22): open weights, commercial use allowed with conditions (reported revenue cap, content-filtering duty, derivative naming). Read krea.ai/krea-2-licensing before shipping a product on it.",
-    "minComfyVersion": "0.26.0",
-    "saveNode": "9",
     "needsImage": false,
     "needsMask": false,
-    "defaults": { "steps": 8, "guidance": 1.0 },
-    "placeholders": {
-      "prompt": "string", "seed": "int", "steps": "int", "cfg": "float",
-      "width": "int", "height": "int", "prefix": "string",
-      "unet": "string", "clip": "string", "vae": "string"
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
     },
     "models": [
-      { "placeholder": "unet", "folder": "diffusion_models", "default": "krea2_turbo_fp8_scaled.safetensors", "nvfp4": "krea2_turbo_nvfp4.safetensors" },
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen3vl_4b_fp8_scaled.safetensors" },
-      { "placeholder": "vae", "folder": "vae", "default": "qwen_image_vae.safetensors" }
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "krea2_turbo_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_4b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      }
     ],
     "notes": "Node names and settings follow ComfyUI's official 'Text to Image (Krea-2 Turbo)' template (image_krea2_turbo_t2i.json): UNETLoader, CLIPLoader type krea2, CLIPTextEncode, ConditioningZeroOut as the negative (Turbo runs at CFG 1, so a negative prompt has no effect), EmptyLatentImage, KSampler euler/simple 8 steps denoise 1, VAEDecode. The template's optional prompt-enhance step (TextGenerate on the Qwen3-VL encoder) and style LoRA switch are left out; prompt enhancement belongs to the assistant work (proposal L2).",
     "creator": "Krea",
     "description": "Fast, photographic text to image",
-    "badges": ["fast"],
-    "sizes": {"aspects": ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], "min": 512, "max": 2048, "step": 16},
-    "estimatedSeconds": {"base": 2, "perMegapixel": 5},
-    "pages": ["image"]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "krea2", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "{{prompt}}" } },
-    "5": { "class_type": "ConditioningZeroOut", "inputs": { "conditioning": ["4", 0] } },
-    "6": { "class_type": "EmptyLatentImage", "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 } },
-    "7": { "class_type": "KSampler", "inputs": { "model": ["1", 0], "positive": ["4", 0], "negative": ["5", 0], "latent_image": ["6", 0], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
-    "8": { "class_type": "VAEDecode", "inputs": { "samples": ["7", 0], "vae": ["3", 0] } },
-    "9": { "class_type": "SaveImage", "inputs": { "images": ["8", 0], "filename_prefix": "{{prefix}}" } }
+    "badges": [
+      "fast"
+    ],
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 2,
+      "perMegapixel": 5
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
   }
 }

@@ -6,39 +6,57 @@
     "task": "image",
     "license": "research",
     "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
-    "minComfyVersion": "0.37.0",
-    "saveNode": "9",
     "needsImage": false,
     "needsMask": false,
-    "defaults": { "steps": 25, "guidance": 1.0 },
-    "promptFormatTransparent": "{prompt}, isolated on a transparent background, output a PNG image",
-    "placeholders": {
-      "prompt": "string", "negative": "string", "seed": "int", "steps": "int", "cfg": "float",
-      "width": "int", "height": "int", "prefix": "string",
-      "unet": "string", "clip": "string", "vae": "string"
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
     },
+    "promptFormatTransparent": "{prompt}, isolated on a transparent background, output a PNG image",
     "models": [
-      { "placeholder": "unet", "folder": "diffusion_models", "default": "qwen_image_2.1_int8_convrot.safetensors" },
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen3vl_8b_int8_convrot.safetensors" },
-      { "placeholder": "vae", "folder": "vae", "default": "qwen_image_2.1_vae_bf16.safetensors" }
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
     ],
     "notes": "Node names and settings follow ComfyUI's official 'Text to Image (Qwen Image 2.1)' template (image_qwen_image_2_1_t2i.json): UNETLoader → QwenImage21Cache, CLIPLoader type qwen_image, TextEncodeQwenImage21 without images (positive and negative), EmptyLatentImage, KSampler euler/simple 25 steps CFG 1, VAEDecode. The optional prompt-enhancement encoder (qwen3.5_9b_qwen_image_2.1_pe_t2i) is left out. The 2.1 VAE decodes RGBA: asked for '…, isolated on a transparent background, output a PNG image' (promptFormatTransparent, the official background-removal template's phrasing) the saved PNG carries a real alpha channel (verified live 2026-10-09: a boat with a clean soft matte, 10 s at 1024²).",
     "creator": "Alibaba Qwen",
     "description": "Text to image with native transparency",
-    "badges": ["transparency"],
-    "sizes": {"aspects": ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], "min": 512, "max": 2048, "step": 16},
-    "estimatedSeconds": {"base": 4, "perMegapixel": 10},
-    "pages": ["image"]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "qwen_image", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "QwenImage21Cache", "inputs": { "model": ["1", 0], "device": "auto", "dtype": "default" } },
-    "5": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": ["2", 0], "prompt": "{{prompt}}", "negative_prompt": "{{negative}}", "resolution": 1024 } },
-    "6": { "class_type": "EmptyLatentImage", "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 } },
-    "7": { "class_type": "KSampler", "inputs": { "model": ["4", 0], "positive": ["5", 0], "negative": ["5", 1], "latent_image": ["6", 0], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
-    "8": { "class_type": "VAEDecode", "inputs": { "samples": ["7", 0], "vae": ["3", 0] } },
-    "9": { "class_type": "SaveImage", "inputs": { "images": ["8", 0], "filename_prefix": "{{prefix}}" } }
+    "badges": [
+      "transparency"
+    ],
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 4,
+      "perMegapixel": 10
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
   }
 }

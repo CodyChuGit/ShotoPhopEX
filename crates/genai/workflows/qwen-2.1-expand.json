@@ -6,43 +6,43 @@
     "task": "expand",
     "license": "research",
     "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
-    "minComfyVersion": "0.37.0",
-    "saveNode": "12",
     "needsImage": true,
     "needsMask": true,
-    "defaults": { "steps": 25, "guidance": 1.0 },
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
+    },
     "expandMargin": 1.0,
     "promptFormat": "Extend this image beyond its current edges with {prompt}, continuing the scene naturally and matching its perspective, lighting and style.",
     "promptFormatImperative": "{prompt}. Extend the image beyond its current edges, continuing the scene naturally and matching its perspective, lighting and style.",
-    "placeholders": {
-      "prompt": "string", "negative": "string", "seed": "int", "steps": "int", "cfg": "float",
-      "image": "string", "prefix": "string", "width": "int", "height": "int",
-      "unet": "string", "clip": "string", "vae": "string",
-      "ref_x": "int", "ref_y": "int", "ref_w": "int", "ref_h": "int"
-    },
     "models": [
-      { "placeholder": "unet", "folder": "diffusion_models", "default": "qwen_image_2.1_int8_convrot.safetensors" },
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen3vl_8b_int8_convrot.safetensors" },
-      { "placeholder": "vae", "folder": "vae", "default": "qwen_image_2.1_vae_bf16.safetensors" }
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
     ],
     "notes": "Qwen-Image-2.1 edits in context and regenerates the whole picture, so an expand gives it the picture alone as its reference (ImageCrop at {{ref_x}},{{ref_y}} {{ref_w}}×{{ref_h}}: the canvas's new area, prefilled with replicated edge colours or grey, would otherwise come back as content, tried 2026-10-20) and samples a latent of the whole canvas's size (EmptyLatentImage {{width}}×{{height}} instead of the encoder node's own latent); the editor then masks the result to the new area. On the native engine the picture's tokens sit at their own position inside the canvas (the reference's offset), so an asymmetric expand lines up; ComfyUI's TextEncodeQwenImage21 centres every reference on the target, so through ComfyUI this template lines up for symmetric expands only. The selection mask is not sent to the model (needsMask keeps the engine's expand request shape). expandMargin 1: the whole picture goes along as the reference; shown a strip of it, the model painted a second fox into a one-sided expansion (2026-10-20). Nodes verified against a live server's /object_info on 2026-10-11 (the fill graph's) plus ImageCrop and EmptyLatentImage.",
     "creator": "Alibaba Qwen",
     "description": "Qwen-Image-2.1 continues the scene in context: quick",
     "badges": [],
-    "estimatedSeconds": {"base": 8, "perMegapixel": 22},
-    "pages": ["expand"]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "qwen_image", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "21": { "class_type": "ImageCrop", "inputs": { "image": ["4", 0], "width": "{{ref_w}}", "height": "{{ref_h}}", "x": "{{ref_x}}", "y": "{{ref_y}}" } },
-    "5": { "class_type": "QwenImage21Cache", "inputs": { "model": ["1", 0], "device": "auto", "dtype": "default" } },
-    "6": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": ["2", 0], "vae": ["3", 0], "prompt": "{{prompt}}", "negative_prompt": "{{negative}}", "resolution": 0, "images.image_1": ["21", 0] } },
-    "8": { "class_type": "EmptyLatentImage", "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 } },
-    "10": { "class_type": "KSampler", "inputs": { "model": ["5", 0], "positive": ["6", 0], "negative": ["6", 1], "latent_image": ["8", 0], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
-    "11": { "class_type": "VAEDecode", "inputs": { "samples": ["10", 0], "vae": ["3", 0] } },
-    "12": { "class_type": "SaveImage", "inputs": { "images": ["11", 0], "filename_prefix": "{{prefix}}" } }
+    "estimatedSeconds": {
+      "base": 8,
+      "perMegapixel": 22
+    },
+    "pages": [
+      "expand"
+    ],
+    "parameters": []
   }
 }

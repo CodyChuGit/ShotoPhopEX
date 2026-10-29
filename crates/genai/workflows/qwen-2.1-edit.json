@@ -6,48 +6,46 @@
     "task": "edit",
     "license": "research",
     "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
-    "minComfyVersion": "0.37.0",
-    "saveNode": "12",
     "needsImage": true,
     "needsMask": false,
-    "defaults": { "steps": 25, "guidance": 1.0 },
-    "placeholders": {
-      "prompt": "string", "negative": "string", "seed": "int", "steps": "int", "cfg": "float",
-      "image": "string", "ref2": "string", "ref3": "string", "ref4": "string", "ref5": "string", "ref6": "string",
-      "ref7": "string", "ref8": "string", "ref9": "string", "ref10": "string", "prefix": "string",
-      "unet": "string", "clip": "string", "vae": "string"
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
     },
     "models": [
-      { "placeholder": "unet", "folder": "diffusion_models", "default": "qwen_image_2.1_int8_convrot.safetensors" },
-      { "placeholder": "clip", "folder": "text_encoders", "default": "qwen3vl_8b_int8_convrot.safetensors" },
-      { "placeholder": "vae", "folder": "vae", "default": "qwen_image_2.1_vae_bf16.safetensors" }
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
     ],
     "notes": "ComfyUI's official 'Image Edit (Qwen Image 2.1)' template (image_qwen_image_2_1_image_edit.json) without its optional prompt-enhancement encoder: UNETLoader → QwenImage21Cache, CLIPLoader type qwen_image, TextEncodeQwenImage21 (resolution 0 keeps the inputs' sizes) whose grouped `images` input takes the picture as images.image_1 and up to nine references as images.image_2…images.image_10 (the official template's limit of ten images); its third output is the empty latent sized to image_1. KSampler euler/simple 25 steps CFG 1, VAEDecode. The official notes say to name the images in the prompt as <image1>, <image2>, …; image 1 is the picture being edited. References not given are pruned with their LoadImage node. Verified against a live server's /object_info on 2026-10-11.",
     "creator": "Alibaba Qwen",
     "description": "In-context edit with up to nine reference images",
-    "badges": ["references"],
-    "references": {"max": 9, "placeholders": ["ref2", "ref3", "ref4", "ref5", "ref6", "ref7", "ref8", "ref9", "ref10"], "nodes": {"ref2": ["20"], "ref3": ["21"], "ref4": ["22"], "ref5": ["23"], "ref6": ["24"], "ref7": ["25"], "ref8": ["26"], "ref9": ["27"], "ref10": ["28"]}},
-    "estimatedSeconds": {"base": 8, "perMegapixel": 22, "perReference": 6},
-    "pages": ["edit"]
-  },
-  "graph": {
-    "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "qwen_image", "device": "default" } },
-    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
-    "4": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "20": { "class_type": "LoadImage", "inputs": { "image": "{{ref2}}", "upload": "image" } },
-    "21": { "class_type": "LoadImage", "inputs": { "image": "{{ref3}}", "upload": "image" } },
-    "22": { "class_type": "LoadImage", "inputs": { "image": "{{ref4}}", "upload": "image" } },
-    "23": { "class_type": "LoadImage", "inputs": { "image": "{{ref5}}", "upload": "image" } },
-    "24": { "class_type": "LoadImage", "inputs": { "image": "{{ref6}}", "upload": "image" } },
-    "25": { "class_type": "LoadImage", "inputs": { "image": "{{ref7}}", "upload": "image" } },
-    "26": { "class_type": "LoadImage", "inputs": { "image": "{{ref8}}", "upload": "image" } },
-    "27": { "class_type": "LoadImage", "inputs": { "image": "{{ref9}}", "upload": "image" } },
-    "28": { "class_type": "LoadImage", "inputs": { "image": "{{ref10}}", "upload": "image" } },
-    "5": { "class_type": "QwenImage21Cache", "inputs": { "model": ["1", 0], "device": "auto", "dtype": "default" } },
-    "6": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": ["2", 0], "vae": ["3", 0], "prompt": "{{prompt}}", "negative_prompt": "{{negative}}", "resolution": 0, "images.image_1": ["4", 0], "images.image_2": ["20", 0], "images.image_3": ["21", 0], "images.image_4": ["22", 0], "images.image_5": ["23", 0], "images.image_6": ["24", 0], "images.image_7": ["25", 0], "images.image_8": ["26", 0], "images.image_9": ["27", 0], "images.image_10": ["28", 0] } },
-    "10": { "class_type": "KSampler", "inputs": { "model": ["5", 0], "positive": ["6", 0], "negative": ["6", 1], "latent_image": ["6", 2], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
-    "11": { "class_type": "VAEDecode", "inputs": { "samples": ["10", 0], "vae": ["3", 0] } },
-    "12": { "class_type": "SaveImage", "inputs": { "images": ["11", 0], "filename_prefix": "{{prefix}}" } }
+    "badges": [
+      "references"
+    ],
+    "references": {
+      "max": 9
+    },
+    "estimatedSeconds": {
+      "base": 8,
+      "perMegapixel": 22,
+      "perReference": 6
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
   }
 }

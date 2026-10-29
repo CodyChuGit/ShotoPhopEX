@@ -2872,7 +2872,6 @@ curves	Smooth	平滑
 	Generate Image…	產生影像…
 	Select by Text…	依文字選取…
 	Allow research models	允許研究用模型
-	ComfyUI server	ComfyUI 伺服器
 	Default edit model	預設編輯模型
 	Default fill template	預設填滿範本
 	Default generate model	預設生成模型
@@ -2899,8 +2898,6 @@ curves	Smooth	平滑
 	Enhance prompt	優化提示詞
 	Enhancing…	正在優化…
 	The model could not improve this prompt	模型無法優化此提示詞
-	Model precision	模型精度
-	NVFP4 (Blackwell GPUs)	NVFP4（Blackwell GPU）
 	Select by text…	依文字選取…
 	Click an object, or drag a rectangle around it	點按物件，或在其周圍拖曳矩形
 	Select by Point	依點選取
@@ -2992,7 +2989,7 @@ curves	Smooth	平滑
 	Not in this build yet	此版本尚未提供
 	Open a picture first	請先開啟一張圖片
 	Generative Features	生成式功能
-	Runs on your own ComfyUI server with the models you installed.	在你自己的 ComfyUI 伺服器上執行，使用你安裝的模型。
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	即將推出
 	Split into Layers	分割為圖層
 	Angles	視角
@@ -3009,7 +3006,7 @@ curves	Smooth	平滑
 	front	正面
 	Camera	相機
 	Generative Angles	生成式視角
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	需要將 qwen-image-edit-2511-multiple-angles-lora.safetensors 放入 ComfyUI/models/loras（fal，Apache-2.0）
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	正視圖
 	front-right quarter view	右前四分之三視圖
 	right side view	右側視圖
@@ -3050,20 +3047,14 @@ curves	Smooth	平滑
 	Engine: running outside the app	引擎：在應用程式外執行
 	Engine: failed	引擎：失敗
 	Engine: stopped	引擎：已停止
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	在 偏好設定 › AI 整合 中設定 ComfyUI 資料夾，應用程式即可自行啟動它
 	Start engine	啟動引擎
 	Stop engine	停止引擎
 	Restart engine	重新啟動引擎
 	Show log	顯示記錄
-	ComfyUI folder	ComfyUI 資料夾
-	ComfyUI launch flags	ComfyUI 啟動參數
-	Engine start on launch	啟動時啟動引擎
-	Engine stop on quit	結束時停止引擎
 	Engine	引擎
 	Native	原生
-	ComfyUI	ComfyUI
 	Native runtime folders	原生執行階段資料夾
-	Native models folder	原生模型資料夾
+	Models folder	原生模型資料夾
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Instance	實例
@@ -3081,7 +3072,7 @@ curves	Smooth	平滑
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	生成式
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	以生成模型填滿：較慢，但在紋理與圖樣上好得多（需要 ComfyUI 伺服器或原生引擎）
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	預覽顯示的是傳統填滿；「確定」與「套用」會把模型結果放到新圖層。
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -3089,9 +3080,6 @@ curves	Smooth	平滑
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	產生兩個候選結果，顯示看起來未經修改的那個；關閉後只產生一個，耗時約減半
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	工作之間卸載模型
-	When any model file changes	任一模型檔案變更時
-	When the diffusion model changes	擴散模型變更時
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	模型資料夾 loras 子資料夾中的適配器，由原生引擎套用
 	Strength	強度

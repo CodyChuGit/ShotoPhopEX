@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 
 use super::loras::runs_native;
 use super::{
-    DEFAULT_EDIT_TEMPLATE, GenerativeInfo, JobProgress, backend_for, gen_err, loras_of, opt_num, opt_str, plan_common, purge_mode, request_size_within,
-    resize_rgba8, run_switching, set_generative_info, write_rgba8,
+    DEFAULT_EDIT_TEMPLATE, GenerativeInfo, JobProgress, backend_for, gen_err, loras_of, opt_num, opt_str, plan_common, request_size_within, resize_rgba8,
+    set_generative_info, write_rgba8,
 };
 use crate::jobs::now_ms;
 use crate::{EngineError, Result, Session};
@@ -134,8 +134,7 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     {
         loras.push((RESTORE_LORA.to_string(), restore_strength));
     }
-    let (backend, server) = backend_for(s, &common.template.meta.id)?;
-    let purge = purge_mode(s);
+    let (backend, _server) = backend_for(s, &common.template.meta.id)?;
     let side = ((tile_mp * 1e6).sqrt() as u32 / 16 * 16).max(256);
     let enlarge = now_ms();
     if (tw, th) != (w, h) {
@@ -186,7 +185,7 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
                     ..Request::new(&template_id, &common.prompt)
                 };
                 let request = now_ms();
-                let resp = run_switching(backend.as_ref(), &server, &req, purge, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
+                let resp = backend.as_ref().run(&req, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
                 let request_ms = now_ms() - request;
                 ms += resp.elapsed_ms;
                 let backend_timings = resp.timings;
@@ -276,10 +275,14 @@ mod tests {
 
     #[test]
     fn an_upscale_enlarges_the_picture_and_redraws_it_as_a_layer_tile_by_tile() {
-        let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
+        let fake = photocraft_genai::fake::FakeNative::start().unwrap();
         let mut s = Session::new();
         s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
-        s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+        s.edit_prefs(|p| {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        });
         let layers = s.active().unwrap().doc.layers.len();
         let r = s.execute(UPSCALE, json!({"scale": 2, "tileMegapixels": 0.25, "seed": 5})).unwrap();
         // 600×400 in tiles of 496 px: two across (0 and 104), one down.
@@ -292,8 +295,8 @@ mod tests {
         assert_eq!((d.doc.size.width, d.doc.size.height), (600, 400), "enlarged first");
         assert_eq!(d.doc.layers.len(), layers + 1, "the redraw is one layer above");
         let st = fake.state();
-        assert_eq!(st.prompts.len(), 2, "a run per tile");
-        assert!(st.prompts[0].1.to_string().contains("Restore the photo"), "the restore wording by default");
+        assert_eq!(st.runs.len(), 2, "a run per tile");
+        assert!(st.runs[0].request.to_string().contains("Restore the photo"), "the restore wording by default");
         drop(st);
         assert!(s.execute(UPSCALE, json!({"scale": 9})).is_err(), "scale 1 to 4");
     }

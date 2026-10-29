@@ -6,32 +6,42 @@
     "task": "segment",
     "license": "community",
     "licenseNote": "SAM 3.1 (Meta, 2026-03-27) ships under the SAM License: research and commercial use allowed with no thresholds; military, nuclear, espionage and weapons uses banned; the licence travels with any redistribution; Meta may change the terms. The app ships no weights.",
-    "minComfyVersion": "0.39.0",
-    "saveNode": "6",
     "needsImage": true,
     "needsMask": false,
-    "defaults": { "steps": 1, "guidance": 0.0 },
-    "placeholders": {
-      "prompt": "string", "image": "string", "prefix": "string", "threshold": "float",
-      "points": "string", "negatives": "string", "bx": "int", "by": "int", "bw": "int", "bh": "int", "ckpt": "string"
+    "defaults": {
+      "steps": 1,
+      "guidance": 0.0
     },
     "models": [
-      { "placeholder": "ckpt", "folder": "checkpoints", "default": "sam3.1_multiplex_fp16.safetensors" }
+      {
+        "placeholder": "ckpt",
+        "folder": "checkpoints",
+        "default": "sam3.1_multiplex_fp16.safetensors"
+      }
     ],
     "notes": "The `sam3.1/segment-point` graph prompted with a box: PrimitiveBoundingBox (stock ComfyUI) feeds SAM3_Detect's bboxes in the request's own pixels (the engine scales the canvas rectangle to the request size), and positive_coords / negative_coords take JSON lists of points inside or outside the object ('[]' when none; checked live 2026-10-16: an empty list is accepted, a negative point trims the mask). No conditioning, so the detector segments the object the box frames (individual_masks true, 2 refinement passes). The prompt placeholder is bound but unused (the backend requires one).",
     "creator": "Meta",
     "description": "Finds the object a dragged box frames",
     "badges": [],
-    "counts": {"max": 1, "default": 1},
-    "estimatedSeconds": {"base": 1.5, "perMegapixel": 0},
-    "pages": ["select"]
-  },
-  "graph": {
-    "1": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "{{ckpt}}" } },
-    "2": { "class_type": "LoadImage", "inputs": { "image": "{{image}}", "upload": "image" } },
-    "7": { "class_type": "PrimitiveBoundingBox", "inputs": { "x": "{{bx}}", "y": "{{by}}", "width": "{{bw}}", "height": "{{bh}}" } },
-    "4": { "class_type": "SAM3_Detect", "inputs": { "model": ["1", 0], "image": ["2", 0], "bboxes": ["7", 0], "positive_coords": "{{points}}", "negative_coords": "{{negatives}}", "threshold": "{{threshold}}", "refine_iterations": 2, "individual_masks": true } },
-    "5": { "class_type": "MaskToImage", "inputs": { "mask": ["4", 0] } },
-    "6": { "class_type": "SaveImage", "inputs": { "images": ["5", 0], "filename_prefix": "{{prefix}}" } }
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1.5,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "select"
+    ],
+    "parameters": [
+      "threshold",
+      "points",
+      "negatives",
+      "bx",
+      "by",
+      "bw",
+      "bh"
+    ]
   }
 }

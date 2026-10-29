@@ -3445,7 +3445,6 @@ curves	Smooth	매끄럽게
 	Generate Image…	이미지 생성…
 	Select by Text…	텍스트로 선택…
 	Allow research models	연구용 모델 허용
-	ComfyUI server	ComfyUI 서버
 	Default edit model	기본 편집 모델
 	Default fill template	기본 채우기 템플릿
 	Default generate model	기본 생성 모델
@@ -3472,8 +3471,6 @@ curves	Smooth	매끄럽게
 	Enhance prompt	프롬프트 개선
 	Enhancing…	개선 중…
 	The model could not improve this prompt	모델이 이 프롬프트를 개선하지 못했습니다
-	Model precision	모델 정밀도
-	NVFP4 (Blackwell GPUs)	NVFP4(Blackwell GPU)
 	Select by text…	텍스트로 선택…
 	Click an object, or drag a rectangle around it	개체를 클릭하거나 주위에 사각형을 드래그하세요
 	Select by Point	점으로 선택
@@ -3563,7 +3560,7 @@ curves	Smooth	매끄럽게
 	Not in this build yet	이 빌드에는 아직 없음
 	Open a picture first	먼저 이미지를 여세요
 	Generative Features	생성 기능
-	Runs on your own ComfyUI server with the models you installed.	설치한 모델로 사용자의 ComfyUI 서버에서 실행됩니다.
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
 	SOON	곧 제공
 	Split into Layers	레이어로 분리
 	Angles	앵글
@@ -3580,7 +3577,7 @@ curves	Smooth	매끄럽게
 	front	정면
 	Camera	카메라
 	Generative Angles	생성 앵글
-	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in ComfyUI/models/loras (fal, Apache-2.0)	ComfyUI/models/loras에 qwen-image-edit-2511-multiple-angles-lora.safetensors가 필요합니다(fal, Apache-2.0)
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
 	front view	정면 뷰
 	front-right quarter view	오른쪽 앞 사분 뷰
 	right side view	오른쪽 측면 뷰
@@ -3620,20 +3617,14 @@ curves	Smooth	매끄럽게
 	Engine: running outside the app	엔진: 앱 외부에서 실행 중
 	Engine: failed	엔진: 실패
 	Engine: stopped	엔진: 중지됨
-	Set the ComfyUI folder in Preferences › AI Integrations to let the app start it	환경설정 › AI 연동에서 ComfyUI 폴더를 설정하면 앱이 직접 시작합니다
 	Start engine	엔진 시작
 	Stop engine	엔진 중지
 	Restart engine	엔진 다시 시작
 	Show log	로그 표시
-	ComfyUI folder	ComfyUI 폴더
-	ComfyUI launch flags	ComfyUI 실행 플래그
-	Engine start on launch	앱 시작 시 엔진 시작
-	Engine stop on quit	종료 시 엔진 중지
 	Engine	엔진
 	Native	네이티브
-	ComfyUI	ComfyUI
 	Native runtime folders	네이티브 런타임 폴더
-	Native models folder	네이티브 모델 폴더
+	Models folder	네이티브 모델 폴더
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Instance	인스턴스
@@ -3651,7 +3642,7 @@ curves	Smooth	매끄럽게
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
 	Generative	생성형
-	Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)	생성 모델로 채웁니다. 느리지만 텍스처와 패턴에 훨씬 뛰어납니다(ComfyUI 서버 또는 네이티브 엔진 필요)
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
 	The preview shows the classical fill; OK and Apply run the model onto a new layer.	미리 보기는 기존 채우기를 보여 줍니다. 확인과 적용은 모델을 새 레이어에 실행합니다.
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
@@ -3659,9 +3650,6 @@ curves	Smooth	매끄럽게
 	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	후보 두 개를 생성해 손대지 않은 것처럼 보이는 쪽을 표시합니다. 끄면 후보 하나, 시간은 약 절반입니다
 
 # PhotoshopEX, upstream merge 2026-10-21: the fork's strings this catalog lacked.
-	Unload models between tasks	작업 사이에 모델 해제
-	When any model file changes	모델 파일이 하나라도 바뀔 때
-	When the diffusion model changes	확산 모델이 바뀔 때
 	LoRAs	LoRAs
 	Adapters in the models folder's loras subfolder, applied by the native engine	모델 폴더의 loras 하위 폴더에 있는 어댑터로, 네이티브 엔진이 적용합니다
 	Generative Upscale	생성형 업스케일

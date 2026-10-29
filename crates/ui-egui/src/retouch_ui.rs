@@ -84,7 +84,10 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
     let o = app.ui.tool_options.clone();
     let pts = json!(points);
     let (cmd, mut p): (&str, Value) = match tool {
-        Tool::SpotHealing => ("paint.spotHealing", json!({"type": o.spot_type, "sampleAllLayers": o.sample_all.spot_healing, "variations": if o.remove_pick_best { 2 } else { 1 }})),
+        Tool::SpotHealing => (
+            "paint.spotHealing",
+            json!({"type": o.spot_type, "sampleAllLayers": o.sample_all.spot_healing, "variations": if o.remove_pick_best { 2 } else { 1 }}),
+        ),
         Tool::Remove => {
             if !o.remove_after_each_stroke {
                 remove_pending_add(app, points);
@@ -408,31 +411,13 @@ pub fn finish_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f
     crate::object_select::finish(app, start, end, mods);
 }
 
-/// Is a generative server configured (Preferences › AI Integrations)? The options bar shows the
-/// SAM 3.1 controls of the selection tools only then (the default preference names the local
-/// server, so this is true out of the box). Under `integrations.engine = native` the question
-/// is whether the worker has its runtime and model folders.
+/// Whether the native worker has runtime and Models folders for model-backed tools.
 pub fn server_configured(app: &PhotocraftApp) -> bool {
-    let i = &app.session.prefs().integrations;
-    let native = i.native_configured();
-    match i.engine.trim() {
-        "native" => native,
-        "comfy" => !i.comfy_server.trim().is_empty(),
-        // `auto`: either route can answer a SAM 3.1 request.
-        _ => native || !i.comfy_server.trim().is_empty(),
-    }
+    app.session.prefs().integrations.native_configured()
 }
 
-/// Could SAM 3.1 requests go to the native worker (`integrations.engine` `native`, or `auto`
-/// with the worker's folders set)? Its SAM 3.1 keeps a picture's embedding, so the object finder
-/// can ask sooner after the pointer rests.
-pub fn native_engine(app: &PhotocraftApp) -> bool {
-    let i = &app.session.prefs().integrations;
-    match i.engine.trim() {
-        "native" => true,
-        "comfy" => false,
-        _ => i.native_configured(),
-    }
+pub fn native_engine(_app: &PhotocraftApp) -> bool {
+    true
 }
 
 /// The template the selection tools' health check asks about: under `auto` its backend is the
@@ -564,7 +549,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             }
             // PhotoshopEX: the stroke healed through the fill model.
             let mut on = o.spot_type == "generative";
-            if crate::widgets::checkbox(ui, &mut on, tl!("Generative")).on_hover_text(tl!("Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)")).clicked() {
+            if crate::widgets::checkbox(ui, &mut on, tl!("Generative"))
+                .on_hover_text(tl!("Fill from the generative model: slower, far better on textures and patterns (needs the native worker)"))
+                .clicked()
+            {
                 o.spot_type = "generative".into();
             }
             if o.spot_type == "generative" {
@@ -582,7 +570,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::checkbox(ui, &mut o.remove_after_each_stroke, tl!("Remove after each stroke"));
             // PhotoshopEX: the hole filled through the fill model (a masked layer either way).
             crate::widgets::checkbox(ui, &mut o.remove_generative, tl!("Generative"))
-                .on_hover_text(tl!("Fill from the generative model: slower, far better on textures and patterns (needs a ComfyUI server or the native engine)"));
+                .on_hover_text(tl!("Fill from the generative model: slower, far better on textures and patterns (needs the native worker)"));
             if o.remove_generative {
                 crate::widgets::checkbox(ui, &mut o.remove_pick_best, tl!("Best of two"))
                     .on_hover_text(tl!("Run two candidates and show the one that looks untouched; off, one candidate, about half the time"));
@@ -770,8 +758,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                     .on_hover_text(tl!("Widen the object's mask by this many pixels (negative shrinks it)"));
                 crate::widgets::checkbox(ui, &mut o.object_fill_holes, tl!("Fill Holes")).on_hover_text(tl!("Fill the gaps the object's mask encloses"));
                 opt(ui, tl!("Soften"));
-                crate::widgets::value_field(ui, &mut o.object_soften, 0.0..=64.0, "px", 52.0)
-                    .on_hover_text(tl!("Feather the mask's edge by this many pixels"));
+                crate::widgets::value_field(ui, &mut o.object_soften, 0.0..=64.0, "px", 52.0).on_hover_text(tl!("Feather the mask's edge by this many pixels"));
                 let field = egui::TextEdit::singleline(&mut o.select_text).hint_text(tl!("Select by text…")).desired_width(150.0).id_salt("object-select-text");
                 let resp = ui.add(field);
                 by_text = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !o.select_text.trim().is_empty();
@@ -837,7 +824,7 @@ mod tests {
         // PhotoshopEX: no generative server, so the Object Selection tool stays classical
         // here even with a ComfyUI running on the development PC.
         s.edit_prefs(|p| {
-            p.integrations.comfy_server.clear();
+            p.integrations.models_path.clear();
             p.integrations.runtime_path.clear();
             p.integrations.models_path.clear();
         });
@@ -873,28 +860,31 @@ mod tests {
     /// rectangle and without a server nothing changes.
     #[test]
     fn object_selection_click_asks_the_detector_and_the_bar_selects_by_text() {
-        let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
+        let fake = photocraft_genai::fake::FakeNative::start().unwrap();
         let mut app = app();
         app.ui.tool = Tool::ObjectSelection;
         let none = egui::Modifiers::NONE;
         // No server (the default preference names the local one, which may be running on the
         // machine the tests run on): a click does nothing, quietly.
-        app.session.edit_prefs(|p| p.integrations.comfy_server.clear());
+        app.session.edit_prefs(|p| p.integrations.models_path.clear());
         tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 30.0, pressure: 1.0 }, none);
         tool_event(&mut app, ToolEvent::Up { x: 40.0, y: 30.0 }, none);
-        assert!(fake.state().prompts.is_empty());
+        assert!(fake.state().runs.is_empty());
         assert!(!app.ui.status_error, "{}", app.ui.status);
         assert!(app.session.active().unwrap().doc.selection.is_none());
         // A server: the click goes to the detector's point prompt and its mask becomes the selection.
-        app.session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+        app.session.edit_prefs(|p| {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        });
         tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 30.0, pressure: 1.0 }, none);
         tool_event(&mut app, ToolEvent::Up { x: 40.0, y: 30.0 }, none);
         {
             let st = fake.state();
-            assert_eq!(st.prompts.len(), 1, "{}", app.ui.status);
-            let g = &st.prompts[0].1;
-            assert_eq!(g["4"]["class_type"], "SAM3_Detect");
-            let coords = g["4"]["inputs"]["positive_coords"].as_str().unwrap_or_default();
+            assert_eq!(st.runs.len(), 1, "{}", app.ui.status);
+            let g = &st.runs[0].request;
+            let coords = g["params"]["points"].as_str().unwrap_or_default();
             assert!(coords.contains("\"x\":40") && coords.contains("\"y\":30"), "the clicked point as the prompt: {coords}");
         }
         assert!(app.session.active().unwrap().doc.selection.is_some());
@@ -902,13 +892,13 @@ mod tests {
         // ⇧-click adds through the same path.
         tool_event(&mut app, ToolEvent::Down { x: 70.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::SHIFT);
         tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 30.0 }, egui::Modifiers::SHIFT);
-        assert_eq!(fake.state().prompts.len(), 2);
+        assert_eq!(fake.state().runs.len(), 2);
         assert_eq!(app.session.journal.last().map(|(_, p)| p["mode"].as_str()), Some(Some("add")));
         // A drag is a box prompt to the detector (`object_select` has the rest).
         tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 10.0, pressure: 1.0 }, none);
         tool_event(&mut app, ToolEvent::Move { x: 60.0, y: 50.0, pressure: 1.0 }, none);
         tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 50.0 }, none);
-        assert_eq!(fake.state().prompts.len(), 3);
+        assert_eq!(fake.state().runs.len(), 3);
         assert_eq!(app.session.journal.last().map(|(id, p)| (id.as_str(), p["box"].is_array())), Some(("select.byPoint", true)));
         // The options bar's phrase.
         app.ui.tool_options.select_text = "   ".into();
@@ -917,19 +907,23 @@ mod tests {
         select_by_text(&mut app).unwrap();
         {
             let st = fake.state();
-            assert_eq!(st.prompts.len(), 4);
-            assert_eq!(st.prompts[3].1["3"]["inputs"]["text"], "the dog");
+            assert_eq!(st.runs.len(), 4);
+            assert_eq!(st.runs[3].request["prompt"], "the dog");
         }
         // Select Subject: the detector with a server that answers, the classical path otherwise
         // (none configured, or one that is down).
         select_subject(&mut app).unwrap();
-        assert_eq!(fake.state().prompts.len(), 5);
+        assert_eq!(fake.state().runs.len(), 5);
         assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.subjectML"));
-        app.session.edit_prefs(|p| p.integrations.comfy_server.clear());
+        app.session.edit_prefs(|p| p.integrations.models_path.clear());
         select_subject(&mut app).unwrap();
-        assert_eq!(fake.state().prompts.len(), 5);
+        assert_eq!(fake.state().runs.len(), 5);
         assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.subject"));
-        app.session.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
+        app.session.edit_prefs(|p| {
+            p.integrations.models_path = "http://127.0.0.1:9".into();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        });
         tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 30.0, pressure: 1.0 }, none);
         tool_event(&mut app, ToolEvent::Up { x: 40.0, y: 30.0 }, none);
         assert_ne!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.byPoint"), "a server that is down: no point prompt");
@@ -941,7 +935,7 @@ mod tests {
     /// one that is down, it stays the classical `select.quick`.
     #[test]
     fn quick_selection_strokes_ask_the_detector_when_a_server_answers() {
-        let fake = photocraft_genai::fake::FakeComfy::start().unwrap();
+        let fake = photocraft_genai::fake::FakeNative::start().unwrap();
         let mut app = app();
         app.ui.tool = Tool::QuickSelection;
         app.ui.tool_options.enhance_edge = false;
@@ -955,12 +949,16 @@ mod tests {
             assert!(!app.ui.status_error, "{}", app.ui.status);
         };
         // No server: the classical quick selection.
-        app.session.edit_prefs(|p| p.integrations.comfy_server.clear());
+        app.session.edit_prefs(|p| p.integrations.models_path.clear());
         stroke(&mut app, none);
         assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.quick"));
-        assert!(fake.state().prompts.is_empty());
+        assert!(fake.state().runs.is_empty());
         // A server: the stroke's spots become the detector's positive points, mode add.
-        app.session.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+        app.session.edit_prefs(|p| {
+            p.integrations.models_path = fake.url.clone();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        });
         app.ui.tool_options.enhance_edge = true;
         stroke(&mut app, none);
         let (id, p) = app.session.journal.last().map(|(id, p)| (id.clone(), p.clone())).unwrap();
@@ -971,17 +969,21 @@ mod tests {
         assert_eq!((pts.first().cloned(), pts.last().cloned()), (Some(json!([10.0, 30.0])), Some(json!([50.0, 30.0]))), "the stroke's ends are in");
         {
             let st = fake.state();
-            assert_eq!(st.prompts.len(), 1);
-            let coords = st.prompts[0].1["4"]["inputs"]["positive_coords"].as_str().unwrap_or_default();
+            assert_eq!(st.runs.len(), 1);
+            let coords = st.runs[0].request["params"]["points"].as_str().unwrap_or_default();
             assert!(coords.contains("\"x\":10") && coords.contains("\"x\":50"), "{coords}");
         }
         assert!(app.session.active().unwrap().doc.selection.is_some());
         // ⌥: the object under the stroke is subtracted.
         stroke(&mut app, egui::Modifiers::ALT);
         assert_eq!(app.session.journal.last().map(|(_, p)| p["mode"].as_str()), Some(Some("subtract")));
-        assert_eq!(fake.state().prompts.len(), 2);
+        assert_eq!(fake.state().runs.len(), 2);
         // A server that is down: the classical path again, quietly.
-        app.session.edit_prefs(|p| p.integrations.set_comfy_route("http://127.0.0.1:9"));
+        app.session.edit_prefs(|p| {
+            p.integrations.models_path = "http://127.0.0.1:9".into();
+            p.integrations.runtime_path = "fake".into();
+            p.integrations.allow_research_models = false;
+        });
         stroke(&mut app, none);
         assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("select.quick"));
     }

@@ -1,7 +1,7 @@
 use egui::vec2;
 use egui_kittest::Harness;
 use photocraft_doc::LayerId;
-use photocraft_genai::fake::FakeComfy;
+use photocraft_genai::fake::FakeNative;
 use serde_json::json;
 
 use super::*;
@@ -12,7 +12,11 @@ fn app(url: &str) -> PhotocraftApp {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     app.sync_views();
     app
@@ -28,7 +32,7 @@ fn control(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: V
 
 #[test]
 fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut app = app(&fake.url);
     let ctx = egui::Context::default();
     // Without a selection the menu row is disabled, like the command itself.
@@ -42,18 +46,18 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
     let ids: Vec<&str> = app.ui.generative_bar.templates.iter().map(|t| t.id.as_str()).collect();
     assert!(ids.contains(&"qwen-edit-2511/fill") && ids.contains(&"qwen-2.1/fill"), "{ids:?}");
     assert!(!app.ui.generative_bar.templates.iter().find(|t| t.id == "qwen-2.1/fill").unwrap().allowed, "research template gated");
-    assert!(!fake.state().requests.iter().any(|r| r == "POST /prompt"), "listing templates for the picker queues nothing");
+    assert!(fake.state().runs.is_empty(), "listing templates queues nothing");
     // The installed badges: the probe (inline here) found every file of the built-in templates.
     assert!(app.ui.generative_bar.templates.iter().all(|t| t.installed == Some(true)), "{:?}", app.ui.generative_bar.templates);
 
     // An empty prompt does nothing; a prompt generates, inline here (no background jobs).
     assert!(generate(&mut app).is_err());
-    assert!(fake.state().prompts.is_empty());
+    assert!(fake.state().runs.is_empty());
     app.ui.generate.prompt = "a kite".into();
     app.ui.generate.count = 2;
     let layers_before = app.session.active().unwrap().doc.layers.len();
     generate(&mut app).unwrap();
-    assert_eq!(fake.state().prompts.len(), 2, "one backend run per variation");
+    assert_eq!(fake.state().runs.len(), 2, "one backend run per variation");
     assert!(app.ui.generative_bar.job.is_none());
     // The run's variations are the Variations strip's newest run.
     let run = crate::variations_strip::bundles(&app).first().cloned().unwrap();
@@ -109,26 +113,26 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
     assert!(app.ui.generative_bar.templates.iter().any(|t| t.task == "edit" && t.id == "qwen-edit-2511/edit"));
     assert!(looks_like_an_edit("make this hyper realistic") && looks_like_an_edit("Turn it into a painting"));
     assert!(!looks_like_an_edit("a red boat") && !looks_like_an_edit("make a red boat"));
-    let prompts_before = fake.state().prompts.len();
+    let prompts_before = fake.state().runs.len();
     generate(&mut app).unwrap();
     let st = fake.state();
-    assert_eq!(st.prompts.len(), prompts_before + 1);
-    let g = &st.prompts.last().unwrap().1;
-    assert!(g.get("13").is_none(), "an edit graph: no noise mask");
-    assert_eq!(g["6"]["inputs"]["prompt"], "turn this drawing into a realistic portrait. Keep everything else exactly as it is.");
+    assert_eq!(st.runs.len(), prompts_before + 1);
+    assert!(st.runs.last().unwrap().run.image.is_some());
+    assert_eq!(st.runs.last().unwrap().run.task, "edit");
+    let g = &st.runs.last().unwrap().request;
+    assert_eq!(g["prompt"], "turn this drawing into a realistic portrait. Keep everything else exactly as it is.");
     drop(st);
     let d = app.session.active().unwrap();
     assert!(d.doc.layers.last().unwrap().name.starts_with("Generative Edit:"));
     // Enhance rewrites the prompt with the picture in view (inline here) and leaves it for the
     // user to read and run.
-    let prompts_before = fake.state().prompts.len();
+    let prompts_before = fake.state().runs.len();
     enhance(&mut app).unwrap();
     assert_eq!(app.ui.generate.prompt, "Enhanced: turn this drawing into a realistic portrait");
     assert!(app.ui.generative_bar.enhance_job.is_none());
     let st = fake.state();
-    assert_eq!(st.prompts.len(), prompts_before + 1, "the rewriter ran, nothing was generated");
-    let g = &st.prompts.last().unwrap().1;
-    assert!(g.as_object().unwrap().values().any(|n| n["class_type"] == "TextGenerate") && g.get("2").is_some(), "a text graph with the picture: {g}");
+    assert_eq!(st.runs.len(), prompts_before + 1, "the rewriter ran, nothing was generated");
+    assert!(st.runs.last().unwrap().run.image.is_some());
     drop(st);
     app.ui.generate.prompt.clear();
     assert!(enhance(&mut app).is_err(), "nothing to enhance");
@@ -154,7 +158,7 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
 
 #[test]
 fn the_preference_hides_the_bar_and_the_menu_falls_back_to_the_dialog() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut app = app(&fake.url);
     let ctx = egui::Context::default();
     app.session.edit_prefs(|p| p.integrations.show_generative_bar = "never".into());
@@ -196,7 +200,7 @@ fn bar_rect(h: &Harness<'static, PhotocraftApp>) -> Option<egui::Rect> {
 
 #[test]
 fn the_bar_appears_under_a_new_selection_inside_the_canvas_and_goes_with_it() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let app = app(&fake.url);
     let mut h = harness(app);
     assert!(!h.state().ui.generative_bar.open, "no selection, no bar");

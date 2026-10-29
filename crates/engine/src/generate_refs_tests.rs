@@ -2,7 +2,7 @@
 //! estimate, against the fake server.
 
 use photocraft_doc::LayerId;
-use photocraft_genai::fake::FakeComfy;
+use photocraft_genai::fake::FakeNative;
 use serde_json::{Value, json};
 
 use super::*;
@@ -34,17 +34,21 @@ fn session(url: &str) -> (Session, LayerId, LayerId) {
     let hat = s.active().unwrap().active_layer.unwrap();
     s.execute("layer.select", json!({"layer": base.0})).unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     (s, base, hat)
 }
 
-fn uploads(fake: &FakeComfy) -> Vec<(String, (u32, u32))> {
-    fake.state().uploads.iter().map(|(n, b)| (n.clone(), photocraft_genai::png::decode_rgba8(b).map(|i| (i.width, i.height)).unwrap_or((0, 0)))).collect()
+fn uploads(fake: &FakeNative) -> Vec<(String, (u32, u32))> {
+    fake.state().pictures.iter().enumerate().map(|(n, p)| (n.to_string(), (p.width, p.height))).collect()
 }
 
 #[test]
 fn an_edit_sends_its_layer_references_and_similar_sends_them_again() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, base, hat) = session(&fake.url);
     let r = s.execute(EDIT, json!({"prompt": "put the hat from image 2 on the sky", "seed": 3, "references": [{"layer": hat.0}, {"layer": base.0}]})).unwrap();
     let up = uploads(&fake);
@@ -52,10 +56,7 @@ fn an_edit_sends_its_layer_references_and_similar_sends_them_again() {
     assert_eq!(up[1].1, (20, 12), "the hat layer over its content bounds");
     {
         let st = fake.state();
-        let g = &st.prompts[0].1;
-        assert_eq!(g["20"]["inputs"]["image"], st.uploads[1].0);
-        assert_eq!(g["21"]["inputs"]["image"], st.uploads[2].0);
-        assert_eq!(g["6"]["inputs"]["image2"], json!(["20", 0]));
+        assert_eq!(st.runs[0].run.references.len(), 2);
     }
     let layer = LayerId(r["layer"].as_u64().unwrap());
     let info = generative_info(s.active().unwrap().doc.layer(layer).unwrap()).unwrap();
@@ -63,13 +64,13 @@ fn an_edit_sends_its_layer_references_and_similar_sends_them_again() {
     // Similar resolves them again.
     s.execute(SIMILAR, json!({"layer": layer.0, "seed": 4})).unwrap();
     let st = fake.state();
-    assert_eq!(st.prompts.len(), 2);
-    assert!(st.prompts[1].1.get("21").is_some(), "both references again");
+    assert_eq!(st.runs.len(), 2);
+    assert!(st.runs[1].request["references"].as_array().is_some_and(|r| r.len() == 2), "both references again");
 }
 
 #[test]
 fn reference_counts_and_specs_are_checked_before_anything_runs() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, base, hat) = session(&fake.url);
     let three = json!([{"layer": hat.0}, {"layer": base.0}, {"layer": hat.0}]);
     let e = s.execute(EDIT, json!({"prompt": "x", "references": three})).unwrap_err();
@@ -91,7 +92,7 @@ fn reference_counts_and_specs_are_checked_before_anything_runs() {
     assert!(e.to_string().contains("takes no reference images"), "{e}");
     let e = s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-edit-2511/image-ref"})).unwrap_err();
     assert!(e.to_string().contains("at least 1"), "{e}");
-    assert!(fake.state().prompts.is_empty(), "nothing queued");
+    assert!(fake.state().runs.is_empty(), "nothing queued");
 }
 
 /// A fill given a reference image (no template named) runs the fill-from-reference template:
@@ -99,7 +100,7 @@ fn reference_counts_and_specs_are_checked_before_anything_runs() {
 /// the layer remembers it all and Generate Similar sends the reference again.
 #[test]
 fn a_fill_with_a_reference_erases_the_selection_and_runs_the_reference_template() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, _, hat) = session(&fake.url);
     let want = crate::generate_cmds::fill_ref_template(crate::generate_cmds::quality(&s));
     let r = s.execute(FILL, json!({"prompt": "the red hat", "seed": 3, "edge": "hard", "references": [{"layer": hat.0}]})).unwrap();
@@ -109,15 +110,12 @@ fn a_fill_with_a_reference_erases_the_selection_and_runs_the_reference_template(
     assert_eq!(up[2].1, (20, 12), "the hat layer over its content bounds");
     {
         let st = fake.state();
-        let g = &st.prompts[0].1;
-        assert_eq!(g["20"]["inputs"]["image"], st.uploads[2].0, "the reference on image 2");
-        assert_eq!(g["6"]["inputs"]["image2"], json!(["20", 0]));
-        assert!(g.get("21").is_none(), "the third slot pruned");
-        let prompt = g["6"]["inputs"]["prompt"].as_str().unwrap_or_default();
+        let g = &st.runs[0].request;
+        let prompt = g["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains("flat grey area") && prompt.contains("the red hat"), "{prompt}");
         // Selection 20×16 at (10, 8) with its margin: a 32×32 request from (5, 3), sent at
         // 512²; document (x, y) is request ((x − 5) × 16, (y − 3) × 16).
-        let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
+        let sent = st.pictures[0].clone();
         assert_eq!(sent.get(200, 200), Some([128, 128, 128, 255]), "inside the selection: flat grey");
         assert_ne!(sent.get(8, 8).map(|p| [p[0], p[1], p[2]]), Some([128, 128, 128]), "the margin keeps its pixels");
     }
@@ -127,9 +125,9 @@ fn a_fill_with_a_reference_erases_the_selection_and_runs_the_reference_template(
     assert_eq!(info.references, vec![json!({"layer": hat.0})]);
     s.execute(SIMILAR, json!({"layer": layer.0, "seed": 4})).unwrap();
     let st = fake.state();
-    assert_eq!(st.prompts.len(), 2);
-    assert!(st.prompts[1].1.get("20").is_some(), "the reference again");
-    let sent = photocraft_genai::png::decode_rgba8(&st.uploads[3].1).unwrap();
+    assert_eq!(st.runs.len(), 2);
+    assert!(st.runs[1].request["references"].as_array().is_some_and(|r| r.len() == 1), "the reference again");
+    let sent = st.pictures[3].clone();
     assert_eq!(sent.get(200, 200), Some([128, 128, 128, 255]), "erased again");
 }
 
@@ -137,7 +135,7 @@ fn a_fill_with_a_reference_erases_the_selection_and_runs_the_reference_template(
 /// flattens it on any fill template, and off keeps the pixels on the reference template.
 #[test]
 fn grow_widens_the_selection_and_erase_is_a_choice() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, _, hat) = session(&fake.url);
     let r = s.execute(FILL, json!({"prompt": "x", "seed": 1, "edge": "hard", "grow": 4, "erase": true})).unwrap();
     assert_eq!(r["template"], crate::generate_cmds::likely_auto(FILL, crate::generate_cmds::quality(&s)), "a plain fill still");
@@ -150,13 +148,13 @@ fn grow_widens_the_selection_and_erase_is_a_choice() {
     assert_eq!((info.grow, info.erase), (4, true));
     {
         let st = fake.state();
-        let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
+        let sent = st.pictures[0].clone();
         assert_eq!(sent.get(72, 120), Some([128, 128, 128, 255]), "document (9, 10), left of the selection: grown and erased");
     }
     // The reference template with `erase: false`: the pixels stay.
     s.execute(FILL, json!({"prompt": "x", "seed": 1, "erase": false, "references": [{"layer": hat.0}]})).unwrap();
     let st = fake.state();
-    let sent = photocraft_genai::png::decode_rgba8(&st.uploads[3].1).unwrap();
+    let sent = st.pictures[3].clone();
     assert_ne!(sent.get(200, 200).map(|p| [p[0], p[1], p[2]]), Some([128, 128, 128]));
     assert!(matches!(s.execute(FILL, json!({"prompt": "x", "grow": 1.5})), Err(EngineError::BadParams { .. })));
     assert!(matches!(s.execute(FILL, json!({"prompt": "x", "grow": 9999})), Err(EngineError::BadParams { .. })));
@@ -167,12 +165,12 @@ fn grow_widens_the_selection_and_erase_is_a_choice() {
 /// blue all round it, so the smoothed hole is blue where the real picture is red.
 #[test]
 fn a_qwen_21_removal_sees_the_picture_as_it_is_and_a_2511_one_the_hole_smoothed() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, _, _) = session(&fake.url);
     // The picture is a run's first upload (a fill's mask follows it).
-    let centre_of_hole = |fake: &FakeComfy, first: usize| -> [u8; 4] {
+    let centre_of_hole = |fake: &FakeNative, first: usize| -> [u8; 4] {
         let st = fake.state();
-        let pic = photocraft_genai::png::decode_rgba8(&st.uploads[first].1).unwrap();
+        let pic = st.pictures[first].clone();
         // The request is the whole 64×48 canvas resampled; the hole's centre is (20, 16).
         pic.get(pic.width * 20 / 64, pic.height * 16 / 48).unwrap()
     };
@@ -184,8 +182,11 @@ fn a_qwen_21_removal_sees_the_picture_as_it_is_and_a_2511_one_the_hole_smoothed(
     assert_eq!(r["template"], "qwen-2.1/edit", "{r}");
     let [rd, _, b, _] = centre_of_hole(&fake, 0);
     assert!(rd > 180 && b < 80, "2.1 sees the red hat: {rd} {b}");
-    s.edit_prefs(|p| p.integrations.default_fill_template = "auto".into());
-    let before = fake.state().uploads.len();
+    s.edit_prefs(|p| {
+        p.integrations.default_fill_template = "auto".into();
+        p.integrations.allow_research_models = false;
+    });
+    let before = fake.state().pictures.len();
     let r = s.execute("edit.contentAwareFill", json!({"generative": true, "variations": 1, "enhance": false})).unwrap();
     assert!(r["template"].as_str().unwrap_or_default().starts_with("qwen-edit-2511/"), "{r}");
     let [rd, _, b, _] = centre_of_hole(&fake, before);
@@ -197,7 +198,7 @@ fn a_qwen_21_removal_sees_the_picture_as_it_is_and_a_2511_one_the_hole_smoothed(
 /// layer; without a backend configured they fall back to their classical fills, in place.
 #[test]
 fn the_classical_tools_go_through_the_model_when_asked_and_fall_back_without_a_server() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, _, _) = session(&fake.url);
     let layers = s.active().unwrap().doc.layers.len();
     let r = s.execute("edit.contentAwareFill", json!({"generative": true, "variations": 1})).unwrap();
@@ -210,12 +211,12 @@ fn the_classical_tools_go_through_the_model_when_asked_and_fall_back_without_a_s
     {
         let st = fake.state();
         // The rewriter names the object first (the fake echoes the instruction), then the fill.
-        assert_eq!(st.prompts.len(), 2, "the rewriter's ask, then the fill");
-        let prompt = st.prompts[1].1["6"]["inputs"]["prompt"].as_str().unwrap_or_default();
+        assert_eq!(st.runs.len(), 2, "the rewriter's ask, then the fill");
+        let prompt = st.runs[1].request["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains("Remove the object in the selected area") && prompt.to_lowercase().contains("change nothing else"), "{prompt}");
         // Selection 20×16 at (10, 8): the 32×32 request from (5, 3) at 512²; (200, 200) is inside
         // and keeps the picture's pixels (a grey hole is painted back as a panel: measured).
-        let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
+        let sent = st.pictures[0].clone();
         assert_ne!(sent.get(200, 200).map(|p| [p[0], p[1], p[2]]), Some([128, 128, 128]), "the pixels stay");
     }
     let made = LayerId(r["layer"].as_u64().unwrap());
@@ -240,10 +241,10 @@ fn the_classical_tools_go_through_the_model_when_asked_and_fall_back_without_a_s
     s.execute("paint.remove", json!({"points": [[20, 16], [26, 16]], "size": 6, "generative": true, "variations": 1})).unwrap();
     s.execute("paint.spotHealing", json!({"points": [[22, 18]], "size": 6, "type": "generative", "variations": 1})).unwrap();
     assert_eq!(s.active().unwrap().doc.layers.len(), layers + 5, "the first fill, the kept pair, a layer each for the two tools");
-    assert_eq!(fake.state().prompts.len(), 10, "two detector asks, two rewrites, two fills more");
+    assert_eq!(fake.state().runs.len(), 10, "two detector asks, two rewrites, two fills more");
     // No backend configured: the classical fills, in place, no layer.
     s.edit_prefs(|p| {
-        p.integrations.comfy_server.clear();
+        p.integrations.models_path.clear();
         p.integrations.runtime_path.clear();
         p.integrations.models_path.clear();
     });
@@ -253,12 +254,12 @@ fn the_classical_tools_go_through_the_model_when_asked_and_fall_back_without_a_s
     s.execute("paint.remove", json!({"points": [[20, 16], [26, 16]], "size": 6, "generative": true, "variations": 1})).unwrap();
     s.execute("paint.spotHealing", json!({"points": [[22, 18]], "size": 6, "type": "generative", "variations": 1})).unwrap();
     assert_eq!(s.active().unwrap().doc.layers.len(), n);
-    assert_eq!(fake.state().prompts.len(), 10, "nothing more was asked of the server");
+    assert_eq!(fake.state().runs.len(), 10, "nothing more was asked of the server");
 }
 
 #[test]
 fn a_fills_denoise_reaches_the_2511_sampler_and_is_one_unless_given() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, _, _) = session(&fake.url);
     s.execute("file.new", json!({"width": 256, "height": 256})).unwrap();
     s.execute("select.rect", json!({"x": 64, "y": 64, "width": 96, "height": 96})).unwrap();
@@ -269,9 +270,8 @@ fn a_fills_denoise_reaches_the_2511_sampler_and_is_one_unless_given() {
         }
         s.execute("generate.fill", p).unwrap();
         let st = fake.state();
-        let g = &st.prompts.last().unwrap().1;
-        let sampler = g.as_object().unwrap().values().find(|n| n["class_type"] == "KSampler").unwrap();
-        assert_eq!(sampler["inputs"]["denoise"].as_f64(), Some(denoise.unwrap_or(1.0)), "{sampler}");
+        let g = &st.runs.last().unwrap().request;
+        assert_eq!(g["params"]["denoise"].as_f64(), denoise, "omitted means the worker default of 1");
     }
     assert!(crate::generate_cmds::takes_denoise("qwen-edit-2511/fill-lightning-8"));
     assert!(!crate::generate_cmds::takes_denoise("qwen-2.1/fill"), "the 2.1 fill redraws from noise");
@@ -281,7 +281,7 @@ fn a_fills_denoise_reaches_the_2511_sampler_and_is_one_unless_given() {
 #[test]
 fn name_shadow_asks_a_whole_picture_removal_for_the_objects_shadow_too() {
     use photocraft_genai::fake::Options;
-    let fake = FakeComfy::start_with(Options {
+    let fake = FakeNative::start_with(Options {
         segments_for: vec![("red hat".into(), vec![[0.25, 1.0 / 3.0, 0.75, 170.0 / 300.0]])],
         enhanced_text: Some("Remove the red hat.".into()),
         ..Options::default()
@@ -317,7 +317,7 @@ fn a_generative_stroke_takes_the_object_under_it_whole_when_it_covers_enough_of_
     // stroke's spots (8400 pixels), and, asked by the name the rewriter gives it, the whole
     // "red hat" at (100, 100)–(300, 170) (14000 pixels: a thin object's point prompt returns
     // only the brushed part).
-    let fake = FakeComfy::start_with(Options {
+    let fake = FakeNative::start_with(Options {
         segments: vec![[0.25, 1.0 / 3.0, 0.55, 170.0 / 300.0]],
         segments_for: vec![("red hat".into(), vec![[0.25, 1.0 / 3.0, 0.75, 170.0 / 300.0]])],
         enhanced_text: Some("Remove the red hat.".into()),
@@ -330,24 +330,31 @@ fn a_generative_stroke_takes_the_object_under_it_whole_when_it_covers_enough_of_
     // "the red hat", the detector finds the whole of it by that name and the stroke covers
     // over a tenth of it, so it goes whole, the hole grown by 15 % of its larger side (the
     // stroke and the whole hat: x 85 to 300 → 215 → 32). The point prompt is not asked.
-    let r = s.execute("paint.spotHealing", json!({"points": [[110, 135], [210, 135]], "size": 30, "hardness": 1, "type": "generative", "variations": 1, "seed": 3})).unwrap();
+    let r = s
+        .execute("paint.spotHealing", json!({"points": [[110, 135], [210, 135]], "size": 30, "hardness": 1, "type": "generative", "variations": 1, "seed": 3}))
+        .unwrap();
     let made = LayerId(r["layer"].as_u64().unwrap());
     let info = generative_info(s.active().unwrap().doc.layer(made).unwrap()).unwrap();
     assert_eq!(info.grow, 32, "{info:?}");
     // The rewriter gives the name; the fill keeps the generic wording around it.
-    assert_eq!(info.enhanced, "Remove the red hat and fill its place with the surrounding scene continued seamlessly (its background, surfaces, textures, patterns and lines), as if nothing had ever been there", "{info:?}");
+    assert_eq!(
+        info.enhanced,
+        "Remove the red hat and fill its place with the surrounding scene continued seamlessly (its background, surfaces, textures, patterns and lines), as if nothing had ever been there",
+        "{info:?}"
+    );
     let rect = photocraft_geom::Rect::new(info.rect[0], info.rect[1], info.rect[0] + info.rect[2], info.rect[1] + info.rect[3]);
     assert!(rect.contains(70, 70) && rect.contains(330, 200), "the request takes in the whole hat, its growth and margin: {rect:?}");
     {
         let st = fake.state();
-        assert_eq!(st.prompts.len(), 3, "the rewriter, the detector by name, the fill");
-        assert!(st.prompts[1].1.to_string().contains("\"text\":\"red hat\""), "asked by the rewriter's name: {}", st.prompts[1].1);
+        assert_eq!(st.runs.len(), 3, "the rewriter, the detector by name, the fill");
+        assert!(st.runs[1].run.prompt == "red hat", "asked by the rewriter's name: {}", st.runs[1].request);
     }
     // A dab on one spot of it (a blemish, not the object): the named hat is 14000 pixels, the
     // dab covers under a tenth of it, and so of the "hat" the shorter name finds (the fake's
     // default object, 8400 pixels); the point prompt's object (the same) is far bigger than
     // the dab's box. The hat stays, the dab is healed with the least growth.
-    let r = s.execute("paint.spotHealing", json!({"points": [[120, 130]], "size": 8, "hardness": 1, "type": "generative", "variations": 1, "seed": 3})).unwrap();
+    let r =
+        s.execute("paint.spotHealing", json!({"points": [[120, 130]], "size": 8, "hardness": 1, "type": "generative", "variations": 1, "seed": 3})).unwrap();
     let made = LayerId(r["layer"].as_u64().unwrap());
     let info = generative_info(s.active().unwrap().doc.layer(made).unwrap()).unwrap();
     assert_eq!(info.grow, 16, "{info:?}");
@@ -355,17 +362,26 @@ fn a_generative_stroke_takes_the_object_under_it_whole_when_it_covers_enough_of_
     // The request is widened to at least 384 px a side (the canvas is 300 tall) so the model
     // sees context around the dab, but no further.
     assert!(rect.width() == 384 && rect.height() == 300 && !rect.contains(399, 10), "a dab's request: {rect:?}");
-    assert_eq!(fake.state().prompts.len(), 8, "the rewriter, the detector by \"red hat\" then \"hat\", the detector by point, the fill");
+    assert_eq!(fake.state().runs.len(), 8, "the rewriter, the detector by \"red hat\" then \"hat\", the detector by point, the fill");
     // `wholeObject: false` never asks the detector; `enhance: false` never asks the rewriter.
-    s.execute("paint.remove", json!({"points": [[110, 135], [210, 135]], "size": 30, "generative": true, "wholeObject": false, "enhance": false, "variations": 1})).unwrap();
-    assert_eq!(fake.state().prompts.len(), 9, "the fill alone for the Remove stroke");
+    s.execute(
+        "paint.remove",
+        json!({"points": [[110, 135], [210, 135]], "size": 30, "generative": true, "wholeObject": false, "enhance": false, "variations": 1}),
+    )
+    .unwrap();
+    assert_eq!(fake.state().runs.len(), 9, "the fill alone for the Remove stroke");
     // With no rewriter (`enhance: false`) the point prompt's object is taken when it fits
     // the stroke's box: the stroke's box is 150×51, the object 120×70 (under 1.5× each way).
-    let r = s.execute("paint.spotHealing", json!({"points": [[110, 135], [210, 135]], "size": 30, "hardness": 1, "type": "generative", "enhance": false, "variations": 1, "seed": 3})).unwrap();
+    let r = s
+        .execute(
+            "paint.spotHealing",
+            json!({"points": [[110, 135], [210, 135]], "size": 30, "hardness": 1, "type": "generative", "enhance": false, "variations": 1, "seed": 3}),
+        )
+        .unwrap();
     let made = LayerId(r["layer"].as_u64().unwrap());
     let info = generative_info(s.active().unwrap().doc.layer(made).unwrap()).unwrap();
     assert_eq!((info.grow, info.enhanced.as_str()), (23, ""), "the stroke and the point object, x 85 to 235: {info:?}");
-    assert_eq!(fake.state().prompts.len(), 11, "the detector by point, the fill");
+    assert_eq!(fake.state().runs.len(), 11, "the detector by point, the fill");
 }
 
 #[test]
@@ -374,7 +390,7 @@ fn a_removal_matches_the_tone_of_its_surroundings_at_the_hole() {
     // comes back matched to the document at the hole's edge, so the layer's pixels inside the
     // hole are the document's tone, not the fake's; a plain fill keeps the fake's colour.
     use photocraft_genai::fake::Options;
-    let fake = FakeComfy::start_with(Options { color: [200, 120, 40, 255], ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options { color: [200, 120, 40, 255], ..Options::default() }).unwrap();
     let (mut s, _, _) = session(&fake.url);
     s.execute("file.new", json!({"width": 400, "height": 300})).unwrap();
     s.execute("edit.fill", json!({"color": "#2060a0"})).unwrap();
@@ -385,7 +401,12 @@ fn a_removal_matches_the_tone_of_its_surroundings_at_the_hole() {
         px[0]
     };
     let before = s.active().unwrap().doc.layers.len();
-    let r = s.execute("paint.spotHealing", json!({"points": [[200, 150]], "size": 40, "hardness": 1, "type": "generative", "enhance": false, "wholeObject": false, "seed": 3})).unwrap();
+    let r = s
+        .execute(
+            "paint.spotHealing",
+            json!({"points": [[200, 150]], "size": 40, "hardness": 1, "type": "generative", "enhance": false, "wholeObject": false, "seed": 3}),
+        )
+        .unwrap();
     let removed = sample(&s, LayerId(r["layer"].as_u64().unwrap()), 200, 150);
     assert!(removed[0] < 80 && removed[2] > 120, "the document's blue, not the fake's orange: {removed:?}");
     // Two seeds by default: two layers, the shown one first (the fake paints both alike).
@@ -402,7 +423,10 @@ fn a_removal_matches_the_tone_of_its_surroundings_at_the_hole() {
 #[test]
 fn a_rewritten_removal_names_its_object() {
     use crate::generate_cmds::named_object;
-    assert_eq!(named_object("Remove the gold necklace and replace it with the surrounding skin, collarbone, and dark grey fabric."), Some("gold necklace".into()));
+    assert_eq!(
+        named_object("Remove the gold necklace and replace it with the surrounding skin, collarbone, and dark grey fabric."),
+        Some("gold necklace".into())
+    );
     assert_eq!(named_object("Remove the gold pendant and chain, replacing them with skin."), Some("gold pendant and chain".into()));
     assert_eq!(named_object("Remove the red boat from the water so the sea continues."), Some("red boat".into()));
     assert_eq!(named_object("remove the small bird on the wire."), Some("small bird".into()));
@@ -437,8 +461,8 @@ fn a_rewritten_removal_names_its_object() {
 #[test]
 fn the_worker_names_a_removal_from_a_tighter_close_up_and_a_wide_one_keeps_its_shape() {
     use crate::generate_cmds::{naming_views, side_by_side};
-    use photocraft_geom::Rect;
     use photocraft_genai::Rgba8;
+    use photocraft_geom::Rect;
     // A 200×160 mask on a 2000×1500 photo: the close-up the 4B sees has a quarter of the grown
     // stroke's side around it, the one the worker's 8B sees a tenth.
     let canvas = Rect::new(0, 0, 2000, 1500);
@@ -477,9 +501,24 @@ fn a_removal_takes_the_shadow_that_went_with_its_object_and_nothing_else() {
     let far = |x: f64, y: f64| x >= 112.0 && y < 12.0;
     // The photo: a dark disc and its cast shadow on grey; the model's result: the disc and the
     // shadow gone, and (unconnected) a corner it changed for no reason.
-    let original = paint(&|x, y| if disc(x, y) { 20 } else if shadow(x, y) { 70 } else { 128 });
+    let original = paint(&|x, y| {
+        if disc(x, y) {
+            20
+        } else if shadow(x, y) {
+            70
+        } else {
+            128
+        }
+    });
     let result = paint(&|x, y| if far(x, y) { 200 } else { 128 });
-    let hole = Gray8::new(w, h, (0..w * h).map(|i| if disc(f64::from(i % w), f64::from(i / w)) || (f64::from(i % w) - 40.0).hypot(f64::from(i / w) - 48.0) <= 13.0 { 255 } else { 0 }).collect()).unwrap();
+    let hole = Gray8::new(
+        w,
+        h,
+        (0..w * h)
+            .map(|i| if disc(f64::from(i % w), f64::from(i / w)) || (f64::from(i % w) - 40.0).hypot(f64::from(i / w) - 48.0) <= 13.0 { 255 } else { 0 })
+            .collect(),
+    )
+    .unwrap();
     let mask = feather_outward(&hole, 6).unwrap();
     let band = change_band(&result, &original, &mask, SHADOW_MAX_SHARE, SHADOW_CHANGE).expect("the shadow changed with the disc");
     let at = |x: u32, y: u32| band.data[(y * w + x) as usize];
@@ -494,7 +533,15 @@ fn a_removal_takes_the_shadow_that_went_with_its_object_and_nothing_else() {
     assert!(change_band(&brighter, &original, &mask, SHADOW_MAX_SHARE, SHADOW_CHANGE).is_none(), "a whole-picture tone shift is not a shadow");
     // A shadow that runs out of the request: not cut off at its edge.
     let long = |x: f64, y: f64| x >= 45.0 && (y - 50.0).abs() <= 5.0;
-    let original = paint(&|x, y| if disc(x, y) { 20 } else if long(x, y) { 70 } else { 128 });
+    let original = paint(&|x, y| {
+        if disc(x, y) {
+            20
+        } else if long(x, y) {
+            70
+        } else {
+            128
+        }
+    });
     assert!(change_band(&paint(&|_, _| 128), &original, &mask, SHADOW_MAX_SHARE, SHADOW_CHANGE).is_none(), "the shadow goes on past the request");
 }
 
@@ -532,7 +579,7 @@ fn an_edit_takes_the_garment_that_runs_past_its_selection_within_its_share() {
 
 #[test]
 fn an_image_from_a_reference_switches_template_and_variations_fill_one_document() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, _, hat) = session(&fake.url);
     let r = s
         .execute(IMAGE, json!({"prompt": "a portrait wearing the hat from image 1", "target": "document", "width": 96, "height": 64, "variations": 2, "seed": 9, "references": [{"layer": hat.0}]}))
@@ -549,15 +596,15 @@ fn an_image_from_a_reference_switches_template_and_variations_fill_one_document(
     assert_eq!(info.template, "qwen-edit-2511/image-ref");
     assert_eq!(info.references, vec![json!({"layer": hat.0})]);
     let st = fake.state();
-    assert_eq!(st.prompts.len(), 2);
-    let g = &st.prompts[0].1;
-    assert!(g.get("20").is_none() && g.get("21").is_none(), "unused slots pruned");
-    assert_eq!(g["10"]["inputs"]["width"], 96);
+    assert_eq!(st.runs.len(), 2);
+    let g = &st.runs[0].request;
+    assert_eq!(g["references"].as_array().map(Vec::len), Some(1), "only the supplied reference is sent");
+    assert_eq!(g["width"], 96);
 }
 
 #[test]
 fn image_variations_on_a_layer_and_references_from_files_and_generations() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let (mut s, _, hat) = session(&fake.url);
     s.execute("select.deselect", json!({})).unwrap();
     let r = s.execute(IMAGE, json!({"prompt": "a lighthouse", "target": "layer", "variations": 3, "seed": 1})).unwrap();
@@ -577,7 +624,7 @@ fn image_variations_on_a_layer_and_references_from_files_and_generations() {
     std::fs::write(&file, png).unwrap();
     s.execute(IMAGE, json!({"prompt": "a boat", "target": "layer", "references": [{"layer": hat.0}]})).unwrap();
     let job = s.generations.records().last().unwrap().id;
-    let before = fake.state().uploads.len();
+    let before = fake.state().pictures.len();
     s.execute(EDIT, json!({"prompt": "x", "references": [{"path": file.to_string_lossy()}, {"job": job}]})).unwrap();
     let up = uploads(&fake);
     assert_eq!(up.len(), before + 3);

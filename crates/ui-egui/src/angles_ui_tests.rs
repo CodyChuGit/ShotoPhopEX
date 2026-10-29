@@ -1,7 +1,7 @@
 use egui::vec2;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use serde_json::json;
 
 use super::*;
@@ -11,7 +11,11 @@ fn app(url: &str) -> PhotocraftApp {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 96, "height": 64})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let mut app = PhotocraftApp::new(s, crate::Services::default());
     app.sync_views();
     app
@@ -25,7 +29,7 @@ fn the_camera_snaps_to_the_loras_stops() {
 
 #[test]
 fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut a = app(&fake.url);
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut a, &ctx, "generate.angles", json!({})).unwrap();
@@ -43,8 +47,8 @@ fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
     assert_eq!((a.ui.angles.rotation, a.ui.angles.tilt), (45, 0), "unchanged by the refused calls");
     set(&mut a, &json!({"angles": {"rotation": 180, "tilt": 30, "zoom": 10, "variations": 2, "generate": true}})).unwrap();
     let st = fake.state();
-    assert_eq!(st.prompts.len(), 2, "two variations");
-    assert_eq!(st.prompts[0].1["6"]["inputs"]["prompt"], "<sks> back view elevated shot close-up");
+    assert_eq!(st.runs.len(), 2, "two variations");
+    assert_eq!(st.runs[0].request["prompt"], "<sks> back view elevated shot close-up");
     drop(st);
     let runs = crate::variations_strip::bundles(&a);
     assert_eq!((runs.len(), runs[0].layers.len()), (1, 2), "the results are a run of the Variations strip");
@@ -58,7 +62,7 @@ fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
 #[test]
 fn the_window_draws_the_orbit_and_warns_when_the_lora_is_missing() {
     let fake =
-        FakeComfy::start_with(Options { missing_files: vec!["qwen-image-edit-2511-multiple-angles-lora.safetensors".into()], ..Options::default() }).unwrap();
+        FakeNative::start_with(Options { missing_files: vec!["qwen-image-edit-2511-multiple-angles-lora.safetensors".into()], ..Options::default() }).unwrap();
     let mut a = app(&fake.url);
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut a, &ctx, "generate.angles", json!({})).unwrap();

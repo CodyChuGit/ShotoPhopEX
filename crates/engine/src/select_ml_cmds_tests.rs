@@ -1,4 +1,4 @@
-use photocraft_genai::fake::{FakeComfy, Options};
+use photocraft_genai::fake::{FakeNative, Options};
 use photocraft_geom::Rect;
 use serde_json::json;
 
@@ -9,7 +9,11 @@ fn session(url: &str) -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(url.to_string()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = url.to_string();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     s
 }
 
@@ -20,7 +24,7 @@ fn selection_bounds(s: &Session) -> Option<Rect> {
 #[test]
 fn by_text_selects_what_the_model_found() {
     // The fake "finds" the centre quarter: x 16..48, y 12..36 on 64×48.
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let steps = s.active().unwrap().history.past_len();
     let r = s.execute(BY_TEXT, json!({"prompt": "the lighthouse"})).unwrap();
@@ -32,15 +36,13 @@ fn by_text_selects_what_the_model_found() {
     assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "one undo step");
 
     let st = fake.state();
-    assert_eq!(st.uploads.len(), 1, "the composite, no mask");
-    let sent = photocraft_genai::png::decode_rgba8(&st.uploads[0].1).unwrap();
+    assert_eq!(st.pictures.len(), 1, "the composite, no mask");
+    let sent = st.pictures[0].clone();
     assert_eq!((sent.width, sent.height), (64, 48));
-    let g = &st.prompts[0].1;
-    assert_eq!(g["3"]["inputs"]["text"], "the lighthouse");
-    assert_eq!(g["4"]["class_type"], "SAM3_Detect");
-    assert_eq!(g["4"]["inputs"]["threshold"], 0.5);
-    assert_eq!(g["4"]["inputs"]["individual_masks"], true);
-    assert_eq!(g["1"]["inputs"]["ckpt_name"], "sam3.1_multiplex_fp16.safetensors");
+    let g = &st.runs[0].request;
+    assert_eq!(g["prompt"], "the lighthouse");
+    assert_eq!(g["params"]["threshold"], 0.5);
+    assert_eq!(g["params"]["models"]["ckpt"], "sam3.1_multiplex_fp16.safetensors");
     drop(st);
 
     assert!(s.undo());
@@ -49,17 +51,15 @@ fn by_text_selects_what_the_model_found() {
 
 #[test]
 fn by_point_selects_the_object_under_the_point() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let r = s.execute(BY_POINT, json!({"x": 30, "y": 20})).unwrap();
     assert_eq!(r["selected"], true);
     assert_eq!(selection_bounds(&s), Some(Rect::new(16, 12, 48, 36)), "what the fake detector found");
     let st = fake.state();
-    let g = &st.prompts[0].1;
-    assert_eq!(g["4"]["class_type"], "SAM3_Detect");
-    assert_eq!(g["4"]["inputs"]["positive_coords"], r#"[{"x":30,"y":20}]"#, "the point in the request's pixels");
-    assert!(g.get("3").is_none(), "no text conditioning");
-    assert_eq!(g["1"]["inputs"]["ckpt_name"], "sam3.1_multiplex_fp16.safetensors");
+    let g = &st.runs[0].request;
+    assert_eq!(g["params"]["points"], r#"[{"x":30,"y":20}]"#, "the point in the request's pixels");
+    assert_eq!(g["params"]["models"]["ckpt"], "sam3.1_multiplex_fp16.safetensors");
     drop(st);
     for p in [json!({}), json!({"x": 30}), json!({"x": -1, "y": 2}), json!({"x": 64, "y": 2}), json!({"x": "a", "y": 2})] {
         assert!(matches!(s.execute(BY_POINT, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
@@ -70,7 +70,7 @@ fn by_point_selects_the_object_under_the_point() {
 /// what it encloses, `soften` feathers its edge; validated, in that order.
 #[test]
 fn grow_fill_holes_and_soften_finish_the_detectors_mask() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     // The fake finds x 16..48, y 12..36; widened by 4 on every side.
     s.execute(BY_POINT, json!({"x": 30, "y": 20, "grow": 4})).unwrap();
@@ -108,34 +108,32 @@ fn grow_fill_holes_and_soften_finish_the_detectors_mask() {
 
 #[test]
 fn a_box_and_negative_points_reach_the_detector_and_refine_softens_the_edge() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     // A box: the box template with PrimitiveBoundingBox in the request's pixels; no points.
     let r = s.execute(BY_POINT, json!({"box": [10, 8, 40, 30]})).unwrap();
     assert_eq!(r["selected"], true);
     {
         let st = fake.state();
-        let g = &st.prompts[0].1;
-        assert_eq!(g["7"]["class_type"], "PrimitiveBoundingBox");
-        assert_eq!((g["7"]["inputs"]["x"].as_i64(), g["7"]["inputs"]["y"].as_i64()), (Some(10), Some(8)));
-        assert_eq!((g["7"]["inputs"]["width"].as_i64(), g["7"]["inputs"]["height"].as_i64()), (Some(40), Some(30)));
-        assert_eq!(g["4"]["inputs"]["bboxes"], json!(["7", 0]));
-        assert_eq!(g["4"]["inputs"]["positive_coords"], "[]");
-        assert_eq!(g["4"]["inputs"]["negative_coords"], "[]");
+        let g = &st.runs[0].request;
+        assert_eq!((g["params"]["bx"].as_i64(), g["params"]["by"].as_i64()), (Some(10), Some(8)));
+        assert_eq!((g["params"]["bw"].as_i64(), g["params"]["bh"].as_i64()), (Some(40), Some(30)));
+        assert_eq!(g["params"]["points"], "[]");
+        assert_eq!(g["params"]["negatives"], "[]");
     }
     assert_eq!(s.active().unwrap().history.entries().last().map(String::as_str), Some("Select by Box"));
     // Points to include and exclude, with x/y as the first positive.
     s.execute(BY_POINT, json!({"x": 30, "y": 20, "points": [[40, 20]], "negativePoints": [[5, 5], [60, 40]]})).unwrap();
     {
         let st = fake.state();
-        let g = &st.prompts[1].1;
-        assert_eq!(g["4"]["inputs"]["positive_coords"], r#"[{"x":30,"y":20},{"x":40,"y":20}]"#);
-        assert_eq!(g["4"]["inputs"]["negative_coords"], r#"[{"x":5,"y":5},{"x":60,"y":40}]"#);
-        assert!(g.get("7").is_none(), "no box: the point template");
+        let g = &st.runs[1].request;
+        assert_eq!(g["params"]["points"], r#"[{"x":30,"y":20},{"x":40,"y":20}]"#);
+        assert_eq!(g["params"]["negatives"], r#"[{"x":5,"y":5},{"x":60,"y":40}]"#);
+        assert!(g["params"].get("bx").is_none(), "no box: the point template");
     }
     // A box with a negative size is normalised and clipped; a tiny one is refused.
     s.execute(BY_POINT, json!({"box": [50, 38, -40, -30]})).unwrap();
-    assert_eq!(fake.state().prompts[2].1["7"]["inputs"]["x"], 10);
+    assert_eq!(fake.state().runs[2].request["params"]["bx"], 10);
     for p in
         [json!({"box": [1, 1, 1, 1]}), json!({"box": [1, 2, 3]}), json!({"negativePoints": [[1, 1]]}), json!({"x": 1, "y": 1, "negativePoints": [[99, 1]]})]
     {
@@ -153,7 +151,7 @@ fn a_box_and_negative_points_reach_the_detector_and_refine_softens_the_edge() {
 
 #[test]
 fn a_probe_is_kept_for_the_click_that_follows_and_goes_stale_with_an_edit() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     let steps = s.active().unwrap().history.past_len();
     let journal = s.journal.len();
@@ -174,39 +172,43 @@ fn a_probe_is_kept_for_the_click_that_follows_and_goes_stale_with_an_edit() {
         assert_eq!(d.history.past_len(), steps, "no undo step");
     }
     assert_eq!(s.journal.len(), journal, "not journaled");
-    assert_eq!(fake.state().prompts.len(), 1);
+    assert_eq!(fake.state().runs.len(), 1);
     assert_eq!(s.select_probes.len(), 1);
     // The click applies the kept probe: no second server call, one undo step.
     let r = s.execute(BY_POINT, json!({"x": 30, "y": 20, "probe": id})).unwrap();
     assert_eq!(r["probe"], true);
-    assert_eq!(fake.state().prompts.len(), 1);
+    assert_eq!(fake.state().runs.len(), 1);
     assert_eq!(selection_bounds(&s), Some(Rect::new(16, 12, 48, 36)));
     assert_eq!(s.active().unwrap().history.past_len(), steps + 1);
     // After an edit the probe is stale: the server is asked.
     let r = s.execute(BY_POINT, json!({"x": 30, "y": 20, "probe": id, "mode": "add"})).unwrap();
     assert!(r.get("probe").is_none());
-    assert_eq!(fake.state().prompts.len(), 2);
+    assert_eq!(fake.state().runs.len(), 2);
     // An unknown probe too.
     s.execute(BY_POINT, json!({"x": 30, "y": 20, "probe": 999})).unwrap();
-    assert_eq!(fake.state().prompts.len(), 3);
+    assert_eq!(fake.state().runs.len(), 3);
     // Nothing under the pointer is an error that keeps nothing.
-    let none = FakeComfy::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
+    let none = FakeNative::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
     let mut s2 = session(&none.url);
     assert!(s2.execute(PROBE, json!({"x": 1, "y": 1})).is_err());
     assert!(s2.select_probes.is_empty());
     // Probes of big pictures go out small.
     let mut big = Session::new();
     big.execute("file.new", json!({"width": 2400, "height": 1800})).unwrap();
-    big.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    big.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let r = big.execute(PROBE, json!({"x": 1200, "y": 900})).unwrap();
     assert!(r["width"].as_u64().unwrap() * r["height"].as_u64().unwrap() <= 768 * 768, "{r}");
-    let sent = photocraft_genai::png::decode_rgba8(&fake.state().uploads.last().unwrap().1).unwrap();
+    let sent = fake.state().pictures.last().unwrap().clone();
     assert!(u64::from(sent.width) * u64::from(sent.height) <= 768 * 768);
 }
 
 #[test]
 fn modes_combine_with_the_current_selection() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.execute("select.rect", json!({"x": 0, "y": 0, "width": 20, "height": 20})).unwrap();
     s.execute(BY_TEXT, json!({"prompt": "x", "mode": "add"})).unwrap();
@@ -220,12 +222,12 @@ fn modes_combine_with_the_current_selection() {
     assert_eq!(m.read_region(Rect::new(2, 2, 3, 3)), vec![1.0]);
     s.execute(BY_TEXT, json!({"prompt": "x", "mode": "replace", "threshold": 0.3})).unwrap();
     assert_eq!(selection_bounds(&s), Some(Rect::new(16, 12, 48, 36)));
-    assert_eq!(fake.state().prompts.last().unwrap().1["4"]["inputs"]["threshold"], 0.3);
+    assert_eq!(fake.state().runs.last().unwrap().request["params"]["threshold"], 0.3);
 }
 
 #[test]
 fn instances_can_be_picked_one_at_a_time() {
-    let fake = FakeComfy::start_with(Options { segments: vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]], ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options { segments: vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]], ..Options::default() }).unwrap();
     let mut s = session(&fake.url);
     let r = s.execute(BY_TEXT, json!({"prompt": "window"})).unwrap();
     assert_eq!(r["count"], 2);
@@ -239,7 +241,7 @@ fn instances_can_be_picked_one_at_a_time() {
 
 #[test]
 fn nothing_found_is_a_clear_error_that_changes_nothing() {
-    let fake = FakeComfy::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
+    let fake = FakeNative::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
     let mut s = session(&fake.url);
     s.execute("select.rect", json!({"x": 1, "y": 1, "width": 5, "height": 5})).unwrap();
     let steps = s.active().unwrap().history.past_len();
@@ -251,14 +253,14 @@ fn nothing_found_is_a_clear_error_that_changes_nothing() {
 
 #[test]
 fn select_subject_ml_uses_a_fixed_phrase() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.execute(SUBJECT_ML, json!({})).unwrap();
     s.execute(SUBJECT_ML, json!({"what": "sky", "mode": "add"})).unwrap();
     let st = fake.state();
-    assert_eq!(st.prompts.len(), 2, "the main subject found at once: no fallback asked");
-    assert_eq!(st.prompts[0].1["3"]["inputs"]["text"], "the main subject");
-    assert_eq!(st.prompts[1].1["3"]["inputs"]["text"], "sky");
+    assert_eq!(st.runs.len(), 2, "the main subject found at once: no fallback asked");
+    assert_eq!(st.runs[0].request["prompt"], "the main subject");
+    assert_eq!(st.runs[1].request["prompt"], "sky");
     drop(st);
     assert!(matches!(s.execute(SUBJECT_ML, json!({"what": "banana"})), Err(EngineError::BadParams { .. })));
 }
@@ -267,7 +269,7 @@ fn select_subject_ml_uses_a_fixed_phrase() {
 fn select_subject_falls_back_through_the_kinds_of_thing_a_picture_is_of_and_drops_specks() {
     // "the main subject" and "the foreground object" find nothing; "person" finds a figure and
     // a speck beside it.
-    let fake = FakeComfy::start_with(Options {
+    let fake = FakeNative::start_with(Options {
         segments_for: vec![
             ("the main subject".into(), vec![]),
             ("the foreground object".into(), vec![]),
@@ -278,7 +280,7 @@ fn select_subject_falls_back_through_the_kinds_of_thing_a_picture_is_of_and_drop
     .unwrap();
     let mut s = session(&fake.url);
     let r = s.execute(SUBJECT_ML, json!({})).unwrap();
-    let asked: Vec<String> = fake.state().prompts.iter().map(|p| p.1["3"]["inputs"]["text"].as_str().unwrap_or_default().to_string()).collect();
+    let asked: Vec<String> = fake.state().runs.iter().map(|p| p.request["prompt"].as_str().unwrap_or_default().to_string()).collect();
     assert_eq!(asked, ["the main subject", "the foreground object", "person"]);
     assert_eq!(r["count"], 1, "the speck beside the figure is dropped: {r}");
     assert_eq!(selection_bounds(&s), Some(Rect::new(16, 12, 48, 36)));
@@ -286,15 +288,15 @@ fn select_subject_falls_back_through_the_kinds_of_thing_a_picture_is_of_and_drop
     let r = s.execute(BY_TEXT, json!({"prompt": "person", "instance": 2})).unwrap();
     assert_eq!(r["count"], 2);
     // Nothing anywhere: one clear error after the whole chain, the selection untouched.
-    let none = FakeComfy::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
+    let none = FakeNative::start_with(Options { segments: vec![], ..Options::default() }).unwrap();
     let mut s2 = session(&none.url);
     let e = s2.execute(SUBJECT_ML, json!({})).unwrap_err().to_string();
     assert!(e.contains("nothing matching"), "{e}");
-    assert_eq!(none.state().prompts.len(), SUBJECT_FALLBACKS.len(), "every fallback was tried");
+    assert_eq!(none.state().runs.len(), SUBJECT_FALLBACKS.len(), "every fallback was tried");
     assert!(s2.active().unwrap().doc.selection.is_none());
     // The server's own words for an empty mask batch read as "nothing found".
     let bad =
-        FakeComfy::start_with(Options { fail: Some("SaveImage: index 0 is out of bounds for dimension 0 with size 0".into()), ..Options::default() }).unwrap();
+        FakeNative::start_with(Options { fail: Some("SaveImage: index 0 is out of bounds for dimension 0 with size 0".into()), ..Options::default() }).unwrap();
     let mut s3 = session(&bad.url);
     let e = s3.execute(BY_TEXT, json!({"prompt": "unicorn"})).unwrap_err().to_string();
     assert!(e.contains("nothing matching \"unicorn\""), "{e}");
@@ -302,10 +304,10 @@ fn select_subject_falls_back_through_the_kinds_of_thing_a_picture_is_of_and_drop
 
 #[test]
 fn the_active_layer_can_be_sampled_instead_of_the_composite() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.execute(BY_TEXT, json!({"prompt": "x", "sampleAllLayers": false})).unwrap();
-    let sent = photocraft_genai::png::decode_rgba8(&fake.state().uploads[0].1).unwrap();
+    let sent = fake.state().pictures[0].clone();
     assert_eq!((sent.width, sent.height), (64, 48));
     assert_eq!(sent.get(5, 5), Some([0, 0, 0, 0]), "the empty active layer is transparent, the white Background is not sampled");
 }
@@ -313,14 +315,18 @@ fn the_active_layer_can_be_sampled_instead_of_the_composite() {
 #[test]
 fn big_canvases_are_sent_downscaled_and_the_masks_come_back_at_canvas_size() {
     // 2400×1800 = 4.3 MP goes out at ≤ 2 MP; the fake finds the centre quarter of what it got.
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 2400, "height": 1800})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.edit_prefs(|p| p.integrations.set_comfy_route(fake.url.clone()));
+    s.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = false;
+    });
     let r = s.execute(BY_TEXT, json!({"prompt": "the lighthouse"})).unwrap();
     assert_eq!(r["count"], 1);
-    let sent = photocraft_genai::png::decode_rgba8(&fake.state().uploads[0].1).unwrap();
+    let sent = fake.state().pictures[0].clone();
     assert!(u64::from(sent.width) * u64::from(sent.height) <= 2048 * 1024, "{}×{}", sent.width, sent.height);
     assert!(sent.width.is_multiple_of(16) && sent.height.is_multiple_of(16) && sent.width > sent.height);
     let b = selection_bounds(&s).unwrap();
@@ -332,7 +338,7 @@ fn big_canvases_are_sent_downscaled_and_the_masks_come_back_at_canvas_size() {
 
 #[test]
 fn parameters_are_validated_and_the_command_needs_a_document() {
-    let fake = FakeComfy::start().unwrap();
+    let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     for p in [
         json!({}),
@@ -347,7 +353,7 @@ fn parameters_are_validated_and_the_command_needs_a_document() {
         let e = s.execute(BY_TEXT, p.clone()).unwrap_err();
         assert!(matches!(e, EngineError::BadParams { .. }), "{p}: {e}");
     }
-    assert!(fake.state().requests.is_empty());
+    assert!(fake.state().runs.is_empty());
     let mut empty = Session::new();
     assert!(matches!(empty.execute(BY_TEXT, json!({"prompt": "x"})), Err(EngineError::Disabled(..))));
     let m = s.execute("generate.models", json!({})).unwrap();
