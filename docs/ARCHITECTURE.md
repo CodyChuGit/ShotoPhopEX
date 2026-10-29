@@ -7,7 +7,7 @@ file restates the contracts a contributor needs while working here.
 ## Five one-way layers
 
 ```
-gn-perception (SAM 3.1 via ONNX Runtime)      ── own runtime, no dependency on the layers below
+gn-perception (SAM 3.1 on candle, gn-segment) ── no dependency on the layers below
 gn-weights    (BYOM loader)                   ── depends on gn-kernels (device buffers)
 gn-models     (thin definitions)              ── depends on gn-blocks, gn-weights
 gn-blocks     (the library)                   ── depends on gn-kernels
@@ -26,8 +26,8 @@ gn-kernels    (the GPU behind a trait)        ── depends on nothing of ours
 - **gn-weights** reads official safetensors (mmap, hardened parser, no pickle ever), GGUF, and
   ComfyUI's repack naming through per-model key maps; indexes a folder into "what fits which
   slot".
-- **gn-perception** binds ONNX Runtime (`ort`) with the CUDA/TensorRT providers for SAM 3.1 and
-  future detectors; engine caches are per GPU + runtime version.
+- **gn-perception** serves SAM 3.1 through `gn-segment`, its candle port of the checkpoint (CPU or
+  CUDA), behind the worker protocol. There is no ONNX Runtime (removed on 2026-10-29).
 
 Around them: **gn-harness** (this repository's yardstick), **gn-engine** (the worker process:
 channel server, residency, VRAM budget) and **gn-sdcpp** (the sd.cpp FFI behind the same worker
@@ -49,4 +49,4 @@ process group on Unix. A CUDA fault ends the worker, never the editor.
 ## Platforms
 
 Windows and Linux are first-class from day one; every phase closes on both. macOS arrives as a
-`Kernels` implementation over Metal and the CoreML provider for perception.
+`Kernels` implementation over Metal (and candle's Metal backend for perception).
