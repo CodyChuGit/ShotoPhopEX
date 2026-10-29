@@ -266,7 +266,14 @@ pub struct Pipeline {
     te: std::sync::Mutex<Option<QwenTextEncoder>>,
     dit: QwenImageDit,
     vae: QwenImageVae,
-    vision: Option<VisionTower>,
+    /// The vision tower (f32, ~2.4 GB for Qwen3-VL 8B) when `opts.vision`; `None` after
+    /// [`Self::make_room`] gave its memory to the sampling, loaded again by the next picture.
+    vision: std::sync::Mutex<Option<VisionTower>>,
+    /// Set once [`Self::make_room`] had to drop the vision tower: from then on it is loaded for
+    /// each picture's encode and dropped after it (0.5 s a picture), since keeping it between
+    /// requests on a full card left the next sampling to Windows' paging (2026-10-29: a cold
+    /// Upscale's first tiles took 29 s to denoise instead of 3.5).
+    vision_transient: std::sync::atomic::AtomicBool,
     opts: Options,
     /// Bounded to one picture conditioning; fresh seeds reuse the encoders as in ComfyUI.
     conditioning: std::sync::Mutex<Option<(ConditioningKey, Conditioning)>>,
@@ -438,9 +445,7 @@ impl Pipeline {
         let vision = if opts.vision {
             progress(0.9, "Loading the vision tower");
             let t0 = Instant::now();
-            let files = src.text_files()?;
-            let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, &dev)? };
-            let tower = VisionTower::load(&VisionConfig::default(), vb32.pp("model").pp("visual"))?;
+            let tower = load_vision(&src, &dev)?;
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "vision tower loaded");
             Some(tower)
         } else {
@@ -456,7 +461,8 @@ impl Pipeline {
             te: std::sync::Mutex::new(Some(te)),
             dit,
             vae,
-            vision,
+            vision: std::sync::Mutex::new(vision),
+            vision_transient: std::sync::atomic::AtomicBool::new(false),
             opts,
             conditioning: std::sync::Mutex::new(None),
             head: std::sync::Mutex::new(None),
@@ -477,6 +483,28 @@ impl Pipeline {
         }
     }
 
+    /// Run `f` on the vision tower, loading it again first if [`Self::make_room`] dropped it.
+    fn with_vision<R>(&self, f: impl FnOnce(&VisionTower) -> Result<R>) -> Result<R> {
+        anyhow::ensure!(self.opts.vision, "this pipeline was loaded without the vision tower; references need it");
+        let mut slot = self.vision.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            let t0 = Instant::now();
+            *slot = Some(load_vision(&self.src, &self.dev)?);
+            tracing::info!(load_s = t0.elapsed().as_secs_f32(), "vision tower loaded again");
+        }
+        match slot.as_ref() {
+            Some(tower) => f(tower),
+            None => anyhow::bail!("no vision tower"),
+        }
+    }
+
+    /// After a request's pictures are encoded: drop the vision tower when it is transient.
+    fn release_vision(&self) {
+        if self.vision_transient.load(std::sync::atomic::Ordering::Relaxed) {
+            *self.vision.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
     /// Is the text encoder on the device right now?
     pub fn text_encoder_resident(&self) -> bool {
         self.te.lock().unwrap_or_else(|e| e.into_inner()).is_some()
@@ -484,20 +512,35 @@ impl Pipeline {
 
     /// The prompt is encoded; make room for the sampling if the device cannot hold the
     /// prefix cache of `prefix_len` rows (plus the step's working set) beside everything
-    /// resident: drop the text encoder, which the next prompt loads again.
+    /// resident: drop the vision tower first (0.7 s to load again), then, if that is not
+    /// enough, the text encoder (5 s), which the next prompt loads again.
     fn make_room(&self, prefix_len: usize, target_len: usize) {
         if !self.opts.evict_text_encoder || !self.text_encoder_resident() {
             return;
         }
-        // The pool's retained memory is this process's to reuse (the driver counts it as used).
-        let Some((free, total)) = crate::device::usable_vram(&self.dev) else { return };
         let cache = self.dit.prefix_cache_bytes(prefix_len);
         // The step's working set: the joint keys and values the target attends to (two
         // copies in flight), the prefix pass's f32 score chunks, and 512 MiB headroom.
         let working = 4 * (prefix_len + target_len) * dit::INNER * 2 + 3 * dit::HEADS * 1024 * prefix_len * 4 + (512 << 20);
-        let need = cache + working;
+        // The sampling draws on the pool's slack first, then the driver's free memory, which must
+        // keep its paging headroom.
+        let need = cache + working + crate::device::PAGING_HEADROOM;
+        // The pool's retained memory is this process's to reuse (the driver counts it as used).
+        let Some((free, total)) = crate::device::usable_vram(&self.dev) else { return };
         if free >= need {
             return;
+        }
+        // The f32 vision tower is ~2.4 GB and only the next picture needs it: on a 32 GB card
+        // with the desktop's ~3.4 GB that alone covered a warm Upscale tile's sampling, which
+        // otherwise reloaded the text encoder for every tile (2026-10-29: 56 s against 29 s).
+        let dropped = self.vision.lock().unwrap_or_else(|e| e.into_inner()).take().is_some();
+        if dropped {
+            self.vision_transient.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = self.dev.synchronize();
+            if crate::device::usable_vram(&self.dev).is_some_and(|(free, _)| free >= need) {
+                tracing::info!(free_gb = free as f32 / 1e9, need_gb = need as f32 / 1e9, "dropped the vision tower for the sampling");
+                return;
+            }
         }
         tracing::info!(free_gb = free as f32 / 1e9, need_gb = need as f32 / 1e9, total_gb = total as f32 / 1e9, "evicting the text encoder for the sampling");
         *self.te.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -542,7 +585,6 @@ impl Pipeline {
     /// Each reference through the VAE encoder (its packed normalised latent and grid) and the
     /// vision tower.
     fn prepare_references(&self, refs: &[RefImage]) -> Result<(Vec<PackedLatent>, Vec<VisionFeatures>)> {
-        let Some(tower) = &self.vision else { anyhow::bail!("this pipeline was loaded without the vision tower; references need it") };
         anyhow::ensure!(self.vae.can_encode(), "this VAE weight set has no encoder; references need it");
         let mut latents = Vec::with_capacity(refs.len());
         let mut feats = Vec::with_capacity(refs.len());
@@ -561,10 +603,13 @@ impl Pipeline {
             latents.push((packed, lh, lw, offset));
             let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
             let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
-            let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
-            tracing::info!(w, h, vw, vh, tokens = gh * gw / 4, "reference dimensions");
-            feats.push(crate::profile::phase("vision", &self.dev, || tower.forward(&patches, gh, gw))?);
+            feats.push(self.with_vision(|tower| {
+                let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
+                tracing::info!(w, h, vw, vh, tokens = gh * gw / 4, "reference dimensions");
+                crate::profile::phase("vision", &self.dev, || tower.forward(&patches, gh, gw))
+            })?);
         }
+        self.release_vision();
         Ok((latents, feats))
     }
 
@@ -641,12 +686,15 @@ impl Pipeline {
         let t0 = Instant::now();
         let feats: Vec<VisionFeatures> = match image {
             Some(r) => {
-                let Some(tower) = &self.vision else { anyhow::bail!("this pipeline was loaded without the vision tower") };
                 let (_, rgb, (w, h)) = prepare_ref(r, &self.dev)?;
                 let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
                 let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
-                let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
-                vec![tower.forward(&patches, gh, gw)?]
+                let feats = self.with_vision(|tower| {
+                    let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
+                    tower.forward(&patches, gh, gw)
+                })?;
+                self.release_vision();
+                vec![feats]
             }
             None => Vec::new(),
         };
@@ -787,6 +835,10 @@ impl Pipeline {
                 })
             })?;
             latents = (latents + (v * *dt as f64)?)?;
+            if i == 0 {
+                // The step's working set is allocated by now.
+                crate::device::warn_if_paging(&self.dev, "2.1 sampling");
+            }
             progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
         }
         self.dev.synchronize()?;
@@ -800,6 +852,7 @@ impl Pipeline {
         let z = vae::unpack_latents_hw(&latents, lh, lw)?;
         let img =
             if req.references.is_empty() { self.vae.decode_auto(&z, self.opts.vae_tile)? } else { self.vae.decode_auto_bounded(&z, self.opts.vae_tile)? };
+        crate::device::warn_if_paging(&self.dev, "2.1 decode");
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, rgba) = vae::to_rgba_u8(&img)?;
@@ -861,6 +914,13 @@ impl Pipeline {
 /// snapshot's bf16 shards, quantized on load when asked.
 pub fn load_text_encoder(model: &Path, dev: &Device, dtype: DType, quant_text: bool, text_gguf: Option<&Path>) -> Result<QwenTextEncoder> {
     load_text_from(&Source::Snapshot(model.to_path_buf()), dev, dtype, quant_text, text_gguf)
+}
+
+/// The Qwen3-VL vision tower (f32) from the text encoder's files.
+fn load_vision(src: &Source, dev: &Device) -> Result<VisionTower> {
+    let files = src.text_files()?;
+    let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, dev)? };
+    VisionTower::load(&VisionConfig::default(), vb32.pp("model").pp("visual"))
 }
 
 /// [`load_text_encoder`] from either source (ComfyUI's single file roots the language model at
