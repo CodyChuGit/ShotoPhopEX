@@ -4,6 +4,16 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29 (night): speed pass 2, item 1: Split keeps its DiT resident
+
+Speed pass 2 started from genai-native main `aa5ccdf` and photoshopex `72efc7dd`. Branch
+`perf/split-resident` in both repos (genai-native `9e10f13`, pinned here). `LayeredPipeline` keeps
+the DiT and the VAE resident between splits, plus a one-entry conditioning cache for the prompt.
+The app sends `SPLIT_DEFAULT_PROMPT`, so warm splits hit it. A cache miss drops the DiT before
+the text encoder loads. Warm Split 91.9 to 86.0 s, layers byte-identical (benchmarks.md §0).
+`QIR_LAYERED_RESIDENT=0` restores per-split loads.
+The denoise (84.4 s of 86) is what's left; item 2 (INT8 linears without paging) is next.
+
 ## 2026-10-29 (later): upstream PhotoCraft v0.17.0 merged
 
 Merged storytold/photocraft `v0.17.0` (from v0.11.1+172; about 4,000 commits: egui 0.37, engine

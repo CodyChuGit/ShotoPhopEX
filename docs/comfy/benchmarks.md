@@ -129,6 +129,17 @@ cold and warm. A worker that refuses the batch is asked tile by tile. The same P
 also fixes Upscale to run as a background job: a nested `image.imageSize` used to switch the job
 off, so Upscale ran inline on the UI thread.
 
+**Split into Layers with the DiT resident, 2026-10-29 night** (speed pass 2, genai-native
+`perf/split-resident` `9e10f13`). The Layered DiT (~20 GB) and VAE stay on the card between
+splits, and the prompt's text conditioning is kept. The app always sends its default split
+prompt, so a warm split loads nothing. A new prompt drops the DiT for the text encoder, since the
+two don't fit 32 GB together. One binary, `QIR_LAYERED_RESIDENT=0` against the default, ABBA
+order, 45 s cooldowns, seed 7, 3 layers at ~1 MP, a cold split and two warm per worker: warm
+**91.9 to 86.0 s** (91.6 / 92.2 / 91.7 / 92.1 against 85.7 / 86.2 / 85.7 / 86.2). The phases
+gone are the text encode (2.6 s, its load included), the DiT load (3.2 s) and the VAE loads
+(0.3 s). The 84.4 s denoise is unchanged. Every layer is **byte-identical** to the per-split
+loads.
+
 **Upscale on fewer, larger tiles by default, 2026-10-29** (PhotoshopEX `perf/upscale-tiles`, the
 owner's call after the seam crops). The default tiling is now the fewest equal tiles of at most
 1.15 MP each, never a strip of three or more; `grid` names one and `tileMegapixels` asks for the
