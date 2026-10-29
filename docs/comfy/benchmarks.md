@@ -75,6 +75,27 @@ the flash kernel; tiles within 0.0036/255 of before, Krea 2 with a LoRA byte-ide
 **40.6 s** against ComfyUI's 39.0 s with the same Restore LoRA (1.04×; the six model calls are
 faster natively, the remainder is the app's per-tile work).
 
+**Split into Layers with SageAttention2, 2026-10-29** (genai-native `perf/layered-attention`;
+the 3-layer split of the 864×1152 portrait, seed 7, through the app's CLI, one fresh worker per
+variant, RTX 5090). Quality is judged by compositing the three layers back onto the input picture,
+the split's own job: the background layer's invented detail moves with any numeric change (int8
+and fp8 matmuls moved it as much as Sage2), so a per-layer comparison with the bf16 run measures
+divergence, not damage. Flash at two seeds sets the band.
+
+| Variant | Warm | Composite vs input |
+|---|---|---|
+| bf16 flash attention (before) | 137.2 s | 36.91 dB (seed 8: 139.1 s, 38.73 dB) |
+| **SageAttention2, blocks 0/52/58 on flash (now the default)** | **92.6 s (−33 %)** | **36.91 dB** |
+| fp8 tensor-core GEMM, activations scaled (rejected) | 133.0 s | 34.34 dB |
+| Sage2 + fp8 GEMM (rejected) | 106.2 s | 32.91 dB |
+| int8 ConvRot from the fp8 file (rejected: slow path) | 222.6 s | 36.04 dB |
+
+Sage2 takes V in f16 and Layered's values reach |23,680|: each head's V is scaled into f16's range
+and its output back (exact). Blocks 0, 52 and 58 keep the flash kernel: their queries/keys reach
+|796|, |45.5| and |80.5| where the rest stay at or under |21|, and on block 0 Sage2's INT8 was
+12–89 % off flash per token range (blocks 1 and 59: 0.4–3.1 %). ComfyUI 0.43's split: 124.8 s
+(§0, before this change); native now 92.6 s, **0.74×**.
+
 **Upscale rerun, 2026-10-29** (`speed-table.ps1 -Only "upscale 2x" -UpscaleLora restore`, the
 cdcedbd8 CLI so both routes run, genai-native `8d4e86e`, ComfyUI 0.43, the app sending the
 Restore LoRA at 0.5 on both): native cold 51.7 s, **warm 30.8 s**; ComfyUI cold 63.3 s, warm
