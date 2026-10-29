@@ -115,6 +115,8 @@ ComfyUI 0.43's Upscale: 44.1 s, so native now **0.69×**. The Q8_0 text encoder 
 also removed the evictions (29.1 s) but moved Edit's output to 38.45 dB for no Edit gain, so it
 stays the low-VRAM option.
 
+**Qwen-Image-Edit-2511 with SageAttention2, 2026-10-29** (genai-native `e9a4ea1`, the same flash blocks as Layered after its own survey: 0 at |728|, 58 at |79|, 52 at |53|): Lightning-8 edit **8.09 to 7.25 s** warm (cold 43.3 to 33.0 s), the 40-step CFG 4 edit **94.4 to 86.8 s**; same seed against flash 26.8 / 35.8 dB (the snowflakes placed differently, composition, scarf and face alike) where a second seed is 14.9 / 14.5 dB.
+
 **Upscale rerun, 2026-10-29** (`speed-table.ps1 -Only "upscale 2x" -UpscaleLora restore`, the
 cdcedbd8 CLI so both routes run, genai-native `8d4e86e`, ComfyUI 0.43, the app sending the
 Restore LoRA at 0.5 on both): native cold 51.7 s, **warm 30.8 s**; ComfyUI cold 63.3 s, warm
