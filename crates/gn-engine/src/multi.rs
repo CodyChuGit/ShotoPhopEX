@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 
 use serde_json::{Value, json};
 
-use crate::protocol::{DoneInfo, ErrorKind, Health, RunRequest};
+use crate::protocol::{DoneInfo, ErrorKind, Health, Preview, RunRequest};
 use crate::server::{Engine, EngineError};
 
 pub struct Multi {
@@ -72,6 +72,17 @@ impl Engine for Multi {
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        self.run_previewed(req, blobs, progress, &mut |_| {}, cancel)
+    }
+
+    fn run_previewed(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        preview: &mut dyn FnMut(Preview),
+        cancel: &AtomicBool,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
         let Some(i) = self.pick(&req.model) else {
             return Err(EngineError::new(ErrorKind::ModelMissing, format!("no engine here serves {}", req.model)));
         };
@@ -82,7 +93,7 @@ impl Engine for Multi {
             }
         }
         let Some(e) = self.engines.get_mut(i) else { return Err(EngineError::new(ErrorKind::Internal, "engine vanished")) };
-        e.run(req, blobs, progress, cancel)
+        e.run_previewed(req, blobs, progress, preview, cancel)
     }
 
     fn free(&mut self) {
@@ -134,6 +145,7 @@ mod tests {
             mask: None,
             references: Vec::new(),
             params: Default::default(),
+            preview: Default::default(),
         };
         let (info, pics) = m.run(&req, &[], &mut |_, _| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!((info.images.len(), pics[0].len()), (1, 4 * 2 * 4));
@@ -163,6 +175,7 @@ mod tests {
             mask: None,
             references: Vec::new(),
             params: Default::default(),
+            preview: Default::default(),
         };
         let go = |m: &mut Multi, model: &str| m.run(&req(model), &[], &mut |_, _| {}, &AtomicBool::new(false)).map(|_| ());
         go(&mut m, "sam3.1/segment").unwrap();

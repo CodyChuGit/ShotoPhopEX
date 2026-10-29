@@ -26,8 +26,9 @@ use std::time::Instant;
 
 use std::sync::Arc;
 
-use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
+use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, Preview, RunRequest};
 use gn_engine::server::{Engine, EngineError};
+use qwen_image_rs::preview::{Frame, LatentSpace, PreviewMode, Previewer, StepPreview, TinyDecoder, TINY_DIR};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::edit2511_pipeline::{self, Edit2511Pipeline, Edit2511Request};
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
@@ -159,6 +160,39 @@ pub struct DiffusionEngine {
     /// Why a CUDA build serves nothing on this PC (no NVIDIA driver or card, a card older than
     /// the kernels): the engine lists no templates and says so in its health.
     refused: Option<String>,
+    /// The tiny decoder Sharp previews use, loaded on the first Sharp run of its latent space.
+    tiny: Option<TinyDecoder>,
+}
+
+/// The protocol's preview mode as the pipelines know it.
+fn preview_mode(m: gn_engine::protocol::PreviewMode) -> PreviewMode {
+    match m {
+        gn_engine::protocol::PreviewMode::Off => PreviewMode::Off,
+        gn_engine::protocol::PreviewMode::Fast => PreviewMode::Fast,
+        gn_engine::protocol::PreviewMode::Sharp => PreviewMode::Sharp,
+    }
+}
+
+/// The latent space a family samples in: Qwen-Image-2.1's own 64-channel VAE, the Wan 2.1
+/// family's (Krea 2, Qwen-Image-Edit-2511), or the Layered RGBA VAE's.
+fn latent_space(f: Family) -> LatentSpace {
+    match f {
+        Family::QwenImage21 => LatentSpace::QwenImage21,
+        Family::Krea2 | Family::Edit2511 => LatentSpace::Wan21,
+        Family::Layered => LatentSpace::Layered,
+    }
+}
+
+fn engine_preview(f: Frame) -> Preview {
+    let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+    Preview { step: n(f.step), steps: n(f.steps), output: n(f.output), width: n(f.width), height: n(f.height), rgba: f.rgba }
+}
+
+/// One line in the worker's log per previewed run: how many pictures and what they cost.
+fn log_previews(mode: PreviewMode, viewer: &Previewer<'_>) {
+    if mode != PreviewMode::Off {
+        eprintln!("gn-diffusion: previews {mode:?}: {} pictures in {:.1} ms", viewer.shown, viewer.spent.as_secs_f64() * 1000.0);
+    }
 }
 
 /// The card and, in a CUDA build, the sentence that refuses it (plan-native-engine §10, GPU
@@ -237,7 +271,37 @@ impl DiffusionEngine {
         if let Some(why) = &refused {
             eprintln!("gn-diffusion: {why}");
         }
-        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused }
+        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None }
+    }
+
+    /// For a Sharp preview: `space`'s tiny decoder on the resident pipeline's device, loaded
+    /// once from the model root's `vae_approx/`. Without the file (or when it does not load)
+    /// Sharp shows Fast; the run goes on either way.
+    fn ensure_tiny(&mut self, mode: PreviewMode, space: LatentSpace) {
+        if mode != PreviewMode::Sharp {
+            return;
+        }
+        let dev = match &self.resident {
+            Resident::Qwen(p) => p.device(),
+            Resident::Krea2(p) => p.device(),
+            Resident::Layered(p) => p.device(),
+            Resident::Edit2511(p) => p.device(),
+            Resident::None => return,
+        };
+        if self.tiny.as_ref().is_some_and(|t| t.space() == space && t.on(dev)) {
+            return;
+        }
+        // A space no tiny decoder decodes (Layered) shows Fast without a word.
+        let Some(name) = space.tiny_file() else { return };
+        self.tiny = None;
+        let Some(file) = TinyDecoder::file(&self.models_root, space) else {
+            eprintln!("gn-diffusion: no {name} under {}; Sharp previews show Fast", self.models_root.join(TINY_DIR).display());
+            return;
+        };
+        match TinyDecoder::load(&file, space, dev) {
+            Ok(t) => self.tiny = Some(t),
+            Err(e) => eprintln!("gn-diffusion: {} did not load ({e}); Sharp previews show Fast", file.display()),
+        }
     }
 
     /// Where a LoRA named by a request lives: an absolute path as given, a name under the model
@@ -514,6 +578,7 @@ impl DiffusionEngine {
         req: &RunRequest,
         blobs: &[Vec<u8>],
         progress: &mut dyn FnMut(f32, &str),
+        preview: &mut dyn FnMut(Preview),
         cancel: &AtomicBool,
         started: Instant,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
@@ -533,14 +598,21 @@ impl DiffusionEngine {
         let result = (|| {
             self.ensure_loaded(Family::Edit2511, progress)?;
             ask.loras = self.stack_for(&params)?;
+            let mode = preview_mode(req.preview);
+            self.ensure_tiny(mode, LatentSpace::Wan21);
             let Resident::Edit2511(p) = &self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no 2511 pipeline")) };
-            p.generate(&ask, |i, n| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Editing"), cancel).map_err(|e| {
+            let mut sink = |f: Frame| preview(engine_preview(f));
+            let mut viewer = Previewer::new(mode, LatentSpace::Wan21, self.tiny.as_ref(), &mut sink);
+            let shown = (mode != PreviewMode::Off).then_some(&mut viewer as &mut dyn StepPreview);
+            let out = p.generate_previewed(&ask, |i, n| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Editing"), shown, cancel).map_err(|e| {
                 if cancel.load(Ordering::SeqCst) {
                     EngineError::cancelled()
                 } else {
                     EngineError::new(kind_of(&e), e.to_string())
                 }
-            })
+            });
+            log_previews(mode, &viewer);
+            out
         })();
         self.give_back();
         let rgb = match result {
@@ -576,6 +648,7 @@ impl DiffusionEngine {
         req: &RunRequest,
         blobs: &[Vec<u8>],
         progress: &mut dyn FnMut(f32, &str),
+        preview: &mut dyn FnMut(Preview),
         cancel: &AtomicBool,
         started: Instant,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
@@ -601,15 +674,22 @@ impl DiffusionEngine {
         };
         let result: Result<Vec<_>, EngineError> = (|| {
             self.ensure_loaded(Family::Layered, progress)?;
+            let mode = preview_mode(req.preview);
+            self.ensure_tiny(mode, LatentSpace::Layered);
             let Resident::Layered(p) = &self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no pipeline")) };
             let mut report = |i: usize, n: usize| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Splitting");
-            p.split(&rgba, layers, &req.prompt, req.seed, steps, &mut report, cancel).map_err(|e| {
+            let mut sink = |f: Frame| preview(engine_preview(f));
+            let mut viewer = Previewer::new(mode, LatentSpace::Layered, self.tiny.as_ref(), &mut sink);
+            let shown = (mode != PreviewMode::Off).then_some(&mut viewer as &mut dyn StepPreview);
+            let out = p.split_previewed(&rgba, layers, &req.prompt, req.seed, steps, &mut report, shown, cancel).map_err(|e| {
                 if cancel.load(Ordering::SeqCst) {
                     EngineError::cancelled()
                 } else {
                     EngineError::new(kind_of(&e), e.to_string())
                 }
-            })
+            });
+            log_previews(mode, &viewer);
+            out
         })();
         self.give_back();
         let out = match result {
@@ -888,6 +968,19 @@ impl Engine for DiffusionEngine {
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        self.run_previewed(req, blobs, progress, &mut |_| {}, cancel)
+    }
+
+    /// Previews (`req.preview`) from every diffusion family: the step loops hand their
+    /// denoised estimate to a [`Previewer`] (the chat templates have none).
+    fn run_previewed(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        preview: &mut dyn FnMut(Preview),
+        cancel: &AtomicBool,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
         let started = Instant::now();
         if let Some(why) = &self.refused {
             return Err(EngineError::new(ErrorKind::Unsupported, why.clone()));
@@ -931,10 +1024,10 @@ impl Engine for DiffusionEngine {
             return self.chat(req, blobs, progress, cancel, started);
         }
         if task == "layers" {
-            return self.split(req, blobs, progress, cancel, started);
+            return self.split(req, blobs, progress, preview, cancel, started);
         }
         if family == Family::Edit2511 {
-            return self.edit2511(req, blobs, progress, cancel, started);
+            return self.edit2511(req, blobs, progress, preview, cancel, started);
         }
         // The pictures the model sees in order: image 1 is the picture being edited, then the
         // mask (a fill) or the references (an edit; a matte has none). The target takes image
@@ -1049,17 +1142,26 @@ impl Engine for DiffusionEngine {
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             let stop = || cancel.load(Ordering::SeqCst);
             let err = |e: anyhow::Error| EngineError::new(kind_of(&e), e.to_string());
-            match (&self.resident, &batch) {
+            let mode = preview_mode(req.preview);
+            self.ensure_tiny(mode, latent_space(family));
+            let mut sink = |f: Frame| preview(engine_preview(f));
+            let mut viewer = Previewer::new(mode, latent_space(family), self.tiny.as_ref(), &mut sink);
+            let shown = (mode != PreviewMode::Off).then_some(&mut viewer as &mut dyn StepPreview);
+            let out = match (&self.resident, &batch) {
                 (Resident::Qwen(p), Some(seeds)) => {
                     let asks: Vec<Request> =
                         ask.references.iter().zip(seeds).map(|(r, &seed)| Request { references: vec![r.clone()], seed, ..ask.clone() }).collect();
-                    p.generate_batch(&asks, &mut report, &stop).map_err(err)
+                    p.generate_batch_previewed(&asks, &mut report, shown, &stop).map_err(err)
                 }
-                (Resident::Qwen(p), None) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
-                (Resident::Krea2(p), _) if req.model == TEMPLATE_KREA2_STYLE => p.generate_style(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
-                (Resident::Krea2(p), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Qwen(p), None) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Krea2(p), _) if req.model == TEMPLATE_KREA2_STYLE => {
+                    p.generate_style_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                }
+                (Resident::Krea2(p), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::Edit2511(_) | Resident::Layered(_) | Resident::None, _) => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
-            }
+            };
+            log_previews(mode, &viewer);
+            out
         })();
         self.give_back();
         let pics = match result {
@@ -1089,6 +1191,7 @@ impl Engine for DiffusionEngine {
         self.bind();
         self.resident = Resident::None;
         self.loras.clear();
+        self.tiny = None;
     }
 
     fn index(&mut self, dir: &str) -> Value {
@@ -1154,6 +1257,7 @@ mod tests {
             mask: None,
             references: Vec::new(),
             params: BTreeMap::new(),
+            preview: Default::default(),
         }
     }
 
