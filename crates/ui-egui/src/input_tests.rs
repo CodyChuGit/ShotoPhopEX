@@ -563,6 +563,8 @@ fn alt_scroll_zooms_in_steps_around_the_pointer() {
 #[test]
 fn animated_alt_scroll_zoom_still_lands_on_one_step_around_the_pointer() {
     let mut h = harness();
+    // (PhotoshopEX turns Zoom with Scroll Wheel on by default; this measures ⌥ + wheel.)
+    h.state_mut().session.edit_prefs(|p| p.general.zoom_with_scroll_wheel = false);
     assert!(h.state().session.prefs().general.animated_zoom, "on by default");
     let r = h.state().last_canvas_rect;
     let p = pos2(r.center().x + 120.0, r.center().y - 70.0);
@@ -581,6 +583,8 @@ fn animated_alt_scroll_zoom_still_lands_on_one_step_around_the_pointer() {
 #[test]
 fn the_first_animated_notch_back_from_the_limit_zooms_out() {
     let mut h = harness();
+    // (PhotoshopEX turns Zoom with Scroll Wheel on by default; this measures ⌥ + wheel.)
+    h.state_mut().session.edit_prefs(|p| p.general.zoom_with_scroll_wheel = false);
     {
         let v = &mut h.state_mut().ui.views[0];
         (v.zoom, v.fit_pending) = (crate::zoom_levels::MAX / 1.05, false);

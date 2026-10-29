@@ -300,7 +300,6 @@ pub struct UiState {
     /// Selection-tool context menu opened by a plain canvas right-click.
     #[serde(default)]
     pub canvas_tool_menu: Option<crate::canvas_tool_menu::CanvasToolMenu>,
-    /// The guide a Move-tool click selected (`guide_select`): drawn blue, Delete removes it.
     /// The generative task bar under the selection (comfy-photocraft, `generative_bar`).
     #[serde(default)]
     pub generative_bar: crate::generative_bar::GenerativeBar,
@@ -326,8 +325,7 @@ pub struct UiState {
     /// The generative engine's last polled status, for the status bar's dot (`engine_ui`).
     #[serde(skip)]
     pub engine: crate::engine_ui::EngineUi,
-    /// Smoothing is a per-tool option (Brush and Eraser each keep theirs): the tool whose
-    /// smoothing the session brush holds, and the other tools' saved values.
+    /// The guide a Move-tool click selected (`guide_select`): drawn blue, Delete removes it.
     #[serde(default)]
     pub selected_guide: Option<crate::guide_select::SelectedGuide>,
     /// The brush is a per-tool option (the Brush, the Eraser and every retouching tool each keep

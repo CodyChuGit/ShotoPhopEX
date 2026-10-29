@@ -501,11 +501,13 @@ fn theme_switch_keeps_the_selected_color_group_panel() {
 }
 
 /// Full app at `size` (1× scale) on a document with `n` layers named "Row 00", "Row 01", …
-fn app_harness_rows(size: egui::Vec2, theme: ThemeKind, n: usize) -> Harness<'static, PhotocraftApp> {
+fn app_harness_rows(size: egui::Vec2, theme: ThemeKind, n: usize, generative: bool) -> Harness<'static, PhotocraftApp> {
     let mut h = Harness::builder().with_size(size).with_max_steps(64).build_eframe(move |cc| {
         PhotocraftApp::setup_context(&cc.egui_ctx, theme);
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.ui.theme = theme;
+        app.ui.panels.generations = generative;
+        app.ui.panels.generate = generative;
         app.run("file.new", json!({"width": 200, "height": 150})).unwrap();
         for i in 0..n {
             app.run("layer.new.layer", json!({"name": format!("Row {i:02}")})).unwrap();
@@ -531,14 +533,18 @@ fn rows_in_view(h: &Harness<'static, PhotocraftApp>, n: usize) -> usize {
 }
 
 /// #147: the default workspace gives Layers the column's spare height: at least ten rows on a
-/// 900 pt window, and a usable list on a 720 pt one.
+/// 900 pt window, and a usable list on a 720 pt one. PhotoshopEX's Essentials also shows the
+/// Generate and Generations groups (the owner's choice, plan §0), folded to their tab strips,
+/// and Layers keeps five rows at 900 pt. Upstream's guarantee is checked without them.
 #[test]
 fn default_layout_shows_ten_layer_rows_at_900pt() {
-    for (size, want) in [(vec2(1440.0, 900.0), 10), (vec2(1280.0, 720.0), 4)] {
-        let h = app_harness_rows(size, ThemeKind::ProMedium, 40);
+    for (size, want, generative) in
+        [(vec2(1440.0, 900.0), 10, false), (vec2(1280.0, 720.0), 4, false), (vec2(1440.0, 900.0), 5, true), (vec2(1280.0, 720.0), 3, true)]
+    {
+        let h = app_harness_rows(size, ThemeKind::ProMedium, 40, generative);
         let rows = rows_in_view(&h, 40);
         let groups = crate::panel_docking::last_bodies(&h.ctx);
-        assert!(rows >= want, "{size:?}: {rows} rows visible, want ≥ {want}: {groups:?}");
+        assert!(rows >= want, "{size:?} (generative groups {generative}): {rows} rows visible, want ≥ {want}: {groups:?}");
         // Color and Properties stay open, just not at the expense of Layers.
         for g in [Group::Color, Group::Properties] {
             assert!(rect_of(&h, g).height() >= g.compact_height() - 0.5, "{g:?} at {size:?}: {groups:?}");
@@ -550,13 +556,20 @@ fn default_layout_shows_ten_layer_rows_at_900pt() {
 /// user set stay as they are in a shorter one.
 #[test]
 fn defaults_give_way_to_layers_but_user_sizes_stay() {
-    let (app, _, _) = app_with_layers();
+    // Upstream's column: PhotoshopEX's generative groups would sit between Properties and Layers.
+    let without_generative = || {
+        let (mut app, _, _) = app_with_layers();
+        app.ui.panels.generations = false;
+        app.ui.panels.generate = false;
+        app
+    };
+    let app = without_generative();
     let h = harness(app, vec2(1440.0, 1400.0), ThemeKind::ProMedium);
     for g in [Group::Color, Group::Properties] {
         let height = rect_of(&h, g).height();
         assert!((height - g.default_height()).abs() < 2.0, "{g:?}: {height}");
     }
-    let (mut app, _, _) = app_with_layers();
+    let mut app = without_generative();
     app.ui.dock.heights.insert(Group::Properties, 340.0);
     app.ui.dock.heights.insert(Group::Color, 200.0);
     let h = harness(app, vec2(1440.0, 800.0), ThemeKind::ProMedium);

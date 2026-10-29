@@ -16,6 +16,8 @@ fn harness() -> Harness<'static, PhotocraftApp> {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
         app.ui.tool = Tool::Brush;
+        // Upstream's wheel: plain scroll pans, ⌥ + scroll zooms (the fork's default is wheel = zoom).
+        app.session.edit_prefs(|p| p.general.zoom_with_scroll_wheel = false);
         app
     });
     h.run_steps(8);
