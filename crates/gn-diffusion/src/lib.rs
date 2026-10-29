@@ -899,6 +899,31 @@ impl Engine for DiffusionEngine {
         if req.task != task {
             return Err(EngineError::new(ErrorKind::Unsupported, format!("{} answers `{task}`, not `{}`", req.model, req.task)));
         }
+        // A warm-up (the editor at launch): the template's models loaded, nothing generated.
+        if req.params.get("warmup").and_then(Value::as_bool) == Some(true) {
+            // The VRAM guard: with nothing resident, `need_free` bytes must be free on the card
+            // (asked of the driver here; the health knows only once a pipeline holds the context).
+            if let (Some(need), Resident::None) = (req.params.get("need_free").and_then(Value::as_u64), &self.resident) {
+                let free = qwen_image_rs::device::best_device().ok().and_then(|d| qwen_image_rs::device::free_vram(&d)).map(|(f, _)| f as u64);
+                if free.is_none_or(|f| f < need) {
+                    let gb = |b: u64| b as f64 / 1e9;
+                    let why = format!("skipped: {:.1} GB free on the card, {:.1} GB wanted", free.map_or(0.0, gb), gb(need));
+                    return Ok((DoneInfo { images: Vec::new(), texts: vec![why], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
+                }
+            }
+            let loaded = self.ensure_loaded(family, progress);
+            self.give_back();
+            if let Err(e) = loaded {
+                if e.kind == ErrorKind::OutOfMemory {
+                    self.resident = Resident::None;
+                }
+                return Err(e);
+            }
+            if cancel.load(Ordering::SeqCst) {
+                return Err(EngineError::cancelled());
+            }
+            return Ok((DoneInfo { images: Vec::new(), texts: vec!["warm".into()], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
+        }
         if req.prompt.trim().is_empty() {
             return Err(EngineError::new(ErrorKind::BadRequest, "a prompt is needed"));
         }
@@ -1199,6 +1224,18 @@ mod tests {
         std::fs::remove_dir(root.join(LORA_DIR))?;
         std::fs::remove_dir(root)?;
         Ok(())
+    }
+
+    /// A warm-up loads the template's family and generates nothing; without the files it says so.
+    #[test]
+    fn a_warmup_loads_and_generates_nothing() {
+        let mut e = DiffusionEngine::new(PathBuf::from("Z:/nowhere/models"), false);
+        e.refused = None;
+        let mut w = req(TEMPLATE, "image");
+        w.prompt = String::new();
+        w.params.insert("warmup".into(), json!(true));
+        let r = e.run(&w, &[], &mut |_, _| {}, &AtomicBool::new(false));
+        assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
     }
 
     /// A batch is a 2.1 edit's seeds, one per picture, checked before the models load.
