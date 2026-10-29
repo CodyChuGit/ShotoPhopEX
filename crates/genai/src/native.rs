@@ -5,14 +5,14 @@
 //! fresh one.
 //!
 //! With a runtime folder and a model root configured (`integrations.runtimePath`,
-//! `integrations.modelsPath`) the worker serves `gn-perception`'s engine: SAM 3.1 through ONNX
-//! Runtime (plan Phase 1), and, built with the `native-diffusion` feature, `gn-diffusion`'s:
+//! `integrations.modelsPath`) the worker serves `gn-perception`'s engine: SAM 3.1 on candle
+//! (plan Phase 1, Rust rebuild R1; a backend only with `native-diffusion`), and, built with the `native-diffusion` feature, `gn-diffusion`'s:
 //! Qwen-Image-2.1 text to image from the snapshot under the model root (plan Phase 2), the two
 //! behind one `gn_engine::Multi`. Without them it serves `gn-engine`'s fake engine, which is
 //! enough to route a request end to end (and to test the editor without a GPU). Pixels cross as
 //! binary frames; other values use the editor’s `Request`/`Response` types.
-//! The runtime folders go on the worker's `PATH` too: the CUDA libraries the diffusion engine
-//! links are found there, as the ONNX Runtime ones are.
+//! The runtime folders go on the worker's `PATH` too: the CUDA libraries candle links are found
+//! there.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -472,8 +472,8 @@ impl GenerativeBackend for NativeBackend {
     }
 }
 
-/// The worker flags the preferences translate into: `--runtime <dir;dir>` (where ONNX Runtime
-/// and the CUDA / cuDNN libraries live) and `--models <dir>` (the native model root, one
+/// The worker flags the preferences translate into: `--runtime <dir;dir>` (where the NVIDIA
+/// CUDA libraries live) and `--models <dir>` (the native model root, one
 /// subfolder per model). Empty preferences give no flags, and the worker serves the fake engine.
 pub fn worker_args(runtime_path: &str, models_path: &str) -> Vec<String> {
     let (r, m) = (runtime_path.trim(), models_path.trim());
@@ -488,8 +488,8 @@ pub fn runtime_dirs(runtime_path: &str) -> Vec<PathBuf> {
     runtime_path.split(';').map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from).collect()
 }
 
-/// The engines a worker with these flags serves: the perception engine (SAM 3.1 through ONNX
-/// Runtime) with `--runtime` and `--models`, the diffusion engine (Qwen-Image-2.1, with the
+/// The engines a worker with these flags serves: the perception engine (SAM 3.1 on candle)
+/// with `--runtime` and `--models`, the diffusion engine (Qwen-Image-2.1, with the
 /// `native-diffusion` feature) with `--models`. Empty without a model root.
 fn engines_for(args: &[String]) -> Vec<Box<dyn gn_engine::Engine>> {
     let mut engines: Vec<Box<dyn gn_engine::Engine>> = Vec::new();
@@ -568,8 +568,8 @@ fn missing_cuda_libraries(dirs: &[PathBuf]) -> Vec<&'static str> {
 /// given, binds a loopback port, prints the port line, serves until the editor says quit (or
 /// goes away; with `--stay` it outlives its clients, for a worker started by hand that many
 /// CLI processes join through `PHOTOCRAFT_NATIVE_ENGINE=port:token`). Returns the exit code.
-/// With `--runtime` and `--models` it serves the perception engine (SAM 3.1 through ONNX
-/// Runtime) and, when built with it, the diffusion engine; otherwise the fake engine.
+/// With `--runtime` and `--models` it serves the perception engine (SAM 3.1 on candle)
+/// and, when built with it, the diffusion engine; otherwise the fake engine.
 pub fn engine_main(args: &[String]) -> i32 {
     // The engines report through `tracing`; `RUST_LOG` (env_logger directives, `info` for the
     // phase timings) turns the worker's stderr into their log. Silent otherwise.

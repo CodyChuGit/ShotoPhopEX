@@ -100,36 +100,20 @@ junction to `_eval\weights\krea2-turbo-comfy` (since 2026-10-27: hard links to C
 bf16 folder `_eval\weights\krea2-turbo`, which still loads with ConvRot).
 
 **The runtime folder of a packaged build** (plan §10): `packaging/windows/runtime.ps1 -Cuda
-<toolkit bin\x64> -Ort <onnxruntime lib> -Cudnn <cuDNN 9 bin>` copies the DLLs the worker loads
-(on this PC the cuDNN DLLs come from ComfyUI's torch wheel) and writes `THIRD_PARTY.txt`; the
-test copy is `_eval\runtime-test` (1.33 GB). A `native-diffusion` build delay-loads cuBLAS,
-cuBLASLt and cuRAND, so the editor starts without them; the worker needs that folder (or the
-toolkit) on its `PATH`, which the app arranges from Integrations › Runtime folders, or from a
-`runtime` folder beside the exe when that preference is empty.
+<toolkit bin\x64>` copies the NVIDIA DLLs the worker loads and writes `THIRD_PARTY.txt`. A
+`native-diffusion` build delay-loads cuBLAS, cuBLASLt and cuRAND, so the editor starts without
+them; the worker needs that folder (or the toolkit) on its `PATH`, which the app arranges from
+Integrations › Runtime folders, or from a `runtime` folder beside the exe when that preference
+is empty.
 
-### ONNX Runtime and the SAM 3.1 export (`gn-perception`)
+### SAM 3.1 (`gn-perception`, `gn-segment`)
 
-| What | Where | Notes |
-|---|---|---|
-| ONNX Runtime 1.31.0, Windows x64 GPU, **CUDA 13** build | `C:\Users\5090\Documents\_eval\onnxruntime-cuda13\onnxruntime-win-x64-gpu_cuda13-1.31.0\lib` | `onnxruntime.dll` + `onnxruntime_providers_{shared,cuda,tensorrt}.dll`; the `ort` crate loads it at run time (`load-dynamic`), nothing is linked |
-| CUDA 13 runtime libraries | `C:\Users\5090\scoop\apps\cuda\current\bin\x64` | `cudart64_13`, `cublas64_13`, `cublasLt64_13`, `cufft64_12`; preloaded by name |
-| cuDNN 9.24 | `…\ComfyUI_windows_portable\python_embeded\Lib\site-packages\torch\lib` | every `cudnn*_9.dll` is preloaded (9.24's `cudnn_engines_tensor_ir64_9.dll` is not in `ort`'s own list) |
-| SAM 3.1 ONNX graphs (ours) | `C:\Users\5090\Documents\_eval\sam31-onnx` | `vision/text/geometry/decoder/heads.onnx` + `.data`, `tokenizer.json`; 3.4 GB; SAM licence |
-| SAM 3 community export (fp32 inside) | `C:\Users\5090\Documents\_eval\sam3-onnx-fp16` | `kishanstar2003/SAM3_ONNX_FP16`; the bring-up set, detector only |
-| Python packages added to ComfyUI's interpreter (2026-10-19) | `python_embeded` | `onnx` 1.23.2, `onnxscript` 0.7.2 (the exporter), `onnxruntime` 1.31.0 CPU (verification) |
-
-```powershell
-$py = "C:\Users\5090\ComfyUI\ComfyUI_windows_portable\python_embeded\python.exe"
-# export (≈1 min; the vision graph is 1.87 GB) and verify the small graphs against torch
-& $py -s C:\Users\5090\Documents\genai-native\tools\export_sam31.py --comfy C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI --out C:\Users\5090\Documents\_eval\sam31-onnx --verify --image <png>
-# run one prompt natively
-C:\Users\5090\Documents\genai-native\target\release\gn-sam.exe run --ort <ort lib dir> --lib <cuda x64> --lib <torch\lib> --models C:\Users\5090\Documents\_eval\sam31-onnx --image <png> --text fox --out mask.png
-```
-
-`tools/sam31_smoke.py` runs ComfyUI's own node from a script (the ground truth: bounds and
-timings); `comfy.model_management.in_training = True` during the export keeps RoPE on the
-plain-torch path (`comfy_kitchen.apply_rope` has no ONNX translation).
-
+SAM 3.1 runs on candle from ComfyUI's `checkpoints/sam3.1_multiplex_fp16.safetensors` (GPU in a
+`native-diffusion` build). The ONNX Runtime route (`gn-perception`'s `onnx` feature, PhotoshopEX's
+`sam-onnx`, the `gn-sam` tool and `export_sam31.py`) was removed on 2026-10-29; the ONNX Runtime
+build, cuDNN and the exported graphs under `_eval` are no longer used.
+`tools/sam31_smoke.py` (genai-native) runs ComfyUI's own node from a script (the ground truth:
+bounds and timings).
 ## Build and run
 
 Cold release build of the desktop app on this machine: **2 min 39 s**

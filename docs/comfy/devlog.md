@@ -4,6 +4,22 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29: ONNX Runtime route removed (branch `cleanup/remove-onnx`)
+
+The owner's call: no `ort` anywhere. genai-native `cleanup/remove-onnx` deletes gn-perception's
+`onnx` feature, its `ort` dependency, the ONNX modules (runtime, sam3, sam31, tokenizer,
+resample), the `gn-sam` tool, `export_sam31.py`, gn-harness's `sam-ort` engine and gn-segment's
+ONNX comparison example and dev-dependencies; SAM 3.1 runs on candle exactly as before. Here:
+the `sam-onnx` features and `default`s of `photocraft`, `photocraft-cli` and `photocraft-genai`
+are gone (the apps have no default features, so `package.ps1 -Native` drops its
+`--no-default-features` with the same feature set), `runtime.ps1` loses `-Ort` / `-Cudnn` (CUDA
+libraries only), comments and `dev-environment-windows.md` no longer describe ONNX Runtime. A
+build without `native-diffusion` now has no SAM 3.1 backend (the worker answers ModelMissing);
+before, it ran the ONNX graphs. Gates against the local genai-native worktree (cargo `--config`
+patches): workspace check and clippy `-D warnings` clean, genai 14 + engine lib 1,928 pass,
+`xtask layers` / `wasm` OK. Open: bump `crates/genai/Cargo.toml`'s genai-native rev to the
+cleanup branch's commit once it merges (the pin here is unchanged).
+
 ## 2026-10-29: ComfyUI engine removed
 
 The owner's call. Every generative command runs on the native worker (`photocraft --engine`);

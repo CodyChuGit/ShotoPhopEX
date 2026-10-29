@@ -318,7 +318,8 @@ candle, the 2511 holdouts, Qwen-Image-Layered, one models folder, packaging, nat
 default) and its progress log live there. As of 2026-10-28: R0 ✅, R2 ✅ (fill and image from
 references, Angles natively), R4 ✅ for 2.1 and Krea 2 (ComfyUI's folder as it is; ComfyUI's
 int8 repacks in progress), R1 ✅ (SAM 3.1 on candle, f16 on the GPU, as fast as ONNX Runtime
-through the app; no `ort` in the -Native build), R3 ✅ at 640 px (57 s against ComfyUI's 58 s;
+through the app; no `ort` in the -Native build; on 2026-10-29 the ONNX Runtime route was deleted from both
+repositories, `sam-onnx` and `gn-perception`'s `onnx` feature with it), R3 ✅ at 640 px (57 s against ComfyUI's 58 s;
 the 1 MP size slower), R5 ✅ (the -Native zip, 557 MB, runs every generative command from a
 fresh profile with no ComfyUI, no Python and no ONNX Runtime or cuDNN), R6 🟡 (`auto` prefers
 the worker already; the permissive defaults wait on the owner's licence decision).
