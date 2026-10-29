@@ -518,6 +518,12 @@ impl Stream {
 
     fn modulate_split(x: &Tensor, params: &Tensor, offset: usize, split: Option<usize>) -> Result<Tensor> {
         let Some(n) = split else { return Self::modulate(x, params, offset) };
+        #[cfg(feature = "fusednorm")]
+        if x.device().is_cuda() && x.dtype() == DType::BF16 {
+            return crate::profile::scope("edit2511 split modulate", 0.0, x.device(), || {
+                Ok(x.apply_op2_no_bwd(params, &cuda_ops::EditModulate { shift: offset, split: n })?)
+            });
+        }
         let b = x.dim(0)?;
         Ok(Tensor::cat(
             &[
@@ -531,9 +537,19 @@ impl Stream {
     fn finish_split(&self, x: &Tensor, attention: &Tensor, params: &Tensor, split: Option<usize>) -> Result<Tensor> {
         let Some(n) = split else { return self.finish(x, attention, params) };
         // Project jointly; select the two gates at each residual boundary.
-        let x = (x + self.out.forward_precise(attention)?.broadcast_mul(&Self::selected_gate(x, params, 2, n)?)?)?;
+        let x = Self::residual_split(x, &self.out.forward_precise(attention)?, params, 2, n)?;
         let mlp = self.down.forward_precise(&self.up.forward_gelu_precise(&Self::modulate_split(&x, params, 3, split)?)?)?;
-        Ok((&x + mlp.broadcast_mul(&Self::selected_gate(&x, params, 5, n)?)?)?)
+        Self::residual_split(&x, &mlp, params, 5, n)
+    }
+
+    fn residual_split(x: &Tensor, value: &Tensor, params: &Tensor, gate: usize, split: usize) -> Result<Tensor> {
+        #[cfg(feature = "fusednorm")]
+        if x.device().is_cuda() && x.dtype() == DType::BF16 {
+            return crate::profile::scope("edit2511 split residual", 0.0, x.device(), || {
+                Ok(x.apply_op3_no_bwd(&value.contiguous()?, params, &cuda_ops::EditResidual { gate, split })?)
+            });
+        }
+        Ok((x + value.broadcast_mul(&Self::selected_gate(x, params, gate, split)?)?)?)
     }
 
     fn selected_gate(x: &Tensor, params: &Tensor, offset: usize, n: usize) -> Result<Tensor> {
@@ -962,7 +978,7 @@ impl LayeredDit {
     }
 }
 
-/// Layered-only fusions preserve bf16 boundaries and compile at build time.
+/// Shared fusions preserve bf16 boundaries and compile at build time.
 #[cfg(feature = "fusednorm")]
 mod cuda_ops {
     use std::ffi::c_void;
@@ -1057,6 +1073,152 @@ mod cuda_ops {
                 };
                 if rc != 0 {
                     candle_core::bail!("Layered modulation failed, rc={rc}");
+                }
+            }
+            Ok((CudaStorage::wrap_cuda_slice(out, dev), xl.shape().clone()))
+        }
+    }
+
+    extern "C" {
+        fn qir_edit2511_modulate(
+            y: *mut c_void,
+            x: *const c_void,
+            p: *const c_void,
+            rows: u32,
+            seq: u32,
+            width: u32,
+            pw: u32,
+            pb: u32,
+            shift: u32,
+            split: u32,
+            stream: *mut c_void,
+        ) -> i32;
+        fn qir_edit2511_residual(
+            y: *mut c_void,
+            x: *const c_void,
+            v: *const c_void,
+            p: *const c_void,
+            elements: usize,
+            seq: u32,
+            width: u32,
+            pw: u32,
+            batches: u32,
+            gate: u32,
+            split: u32,
+            stream: *mut c_void,
+        ) -> i32;
+    }
+
+    pub(super) struct EditModulate {
+        pub shift: usize,
+        pub split: usize,
+    }
+    impl candle_core::CustomOp2 for EditModulate {
+        fn name(&self) -> &'static str {
+            "edit2511-modulate"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+            candle_core::bail!("Edit modulation requires CUDA")
+        }
+        fn cuda_fwd(&self, x: &CudaStorage, xl: &Layout, p: &CudaStorage, pl: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+            let (b, seq, width) = xl.shape().dims3()?;
+            let (pb, pw) = pl.shape().dims2()?;
+            if width != super::WIDTH || pb != 2 * b || pw != 6 * width || self.shift > 3 || self.split == 0 || self.split >= seq {
+                candle_core::bail!("invalid Edit modulation dimensions");
+            }
+            let u = |v| u32::try_from(v).map_err(candle_core::Error::wrap);
+            let dev = x.device().clone();
+            let stream = dev.cuda_stream();
+            // SAFETY: every output element is written on the owning stream.
+            let out = unsafe { dev.alloc::<half::bf16>(b * seq * width)? };
+            {
+                let xv = x.as_cuda_slice::<half::bf16>()?;
+                let pv = p.as_cuda_slice::<half::bf16>()?;
+                let ((xp, _gx), (pp, _gp), (op, _go)) = (xv.device_ptr(&stream), pv.device_ptr(&stream), out.device_ptr(&stream));
+                let xp = xp + dense_byte_offset::<half::bf16>(xl, "edit modulate x")?;
+                let pp = pp + dense_byte_offset::<half::bf16>(pl, "edit modulate p")?;
+                // SAFETY: dense bf16 views with checked dimensions and parameter bounds.
+                let rc = unsafe {
+                    qir_edit2511_modulate(
+                        op as *mut c_void,
+                        xp as *const c_void,
+                        pp as *const c_void,
+                        u(b * seq)?,
+                        u(seq)?,
+                        u(width)?,
+                        u(pw)?,
+                        u(pb)?,
+                        u(self.shift)?,
+                        u(self.split)?,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                };
+                if rc != 0 {
+                    candle_core::bail!("Edit modulation failed: {rc}");
+                }
+            }
+            Ok((CudaStorage::wrap_cuda_slice(out, dev), xl.shape().clone()))
+        }
+    }
+
+    pub(super) struct EditResidual {
+        pub gate: usize,
+        pub split: usize,
+    }
+    impl candle_core::CustomOp3 for EditResidual {
+        fn name(&self) -> &'static str {
+            "edit2511-residual"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+            candle_core::bail!("Edit residual requires CUDA")
+        }
+        fn cuda_fwd(
+            &self,
+            x: &CudaStorage,
+            xl: &Layout,
+            v: &CudaStorage,
+            vl: &Layout,
+            p: &CudaStorage,
+            pl: &Layout,
+        ) -> candle_core::Result<(CudaStorage, Shape)> {
+            let (b, seq, width) = xl.shape().dims3()?;
+            let (pb, pw) = pl.shape().dims2()?;
+            if vl.shape() != xl.shape() || width != super::WIDTH || pb != 2 * b || pw != 6 * width || self.gate >= 6 || self.split == 0 || self.split >= seq {
+                candle_core::bail!("invalid Edit residual dimensions");
+            }
+            let u = |v| u32::try_from(v).map_err(candle_core::Error::wrap);
+            let dev = x.device().clone();
+            let stream = dev.cuda_stream();
+            // SAFETY: every output element is written on the owning stream.
+            let out = unsafe { dev.alloc::<half::bf16>(b * seq * width)? };
+            {
+                let xv = x.as_cuda_slice::<half::bf16>()?;
+                let vv = v.as_cuda_slice::<half::bf16>()?;
+                let pv = p.as_cuda_slice::<half::bf16>()?;
+                let ((xp, _gx), (vp, _gv), (pp, _gp), (op, _go)) =
+                    (xv.device_ptr(&stream), vv.device_ptr(&stream), pv.device_ptr(&stream), out.device_ptr(&stream));
+                let xp = xp + dense_byte_offset::<half::bf16>(xl, "edit residual x")?;
+                let vp = vp + dense_byte_offset::<half::bf16>(vl, "edit residual v")?;
+                let pp = pp + dense_byte_offset::<half::bf16>(pl, "edit residual p")?;
+                // SAFETY: dense bf16 views with checked dimensions and parameter bounds.
+                let rc = unsafe {
+                    qir_edit2511_residual(
+                        op as *mut c_void,
+                        xp as *const c_void,
+                        vp as *const c_void,
+                        pp as *const c_void,
+                        b * seq * width,
+                        u(seq)?,
+                        u(width)?,
+                        u(pw)?,
+                        u(b)?,
+                        u(self.gate)?,
+                        u(self.split)?,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                };
+                if rc != 0 {
+                    candle_core::bail!("Edit residual failed: {rc}");
                 }
             }
             Ok((CudaStorage::wrap_cuda_slice(out, dev), xl.shape().clone()))
@@ -1218,6 +1380,36 @@ mod layered_tests {
 
     fn error(a: &Tensor, b: &Tensor) -> Result<f32> {
         Ok((a.to_dtype(DType::F32)? - b.to_dtype(DType::F32)?)?.abs()?.max_all()?.to_scalar::<f32>()?)
+    }
+
+    #[test]
+    #[cfg(feature = "fusednorm")]
+    fn edit2511_split_fusions_preserve_bf16_boundaries() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        for b in [1, 2] {
+            let x = Tensor::randn(0f32, 2.0, (b + 1, 17, WIDTH), &dev)?.to_dtype(DType::BF16)?.narrow(0, 1, b)?;
+            let v = Tensor::randn(0f32, 2.0, (b + 1, 17, WIDTH), &dev)?.to_dtype(DType::BF16)?.narrow(0, 1, b)?;
+            let p = Tensor::randn(0f32, 0.5, (2 * b + 1, WIDTH * 6), &dev)?.to_dtype(DType::BF16)?.narrow(0, 1, 2 * b)?;
+            for split in [1, 8, 16] {
+                for offset in [0, 3] {
+                    let old = Tensor::cat(
+                        &[
+                            Stream::modulate_edit(&x.narrow(1, 0, split)?.contiguous()?, &p.narrow(0, 0, b)?, offset)?,
+                            Stream::modulate_edit(&x.narrow(1, split, 17 - split)?.contiguous()?, &p.narrow(0, b, b)?, offset)?,
+                        ],
+                        1,
+                    )?;
+                    let new = Stream::modulate_split(&x, &p, offset, Some(split))?;
+                    assert_eq!(error(&old, &new)?, 0.0);
+                }
+                for gate in [2, 5] {
+                    let old = (&x + v.broadcast_mul(&Stream::selected_gate(&x, &p, gate, split)?)?)?;
+                    let new = Stream::residual_split(&x, &v, &p, gate, split)?;
+                    assert_eq!(error(&old, &new)?, 0.0);
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]
