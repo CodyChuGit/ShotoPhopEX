@@ -3241,6 +3241,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                 paint_cpu_document(&painter, &pattern_xf(&xf, c, size), doc.bounds(), rotated, checkerboard, tex);
             }
         }
+        // A generation running on this document: its latest picture over the result's place.
+        crate::gen_preview::paint(app, &ctx, &painter, &xf, doc.id);
         // Channels panel: alpha / Quick Mask overlays and single-channel views (channel_view.rs).
         if let Some(tex) = crate::channel_view::ensure(app, &ctx, idx) {
             if view.rotation.abs() > 0.05 {

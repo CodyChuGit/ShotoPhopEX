@@ -823,3 +823,120 @@ fn research_templates_are_gated_by_the_preference() {
     let t = template::find(DEFAULT_FILL_TEMPLATE).unwrap();
     assert_eq!(t.meta.license, License::Permissive);
 }
+
+/// The job keeps a backend's latest picture over the place the work named, drops one with no
+/// place, a wrong byte count or after a cancel, and clears it on request.
+#[test]
+fn job_progress_keeps_the_latest_preview_with_its_place() {
+    let ctx = JobCtx::new();
+    let p = JobProgress::span(&ctx, 0.1, 0.9);
+    let picture = |level: u8, step: u32| photocraft_genai::Preview { image: Rgba8::solid(4, 2, [level, level, level, 255]).unwrap(), step, steps: 8, output: 0 };
+    photocraft_genai::Progress::preview(&p, &picture(10, 1));
+    assert_eq!(ctx.preview(), None, "no place named: nothing to show");
+    ctx.preview_at(Rect::new(5, 3, 37, 35));
+    photocraft_genai::Progress::preview(&p, &picture(20, 2));
+    let first = ctx.preview().unwrap();
+    assert_eq!((first.rect, first.width, first.height, first.step, first.steps, first.output), (Rect::new(5, 3, 37, 35), 4, 2, 2, 8, 0));
+    assert_eq!(first.rgba[..4], [20, 20, 20, 255]);
+    // A later picture replaces it, with a new version; a later place applies to later pictures.
+    ctx.preview_at(Rect::new(0, 0, 64, 48));
+    photocraft_genai::Progress::preview(&p, &photocraft_genai::Preview { output: 2, ..picture(30, 3) });
+    let second = ctx.preview().unwrap();
+    assert!(second.version > first.version);
+    assert_eq!((second.rect, second.step, second.output), (Rect::new(0, 0, 64, 48), 3, 2));
+    ctx.show_preview(4, 2, vec![0; 5], 4, 8, 0);
+    assert_eq!(ctx.preview().map(|p| p.step), Some(3), "a picture of the wrong size is dropped");
+    ctx.clear_preview();
+    assert_eq!(ctx.preview(), None);
+    ctx.cancel();
+    photocraft_genai::Progress::preview(&p, &picture(40, 4));
+    assert_eq!(ctx.preview(), None, "a cancelled job shows no more pictures");
+}
+
+/// One request making several tiles (Upscale's batch): output `i`'s pictures land on tile `i`,
+/// each output keeps its latest, an output past the list is dropped; a single place takes every
+/// output (a split's layers) and keeps only the latest.
+#[test]
+fn batched_previews_land_on_their_own_tiles() {
+    let ctx = JobCtx::new();
+    let tiles = vec![Rect::new(0, 0, 32, 32), Rect::new(32, 0, 64, 32), Rect::new(0, 32, 32, 64)];
+    ctx.preview_places(tiles.clone());
+    for (step, output) in [(1, 0), (1, 1), (1, 2), (2, 1), (1, 7)] {
+        ctx.show_preview(2, 2, vec![9; 16], step, 4, output);
+    }
+    let shown = ctx.previews();
+    assert_eq!(shown.iter().map(|p| (p.output, p.rect, p.step)).collect::<Vec<_>>(), [(0, tiles[0], 1), (1, tiles[1], 2), (2, tiles[2], 1)]);
+    assert_eq!(ctx.preview().map(|p| p.output), Some(1), "the latest");
+    ctx.preview_at(Rect::new(0, 0, 64, 64));
+    assert!(ctx.previews().is_empty(), "a new place drops the old pictures");
+    ctx.show_preview(2, 2, vec![9; 16], 1, 4, 0);
+    ctx.show_preview(2, 2, vec![9; 16], 1, 4, 1);
+    let shown = ctx.previews();
+    assert_eq!(shown.iter().map(|p| (p.output, p.rect)).collect::<Vec<_>>(), [(1, Rect::new(0, 0, 64, 64))]);
+}
+
+/// A fill in the background shows the worker's pictures over its request area while it runs
+/// (`Session::job_preview`), and the result replaces them when it lands.
+#[test]
+fn a_running_fill_shows_its_preview_over_its_area_until_the_result_lands() {
+    let fake = FakeNative::start_with(Options { delay_ms: 1500, progress_steps: 6, ..Options::default() }).unwrap();
+    let mut s = session(&fake.url);
+    assert_eq!(s.prefs().integrations.preview_while_generating, "fast", "on by default");
+    let doc = s.active().unwrap().doc.id;
+    let id = match s.start(FILL, json!({"prompt": "moss", "seed": 3, "enhance": false})).unwrap() {
+        Started::Job(id) => id,
+        Started::Done(v) => panic!("ran inline: {v}"),
+    };
+    let t = Instant::now();
+    let shown = loop {
+        if let Some(p) = s.job_preview(doc) {
+            break p;
+        }
+        assert!(t.elapsed() < Duration::from_secs(20), "no preview arrived");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    // The request rectangle (see `fill_adds_a_masked_layer_above_the_active_one`), at the
+    // worker's eighth of the 512-px request.
+    assert_eq!(shown.rect, Rect::new(5, 3, 37, 35));
+    assert_eq!((shown.width, shown.height, shown.steps), (64, 64, 6));
+    assert_eq!(shown.rgba.len(), 64 * 64 * 4);
+    assert_eq!(s.job_preview_of(id).map(|p| p.rect), Some(shown.rect));
+    assert_eq!(fake.state().runs[0].run.preview.as_str(), "fast");
+    let e = wait(&mut s, id);
+    assert!(matches!(e.outcome, JobOutcome::Done(_)), "{e:?}");
+    assert_eq!(s.job_preview(doc), None, "the result replaced the preview");
+    assert_eq!(s.job_preview_of(id), None);
+}
+
+/// `integrations.previewWhileGenerating` reaches the worker at the next run; `off` asks for no
+/// pictures and the job shows none.
+#[test]
+fn the_preview_preference_reaches_the_next_run() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.execute("prefs.set", json!({"path": "integrations.previewWhileGenerating", "value": "off"})).unwrap();
+    s.execute(FILL, json!({"prompt": "moss", "seed": 3, "enhance": false})).unwrap();
+    s.execute("prefs.set", json!({"path": "integrations.previewWhileGenerating", "value": "sharp"})).unwrap();
+    s.execute(FILL, json!({"prompt": "moss", "seed": 3, "enhance": false})).unwrap();
+    let st = fake.state();
+    let asked: Vec<_> = st.runs.iter().map(|r| r.run.preview.as_str()).collect();
+    assert_eq!(asked, ["off", "sharp"]);
+    assert!(st.runs[0].request.get("preview").is_none(), "off is not sent: a worker from before previews reads the same request");
+}
+
+/// The preference: `fast` by default, one of off / fast / sharp, kept across a restart; a
+/// hand-edited unknown value reads as `fast`.
+#[test]
+fn the_preview_preference_defaults_to_fast_and_round_trips() {
+    let mut s = Session::new();
+    assert_eq!(s.execute("prefs.get", json!({"path": "integrations.previewWhileGenerating"})).unwrap(), json!("fast"));
+    assert_eq!(preview_mode(&s.prefs().integrations), photocraft_genai::PreviewMode::Fast);
+    assert!(s.execute("prefs.set", json!({"path": "integrations.previewWhileGenerating", "value": "blurry"})).is_err());
+    s.execute("prefs.set", json!({"path": "integrations.previewWhileGenerating", "value": "sharp"})).unwrap();
+    assert_eq!(s.execute("prefs.get", json!({"path": "integrations.previewWhileGenerating"})).unwrap(), json!("sharp"));
+    let mut restored = Session::new();
+    restored.load_prefs_json(&s.prefs_to_json()).unwrap();
+    assert_eq!(preview_mode(&restored.prefs().integrations), photocraft_genai::PreviewMode::Sharp);
+    restored.edit_prefs(|p| p.integrations.preview_while_generating = "blurry".into());
+    assert_eq!(preview_mode(&restored.prefs().integrations), photocraft_genai::PreviewMode::Fast);
+}

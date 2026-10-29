@@ -10,6 +10,8 @@
 //! Preferences read here: `integrations.defaultEditModel`,
 //! `integrations.generativeTimeoutSecs`, `integrations.allowResearchModels`,
 //! `integrations.enhancePrompts` (the default of the fill, edit and image commands' `enhance`),
+//! `integrations.previewWhileGenerating` (the pictures a run shows while it samples: kept on the
+//! job with the place its result takes, `jobs::JobPreview`, for the canvas to draw).
 //! The native worker manages model precision and residency.
 
 use std::collections::BTreeMap;
@@ -684,12 +686,26 @@ fn native_endpoint(spec: &str) -> Result<(u16, String)> {
     Ok((port, token.to_string()))
 }
 
+/// `integrations.previewWhileGenerating` as the backend takes it; an unknown spelling (a
+/// hand-edited file) reads as the default, `fast`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn preview_mode(prefs: &crate::prefs::Integrations) -> photocraft_genai::PreviewMode {
+    photocraft_genai::PreviewMode::parse(&prefs.preview_while_generating).unwrap_or(photocraft_genai::PreviewMode::Fast)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> {
     let integrations = &s.prefs().integrations;
     let timeout = std::time::Duration::from_secs(u64::from(integrations.generative_timeout_secs.max(5)));
-    if let Some(b) = photocraft_genai::native::test_backend(&integrations.models_root()).map_err(gen_err)? {
+    let preview = preview_mode(integrations);
+    // The deadline and the preview mode are read at each run: a change takes effect on the next
+    // generation without restarting the worker.
+    let configure = |b: &photocraft_genai::native::NativeBackend| {
         b.set_timeout(timeout);
+        b.set_preview(preview);
+    };
+    if let Some(b) = photocraft_genai::native::test_backend(&integrations.models_root()).map_err(gen_err)? {
+        configure(&b);
         return Ok(b);
     }
     let endpoint = match std::env::var("PHOTOCRAFT_NATIVE_ENGINE") {
@@ -715,7 +731,7 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
         // The flags after `--engine` are the preferences; a change restarts the worker. A
         // worker this process joined rather than started is kept as it is.
         if b.is_attached() || b.args().get(1..).unwrap_or(&[]) == wanted.as_slice() {
-            b.set_timeout(timeout);
+            configure(b);
             return Ok(Arc::clone(b) as Arc<dyn GenerativeBackend>);
         }
         b.stop();
@@ -726,14 +742,14 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
     // processes shares one resident set of models instead of loading them in every process.
     if let Some((port, token)) = endpoint {
         let b = Arc::new(photocraft_genai::native::NativeBackend::attached(port, &token).map_err(gen_err)?);
-        b.set_timeout(timeout);
+        configure(&b);
         *g = Some(Arc::clone(&b));
         return Ok(b);
     }
     let dirs = photocraft_genai::native::runtime_dirs(&integrations.runtime_folders());
     let b = photocraft_genai::native::NativeBackend::this_executable(&wanted).map_err(gen_err)?.with_path_dirs(dirs);
     let b = Arc::new(b.with_log(crate::generate_engine_cmds::native_log_path()));
-    b.set_timeout(timeout);
+    configure(&b);
     *g = Some(Arc::clone(&b));
     Ok(b)
 }
@@ -895,6 +911,11 @@ impl photocraft_genai::Progress for JobProgress<'_> {
     }
     fn cancelled(&self) -> bool {
         self.ctx.cancelled()
+    }
+    /// The job keeps the latest picture for the canvas, over the place the work closure named
+    /// with [`JobCtx::preview_at`].
+    fn preview(&self, p: &photocraft_genai::Preview) {
+        self.ctx.show_preview(p.image.width, p.image.height, p.image.data.clone(), p.step, p.steps, p.output);
     }
 }
 
@@ -2263,6 +2284,8 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
             &label,
             false,
             move |ctx| {
+                // No canvas yet: the pictures are the new document's (the Generations panel's row).
+                ctx.preview_at(Rect::new(0, 0, width as i32, height as i32));
                 let (prompt, enhanced) = image_prompt(thinker.as_ref(), ctx, enhance, &typed, req.prompt, &wrap, seed);
                 req.prompt = prompt;
                 ctx.check()?;
@@ -2303,6 +2326,8 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         s,
         &label,
         move |doc, active, ctx| {
+            // The new layer covers the canvas.
+            ctx.preview_at(doc.bounds());
             let (prompt, enhanced) = image_prompt(backend.as_ref(), ctx, enhance, &typed, req.prompt, &wrap, seed);
             req.prompt = prompt;
             ctx.check()?;
@@ -2482,6 +2507,11 @@ fn fill_region(
     outpaint: Option<Outpaint>,
 ) -> Result<Filled> {
     ctx.progress(0.0, "Rendering");
+    // The pictures of the run land on the area sent (an expand names its own place: the document
+    // on screen has not grown yet).
+    if outpaint.is_none() {
+        ctx.preview_at(rect);
+    }
     let (w, h) = (rect.width(), rect.height());
     let composite = photocraft_compose::render(doc, rect).to_rgba8();
     let mut image = Rgba8::new(composite.width, composite.height, composite.pixels).map_err(gen_err)?;
@@ -3589,6 +3619,9 @@ fn run_expand(s: &mut Session, p: &Value) -> Result<Value> {
         move |doc, active, ctx| {
             // Canvas Size with a transparent extension: the picture moves by the left/top pads.
             let (ow, oh) = (doc.size.width, doc.size.height);
+            // The document on screen keeps its size and origin until the result lands: the
+            // pictures of the run go on the request area moved back by the pads, past the canvas.
+            ctx.preview_at(rect.translate(-(pads.left as i32), -(pads.top as i32)));
             crate::image_cmds::translate_doc(doc, EXPAND, pads.left as i32, pads.top as i32)?;
             doc.size = Size::new(nw, nh);
             crate::canvas_geom::refresh(doc, crate::canvas_geom::Refresh::Shapes);
@@ -4170,6 +4203,8 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
         move |doc, active, ctx| {
             ctx.progress(0.0, "Rendering");
             let area = doc.bounds();
+            // Each layer of the split covers the canvas; the canvas shows the one being made.
+            ctx.preview_at(area);
             let (w, h) = (area.width(), area.height());
             let n = w as usize * h as usize;
             let layer = if all_layers { None } else { active.and_then(|id| doc.layer(id)).and_then(|l| l.surface()) };

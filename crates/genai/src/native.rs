@@ -23,7 +23,7 @@ use gn_engine::protocol::{Blob, ErrorKind, RunRequest};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{Error, GenerativeBackend, Gray8, Health, Progress, Request, Response, Result, Rgba8, Task, Timings, template};
+use crate::{Error, GenerativeBackend, Gray8, Health, Preview, PreviewMode, Progress, Request, Response, Result, Rgba8, Task, Timings, template};
 
 /// The engine worker, started on first use and restarted after it dies.
 pub struct NativeBackend {
@@ -45,6 +45,8 @@ pub struct NativeBackend {
     timeout_ms: AtomicU64,
     /// Set by every run but a warm-up's: a warm-up in flight stops ([`Self::warm_up`]).
     warm_cancel: AtomicBool,
+    /// [`PreviewMode`] as its index in [`PREVIEW_MODES`], read at each run.
+    preview: AtomicU8,
 }
 
 /// What [`NativeBackend::warm_up`] did.
@@ -56,6 +58,24 @@ pub enum WarmUp {
     Skipped(String),
     /// Another request came first.
     Cancelled,
+}
+
+/// [`NativeBackend::preview`]'s encoding.
+const PREVIEW_MODES: [PreviewMode; 3] = [PreviewMode::Off, PreviewMode::Fast, PreviewMode::Sharp];
+
+/// The worker protocol's spelling of a [`PreviewMode`].
+fn wire_preview(mode: PreviewMode) -> gn_engine::PreviewMode {
+    match mode {
+        PreviewMode::Off => gn_engine::PreviewMode::Off,
+        PreviewMode::Fast => gn_engine::PreviewMode::Fast,
+        PreviewMode::Sharp => gn_engine::PreviewMode::Sharp,
+    }
+}
+
+/// A worker's preview as the editor's; `None` when its bytes do not match its size.
+fn preview_of(p: gn_engine::Preview) -> Option<Preview> {
+    let image = Rgba8::new(p.width, p.height, p.rgba).ok()?;
+    Some(Preview { image, step: p.step, steps: p.steps, output: p.output })
 }
 
 const IDLE: u8 = 0;
@@ -119,6 +139,9 @@ impl Progress for Deadline<'_> {
         }
         false
     }
+    fn preview(&self, preview: &Preview) {
+        self.progress.preview(preview);
+    }
 }
 
 /// How a run that lost its worker mid-way begins its error.
@@ -151,6 +174,7 @@ impl NativeBackend {
             start_error: Mutex::new(None),
             timeout_ms: AtomicU64::new(600_000),
             warm_cancel: AtomicBool::new(false),
+            preview: AtomicU8::new(0),
         }
     }
 
@@ -192,6 +216,18 @@ impl NativeBackend {
     /// Change the generation deadline without unloading the worker’s models.
     pub fn set_timeout(&self, timeout: std::time::Duration) {
         self.timeout_ms.store(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    /// Ask the next runs for pictures while they sample (`Off` asks for none); they arrive
+    /// through [`Progress::preview`].
+    pub fn set_preview(&self, mode: PreviewMode) {
+        let i = PREVIEW_MODES.iter().position(|m| *m == mode).unwrap_or(0);
+        self.preview.store(i as u8, Ordering::Relaxed);
+    }
+
+    /// The preview mode the next run asks for.
+    pub fn preview_mode(&self) -> PreviewMode {
+        PREVIEW_MODES.get(usize::from(self.preview.load(Ordering::Relaxed))).copied().unwrap_or_default()
     }
 
     /// Write the worker's stderr to `path` (truncated at each start), with `RUST_LOG=info`
@@ -467,6 +503,7 @@ impl GenerativeBackend for NativeBackend {
             mask,
             references,
             params,
+            preview: wire_preview(self.preview_mode()),
         };
         let started = std::time::Instant::now();
         let encode_ms = encode.elapsed().as_millis() as u64;
@@ -480,7 +517,13 @@ impl GenerativeBackend for NativeBackend {
         let attempt = || {
             self.with_client(|c| {
                 let mut report = |f: f32, m: &str| deadline.report(f, m);
-                c.run(&rr, &bytes, &mut report, &|| deadline.cancelled())
+                // A malformed preview is dropped: a picture of the run never fails it.
+                let mut preview = |p: gn_engine::Preview| {
+                    if let Some(p) = preview_of(p) {
+                        deadline.preview(&p);
+                    }
+                };
+                c.run_previewed(&rr, &bytes, &mut report, &mut preview, &|| deadline.cancelled())
             })
         };
         // A worker that stopped mid-run (it exits on a poisoned CUDA context) is replaced and
@@ -796,6 +839,47 @@ mod tests {
         assert!(matches!(b.run(&long, &*c), Err(Error::Cancelled)));
         assert_eq!(b.model_files("diffusion_models").unwrap().len(), 3);
         b.free().unwrap();
+    }
+
+    /// Pictures of the run arrive only when asked for, one per step at the size the engine
+    /// chose, and leave the result alone.
+    #[test]
+    fn previews_arrive_when_asked_for_and_leave_the_result_alone() {
+        struct Seen(Mutex<Vec<Preview>>);
+        impl Progress for Seen {
+            fn report(&self, _: f32, _: &str) {}
+            fn cancelled(&self) -> bool {
+                false
+            }
+            fn preview(&self, p: &Preview) {
+                self.0.lock().unwrap().push(p.clone());
+            }
+        }
+        let (port, token) = served();
+        let b = NativeBackend::attached(port, &token).unwrap();
+        let mut req = Request::new("krea2-turbo/image", "a fox");
+        req.size = Some((64, 32));
+        req.steps = 4;
+        req.seed = 5;
+        assert_eq!(b.preview_mode(), PreviewMode::Off, "off unless asked");
+        let off = Seen(Mutex::new(Vec::new()));
+        let plain = b.run(&req, &off).unwrap();
+        assert!(off.0.lock().unwrap().is_empty());
+        b.set_preview(PreviewMode::Fast);
+        assert_eq!(b.preview_mode(), PreviewMode::Fast);
+        let fast = Seen(Mutex::new(Vec::new()));
+        let shown = b.run(&req, &fast).unwrap();
+        let got = fast.0.lock().unwrap();
+        assert_eq!(got.len(), 4, "one per step");
+        assert_eq!(got.iter().map(|p| p.step).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert!(got.iter().all(|p| (p.image.width, p.image.height, p.steps, p.output) == (8, 4, 4, 0)), "an eighth of the result");
+        assert_eq!(shown.images, plain.images, "the result is the same");
+        b.set_preview(PreviewMode::Off);
+        let again = Seen(Mutex::new(Vec::new()));
+        b.run(&req, &again).unwrap();
+        assert!(again.0.lock().unwrap().is_empty());
+        // A malformed picture from a worker is dropped.
+        assert!(preview_of(gn_engine::Preview { step: 1, steps: 1, output: 0, width: 2, height: 2, rgba: vec![0; 3] }).is_none());
     }
 
     /// The status answers without starting a worker: stopped before any, failed with the reason

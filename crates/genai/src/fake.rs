@@ -1,6 +1,6 @@
 //! CPU-only in-process native worker for command and UI tests.
 use crate::native::NativeBackend;
-use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
+use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, Preview, RunRequest};
 use gn_engine::server::{Engine, EngineError};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -162,6 +162,18 @@ impl Engine for FakeEngine {
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        self.run_previewed(req, blobs, progress, &mut |_| {}, cancel)
+    }
+    /// With `req.preview` (and a picture to make): after each step a grey picture an eighth of
+    /// the result's size whose level rises with the step, as a `fast` preview arrives.
+    fn run_previewed(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        preview: &mut dyn FnMut(Preview),
+        cancel: &AtomicBool,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
         {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             for b in req.image.iter().chain(req.mask.iter()).chain(req.references.iter()) {
@@ -180,6 +192,11 @@ impl Engine for FakeEngine {
         }
         let steps = self.options.progress_steps.clamp(1, 1000);
         let start = std::time::Instant::now();
+        let (pw, ph) = req.image.as_ref().map(|b| (b.width, b.height)).unwrap_or((req.width.max(1), req.height.max(1)));
+        let (pw, ph) = ((pw / 8).clamp(1, 512), (ph / 8).clamp(1, 512));
+        let previews = !req.preview.is_off() && req.task != "text" && req.task != "segment";
+        // A batch numbers its pictures' previews by their place in the request.
+        let batched = req.params.get("batch").and_then(Value::as_array).map(Vec::len).filter(|_| !self.options.no_batch).unwrap_or(1).clamp(1, 64);
         for i in 0..steps {
             while start.elapsed().as_millis() < u128::from(self.options.delay_ms) * u128::from(i + 1) / u128::from(steps) {
                 if cancel.load(Ordering::SeqCst) {
@@ -189,6 +206,13 @@ impl Engine for FakeEngine {
                 std::thread::sleep(Duration::from_millis(2));
             }
             progress((i + 1) as f32 / steps as f32, "Sampling");
+            if previews {
+                let level = (255 * (i + 1) / steps) as u8;
+                for output in 0..batched as u32 {
+                    let rgba = [level, level, level, 255].repeat(pw as usize * ph as usize);
+                    preview(Preview { step: i + 1, steps, output, width: pw, height: ph, rgba });
+                }
+            }
         }
         if cancel.load(Ordering::SeqCst) {
             self.state.lock().unwrap_or_else(PoisonError::into_inner).cancellations += 1;

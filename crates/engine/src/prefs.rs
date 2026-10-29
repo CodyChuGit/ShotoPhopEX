@@ -945,6 +945,11 @@ pub struct Integrations {
     /// for them; skipped when the card has too little free memory, given up when another
     /// generation starts first.
     pub warm_up_at_launch: bool,
+    /// What the canvas shows while a generation samples, over the place its result will take
+    /// (`photocraft_genai::PreviewMode`): `off` (nothing until the result), `fast` (the model's
+    /// estimate at its latent grid, next to free; the default) or `sharp` (through a tiny decoder,
+    /// up to full size, every few steps). Read at each run, so it takes effect on the next one.
+    pub preview_while_generating: String,
     /// The native worker's runtime folders, `;`-separated: where NVIDIA's CUDA libraries
     /// (cuBLAS, cuBLASLt, cuRAND, the CUDA runtime) live. Nothing is read from `PATH`. Empty =
     /// the `runtime` folder beside the executable when a package put one there ([`Integrations::runtime_folders`]), else the
@@ -977,6 +982,7 @@ impl Default for Integrations {
             alerts: "off".into(),
             enhance_prompts: false,
             warm_up_at_launch: true,
+            preview_while_generating: "fast".into(),
             runtime_path: String::new(),
             models_path: String::new(),
         }
@@ -1285,6 +1291,7 @@ pub fn choices(path: &str) -> Option<&'static [&'static str]> {
         "integrations.variationsStrip" => VARIATIONS_STRIP_PLACES,
         "integrations.quality" => QUALITY_MODES,
         "integrations.alerts" => ALERT_MODES,
+        "integrations.previewWhileGenerating" => photocraft_genai::PreviewMode::NAMES,
         _ => return None,
     })
 }
