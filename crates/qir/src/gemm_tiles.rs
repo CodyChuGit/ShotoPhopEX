@@ -82,9 +82,56 @@ const LARGE_M: usize = 8192;
 /// From this M on (B >= 3) 128x256 also wins for the merged q|k.
 const HUGE_M: usize = 12288;
 
-/// The launch plan for an `(M, N, K)` INT8 GEMM, from `gemm-bench` (RTX
-/// 4090, min of 3 interleaved rounds at txt = 21 / 60 / 120 and B = 1 / 2;
-/// HANDOVER "GEMM tiling push"):
+/// The launch plan for an `(M, N, K)` INT8 GEMM: the RTX 4090's ([`gemm_plan_sm89`]), or with
+/// `QIR_GEMM_PLAN=sm120` on an sm_120 build the RTX 5090's ([`gemm_plan_sm120`]). Every plan
+/// computes the same bits; only the speed differs. The 5090's plan is opt-in: 3–11 % faster per
+/// GEMM in isolation, but end to end within run-to-run noise (2026-10-29, the same build: 2.1
+/// text to image 3.56 -> 3.50 s, Edit 4.22 -> 4.39 s, outputs byte-identical).
+pub fn gemm_plan(m: usize, n: usize, k: usize) -> GemmPlan {
+    static SM120: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let sm120 = || env!("QIR_COMPUTE_CAP").trim().parse::<u32>().unwrap_or(89) >= 120 && std::env::var("QIR_GEMM_PLAN").is_ok_and(|v| v.trim() == "sm120");
+    if *SM120.get_or_init(sm120) {
+        gemm_plan_sm120(m, n, k)
+    } else {
+        gemm_plan_sm89(m, n, k)
+    }
+}
+
+/// One ~1 MP lane at 864x1152 (3888 image rows plus the text) sits just under [`TUNED_M`]; the
+/// 5090's plan starts here.
+const LANE_M: usize = 3584;
+/// Two lanes or one lane with its reference (~7900-8300 rows) up to this M.
+const PAIR_M: usize = 12288;
+
+/// The RTX 5090's plan (`tests/convrot_shapes.rs gemm_plans_on_this_card`, 2026-10-29: every
+/// config and split at the worker's shapes, 20 runs each; selected vs best of the 4090 plan
+/// within 0–11 %):
+/// - one lane (M ~3990): 128x256 swizzle 4 with the 64x64 tail, gate|proj without it (2.1
+///   text to image: 575 -> 622 TOPS at N = K = 4096, 629 -> 700 at K = 12288);
+/// - two lanes / a reference (M ~7900-8300): 128x256 4-stage, K >= 8192 on swizzle 4 (q|k-class
+///   N = 8192-12288: 465-619 -> 514-652);
+/// - larger M (the 3-layer split's ~40000 rows): 128x256 swizzle 4, no tail split (726 against
+///   692 at N = 3072, K = 12288).
+pub fn gemm_plan_sm120(m: usize, n: usize, k: usize) -> GemmPlan {
+    if m <= SMALL || n <= SMALL {
+        GemmPlan::single(2)
+    } else if m < LANE_M {
+        GemmPlan::single(0)
+    } else if m < LARGE_M {
+        if n >= 16384 {
+            GemmPlan::single(3)
+        } else {
+            GemmPlan { main: 3, tail: Some(2) }
+        }
+    } else if m < PAIR_M {
+        GemmPlan::single(if n < 8192 && k >= 8192 { 3 } else { 4 })
+    } else {
+        GemmPlan::single(3)
+    }
+}
+
+/// The RTX 4090's plan, from `gemm-bench` (min of 3 interleaved rounds at txt = 21 / 60 / 120
+/// and B = 1 / 2; HANDOVER "GEMM tiling push"):
 /// - small M or N -> 64x64 6-stage;
 /// - N >= 16384 (gate|proj) -> 128x256, 4-stage at B = 1, swizzle 4 at
 ///   B >= 2; no split (the tail launch would re-read the 100 MB weight);
@@ -93,7 +140,7 @@ const HUGE_M: usize = 12288;
 /// - N <= 4096-class (to_v / to_out / MLP out, K = 4096 and 12288) ->
 ///   128x256 swizzle 4 over the full 128-row tiles + the < 128 tail rows
 ///   on 64x64 (-5..-8%: exact waves for the head).
-pub fn gemm_plan(m: usize, n: usize, _k: usize) -> GemmPlan {
+pub fn gemm_plan_sm89(m: usize, n: usize, _k: usize) -> GemmPlan {
     if m <= SMALL || n <= SMALL {
         GemmPlan::single(2)
     } else if m < TUNED_M {
@@ -123,35 +170,35 @@ mod tests {
     fn b1_dit_shapes() {
         for txt in [5usize, 21, 60, 120] {
             let m = 4096 + txt;
-            assert_eq!(gemm_plan(m, 4096, 4096), SPLIT, "to_v / to_out");
-            assert_eq!(gemm_plan(m, 8192, 4096), GemmPlan::single(1), "q|k");
-            assert_eq!(gemm_plan(m, 24576, 4096), GemmPlan::single(4), "gate|proj");
-            assert_eq!(gemm_plan(m, 4096, 12288), SPLIT, "mlp out");
+            assert_eq!(gemm_plan_sm89(m, 4096, 4096), SPLIT, "to_v / to_out");
+            assert_eq!(gemm_plan_sm89(m, 8192, 4096), GemmPlan::single(1), "q|k");
+            assert_eq!(gemm_plan_sm89(m, 24576, 4096), GemmPlan::single(4), "gate|proj");
+            assert_eq!(gemm_plan_sm89(m, 4096, 12288), SPLIT, "mlp out");
         }
     }
 
     #[test]
     fn batched_dit_shapes() {
         for (m, qk) in [(8234usize, 1u8), (12351, 3), (16468, 3)] {
-            assert_eq!(gemm_plan(m, 4096, 4096), SPLIT);
-            assert_eq!(gemm_plan(m, 8192, 4096), GemmPlan::single(qk));
-            assert_eq!(gemm_plan(m, 24576, 4096), GemmPlan::single(3));
-            assert_eq!(gemm_plan(m, 4096, 12288), SPLIT);
+            assert_eq!(gemm_plan_sm89(m, 4096, 4096), SPLIT);
+            assert_eq!(gemm_plan_sm89(m, 8192, 4096), GemmPlan::single(qk));
+            assert_eq!(gemm_plan_sm89(m, 24576, 4096), GemmPlan::single(3));
+            assert_eq!(gemm_plan_sm89(m, 4096, 12288), SPLIT);
         }
     }
 
     #[test]
     fn tails_take_the_small_tile() {
-        assert_eq!(gemm_plan(2, 16384, 4096), GemmPlan::single(2)); // modulation
-        assert_eq!(gemm_plan(2, 4096, 256), GemmPlan::single(2)); // time_embed.linear_1
-        assert_eq!(gemm_plan(37, 4096, 4096), GemmPlan::single(2)); // txt_in
-        assert_eq!(gemm_plan(4117, 64, 4096), GemmPlan::single(2)); // proj_out
+        assert_eq!(gemm_plan_sm89(2, 16384, 4096), GemmPlan::single(2)); // modulation
+        assert_eq!(gemm_plan_sm89(2, 4096, 256), GemmPlan::single(2)); // time_embed.linear_1
+        assert_eq!(gemm_plan_sm89(37, 4096, 4096), GemmPlan::single(2)); // txt_in
+        assert_eq!(gemm_plan_sm89(4117, 64, 4096), GemmPlan::single(2)); // proj_out
     }
 
     #[test]
     fn untuned_mid_m_keeps_the_original_config() {
         for m in [65usize, 1024, 1041, 4095] {
-            assert_eq!(gemm_plan(m, 4096, 4096), GemmPlan::single(0));
+            assert_eq!(gemm_plan_sm89(m, 4096, 4096), GemmPlan::single(0));
         }
     }
 
@@ -160,7 +207,7 @@ mod tests {
         for m in [1usize, 2, 64, 65, 4117, 8192, 16468] {
             for n in [64usize, 4096, 8192, 24576] {
                 for k in [256usize, 4096, 12288] {
-                    let p = gemm_plan(m, n, k);
+                    let p = gemm_plan_sm89(m, n, k);
                     assert!((p.main as usize) < GEMM_CONFIGS.len());
                     assert!(p.tail.is_none_or(|t| (t as usize) < GEMM_CONFIGS.len()));
                 }
@@ -189,6 +236,38 @@ mod tests {
         }
         assert_eq!(SPLIT.segments(4117), vec![(0, 4096, 3), (4096, 21, 2)]);
         assert_eq!(SPLIT.segments(4096), vec![(0, 4096, 3)]);
+    }
+
+    #[test]
+    fn sm120_plan_follows_the_5090_measurements() {
+        // One 864x1152 lane of 2.1 text to image.
+        assert_eq!(gemm_plan_sm120(3988, 4096, 4096), SPLIT);
+        assert_eq!(gemm_plan_sm120(3988, 4096, 12288), SPLIT);
+        assert_eq!(gemm_plan_sm120(3988, 8192, 4096), SPLIT);
+        assert_eq!(gemm_plan_sm120(3988, 24576, 4096), GemmPlan::single(3));
+        // A reference, or two lanes (MOSS-Image at 1024²).
+        assert_eq!(gemm_plan_sm120(7876, 4096, 4096), GemmPlan::single(4));
+        assert_eq!(gemm_plan_sm120(7876, 8192, 4096), GemmPlan::single(4));
+        assert_eq!(gemm_plan_sm120(7876, 4096, 12288), GemmPlan::single(3));
+        assert_eq!(gemm_plan_sm120(8272, 9216, 3072), GemmPlan::single(4));
+        assert_eq!(gemm_plan_sm120(8272, 16384, 3072), GemmPlan::single(4));
+        assert_eq!(gemm_plan_sm120(8272, 3072, 8192), GemmPlan::single(3));
+        assert_eq!(gemm_plan_sm120(8272, 12288, 3072), GemmPlan::single(4));
+        // The 3-layer split's CFG pair.
+        assert_eq!(gemm_plan_sm120(40000, 12288, 3072), GemmPlan::single(3));
+        assert_eq!(gemm_plan_sm120(40000, 3072, 12288), GemmPlan::single(3));
+        // Small shapes and the untuned range keep the 4090's choices.
+        for (m, n, k) in [(2usize, 16384usize, 4096usize), (37, 4096, 4096), (4117, 64, 4096), (1024, 4096, 4096)] {
+            assert_eq!(gemm_plan_sm120(m, n, k), gemm_plan_sm89(m, n, k), "{m}x{n}x{k}");
+        }
+        for m in [1usize, 2, 64, 65, 3988, 4117, 7876, 8272, 16468, 40000] {
+            for n in [64usize, 3072, 4096, 8192, 12288, 24576] {
+                for k in [256usize, 3072, 4096, 12288] {
+                    let p = gemm_plan_sm120(m, n, k);
+                    assert!((p.main as usize) < GEMM_CONFIGS.len() && p.tail.is_none_or(|t| (t as usize) < GEMM_CONFIGS.len()));
+                }
+            }
+        }
     }
 
     #[test]

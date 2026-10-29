@@ -245,6 +245,12 @@ impl LayeredPipeline {
                     self.device.synchronize()?;
                 }
                 progress(i + 1, steps);
+                crate::device::warn_if_paging(&self.device, "layered step");
+                if i == 0 {
+                    if let Some((free, _)) = crate::device::free_vram(&self.device) {
+                        tracing::info!(driver_free_mib = free >> 20, slack_mib = crate::device::pool_slack(&self.device) >> 20, "layered step 0 memory");
+                    }
+                }
                 if profile {
                     mark(&format!("step {i}"))?;
                 }
