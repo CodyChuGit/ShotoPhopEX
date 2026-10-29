@@ -1,5 +1,7 @@
 # Comfy PhotoCraft roadmap
 
+Current engine (2026-10-29): native worker only; ComfyUI removed. Historical phases below describe the fork’s development. See [removal report](research/notes/comfyui-removal.md).
+
 Status legend: ✅ done · 🟡 in progress · ⬜ not started. Updated 2026-10-09.
 
 Each phase ends with something a user can run. Every phase obeys upstream's gates

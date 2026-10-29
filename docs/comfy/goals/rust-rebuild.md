@@ -5,7 +5,7 @@
 > `gn-diffusion`, `gn-perception`, `gn-engine`), on candle and our own CUDA kernels. No
 > ComfyUI, no `python.exe` process, no ONNX Runtime, no Python step to prepare a model. The
 > only libraries beside the executable are NVIDIA's (cuBLAS/cuBLASLt/cuRAND, loaded on first
-> use). ComfyUI stays an optional engine for people who have it, never a requirement.
+> use). ComfyUI was removed on 2026-10-29; its benchmark comparisons remain external.
 
 Owner's ask (2026-10-27): "the full rust rebuild of onnx and stuff so everything can be one
 exe and rust native without having weird python instances that OOM", then "we need to get
@@ -241,3 +241,14 @@ step, the dev log and roadmap updated.
   style reference natively (Codex C3, Ostris's LoRA downloaded on the owner's go): every CPU gate
   but the conditioning's 0.02 absolute cap (0.031; relative RMS passes), GPU comparison next.
   fal's Multiple Angles LoRA downloaded for the 2511 Angles benchmark.
+- 2026-10-29: the owner's call ("delete and move on"): **the ComfyUI engine is removed from
+  PhotoshopEX** (Codex K, checked). Every generative command runs on the native worker; the
+  ComfyUI client, sidecar, route preferences (comfyServer, comfyPath, comfyArgs, engine,
+  engineStartOnLaunch/StopOnQuit, purgeModels, modelPrecision), graph templates and the NVFP4
+  and purge policies are gone; the 28 templates are metadata only. Tests run against a fake
+  native worker on the real gn-engine protocol. Old preference files load (retired keys dropped;
+  a `comfyPath` with no Models folder becomes that install's `models` folder once); with no
+  Models folder the Generate panel asks for one. Bench scripts stay, comparison only. Native
+  2511 has no cold glitch (cold and warm at one seed byte-identical; the 27 dB was ComfyUI's
+  first call), and the empty-prompt Remove Background holds on the GPU (5 of 5). Report:
+  [`research/notes/comfyui-removal.md`](../research/notes/comfyui-removal.md).

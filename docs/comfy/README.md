@@ -5,11 +5,12 @@
 Comfy PhotoCraft is a fork of [storytold/photocraft](https://github.com/storytold/photocraft) (the
 clean-room, pure-Rust Photoshop reimplementation) whose purpose is to close the one gap upstream
 has deliberately deferred: **AI / generative features** (`docs/roadmap.md` grades them "~0%,
-deferred by decision (#41)"). The generative engine is a locally running
-[ComfyUI](https://github.com/comfyanonymous/ComfyUI) server driving open-weight models such as
-**Krea 2**, **Qwen-Image-2.1 / Qwen-Image-Edit** and friends, so that Generative Fill, Generative
-Expand, text-to-image, instruction editing and background removal run on the user's own GPU with
-no account, no cloud and no credits.
+deferred by decision (#41)"). The generative engine is the native `photocraft --engine` worker from `genai-native`.
+Since 2026-10-29 the app has no ComfyUI client or sidecar. The weights live in the Models folder,
+read in ComfyUI's `models` layout without requiring ComfyUI (an old install's folder is taken
+over once on upgrade). The benchmark scripts are
+external comparisons only; historical scripts using removed app preferences need `cdcedbd8`
+or direct ComfyUI HTTP calls.
 
 This folder is the fork's own documentation. Everything upstream wrote still applies: read
 [`AGENTS.md`](../../AGENTS.md) first, then the upstream `docs/`, then this folder.
@@ -17,13 +18,13 @@ This folder is the fork's own documentation. Everything upstream wrote still app
 | Document | What it is for |
 |---|---|
 | [`codebase-orientation.md`](codebase-orientation.md) | The parts of the ~250k-line workspace a generative feature touches: command anatomy, pixel access, jobs, preferences, UI hooks, automation, tests. Cited to `file:line`. |
-| [`architecture.md`](architecture.md) | The design: the `photocraft-genai` crate, the ComfyUI client, workflow templates, the `generate.*` commands, the UI, and how it stays inside upstream's rules. |
+| [`architecture.md`](architecture.md) | The design: the `photocraft-genai` crate, the native worker, metadata templates, the `generate.*` commands, the UI, and how it stays inside upstream's rules. |
 | [`models.md`](models.md) | The model catalogue: what each open model does, its licence, VRAM, ComfyUI support and file names. Includes the Firefly feature → model mapping. |
 | [`comfyui-setup.md`](comfyui-setup.md) | Running ComfyUI locally on this machine (RTX 5090), the model files to download, and an API primer (HTTP + WebSocket) with exact field names. |
 | [`roadmap.md`](roadmap.md) | Phases 0–6 with a definition of done each, ordered so every phase ships something usable. |
 | [`ai-integration-proposal.md`](ai-integration-proposal.md) | The full catalogue of what ComfyUI (generation, perception) and a local LLM (assistant, prompts, naming) can add, with value, effort, licence and a recommended order. |
 | [`plan-artcraft-experience.md`](plan-artcraft-experience.md) | The executable hand-off plan for the ArtCraft experience in PhotoshopEX: five phases (Generations library and panel, Generate panel with references, model picker, Variations strip, hub/alerts/export/Angles) with data shapes, command specs, code anchors by file and line, tests, docs and an acceptance walkthrough. Built 2026-10-12. |
-| [`plan-native-engine.md`](plan-native-engine.md) | The hand-off plan for the native engine (`genai-native`): one executable, no Python, Krea 2 Turbo + Qwen-Image-2.1 + SAM 3.1 in-process on the 5090 through a five-layer Rust engine (kernels, blocks, thin model definitions, BYOM loader, perception via ONNX Runtime) in a worker process, with sd.cpp and a hidden ComfyUI sidecar as day-0 lanes behind the same trait, a parity harness, a kernel track, phases with gates, a timeline and the owner's decisions. Start here to build it. |
+| [`plan-native-engine.md`](plan-native-engine.md) | The hand-off plan for the native engine (`genai-native`): one executable, no Python, Krea 2 Turbo + Qwen-Image-2.1 + SAM 3.1 in-process on the 5090 through a five-layer Rust engine (kernels, blocks, thin model definitions, BYOM loader, perception via ONNX Runtime) in a worker process, with historical sd.cpp/ComfyUI day-0 plans (the ComfyUI engine was removed on 2026-10-29), a parity harness, a kernel track, phases with gates, a timeline and the owner's decisions. Start here to build it. |
 | [`artcraft-study.md`](artcraft-study.md) | How ArtCraft (storytold's AI studio) delivers generation as an experience: the shell, the Create pages, the prompt box, the feed, the Task Queue, the lightbox and Library, the 2D editor's History Stack, settings; the principles behind it; and the PhotoshopEX translation (Generate panel, Generations panel, Variations strip) with wireframes and a build order. Credits left out: local compute. |
 | [`research/notes/ausboss-krea2-clothing-workflow.md`](research/notes/ausboss-krea2-clothing-workflow.md) | A community ComfyUI workflow (select the clothes, repaint them from a second picture) read piece by piece: the mask stack, the grey hole, the side-by-side pair, the prompt writer, the AnyPaint registered-reference trick for Krea 2; what PhotoshopEX took from it (fill from a reference, `grow`, `erase`) and what is still to take. |
 | [`dev-environment-windows.md`](dev-environment-windows.md) | What is installed on the development PC, how it was installed, build and test commands, timings and gotchas. |
@@ -40,11 +41,8 @@ background-job system with progress and cancellation, and a thin UI that is gene
 What is missing is a backend that turns "prompt + pixels + mask" into pixels, and the handful of
 commands and panels that wire it in.
 
-ComfyUI is that backend. It is the de-facto standard runtime for open image models, it gets
-day-one support for new models (Krea 2 landed in ComfyUI 0.26.0 the day after its release;
-Qwen-Image-2.1 the day of), it runs on the user's own GPU, and it exposes a small, stable HTTP +
-WebSocket API. Treating it as an external service keeps PhotoCraft pure Rust (no PyTorch, no CUDA
-bindings, no C dependencies) and keeps the browser build intact.
+The native worker is that backend. Rust commands pass prompts and raw pixel blobs through
+the gn-engine protocol; the worker owns model loading and residency.
 
 ## Principles (in addition to upstream's)
 
@@ -58,10 +56,9 @@ bindings, no C dependencies) and keeps the browser build intact.
 3. **Non-destructive.** A generation lands on a new raster layer with a layer mask cut from the
    selection, exactly like Photoshop's generative layers. The original pixels never change. Prompt,
    seed, model and workflow are recorded on the layer so a result can be reproduced or varied.
-4. **The backend is a trait.** ComfyUI is the first `GenerativeBackend`. A native inference
-   backend (candle/burn) or another server can come later without touching the commands or UI.
+4. **The backend is a trait.** `NativeBackend` connects engine commands to the Rust worker through gn-engine.
 5. **Never block, never crash.** Generation runs as a background job (`crates/engine/src/jobs.rs`)
-   with progress from ComfyUI's WebSocket and cancellation that interrupts the server. A server
+   with progress and cancellation through gn-engine. A worker
    that is down, slow, misconfigured or returns garbage produces an error the user can act on.
 6. **Upstream-compatible.** The fork tracks upstream `main`. Generic improvements go back upstream
    as PRs; the generative crate is designed so it could be upstreamed as a whole once #41 is
@@ -76,8 +73,8 @@ The target list is Photoshop 2026 (v27.x) as documented by Adobe and the communi
 |---|---|---|---|---|
 | Generative Fill | Inpaint the selection from a prompt; result on a masked layer; several variations | `generate.fill`: composite + selection mask → edit/inpaint workflow → new layer + mask | Qwen-Image-Edit-2511 (Apache-2.0); Qwen-Image-2.1 (research) | 1–2 |
 | Generative Expand | Outpaint when the canvas/crop grows | `generate.expand`: pad composite, mask the new area, same workflow | same as Fill | 3 |
-| Generate Image | Text-to-image into a new document/layer, reference image optional | `generate.image` | Krea 2 Turbo (Krea 2 Community); Z-Image Turbo (Apache-2.0) | 3 |
-| Generate Background | Replace the background behind the subject | `generate.removeBackground` + `generate.fill` of the inverse | Qwen-Image-2.1 RGBA / BiRefNet + editor | 3 |
+| Generate Image | Text-to-image into a new document/layer, reference image optional | `generate.image` | Krea 2 Turbo (Krea 2 Community); Qwen-Image-2.1 (research) | 3 |
+| Generate Background | Replace the background behind the subject | `generate.removeBackground` + `generate.fill` of the inverse | Qwen-Image-2.1 RGBA + editor | 3 |
 | Remove tool / Distraction Removal | Remove an object, fill plausibly | **shipped 2026-10-21**: Content-Aware Fill (`generative`), the Remove tool and the Spot Healing Brush (`type: generative`) run the fill model with a "remove the object in the selected area and continue the surroundings" instruction (`generate_cmds::generative_remove`): a stroke takes the object SAM 3.1 finds under it whole, the vision-language model names it ("remove the gold necklace…": what removes a thin necklace over skin that the generic wording leaves), SAM is asked again by that name (so half a stroke over a chain removes the whole necklace), the hole grows past it, two seeds run and the vision-language model keeps the one that looks untouched; measured on a fourteen-scene set (watch, glasses, earring, tattoo, logo, car, person, lamp post, sign, crow, mug, ring, poster, dog); the classical PatchMatch fills stay as the fallback without a backend | Qwen-Image-Edit-2511 fill (Apache-2.0); Qwen-Image-2.1 fill natively | 2–3 |
 | Reference Image / Style reference | Steer a generation with an image | `generate.image` / `generate.edit` / `generate.fill` with `references[]` (a fill from a reference repaints the selection with what the reference shows: the hole flattened to grey, `grow` for room; 2026-10-21) | Krea 2 style-reference LoRA; Qwen-Image-Edit-2511 `fill-ref`; Qwen-Image-2.1 (up to 10 refs) | 4 |
 | Harmonize | Match colour, light and shadows of a pasted layer to the scene | `generate.edit` preset ("harmonize") on the layer with the composite as context | Qwen edit models | 5 |
@@ -88,8 +85,8 @@ The target list is Photoshop 2026 (v27.x) as documented by Adobe and the communi
 
 ## How to use (PhotoshopEX)
 
-Everything runs on your own ComfyUI server (Edit › Preferences › AI Integrations › ComfyUI
-server) with the models you installed there; the app ships no weights.
+Everything runs on the native worker. Set **Models folder** and the runtime folders in
+Edit › Preferences › AI Integrations; ComfyUI is not needed.
 
 - **Window › Generate** (the prompt box in the dock): pick Image, Fill, Edit or Expand, type,
   add reference images to the deck (+, or drop files on the panel), choose a model in the picker
@@ -107,11 +104,11 @@ server) with the models you installed there; the app ships no weights.
   Preferences › Variations strip: right, bottom or off.
 - **Edit › Generative Angles…**: drag the camera around the subject in the orbit widget (8
   directions, 4 heights, 3 distances) and Generate; needs fal's Multiple Angles LoRA in
-  ComfyUI/models/loras.
+  the Models folder’s `loras/` subfolder.
 - **The Home screen and Help › Generative Features…**: one card per feature; an Edit card asks
   for a picture first when none is open.
 - **Quality** (the menu beside the model in the Generate panel, or Preferences › AI
-  Integrations › Quality): Best runs the full-step models and keeps the 4-bit weights off; Balanced
+  Integrations › Quality): Best runs the full-step models; Balanced
   takes the 8-step Lightning tier; Fast the 4-step tier. It only changes what Auto picks.
 - **The Object Selection tool (W) with SAM 3.1**: rest the pointer on something and the object
   finder tints what a click would select; click to select it, drag a box around an object to find
@@ -125,29 +122,15 @@ server) with the models you installed there; the app ships no weights.
   Edge** is the detector's edge refinement. Without a server it is the classical quick selection.
 - **Preferences › Alerts**: a short sound when a run finishes (`done`) or also when it fails
   (`doneAndFailed`); the Windows and macOS packages are built with the `alerts` feature.
-- **The engine dot** (status bar, right end): set **Preferences › AI Integrations › ComfyUI
-  folder** to your ComfyUI install (the portable build's folder or a checkout) and the app starts
-  ComfyUI itself, hidden, when a generative command needs it or at launch (**Start engine at
-  launch**), and stops it when you quit (**Stop engine on quit**). Grey = stopped, amber =
-  starting, green = ready, blue = a ComfyUI you started yourself, red = failed (the tooltip has
-  the reason; the dot's menu has Start / Stop / Restart / Show log). No console window.
-- **Preferences › AI Integrations › Engine**: `Auto`, `ComfyUI`, or `Native` — the in-process
-  worker (`photocraft --engine`, started on first use, restarted if it dies). With **Native
-  runtime folders** (where ONNX Runtime and the CUDA / cuDNN libraries live, `;`-separated) and
-  a **Native models folder** (one subfolder per model; `sam3.1/` holds the graphs
-  `genai-native/tools/export_sam31.py` writes from your own checkpoint) set, the worker runs
-  SAM 3.1 itself: Select by Text, Select Subject, the Object Selection tool's prompts and Quick
-  Selection work with ComfyUI off and give the same masks. **`Auto` sends each request where it
-  runs best today**: SAM 3.1 to the native worker when those two folders are set, everything
-  else (Fill, Image, Edit, Expand…) to ComfyUI. `Native` sends everything to the worker, which
-  serves SAM 3.1 and, in a build with the `native-diffusion` feature, **Generate Image with
-  Qwen-Image-2.1** from the official snapshot placed at `qwen-image-2.1/` in the models folder
-  (`processor/ text_encoder/ transformer/ vae/`, as Hugging Face publishes it; the INT8 copy of
-  the transformer is cached in `.qir-cache/` beside it on first use): the same prompt, seed and
-  steps give the ComfyUI route's picture (40 dB on the fox), resident after the first one and
-  faster than ComfyUI per picture, so `Auto` sends Generate Image with that template to the
-  worker too (dev log 2026-10-20). Without the folders the worker paints placeholder pictures,
-  so the path is exercised end to end on any machine.
+- **The engine dot** shows only the native worker: grey = stopped, amber = starting,
+  green = ready/working, red = failed. Its menu offers Start / Stop / Purge models / Show log.
+  `generate.engine.restart` also restarts the worker. The first generative command starts it;
+  the app stops its owned worker on quit.
+- **Preferences › AI Integrations** keeps **Native runtime folders** and **Models folder**.
+  Models folder must be explicit; existing weights can stay in ComfyUI’s layout. There is no
+  engine choice, ComfyUI path/server/flags, automatic ComfyUI purge or NVFP4 policy preference.
+  The native worker manages residency and precision. Diffusion requires a build with
+  `native-diffusion`; a plain build reports unsupported models without falling back to ComfyUI.
 
 ## Status
 

@@ -13,7 +13,7 @@ the owner's call.
 
 The base: the **Comfy PhotoCraft** fork of [storytold/photocraft](https://github.com/storytold/photocraft):
 PhotoCraft (a clean-room, pure-Rust Photoshop reimplementation) plus a fully local, open-source
-generative toolset driven by a ComfyUI server (Krea 2, Qwen-Image-Edit, Qwen-Image-2.1, Z-Image…).
+generative toolset driven by the native worker (Krea 2, Qwen-Image-Edit, Qwen-Image-2.1, SAM 3.1). ComfyUI was removed on 2026-10-29.
 Integration branch: `comfy-photocraft` (in `C:\Users\5090\Projects\comfy-photocraft`). Upstream
 remains the source of truth for everything that is not generative.
 
@@ -43,27 +43,25 @@ See [`docs/comfy/dev-environment-windows.md`](docs/comfy/dev-environment-windows
 $env:PATH = "C:\Users\5090\scoop\persist\rustup\.cargo\bin;$env:PATH"
 cargo build --release -p photocraft           # ~2.5 min cold; target\release\photocraft.exe
 cargo build --release -p photocraft-cli
-cargo test --workspace --no-fail-fast         # baseline in devlog.md: 9 GPU-driver-related failures on this PC
+cargo test --workspace --no-fail-fast         # baseline in devlog.md: a few GPU-preview failures on this PC
 cargo xtask layers; cargo xtask wasm; cargo xtask parity; cargo xtask scorecard --check
 ```
 
 `photocraft.exe --help` opens the GUI (not a CLI flag); stop it with `Stop-Process -Name photocraft`.
-Use a separate `CARGO_TARGET_DIR` per parallel agent. ComfyUI is a separate process on
-`127.0.0.1:8188`. **The app starts it itself** when Preferences › AI Integrations › ComfyUI folder
-names the install (`C:\Users\5090\ComfyUI\ComfyUI_windows_portable` here; `generate.engine.*`,
-`photocraft_genai::sidecar`, the status bar's engine dot; the native engine is being built to
-[`docs/comfy/plan-native-engine.md`](docs/comfy/plan-native-engine.md), Windows and Linux first).
-By hand: `powershell -File C:\Users\5090\ComfyUI\start-comfyui-fast.ps1`
-(the flags measured in [`docs/comfy/benchmarks.md`](docs/comfy/benchmarks.md)); setup and API in
-[`docs/comfy/comfyui-setup.md`](docs/comfy/comfyui-setup.md). Live timings come from
-`docs/comfy/bench/bench-fill.ps1`.
+Use a separate `CARGO_TARGET_DIR` for each build job. PhotoshopEX no longer starts or uses
+ComfyUI. The weights live in the **Models folder** (`integrations.modelsPath`), read in ComfyUI’s
+`models` layout (`diffusion_models/`, `text_encoders/`, `vae/`, `loras/`, `checkpoints/`);
+ComfyUI itself is not required. Preferences saved with a `comfyPath` and no Models folder take
+that install's `models` folder once on load; with neither, the Generate panel asks for it. `runtimePath` still supplies native runtime
+libraries. Scripts in `docs/comfy/bench/scripts/` drive external ComfyUI for comparison only;
+those using retired app preferences need commit `cdcedbd8` or direct HTTP calls.
 
 The native engine lives in a second repository, **`C:\Users\5090\Documents\genai-native`**
 (github.com/CodyChuGit/genai-native, private; harness, loader, worker): `crates/genai` depends on
 its `gn-engine` crate by git rev, fetched with the system git (`.cargo/config.toml`); after
 pushing there, bump the rev in `crates/genai/Cargo.toml`. `photocraft --engine` /
 `photocraft-cli --engine` run this executable as the engine worker; Preferences › AI
-Integrations › Engine = Native routes generative commands to it.
+Integrations provides its runtime and Models folders; every generative command routes to it.
 
 ## Conventions specific to the fork
 
@@ -74,17 +72,15 @@ Integrations › Engine = Native routes generative commands to it.
 - Commands are `generate.<verb>` (pixels) and `select.<verb>` for model-backed selection
   (`crates/engine/src/select_ml_cmds.rs`); preferences live under the existing `integrations`
   section (Edit › Preferences › AI Integrations…); every preference is read by code in the same
-  change. Workflow templates are JSON files in `crates/genai/workflows/`, taken from ComfyUI's
-  official templates and verified against a live server's `/object_info` before they ship.
+  change. Workflow templates in `crates/genai/workflows/` contain native metadata only; their IDs must be served by the pinned worker.
 - Model and licence facts go in [`docs/comfy/models.md`](docs/comfy/models.md) with a source and a
   date; research-only models are never defaults in a build for others. PhotoshopEX (this
-  owner's version) is the exception since 2026-10-28, on the owner's call: engine `native` and
+  owner's version) is the exception since 2026-10-28, on the owner's call: the native worker and
   "Allow Research-Only Models" on by default, so Qwen-Image-2.1 and Krea 2 serve everything
-  with no ComfyUI. Turn both back before publishing (the checklist in `upstream.md`).
+  with no ComfyUI. Review the research opt-in before publishing (the checklist in `upstream.md`).
 - Keep the fork MIT OR Apache-2.0; ship no model weights. Before any published build, follow the
   brand checklist in [`docs/comfy/upstream.md`](docs/comfy/upstream.md).
-- Tests for anything that talks to ComfyUI run against an in-process fake server; one `#[ignore]`
-  live test may use `PHOTOCRAFT_COMFY_URL`.
+- Generative tests run against an in-process fake native worker using the real gn-engine protocol; no GPU is needed.
 
 ## Before you finish a task
 

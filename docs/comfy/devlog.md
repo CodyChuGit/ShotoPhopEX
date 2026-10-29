@@ -4,6 +4,20 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29: ComfyUI engine removed
+
+The owner's call. Every generative command runs on the native worker (`photocraft --engine`);
+the ComfyUI client, sidecar, route preferences, graph templates and the NVFP4/purge policies are
+gone, and the tests run against a fake native worker (`photocraft_genai::fake`) on the real
+gn-engine protocol (Codex K, checked). Old preference files load: retired keys are dropped, and a
+`comfyPath` with no Models folder becomes that install's `models` folder once; with no Models
+folder at all the Generate panel shows "Set Models Folder…". Bench scripts stay, comparison only
+(those using retired preferences need `cdcedbd8`). Gates on the real GPU: engine lib 1,928 pass;
+the workspace failures are the known GPU-preview ones (full_res_preview 3, pattern_preview_canvas
+1) and `photocraft-gpu` timing (unchanged crate, timing under another job's load). Native 2511
+has no cold glitch; empty-prompt Remove Background 5 of 5 on the GPU. Report:
+[`research/notes/comfyui-removal.md`](research/notes/comfyui-removal.md).
+
 ## 2026-10-28 (overnight): Rust rebuild: no ONNX Runtime, the -Native zip from a clean profile
 
 Details and every commit in `goals/rust-rebuild.md` §5; the morning summary in
