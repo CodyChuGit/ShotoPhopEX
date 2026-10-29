@@ -75,6 +75,17 @@ the flash kernel; tiles within 0.0036/255 of before, Krea 2 with a LoRA byte-ide
 **40.6 s** against ComfyUI's 39.0 s with the same Restore LoRA (1.04×; the six model calls are
 faster natively, the remainder is the app's per-tile work).
 
+**Upscale rerun, 2026-10-29** (`speed-table.ps1 -Only "upscale 2x" -UpscaleLora restore`, the
+cdcedbd8 CLI so both routes run, genai-native `8d4e86e`, ComfyUI 0.43, the app sending the
+Restore LoRA at 0.5 on both): native cold 51.7 s, **warm 30.8 s**; ComfyUI cold 63.3 s, warm
+44.1 s (**0.70×**, the gap closed). Per warm tile: native request 4.9–5.3 s (25-step denoise
+3.4–3.8 s; the merged LoRA costs nothing per step), ComfyUI 7.0–7.4 s; the app's own work
+(enlarge, crop, align, colour, blend, composite) about 0.4 s per run on both routes. In the cold
+run the native worker evicts its text encoder for the first sampling and reloads it on the
+second tile (5.2 s); the warm run keeps it resident. The earlier 40.6 vs 39.0 was a single
+run before `8d4e86e`; this one is too, so it is one sample, but the per-tile split is
+consistent across all six tiles.
+
 **Upscale follow-up, 2026-10-28:** [phase report](research/notes/upscale-native-speed.md).
 Small CPU optimizations preserve byte-identical outputs on both routes (seeds 20/21). New
 unprofiled native warm: 47.5 s with default Restore 0.5, versus 30.8 s with that adapter disabled
