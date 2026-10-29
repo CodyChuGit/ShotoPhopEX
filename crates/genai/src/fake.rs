@@ -20,6 +20,8 @@ pub struct Options {
     pub missing_files: Vec<String>,
     pub matte: Option<[f32; 4]>,
     pub enhanced_text: Option<String>,
+    /// Answer a `batch` request with one picture, as a worker without batches would.
+    pub no_batch: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -34,6 +36,7 @@ impl Default for Options {
             missing_files: Vec::new(),
             matte: None,
             enhanced_text: None,
+            no_batch: false,
         }
     }
 }
@@ -182,7 +185,26 @@ impl Engine for FakeEngine {
             let text = self.options.enhanced_text.clone().unwrap_or_else(|| format!("Enhanced: {prompt}"));
             return Ok((DoneInfo { images: Vec::new(), texts: vec![text], seed: req.seed, elapsed_ms: 0 }, Vec::new()));
         }
-        let (w, h) = req.image.as_ref().map(|b| (b.width, b.height)).unwrap_or((req.width.max(1), req.height.max(1)));
+        // A batch of edits, as the real worker answers one: each picture drawn alone.
+        if !self.options.no_batch && req.params.contains_key("batch") {
+            let mut descriptors = Vec::new();
+            let mut pictures = Vec::new();
+            for (k, b) in req.image.iter().chain(req.references.iter()).enumerate() {
+                let one = RunRequest { image: Some(b.clone()), references: Vec::new(), ..req.clone() };
+                let (_, mut drawn) = self.draw(&one, blobs)?;
+                descriptors.push(Blob { width: b.width, height: b.height, channels: 4, index: k as u32 });
+                pictures.push(drawn.swap_remove(0));
+            }
+            return Ok((DoneInfo { images: descriptors, texts: Vec::new(), seed: req.seed, elapsed_ms: 0 }, pictures));
+        }
+        let (descriptors, pictures) = self.draw(req, blobs)?;
+        Ok((DoneInfo { images: descriptors, texts: Vec::new(), seed: req.seed, elapsed_ms: 0 }, pictures))
+    }
+}
+impl FakeEngine {
+    /// The pictures a run returns: one per segment or layer, else one.
+    fn draw(&self, req: &RunRequest, blobs: &[Vec<u8>]) -> Result<(Vec<Blob>, Vec<Vec<u8>>), EngineError> {
+        let (w, h) =req.image.as_ref().map(|b| (b.width, b.height)).unwrap_or((req.width.max(1), req.height.max(1)));
         let n = (w as usize)
             .checked_mul(h as usize)
             .filter(|n| *n <= 16 * 1024 * 1024)
@@ -236,7 +258,7 @@ impl Engine for FakeEngine {
             descriptors.push(Blob { width: w, height: h, channels, index: layer as u32 });
             pictures.push(data);
         }
-        Ok((DoneInfo { images: descriptors, texts: Vec::new(), seed: req.seed, elapsed_ms: 0 }, pictures))
+        Ok((descriptors, pictures))
     }
 }
 #[cfg(test)]

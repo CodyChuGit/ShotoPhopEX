@@ -418,7 +418,10 @@ impl GenerativeBackend for NativeBackend {
         };
         let started = std::time::Instant::now();
         let encode_ms = encode.elapsed().as_millis() as u64;
-        let timeout = std::time::Duration::from_millis(self.timeout_ms.load(Ordering::Relaxed));
+        // A batch (Upscale's tiles) is one generation per seed, each given the whole limit.
+        let runs = req.params.get("batch").and_then(serde_json::Value::as_array).map_or(1, |a| a.len().max(1));
+        let limit = std::time::Duration::from_millis(self.timeout_ms.load(Ordering::Relaxed));
+        let timeout = limit.checked_mul(u32::try_from(runs).unwrap_or(u32::MAX)).unwrap_or(std::time::Duration::MAX);
         let deadline = Deadline { progress, started, timeout, expired: std::cell::Cell::new(false) };
         self.busy.store(RUNNING, Ordering::SeqCst);
         let _busy = Busy(&self.busy);
