@@ -190,7 +190,7 @@ pub fn pill(ui: &mut Ui, id_salt: &str, items: &[Item], current: &mut String, au
     let h = 24.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, h), Sense::click());
     let frame = ui.ctx().cumulative_frame_nr();
-    ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<Drawn>(egui::Id::new("model-pickers")).insert(id_salt.to_string(), (rect, frame, label.clone())));
+    ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<Drawn>(egui::Id::unique("model-pickers")).insert(id_salt.to_string(), (rect, frame, label.clone())));
     let p = ui.painter();
     p.rect_filled(rect, h / 2.0, if resp.hovered() { t.hover } else { t.field });
     p.rect_stroke(rect, h / 2.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
@@ -213,7 +213,7 @@ pub fn pill(ui: &mut Ui, id_salt: &str, items: &[Item], current: &mut String, au
         crate::icons::paint(ui, Rect::from_min_size(pos2(rect.right() - 18.0, rect.center().y - 6.0), vec2(12.0, 12.0)), "chevron-down", 10.0, t.text_dim);
     }
     let spoken = format!("{}: {label}", tl!("Model"));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), &spoken));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), &spoken));
     let resp = resp.on_hover_text(chosen.map_or_else(|| auto_description(auto), |c| c.name.clone()));
     let mut changed = false;
     egui::Popup::menu(&resp).id(popup_id(id_salt)).show(|ui| {
@@ -263,7 +263,7 @@ type Drawn = std::collections::BTreeMap<String, (Rect, u64, String)>;
 /// label and whether their popover is open (scripts click them with `ui.click`).
 pub fn inspect(ctx: &egui::Context) -> serde_json::Value {
     let now = ctx.cumulative_frame_nr();
-    let drawn: Drawn = ctx.data(|d| d.get_temp(egui::Id::new("model-pickers"))).unwrap_or_default();
+    let drawn: Drawn = ctx.data(|d| d.get_temp(egui::Id::unique("model-pickers"))).unwrap_or_default();
     drawn
         .into_iter()
         .filter(|(_, (_, f, _))| now.saturating_sub(*f) <= 2)
@@ -272,7 +272,7 @@ pub fn inspect(ctx: &egui::Context) -> serde_json::Value {
 }
 
 fn popup_id(id_salt: &str) -> egui::Id {
-    egui::Id::new(("model-picker", id_salt))
+    egui::Id::unique(("model-picker", id_salt))
 }
 
 /// Is the popover of the picker drawn with `id_salt` open? (Callers ask the server for the
@@ -308,7 +308,7 @@ fn row_ui(ui: &mut Ui, it: Option<&Item>, name: &str, auto: Option<&str>, checke
         Some(i) => (name.to_string(), i.description.clone()),
         None => (tl!("Auto").to_string(), auto_description(auto)),
     };
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, enabled, checked, &name));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, checked, &name));
     p.text(pos2(g.right() + 8.0, rect.top() + 13.0), Align2::LEFT_CENTER, name, FontId::proportional(12.5), dim(t.text));
     p.text(pos2(g.right() + 8.0, rect.top() + 29.0), Align2::LEFT_CENTER, desc, FontId::proportional(10.5), dim(t.text_faint));
     // Badges from the right edge; the check left of them.

@@ -420,7 +420,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         return;
     }
     let sel = xf.doc_rect(bounds);
-    let id = egui::Id::new(AREA_ID);
+    let id = egui::Id::unique(AREA_ID);
     let size = ctx.memory(|m| m.area_rect(id)).map_or(vec2(560.0, 44.0), |r| r.size());
     let pos = place(sel, size, canvas);
     let t = Tokens::get(ctx);
@@ -525,7 +525,7 @@ fn idle(
     // Fill (regenerate the selection) or Edit (change the picture by instruction, shown
     // inside the selection). The Generate panel follows.
     let mut mode = if bar.mode == MODE_EDIT { MODE_EDIT.to_string() } else { MODE_FILL.to_string() };
-    if crate::widgets::dropdown(ui, "generative-mode", &mut mode, &[(MODE_FILL.to_string(), "Fill"), (MODE_EDIT.to_string(), "Edit")], 64.0) {
+    if crate::widgets::dropdown(ui, "generative-mode", tl!("Mode"), &mut mode, &[(MODE_FILL.to_string(), "Fill"), (MODE_EDIT.to_string(), "Edit")], 64.0) {
         bar.mode = mode.clone();
         shared.mode = mode.clone();
     }
@@ -577,7 +577,7 @@ fn idle(
     // Variations.
     ui.label(RichText::new(tl!("Variations")).color(t.text_dim));
     let mut n = shared.count.clamp(1, 4);
-    crate::widgets::dropdown(ui, "generative-variations", &mut n, &[(1u8, "1"), (2, "2"), (3, "3"), (4, "4")], 44.0);
+    crate::widgets::dropdown(ui, "generative-variations", tl!("Variations"), &mut n, &[(1u8, "1"), (2, "2"), (3, "3"), (4, "4")], 44.0);
     shared.count = n;
     let can_run = !shared.prompt.trim().is_empty();
     if ui.add_enabled_ui(can_run, |ui| crate::widgets::primary_button(ui, tl!("Generate"), 88.0)).inner.clicked() || (enter && can_run) {

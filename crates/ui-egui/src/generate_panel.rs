@@ -755,7 +755,7 @@ fn submitted(ui: &egui::Ui, app: &PhotocraftApp, field: egui::Id, enter: bool) -
 }
 
 fn compact_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, _t: &Tokens, action: &mut Option<Action>) {
-    let field_id = egui::Id::new("generate-prompt-compact");
+    let field_id = egui::Id::unique("generate-prompt-compact");
     if submitted(ui, app, field_id, true) {
         *action = Some(Action::Generate);
     }
@@ -763,7 +763,7 @@ fn compact_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, _t: &Tokens, action: 
         ui.spacing_mut().item_spacing.x = 4.0;
         let mut mode = app.ui.generate.mode.clone();
         let options: Vec<(String, &str)> = MODES.iter().map(|m| (m.to_string(), mode_label(m))).collect();
-        if widgets::dropdown(ui, "generate-mode-compact", &mut mode, &options, 70.0) {
+        if widgets::dropdown(ui, "generate-mode-compact", tl!("Mode"), &mut mode, &options, 70.0) {
             *action = Some(Action::Mode(mode.clone()));
         }
         // The button at the right edge first; the prompt takes what is left.
@@ -813,7 +813,7 @@ fn full(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, action: &mut Opt
     // The prompt: grows from two to six rows; the counter; Enter / Ctrl+Enter.
     let rows = app.ui.generate.prompt.lines().count().clamp(2, 6);
     let enter_generates = app.session.prefs().integrations.enter_to_generate;
-    let field_id = egui::Id::new("generate-prompt");
+    let field_id = egui::Id::unique("generate-prompt");
     let submit = submitted(ui, app, field_id, enter_generates);
     ui.horizontal(|ui| {
         let w = (ui.available_width() - 24.0).max(80.0);
@@ -905,7 +905,7 @@ fn quality_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ("balanced".to_string(), "Balanced", "Auto takes the 8-step Lightning tier when the server has it"),
         ("fast".to_string(), "Fast", "Auto takes the 4-step tier where there is one"),
     ];
-    if widgets::dropdown_with_tooltips(ui, "generate-quality", &mut q, &options, 92.0) {
+    if widgets::dropdown_with_tooltips(ui, "generate-quality", tl!("Quality"), &mut q, &options, 92.0) {
         let _ = app.run("prefs.set", json!({"path": "integrations.quality", "value": q}));
     }
 }
@@ -921,7 +921,7 @@ fn options_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str, template:
             let mut aspect = app.ui.generate.aspect.clone();
             let aspects: Vec<(String, &str)> =
                 m.aspects.iter().map(|a| (a.clone(), a.as_str())).chain(std::iter::once(("custom".to_string(), tl!("Custom")))).collect();
-            if widgets::dropdown(ui, "generate-aspect", &mut aspect, &aspects, 70.0) {
+            if widgets::dropdown(ui, "generate-aspect", tl!("Aspect Ratio"), &mut aspect, &aspects, 70.0) {
                 app.ui.generate.aspect = aspect.clone();
             }
             if aspect == "custom" {
@@ -936,7 +936,7 @@ fn options_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str, template:
             } else {
                 let mut size = app.ui.generate.size.clone();
                 let sizes: Vec<(String, &str)> = SIZES.iter().filter(|(_, v)| m.size_max == 0 || *v <= m.size_max).map(|(k, _)| (k.to_string(), *k)).collect();
-                if widgets::dropdown(ui, "generate-size", &mut size, &sizes, 56.0) {
+                if widgets::dropdown(ui, "generate-size", tl!("Size"), &mut size, &sizes, 56.0) {
                     app.ui.generate.size = size;
                 }
             }
@@ -945,7 +945,7 @@ fn options_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str, template:
             let max = info(app, template).map_or(4, |m| m.counts_max).clamp(1, 4) as u8;
             let mut n = app.ui.generate.count.clamp(1, max);
             let counts: Vec<(u8, &str)> = [(1u8, "1"), (2, "2"), (3, "3"), (4, "4")].into_iter().filter(|(c, _)| *c <= max).collect();
-            widgets::dropdown(ui, "generate-count", &mut n, &counts, 40.0);
+            widgets::dropdown(ui, "generate-count", tl!("Count"), &mut n, &counts, 40.0);
             app.ui.generate.count = n;
         }
         if mode == "fill" {
@@ -1149,7 +1149,7 @@ fn editor(app: &mut PhotocraftApp, ctx: &egui::Context, action: &mut Option<Acti
         return;
     }
     let mode = app.ui.generate.mode.clone();
-    egui::Modal::new(egui::Id::new("generate-prompt-editor")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("generate-prompt-editor")).show(ctx, |ui| {
         ui.set_width(560.0);
         widgets::section_label(ui, mode_label(&mode));
         ui.add(egui::TextEdit::multiline(&mut app.ui.generate.prompt).hint_text(hint(&mode)).desired_rows(14).desired_width(f32::INFINITY));
@@ -1167,7 +1167,7 @@ fn confirm_clear(app: &mut PhotocraftApp, ctx: &egui::Context, action: &mut Opti
         return;
     }
     let mut answer = None;
-    egui::Modal::new(egui::Id::new("generate-clear")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("generate-clear")).show(ctx, |ui| {
         ui.set_max_width(320.0);
         ui.label(tl!("Clear the prompt and remove the reference images?"));
         ui.add_space(10.0);

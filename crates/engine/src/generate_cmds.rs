@@ -895,6 +895,16 @@ enum Edge {
     Hard,
 }
 
+impl Edge {
+    /// The `edge` parameter's spelling.
+    fn name(self) -> &'static str {
+        match self {
+            Edge::Soft => "soft",
+            Edge::Hard => "hard",
+        }
+    }
+}
+
 fn parse_edge(cmd: &str, p: &Value) -> Result<Edge> {
     match opt_str(cmd, p, "edge", 10)? {
         None | Some("soft") => Ok(Edge::Soft),
@@ -2427,6 +2437,143 @@ fn native21_fill_fallback() -> &'static str {
     "qwen-2.1/fill"
 }
 
+/// The request's sampler, scheduler, LoRAs and denoise, and for an expand the picture's
+/// rectangle inside the request (in the request's `(rw, rh)` pixels) and the canvas size.
+fn request_params(tuning: &Tuning, outpaint: Option<&Outpaint>, rect: Rect, (w, h): (u32, u32), (rw, rh): (u32, u32)) -> BTreeMap<String, Value> {
+    let mut params = BTreeMap::new();
+    params.insert("sampler".to_string(), Value::String(tuning.sampler.clone().unwrap_or_else(|| DEFAULT_SAMPLER.to_string())));
+    params.insert("scheduler".to_string(), Value::String(tuning.scheduler.clone().unwrap_or_else(|| DEFAULT_SCHEDULER.to_string())));
+    if let Some(l) = tuning.loras_param() {
+        params.insert("loras".to_string(), l);
+    }
+    if let Some(d) = tuning.denoise {
+        params.insert("denoise".to_string(), json!(d));
+    }
+    if let Some(o) = outpaint {
+        let (sx, sy) = (f64::from(rw) / f64::from(w.max(1)), f64::from(rh) / f64::from(h.max(1)));
+        let p = o.picture;
+        let x0 = (f64::from(p.x0 - rect.x0) * sx).floor().clamp(0.0, f64::from(rw.saturating_sub(16)));
+        let y0 = (f64::from(p.y0 - rect.y0) * sy).floor().clamp(0.0, f64::from(rh.saturating_sub(16)));
+        let x1 = (f64::from(p.x1 - rect.x0) * sx).ceil().clamp(x0 + 16.0, f64::from(rw));
+        let y1 = (f64::from(p.y1 - rect.y0) * sy).ceil().clamp(y0 + 16.0, f64::from(rh));
+        params.insert("ref_x".to_string(), json!(x0 as u32));
+        params.insert("ref_y".to_string(), json!(y0 as u32));
+        params.insert("ref_w".to_string(), json!((x1 - x0) as u32));
+        params.insert("ref_h".to_string(), json!((y1 - y0) as u32));
+        // The canvas size, for templates that sample a latent of their own size (Qwen-Image-2.1
+        // takes its target from the reference otherwise).
+        params.insert("width".to_string(), json!(rw));
+        params.insert("height".to_string(), json!(rh));
+    }
+    params
+}
+
+/// A removal's highlight adapter: its template id, the picture with the hole painted its colour,
+/// and the tight hole's mask (see `fill_region`), or `None` when no adapter template applies.
+#[allow(clippy::too_many_arguments)]
+fn removal_adapter(
+    backend: &dyn GenerativeBackend,
+    template_id: &str,
+    auto: bool,
+    n: u32,
+    tight: &[f32],
+    image: &Rgba8,
+    (w, h): (u32, u32),
+    (rw, rh): (u32, u32),
+    radius: usize,
+) -> Result<Option<(String, Rgba8, Gray8)>> {
+    let named = template::find(template_id).ok().filter(|t| t.meta.highlight.is_some()).map(|t| t.meta.id.clone());
+    let id = named.or_else(|| (auto && n > 1).then(|| resolve_auto(backend, REMOVE_HIGHLIGHT_ORDER, "")).filter(|s| !s.is_empty()));
+    Ok(match id.and_then(|id| template::find(&id).ok()).and_then(|t| t.meta.highlight.clone().map(|c| (t.meta.id.clone(), c))) {
+        Some((id, colour)) => {
+            let g = Gray8::new(w, h, tight.iter().map(|c| (c * 255.0 + 0.5) as u8).collect()).map_err(gen_err)?;
+            let g = feather_outward(&g, radius)?;
+            let g = if (rw, rh) == (w, h) { g } else { resize_gray8(&g, rw, rh)? };
+            Some((id, highlight_covered(image, &g, &colour), g))
+        }
+        None => None,
+    })
+}
+
+/// A fill's or edit's prompt rewritten by the vision-language model with the picture in view
+/// (`fill_region`'s `enhance`); the prompt as typed when the rewriter fails.
+#[allow(clippy::too_many_arguments)]
+fn rewritten_fill_prompt(
+    thinker: &dyn GenerativeBackend,
+    command: &str,
+    refs: &crate::generate_refs::Refs,
+    image: &Rgba8,
+    prompt: String,
+    place: Option<&str>,
+    seed: u64,
+    ctx: &JobCtx,
+) -> String {
+    ctx.progress(0.02, "Improving the prompt");
+    // A fill from a reference shows the rewriter the picture (its hole grey) and the first
+    // reference side by side, so it can name what to take as the reference shows it.
+    let fill_ref = command == FILL && !refs.images.is_empty();
+    let kind = if command == EDIT {
+        EnhanceKind::Edit
+    } else if fill_ref {
+        EnhanceKind::FillRef
+    } else {
+        EnhanceKind::Fill
+    };
+    let seen = if fill_ref { refs.images.first().and_then(|r| side_by_side(image, r).ok()) } else { None };
+    let seen = seen.as_ref().unwrap_or(image);
+    // A rewriter that fails (no encoder on the server, nothing usable said) leaves the
+    // prompt as typed; the run itself reports a server that is down.
+    match enhance_prompt(thinker, kind, &prompt, Some(seen), place, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
+        Ok(Some(p)) => p,
+        Ok(None) | Err(_) => prompt,
+    }
+}
+
+/// What a whole-picture route changed beside the hole, connected to it (`change_band`): the
+/// request mask widened by it, and the layer coverage widened by it (at `(w, h)`); `None`s when
+/// nothing changed there.
+fn change_band_coverage(
+    out: &Rgba8,
+    original: &Rgba8,
+    run_mask: &Gray8,
+    layer_coverage: &[f32],
+    removal: bool,
+    (w, h): (u32, u32),
+) -> Result<(Option<Gray8>, Option<Vec<f32>>)> {
+    let (band_share, band_change) = if removal { (SHADOW_MAX_SHARE, SHADOW_CHANGE) } else { (EDIT_BAND_MAX_SHARE, EDIT_BAND_CHANGE) };
+    let Some(b) = change_band(out, original, run_mask, band_share, band_change) else { return Ok((None, None)) };
+    let widened = Gray8::new(b.width, b.height, b.data.iter().zip(&run_mask.data).map(|(a, m)| (*a).max(*m)).collect()).ok();
+    let b = if (b.width, b.height) == (w, h) { b } else { resize_gray8(&b, w, h)? };
+    let coverage = layer_coverage.iter().zip(&b.data).map(|(c, v)| c.max(f32::from(*v) / 255.0)).collect();
+    Ok((widened, Some(coverage)))
+}
+
+/// A whole-picture route's result moved back onto the picture outside the mask
+/// (`generate_realign`), when it came back the picture's size.
+fn realigned(out: Rgba8, picture: &Rgba8, mask: &Gray8) -> Rgba8 {
+    if (out.width, out.height) != (picture.width, picture.height) {
+        return out;
+    }
+    let d = crate::generate_realign::drift(&out, picture, Some(mask), crate::generate_realign::max_shift(out.width, out.height));
+    crate::generate_realign::shifted(&out, picture, d)
+}
+
+/// A removal's result tone-matched to the picture at the hole's edge, and its edge mismatch for
+/// the judge (its crop pushed to `judged`); as it came, mismatch 0, when it is not the
+/// picture's size.
+fn tone_match_removal(out: Rgba8, picture: &Rgba8, mask: &Gray8, adapter: bool, judged: &mut Vec<Rgba8>) -> (Rgba8, f64) {
+    if (out.width, out.height) != (picture.width, picture.height) {
+        return (out, 0.0);
+    }
+    // The adapter leaving its red in the hole is a loss before any judging: the judge
+    // once chose a red-tinted glass as the natural one (measured 2026-10-22).
+    let painted = adapter && paint_left(&out, mask);
+    let matched = tone_matched(&out, picture, mask);
+    judged.push(crop_rgba8(&matched, judged_rect(mask, TONE_MATCH_INSIDE)));
+    let mismatch = if painted { f64::INFINITY } else { edge_mismatch(&out, picture, mask) };
+    (matched, mismatch)
+}
+
 fn fill_region(
     doc: &mut Document,
     active: &mut Option<LayerId>,
@@ -2513,20 +2660,8 @@ fn fill_region(
     // smoothed over) the rest, so the judge picks between an adapter that removes cleanly on
     // most scenes and leaves its colour on some, and a fill that never does that.
     let n = variations.max(1);
-    let adapter: Option<(String, Rgba8, Gray8)> = match (&coverage_tight, outpaint.is_none()) {
-        (Some(tight), true) => {
-            let named = template::find(&template_id).ok().filter(|t| t.meta.highlight.is_some()).map(|t| t.meta.id.clone());
-            let id = named.or_else(|| (auto && n > 1).then(|| resolve_auto(backend.as_ref(), REMOVE_HIGHLIGHT_ORDER, "")).filter(|s| !s.is_empty()));
-            match id.and_then(|id| template::find(&id).ok()).and_then(|t| t.meta.highlight.clone().map(|c| (t.meta.id.clone(), c))) {
-                Some((id, colour)) => {
-                    let g = Gray8::new(w, h, tight.iter().map(|c| (c * 255.0 + 0.5) as u8).collect()).map_err(gen_err)?;
-                    let g = feather_outward(&g, radius)?;
-                    let g = if (rw, rh) == (w, h) { g } else { resize_gray8(&g, rw, rh)? };
-                    Some((id, highlight_covered(&image, &g, &colour), g))
-                }
-                None => None,
-            }
-        }
+    let adapter = match (&coverage_tight, outpaint.is_none()) {
+        (Some(tight), true) => removal_adapter(backend.as_ref(), &template_id, auto, n, tight, &image, (w, h), (rw, rh), radius)?,
         _ => None,
     };
     // Every variation is the adapter's when the adapter template was named; else the first.
@@ -2548,56 +2683,14 @@ fn fill_region(
     let prompt = if let Some(r) = rewritten {
         r
     } else if enhance && outpaint.is_none() {
-        ctx.progress(0.02, "Improving the prompt");
-        // A fill from a reference shows the rewriter the picture (its hole grey) and the first
-        // reference side by side, so it can name what to take as the reference shows it.
-        let fill_ref = command == FILL && !refs.images.is_empty();
-        let kind = if command == EDIT {
-            EnhanceKind::Edit
-        } else if fill_ref {
-            EnhanceKind::FillRef
-        } else {
-            EnhanceKind::Fill
-        };
-        let seen = if fill_ref { refs.images.first().and_then(|r| side_by_side(&image, r).ok()) } else { None };
-        let seen = seen.as_ref().unwrap_or(&image);
-        // A rewriter that fails (no encoder on the server, nothing usable said) leaves the
-        // prompt as typed; the run itself reports a server that is down.
-        match enhance_prompt(thinker.as_ref(), kind, &prompt, Some(seen), place.as_deref(), seed, &JobProgress::span(ctx, 0.02, 0.05)) {
-            Ok(Some(p)) => p,
-            Ok(None) | Err(_) => prompt,
-        }
+        rewritten_fill_prompt(thinker.as_ref(), command, &refs, &image, prompt, place.as_deref(), seed, ctx)
     } else {
         prompt
     };
     ctx.check()?;
     // An expand template crops the model's reference to the picture: its rectangle inside the
     // request, in the request's (possibly resampled) pixels.
-    let mut params = BTreeMap::new();
-    params.insert("sampler".to_string(), Value::String(tuning.sampler.clone().unwrap_or_else(|| DEFAULT_SAMPLER.to_string())));
-    params.insert("scheduler".to_string(), Value::String(tuning.scheduler.clone().unwrap_or_else(|| DEFAULT_SCHEDULER.to_string())));
-    if let Some(l) = tuning.loras_param() {
-        params.insert("loras".to_string(), l);
-    }
-    if let Some(d) = tuning.denoise {
-        params.insert("denoise".to_string(), json!(d));
-    }
-    if let Some(o) = &outpaint {
-        let (sx, sy) = (f64::from(rw) / f64::from(w.max(1)), f64::from(rh) / f64::from(h.max(1)));
-        let p = o.picture;
-        let x0 = (f64::from(p.x0 - rect.x0) * sx).floor().clamp(0.0, f64::from(rw.saturating_sub(16)));
-        let y0 = (f64::from(p.y0 - rect.y0) * sy).floor().clamp(0.0, f64::from(rh.saturating_sub(16)));
-        let x1 = (f64::from(p.x1 - rect.x0) * sx).ceil().clamp(x0 + 16.0, f64::from(rw));
-        let y1 = (f64::from(p.y1 - rect.y0) * sy).ceil().clamp(y0 + 16.0, f64::from(rh));
-        params.insert("ref_x".to_string(), json!(x0 as u32));
-        params.insert("ref_y".to_string(), json!(y0 as u32));
-        params.insert("ref_w".to_string(), json!((x1 - x0) as u32));
-        params.insert("ref_h".to_string(), json!((y1 - y0) as u32));
-        // The canvas size, for templates that sample a latent of their own size (Qwen-Image-2.1
-        // takes its target from the reference otherwise).
-        params.insert("width".to_string(), json!(rw));
-        params.insert("height".to_string(), json!(rh));
-    }
+    let params = request_params(&tuning, outpaint.as_ref(), rect, (w, h), (rw, rh));
     // An edit template has no noise mask: the picture goes alone and the selection only masks
     // the result layer.
     let wants_mask = |id: &str| template::find(id).map(|t| t.meta.needs_mask).unwrap_or(true);
@@ -2647,12 +2740,7 @@ fn fill_region(
         let resp = backend.as_ref().run(&req, &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
         ctx.check()?;
         let out = resp.images.into_iter().next().ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;
-        let out = if realign && (out.width, out.height) == (image_plain.width, image_plain.height) {
-            let d = crate::generate_realign::drift(&out, &image_plain, Some(run_mask), crate::generate_realign::max_shift(out.width, out.height));
-            crate::generate_realign::shifted(&out, &image_plain, d)
-        } else {
-            out
-        };
+        let out = if realign { realigned(out, &image_plain, run_mask) } else { out };
         // `shadow`: on a whole-picture route a removal also takes what changed with the object
         // beside the hole; that band joins the hole for the tone match (the membrane carries
         // the result across it, so its edge meets the picture) and the layer mask.
@@ -2660,31 +2748,12 @@ fn fill_region(
         // connected to it (a new coat longer than the old jacket), joins the layer mask, which
         // otherwise cut it off in a dark band at the selection's edge (measured 2026-10-27,
         // `benchmarks.md` swaps); held to a smaller share of the selection than a shadow.
-        let whole_picture = qwen21 || command == EDIT;
-        let (band_share, band_change) = if removal { (SHADOW_MAX_SHARE, SHADOW_CHANGE) } else { (EDIT_BAND_MAX_SHARE, EDIT_BAND_CHANGE) };
-        let band = (whole_picture && tuning.shadow && outpaint.is_none() && this_adapter.is_none() && layer_coverage.iter().any(|c| *c < 1.0))
-            .then(|| change_band(&out, &image_plain, run_mask, band_share, band_change))
-            .flatten();
-        let widened = band.as_ref().and_then(|b| Gray8::new(b.width, b.height, b.data.iter().zip(&run_mask.data).map(|(a, m)| (*a).max(*m)).collect()).ok());
+        let take_band = (qwen21 || command == EDIT) && tuning.shadow && outpaint.is_none() && this_adapter.is_none() && layer_coverage.iter().any(|c| *c < 1.0);
+        let (widened, band_coverage) =
+            if take_band { change_band_coverage(&out, &image_plain, run_mask, &layer_coverage, removal, (w, h))? } else { (None, None) };
         let run_mask = widened.as_ref().unwrap_or(run_mask);
-        let band_coverage = match &band {
-            Some(b) => {
-                let b = if (b.width, b.height) == (w, h) { b.clone() } else { resize_gray8(b, w, h)? };
-                Some(layer_coverage.iter().zip(&b.data).map(|(c, v)| c.max(f32::from(*v) / 255.0)).collect::<Vec<f32>>())
-            }
-            None => None,
-        };
         // A removal's result is tone-matched to the picture at the hole's edge and judged.
-        let (out, mismatch) = if removal && (out.width, out.height) == (image_plain.width, image_plain.height) {
-            // The adapter leaving its red in the hole is a loss before any judging: the judge
-            // once chose a red-tinted glass as the natural one (measured 2026-10-22).
-            let painted = this_adapter.is_some() && paint_left(&out, run_mask);
-            let matched = tone_matched(&out, &image_plain, run_mask);
-            judged.push(crop_rgba8(&matched, judged_rect(run_mask, TONE_MATCH_INSIDE)));
-            (matched, if painted { f64::INFINITY } else { edge_mismatch(&out, &image_plain, run_mask) })
-        } else {
-            (out, 0.0)
-        };
+        let (out, mismatch) = if removal { tone_match_removal(out, &image_plain, run_mask, this_adapter.is_some(), &mut judged) } else { (out, 0.0) };
         mismatches.push(mismatch);
         let out = if (out.width, out.height) == (w, h) { out } else { resize_rgba8(&out, w, h)? };
         // The result becomes a layer in the document's own format, masked to the coverage.
@@ -2704,10 +2773,7 @@ fn fill_region(
                 seed: req.seed,
                 steps: req.steps,
                 guidance: req.guidance,
-                edge: match edge {
-                    Edge::Soft => "soft".into(),
-                    Edge::Hard => "hard".into(),
-                },
+                edge: edge.name().into(),
                 rect: [rect.x0, rect.y0, rect.width() as i32, rect.height() as i32],
                 name: name.clone(),
                 enhanced: run_enhanced,

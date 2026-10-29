@@ -168,7 +168,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut action = None;
     let mut drawn = Vec::new();
     let mut builds = 0usize;
-    egui::Area::new(egui::Id::new("variations-strip")).order(egui::Order::Middle).fixed_pos(pos).constrain(false).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("variations-strip")).order(egui::Order::Middle).fixed_pos(pos).constrain(false).show(ctx, |ui| {
         egui::Frame::NONE
             .fill(t.card)
             .stroke(Stroke::new(1.0, t.card_border))
@@ -238,21 +238,21 @@ fn bundle_ui(
     let br = Rect::from_center_size(pos2(hr.right() - 8.0, hr.center().y), vec2(16.0, 16.0));
     match b.status {
         GenStatus::Done => {
-            let resp = ui.interact(br, ui.id().with(("var-similar", b.record)), Sense::click());
+            let resp = ui.interact(br, ui.scope_id().with(("var-similar", b.record)), Sense::click());
             if resp.hovered() {
                 ui.painter().rect_filled(br, t.radius_sm, t.hover);
             }
             icons::paint(ui, br, "sparkles", 11.0, if resp.hovered() { t.accent } else { t.text_dim });
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Generate Similar")));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Generate Similar")));
             if resp.on_hover_text(tl!("Generate Similar")).clicked() {
                 *action = Some(Action::Similar(b.record));
             }
             drawn.push((b.record, "similar", 0, br));
         }
         GenStatus::Running => {
-            let resp = ui.interact(br, ui.id().with(("var-cancel", b.record)), Sense::click());
+            let resp = ui.interact(br, ui.scope_id().with(("var-cancel", b.record)), Sense::click());
             icons::paint(ui, br, "x", 10.0, if resp.hovered() { t.text } else { t.text_dim });
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Cancel")));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Cancel")));
             if resp.on_hover_text(tl!("Cancel")).clicked() {
                 *action = Some(Action::Cancel(b.record));
             }
@@ -291,15 +291,15 @@ fn bundle_ui(
             } else {
                 format!("{kind}: {why}\n{}\n{}", b.prompt, tl!("Click to retry"))
             };
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Retry")));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Retry")));
             if resp.on_hover_text(tip).clicked() {
                 *action = Some(Action::Retry(b.record));
             }
             drawn.push((b.record, "retry", 0, r));
             let xr = Rect::from_min_size(pos2(r.right() - 16.0, r.top() + 2.0), vec2(14.0, 14.0));
-            let xresp = ui.interact(xr, ui.id().with(("var-dismiss", b.record)), Sense::click());
+            let xresp = ui.interact(xr, ui.scope_id().with(("var-dismiss", b.record)), Sense::click());
             icons::paint(ui, xr, "x", 10.0, if xresp.hovered() { t.text } else { t.text_dim });
-            xresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Dismiss")));
+            xresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Dismiss")));
             if xresp.on_hover_text(tl!("Dismiss")).clicked() {
                 *action = Some(Action::Dismiss(b.record));
             }
@@ -326,7 +326,7 @@ fn bundle_ui(
                 };
                 ui.painter().rect_stroke(r, t.radius_sm, ring, StrokeKind::Inside);
                 let name = crate::i18n::fmt(tl!("Variation {n} of {count}"), &[("n", &(i + 1).to_string()), ("count", &b.layers.len().to_string())]);
-                resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, shown, &name));
+                resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, shown, &name));
                 let hovered = resp.hovered();
                 if resp.on_hover_text(format!("{name}\n{}", b.prompt)).clicked() && !shown {
                     *action = Some(Action::Show(b.record, i));
@@ -334,12 +334,12 @@ fn bundle_ui(
                 drawn.push((b.record, "tile", i, r));
                 // × (delete this one): on hover; always clickable so scripts can reach it.
                 let xr = Rect::from_min_size(pos2(r.right() - 17.0, r.top() + 3.0), vec2(14.0, 14.0));
-                let xresp = ui.interact(xr, ui.id().with(("var-drop", b.record, i)), Sense::click());
+                let xresp = ui.interact(xr, ui.scope_id().with(("var-drop", b.record, i)), Sense::click());
                 if hovered || xresp.hovered() {
                     ui.painter().circle_filled(xr.center(), 7.0, Color32::from_black_alpha(170));
                     icons::paint(ui, xr, "x", 9.0, Color32::WHITE);
                 }
-                xresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Delete this variation")));
+                xresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Delete this variation")));
                 if xresp.on_hover_text(tl!("Delete this variation")).clicked() {
                     *action = Some(Action::Drop(b.record, i));
                 }
@@ -347,10 +347,10 @@ fn bundle_ui(
                 // ✓ (keep this one, delete the others): on the shown one when there are others.
                 if shown && b.layers.len() > 1 {
                     let kr = Rect::from_min_size(pos2(r.right() - 17.0, r.bottom() - 17.0), vec2(14.0, 14.0));
-                    let kresp = ui.interact(kr, ui.id().with(("var-keep", b.record)), Sense::click());
+                    let kresp = ui.interact(kr, ui.scope_id().with(("var-keep", b.record)), Sense::click());
                     ui.painter().circle_filled(kr.center(), 7.0, if kresp.hovered() { t.accent } else { t.accent.gamma_multiply(0.85) });
                     icons::paint(ui, kr, "check", 9.0, Color32::WHITE);
-                    kresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Keep this one")));
+                    kresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Keep this one")));
                     if kresp.on_hover_text(tl!("Keep this one and delete the other variations")).clicked() {
                         *action = Some(Action::Keep(b.record, i));
                     }

@@ -160,7 +160,7 @@ pub fn section(ui: &mut egui::Ui, width: f32) -> Option<Card> {
                 }
                 let frame = ui.ctx().cumulative_frame_nr();
                 ui.ctx().data_mut(|d| {
-                    let v = d.get_temp_mut_or_default::<Drawn>(egui::Id::new("hub-cards"));
+                    let v = d.get_temp_mut_or_default::<Drawn>(egui::Id::unique("hub-cards"));
                     v.retain(|(_, _, f)| frame.saturating_sub(*f) <= 2);
                     v.push((c.id, r, frame));
                 });
@@ -173,7 +173,7 @@ pub fn section(ui: &mut egui::Ui, width: f32) -> Option<Card> {
 /// One card: a tinted icon tile, the uppercase label, one sentence, the badge.
 fn card_ui(ui: &mut egui::Ui, r: Rect, c: &Card, t: &Tokens) -> bool {
     let live = c.target != Target::Soon;
-    let resp = ui.interact(r, ui.id().with(("hub-card", c.id)), if live { Sense::click() } else { Sense::hover() });
+    let resp = ui.interact(r, ui.scope_id().with(("hub-card", c.id)), if live { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
     p.rect_filled(r, t.radius_sm, if resp.hovered() && live { t.hover } else { t.card });
     p.rect_stroke(r, t.radius_sm, Stroke::new(1.0, t.card_border), StrokeKind::Inside);
@@ -197,7 +197,7 @@ fn card_ui(ui: &mut egui::Ui, r: Rect, c: &Card, t: &Tokens) -> bool {
         ui.painter().rect_stroke(br, 6.0, Stroke::new(1.0, color.gamma_multiply(0.7)), StrokeKind::Inside);
         ui.painter().galley(pos2(br.left() + 4.0, br.center().y - bg.size().y / 2.0), bg, color);
     }
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, live, tl!(c.label)));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, live, tl!(c.label)));
     let tip = if live { tl!(c.sentence).to_string() } else { format!("{}\n{}", tl!(c.sentence), tl!("Not in this build yet")) };
     live && resp.on_hover_text(tip).clicked()
 }
@@ -268,7 +268,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let t = Tokens::get(ctx);
     let mut chosen = None;
     let mut close = false;
-    let modal = egui::Modal::new(egui::Id::new("generate-hub")).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::unique("generate-hub")).show(ctx, |ui| {
         let width = 3.0 * 150.0 + 2.0 * GAP;
         ui.set_width(width);
         ui.label(egui::RichText::new(tl!("Generative Features")).font(crate::theme::semibold(16.0)).color(t.text));
@@ -300,7 +300,7 @@ type Drawn = Vec<(&'static str, Rect, u64)>;
 pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
     let now = ctx.cumulative_frame_nr();
     let drawn: Drawn = ctx.data_mut(|d| {
-        let v = d.get_temp_mut_or_default::<Drawn>(egui::Id::new("hub-cards"));
+        let v = d.get_temp_mut_or_default::<Drawn>(egui::Id::unique("hub-cards"));
         v.retain(|(_, _, f)| now.saturating_sub(*f) <= 2);
         v.clone()
     });
