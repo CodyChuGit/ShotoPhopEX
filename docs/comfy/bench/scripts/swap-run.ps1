@@ -8,6 +8,8 @@
 #             selection's thing named and the fill made by instruction on the 2.1 edit template
 #   fillenh   the same with fillAsEdit off: the 2.1 fill template and its fill rewriter
 #   fill2511  Generative Fill on Qwen-Image-Edit-2511, the 8-step tier through ComfyUI (the old default)
+#   fill2511n the same 2511 fill natively (genai-native d40c536+), models from ComfyUI's folder
+#   edit2511n Generative Edit on 2511 natively (qwen-edit-2511/edit-lightning-8), masked to the selection
 # -Generate makes the outfit pictures first (Krea 2 on the worker, bench\swap\gen\). Native routes
 # want a worker started by native-worker.ps1 (PHOTOCRAFT_NATIVE_ENGINE); fill2511 a ComfyUI server
 # on 127.0.0.1:8188. The prompt rewriter is off so the routes see the same words.
@@ -32,7 +34,9 @@ if ($Generate) {
         "gen $($g.id): exit $LASTEXITCODE"
     }
 }
-$prefs = if ($Route -eq "fill2511") { $comfy } else { $native }
+# The native 2511 routes read ComfyUI's models folder as it is (the 2511 files live there).
+$native2511 = $native.Clone(); $native2511["integrations.modelsPath"] = "C:/Users/5090/ComfyUI/ComfyUI_windows_portable/ComfyUI/models"; $native2511["integrations.engine"] = "native"
+$prefs = if ($Route -eq "fill2511") { $comfy } elseif ($Route -like "*2511n") { $native2511 } else { $native }
 foreach ($c in $spec.cases) {
     if ($Only -and ($Only -split ',') -notcontains $c.id) { continue }
     $src = Join-Path $root ($c.image -replace '^stock/', 'stock\' -replace '^gen/', 'swap\gen\')
@@ -45,6 +49,8 @@ foreach ($c in $spec.cases) {
             "fillnamed" { @("generate.fill", @{ prompt = $c.fill; seed = [int]$seed; enhance = $true; fillAsEdit = $true }) }
             "fillenh" { @("generate.fill", @{ prompt = $c.fill; seed = [int]$seed; enhance = $true; fillAsEdit = $false }) }
             "fill2511" { @("generate.fill", @{ prompt = $c.fill; template = "qwen-edit-2511/fill-lightning-8"; seed = [int]$seed; enhance = $false }) }
+            "fill2511n" { @("generate.fill", @{ prompt = $c.fill; template = "qwen-edit-2511/fill-lightning-8"; seed = [int]$seed; enhance = $false }) }
+            "edit2511n" { @("generate.edit", @{ prompt = $c.edit; template = "qwen-edit-2511/edit-lightning-8"; seed = [int]$seed; enhance = $false }) }
             default { @("generate.fill", @{ prompt = $c.fill; template = "qwen-2.1/fill"; seed = [int]$seed; enhance = $false }) }
         }
         $t0 = Get-Date

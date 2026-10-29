@@ -94,7 +94,24 @@ genai-native `d40c536` (the 2511 port: a selectable alternative, not a default;
 | angles | 4 / 1 | 43.2 dB | 7.4 s | 4.5 s |
 | edit (base) | 40 / 4 | 36.6 dB | 90.5 s | 81.9 s |
 
-The pictures match; native is 1.1–1.6× slower warm (speed pass running). The first image-ref
+The pictures match. **After genai-native `8d4e86e`** (the 20 GB DiT kept resident between 2511
+requests instead of reloaded; outputs byte-identical) native is faster on every template: edit
+8.3 vs 8.4 s, fill 8.3 vs 8.8, remove 8.3 vs 8.5, expand 8.3 vs 8.5, fill-ref 20.3 vs 21.1,
+image-ref 20.4 vs 21.1, angles 4.4 vs 4.5, the 40-step edit 78.2 vs 81.9
+(`crates/qir/tools/edit2511_performance.md`).
+
+**2511 vs 2.1 on the swap set** (2026-10-28; `swap-run.ps1` routes `fill2511n` / `edit2511n`,
+both native, the 15 cases of `swap-cases.json`, seeds 7 and 11, the object selected by name with
+SAM 3.1 and replaced; judged on contact sheets):
+
+| | Qwen-Image-2.1 | Qwen-Image-Edit-2511 (Lightning 8) |
+|---|---|---|
+| Generative Fill | about 13 of 15 swaps per seed; misses: the cup at seed 11, the subtle jacket | about 7 of 15: kept the bicycle, dog, hydrant, cup (both seeds), put the mug inside the glass, half-replaced the motorcycle; the outfits, sunglasses, umbrella, hat and bench right |
+| Generative Edit | about 14 of 15 (the cup became a cup of red wine) | about 14 of 15, the same cup miss; stray text printed on the stone bench, a blend line at the raincoat's hem; the leather jacket more convincing |
+| Warm time, 864×1152 | fill 3.2 s, edit 5.1 s | fill 8.3 s, edit 8.3 s |
+
+Reading: for fill, 2.1 is clearly better and faster; for edit, the two are level on these swaps
+and 2.1 is faster. The owner's choice of 2.1 as the default stands; 2511 stays selectable. The first image-ref
 after a load is 27 dB (ComfyUI's first dynamic call uses the bf16 patch before its resident
 copy). The 2511-vs-2.1 comparison on the earlier sets follows once 2511 is at speed.
 
