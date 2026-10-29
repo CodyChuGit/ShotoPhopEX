@@ -140,7 +140,7 @@ pub fn stereo(bytes: &[u8]) -> Option<PngStereo> {
         }
         let Ok(length) = usize::try_from(length) else { break };
         let Some(data) = tail.get(..length) else { break };
-        let Some((checksum, next)) = tail.get(length..).and_then(|t| t.split_first_chunk::<4>()) else { break };
+        let Some((checksum, next)) = tail.get(length..).and_then(<[u8]>::split_first_chunk::<4>) else { break };
         rest = next;
         if kind == b"IEND" {
             break;
@@ -194,7 +194,7 @@ fn read_text_metadata(bytes: &[u8], mut remaining: usize, meta: &mut Metadata) -
         }
         let Ok(length) = usize::try_from(length) else { break };
         let Some(data) = tail.get(..length) else { break };
-        let Some((checksum, next)) = tail.get(length..).and_then(|t| t.split_first_chunk::<4>()) else { break };
+        let Some((checksum, next)) = tail.get(length..).and_then(<[u8]>::split_first_chunk::<4>) else { break };
         rest = next;
         if kind == b"IEND" {
             break;
@@ -419,7 +419,7 @@ fn adam7_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompression
     }
     let lvl = match level {
         PngCompression::None => flate2::Compression::none(),
-        PngCompression::Fast => flate2::Compression::fast(),
+        PngCompression::Fast => FAST,
         PngCompression::Default => flate2::Compression::default(),
         PngCompression::Best => flate2::Compression::best(),
     };
@@ -427,6 +427,11 @@ fn adam7_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompression
     z.write_all(&raw).map_err(|e| CodecError::encode(F, e))?;
     z.finish().map_err(|e| CodecError::encode(F, e))
 }
+
+/// The deflate level of [`PngCompression::Fast`]: zlib-rs level 1 writes static Huffman blocks
+/// only (20-30% bigger on filtered photos); level 3 is the lowest that is never bigger than
+/// miniz's level 1 was, at about twice its time.
+const FAST: flate2::Compression = flate2::Compression::new(3);
 
 /// Images at least this large (bytes) are filtered and deflated on all cores.
 const PARALLEL_MIN_BYTES: usize = 4 << 20;
@@ -456,7 +461,7 @@ fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompressio
     let band_rows = (BAND_BYTES / stride.saturating_add(1)).max(1);
     let bands: Vec<(usize, usize)> = (0..h).step_by(band_rows).map(|y| (y, (y + band_rows).min(h))).collect();
     let lvl = match level {
-        PngCompression::Fast => flate2::Compression::fast(),
+        PngCompression::Fast => FAST,
         PngCompression::Best => flate2::Compression::best(),
         _ => flate2::Compression::default(),
     };
@@ -494,7 +499,7 @@ fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompressio
     let mut out = Vec::with_capacity(parts.iter().map(|p| p.1.len()).sum::<usize>() + 6);
     // zlib header: deflate, 32 K window; FLEVEL only advertises the effort.
     out.extend_from_slice(match level {
-        PngCompression::Fast => &[0x78, 0x01],
+        PngCompression::Fast => &[0x78, 0x5E],
         PngCompression::Best => &[0x78, 0xDA],
         _ => &[0x78, 0x9C],
     });
@@ -509,7 +514,7 @@ fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompressio
 
 /// Raw deflate of one band: ends on a sync flush, or finishes the stream for the `last` band.
 /// The output buffer is sized past deflate's worst case so that one call takes the whole band
-/// and completes the flush: when a sync flush fills the buffer, miniz_oxide (flate2's Rust
+/// and completes the flush: when a sync flush fills the buffer, miniz_oxide (flate2's former Rust
 /// backend) can return before compressing the last lookahead bytes, and the next call only
 /// drains the pending output, so a resumed flush silently drops data. `None` (the caller then
 /// uses the serial encoder) if the single call did not finish.
@@ -676,8 +681,8 @@ mod stereo_tests {
 
     #[test]
     fn reads_both_defined_views() {
-        assert_eq!(stereo(&png_with(&[0])), Some(PngStereo::Horizontal));
-        assert_eq!(stereo(&png_with(&[1])), Some(PngStereo::Vertical));
+        assert_eq!(stereo(&png_with(&[0])), Some(PngStereo::CrossFuse));
+        assert_eq!(stereo(&png_with(&[1])), Some(PngStereo::DivergingFuse));
         assert_eq!(stereo(&png_with(&[])), None);
         // Reserved and unknown mode bytes are not a pairing we can keep.
         assert_eq!(stereo(&png_with(&[2])), None);
@@ -685,6 +690,24 @@ mod stereo_tests {
         // A two-byte payload is not sTER data.
         assert_eq!(stereo(&png_with(&[0, 0])), None);
         assert_eq!(stereo(b"not a png"), None);
+    }
+
+    #[test]
+    fn ster_mode_bytes_describe_eye_order_not_vertical_packing() {
+        // PNG Extensions 1.4.0 §3.6: both views occupy horizontal halves.
+        // Each view is eight columns, so the second starts on an eight-column boundary.
+        for (mode, left_pixel, right_pixel) in [(0, [0, 0, 255], [255, 0, 0]), (1, [255, 0, 0], [0, 0, 255])] {
+            let pixels: Vec<u8> = [left_pixel; 8].into_iter().chain([right_pixel; 8]).flatten().collect();
+            let img = Image::from_raw(16, 1, ChannelLayout::Rgb, SampleType::U8, pixels.clone()).unwrap();
+            let pairing = if mode == 0 { PngStereo::CrossFuse } else { PngStereo::DivergingFuse };
+            let opts = EncodeOptions { png_stereo: Some(pairing), ..Default::default() };
+            let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
+            let chunk = bytes.windows(4).position(|w| w == b"sTER").unwrap();
+            assert_eq!(bytes[chunk + 4], mode, "the specification's literal mode byte");
+            let decoded = decode(&bytes, &Limits::default()).unwrap();
+            assert_eq!(decoded.dimensions(), (16, 1));
+            assert_eq!(decoded.data(), pixels);
+        }
     }
 
     #[test]
@@ -699,7 +722,7 @@ mod stereo_tests {
     #[test]
     fn encode_writes_the_chunk_before_idat_and_it_reads_back() {
         let img = Image::from_raw(2, 1, ChannelLayout::Rgb, SampleType::U8, vec![9; 6]).unwrap();
-        for view in [PngStereo::Horizontal, PngStereo::Vertical] {
+        for view in [PngStereo::CrossFuse, PngStereo::DivergingFuse] {
             let opts = EncodeOptions { png_stereo: Some(view), ..Default::default() };
             let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
             assert_eq!(stereo(&bytes), Some(view));
@@ -716,12 +739,12 @@ mod stereo_tests {
     #[test]
     fn interlaced_and_indexed_encoders_keep_the_mark() {
         let img = Image::from_raw(2, 2, ChannelLayout::Rgb, SampleType::U8, vec![9; 12]).unwrap();
-        let opts = EncodeOptions { png_stereo: Some(PngStereo::Vertical), png_interlaced: true, ..Default::default() };
+        let opts = EncodeOptions { png_stereo: Some(PngStereo::DivergingFuse), png_interlaced: true, ..Default::default() };
         let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
-        assert_eq!(stereo(&bytes), Some(PngStereo::Vertical));
+        assert_eq!(stereo(&bytes), Some(PngStereo::DivergingFuse));
         let pal = [[255, 0, 0], [0, 0, 255]];
-        let bytes = encode_indexed(2, 1, &[0, 1], &pal, None, None, Some(PngStereo::Horizontal)).unwrap();
-        assert_eq!(stereo(&bytes), Some(PngStereo::Horizontal));
+        let bytes = encode_indexed(2, 1, &[0, 1], &pal, None, None, Some(PngStereo::CrossFuse)).unwrap();
+        assert_eq!(stereo(&bytes), Some(PngStereo::CrossFuse));
         assert_eq!(palette(&bytes).unwrap().map(|p| p.colors), Some(pal.to_vec()));
     }
 }

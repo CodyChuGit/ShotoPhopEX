@@ -830,7 +830,8 @@ fn research_templates_are_gated_by_the_preference() {
 fn job_progress_keeps_the_latest_preview_with_its_place() {
     let ctx = JobCtx::new();
     let p = JobProgress::span(&ctx, 0.1, 0.9);
-    let picture = |level: u8, step: u32| photocraft_genai::Preview { image: Rgba8::solid(4, 2, [level, level, level, 255]).unwrap(), step, steps: 8, output: 0 };
+    let picture =
+        |level: u8, step: u32| photocraft_genai::Preview { image: Rgba8::solid(4, 2, [level, level, level, 255]).unwrap(), step, steps: 8, output: 0 };
     photocraft_genai::Progress::preview(&p, &picture(10, 1));
     assert_eq!(ctx.preview(), None, "no place named: nothing to show");
     ctx.preview_at(Rect::new(5, 3, 37, 35));

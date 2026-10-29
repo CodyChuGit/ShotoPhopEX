@@ -256,7 +256,7 @@ impl Engine for FakeEngine {
 impl FakeEngine {
     /// The pictures a run returns: one per segment or layer, else one.
     fn draw(&self, req: &RunRequest, blobs: &[Vec<u8>]) -> Result<(Vec<Blob>, Vec<Vec<u8>>), EngineError> {
-        let (w, h) =req.image.as_ref().map(|b| (b.width, b.height)).unwrap_or((req.width.max(1), req.height.max(1)));
+        let (w, h) = req.image.as_ref().map(|b| (b.width, b.height)).unwrap_or((req.width.max(1), req.height.max(1)));
         let n = (w as usize)
             .checked_mul(h as usize)
             .filter(|n| *n <= 16 * 1024 * 1024)

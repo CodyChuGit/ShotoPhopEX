@@ -35,11 +35,19 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
     let fake = FakeNative::start().unwrap();
     let mut app = app(&fake.url);
     let ctx = egui::Context::default();
+    menu_opens_the_bar(&mut app, &ctx, &fake);
+    generate_runs_the_variations(&mut app, &ctx, &fake);
+    ui_set_drives_the_bar(&mut app, &ctx, &fake);
+    edit_mode_runs_generate_edit(&mut app, &ctx, &fake);
+    research_templates_wait_for_the_preference(&mut app, &ctx, &fake);
+}
+
+fn menu_opens_the_bar(app: &mut PhotocraftApp, ctx: &egui::Context, fake: &FakeNative) {
     // Without a selection the menu row is disabled, like the command itself.
-    assert!(crate::menus::invoke(&mut app, &ctx, COMMAND, json!({})).is_err());
+    assert!(crate::menus::invoke(app, ctx, COMMAND, json!({})).is_err());
     assert!(!app.ui.generative_bar.open);
     app.run("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
-    let r = crate::menus::invoke(&mut app, &ctx, COMMAND, json!({})).unwrap();
+    let r = crate::menus::invoke(app, ctx, COMMAND, json!({})).unwrap();
     assert_eq!(r["generativeBar"], true);
     assert!(app.ui.generative_bar.open && app.ui.generative_bar.focus);
     assert!(app.ui.dialogs.is_empty(), "the bar replaces the generated dialog");
@@ -49,18 +57,20 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
     assert!(fake.state().runs.is_empty(), "listing templates queues nothing");
     // The installed badges: the probe (inline here) found every file of the built-in templates.
     assert!(app.ui.generative_bar.templates.iter().all(|t| t.installed == Some(true)), "{:?}", app.ui.generative_bar.templates);
+}
 
+fn generate_runs_the_variations(app: &mut PhotocraftApp, _ctx: &egui::Context, fake: &FakeNative) {
     // An empty prompt does nothing; a prompt generates, inline here (no background jobs).
-    assert!(generate(&mut app).is_err());
+    assert!(generate(app).is_err());
     assert!(fake.state().runs.is_empty());
     app.ui.generate.prompt = "a kite".into();
     app.ui.generate.count = 2;
     let layers_before = app.session.active().unwrap().doc.layers.len();
-    generate(&mut app).unwrap();
+    generate(app).unwrap();
     assert_eq!(fake.state().runs.len(), 2, "one backend run per variation");
     assert!(app.ui.generative_bar.job.is_none());
     // The run's variations are the Variations strip's newest run.
-    let run = crate::variations_strip::bundles(&app).first().cloned().unwrap();
+    let run = crate::variations_strip::bundles(app).first().cloned().unwrap();
     assert_eq!((run.layers.len(), run.shown), (2, Some(0)));
     let d = app.session.active().unwrap();
     assert_eq!(d.doc.layers.len(), layers_before + 2);
@@ -68,43 +78,47 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
 
     // The strip shows the second variation through generate.variation (one undo step).
     let steps = app.session.active().unwrap().history.past_len();
-    crate::variations_strip::choose(&mut app, run.record, 1).unwrap();
+    crate::variations_strip::choose(app, run.record, 1).unwrap();
     let d = app.session.active().unwrap();
     let (a, b) = (LayerId(run.layers[0]), LayerId(run.layers[1]));
     assert!(!d.doc.layer(a).unwrap().visible && d.doc.layer(b).unwrap().visible);
     assert_eq!(d.history.past_len(), steps + 1);
-    assert_eq!(crate::variations_strip::bundles(&app)[0].shown, Some(1));
-    assert!(crate::variations_strip::choose(&mut app, run.record, 7).is_ok(), "an index past the end shows the last one");
-    assert_eq!(crate::variations_strip::bundles(&app)[0].shown, Some(1));
+    assert_eq!(crate::variations_strip::bundles(app)[0].shown, Some(1));
+    assert!(crate::variations_strip::choose(app, run.record, 7).is_ok(), "an index past the end shows the last one");
+    assert_eq!(crate::variations_strip::bundles(app)[0].shown, Some(1));
+}
 
+fn ui_set_drives_the_bar(app: &mut PhotocraftApp, ctx: &egui::Context, _fake: &FakeNative) {
     // ui.inspect shows the bar; ui.set drives and validates it.
-    let v = control(&mut app, &ctx, "ui.inspect", json!({}));
+    let v = control(app, ctx, "ui.inspect", json!({}));
     assert_eq!(v["result"]["generativeBar"]["prompt"], "a kite");
     assert_eq!(v["result"]["variations"]["runs"][0]["layers"].as_array().unwrap().len(), 2);
-    let bad = control(&mut app, &ctx, "ui.set", json!({"generativeVariations": 9}));
+    let bad = control(app, ctx, "ui.set", json!({"generativeVariations": 9}));
     assert_eq!(bad["ok"], false, "{bad}");
-    let bad = control(&mut app, &ctx, "ui.set", json!({"generativePrompt": 5}));
+    let bad = control(app, ctx, "ui.set", json!({"generativePrompt": 5}));
     assert_eq!(bad["ok"], false, "{bad}");
-    let ok = control(&mut app, &ctx, "ui.set", json!({"generativePrompt": "a boat", "generativeVariations": 3, "generativeTemplate": "qwen-2.1/fill"}));
+    let ok = control(app, ctx, "ui.set", json!({"generativePrompt": "a boat", "generativeVariations": 3, "generativeTemplate": "qwen-2.1/fill"}));
     assert_eq!(ok["ok"], true, "{ok}");
     // The Generate panel's fields: the bar shares them.
     let g = &app.ui.generate;
     assert_eq!((g.prompt.as_str(), g.count, g.template.get("fill").map(String::as_str)), ("a boat", 3, Some("qwen-2.1/fill")));
-    let v = control(&mut app, &ctx, "ui.inspect", json!({}));
+    let v = control(app, ctx, "ui.inspect", json!({}));
     assert_eq!(v["result"]["generatePanel"]["prompt"], "a boat");
     assert_eq!(v["result"]["generativeBar"]["variations"], 3);
-    assert_eq!(control(&mut app, &ctx, "ui.set", json!({"generativeBar": false}))["ok"], true);
+    assert_eq!(control(app, ctx, "ui.set", json!({"generativeBar": false}))["ok"], true);
     assert!(!app.ui.generative_bar.open);
-    assert_eq!(control(&mut app, &ctx, "ui.set", json!({"generativeBar": true}))["ok"], true);
+    assert_eq!(control(app, ctx, "ui.set", json!({"generativeBar": true}))["ok"], true);
     assert!(app.ui.generative_bar.open);
+}
 
+fn edit_mode_runs_generate_edit(app: &mut PhotocraftApp, ctx: &egui::Context, fake: &FakeNative) {
     // Edit mode: the same bar runs generate.edit (no noise mask, the selection masks the
     // layer); the picker lists edit templates; a prompt that changes what is there is spotted.
-    assert_eq!(control(&mut app, &ctx, "ui.set", json!({"generativeMode": "paint"}))["ok"], false);
+    assert_eq!(control(app, ctx, "ui.set", json!({"generativeMode": "paint"}))["ok"], false);
     assert_eq!(
         control(
-            &mut app,
-            &ctx,
+            app,
+            ctx,
             "ui.set",
             json!({"generativeMode": "edit", "generativePrompt": "turn this drawing into a realistic portrait", "generativeVariations": 1, "generativeTemplate": ""})
         )["ok"],
@@ -114,7 +128,7 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
     assert!(looks_like_an_edit("make this hyper realistic") && looks_like_an_edit("Turn it into a painting"));
     assert!(!looks_like_an_edit("a red boat") && !looks_like_an_edit("make a red boat"));
     let prompts_before = fake.state().runs.len();
-    generate(&mut app).unwrap();
+    generate(app).unwrap();
     let st = fake.state();
     assert_eq!(st.runs.len(), prompts_before + 1);
     assert!(st.runs.last().unwrap().run.image.is_some());
@@ -127,7 +141,7 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
     // Enhance rewrites the prompt with the picture in view (inline here) and leaves it for the
     // user to read and run.
     let prompts_before = fake.state().runs.len();
-    enhance(&mut app).unwrap();
+    enhance(app).unwrap();
     assert_eq!(app.ui.generate.prompt, "Enhanced: turn this drawing into a realistic portrait");
     assert!(app.ui.generative_bar.enhance_job.is_none());
     let st = fake.state();
@@ -135,23 +149,25 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
     assert!(st.runs.last().unwrap().run.image.is_some());
     drop(st);
     app.ui.generate.prompt.clear();
-    assert!(enhance(&mut app).is_err(), "nothing to enhance");
+    assert!(enhance(app).is_err(), "nothing to enhance");
     // Back to the Fill state the rest of the test expects.
     assert_eq!(
         control(
-            &mut app,
-            &ctx,
+            app,
+            ctx,
             "ui.set",
             json!({"generativeMode": "fill", "generativePrompt": "a boat", "generativeVariations": 3, "generativeTemplate": "qwen-2.1/fill"})
         )["ok"],
         true
     );
+}
 
+fn research_templates_wait_for_the_preference(app: &mut PhotocraftApp, _ctx: &egui::Context, _fake: &FakeNative) {
     // A research template is refused by the engine until the preference allows it.
-    assert!(generate(&mut app).is_err());
+    assert!(generate(app).is_err());
     app.session.edit_prefs(|p| p.integrations.allow_research_models = true);
-    generate(&mut app).unwrap();
-    let run = crate::variations_strip::bundles(&app).first().cloned().unwrap();
+    generate(app).unwrap();
+    let run = crate::variations_strip::bundles(app).first().cloned().unwrap();
     assert_eq!(run.layers.len(), 3);
     assert_eq!(app.session.active().unwrap().doc.layer(LayerId(run.layers[1])).unwrap().name, "Generative Fill: a boat (2/3)");
 }
@@ -195,7 +211,7 @@ fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
 }
 
 fn bar_rect(h: &Harness<'static, PhotocraftApp>) -> Option<egui::Rect> {
-    h.ctx.memory(|m| m.area_rect(egui::Id::new(AREA_ID)))
+    h.ctx.memory(|m| m.area_rect(egui::Id::unique(AREA_ID)))
 }
 
 #[test]

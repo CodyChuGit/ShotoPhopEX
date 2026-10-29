@@ -4,6 +4,29 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29 (later): upstream PhotoCraft v0.17.0 merged
+
+Merged storytold/photocraft `v0.17.0` (from v0.11.1+172; about 4,000 commits: egui 0.37, engine
+and UI modules moved into folders, native panel docking, clap CLI). Generative modules stay
+top-level; their hooks moved into upstream's new files. No ComfyUI code came back.
+
+- Upstream replaced the old dock, so `heights_for`'s generative rules are gone. In the native
+  dock the Generate and Generations groups give way to their tab strips before Layers shrinks
+  (`panel_docking.rs`: min and compact 0 for `Group::yields`, body skipped when squeezed);
+  folded, the task bar under a selection stands in for the Generate panel.
+- New upstream tests that measure ⌥ + wheel turn off the fork's wheel = zoom default; docking
+  tests expect the generative groups in Essentials, or hide them where upstream geometry is
+  measured.
+- Clippy now denies `cognitive_complexity` (30): `fill_region` and the big task-bar test were
+  split.
+- Tests (cloud, no GPU, no CJK fonts): every failure is a wgpu or missing-glyph one, and those
+  fail on plain v0.17.0 too.
+- Scheduled check "PhotoCraft release merge check" runs daily at 18:23 UTC: a new upstream
+  vX.Y.0 tag gets merged on a branch and PR'd into `photoshopex`.
+
+**Still open**
+
+- Merge the PR into `photoshopex`, then rebuild on the PC.
 ## 2026-10-29: MOSS-Image natively, level with ComfyUI
 
 The owner asked for "moss" on the native stack (nothing was in Downloads; MOSS-Image, OpenMOSS,

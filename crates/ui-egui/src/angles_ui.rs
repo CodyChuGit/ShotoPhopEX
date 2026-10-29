@@ -107,7 +107,7 @@ fn orbit(ui: &mut egui::Ui, a: &mut AnglesUi, t: &Tokens) -> bool {
         a.tilt = tilt;
     }
     let words = angle_prompt(a.rotation, a.tilt, a.zoom).unwrap_or_default();
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, true, tl!("Camera")));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, tl!("Camera")));
     resp.on_hover_text(words.trim_start_matches("<sks> "));
     moved
 }
@@ -132,56 +132,59 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut generate = false;
     let mut a = app.ui.angles.clone();
-    egui::Window::new(tl!("Generative Angles")).id(egui::Id::new("generative-angles")).open(&mut open).resizable(false).default_width(260.0).show(ctx, |ui| {
-        ui.spacing_mut().item_spacing.y = 6.0;
-        orbit(ui, &mut a, &t);
-        let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
-            ui.horizontal(|ui| {
-                ui.add_sized(vec2(64.0, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim)));
-                add(ui);
+    egui::Window::new(tl!("Generative Angles")).id(egui::Id::unique("generative-angles")).open(&mut open).resizable(false).default_width(260.0).show(
+        ctx,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            orbit(ui, &mut a, &t);
+            let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(vec2(64.0, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim)));
+                    add(ui);
+                });
+            };
+            let dirs: Vec<(u32, &str)> = ANGLE_ROTATIONS.iter().map(|(d, w)| (*d, tl!(*w))).collect();
+            row(ui, tl!("Direction"), &mut |ui| {
+                crate::widgets::dropdown(ui, "angles-rotation", tl!("Rotation"), &mut a.rotation, &dirs, 170.0);
             });
-        };
-        let dirs: Vec<(u32, &str)> = ANGLE_ROTATIONS.iter().map(|(d, w)| (*d, tl!(*w))).collect();
-        row(ui, tl!("Direction"), &mut |ui| {
-            crate::widgets::dropdown(ui, "angles-rotation", &mut a.rotation, &dirs, 170.0);
-        });
-        let tilts: Vec<(i32, &str)> = ANGLE_TILTS.iter().map(|(d, w)| (*d, tl!(*w))).collect();
-        row(ui, tl!("Height"), &mut |ui| {
-            crate::widgets::dropdown(ui, "angles-tilt", &mut a.tilt, &tilts, 170.0);
-        });
-        let zooms: Vec<(u32, &str)> = ANGLE_ZOOMS.iter().map(|(d, w)| (*d, tl!(*w))).collect();
-        row(ui, tl!("Distance"), &mut |ui| {
-            crate::widgets::dropdown(ui, "angles-zoom", &mut a.zoom, &zooms, 170.0);
-        });
-        row(ui, tl!("Variations"), &mut |ui| {
-            crate::widgets::dropdown(ui, "angles-variations", &mut a.variations, &[(1u8, "1"), (2, "2"), (3, "3"), (4, "4")], 50.0);
-        });
-        if missing {
-            ui.label(
-                egui::RichText::new(tl!(
-                    "Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)"
-                ))
-                .small()
-                .color(t.warning),
-            );
-        }
-        ui.add_space(2.0);
-        ui.horizontal(|ui| match &running {
-            Some(j) => {
-                let label = format!("{} · {:.0}%", tl!("Cancel"), j.progress.clamp(0.0, 1.0) * 100.0);
-                if crate::widgets::secondary_button(ui, &label, 150.0).clicked() {
-                    crate::jobs_ui::cancel(app, j.id);
+            let tilts: Vec<(i32, &str)> = ANGLE_TILTS.iter().map(|(d, w)| (*d, tl!(*w))).collect();
+            row(ui, tl!("Height"), &mut |ui| {
+                crate::widgets::dropdown(ui, "angles-tilt", tl!("Tilt"), &mut a.tilt, &tilts, 170.0);
+            });
+            let zooms: Vec<(u32, &str)> = ANGLE_ZOOMS.iter().map(|(d, w)| (*d, tl!(*w))).collect();
+            row(ui, tl!("Distance"), &mut |ui| {
+                crate::widgets::dropdown(ui, "angles-zoom", tl!("Zoom"), &mut a.zoom, &zooms, 170.0);
+            });
+            row(ui, tl!("Variations"), &mut |ui| {
+                crate::widgets::dropdown(ui, "angles-variations", tl!("Variations"), &mut a.variations, &[(1u8, "1"), (2, "2"), (3, "3"), (4, "4")], 50.0);
+            });
+            if missing {
+                ui.label(
+                    egui::RichText::new(tl!(
+                        "Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)"
+                    ))
+                    .small()
+                    .color(t.warning),
+                );
+            }
+            ui.add_space(2.0);
+            ui.horizontal(|ui| match &running {
+                Some(j) => {
+                    let label = format!("{} · {:.0}%", tl!("Cancel"), j.progress.clamp(0.0, 1.0) * 100.0);
+                    if crate::widgets::secondary_button(ui, &label, 150.0).clicked() {
+                        crate::jobs_ui::cancel(app, j.id);
+                    }
                 }
-            }
-            None => {
-                let label = match eta.map(crate::generate_panel::eta_label).filter(|s| !s.is_empty()) {
-                    Some(e) => format!("{} · {e}", tl!("Generate")),
-                    None => tl!("Generate").to_string(),
-                };
-                generate = crate::widgets::primary_button(ui, &label, 150.0).clicked();
-            }
-        });
-    });
+                None => {
+                    let label = match eta.map(crate::generate_panel::eta_label).filter(|s| !s.is_empty()) {
+                        Some(e) => format!("{} · {e}", tl!("Generate")),
+                        None => tl!("Generate").to_string(),
+                    };
+                    generate = crate::widgets::primary_button(ui, &label, 150.0).clicked();
+                }
+            });
+        },
+    );
     a.job = app.ui.angles.job;
     app.ui.angles = AnglesUi { open: open && app.ui.angles.open, ..a };
     if generate {

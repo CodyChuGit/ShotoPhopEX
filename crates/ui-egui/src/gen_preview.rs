@@ -24,16 +24,16 @@ type Cached = (u64, TextureHandle);
 
 /// Where the outputs drawn on `doc`'s canvas last frame are listed.
 fn canvas_key(doc: DocId) -> egui::Id {
-    egui::Id::new(("pc-gen-preview", doc.0))
+    egui::Id::unique(("pc-gen-preview", doc.0))
 }
 
 /// The upload of output `output`'s picture on `doc`'s canvas.
 fn output_key(doc: DocId, output: u32) -> egui::Id {
-    egui::Id::new(("pc-gen-preview", doc.0, output))
+    egui::Id::unique(("pc-gen-preview", doc.0, output))
 }
 
 fn row_key(record: u64) -> egui::Id {
-    egui::Id::new(("pc-gen-preview-row", record))
+    egui::Id::unique(("pc-gen-preview-row", record))
 }
 
 /// The texture of `p`, uploaded once per picture and kept under `key` between frames. `None`
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn a_picture_is_uploaded_once_per_version() {
         let ctx = egui::Context::default();
-        let key = egui::Id::new("t");
+        let key = egui::Id::unique("t");
         let a = texture(&ctx, key, &picture(1, 10)).unwrap();
         let again = texture(&ctx, key, &picture(1, 99)).unwrap();
         assert_eq!(a.id(), again.id());
@@ -159,7 +159,7 @@ mod tests {
         assert_eq!(next.id(), a.id(), "the same texture, new pixels");
         assert_eq!(ctx.data(|d| d.get_temp::<Cached>(key)).map(|c| c.0), Some(2));
         let bad = JobPreview { rgba: Arc::new(vec![0; 3]), ..picture(3, 0) };
-        assert!(texture(&ctx, egui::Id::new("u"), &bad).is_none());
+        assert!(texture(&ctx, egui::Id::unique("u"), &bad).is_none());
         drop_texture(&ctx, key);
         assert!(ctx.data(|d| d.get_temp::<Cached>(key)).is_none());
     }

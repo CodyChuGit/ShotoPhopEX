@@ -18,7 +18,7 @@ fn card(id: &str) -> Card {
 fn app(pick: Option<&str>) -> PhotocraftApp {
     let answer = pick.map(|n| crate::FileDialogAnswer::Contents(n.to_string(), b"img".to_vec()));
     let services = Services {
-        import: Some(Box::new(|name: &str, _bytes: &[u8], _depth: usize| {
+        import: Some(Box::new(|name: &str, _bytes: &[u8], _opts: &photocraft_io::ImportOptions| {
             Ok((Document::new(name, Size::new(32, 24), ColorMode::Rgb, SampleType::U8), Vec::new()))
         })),
         file_dialog: pick.map(|_| crate::file_dialog::fake(vec![answer]).0),

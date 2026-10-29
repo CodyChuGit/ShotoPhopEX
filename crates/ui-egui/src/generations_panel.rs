@@ -349,7 +349,7 @@ fn strip(app: &mut PhotocraftApp, ui: &mut egui::Ui, rows: &[Row], t: &Tokens, d
 
 /// A running or failed row as a strip tile.
 fn status_tile(ui: &mut egui::Ui, cell: Rect, r: &Row, t: &Tokens, action: &mut Option<Action>) {
-    let resp = ui.interact(cell, ui.id().with(("gen-tile", r.id)), Sense::click());
+    let resp = ui.interact(cell, ui.scope_id().with(("gen-tile", r.id)), Sense::click());
     let p = ui.painter();
     p.rect_filled(cell, 3.0, t.hover.gamma_multiply(if resp.hovered() { 1.0 } else { 0.6 }));
     let id = r.id;
@@ -433,7 +433,7 @@ fn header(app: &mut PhotocraftApp, ui: &mut egui::Ui, rows: &[Row], t: &Tokens, 
 
 /// An icon button with its name for screen readers (and tests).
 fn labeled(resp: egui::Response, label: &str) -> egui::Response {
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, resp.enabled(), label));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, resp.enabled(), label));
     resp
 }
 
@@ -464,7 +464,7 @@ fn running_row(ui: &mut egui::Ui, r: &Row, t: &Tokens, preview: Option<&egui::Te
     let sub = if r.message.is_empty() { pct } else { format!("{pct} · {}", r.message) };
     p.text(pos2(left, rect.top() + 27.0), Align2::LEFT_CENTER, clip(&sub, chars + 6), FontId::proportional(10.5), t.text_faint);
     let cancel = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y - 2.0), vec2(22.0, 22.0));
-    let c = ui.interact(cancel, ui.id().with(("gen-cancel", r.id)), Sense::click());
+    let c = ui.interact(cancel, ui.scope_id().with(("gen-cancel", r.id)), Sense::click());
     let tint = icons::button_chrome(ui, cancel, false, c.hovered());
     icons::paint(ui, cancel, "x", 12.0, tint);
     if c.on_hover_text(tl!("Cancel")).clicked() {
@@ -491,7 +491,7 @@ fn failed_row(ui: &mut egui::Ui, r: &Row, t: &Tokens, action: &mut Option<Action
     let mut x = rect.right() - 14.0;
     for (icon, tip, a) in [("x", tl!("Dismiss"), Action::Dismiss(r.id)), ("rotate-cw", tl!("Recreate"), Action::Recreate(r.id))] {
         let b = Rect::from_center_size(pos2(x, rect.center().y), vec2(22.0, 22.0));
-        let c = ui.interact(b, ui.id().with(("gen-failed", r.id, icon)), Sense::click());
+        let c = ui.interact(b, ui.scope_id().with(("gen-failed", r.id, icon)), Sense::click());
         let tint = icons::button_chrome(ui, b, false, c.hovered());
         icons::paint(ui, b, icon, 12.0, tint);
         if c.on_hover_text(tip).clicked() {
@@ -567,7 +567,7 @@ fn list(app: &mut PhotocraftApp, ui: &mut egui::Ui, done: &[&Row], t: &Tokens, d
 /// action buttons. Click opens it; right-click shows every action.
 #[allow(clippy::too_many_arguments)]
 fn card(app: &mut PhotocraftApp, ui: &mut egui::Ui, cell: Rect, r: &Row, t: &Tokens, decodes: &mut usize, action: &mut Option<Action>, overlay: bool) {
-    let resp = ui.interact(cell, ui.id().with(("gen-card", r.id)), Sense::click());
+    let resp = ui.interact(cell, ui.scope_id().with(("gen-card", r.id)), Sense::click());
     if !ui.is_rect_visible(cell) {
         return;
     }
@@ -622,7 +622,7 @@ fn card(app: &mut PhotocraftApp, ui: &mut egui::Ui, cell: Rect, r: &Row, t: &Tok
         let step = bar.width() / buttons.len() as f32;
         for (k, (icon, tip, a)) in buttons.into_iter().enumerate() {
             let b = Rect::from_center_size(pos2(bar.left() + step * (k as f32 + 0.5), bar.center().y), vec2(20.0, 20.0));
-            let c = ui.interact(b, ui.id().with(("gen-act", r.id, k)), Sense::click());
+            let c = ui.interact(b, ui.scope_id().with(("gen-act", r.id, k)), Sense::click());
             let tint = icons::button_chrome(ui, b, false, c.hovered());
             icons::paint(ui, b, icon, 12.0, tint);
             if c.on_hover_text(tip).clicked() {
@@ -743,7 +743,7 @@ fn confirm_clear(app: &mut PhotocraftApp, ctx: &egui::Context) {
         _ => tl!("Delete every generation and its files? Running jobs stay."),
     };
     let mut answer = None;
-    egui::Modal::new(egui::Id::new("generations-clear")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("generations-clear")).show(ctx, |ui| {
         ui.set_max_width(320.0);
         ui.label(text);
         ui.add_space(10.0);

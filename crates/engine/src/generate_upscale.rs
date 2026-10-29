@@ -363,9 +363,7 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
                 "compositeMs": now_ms() - composite, "totalMs": now_ms() - started});
             Ok((id, n, bw, bh, ms, template_id, timings))
         },
-        move |(id, n, bw, bh, ms, template, timings)| {
-            json!({"layer": id.0, "tiles": n, "grid": recorded_grid, "width": bw, "height": bh, "elapsedMs": ms, "template": template, "timings": timings})
-        },
+        move |(id, n, bw, bh, ms, template, timings)| json!({"layer": id.0, "tiles": n, "grid": recorded_grid, "width": bw, "height": bh, "elapsedMs": ms, "template": template, "timings": timings}),
     )
 }
 
@@ -465,8 +463,9 @@ mod tests {
     #[test]
     fn a_batched_upscale_reports_progress_and_cancels_like_tile_by_tile() {
         use std::time::{Duration, Instant};
-        let fake = photocraft_genai::fake::FakeNative::start_with(photocraft_genai::fake::Options { delay_ms: 20_000, progress_steps: 200, ..Default::default() })
-            .unwrap();
+        let fake =
+            photocraft_genai::fake::FakeNative::start_with(photocraft_genai::fake::Options { delay_ms: 20_000, progress_steps: 200, ..Default::default() })
+                .unwrap();
         let mut s = Session::new();
         s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
         s.edit_prefs(|p| {

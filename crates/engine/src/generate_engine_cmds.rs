@@ -191,7 +191,8 @@ mod tests {
     #[test]
     fn a_generation_cancels_a_warm_up_in_flight() {
         use std::time::{Duration, Instant};
-        let (fake, mut s) = fake_session(photocraft_genai::fake::Options { vram_free: Some(40_000_000_000), delay_ms: 3_000, progress_steps: 300, ..Default::default() });
+        let (fake, mut s) =
+            fake_session(photocraft_genai::fake::Options { vram_free: Some(40_000_000_000), delay_ms: 3_000, progress_steps: 300, ..Default::default() });
         s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
         assert_eq!(warm_up_at_launch(&mut s).unwrap()["state"], "started");
         let t = Instant::now();
@@ -200,7 +201,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let t = Instant::now();
-        s.execute("generate.image", json!({"prompt": "a lighthouse", "template": "krea2-turbo/image", "target": "layer", "width": 64, "height": 64, "enhance": false})).unwrap();
+        s.execute(
+            "generate.image",
+            json!({"prompt": "a lighthouse", "template": "krea2-turbo/image", "target": "layer", "width": 64, "height": 64, "enhance": false}),
+        )
+        .unwrap();
         // The generation's own 3 s, plus at most the warm-up's cancel round trip.
         assert!(t.elapsed() < Duration::from_millis(5_000), "waited {:?} for the warm-up", t.elapsed());
         let st = fake.state();
