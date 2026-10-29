@@ -24,6 +24,7 @@ use crate::model::scheduler::{FlowConfig, FlowMatchEuler};
 use crate::model::text_encoder::{self, prompt as tmpl, QwenTextEncoder, TextConfig};
 use crate::model::vae::{self, QwenImageVae, VaeTiling};
 use crate::model::vision::{self, VisionConfig, VisionFeatures, VisionTower};
+use crate::preview::StepPreview;
 use crate::Result;
 
 /// How the pipeline is loaded.
@@ -737,8 +738,20 @@ impl Pipeline {
     /// Make one picture. `progress` hears every step; `cancel` is read between steps and a
     /// true answer ends the run with [`Cancelled`].
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+        self.generate_previewed(req, progress, None, cancel)
+    }
+
+    /// [`Self::generate`], showing the denoised estimate to `preview` after the steps it asks
+    /// for ([`crate::preview`]); the picture is the same either way.
+    pub fn generate_previewed(
+        &self,
+        req: &Request,
+        progress: &mut dyn FnMut(f32, &str),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
         crate::device::bind_thread(&self.dev);
-        self.generate_with(req, None, progress, cancel)
+        self.generate_with(req, None, progress, preview, cancel)
     }
 
     /// Make one picture per request, the batch's pictures encoded first: each request's
@@ -747,6 +760,18 @@ impl Pipeline {
     /// picture is the one [`Self::generate`] makes from its request (Upscale's tiles: the
     /// encoders' outputs do not depend on what else is resident).
     pub fn generate_batch(&self, reqs: &[Request], progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Vec<Picture>> {
+        self.generate_batch_previewed(reqs, progress, None, cancel)
+    }
+
+    /// [`Self::generate_batch`] with previews: request `i`'s pictures are output `i`
+    /// ([`StepPreview::begin_output`]).
+    pub fn generate_batch_previewed(
+        &self,
+        reqs: &[Request],
+        progress: &mut dyn FnMut(f32, &str),
+        mut preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Vec<Picture>> {
         use std::sync::atomic::Ordering::Relaxed;
         crate::device::bind_thread(&self.dev);
         anyhow::ensure!(reqs.iter().all(|r| r.steps > 0), "at least one step");
@@ -769,13 +794,24 @@ impl Pipeline {
         let mut out = Vec::with_capacity(reqs.len());
         for (i, (r, c)) in reqs.iter().zip(conds).enumerate() {
             let mut report = |f: f32, m: &str| progress(0.1 + 0.9 * (i as f32 + f) / n, &format!("Tile {}/{}: {m}", i + 1, reqs.len()));
-            out.push(self.generate_with(r, Some(c), &mut report, cancel)?);
+            let shown = preview.as_mut().map(|p| {
+                p.begin_output(i);
+                &mut **p as &mut dyn StepPreview
+            });
+            out.push(self.generate_with(r, Some(c), &mut report, shown, cancel)?);
         }
         Ok(out)
     }
 
     /// [`Self::generate`] with the request's conditioning already computed, or computed here.
-    fn generate_with(&self, req: &Request, cond: Option<Conditioning>, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+    fn generate_with(
+        &self,
+        req: &Request,
+        cond: Option<Conditioning>,
+        progress: &mut dyn FnMut(f32, &str),
+        mut preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
         if req.steps == 0 {
             anyhow::bail!("at least one step");
         }
@@ -841,15 +877,21 @@ impl Pipeline {
 
         // 2. Noise and schedule, then the Euler loop.
         let img_seq = lw * lh;
-        let (tsteps, dts): (Vec<f32>, Vec<f32>) = match req.schedule {
+        // The model's timesteps, the Euler intervals and the sigmas (x0 for a preview).
+        let (tsteps, dts, sigmas): (Vec<f32>, Vec<f32>, Vec<f32>) = match req.schedule {
             Schedule::Comfy => {
                 use crate::comfy::{comfy_timestep, FlowSchedule};
                 let s = FlowSchedule::simple(req.steps, FlowSchedule::QWEN_IMAGE_21).map_err(anyhow::Error::msg)?;
-                ((0..req.steps).map(|i| comfy_timestep(s.sigma(i))).collect(), (0..req.steps).map(|i| s.dt(i)).collect())
+                (
+                    (0..req.steps).map(|i| comfy_timestep(s.sigma(i))).collect(),
+                    (0..req.steps).map(|i| s.dt(i)).collect(),
+                    (0..req.steps).map(|i| s.sigma(i)).collect(),
+                )
             }
             Schedule::Diffusers => {
                 let s = FlowMatchEuler::new(&FlowConfig::default(), req.steps, img_seq);
-                (s.timesteps().iter().map(|t| (*t / 1000.0) as f32).collect(), (0..req.steps).map(|i| s.dt(i) as f32).collect())
+                let t: Vec<f32> = s.timesteps().iter().map(|t| (*t / 1000.0) as f32).collect();
+                (t.clone(), (0..req.steps).map(|i| s.dt(i) as f32).collect(), t)
             }
         };
         let t0 = Instant::now();
@@ -881,6 +923,15 @@ impl Pipeline {
                     )?,
                 })
             })?;
+            if let Some(p) = preview.as_deref_mut() {
+                if p.wants(i + 1, req.steps) {
+                    let sigma = f64::from(sigmas.get(i).copied().unwrap_or(0.0));
+                    match (&v * sigma).and_then(|sv| &latents - sv).map_err(anyhow::Error::from).and_then(|x0| vae::unpack_latents_hw(&x0, lh, lw)) {
+                        Ok(x0) => p.show(i + 1, req.steps, &x0),
+                        Err(e) => tracing::warn!(error = %e, "preview skipped"),
+                    }
+                }
+            }
             latents = (latents + (v * *dt as f64)?)?;
             if i == 0 {
                 // The step's working set is allocated by now.

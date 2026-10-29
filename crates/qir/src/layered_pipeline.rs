@@ -13,6 +13,7 @@ use crate::layered_files::{LayeredFiles, TensorFile};
 use crate::model::qwen25_text::{load_tokenizer, tokenize, Qwen25TextEncoder};
 use crate::model::qwen_image_dit::{image_positions, patchify, text_positions, unpatchify, LayeredDit, LayeredRope};
 use crate::model::wan_vae::WanVae;
+use crate::preview::StepPreview;
 use crate::Result;
 
 pub const DEFAULT_STEPS: usize = 20;
@@ -48,6 +49,15 @@ pub fn euler_cfg(x: &Tensor, positive: &Tensor, negative: &Tensor, sigma: f32, n
     let denoised = (&neg + ((pos - &neg)? * CFG as f64)?)?;
     let derivative = ((&x - denoised)? / sigma as f64)?;
     Ok((&x + (derivative * (next - sigma) as f64)?)?)
+}
+
+/// The CFG-combined denoised estimate [`euler_cfg`] steps towards (for a preview; the
+/// sampler's own arithmetic stays in `euler_cfg`).
+pub fn cfg_denoised(x: &Tensor, positive: &Tensor, negative: &Tensor, sigma: f32) -> Result<Tensor> {
+    let x = x.to_dtype(DType::F32)?;
+    let pos = (&x - (positive.to_dtype(DType::F32)? * sigma as f64)?)?;
+    let neg = (&x - (negative.to_dtype(DType::F32)? * sigma as f64)?)?;
+    Ok((&neg + ((pos - &neg)? * CFG as f64)?)?)
 }
 
 /// Drop the composite and move time to batch in LatentCutToBatch's order.
@@ -123,7 +133,41 @@ impl LayeredPipeline {
         prompt: &str,
         seed: u64,
         steps: usize,
+        progress: impl FnMut(usize, usize),
+        cancel: &AtomicBool,
+        observe: impl FnMut(&str, &Tensor) -> Result<()>,
+    ) -> Result<Vec<RgbaImage>> {
+        self.split_inner(picture, layers, prompt, seed, steps, progress, None, cancel, observe)
+    }
+
+    /// [`Self::split`], showing the layers' denoised estimate `(layers, 16, h/8, w/8)`
+    /// (background first, the composite left out) to `preview` after the steps it asks for;
+    /// the layers are the same either way.
+    #[allow(clippy::too_many_arguments)]
+    pub fn split_previewed(
+        &self,
+        picture: &RgbaImage,
+        layers: usize,
+        prompt: &str,
+        seed: u64,
+        steps: usize,
+        progress: impl FnMut(usize, usize),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &AtomicBool,
+    ) -> Result<Vec<RgbaImage>> {
+        self.split_inner(picture, layers, prompt, seed, steps, progress, preview, cancel, |_, _| Ok(()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn split_inner(
+        &self,
+        picture: &RgbaImage,
+        layers: usize,
+        prompt: &str,
+        seed: u64,
+        steps: usize,
         mut progress: impl FnMut(usize, usize),
+        mut preview: Option<&mut dyn StepPreview>,
         cancel: &AtomicBool,
         mut observe: impl FnMut(&str, &Tensor) -> Result<()>,
     ) -> Result<Vec<RgbaImage>> {
@@ -238,6 +282,14 @@ impl LayeredPipeline {
                 observe(&format!("step_{i}.positive"), &pos)?;
                 observe(&format!("step_{i}.negative"), &neg)?;
                 check()?;
+                if let Some(p) = preview.as_deref_mut() {
+                    if p.wants(i + 1, steps) {
+                        match cfg_denoised(&latent, &pos, &neg, schedule.sigma(i)).and_then(|d| retained_slices(&d)) {
+                            Ok(x0) => p.show(i + 1, steps, &x0),
+                            Err(e) => tracing::warn!(error = %e, "preview skipped"),
+                        }
+                    }
+                }
                 latent = euler_cfg(&latent, &pos, &neg, schedule.sigma(i), schedule.sigmas[i + 1])?;
                 observe(&format!("step_{i}.latent"), &latent)?;
                 #[cfg(feature = "cuda")]

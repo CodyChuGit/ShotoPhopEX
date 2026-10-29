@@ -22,6 +22,7 @@ use crate::model::text_encoder::{QwenTextEncoder, TextConfig};
 use crate::model::vision::{self, VisionConfig, VisionTower};
 use crate::model::wan_vae::{self, WanVae};
 use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
+use crate::preview::StepPreview;
 use crate::Result;
 
 /// The longest side of the picture the encoder sees beside an edit's instruction (the
@@ -321,17 +322,47 @@ impl Krea2Pipeline {
 
     /// Generate from one or two style pictures using stock EditPlus semantics.
     pub fn generate_style(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+        self.generate_style_previewed(req, progress, None, cancel)
+    }
+
+    /// [`Self::generate_style`] with previews ([`Self::generate_previewed`]).
+    pub fn generate_style_previewed(
+        &self,
+        req: &Request,
+        progress: &mut dyn FnMut(f32, &str),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
         anyhow::ensure!((1..=2).contains(&req.references.len()), "Krea style needs one or two references");
         anyhow::ensure!(req.width > 0 && req.height > 0, "Krea style needs explicit width and height");
-        self.generate_inner(req, progress, cancel, true)
+        self.generate_inner(req, progress, preview, cancel, true)
     }
 
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
-        self.generate_inner(req, progress, cancel, false)
+        self.generate_inner(req, progress, None, cancel, false)
     }
 
-    fn generate_inner(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool, style: bool) -> Result<Picture> {
+    /// [`Self::generate`], showing the denoised estimate `(1, 16, h/8, w/8)` to `preview`
+    /// after the steps it asks for; the picture is the same either way.
+    pub fn generate_previewed(
+        &self,
+        req: &Request,
+        progress: &mut dyn FnMut(f32, &str),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
+        self.generate_inner(req, progress, preview, cancel, false)
+    }
+
+    fn generate_inner(
+        &self,
+        req: &Request,
+        progress: &mut dyn FnMut(f32, &str),
+        mut preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+        style: bool,
+    ) -> Result<Picture> {
         crate::device::bind_thread(&self.dev);
         anyhow::ensure!(req.steps > 0, "at least one step");
         // An edit: the first reference is the picture (one picture; the krea2_edit LoRAs take up
@@ -401,6 +432,14 @@ impl Krea2Pipeline {
                 self.dit.forward_edit(&input, schedule.sigma(i), &cond, edit.as_ref())?
             }
             .to_dtype(DType::F32)?;
+            if let Some(p) = preview.as_deref_mut() {
+                if p.wants(i + 1, req.steps) {
+                    match (&v * f64::from(schedule.sigma(i))).and_then(|sv| &x - sv) {
+                        Ok(x0) => p.show(i + 1, req.steps, &x0),
+                        Err(e) => tracing::warn!(error = %e, "preview skipped"),
+                    }
+                }
+            }
             x = (x + (v * f64::from(schedule.dt(i)))?)?;
             progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
         }

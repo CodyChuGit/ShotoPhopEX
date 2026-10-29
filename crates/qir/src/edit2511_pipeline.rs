@@ -226,6 +226,31 @@ impl Edit2511Pipeline {
     pub fn generate(&self, req: &Edit2511Request, progress: impl FnMut(usize, usize), cancel: &AtomicBool) -> Result<RgbImage> {
         self.generate_observed(req, progress, cancel, |_, _| Ok(()))
     }
+
+    /// [`Self::generate`], showing each step's denoised estimate `(1, 16, h/8, w/8)` (a fill's
+    /// kept area already the picture's) to `preview` after the steps it asks for; the picture
+    /// is the same either way.
+    pub fn generate_previewed(
+        &self,
+        req: &Edit2511Request,
+        progress: impl FnMut(usize, usize),
+        mut preview: Option<&mut dyn crate::preview::StepPreview>,
+        cancel: &AtomicBool,
+    ) -> Result<RgbImage> {
+        let steps = req.steps;
+        self.generate_observed(req, progress, cancel, |name, t| {
+            let step = name.strip_prefix("step_").and_then(|r| r.strip_suffix(".denoised")).and_then(|n| n.parse::<usize>().ok());
+            if let (Some(p), Some(i)) = (preview.as_deref_mut(), step) {
+                if p.wants(i + 1, steps) {
+                    match t.squeeze(2) {
+                        Ok(x0) => p.show(i + 1, steps, &x0),
+                        Err(e) => tracing::warn!(error = %e, "preview skipped"),
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
     /// Expose sampler boundaries for oracle-velocity and full-route comparisons.
     pub fn generate_observed(
         &self,
