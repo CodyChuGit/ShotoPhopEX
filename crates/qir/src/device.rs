@@ -182,6 +182,22 @@ pub fn usable_vram(device: &Device) -> Option<(usize, usize)> {
     free_vram(device).map(|(free, total)| (free.saturating_add(pool_slack(device)), total))
 }
 
+/// Driver-free memory a working set must leave: under it Windows (WDDM) does not fail an
+/// allocation but pages device memory to the host, silently 2–5x slower.
+pub const PAGING_HEADROOM: usize = 256 << 20;
+
+/// Log a warning when the driver's free memory and the pool's own slack are both under
+/// [`PAGING_HEADROOM`] as `what` runs, so a run that Windows pages shows as paging in the log
+/// rather than as a slow kernel. A full driver count beside a large slack is not paging: a whole
+/// VAE decode grows the pool into the driver's last free memory and later work reuses it
+/// (2026-10-29: 0 MiB driver-free with 6.4 GB slack, every step at its usual speed).
+pub fn warn_if_paging(device: &Device, what: &str) {
+    let slack = pool_slack(device);
+    if let Some((free, _)) = free_vram(device).filter(|(free, _)| *free < PAGING_HEADROOM && slack < PAGING_HEADROOM) {
+        tracing::warn!(what, driver_free_mib = free >> 20, slack_mib = slack >> 20, "device memory nearly full: Windows may page it");
+    }
+}
+
 /// The compute capability the kernels were built for (`CUDA_COMPUTE_CAP` at build time, as
 /// `major * 10 + minor`: 120 for the RTX 50 series, 89 for Ada).
 pub fn built_compute_cap() -> u32 {
