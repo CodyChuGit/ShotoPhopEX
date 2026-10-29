@@ -862,6 +862,12 @@ fn sage_check(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)
     Ok(())
 }
 
+/// `QIR_2511_SAGE=1`: SageAttention2 for Qwen-Image-Edit-2511's joint attention too (off).
+fn edit2511_sage() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("QIR_2511_SAGE").is_ok_and(|v| v.trim() == "1"))
+}
+
 /// Whether block `i` may use SageAttention2: not the [`FLASH_BLOCKS`].
 fn sage_block(i: usize) -> bool {
     !FLASH_BLOCKS.contains(&i)
@@ -1179,8 +1185,12 @@ impl LayeredDit {
     ) -> Result<Tensor> {
         let (mut img, mut txt) = self.input.project(img_tokens, txt_tokens)?;
         let temb = self.input.timestep(timestep, additional_t_cond)?;
-        // SageAttention2 was measured on Qwen-Image-Layered only; 2511 keeps the flash kernel.
-        let layered = self.kind == DitKind::Layered;
+        // SageAttention2 was measured on Qwen-Image-Layered; 2511 keeps the flash kernel unless
+        // `QIR_2511_SAGE=1` (an experiment while its blocks are surveyed).
+        let layered = match self.kind {
+            DitKind::Layered => true,
+            DitKind::Edit2511 => edit2511_sage(),
+        };
         for (i, block) in self.blocks.iter().enumerate() {
             (img, txt) = block.forward_block(&img, &txt, &temb, rope, padding, split, layered && sage_block(i))?;
         }
