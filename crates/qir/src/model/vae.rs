@@ -427,6 +427,19 @@ pub fn untiled_fits(pixels: usize, bytes_per_pixel: usize, free: usize) -> bool 
     pixels.saturating_mul(bytes_per_pixel).saturating_add(FIT_MARGIN) <= free
 }
 
+/// Headroom kept on the driver's free memory when the worker's own pool also has room
+/// ([`untiled_fits_pooled`]): the display and other processes take from the driver's free
+/// memory, not from what our pool retains.
+pub const DRIVER_MARGIN: usize = 512 << 20;
+
+/// [`untiled_fits`] counting the pool's retained bytes (`slack`) separately from the driver's
+/// `free`: the margin guards only the driver part. A warm 2.1 picture request at about 1 MP has
+/// ~1.3 GiB driver-free and ~3.3 GiB of pool slack against a ~3.8 GiB decode (2026-10-29): one
+/// margin over the sum tiled it (0.70 s a decode against 0.44 s whole).
+pub fn untiled_fits_pooled(pixels: usize, bytes_per_pixel: usize, free: usize, slack: usize) -> bool {
+    pixels.saturating_mul(bytes_per_pixel) <= free.saturating_sub(DRIVER_MARGIN).saturating_add(slack)
+}
+
 /// Whether this build's VAE convs run on cuDNN (feature `cudnn`, not disabled).
 fn conv_uses_cudnn() -> bool {
     #[cfg(feature = "cudnn")]
@@ -968,11 +981,10 @@ impl QwenImageVae {
                 // Memory the CUDA pool retained from earlier work is reusable
                 // by this decode but not in the driver's free count.
                 let slack = crate::device::pool_slack(z_normalized.device());
-                let free = free.saturating_add(slack);
-                let fits = untiled_fits(pixels, bpp, free);
+                let fits = untiled_fits_pooled(pixels, bpp, free, slack);
                 tracing::info!(
                     need_mib = need >> 20,
-                    free_mib = free >> 20,
+                    free_mib = free.saturating_add(slack) >> 20,
                     pool_slack_mib = slack >> 20,
                     mode = if fits { "whole" } else { "tiled" },
                     "vae decode (auto)"
@@ -1135,6 +1147,22 @@ mod tests {
         assert!(untiled_fits(px, decode_bytes_per_pixel(true, true), 22000 * MIB));
         // Overflow saturates instead of wrapping into "fits".
         assert!(!untiled_fits(usize::MAX, cudnn, usize::MAX - 1));
+    }
+
+    #[test]
+    fn pooled_fit_guards_only_the_driver_part() {
+        const MIB: usize = 1 << 20;
+        let need = 3844 * MIB;
+        // The warm 2.1 case: 1322 MiB driver-free and 3343 MiB pool slack fit a 3844 MiB decode
+        // (the single 1 GiB margin over the sum tiled it).
+        assert!(untiled_fits_pooled(need, 1, 1322 * MIB, 3343 * MIB));
+        assert!(!untiled_fits(need, 1, (1322 + 3343) * MIB));
+        // The margin still applies to the driver part, and nothing comes from an empty pool.
+        assert!(untiled_fits_pooled(need, 1, need + DRIVER_MARGIN, 0));
+        assert!(!untiled_fits_pooled(need, 1, need + DRIVER_MARGIN - 1, 0));
+        assert!(!untiled_fits_pooled(need, 1, DRIVER_MARGIN / 2, need - 1));
+        // Overflow saturates instead of wrapping into "fits".
+        assert!(!untiled_fits_pooled(usize::MAX, 2, 0, usize::MAX - 1));
     }
 
     use super::*;
