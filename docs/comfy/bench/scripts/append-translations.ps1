@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Appends rows from pref-translations.tsv (lang<TAB>source<TAB>translation, UTF-8) to each
 # language's TSV, keeping that file's line ending and writing UTF-8 without a BOM.
 $utf8 = New-Object System.Text.UTF8Encoding $false

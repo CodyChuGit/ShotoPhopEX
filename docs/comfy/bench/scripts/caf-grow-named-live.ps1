@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: with the object named by the vision-language rewriter (enhance), does the hole still
 # need to reach far past the object? The boat's silhouette (select.byPoint on the stroke's
 # spots) grown 15 and 30 (both failed unnamed at least once), seeds 7 and 8, Lightning 8,

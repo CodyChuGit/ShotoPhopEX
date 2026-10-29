@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Small-selection cases: a 120x90 patch of rock (request ~180x135, sent at 512 px) and the
 # lighthouse door, with the final Lightning-8 template.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

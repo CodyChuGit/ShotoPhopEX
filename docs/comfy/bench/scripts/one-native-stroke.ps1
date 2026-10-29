@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # One removal stroke through the native 2.1 fill with the worker's phase timings in view:
 # starts a logging worker, runs robust-strokes.ps1 on one tag and kind, prints the worker's
 # log lines (load, encode, sampling, decode) and the stroke's time, stops the worker.

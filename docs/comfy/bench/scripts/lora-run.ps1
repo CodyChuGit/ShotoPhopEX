@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Both sets through the Object Remover v2 adapter (the qwen-edit-2511/remove-lightning-8 template:
 # the hole painted red, the trigger sentence), compared with the shipped default (the hole
 # smoothed, the -smooth run). Output: <prefix>-<tag>-{half,whole}-lora.png and the sheets

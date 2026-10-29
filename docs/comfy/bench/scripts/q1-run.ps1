@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Overnight 2026-10-27 Q1: the wearer's candidates (`wearer_candidates`) on the 2.1 worker
 # route, two judged, the views the rewriter saw dumped to bench\stock\views-q1 (PHOTOCRAFT_DUMP_VIEWS).
 # -Tags picks the scenes (default: the mask scene, `watch`); -Suffix names the outputs.

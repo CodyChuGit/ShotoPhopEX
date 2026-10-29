@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The removal sets through the native Qwen-Image-2.1 fill route (the worker resident, the
 # research opt-in, `qwen-2.1/fill` named as the template, so no 2511 adapter), one candidate
 # a stroke, against the 2511 one-candidate run (-one). Needs a CLI built with

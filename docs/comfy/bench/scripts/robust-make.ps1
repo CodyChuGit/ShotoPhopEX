@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # The robustness set for the generative removal: one scene per line below, each with one
 # object to remove, made by the app's own text-to-image (generate.image, 1024², seed 31,
 # Quality balanced), then the object located by Select by Text. Output: bench\rb-<tag>.png

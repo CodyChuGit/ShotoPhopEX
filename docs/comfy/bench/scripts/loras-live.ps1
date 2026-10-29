@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 param(
     [string]$Exe = "$PSScriptRoot\..\..\..\..\target\release\photocraft.exe",
     [int]$Port = 7881,

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # NVFP4 vs fp8 on the 5090: Comfy-Org's official NVFP4 files against the fp8 ones the templates
 # ship with, through the engine's own graphs posted straight to the server (the CLI's `model`
 # only swaps the first slot). Each case: purge, then three runs (cold, warm, warm); the time of

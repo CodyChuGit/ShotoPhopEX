@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Rust rebuild R4 live check: the same requests on a worker whose models root is the snapshot
 # folder (native-models) and on one whose root is ComfyUI's own `models` folder (ComfyUI's single
 # files, the tokenizer assembled from ComfyUI's qwen25_tokenizer), then the pictures compared.

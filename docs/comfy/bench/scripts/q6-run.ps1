@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Overnight 2026-10-27 Q6: Generative Upscale live (q6_upscale.py) on a shared worker.
 param([string]$Picture = "C:\Users\5090\ComfyUI\photocraft-tests\bench\stock\st-hat.jpg", [string]$Out = "C:\Users\5090\ComfyUI\photocraft-tests\bench\q6-upscale",
     [string]$Cli = "C:\Users\5090\Documents\PhotoshopEX\target\release\photocraft-cli.exe")

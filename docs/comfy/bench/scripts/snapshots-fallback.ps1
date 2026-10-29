@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"
 $env:WGPU_FORCE_FALLBACK_ADAPTER = "1"
 $exe = "C:\Users\5090\Projects\comfy-photocraft\target\release\examples\snapshot.exe"

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 """Run the installed ComfyUI with node and CUDA phase timing, without editing it."""
 import argparse
 import json

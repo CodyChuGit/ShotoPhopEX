@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The rewriter's wording, checked where it moved (2026-10-26): the shipped 2511 route with
 # ComfyUI's 4B on the scenes the wording changed (`-auto5`), then Qwen-Image-2.1 as an edit with
 # the worker's 8B, two seeds judged (`-p22`), on the scenes where the 8B named the person.

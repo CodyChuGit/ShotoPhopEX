@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 # The Krea 2 style reference (krea2-turbo/image-style: Krea 2 Turbo + Ostris's style LoRA, one or
 # two reference pictures) natively and on ComfyUI, one route on the GPU at a time: the native
 # worker first, then ComfyUI started fresh and stopped. Same prompt, references, size, seed and

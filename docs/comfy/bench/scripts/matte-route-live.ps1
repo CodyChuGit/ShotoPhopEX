@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Live: Remove Background without the research opt-in (SAM 3.1 route), and Select by Point.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"
 $cli = (Resolve-Path "target\release\photocraft-cli.exe").Path

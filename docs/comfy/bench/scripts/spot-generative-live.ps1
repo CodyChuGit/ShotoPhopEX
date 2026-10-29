@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: the generative Spot Healing Brush on the lighthouse's red boat (final-fill-s11.png; the
 # boat spans x 305..445, y 645..682), Lightning 8 (Quality balanced), seed 7, through the tool's
 # own command (paint.spotHealing type generative), so what the app sends is what is measured:

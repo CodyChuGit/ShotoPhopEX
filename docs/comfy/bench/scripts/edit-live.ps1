@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Live: generate.edit on the lighthouse (whole picture, then confined to a selection), and the
 # automatic purge across model switches (Lightning edit -> 40-step base -> 2.1 matte -> Lightning).
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

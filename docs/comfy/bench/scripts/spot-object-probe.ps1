@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # What the detector answers for the spots of the Spot Healing strokes of spot-generative-live.ps1
 # (select.byPoint on the same points), and what the generative stroke's layer records
 # (generate.info: the request rect and grow). Prints JSON lines.

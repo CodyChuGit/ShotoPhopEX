@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 """Overnight 2026-10-27: a fill's `denoise` live on the 2511 Lightning fill through ComfyUI. The top
 hat of st-hat.jpg asked to become a red one at denoise 1, 0.75 and 0.6 (the same seed), and a
 sheet of the crops. argv: the CLI, the output folder. Run with ComfyUI's Python, -I.

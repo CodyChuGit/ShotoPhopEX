@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # The rewriter on the native worker: generate.enhancePrompt under engine native (the worker's
 # 2.1 text encoder answering as Qwen3-VL 8B, genai-native Pipeline::chat), an edit with the
 # picture in view and an image idea, with the worker's chat timings. -Cli names the CLI build.

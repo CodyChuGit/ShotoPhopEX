@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # A short rewriter prompt for the 4B vision model, on the doodle and the lighthouse, plus a
 # fill case where the selection is tinted red; then a 2511 edit right after, for the timing.
 $srv = "http://127.0.0.1:8188"

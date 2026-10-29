@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Why does a fresh load sometimes thrash? Purge, then run the 1088x704 edit in a fresh process,
 # three times, reading ComfyUI's own log (model loads, partial loads) after each.
 param([string]$Flags = "--fast fp8_matrix_mult", [int]$Runs = 3)

@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 # The robustness set's strokes (robust-make.ps1's rb-objects.json), through the tools' own
 # commands, Lightning (Quality balanced), random seeds:
 #   half   Spot Healing (generative), one stroke along the object's long axis over its first

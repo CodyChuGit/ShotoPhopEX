@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 # Reproduce the app's generative path from the CLI with the app's own preferences (engine
 # auto, the native folders set, the server default): a generative Spot Healing stroke on the
 # lighthouse's boat and a Krea 2 image, printing every result line and error.

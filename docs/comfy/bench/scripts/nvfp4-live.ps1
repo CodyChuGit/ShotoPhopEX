@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The NVFP4 policy through the CLI against the live server: what generate.models reports, and
 # which files the server loads for a Krea 2 image and a 2511 edit with the default `auto`.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

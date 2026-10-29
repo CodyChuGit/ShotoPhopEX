@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 """Overnight 2026-10-27 Q4: LoRA parity, the native engine against ComfyUI, through the app's CLI.
 
 Each case runs with and without a LoRA on one route (argv: native|comfy, the CLI, the output

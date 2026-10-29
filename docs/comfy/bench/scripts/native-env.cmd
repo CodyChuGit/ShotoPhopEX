@@ -1,3 +1,4 @@
+@rem Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 @echo off
 rem Runs a command with the native engine's build environment (MSVC, nvcc flags, CUTLASS, cargo,
 rem CUDA on PATH), in the current folder: e.g. from C:\Users\5090\Documents\genai-native

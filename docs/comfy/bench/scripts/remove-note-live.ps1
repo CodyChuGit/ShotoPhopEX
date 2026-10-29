@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: the removal's own rewriter note (name the object, then only what is behind it) through
 # the tools: the soft-brush boat stroke twice (random seeds) and the half-necklace stroke, with
 # the rewriter's words. Output: bench\note-*.png.

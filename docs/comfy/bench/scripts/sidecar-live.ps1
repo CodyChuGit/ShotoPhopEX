@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 param(
     [string]$Exe = "$PSScriptRoot\..\..\..\..\target\release\photocraft.exe",
     [string]$Images = "$PSScriptRoot\..\images",

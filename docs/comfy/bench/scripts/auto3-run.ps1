@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Both sets under the shipped defaults with the judge told what was removed and the adapter's
 # red-left check (the -auto3 run), compared with the smoothed-only run. Output:
 # <prefix>-<tag>-{half,whole}-auto3.png and the sheets st-auto3-{half,whole}-{1,2}.png in

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # One candidate a stroke, with and without the rewriter's name: does a dab that skips the
 # vision-language model (no "Naming the object", the detector on the point prompt only, the
 # 2511 left resident between dabs) lose removals? Both sets, the adapter candidate

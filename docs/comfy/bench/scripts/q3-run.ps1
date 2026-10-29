@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Overnight 2026-10-27 Q3: the worker's chat with and without the key/value cache. For each CLI
 # build (-Old: before genai-native's KvCache, -New: with it): the removal rewriter's question on
 # the twenty naming-probe pictures (`naming-base`, seed 7: the answers must match word for word)

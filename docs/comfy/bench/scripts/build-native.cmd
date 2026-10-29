@@ -1,3 +1,4 @@
+@rem Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 @echo off
 rem PhotoshopEX with the diffusion engine compiled in (docs/comfy/dev-environment-windows.md).
 rem %1 = package (photocraft-cli | photocraft); %2 = CARGO_TARGET_DIR (optional)

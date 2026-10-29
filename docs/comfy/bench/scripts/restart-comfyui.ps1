@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Restart the portable ComfyUI with the given extra flags, wait until it answers, print its argv.
 # Python runs unbuffered (-u) so the log file fills as it goes.
 param([string]$Flags = "")

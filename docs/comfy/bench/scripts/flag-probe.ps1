@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Measure a ComfyUI launch flag on a generative Spot Healing dab: starts the portable server
 # with the measured flags plus -Flags, waits for the port, runs same-graph-probe.ps1 (one
 # candidate twice, then Best of two), prints the server's staging ("Model Initialization")

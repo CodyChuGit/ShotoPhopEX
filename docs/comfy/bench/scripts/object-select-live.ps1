@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 param(
     [string]$Exe = "$PSScriptRoot\..\..\..\..\target\release\photocraft.exe",
     [string]$Images = "$PSScriptRoot\..\images",

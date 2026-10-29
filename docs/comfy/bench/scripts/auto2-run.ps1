@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Both sets under the shipped defaults after the adapter landed (auto: the adapter's tight red
 # hole as the first variation, the smoothed plain fill as the second, the judge picking),
 # compared with the smoothed-only run. Output: <prefix>-<tag>-{half,whole}-auto2.png and the

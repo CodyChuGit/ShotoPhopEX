@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Overnight 2026-10-27 Q2: the change band (`shadow`, `change_band`) on the 2.1 worker route, two
 # judged. -Sets stock,rb picks the runs: the stock set's ten hard scenes with it on (`-q2`,
 # against `-p21v`), the robustness set with it on (`-q2`) and off (`-q2off`, its baseline).

@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Removal through Qwen-Image-2.1 as an edit by instruction (AusBoss's Cut Out + Remove recipe,
 # research/notes/ausboss-catalogue-2026-10.md 2.2): `qwen-2.1/edit` as the removal template
 # ("Remove the <name> …" on the crop, no mask in the model's view, the layer mask confining

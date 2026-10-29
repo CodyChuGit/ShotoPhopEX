@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # After the edge change: the three placement cases (ab-run), then expand timings back to back.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"
 $sp = "C:\Users\5090\AppData\Local\Temp\claude\C--Users-5090-Projects-comfy-photocraft\b777eacf-44e3-45c1-98c9-821e291ceadf\scratchpad"

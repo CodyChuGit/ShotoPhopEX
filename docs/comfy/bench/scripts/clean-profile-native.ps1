@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 # Rust rebuild R5 live check (goals/rust-rebuild.md §1.1, §1.2, §1.4): the portable zip of
 # `package.ps1 -Native`, unpacked into a fresh folder and run as a new user would, against the
 # native engine only. Every generative command of the feature table runs in its own CLI process

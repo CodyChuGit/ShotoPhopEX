@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # A hard test picture for the generative removal: a portrait with a necklace, made by the app's
 # own text-to-image (generate.image, Quality balanced), then the necklace located by Select by
 # Text so the strokes can be planned. Output: bench\necklace.png and the necklace's bounds.

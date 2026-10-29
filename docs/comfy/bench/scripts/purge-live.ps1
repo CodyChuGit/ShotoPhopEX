@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The automatic purge needs one process (the engine remembers the last model set per server):
 # three edits in one CLI run, Lightning -> 40-step base -> Lightning, each a different model set.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

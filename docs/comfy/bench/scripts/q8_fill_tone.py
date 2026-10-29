@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 """Overnight 2026-10-27 Q8: the seam tone match on Generative Fill (toneMatch), Qwen-Image-2.1 on the
 native worker: six fills on stock pictures, the same seed with it off and on, and a sheet of
 crops around each selection (original, off, on). argv: the CLI, the output folder. Run with

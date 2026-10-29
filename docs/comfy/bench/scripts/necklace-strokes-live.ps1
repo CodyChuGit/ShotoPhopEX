@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: the generative retouch tools on the necklace (necklace.png: a 6-px gold chain from
 # (405,520) down to a pendant at (481,722) and up to (800,445)), through the tools' own commands,
 # Lightning 8 (Quality balanced):

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The purge policy's cost: six whole-object strokes (four stock, two generated) under each of
 # switch (today's default), heavy and never, timed; the first stroke of each policy warms the
 # server, so the five after it are the number. Starts ComfyUI when it is not answering and

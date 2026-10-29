@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Both sets with the hole smoothed over in the model's picture (prefill=true), then the
 # comparison sheets: st-smooth-{half,whole}-{1,2}.png in bench\stock and rb-smooth-{half,whole}.png
 # in bench. Output: the strokes' lines, then the sheet paths.

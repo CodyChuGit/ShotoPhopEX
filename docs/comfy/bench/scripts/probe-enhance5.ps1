@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Why the 4B rewriter answers nothing half the time: the chat template. With thinking=false
 # ComfyUI appends "<think>\n\n</think>\n\n" after the assistant turn, which the non-thinking
 # Qwen3-VL-4B-Instruct does not expect (it then emits <|im_end|> at once, or restarts the turn

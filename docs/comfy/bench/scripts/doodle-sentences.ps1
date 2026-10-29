@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Candidate rewritten sentences for "make this hyper realistic" on the doodle, straight through
 # generate.edit (no rewriter), to see which wording makes 2511 draw a human face.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

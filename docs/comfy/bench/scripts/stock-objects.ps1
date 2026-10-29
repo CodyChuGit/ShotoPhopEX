@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Locate the object to remove in each stock photograph (stock-fetch.ps1's bench\stock\st-<tag>.jpg)
 # by Select by Text, writing bench\stock\st-objects.json in robust-strokes.ps1's form. The names
 # below are what the photographs actually show (the search hits were not all on subject).

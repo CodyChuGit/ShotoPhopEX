@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 # The native-vs-ComfyUI speed table (the owner's goal of 2026-10-28: every native feature at
 # least as fast as its ComfyUI route at the same settings and size). Every generative feature at
 # the owner's usual 1 MP size on a 3:4 portrait (864x1152), the same template, seed and

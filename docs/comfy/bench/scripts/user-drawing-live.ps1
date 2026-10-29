@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The user's line drawing through Generative Edit with the two prompts they tried in Fill.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"
 $cli = (Resolve-Path "target\release\photocraft-cli.exe").Path

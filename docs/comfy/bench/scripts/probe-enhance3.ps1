@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The Krea 2 encoder (Qwen3-VL 4B) as the rewriter: text-to-image the official way (system text
 # inside the prompt), and edit instructions with the picture attached.
 $srv = "http://127.0.0.1:8188"

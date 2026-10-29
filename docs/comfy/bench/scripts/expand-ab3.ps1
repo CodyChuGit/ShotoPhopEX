@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # A/B 3: wrapper wordings for a described expand (sent as imperative prompts so the CLI can test them
 # without a rebuild), Lightning 8, 4 % feather, edge prefill, seeds 6 and 8.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: Generative Fill from a reference image (PhotoshopEX, 2026-10-21), the technique of
 # AusBoss's "Krea 2 Clothing From Reference" workflow on the app's 2511 route:
 #   1. two pictures from Krea 2 (a person in a plain cardigan; a red sweater as the reference),

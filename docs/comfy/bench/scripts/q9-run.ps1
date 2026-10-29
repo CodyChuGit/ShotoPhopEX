@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Overnight 2026-10-27, after Q8: two measurements for the owner's decisions.
 #  1. A wider removal request (`removeMargin` 0.5 against the default 0.25) on the 2.1 worker
 #     route, two judged, where the request's size matters: the dog (its shadow ran out of the

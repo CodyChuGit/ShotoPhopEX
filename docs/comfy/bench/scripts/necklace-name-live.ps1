@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: does naming the object remove the necklace where "the object in the selected area"
 # does not (necklace.png, the necklace's silhouette from Select by Text grown 64 and 123,
 # seeds 7 and 8, Lightning 8, Quality balanced, pixels kept)?

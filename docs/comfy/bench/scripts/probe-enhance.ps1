@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Can the loaded text encoder rewrite prompts? TextGenerate on Qwen2.5-VL-7B (the 2511 encoder)
 # with the picture and ComfyUI's shipped edit-enhancer system prompt; and the Krea 2 encoder
 # (Qwen3-VL 4B) with the shipped text-to-image enhancer.

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Contact sheet: -Names a,b,c (files in the bench dir), -Cols n, -Crop x,y,w,h (optional), -Out path, -Tile w,h
 param([string]$Names, [int]$Cols = 3, [string]$Crop = "", [string]$Out, [string]$Tile = "420,320")
 $list = @($Names -split ',' | Where-Object { $_ -ne "" })

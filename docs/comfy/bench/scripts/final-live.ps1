@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Final check of the shipped defaults: fill s11 soft, expand right s6/s8 (should hit the cache of
 # the 4 %/edge A/B: identical requests) and the frame at the new feather.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

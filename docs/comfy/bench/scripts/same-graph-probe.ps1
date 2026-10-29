@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 # Does a fill pay its "Model Initializing" again when the same graph runs twice in a row?
 # Three generative Spot Healing dabs with the app's preferences on the lighthouse's boat:
 # one candidate (the smoothed plain fill) twice, then Best of two (adapter + plain), printing

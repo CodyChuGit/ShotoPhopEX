@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: how far past the object the hole must reach for the 2511 fill to remove it rather than
 # redraw it (PhotoshopEX, 2026-10-21; final-fill-s11.png, Lightning 8, Quality balanced,
 # REMOVE_PROMPT, pixels kept). The boat's silhouette from the detector (select.byPoint on the

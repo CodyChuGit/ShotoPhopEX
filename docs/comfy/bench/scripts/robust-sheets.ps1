@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Contact sheets of the robustness set: a row per scene (original, half, whole), cropped
 # around the object (its box doubled, at least 400 px), stacked -PerSheet rows per sheet.
 # Output: bench\rb-sheet-<n>.png. -Tags a,b,c limits the scenes.

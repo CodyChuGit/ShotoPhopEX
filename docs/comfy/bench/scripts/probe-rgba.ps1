@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Probe: run ComfyUI's official Qwen-Image-2.1 background-removal recipe on a test image and
 # report whether the saved PNG carries an alpha channel.
 param([string]$Image = "C:\Users\5090\ComfyUI\photocraft-tests\bench\final-fill-s11.png", [string]$Prompt = "Remove the background, and output a PNG image", [int]$Seed = 7, [string]$Tag = "probe-rgba")

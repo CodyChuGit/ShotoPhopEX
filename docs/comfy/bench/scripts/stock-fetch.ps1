@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # A real-photograph set for the generative removal: one public-domain or CC0 photograph per
 # subject below from Wikimedia Commons (its search API, the first hit whose licence the file's
 # own metadata gives as CC0 or Public domain and whose width is at least 1200 px), saved at

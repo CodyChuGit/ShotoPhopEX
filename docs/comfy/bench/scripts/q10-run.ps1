@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Overnight 2026-10-27: `nameShadow` (the removal prompt asks for the object "and its shadow" on
 # the 2.1 route) on the stock set's ten hard scenes, 2.1 two judged on the worker (`-q2s`,
 # against `-q2`/`-q2b`). -Sets rb adds the robustness set (`-q2s` against `-q2b`).

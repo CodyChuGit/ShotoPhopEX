@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Rust rebuild R1 live check: Select Subject by text and by point on a worker over the native
 # folders (SAM 3.1's ONNX graphs through ONNX Runtime) and on one over ComfyUI's `models` folder
 # (SAM 3.1 on candle from ComfyUI's checkpoint). Prints each selection's result (bounds, pixel

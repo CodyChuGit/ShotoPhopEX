@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Probe: SAM3_Detect with a literal positive_coords point (API format) on the lighthouse photo.
 param([string]$Image = "C:\Users\5090\ComfyUI\photocraft-tests\bench\final-fill-s11.png", [int]$X = 350, [int]$Y = 665, [string]$Tag = "probe-sam-point")
 $srv = "http://127.0.0.1:8188"

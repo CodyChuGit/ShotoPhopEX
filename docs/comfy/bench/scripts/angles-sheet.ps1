@@ -1,4 +1,5 @@
-﻿# One row a picture: the source, then each camera on each route. Labels on top.
+﻿# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# One row a picture: the source, then each camera on each route. Labels on top.
 param([string]$Routes = "edit21,editk2", [string]$Out = "C:\Users\5090\ComfyUI\photocraft-tests\bench\angles\sheet.png", [int]$Tile = 220)
 Add-Type -AssemblyName System.Drawing
 $bench = "C:\Users\5090\ComfyUI\photocraft-tests\bench"

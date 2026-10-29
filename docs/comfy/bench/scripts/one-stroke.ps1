@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # One generative Spot Healing stroke in the foreground, the full output shown: for seeing an
 # error the batch scripts swallow. -Image, -Points (JSON), -Size.
 param([string]$Image = "C:\Users\5090\ComfyUI\photocraft-tests\bench\stock\st-poster.jpg", [string]$Points = "[[1423,668],[1453,668]]", [int]$Size = 33)

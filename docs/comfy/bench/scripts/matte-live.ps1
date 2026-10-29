@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Live: generate.removeBackground on the lighthouse (model's choice, then "the lighthouse"), as a
 # selection, and a transparent generate.image; the outputs are saved as PSD-free PNGs through
 # --out (flattened: the mask is applied, so transparency shows the matte).

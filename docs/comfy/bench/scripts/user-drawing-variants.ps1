@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Prompt and tier variants for the doodle: does the model stop seeing a plate?
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"
 $cli = (Resolve-Path "target\release\photocraft-cli.exe").Path

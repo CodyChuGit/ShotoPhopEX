@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The removal rewriter's naming alone, on a running native worker (2026-10-26): the two views
 # the engine shows it (the surroundings left, a close-up of the stroke right, as
 # `generative_remove` crops them) made here for each scene's half and whole stroke, then one

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Contact sheets for the swap benchmark (swap-run.ps1): one row per case, the original then each
 # route's picture for one seed, into bench\swap\sheet-<kind>-s<seed>.png.
 param([string]$Routes = "fill21,edit21,editk2,fill2511", [string]$Seeds = "7,11", [string]$Tile = "300,300")

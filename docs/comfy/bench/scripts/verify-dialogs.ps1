@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 $env:PATH = "C:\Users\5090\scoop\persist\rustup\.cargo\bin;C:\Users\5090\scoop\shims;$env:PATH"
 $env:CARGO_HOME = "C:\Users\5090\scoop\persist\rustup\.cargo"
 $env:RUSTUP_HOME = "C:\Users\5090\scoop\persist\rustup\.rustup"

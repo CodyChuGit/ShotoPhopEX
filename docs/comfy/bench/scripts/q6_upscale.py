@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 """Overnight 2026-10-27 Q6: Generative Upscale live. A stock picture halved (the ground truth is the
 original), then enlarged 2x back by the app's CLI two ways: plain bicubic (image.imageSize) and
 generate.upscale on the native engine (2.1 edit, the Restore LoRA at 0.5 when installed). Prints

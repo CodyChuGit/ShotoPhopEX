@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 """Overnight 2026-10-27: Generative Fill with Krea 2 Turbo (krea2-turbo/fill, noise-mask inpainting)
 against the 2511 Lightning fill, through ComfyUI, on the six fill cases of q8_fill_tone.py (same
 seeds). A sheet of crops: original, 2511, Krea 2. argv: the CLI, the output folder. Run with

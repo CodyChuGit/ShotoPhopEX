@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Probe: does Qwen-Image-2.1 text-to-image give an RGBA PNG when asked for a transparent background?
 param([string]$Prompt = "A small red wooden rowing boat, product photo, isolated on a transparent background, output a PNG image", [int]$Seed = 3, [string]$Tag = "probe-t2i-alpha")
 $srv = "http://127.0.0.1:8188"

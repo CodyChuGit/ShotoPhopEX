@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # .NET's current directory is not PowerShell's: use absolute paths for [IO.File].
 $dir = "C:\Users\5090\Projects\comfy-photocraft\crates\genai\workflows"
 Set-Location $dir

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Live: Split into Layers on the lighthouse through PhotoCraft (integration + timing), and the
 # same graph straight against ComfyUI to save each layer as its own PNG for a look.
 param([int]$Layers = 3, [int]$Seed = 5)

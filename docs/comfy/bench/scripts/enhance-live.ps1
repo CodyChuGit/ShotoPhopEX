@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The prompt enhancer end to end through the CLI against the live server: what the rewriter
 # says for the user's doodle prompts, a fill with a selection, an image idea; then a Generative
 # Edit of the doodle with `enhance: true` (does the face appear now?) and a Krea 2 image.

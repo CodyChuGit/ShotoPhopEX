@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 # Swap benchmark (swap-cases.json): each case's object selected by name with SAM 3.1
 # (select.byText, grown 12 px, holes filled), then replaced through one route, one picture per
 # seed, into bench\swap\<case>-<route>-s<seed>.png. Routes:

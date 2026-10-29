@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: how far past a thin object (the necklace of necklace.png: a 6-px chain, 5296 px in a
 # 409x297 box) the hole must reach for the 2511 fill to remove it. The necklace's silhouette
 # from Select by Text grown by 32, 64, 96 and 123 (30 % of its larger side), seeds 7 and 8,

@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Best of two on both routes, on the stock set's hard scenes (2026-10-26):
 #  1. Qwen-Image-2.1 as an edit on the native worker, two seeds, the worker's 8B rewriter and
 #     judge (`-p21`), against the shipped 2511 run (`-auto3`: the adapter and the smoothed

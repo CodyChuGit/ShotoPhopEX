@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # The LoRA engine's first live check: a Qwen-Image-2.1 edit through the native worker with and
 # without AusBoss's Consistency LoRA (the same seed), the worker's warnings (an unmatched module
 # would mean the file's names do not map), and the pixel difference between the two results.

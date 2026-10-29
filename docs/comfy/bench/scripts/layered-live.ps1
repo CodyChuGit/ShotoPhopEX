@@ -1,4 +1,6 @@
-﻿# Rust rebuild R3 live check: Split into Layers (Qwen-Image-Layered, 3 layers, seed 7) through
+﻿# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
+# Rust rebuild R3 live check: Split into Layers (Qwen-Image-Layered, 3 layers, seed 7) through
 # the app on the native worker (ComfyUI's models folder, engine = native) and on ComfyUI (the
 # server this script starts, then stops: never both on the card), each layer exported as PNG,
 # then compared per layer (mean |RGB| difference and alpha IoU at 0.5) and timed. -MaxPixels sets the

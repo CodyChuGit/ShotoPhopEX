@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The rewriter with the fixed template (thinking=true: a plain assistant turn for the
 # non-thinking 4B Instruct model; the instructions as a real system turn) and a refined edit
 # prompt that handles "make this realistic" on a doodle: more instructions, two seeds.

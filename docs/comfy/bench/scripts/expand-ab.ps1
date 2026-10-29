@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # A/B for the expand's feather width and prefill, seeds 6 and 8 on the right-side widen.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"
 $cli = (Resolve-Path "target\release\photocraft-cli.exe").Path

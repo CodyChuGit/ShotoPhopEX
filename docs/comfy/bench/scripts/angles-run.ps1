@@ -1,4 +1,6 @@
-﻿# R2 probe: can the native edit models (Qwen-Image-2.1 edit, Krea 2 General Edit V2) move the
+﻿# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
+# R2 probe: can the native edit models (Qwen-Image-2.1 edit, Krea 2 General Edit V2) move the
 # camera by a plain instruction, as the Multiple Angles LoRA does on 2511? Whole-picture edits.
 $s = "C:\Users\5090\AppData\Local\Temp\claude\C--Users-5090-Projects-comfy-photocraft\23d7709e-573f-475c-a78d-721d5e6c037e\scratchpad"
 $sc = "C:\Users\5090\Documents\PhotoshopEX\docs\comfy\bench\scripts"

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # A/B 2: consistency of the new side. (a) the 40-step base expand template, (b) Lightning with a
 # haze-matching instruction, both at 4 % feather with the edge prefill, seeds 6 and 8.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Overnight 2026-10-27 Q4: LoRA parity through the app's CLI (q4_lora_parity.py): the native
 # route on a shared worker, then the ComfyUI route with the worker stopped, then the PSNR table.
 param([string]$Cli = "C:\Users\5090\Documents\PhotoshopEX\target\release\photocraft-cli.exe", [string]$Out = "C:\Users\5090\ComfyUI\photocraft-tests\bench\q4-lora")

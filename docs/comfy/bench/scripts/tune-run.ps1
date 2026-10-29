@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # The fill's own settings against realism: eight whole-object strokes (six stock scenes, two
 # generated) under each variant, compared with the shipped default (the hole smoothed, Lightning
 # 8, euler/simple, 0.75 MP: the -smooth run). Variants: the request at 1.0 and 1.5 MP; the

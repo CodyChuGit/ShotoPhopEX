@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # Live: does the hole's shape decide whether the 2511 fill removes the boat? (PhotoshopEX,
 # 2026-10-21; final-fill-s11.png, Lightning 8, Quality balanced, REMOVE_PROMPT, pixels kept.)
 #   R  the rectangle 300,600 200x120 (the matrix's A: removed the boat)

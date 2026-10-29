@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Run the three A/B cases for the given templates (same seeds and selections as guided-ab.ps1).
 param([string[]]$Templates = @("qwen-edit-2511/fill-lightning-8"), [string]$Model = "")
 # `powershell -File … -Templates a,b` arrives as one string: split it.

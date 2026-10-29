@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 """The native worker's LoRA clear (2026-10-27): an edit with a LoRA, then the same without one, on a
 running worker (PHOTOCRAFT_NATIVE_ENGINE). The second failed with CUDA_ERROR_INVALID_CONTEXT in
 0.3 s. argv: the CLI, the output folder. Run with ComfyUI's Python, -I.

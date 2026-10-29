@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # 1. Does our Krea 2 template run on this server? 2. Reproduce the slow fresh load: the edit at
 # 1088x704 in three separate processes (the CLI purges itself when the card is nearly full),
 # with the server log read after each.

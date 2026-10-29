@@ -1,4 +1,5 @@
-﻿# TextGenerate again: sampling off (no nested inputs), and sampling on with dotted nested keys.
+﻿# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# TextGenerate again: sampling off (no nested inputs), and sampling on with dotted nested keys.
 $srv = "http://127.0.0.1:8188"
 $sp = $PSScriptRoot
 $editSys = [IO.File]::ReadAllText((Join-Path $sp "enhance-edit-system.txt"))

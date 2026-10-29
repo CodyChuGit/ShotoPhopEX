@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # What Select by Text finds on the mug scene for the names the rewriter and its fallbacks give.
 Set-Location "C:\Users\5090\Documents\PhotoshopEX"
 $cli = (Resolve-Path "target\release\photocraft-cli.exe").Path

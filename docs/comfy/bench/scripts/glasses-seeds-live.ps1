@@ -1,3 +1,5 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
+# Removed app preferences/routes require the last ComfyUI-capable commit cdcedbd8 for that benchmark side, or direct ComfyUI HTTP API calls.
 # The glasses scene's half stroke (robust set) seed by seed: variations 1 at seeds 1..4, then
 # variations 2 at seeds 1 and 3 (which choose between 1,2 and 3,4), to see what the edge
 # choice picks. Output: bench\gl-s<seed>.png, gl-v2-<seed>.png.

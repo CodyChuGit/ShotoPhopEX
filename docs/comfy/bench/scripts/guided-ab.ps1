@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # A/B: the mask-guided 2511 template against the plain Lightning-8 one, same seed, plus a second
 # seed and a second selection (water only) to see placement behaviour.
 Set-Location "C:\Users\5090\Projects\comfy-photocraft"

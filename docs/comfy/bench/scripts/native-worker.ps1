@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Start the native worker by hand so a run of many CLI processes shares one resident set of
 # models: `photocraft-cli --engine --stay --runtime … --models …` with a token, its port read
 # from its first stdout line. Prints `PHOTOCRAFT_NATIVE_ENGINE=port:token` for the caller to

@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Both sets under the shipped defaults, as -Suffix (e.g. -auto4), compared with the
 # smoothed-only run (-Base, default -smooth). Starts ComfyUI when it is not answering and
 # stops it afterwards when it started it. Output: <prefix>-<tag>-{half,whole}<Suffix>.png and

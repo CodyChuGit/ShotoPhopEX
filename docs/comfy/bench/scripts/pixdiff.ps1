@@ -1,3 +1,4 @@
+# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
 # Mean absolute RGB difference (sampled every 4th pixel) between pairs "a.png=b.png,c.png=d.png" in the bench dir.
 param([string]$Pairs)
 Add-Type -AssemblyName System.Drawing
