@@ -4552,3 +4552,5 @@ shape	Appearance	Izgled
 	{free} of {total} free	slobodno {free} od {total}
 	Loaded: {models}	Učitano: {models}
 	Purge models	Isprazni modele
+	Choose the folder that holds your model weights to use the generative tools	Izaberite fasciklu sa težinama modela da biste koristili generativne alate
+	Set Models Folder…	Postavi fasciklu modela…

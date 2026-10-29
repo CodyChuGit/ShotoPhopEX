@@ -3494,3 +3494,5 @@ curves	Smooth	Lisser
 	{free} of {total} free	{free} libres sur {total}
 	Loaded: {models}	Chargés : {models}
 	Purge models	Décharger les modèles
+	Choose the folder that holds your model weights to use the generative tools	Choisissez le dossier contenant les poids de vos modèles pour utiliser les outils génératifs
+	Set Models Folder…	Définir le dossier des modèles…

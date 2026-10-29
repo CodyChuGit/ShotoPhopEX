@@ -4182,3 +4182,5 @@ curves	Smooth	Εξομάλυνση
 	{free} of {total} free	{free} ελεύθερα από {total}
 	Loaded: {models}	Φορτωμένα: {models}
 	Purge models	Εκκαθάριση μοντέλων
+	Choose the folder that holds your model weights to use the generative tools	Επιλέξτε τον φάκελο με τα βάρη των μοντέλων σας για να χρησιμοποιήσετε τα παραγωγικά εργαλεία
+	Set Models Folder…	Ορισμός φακέλου μοντέλων…

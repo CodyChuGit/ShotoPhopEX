@@ -4159,3 +4159,5 @@ curves	Smooth	スムーズ
 	{free} of {total} free	{total} 中 {free} 空き
 	Loaded: {models}	読み込み済み: {models}
 	Purge models	モデルを解放
+	Choose the folder that holds your model weights to use the generative tools	生成ツールを使うには、モデルの重みがあるフォルダーを選択してください
+	Set Models Folder…	モデル フォルダーを設定…

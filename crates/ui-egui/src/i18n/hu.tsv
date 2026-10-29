@@ -4398,3 +4398,5 @@ cameraRaw	Yellow	Sárga
 	{free} of {total} free	{total}-ból {free} szabad
 	Loaded: {models}	Betöltve: {models}
 	Purge models	Modellek kiürítése
+	Choose the folder that holds your model weights to use the generative tools	A generatív eszközök használatához válassza ki a modellsúlyokat tartalmazó mappát
+	Set Models Folder…	Modellmappa beállítása…

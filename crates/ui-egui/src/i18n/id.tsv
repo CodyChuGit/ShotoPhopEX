@@ -3481,3 +3481,5 @@ curves	Smooth	Haluskan
 	{free} of {total} free	{free} dari {total} kosong
 	Loaded: {models}	Dimuat: {models}
 	Purge models	Kosongkan model
+	Choose the folder that holds your model weights to use the generative tools	Pilih folder berisi bobot model Anda untuk memakai alat generatif
+	Set Models Folder…	Atur Folder Model…

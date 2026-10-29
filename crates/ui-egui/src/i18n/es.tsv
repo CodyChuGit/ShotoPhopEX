@@ -4441,3 +4441,5 @@ navigator	Zoom	Zoom
 	{free} of {total} free	{free} libres de {total}
 	Loaded: {models}	Cargados: {models}
 	Purge models	Descargar modelos
+	Choose the folder that holds your model weights to use the generative tools	Elija la carpeta con los pesos de sus modelos para usar las herramientas generativas
+	Set Models Folder…	Definir carpeta de modelos…

@@ -4083,3 +4083,5 @@ curves	Smooth	Wygładź
 	{free} of {total} free	wolne {free} z {total}
 	Loaded: {models}	Załadowane: {models}
 	Purge models	Zwolnij modele
+	Choose the folder that holds your model weights to use the generative tools	Wybierz folder z wagami modeli, aby używać narzędzi generatywnych
+	Set Models Folder…	Ustaw folder modeli…

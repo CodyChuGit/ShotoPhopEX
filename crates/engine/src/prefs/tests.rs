@@ -1017,3 +1017,38 @@ fn old_comfy_preferences_are_ignored_and_other_values_survive() {
     }
     assert_eq!(Integrations::default().models_root(), "", "Models folder is required");
 }
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn an_old_comfyui_install_becomes_the_models_folder_once() {
+    let root = std::env::temp_dir().join(format!("photocraft-comfy-migrate-{}", std::process::id()));
+    let portable = root.join("portable");
+    let checkout = root.join("checkout");
+    std::fs::create_dir_all(portable.join("ComfyUI").join("models")).unwrap();
+    std::fs::create_dir_all(checkout.join("models")).unwrap();
+    let load = |integrations: Value| {
+        let mut s = Session::new();
+        let invalid = s.load_prefs_json(&json!({ "integrations": integrations }).to_string()).unwrap();
+        assert!(invalid.is_empty(), "{invalid:?}");
+        s
+    };
+    let path = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
+
+    // The Windows portable build keeps its models in `ComfyUI\models`, a checkout in `models`.
+    let s = load(json!({ "comfyPath": path(portable.clone()), "modelsPath": "" }));
+    assert_eq!(s.prefs().integrations.models_root(), path(portable.join("ComfyUI").join("models")));
+    let s = load(json!({ "comfyPath": path(checkout.clone()) }));
+    assert_eq!(s.prefs().integrations.models_root(), path(checkout.join("models")));
+    // Saved again, the folder stays and the install is gone, so the next load keeps it as is.
+    let saved = s.prefs().to_json();
+    assert!(saved["integrations"].get("comfyPath").is_none());
+    let s = load(saved["integrations"].clone());
+    assert_eq!(s.prefs().integrations.models_root(), path(checkout.join("models")));
+
+    // A Models folder already set wins; an install without a models folder migrates nothing.
+    let s = load(json!({ "comfyPath": path(portable.clone()), "modelsPath": "D:/weights" }));
+    assert_eq!(s.prefs().integrations.models_root(), "D:/weights");
+    let s = load(json!({ "comfyPath": path(root.join("missing")) }));
+    assert_eq!(s.prefs().integrations.models_root(), "");
+    let _ = std::fs::remove_dir_all(&root);
+}

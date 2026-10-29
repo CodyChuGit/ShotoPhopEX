@@ -3112,3 +3112,5 @@ curves	Smooth	平滑
 	{free} of {total} free	{total} 中可用 {free}
 	Loaded: {models}	已加载：{models}
 	Purge models	清除模型
+	Choose the folder that holds your model weights to use the generative tools	要使用生成工具，请选择存放模型权重的文件夹
+	Set Models Folder…	设置模型文件夹…

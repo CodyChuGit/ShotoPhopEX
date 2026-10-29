@@ -698,7 +698,12 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
         Err(_) => return Err(EngineError::Other("PHOTOCRAFT_NATIVE_ENGINE must be valid Unicode port:token".into())),
     };
     if !integrations.native_configured() && endpoint.is_none() {
-        return Err(EngineError::Other("set the runtime and Models folders in Preferences › AI Integrations first".into()));
+        let what = if integrations.models_root().is_empty() {
+            "choose your Models folder (the folder with diffusion_models, text_encoders, vae and loras) in Preferences › AI Integrations first"
+        } else {
+            "set the runtime folders in Preferences › AI Integrations first"
+        };
+        return Err(EngineError::Other(what.into()));
     }
     let mut wanted = photocraft_genai::native::worker_args(&integrations.runtime_folders(), &integrations.models_root());
     if !wanted.is_empty() {

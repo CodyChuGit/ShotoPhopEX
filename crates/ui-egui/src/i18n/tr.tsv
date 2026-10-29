@@ -4209,3 +4209,5 @@ cameraData	Lens	Lens
 	{free} of {total} free	{total} içinde {free} boş
 	Loaded: {models}	Yüklü: {models}
 	Purge models	Modelleri boşalt
+	Choose the folder that holds your model weights to use the generative tools	Üretken araçları kullanmak için model ağırlıklarınızın bulunduğu klasörü seçin
+	Set Models Folder…	Modeller klasörünü ayarla…

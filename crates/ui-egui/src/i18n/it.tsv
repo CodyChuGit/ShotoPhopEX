@@ -4596,3 +4596,5 @@ shape	Appearance	Aspetto
 	{free} of {total} free	{free} liberi su {total}
 	Loaded: {models}	Caricati: {models}
 	Purge models	Scarica i modelli
+	Choose the folder that holds your model weights to use the generative tools	Scegli la cartella con i pesi dei modelli per usare gli strumenti generativi
+	Set Models Folder…	Imposta cartella dei modelli…

@@ -998,6 +998,25 @@ impl Integrations {
     }
 }
 
+/// The `models` folder of a retired ComfyUI install (`integrations.comfyPath` in preferences
+/// saved before 2026-10-29): `<dir>/ComfyUI/models` (the Windows portable build) or
+/// `<dir>/models` (a checkout), when it is a folder.
+fn comfy_models(dir: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if dir.is_empty() {
+            return None;
+        }
+        let d = std::path::Path::new(dir);
+        [d.join("ComfyUI").join("models"), d.join("models")].into_iter().find(|p| p.is_dir()).map(|p| p.to_string_lossy().into_owned())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dir;
+        None
+    }
+}
+
 /// `<executable's folder>/runtime` when it is a folder, looked up once.
 fn bundled_runtime() -> Option<String> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -1976,8 +1995,13 @@ impl Session {
             // A partially migrated file may already contain a newer theme selection (#5139).
             interface.entry(slot).or_insert_with(|| json!(theme.name()));
         }
-        // Retired ComfyUI preferences are intentionally ignored during migration.
+        // Retired ComfyUI preferences are dropped. An empty Models folder takes the old install's
+        // `models` folder first, the place the native worker read weights from until 2026-10-29.
         if let Some(i) = v.get_mut("integrations").and_then(Value::as_object_mut) {
+            let models_empty = i.get("modelsPath").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty());
+            if models_empty && let Some(m) = i.get("comfyPath").and_then(Value::as_str).and_then(|p| comfy_models(p.trim())) {
+                i.insert("modelsPath".into(), json!(m));
+            }
             for key in ["comfyServer", "comfyPath", "comfyArgs", "engine", "engineStartOnLaunch", "engineStopOnQuit", "purgeModels", "modelPrecision"] {
                 i.remove(key);
             }

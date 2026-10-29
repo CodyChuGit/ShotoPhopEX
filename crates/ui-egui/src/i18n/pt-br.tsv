@@ -4268,3 +4268,5 @@ layerLabel	No Color	Sem cor
 	{free} of {total} free	{free} livres de {total}
 	Loaded: {models}	Carregados: {models}
 	Purge models	Descarregar modelos
+	Choose the folder that holds your model weights to use the generative tools	Escolha a pasta com os pesos dos seus modelos para usar as ferramentas generativas
+	Set Models Folder…	Definir pasta de modelos…

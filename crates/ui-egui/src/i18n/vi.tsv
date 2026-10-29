@@ -3970,3 +3970,5 @@ curves	Smooth	Làm mượt
 	{free} of {total} free	còn trống {free} / {total}
 	Loaded: {models}	Đã nạp: {models}
 	Purge models	Giải phóng mô hình
+	Choose the folder that holds your model weights to use the generative tools	Chọn thư mục chứa trọng số mô hình để dùng các công cụ tạo sinh
+	Set Models Folder…	Đặt thư mục mô hình…

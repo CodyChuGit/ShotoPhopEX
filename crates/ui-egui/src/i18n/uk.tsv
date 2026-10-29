@@ -4189,3 +4189,5 @@ curves	Smooth	Згладити
 	{free} of {total} free	вільно {free} з {total}
 	Loaded: {models}	Завантажено: {models}
 	Purge models	Вивантажити моделі
+	Choose the folder that holds your model weights to use the generative tools	Щоб користуватися генеративними інструментами, виберіть теку з вагами моделей
+	Set Models Folder…	Указати теку моделей…

@@ -629,6 +629,8 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 #[derive(Clone, Debug)]
 enum Action {
+    /// Preferences › AI Integrations, where the Models folder is set.
+    OpenModelsFolder,
     Generate,
     Cancel(JobId),
     Enhance,
@@ -700,6 +702,9 @@ fn apply(app: &mut PhotocraftApp, a: Action) {
             app.ui.generate.confirm_clear = false;
         }
         Action::OpenEditor(on) => app.ui.generate.editor = on,
+        Action::OpenModelsFolder => {
+            crate::prefs_ui::open_preferences(app, "integrations");
+        }
     }
 }
 
@@ -777,6 +782,14 @@ fn compact_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, _t: &Tokens, action: 
 
 fn full(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, action: &mut Option<Action>) {
     let mode = app.ui.generate.mode.clone();
+    // First run: no Models folder yet (nothing to migrate from an old ComfyUI install).
+    if app.session.prefs().integrations.models_root().is_empty() {
+        ui.label(RichText::new(tl!("Choose the folder that holds your model weights to use the generative tools")).small().color(t.text_faint));
+        if widgets::secondary_button(ui, tl!("Set Models Folder…"), 0.0).clicked() {
+            *action = Some(Action::OpenModelsFolder);
+        }
+        ui.add_space(4.0);
+    }
     // The mode strip.
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;

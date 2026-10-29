@@ -3487,3 +3487,5 @@ curves	Smooth	Glätten
 	{free} of {total} free	{free} von {total} frei
 	Loaded: {models}	Geladen: {models}
 	Purge models	Modelle entladen
+	Choose the folder that holds your model weights to use the generative tools	Wählen Sie den Ordner mit Ihren Modellgewichten, um die generativen Werkzeuge zu verwenden
+	Set Models Folder…	Modellordner festlegen…

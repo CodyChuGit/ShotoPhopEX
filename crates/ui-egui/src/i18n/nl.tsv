@@ -4239,3 +4239,5 @@ curves	Smooth	Vloeiend maken
 	{free} of {total} free	{free} van {total} vrij
 	Loaded: {models}	Geladen: {models}
 	Purge models	Modellen leegmaken
+	Choose the folder that holds your model weights to use the generative tools	Kies de map met uw modelgewichten om de generatieve hulpmiddelen te gebruiken
+	Set Models Folder…	Modellenmap instellen…

@@ -4086,3 +4086,5 @@ navigator	Zoom	Zvětšení
 	{free} of {total} free	volno {free} z {total}
 	Loaded: {models}	Načteno: {models}
 	Purge models	Uvolnit modely
+	Choose the folder that holds your model weights to use the generative tools	Chcete-li používat generativní nástroje, vyberte složku s váhami modelů
+	Set Models Folder…	Nastavit složku modelů…

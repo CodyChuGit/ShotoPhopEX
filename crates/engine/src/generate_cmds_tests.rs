@@ -629,7 +629,7 @@ fn purge_generative_models_asks_the_server_to_free() {
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
     });
-    assert!(s.execute(FREE, json!({})).unwrap_err().to_string().contains("Models folders"));
+    assert!(s.execute(FREE, json!({})).unwrap_err().to_string().contains("choose your Models folder"));
 }
 
 #[test]
