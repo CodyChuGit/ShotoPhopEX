@@ -110,7 +110,8 @@ impl MossPipeline {
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS DiT loaded");
 
         progress(0.9, "Loading the VAE");
-        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&files.vae], DType::F32, &dev)? };
+        // bf16 on CUDA: 60.0 dB against ComfyUI's f32 decode (f32 60.7), faster and half the memory.
+        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&files.vae], dtype, &dev)? };
         let vae = Flux2Decoder::load(vb).context("the FLUX.2 VAE")?;
         progress(1.0, "Loaded");
         Ok(Self { dev, dtype, tok, te, dit, vae, positive: Mutex::new(None), negative: Mutex::new(None) })
@@ -207,6 +208,7 @@ impl MossPipeline {
         }
         self.dev.synchronize()?;
         timings.denoise_s = t0.elapsed().as_secs_f32();
+        crate::profile::report("moss sampling");
 
         check()?;
         progress(0.92, "Decoding");

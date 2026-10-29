@@ -28,11 +28,15 @@ pub struct Flux2Decoder {
     up: Vec<UpDecoderBlock2D>,
     norm_out: candle_nn::GroupNorm,
     conv_out: candle_nn::Conv2d,
+    /// The decoder's dtype (the builder's).
+    dtype: DType,
 }
 
 impl Flux2Decoder {
-    /// From the VAE file (`bn.*`, `post_quant_conv.*`, `decoder.*`) through an f32 builder.
+    /// From the VAE file (`bn.*`, `post_quant_conv.*`, `decoder.*`); the decoder runs in the
+    /// builder's dtype (the statistics in f32).
     pub fn load(vb: VarBuilder) -> Result<Self> {
+        let dtype = vb.dtype();
         let packed = 4 * LATENT_CHANNELS;
         let var = vb.get(packed, "bn.running_var")?.to_dtype(DType::F32)?;
         let bn_std = (var + BN_EPS)?.sqrt()?.reshape((1, packed, 1, 1))?;
@@ -65,7 +69,7 @@ impl Flux2Decoder {
         }
         let norm_out = candle_nn::group_norm(32, shallowest, 1e-6, d.pp("conv_norm_out"))?;
         let conv_out = candle_nn::conv2d(shallowest, 3, 3, pad1, d.pp("conv_out"))?;
-        Ok(Self { bn_std, bn_mean, post_quant_conv, conv_in, mid, up, norm_out, conv_out })
+        Ok(Self { bn_std, bn_mean, post_quant_conv, conv_in, mid, up, norm_out, conv_out, dtype })
     }
 
     /// The sampler's latent `(1, 128, h, w)` back to the decoder's `(1, 32, 2h, 2w)`: the
@@ -75,7 +79,7 @@ impl Flux2Decoder {
         let (b, c, h, w) = z.dims4()?;
         let z = z.to_dtype(DType::F32)?.broadcast_mul(&self.bn_std)?.broadcast_add(&self.bn_mean)?;
         let z = z.reshape((b, c / 4, 2, 2, h, w))?.permute((0, 1, 4, 2, 5, 3))?.contiguous()?;
-        Ok(z.reshape((b, c / 4, 2 * h, 2 * w))?)
+        Ok(z.reshape((b, c / 4, 2 * h, 2 * w))?.to_dtype(self.dtype)?)
     }
 
     /// RGB `(1, 3, 16h, 16w)` in [-1, 1] for the sampler's latent.
@@ -86,7 +90,7 @@ impl Flux2Decoder {
             x = block.forward(&x)?;
         }
         let x = candle_nn::ops::silu(&self.norm_out.forward(&x)?)?;
-        Ok(self.conv_out.forward(&x)?.clamp(-1f32, 1f32)?)
+        Ok(self.conv_out.forward(&x)?.to_dtype(DType::F32)?.clamp(-1f32, 1f32)?)
     }
 }
 

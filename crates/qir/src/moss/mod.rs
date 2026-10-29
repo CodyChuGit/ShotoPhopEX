@@ -3,6 +3,8 @@
 //! weights as it is (ConvRot INT8 linears on CUDA). See [`pipeline`].
 
 pub mod dit;
+#[cfg(feature = "fusednorm")]
+pub mod fused;
 pub mod pipeline;
 pub mod text;
 pub mod vae;

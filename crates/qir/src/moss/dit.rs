@@ -154,16 +154,82 @@ struct Block {
     o: QLinear,
     up_gate: QLinear,
     down: QLinear,
+    /// The one-pass kernels' weights (CUDA bf16 with `fusednorm`): f32 norms, and q/k norms in
+    /// the interleaved channel order `qkv`'s q and k rows were loaded in (see [`interleaved`]).
+    #[cfg(feature = "fusednorm")]
+    fused: Option<FusedNorms>,
+}
+
+#[cfg(feature = "fusednorm")]
+struct FusedNorms {
+    norm1: Tensor,
+    norm2: Tensor,
+    q_norm: Tensor,
+    k_norm: Tensor,
+}
+
+/// The order that turns each head's rotate-half RoPE pairs `(i, i + D/2)` into adjacent pairs
+/// `(2i, 2i + 1)`: position `2i` takes channel `i`, `2i + 1` channel `i + D/2`. Applied to both q
+/// and k it leaves every `q·k` unchanged, and lets the interleaved fused RoPE kernel serve.
+fn interleaved(d: usize) -> Vec<usize> {
+    (0..d / 2).flat_map(|i| [i, i + d / 2]).collect()
+}
+
+/// SageAttention2 for the blocks (its P·V accumulation from `QIR_SAGE`), unless
+/// `QIR_MOSS_ATTN=exact` asks for exact bf16 attention. At 1024², 50 steps: 17.7 s with the exact
+/// kernel, 10.9 s with SA2 (ComfyUI 10.8 s), DiT cosine to the official model 0.999 either way.
+#[cfg(feature = "sage2")]
+fn sage_attention() -> Result<Option<crate::sage2::PvAccum>> {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var("QIR_MOSS_ATTN").map_or(true, |v| v.trim() != "exact")) {
+        return Ok(None);
+    }
+    Ok(match crate::sage2::attention_impl()? {
+        crate::sage2::AttentionImpl::Sage2(accum) => Some(accum),
+        _ => None,
+    })
+}
+
+/// Whether the blocks take the one-pass kernels: a CUDA bf16 run with `fusednorm`, unless
+/// `QIR_MOSS_FUSED=0` asks for the candle chains (to compare).
+fn use_fused(w: &Weights) -> bool {
+    cfg!(feature = "fusednorm") && w.device().is_cuda() && w.dtype() == DType::BF16 && std::env::var("QIR_MOSS_FUSED").map_or(true, |v| v.trim() != "0")
 }
 
 impl Block {
-    fn load(w: &Weights, p: &str) -> Result<Self> {
+    fn load(w: &Weights, p: &str, heads: usize) -> Result<Self> {
+        let fused = use_fused(w);
+        let dim = w.get(&format!("{p}.norm1.weight"))?.dim(0)?;
+        let hd = dim / heads;
+        // Fused: q's and k's rows in each head's interleaved order, v's as they are.
+        let order: Option<Vec<usize>> = fused.then(|| {
+            let head = interleaved(hd);
+            (0..3 * dim).map(|r| if r < 2 * dim { r / hd * hd + head[r % hd] } else { r }).collect()
+        });
         let qkv = if w.contains(&format!("{p}.proj.qkv.weight")) {
-            w.linear(&format!("{p}.proj.qkv"))?
+            w.linear_rows(&format!("{p}.proj.qkv"), order.as_deref())?
         } else {
             // The official split q/k/v (a diffusers export), stacked here.
             let parts = ["q", "k", "v"].iter().map(|n| w.get(&format!("{p}.proj.{n}.weight"))).collect::<Result<Vec<_>>>()?;
-            QLinear::Dense(candle_nn::Linear::new(Tensor::cat(&parts, 0)?, None))
+            let full = Tensor::cat(&parts, 0)?;
+            let full = match &order {
+                Some(o) => full.index_select(&Tensor::from_vec(o.iter().map(|&i| i as u32).collect::<Vec<_>>(), o.len(), w.device())?, 0)?,
+                None => full,
+            };
+            QLinear::Dense(candle_nn::Linear::new(full, None))
+        };
+        #[cfg(feature = "fusednorm")]
+        let fused = if fused {
+            let head = Tensor::from_vec(interleaved(hd).iter().map(|&i| i as u32).collect::<Vec<_>>(), hd, w.device())?;
+            let f32w = |n: &str| w.get_as(&format!("{p}.{n}.weight"), DType::F32);
+            Some(FusedNorms {
+                norm1: f32w("norm1")?,
+                norm2: f32w("norm2")?,
+                q_norm: f32w("q_norm")?.index_select(&head, 0)?,
+                k_norm: f32w("k_norm")?.index_select(&head, 0)?,
+            })
+        } else {
+            None
         };
         Ok(Self {
             norm1: Rms::load(w, &format!("{p}.norm1.weight"))?,
@@ -174,7 +240,65 @@ impl Block {
             o: w.linear(&format!("{p}.proj.o"))?,
             up_gate: w.linear(&format!("{p}.proj.ffn_up_gate"))?,
             down: w.linear(&format!("{p}.proj.ffn_down"))?,
+            #[cfg(feature = "fusednorm")]
+            fused,
         })
+    }
+
+    /// The block in one-pass kernels: `x (1, S, dim)`, `mods (1, 1, 6·dim)` (shift, scale, gate
+    /// for attention, then for the feed-forward), `cs (2, S, D/2)` cos and sin per pair.
+    #[cfg(feature = "fusednorm")]
+    fn forward_fused(&self, f: &FusedNorms, x: &Tensor, cs: &Tensor, mods: &Tensor, heads: usize) -> Result<Tensor> {
+        use crate::krea2_fused::{head_rope, rms_mod};
+        use crate::profile::scope;
+        let (_, s, dim) = x.dims3()?;
+        let hd = dim / heads;
+        let dev = x.device();
+        let (sf, df) = (s as f64, dim as f64);
+        let ffn = self.up_gate_width();
+        let y = scope("moss norm", 0.0, dev, || rms_mod(x, &f.norm1, Some((mods, 1, 0)), 1e-6))?;
+        let qkv = scope("moss qkv", 2.0 * sf * df * 3.0 * df, dev, || self.qkv.forward(&y))?; // (1, S, 3·dim)
+        let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(2, i * dim, dim)?.reshape((1, s, heads, hd))?) };
+        #[cfg(feature = "sage2")]
+        if let Some(accum) = sage_attention()? {
+            // SageAttention2: q and k normed here, rotated and INT8-quantized in one kernel, V
+            // in FP8.
+            use crate::sage2::{attention as sage, quant_v, rope_quant, Role};
+            let (cos, sin) = (cs.get(0)?.to_dtype(DType::BF16)?, cs.get(1)?.to_dtype(DType::BF16)?);
+            let a = scope("moss attention", 4.0 * sf * sf * df, dev, || {
+                let q = rope_quant(&head_rope(&part(0)?, &f.q_norm, None, 1e-6)?, &cos, &sin, Role::Query)?;
+                let k = rope_quant(&head_rope(&part(1)?, &f.k_norm, None, 1e-6)?, &cos, &sin, Role::Key)?;
+                let v = quant_v(&part(2)?.to_dtype(DType::F16)?, accum)?;
+                Ok(sage(&q, &k, &v, 1.0 / (hd as f32).sqrt(), false)?.reshape((1, s, dim))?)
+            })?;
+            return self.finish_fused(f, x, &a, mods, dev, sf, df, ffn);
+        }
+        let q = scope("moss head rope", 0.0, dev, || Ok(head_rope(&part(0)?, &f.q_norm, Some(cs), 1e-6)?.squeeze(0)?))?;
+        let k = scope("moss head rope", 0.0, dev, || Ok(head_rope(&part(1)?, &f.k_norm, Some(cs), 1e-6)?.squeeze(0)?))?;
+        let a = scope("moss attention", 4.0 * sf * sf * df, dev, || Ok(attention(&q, &k, &part(2)?.squeeze(0)?)?.unsqueeze(0)?))?;
+        self.finish_fused(f, x, &a, mods, dev, sf, df, ffn)
+    }
+
+    /// The fused block after attention: `a (1, S, dim)`.
+    #[cfg(feature = "fusednorm")]
+    #[allow(clippy::too_many_arguments)]
+    fn finish_fused(&self, f: &FusedNorms, x: &Tensor, a: &Tensor, mods: &Tensor, dev: &Device, sf: f64, df: f64, ffn: f64) -> Result<Tensor> {
+        use crate::krea2_fused::{gate_add, rms_mod};
+        use crate::profile::scope;
+        let s = x.dim(1)?;
+        let o = scope("moss o", 2.0 * sf * df * df, dev, || self.o.forward(a))?;
+        let x = scope("moss gate add", 0.0, dev, || gate_add(x, &o, mods, 2))?;
+        let y = scope("moss norm", 0.0, dev, || rms_mod(&x, &f.norm2, Some((mods, 4, 3)), 1e-6))?;
+        let hg = scope("moss up_gate", 2.0 * sf * df * 2.0 * ffn, dev, || self.up_gate.forward(&y))?;
+        let h = scope("moss situ", 0.0, dev, || super::fused::situ(&hg.reshape((s, hg.dim(2)?))?))?;
+        let d = scope("moss down", 2.0 * sf * df * ffn, dev, || Ok(self.down.forward(&h)?.unsqueeze(0)?))?;
+        scope("moss gate add", 0.0, dev, || gate_add(&x, &d, mods, 5))
+    }
+
+    /// The feed-forward width (for the profile's operation counts).
+    #[cfg(feature = "fusednorm")]
+    fn up_gate_width(&self) -> f64 {
+        8192.0
     }
 
     /// `m`: the six modulation rows `(6, dim)` in the run dtype.
@@ -213,11 +337,23 @@ pub struct MossDit {
     final_linear: QLinear,
     dev: Device,
     dtype: DType,
+    /// The last grid's RoPE tables, `(h, w, text_len)` → (f32 rows, run-dtype rows, `(cos, sin)`
+    /// per pair): every step of a picture asks for the same ones.
+    tables: std::sync::Mutex<Option<Tables>>,
+}
+
+#[derive(Clone)]
+struct Tables {
+    /// `(h, w, text_len)` they are for.
+    key: (usize, usize, usize),
+    rope: Tensor,
+    #[cfg_attr(not(feature = "fusednorm"), allow(dead_code))]
+    cs: Tensor,
 }
 
 impl MossDit {
     pub fn load(cfg: &MossConfig, w: &Weights) -> Result<Self> {
-        let layers = (0..cfg.layers).map(|i| Block::load(w, &format!("layers.{i}"))).collect::<Result<Vec<_>>>()?;
+        let layers = (0..cfg.layers).map(|i| Block::load(w, &format!("layers.{i}"), cfg.heads)).collect::<Result<Vec<_>>>()?;
         Ok(Self {
             cfg: cfg.clone(),
             video_embedder: w.linear("video_embedder")?,
@@ -232,7 +368,23 @@ impl MossDit {
             final_linear: w.linear("final_linear_video")?,
             dev: w.device().clone(),
             dtype: w.dtype(),
+            tables: std::sync::Mutex::new(None),
         })
+    }
+
+    /// [`Self::rope`] in the run dtype and its `(2, tokens, head_dim/2)` cos/sin form, made once
+    /// per grid.
+    fn tables(&self, h: usize, w: usize, l: usize) -> Result<Tables> {
+        let mut slot = self.tables.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = slot.as_ref().filter(|t| t.key == (h, w, l)) {
+            return Ok(t.clone());
+        }
+        let rope32 = self.rope(h, w, l)?;
+        let half = self.cfg.head_dim() / 2;
+        let cs = Tensor::stack(&[rope32.narrow(1, half, half)?, rope32.narrow(1, 0, half)?], 0)?.contiguous()?;
+        let t = Tables { key: (h, w, l), rope: rope32.to_dtype(self.dtype)?, cs };
+        *slot = Some(t.clone());
+        Ok(t)
     }
 
     pub fn config(&self) -> &MossConfig {
@@ -299,14 +451,34 @@ impl MossDit {
         anyhow::ensure!(c == self.cfg.channels, "a latent of {c} channels (the model takes {})", self.cfg.channels);
         let n = h * w;
         let l = ctx.dim(0)?;
-        let rope = self.rope(h, w, l)?.to_dtype(self.dtype)?;
+        let tables = self.tables(h, w, l)?;
+        let rope = tables.rope.clone();
         let video = self.video_embedder.forward(&x.reshape((c, n))?.t()?.contiguous()?.to_dtype(self.dtype)?)?;
         let text = self.text(ctx, &rope.narrow(0, n, l)?)?;
         let (m, head) = self.modulation(timestep)?;
         let mut tokens = Tensor::cat(&[video, text], 0)?;
-        for (i, layer) in self.layers.iter().enumerate() {
-            if !skip.contains(&i) {
-                tokens = layer.forward(&tokens, &rope, &m, self.cfg.heads)?;
+        #[cfg(feature = "fusednorm")]
+        if self.layers.first().is_some_and(|b| b.fused.is_some()) {
+            // The six rows as one (1, 1, 6·dim) tensor, the RoPE as (cos, sin) per pair.
+            let mods = Tensor::cat(&m, 1)?.unsqueeze(0)?.contiguous()?;
+            let cs = &tables.cs;
+            let mut x = tokens.unsqueeze(0)?;
+            for (i, layer) in self.layers.iter().enumerate() {
+                if let (false, Some(f)) = (skip.contains(&i), &layer.fused) {
+                    x = layer.forward_fused(f, &x, cs, &mods, self.cfg.heads)?;
+                }
+            }
+            tokens = x.squeeze(0)?;
+        }
+        #[cfg(feature = "fusednorm")]
+        let unfused = self.layers.first().is_none_or(|b| b.fused.is_none());
+        #[cfg(not(feature = "fusednorm"))]
+        let unfused = true;
+        if unfused {
+            for (i, layer) in self.layers.iter().enumerate() {
+                if !skip.contains(&i) {
+                    tokens = layer.forward(&tokens, &rope, &m, self.cfg.heads)?;
+                }
             }
         }
         let y = self.final_norm.forward(&tokens.narrow(0, 0, n)?)?;
