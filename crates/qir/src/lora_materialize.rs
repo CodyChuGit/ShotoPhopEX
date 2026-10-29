@@ -38,14 +38,6 @@ pub fn key_seed(module: &str) -> u64 {
     u64::from(!crc)
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn parameter_seed_matches_installed_comfyui() {
-        assert_eq!(super::key_seed("transformer_blocks.0.attn.to_q"), 706425777);
-    }
-}
-
 pub(crate) fn merge(q: &Tensor, scales: &Tensor, pairs: &[crate::lora::LoraPair], module: &str) -> Result<(Tensor, Tensor)> {
     if pairs.is_empty() {
         return Ok((q.clone(), scales.clone()));
@@ -177,5 +169,13 @@ impl candle_core::CustomOp2 for Quant {
             }
         }
         Ok((CudaStorage::wrap_cuda_slice(out, dev), (n, k).into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn parameter_seed_matches_installed_comfyui() {
+        assert_eq!(super::key_seed("transformer_blocks.0.attn.to_q"), 706425777);
     }
 }
