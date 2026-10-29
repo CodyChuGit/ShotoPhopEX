@@ -186,6 +186,12 @@ impl TensorFile {
         Ok(VarBuilder::from_tensors(tensors, dt, device))
     }
 
+    /// Every tensor uploaded on its own when it is read, so a weight the loader replaces (the
+    /// INT8 conversion) frees its FP8 bytes at once instead of keeping the whole packed region.
+    pub fn resident_builder_unpacked(self, dt: DType, device: &Device) -> VarBuilder<'static> {
+        VarBuilder::from_backend(Box::new(ResidentFile { file: self, packed: None }), dt, device.clone())
+    }
+
     /// Upload a contiguous FP8 region once; individual matrices become zero-copy device views.
     pub fn resident_builder(self, dt: DType, device: &Device) -> Result<VarBuilder<'static>> {
         let mut ranges: Vec<_> = self.tensors.values().filter(|info| info.dtype == "F8_E4M3").map(|info| info.data_offsets).collect();
