@@ -4,6 +4,33 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29 (evening): live preview while generating (Off / Fast / Sharp)
+
+The owner asked for both preview kinds as a setting. Branches: PhotoshopEX `feat/live-preview`
+(on 40f7ad15) and genai-native `feat/live-preview-2` (`df81a61`, on eeb4eb9; the first
+`feat/live-preview` holds only the protocol commit from before the speed-pass rebase and is not
+used).
+- Protocol: `RunRequest.preview` (left out of the JSON when off, so older workers read the same
+  request), `Reply::Preview` with the RGBA picture as the blob before it, `Engine::run_previewed`,
+  `EngineClient::run_previewed`.
+- Worker (`qir::preview`): after a step the loop hands x0 = x − σ·v to a `StepPreview` (2.1 and
+  its Upscale batch, Krea 2 and style, 2511 through its `step_i.denoised` observation, Layered
+  from the CFG-denoised estimate, one picture per layer). Fast: ComfyUI's latent-to-RGB factors
+  (Wan21, QwenImage21) at the latent grid, Layered's own fitted ones. Sharp: madebyollin's
+  taew2_1 (TAEHV, one latent frame) and taeqi2_1 (TAESD 16×), MIT, from `vae_approx/` under the
+  model root (models.md), every 3rd step; Fast without the file or without room. The pictures
+  never change: byte-identical Off/Fast/Sharp on every family (benchmarks.md §0c). Fast is free;
+  Sharp costs 0.15–0.2 s a run.
+- Editor: `integrations.previewWhileGenerating` (default `fast`), "Preview while generating" in
+  Preferences › AI Integrations (20 languages); the job keeps the latest picture with its place
+  (the fill/edit/expand area, the canvas, each Upscale tile of a batch); the canvas draws it
+  scaled over that place until the result lands; the Generations row shows it as a thumbnail.
+- Open: MOSS-Image (branch `moss-image`) is not hooked (its loop can take the same
+  `StepPreview`; taef2 if it matches flux2-vae_small); a split shows the latest layer, not the
+  layers side by side; a text-to-image run that opens a new document has only the row
+  thumbnail; no look at it in the running GUI yet (drawn in tests only); the ui-egui test
+  `readme_tool_list_matches_tool_all` fails on the 40f7ad15 base (its README lost the tools heading).
+
 ## 2026-10-29 (evening): Upscale on fewer, larger tiles by default
 
 The owner chose the larger tiles after the seam crops (`photocraft-tests\bench\upscale-tiles`).

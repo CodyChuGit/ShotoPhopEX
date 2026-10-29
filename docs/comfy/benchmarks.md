@@ -207,6 +207,34 @@ and 2.1 is faster. The owner's choice of 2.1 as the default stands; 2511 stays s
 after a load is 27 dB (ComfyUI's first dynamic call uses the bf16 patch before its resident
 copy). The 2511-vs-2.1 comparison on the earlier sets follows once 2511 is at speed.
 
+## 0c. Live previews while generating: Off / Fast / Sharp (2026-10-29)
+
+genai-native `feat/live-preview-2` (`df81a61`), its ignored test `gn-diffusion/tests/preview_live.rs`
+on the 5090 with ComfyUI's models folder as the root: the engine in-process, one warm-up run,
+then Off, Fast, Sharp and Off again at 864×1152, seed 7, each run's wall time and the card's
+peak memory (nvidia-smi every 100 ms, the whole card: about 3 GB is other tenants). Fast is the
+ComfyUI latent-to-RGB map at the latent grid (Layered: our least-squares fit); Sharp is taew2_1 /
+taeqi2_1 at full size every 3rd step. **Every picture is byte-identical across the four runs of
+its case** (FNV-1a of the result bytes; the test asserts it).
+
+| case | steps | Off | Fast | Sharp | Off again | previews Fast / Sharp | peak card memory |
+|---|---|---|---|---|---|---|---|
+| Krea 2 Turbo, text to image | 8 | 3.37 s | 3.38 s | 3.57 s | 3.51 s | 7 (108×144) / 2 (864×1152) | 27.7 GB, the same in every mode |
+| Qwen-Image-2.1, text to image | 25 | 3.70 s | 3.73 s | 3.90 s | 3.75 s | 24 (54×72) / 8 (864×1152) | 28.8 GB |
+| Qwen-Image-Edit-2511 fill, Lightning 8 | 8 | 7.52 s | 7.50 s | 7.66 s | 7.44 s | 7 (108×144) / 2 (864×1152) | 31.1 GB |
+| Split into Layers, 3 layers | 20 | 94.4 s | 96.2 s | 93.1 s (= Fast) | 93.0 s | 57 (19 × 3 layers, 108×144) | 27.8 GB |
+| Upscale, one ~1 MP tile (2.1 edit + Restore LoRA 0.5) | 25 | 4.24 s | 4.25 s | 4.43 s | 4.24 s | 24 (54×72) / 8 (864×1152) | 18.1 GB |
+
+Krea 2 and Layered are the second run (after the Layered fix); the others the first. Reading:
+**Fast costs nothing measurable** (within the Off-to-Off spread, 0.03–0.15 s; Layered's runs
+vary by 3 s on their own); **Sharp costs about 0.15–0.2 s per run** (60–90 ms a decode, two to
+eight decodes) and no measurable peak memory. Each preview copies its pixels to the host and so
+waits for the queued step (the worker's "pictures in N ms" log line counts that wait, not
+added time). Layered has no tiny decoder (its RGBA VAE's latents run about ten times smaller than
+Wan 2.1's, so taew2_1 and the Wan factors gave grey): its Sharp shows Fast. A Sharp run that finds
+less free memory than the decode needs stays on Fast for the rest of the run (seen on the first
+Upscale run with 31 GB in use). Not measured: MOSS-Image (on its own branch, not hooked yet).
+
 ## 1. Fill templates, default server flags, no cache (run 1)
 
 Uploads had unique names, so every run paid the 7 B vision text encoder and the VAE encode;
