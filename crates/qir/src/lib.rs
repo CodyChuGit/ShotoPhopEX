@@ -44,6 +44,7 @@ mod lora_gemm;
 pub mod lora_materialize;
 pub mod model;
 pub mod pipeline;
+pub mod preview;
 pub mod profile;
 #[cfg(feature = "sage")]
 pub mod rope;

@@ -24,3 +24,5 @@ qwen-image-rs = { path = "../qir", version = "0.0.0" }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The live preview test writes its pictures as PNG (the version qwen-image-rs already uses).
+image = { version = "0.25", default-features = false, features = ["png"] }
