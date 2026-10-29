@@ -12,9 +12,6 @@ build = "build.rs"
 heif = ["photocraft-codecs/heif"]
 # The native worker serves Qwen-Image-2.1 too (needs nvcc; see crates/genai/Cargo.toml).
 native-diffusion = ["photocraft-genai/native-diffusion"]
-# SAM 3.1 through ONNX Runtime for builds without native-diffusion; package.ps1 -Native leaves it out.
-sam-onnx = ["photocraft-genai/sam-onnx"]
-default = ["sam-onnx"]
 
 [lints]
 workspace = true
