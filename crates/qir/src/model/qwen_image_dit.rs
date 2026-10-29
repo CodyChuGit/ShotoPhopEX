@@ -862,10 +862,15 @@ fn sage_check(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)
     Ok(())
 }
 
-/// `QIR_2511_SAGE=1`: SageAttention2 for Qwen-Image-Edit-2511's joint attention too (off).
+/// SageAttention2 for Qwen-Image-Edit-2511's joint attention too unless `QIR_2511_SAGE=0`, with
+/// the same [`FLASH_BLOCKS`]: its survey (2026-10-29, the 864x1152 portrait) found the same wide
+/// blocks (0 at |728|, 58 at |79|, 52 at |53|, the rest at or under |20.5|). Lightning-8 edit
+/// 8.09 to 7.25 s warm, the 40-step CFG 4 edit 94.4 to 86.8 s; same seed against flash 26.8 and
+/// 35.8 dB (snowflakes placed differently, the picture otherwise alike) where a second seed is
+/// 14.9 and 14.5 dB.
 fn edit2511_sage() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("QIR_2511_SAGE").is_ok_and(|v| v.trim() == "1"))
+    *ON.get_or_init(|| std::env::var("QIR_2511_SAGE").map_or(true, |v| v.trim() != "0"))
 }
 
 /// Whether block `i` may use SageAttention2: not the [`FLASH_BLOCKS`].
@@ -1185,8 +1190,7 @@ impl LayeredDit {
     ) -> Result<Tensor> {
         let (mut img, mut txt) = self.input.project(img_tokens, txt_tokens)?;
         let temb = self.input.timestep(timestep, additional_t_cond)?;
-        // SageAttention2 was measured on Qwen-Image-Layered; 2511 keeps the flash kernel unless
-        // `QIR_2511_SAGE=1` (an experiment while its blocks are surveyed).
+        // SageAttention2 for both models (each can opt out: QIR_LAYERED_SAGE=0, QIR_2511_SAGE=0).
         let layered = match self.kind {
             DitKind::Layered => true,
             DitKind::Edit2511 => edit2511_sage(),
