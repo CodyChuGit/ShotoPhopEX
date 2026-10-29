@@ -9,7 +9,7 @@ use candle_nn::{LayerNorm, Module};
 
 use crate::{detector_heads::Heads, prompt::Loader, weights::split_qkv};
 
-/// Raw detector.onnx outputs, before score thresholds or image-size resampling.
+/// Raw detector outputs, before score thresholds or image-size resampling.
 pub struct DetectorOut {
     /// Normalized xyxy coordinates, `[1,200,4]`; corners may extend outside the image.
     pub boxes: Tensor,

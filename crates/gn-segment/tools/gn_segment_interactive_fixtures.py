@@ -3,7 +3,7 @@
 Run with python_embeded/python.exe -I. No FPN arrays or checkpoint weights are saved.
 For k=0,1,2 (sizes 288,144,72), both sides compute in f32, in this order:
 fpn_k[c,y,x] = 0.5 * sin(((0.013*c + 0.071*y) + 0.031*x) + k).
-These are heads.onnx inputs: k=2 already stands for the post-no-memory feature.
+These are the interactive heads' inputs: k=2 already stands for the post-no-memory feature.
 Feedback logits: sin(0.017*y + 0.023*x), shape [1,1,1008,1008].
 Samples: floor(i*(288*288-1)/4095), i=0..4095, independently per plane.
 Stats: mean, population std, min, max. All calculations and stored tensors are f32.

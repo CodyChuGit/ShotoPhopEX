@@ -37,7 +37,7 @@ fn interactive_heads_match_comfyui_f32() -> Result<()> {
     let get = |key: &str| fixtures.get(key).with_context(|| format!("missing fixture {key}"));
     // Exact fixture formula, evaluated in f32 with this grouping:
     // fpn_k[c,y,x] = 0.5*sin(((0.013*c + 0.071*y) + 0.031*x) + k).
-    // k=2 is already the post-no-memory feature at the heads.onnx boundary.
+    // k=2 is already the post-no-memory feature at the interactive heads' input.
     let mut fpn = Vec::new();
     for (k, size) in [288, 144, 72].into_iter().enumerate() {
         let values: Vec<f32> = (0..256)

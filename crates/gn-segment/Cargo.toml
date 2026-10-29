@@ -16,8 +16,6 @@ serde_json = "1"
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 [dev-dependencies]
-ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std", "cuda"] }
-gn-perception = { path = "../gn-perception" }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [features]

@@ -21,8 +21,7 @@ Ported or vendored code keeps its origin here (file, upstream repository, commit
   - candle (Hugging Face), MIT OR Apache-2.0, the tensor spine.
   - The ConvRot W8A8 scheme follows pytorch/ao's group-wise Regular Hadamard rotation.
 
-- crates/gn-perception runs ONNX Runtime (Microsoft, MIT), loaded at run time from a directory
-  the user names; not vendored. The SAM 3.1 graphs it runs are exported on the user's machine
-  from the user's checkpoint (Meta's SAM License) and are never shipped.
+- crates/gn-perception and crates/gn-segment run SAM 3.1 on candle from the user's own checkpoint
+  (Meta's SAM License), which is never shipped.
 
 Model weights are never part of this repository.

@@ -146,7 +146,7 @@ impl Sam31 {
             device: device.clone(),
         })
     }
-    /// Use the same tokenizer.json as the ONNX model directory; no downloads are performed.
+    /// Use a CLIP tokenizer.json (or ComfyUI's `sd1_tokenizer` folder); no downloads are performed.
     pub fn set_tokenizer(&mut self, path: impl AsRef<Path>) -> Result<()> {
         self.tokenizer = Some(ClipTokenizer::open(path)?);
         Ok(())

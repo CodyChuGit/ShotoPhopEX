@@ -2,8 +2,9 @@
 
 The Candle SAM 3.1 port for `docs/comfy/goals/rust-rebuild.md` R1 in
 PhotoshopEX. This crate provides checkpoint validation, numerical foundations,
-all model parts and the composed detector/tracker flows. It does not change
-gn-perception's ONNX runtime.
+all model parts and the composed detector/tracker flows. It is gn-perception's only SAM 3.1
+backend (the ONNX Runtime route was removed on 2026-10-29). ONNX references in the measurement
+records below are the retired route's recorded outputs.
 
 Step 1 covers:
 
@@ -91,7 +92,7 @@ whereas geometry uses a different cross-attention ordering.
 
 Call `set_tokenizer(path)` with the existing local
 `C:/Users/5090/Documents/_eval/native-models/sam3.1/tokenizer.json` before text
-selection. No tokenizer files are downloaded. This uses the ONNX route's JSON
+selection. No tokenizer files are downloaded. This uses the tokenizer JSON's
 normalization and BPE, disables special-token postprocessing, keeps 30 pieces,
 adds BOS/EOS, and pads the 32-slot window with zeros.
 
@@ -123,22 +124,19 @@ without changing the earlier ComfyUI F32 parity boundaries.
 
 ### CPU comparison
 
-Run the two backends separately so their weights and runtime arenas do not
-coexist. The example uses the installed checkpoint, stock JPEGs and ORT 1.31 CPU
-provider at the local paths in its source, with no GPU provider registered:
+Run candle against a recorded reference folder (`GN_SAM31_REFERENCE`, default `onnx`: the retired
+ONNX Runtime route's saved masks). The example uses the installed checkpoint and stock JPEGs at
+the local paths in its source:
 
 ```powershell
 $env:CUDA_VISIBLE_DEVICES = ''
-cargo run -p gn-segment --release --example sam31_parity -- onnx
 cargo run -p gn-segment --release --example sam31_parity -- candle
 ```
 
 The example uses dog/bench/coffee cup prompts and a fixed positive point inside each detected
-object, with the worker's default refinement. It saves binary mask
-planes and metadata under `crates/gn-segment/benchmark-output/{onnx,candle}`, reports counts,
-ordered per-instance IoU, score differences and stage wall times, and fails if
-counts differ or any ordered pair has IoU below 0.99. ONNX is a dev-dependency
-only; production `gn-segment` does not depend on ORT. No worker code is changed.
+object, with the worker's default refinement. It saves binary mask planes and metadata under
+`crates/gn-segment/benchmark-output/<backend>`, reports counts, ordered per-instance IoU, score
+differences and stage wall times, and fails if counts differ or any ordered pair has IoU below 0.99.
 
 ### Measured CPU results (2026-10-27)
 
@@ -187,7 +185,6 @@ processes, with one warm-up per picture and five measured repetitions in the fin
 From the repository root in PowerShell:
 
 ```powershell
-cmd /c crates\gn-segment\examples\cuda-bench.cmd run -p gn-segment --release --features cuda --example sam31_parity -- onnx-cuda 5
 cmd /c crates\gn-segment\examples\cuda-bench.cmd run -p gn-segment --release --features cuda --example sam31_parity -- cuda 5
 cmd /c crates\gn-segment\examples\cuda-bench.cmd run -p gn-segment --release --features cuda --example sam31_parity -- cuda-f16 5
 ```
@@ -196,7 +193,7 @@ cmd /c crates\gn-segment\examples\cuda-bench.cmd run -p gn-segment --release --f
 `crates/gn-segment/target-cuda` as its own target directory. Reference masks, request
 outputs and timing JSON are under the ignored `crates/gn-segment/benchmark-output`.
 Both CUDA Candle modes currently exit with a failing gate on cup text; failures are not suppressed.
-CPU modes remain `onnx` and `candle`, and default to their own CPU reference folder.
+The CUDA modes default to the recorded `onnx-cuda` reference folder, `candle` to `onnx`.
 
 By default, profiling synchronizes CUDA before and after every recorded stage, and
 reports encode, select and point stages separately. Set `GN_SAM31_NO_PROFILE=1` for
@@ -313,20 +310,10 @@ The crop-only vision path already skipped the detector FPN before this task.
 
 ### Diagnostics and remaining work
 
-`sam31_stages` can save and compare FPN, prompt and detector boundaries on cup:
-
-```powershell
-cmd /c crates\gn-segment\examples\cuda-bench.cmd run -p gn-segment --release --features cuda --example sam31_stages -- onnx
-cmd /c crates\gn-segment\examples\cuda-bench.cmd run -p gn-segment --release --features cuda --example sam31_stages -- cross
-cmd /c crates\gn-segment\examples\cuda-bench.cmd run -p gn-segment --release --features cuda --example sam31_stages -- candle
-```
-
-`cross` feeds exact ONNX FPN/prompt inputs into the experimental Candle detector. Its
-bias-inclusive linear variant achieved 0.99223 low-mask IoU in the diagnostic run,
-while the full path still fails. `tools/sam31_observe.py decoder.onnx output.onnx` exposes
-additional boundaries for the installed export. Set `GN_SAM31_DECODER` to that output
-when running the diagnostic ONNX example. Exposing outputs can change ORT fusion; these
-results localize error and do not replace the composed acceptance gate.
+The `sam31_stages` diagnostic (FPN, prompt and detector boundaries against the ONNX graphs) was
+removed with the ONNX Runtime route on 2026-10-29. Its `cross` run, exact ONNX FPN/prompt inputs
+fed into the experimental Candle detector, achieved 0.99223 low-mask IoU with the bias-inclusive
+linear variant while the full path still failed.
 
 Candle 0.11's built-in `candle_nn::ops::sdpa` has no CUDA backend here. The optional
 `candle-flash-attn` package was not cached. Its fetch failed because the configured

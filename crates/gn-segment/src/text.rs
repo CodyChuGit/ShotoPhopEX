@@ -112,7 +112,7 @@ impl Block {
 /// Local CLIP BPE tokenizer with the worker's fixed 32-token window.
 pub struct ClipTokenizer(tokenizers::Tokenizer);
 impl ClipTokenizer {
-    /// Read the ONNX route's tokenizer.json, retaining its normalization and BPE rules, or, for a
+    /// Read a SAM 3.1 model folder's tokenizer.json, retaining its normalization and BPE rules, or, for a
     /// folder, assemble the same tokenizer from its `vocab.json` and `merges.txt` (ComfyUI's
     /// `comfy/sd1_tokenizer`: no file of ours needed beside a ComfyUI install).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
