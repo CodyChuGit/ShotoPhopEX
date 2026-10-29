@@ -386,6 +386,20 @@ pub fn key_seed(module: &str) -> u64 {
     u64::from(!crc)
 }
 
+/// Synchronize only phase boundaries when requested.
+fn phase_marks(device: &Device) -> impl FnMut(&str) -> Result<()> + '_ {
+    let enabled = ["QIR_PROFILE", "QIR_PHASE_PROFILE"].iter().any(|key| std::env::var(key).is_ok_and(|v| v == "1"));
+    let mut last = std::time::Instant::now();
+    move |phase| {
+        if enabled {
+            device.synchronize()?;
+            eprintln!("2511 phase {phase}: {:.6} s", last.elapsed().as_secs_f64());
+            last = std::time::Instant::now();
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,19 +450,5 @@ mod tests {
         req.cfg = 1.;
         req.references[0].put_pixel(0, 0, image::Rgb([1, 0, 0]));
         assert!(key != ConditioningKey::new(&req));
-    }
-}
-
-/// Synchronize only phase boundaries when requested.
-fn phase_marks(device: &Device) -> impl FnMut(&str) -> Result<()> + '_ {
-    let enabled = ["QIR_PROFILE", "QIR_PHASE_PROFILE"].iter().any(|key| std::env::var(key).is_ok_and(|v| v == "1"));
-    let mut last = std::time::Instant::now();
-    move |phase| {
-        if enabled {
-            device.synchronize()?;
-            eprintln!("2511 phase {phase}: {:.6} s", last.elapsed().as_secs_f64());
-            last = std::time::Instant::now();
-        }
-        Ok(())
     }
 }

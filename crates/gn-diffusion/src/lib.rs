@@ -135,7 +135,8 @@ pub const DEFAULT_SIDE: u32 = 1024;
 /// How many pictures an edit may carry: the picture and the template's nine references.
 pub const MAX_PICTURES: usize = 10;
 
-/// What is on the device.
+/// What is on the device. One per engine, so the variants' sizes do not matter.
+#[allow(clippy::large_enum_variant)]
 enum Resident {
     None,
     Qwen(Pipeline),

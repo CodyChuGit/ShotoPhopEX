@@ -831,6 +831,7 @@ impl Krea2Dit {
 
     /// CPU parity runner: load one DiT block at a time to bound checkpoint residency.
     /// Load this model with zero blocks; `weights` supplies the original block prefixes.
+    #[allow(clippy::too_many_arguments)]
     pub fn forward_style_streamed(
         &self,
         x: &Tensor,
