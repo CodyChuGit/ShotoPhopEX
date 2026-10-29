@@ -177,6 +177,18 @@ shipped as a template. `QwenImage21Cache` (in our 2.1 templates) is the other 2.
 Note: there is **no** "Qwen-Image-Edit-2512". `Qwen-Image-2512` (2025-12-31, Apache-2.0) is the
 text-to-image base of that generation; its editing counterpart is Edit-2511.
 
+### Tiny decoders for live previews (Sharp; downloaded 2026-10-29, the owner's go on the preview plan)
+
+| | |
+|---|---|
+| Files | `vae_approx/taew2_1.safetensors` (22,642,902 bytes, SHA-256 `04766eac0221b5390b985ae3fdcca652cbb4b1e8b82b28ea7ff89dfad1b1a93f`, f16; git blob `ec1a2be4…` = the author's GitHub `madebyollin/taehv` `safetensors/taew2_1.safetensors`; lightx2v's mirror of the same name is a different encoding with another hash) and `vae_approx/taeqi2_1.safetensors` (30,591,264 bytes, SHA-256 `6578b31cc5e336233a2c842eba61b56425bbcac97c7088705f7c7db93291887e`, equal to the Hugging Face LFS id of `madebyollin/taeqi2_1`) |
+| What | TAEHV for the Wan 2.1 latent family (Krea 2, Qwen-Image-Edit-2511, the Layered VAE; a video decoder run on one latent frame) and TAESD's 16× RGBA variant for Qwen-Image-2.1's 64-channel VAE; both take the sampler's normalised latents. Native ports in genai-native `qir::preview` |
+| Licence | **MIT** (taehv repository LICENSE; taeqi2_1 model card `license: mit`), checked 2026-10-29 |
+| Where here | ComfyUI's `models/vae_approx/` (where ComfyUI keeps its own tiny decoders; ComfyUI looks for other names, so its previews are unchanged), linked into `_eval/native-models/vae_approx` |
+| Role | **Preview while generating: Sharp**; without them Sharp shows Fast. Fast needs no file (ComfyUI's `latent_rgb_factors` for `Wan21` and `QwenImage21`, in the code) |
+
+Sources: [madebyollin/taehv](https://github.com/madebyollin/taehv) · [madebyollin/taeqi2_1](https://huggingface.co/madebyollin/taeqi2_1) · ComfyUI 0.43 `comfy/latent_formats.py`, `comfy/taesd/`.
+
 ### Z-Image Turbo (fast permissive text-to-image)
 
 6 B distilled model from Alibaba Tongyi Lab, released 2025-11-27, about 8 sampling steps,

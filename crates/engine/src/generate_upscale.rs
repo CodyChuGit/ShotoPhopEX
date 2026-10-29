@@ -265,6 +265,9 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
                 let mut bp = params.clone();
                 bp.insert("batch".into(), json!((0..n).map(|i| common.seed.wrapping_add(i as u64) % super::MAX_SEED).collect::<Vec<_>>()));
                 let req = request_of(0, cut[0].1.clone(), cut[1..].iter().map(|c| c.1.clone()).collect(), bp);
+                // The worker numbers each tile's pictures by its place in the request: each lands
+                // on its own tile, all of them at once.
+                ctx.preview_places(grid.iter().map(|t| t.translate(rect.x0, rect.y0)).collect());
                 let request = now_ms();
                 match backend.as_ref().run(&req, &JobProgress::span(ctx, 0.0, 1.0)) {
                     Ok(resp) if resp.images.len() == n => {
@@ -288,6 +291,8 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
                     Some(out) => (out, None),
                     None => {
                         ctx.progress(lo, &format!("Tile {}/{n}", i + 1));
+                        // One tile per request: its pictures land on that tile.
+                        ctx.preview_at(t.translate(rect.x0, rect.y0));
                         let resp = backend.as_ref().run(&request_of(i, sent, Vec::new(), params.clone()), &JobProgress::span(ctx, lo, hi)).map_err(gen_err)?;
                         ms += resp.elapsed_ms;
                         let out = resp.images.into_iter().next().ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;

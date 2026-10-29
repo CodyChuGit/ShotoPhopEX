@@ -471,6 +471,8 @@ fn paint_canvas(app: &mut PhotocraftApp, ui: &egui::Ui, view: &View, xf: ViewXfo
             paint_cpu_document(painter, &pattern_xf(&xf, c, tile), area, rotated, checkerboard, tex, opaque);
         }
     }
+    // A generation running on this document: its latest picture over the result's place.
+    crate::gen_preview::paint(app, ctx, painter, &xf, doc.id);
     // Channels panel: alpha / Quick Mask overlays and single-channel views (channel_view.rs).
     if let Some(tex) = crate::channel_view::ensure(app, ctx, idx) {
         // Rendered from the live preview, so over the area the preview is shown in.

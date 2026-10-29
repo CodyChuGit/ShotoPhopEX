@@ -224,6 +224,9 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     app.ui.generations.unread.clear();
     let rows = rows(app);
     prune_thumbs(app, &rows);
+    for r in rows.iter().filter(|r| r.status != GenStatus::Running) {
+        crate::gen_preview::forget_row(ui.ctx(), r.id);
+    }
     let mut action: Option<Action> = None;
     let mut decodes = DECODES_PER_FRAME;
     // A group squeezed to its compact height (a short window) gets one strip of small tiles
@@ -255,7 +258,8 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         if !running.is_empty() {
             widgets::section_label(ui, tl!("In progress"));
             for r in &running {
-                running_row(ui, r, &t, &mut action);
+                let preview = crate::gen_preview::row_texture(app, ui.ctx(), r.id);
+                running_row(ui, r, &t, preview.as_ref(), &mut action);
             }
             ui.add_space(4.0);
         }
@@ -433,18 +437,32 @@ fn labeled(resp: egui::Response, label: &str) -> egui::Response {
     resp
 }
 
-fn running_row(ui: &mut egui::Ui, r: &Row, t: &Tokens, action: &mut Option<Action>) {
+/// A running generation: title, progress, Cancel and, while the run shows pictures of itself
+/// (`integrations.previewWhileGenerating`), the latest one as a small thumbnail at the left.
+fn running_row(ui: &mut egui::Ui, r: &Row, t: &Tokens, preview: Option<&egui::TextureHandle>, action: &mut Option<Action>) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect.shrink2(vec2(0.0, 2.0)), t.radius_sm, t.hover.gamma_multiply(0.6));
+    // The thumbnail fits a 34-px square, keeping the picture's aspect.
+    let left = match preview {
+        Some(tex) => {
+            let [w, h] = tex.size().map(|v| v.max(1) as f32);
+            let s = 34.0 / w.max(h);
+            let cell = Rect::from_min_size(pos2(rect.left() + 6.0, rect.top() + 6.0), vec2(34.0, 34.0));
+            p.image(tex.id(), Rect::from_center_size(cell.center(), vec2(w * s, h * s)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            rect.left() + 46.0
+        }
+        None => rect.left() + 8.0,
+    };
     // Real progress, as a band under the text.
-    let bar = Rect::from_min_size(pos2(rect.left() + 8.0, rect.bottom() - 9.0), vec2((rect.width() - 44.0).max(1.0), 3.0));
+    let bar = Rect::from_min_size(pos2(left, rect.bottom() - 9.0), vec2((rect.right() - 36.0 - left).max(1.0), 3.0));
     p.rect_filled(bar, 1.5, t.separator);
     p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * r.progress.clamp(0.0, 1.0), bar.height())), 1.5, t.accent);
     let pct = format!("{:.0} %", r.progress.clamp(0.0, 1.0) * 100.0);
-    p.text(pos2(rect.left() + 8.0, rect.top() + 12.0), Align2::LEFT_CENTER, clip(&r.title, 46), FontId::proportional(12.0), t.text);
+    let chars = if preview.is_some() { 40 } else { 46 };
+    p.text(pos2(left, rect.top() + 12.0), Align2::LEFT_CENTER, clip(&r.title, chars), FontId::proportional(12.0), t.text);
     let sub = if r.message.is_empty() { pct } else { format!("{pct} · {}", r.message) };
-    p.text(pos2(rect.left() + 8.0, rect.top() + 27.0), Align2::LEFT_CENTER, clip(&sub, 52), FontId::proportional(10.5), t.text_faint);
+    p.text(pos2(left, rect.top() + 27.0), Align2::LEFT_CENTER, clip(&sub, chars + 6), FontId::proportional(10.5), t.text_faint);
     let cancel = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y - 2.0), vec2(22.0, 22.0));
     let c = ui.interact(cancel, ui.scope_id().with(("gen-cancel", r.id)), Sense::click());
     let tint = icons::button_chrome(ui, cancel, false, c.hovered());

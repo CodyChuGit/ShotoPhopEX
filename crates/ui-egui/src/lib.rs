@@ -17,6 +17,7 @@ macro_rules! tl {
 pub mod alerts;
 pub mod angles_ui;
 pub mod engine_ui;
+pub mod gen_preview;
 pub mod generate_hub;
 pub mod generate_panel;
 pub mod generations_panel;

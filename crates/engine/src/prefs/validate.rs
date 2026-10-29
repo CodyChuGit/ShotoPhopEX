@@ -109,6 +109,7 @@ pub fn choices(path: &str) -> Option<&'static [&'static str]> {
         "integrations.variationsStrip" => VARIATIONS_STRIP_PLACES,
         "integrations.quality" => QUALITY_MODES,
         "integrations.alerts" => ALERT_MODES,
+        "integrations.previewWhileGenerating" => photocraft_genai::PreviewMode::NAMES,
         _ => return None,
     })
 }
