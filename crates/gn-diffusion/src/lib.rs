@@ -901,6 +901,16 @@ impl Engine for DiffusionEngine {
         }
         // A warm-up (the editor at launch): the template's models loaded, nothing generated.
         if req.params.get("warmup").and_then(Value::as_bool) == Some(true) {
+            // The VRAM guard: with nothing resident, `need_free` bytes must be free on the card
+            // (asked of the driver here; the health knows only once a pipeline holds the context).
+            if let (Some(need), Resident::None) = (req.params.get("need_free").and_then(Value::as_u64), &self.resident) {
+                let free = qwen_image_rs::device::best_device().ok().and_then(|d| qwen_image_rs::device::free_vram(&d)).map(|(f, _)| f as u64);
+                if free.is_none_or(|f| f < need) {
+                    let gb = |b: u64| b as f64 / 1e9;
+                    let why = format!("skipped: {:.1} GB free on the card, {:.1} GB wanted", free.map_or(0.0, gb), gb(need));
+                    return Ok((DoneInfo { images: Vec::new(), texts: vec![why], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
+                }
+            }
             let loaded = self.ensure_loaded(family, progress);
             self.give_back();
             if let Err(e) = loaded {
