@@ -76,12 +76,21 @@ pub fn rgba_image(decoded: &Tensor) -> Result<RgbaImage> {
     RgbaImage::from_raw(u32::try_from(w)?, u32::try_from(h)?, bytes).ok_or_else(|| anyhow::anyhow!("invalid RGBA byte count"))
 }
 
-/// File-backed stages avoid retaining the encoder alongside the diffusion model.
+/// File-backed stages avoid retaining the encoder alongside the diffusion model. On CUDA the DiT
+/// and the VAE stay resident between splits, and the prompt's conditioning is kept, so a split
+/// of the same prompt loads nothing; a new prompt drops the DiT for the text encoder (the two do
+/// not fit 32 GB together) and loads it again. `QIR_LAYERED_RESIDENT=0` loads every stage per
+/// split as before.
 pub struct LayeredPipeline {
     files: LayeredFiles,
     tokenizer: Tokenizer,
     device: Device,
     dtype: DType,
+    resident: bool,
+    dit: std::sync::Mutex<Option<LayeredDit>>,
+    vae: std::sync::Mutex<Option<std::sync::Arc<WanVae>>>,
+    /// The last prompt's text conditioning: (prompt, positive, negative).
+    conditioning: std::sync::Mutex<Option<(String, Tensor, Tensor)>>,
 }
 
 impl LayeredPipeline {
@@ -94,7 +103,59 @@ impl LayeredPipeline {
         let root = models_root.as_ref();
         let files = LayeredFiles::resolve(root)?;
         let tokenizer = crate::comfy_files::tokenizer_dir(root).ok_or_else(|| anyhow::anyhow!("ComfyUI Qwen tokenizer code tree not found"))?;
-        Ok(Self { files, tokenizer: load_tokenizer(tokenizer)?, dtype: if device.is_cuda() { DType::BF16 } else { DType::F32 }, device })
+        let resident = device.is_cuda() && std::env::var("QIR_LAYERED_RESIDENT").map_or(true, |v| v != "0");
+        Ok(Self {
+            files,
+            tokenizer: load_tokenizer(tokenizer)?,
+            dtype: if device.is_cuda() { DType::BF16 } else { DType::F32 },
+            device,
+            resident,
+            dit: std::sync::Mutex::new(None),
+            vae: std::sync::Mutex::new(None),
+            conditioning: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// The VAE, kept between splits when resident.
+    fn vae_shared(&self) -> Result<std::sync::Arc<WanVae>> {
+        let mut slot = self.vae.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = slot.as_ref() {
+            return Ok(v.clone());
+        }
+        let v = std::sync::Arc::new(self.vae()?);
+        if self.resident {
+            *slot = Some(v.clone());
+        }
+        Ok(v)
+    }
+
+    /// The prompt's (positive, negative) text conditioning: the kept one for the same prompt,
+    /// else the text encoder's, with the resident DiT dropped first to make room for it.
+    fn text_conditioning(&self, prompt: &str, check: &dyn Fn() -> Result<()>) -> Result<(Tensor, Tensor)> {
+        let mut slot = self.conditioning.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((p, pos, neg)) = slot.as_ref() {
+            if p == prompt {
+                tracing::info!("layered conditioning cache hit");
+                return Ok((pos.clone(), neg.clone()));
+            }
+        }
+        *slot = None;
+        if self.dit.lock().unwrap_or_else(|e| e.into_inner()).take().is_some() {
+            self.device.synchronize()?;
+            crate::device::trim_pool(&self.device);
+            tracing::info!("layered: dropped the resident DiT for the text encoder");
+        }
+        let (positive, negative) = {
+            let encoder = Qwen25TextEncoder::from_file(&self.files.text_encoder, self.dtype, &self.device)?;
+            let positive = encoder.forward(&tokenize(&self.tokenizer, prompt)?)?;
+            check()?;
+            let negative = encoder.forward(&tokenize(&self.tokenizer, "")?)?;
+            (positive, negative)
+        };
+        if self.resident {
+            *slot = Some((prompt.to_string(), positive.clone(), negative.clone()));
+        }
+        Ok((positive, negative))
     }
 
     /// The device the split runs on.
@@ -194,7 +255,10 @@ impl LayeredPipeline {
             }
             Ok(())
         };
-        let prefetch = if self.device.is_cuda() && std::env::var("QIR_LAYERED_PREFETCH").map_or(true, |v| v != "0") {
+        // A resident DiT is used as it is when the prompt's conditioning is kept too.
+        let kept = self.dit.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+            && self.conditioning.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|(p, _, _)| p == prompt);
+        let prefetch = if !kept && self.device.is_cuda() && std::env::var("QIR_LAYERED_PREFETCH").map_or(true, |v| v != "0") {
             LayeredPrefetch::start(self.files.diffusion.clone())
         } else {
             None
@@ -202,19 +266,13 @@ impl LayeredPipeline {
         // LoadImage supplies RGB to VAEEncode; alpha is a separate, unused mask in this graph.
         let rgb: Vec<f32> = picture.pixels().flat_map(|p| p.0[..3].iter().map(|v| (*v as f32 / 255.0) * 2.0 - 1.0)).collect();
         let pixels = Tensor::from_vec(rgb, (1, h, w, 3), &self.device)?.permute((0, 3, 1, 2))?.contiguous()?;
-        let reference = self.vae()?.encode(&pixels)?.unsqueeze(2)?;
+        let reference = self.vae_shared()?.encode(&pixels)?.unsqueeze(2)?;
         observe("reference", &reference)?;
         // Release reference scratch before loading the resident encoder.
         crate::device::trim_pool(&self.device);
         mark("reference encode")?;
         check()?;
-        let (positive, negative) = {
-            let encoder = Qwen25TextEncoder::from_file(&self.files.text_encoder, self.dtype, &self.device)?;
-            let positive = encoder.forward(&tokenize(&self.tokenizer, prompt)?)?;
-            check()?;
-            let negative = encoder.forward(&tokenize(&self.tokenizer, "")?)?;
-            (positive, negative)
-        };
+        let (positive, negative) = self.text_conditioning(prompt, &check)?;
         observe("positive_text", &positive)?;
         observe("negative_text", &negative)?;
         // The encoder's memory back to the driver before the 20 GB DiT arrives: kept in the
@@ -247,16 +305,23 @@ impl LayeredPipeline {
         {
             // On CUDA the whole DiT goes on the device for the split's forwards (the encoder is
             // gone by now: the two do not fit 32 GB together), else one block at a time.
-            let dit = if self.device.is_cuda() {
-                match prefetch {
-                    Some(prefetch) => LayeredDit::from_resident_file(prefetch.finish()?, &self.device)?,
-                    None => LayeredDit::open_resident(&self.files.diffusion, &self.device)?,
+            let kept_dit = self.dit.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let dit = match kept_dit {
+                Some(d) => d,
+                None => {
+                    let d = if self.device.is_cuda() {
+                        match prefetch {
+                            Some(prefetch) => LayeredDit::from_resident_file(prefetch.finish()?, &self.device)?,
+                            None => LayeredDit::open_resident(&self.files.diffusion, &self.device)?,
+                        }
+                    } else {
+                        LayeredDit::open_streamed(&self.files.diffusion, &self.device)?
+                    };
+                    // Finish uploads and release loading scratch before the denoising working set.
+                    crate::device::trim_pool(&self.device);
+                    d
                 }
-            } else {
-                LayeredDit::open_streamed(&self.files.diffusion, &self.device)?
             };
-            // Finish uploads and release loading scratch before the denoising working set.
-            crate::device::trim_pool(&self.device);
             mark("DiT load")?;
             #[cfg(feature = "cuda")]
             let pool = LayeredPool::retain(&self.device);
@@ -314,12 +379,15 @@ impl LayeredPipeline {
             self.device.synchronize()?;
             mark("denoise")?;
             crate::profile::report("layered steps 1..");
+            if self.resident {
+                *self.dit.lock().unwrap_or_else(|e| e.into_inner()) = Some(dit);
+            }
         }
         crate::device::trim_pool(&self.device);
         check()?;
         let retained = retained_slices(&latent)?;
         observe("retained", &retained)?;
-        let vae = self.vae()?;
+        let vae = self.vae_shared()?;
         let mut images = Vec::with_capacity(layers);
         for i in 0..layers {
             check()?;
