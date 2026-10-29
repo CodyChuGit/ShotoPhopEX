@@ -4,7 +4,17 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
-## 2026-10-29 (evening): warm up the AI models at launch; fewer Upscale tiles (prototype)
+## 2026-10-29 (evening): Upscale on fewer, larger tiles by default
+
+The owner chose the larger tiles after the seam crops (`photocraft-tests\bench\upscale-tiles`).
+On `perf/upscale-tiles`, `auto_grid` picks the fewest equal tiles of at most 1.15 MP each, never a
+strip of three or more, up to 16 per side (64 MP takes 9x9). An explicit `grid` overrides it,
+`tileMegapixels` asks for the old square tiles, and the result reports `grid`. The portrait, cat
+and bird at 2x take 2x2 instead of six tiles: 30.3 to 24.2 s, 30.0 to 24.3 s and 29.7 to 24.8 s
+(benchmarks.md §0). Recreate needs nothing: Upscale is not in the Generations library
+(`is_generative` leaves it out), so no Upscale record exists to replay.
+
+## 2026-10-29 (evening): warm up the AI models at launch; fewer Upscale tiles (the tiles prototype)
 
 The owner chose "try both" for the two optional speedups.
 - `feat/warmup` (genai-native `ae35245`, PhotoshopEX the same name). The preference
@@ -23,7 +33,7 @@ The owner chose "try both" for the two optional speedups.
 - `perf/upscale-tiles`: an opt-in Upscale `grid` ([columns, rows]). 2x2 is 28 to 32 % faster on
   landscapes (cat 35.6 to 25.6 s, bird 34.0 to 23.2 s) and ties on the 3:4 portrait. Strips
   of three (1.5 MP tiles) take 82 to 154 s. The crops are in
-  `photocraft-tests\bench\upscale-tiles`; the default waits for the owner's look.
+  `photocraft-tests\bench\upscale-tiles`; the owner then made larger tiles the default (entry above).
 
 ## 2026-10-29 (late afternoon): Upscale in one batched request; Upscale back in the background
 

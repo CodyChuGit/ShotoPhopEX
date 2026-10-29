@@ -56,6 +56,61 @@ pub(crate) fn tiles(w: u32, h: u32, side: u32) -> Vec<Rect> {
     out
 }
 
+/// The tiles of a `w`×`h` picture in `cols`×`rows`: equal tiles sharing at least [`OVERLAP`]
+/// pixels with each neighbour, sides rounded up to multiples of 16, spread evenly from edge to
+/// edge.
+pub(crate) fn grid_tiles(w: u32, h: u32, cols: u32, rows: u32) -> Vec<Rect> {
+    let side = |len: u32, n: u32| -> u32 {
+        if n <= 1 {
+            return len;
+        }
+        (len + (n - 1) * OVERLAP).div_ceil(n).div_ceil(16).saturating_mul(16).min(len)
+    };
+    let starts = |len: u32, t: u32, n: u32| -> Vec<u32> {
+        if n <= 1 {
+            return vec![0];
+        }
+        (0..n).map(|i| (u64::from(i) * u64::from(len - t) / u64::from(n - 1)) as u32).collect()
+    };
+    let (tw, th) = (side(w, cols.max(1)), side(h, rows.max(1)));
+    let mut out = Vec::new();
+    for y in starts(h, th, rows.max(1)) {
+        for x in starts(w, tw, cols.max(1)) {
+            out.push(Rect::new(x as i32, y as i32, (x + tw) as i32, (y + th) as i32));
+        }
+    }
+    out
+}
+
+/// The largest tile the automatic grid makes: about the 2.1 edit's own megapixel with the strips.
+const MAX_TILE_PIXELS: u64 = 1_150_000;
+
+/// The automatic tiling of a `w`×`h` picture: the fewest [`grid_tiles`] of at most
+/// [`MAX_TILE_PIXELS`] each, the smaller tiles between equal counts, never a strip of three or
+/// more (~1.5 MP strips ran 3–5x slower on the RTX 5090, 2026-10-29). 864x1152, 1232x816 and
+/// 1152x864 enlarged 2x take 2x2 where square megapixel tiles took six: 28–32 % faster on the
+/// landscapes, the same on the portrait.
+pub(crate) fn auto_grid(w: u32, h: u32) -> (u32, u32) {
+    let mut best: Option<(u32, u64, (u32, u32))> = None;
+    for c in 1..=MAX_GRID {
+        for r in 1..=MAX_GRID {
+            let n = c * r;
+            if (c == 1 || r == 1) && n >= 3 {
+                continue;
+            }
+            let Some(t) = grid_tiles(w, h, c, r).first().copied() else { continue };
+            let area = t.width() as u64 * t.height() as u64;
+            if area <= MAX_TILE_PIXELS && best.is_none_or(|(bn, ba, _)| (n, area) < (bn, ba)) {
+                best = Some((n, area, (c, r)));
+            }
+        }
+    }
+    best.map_or((MAX_GRID, MAX_GRID), |b| b.2)
+}
+
+/// Tiles per side at most (64 MP, the largest result, takes 9x9 of the automatic tiles).
+const MAX_GRID: u32 = 16;
+
 /// A tile's weight at `(x, y)` inside it: rising over [`OVERLAP`] from each side that another
 /// tile shares (`shared`: left, top, right, bottom), 1 elsewhere.
 pub(crate) fn tile_weight(t: Rect, shared: [bool; 4], x: i32, y: i32) -> f32 {
@@ -137,6 +192,17 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     let batch = common.template.meta.family == "qwen-image-2.1" && runs_native(s, &common.template.meta.id);
     let (backend, _server) = backend_for(s, &common.template.meta.id)?;
     let side = ((tile_mp * 1e6).sqrt() as u32 / 16 * 16).max(256);
+    let grid = match p.get("grid") {
+        None => None,
+        Some(g) => match g.as_array().map(|a| a.iter().map(|v| v.as_u64().filter(|n| (1..=u64::from(MAX_GRID)).contains(n))).collect::<Option<Vec<u64>>>()) {
+            Some(Some(v)) if v.len() == 2 => Some((v[0] as u32, v[1] as u32)),
+            _ => return Err(EngineError::BadParams { cmd: UPSCALE.into(), msg: format!("grid is [columns, rows], 1 to {MAX_GRID} each") }),
+        },
+    };
+    // Without a grid or a tile size: the automatic grid for the enlarged picture.
+    let grid = grid.or_else(|| p.get("tileMegapixels").is_none().then(|| auto_grid(tw, th)));
+    // In the result: the tiling it ran with, for a script to pass again as `grid`.
+    let recorded_grid = grid.map(|(c, r)| json!([c, r]));
     let enlarge = now_ms();
     if (tw, th) != (w, h) {
         s.execute("image.imageSize", json!({"width": tw, "height": th, "resample": "bicubic"}))?;
@@ -160,7 +226,12 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
             let big = Rgba8::new(c.width, c.height, c.pixels).map_err(gen_err)?;
             let (bw, bh) = (big.width, big.height);
             let render_ms = now_ms() - render;
-            let grid = tiles(bw, bh, side);
+            let grid = match grid {
+                Some((c, r)) => grid_tiles(bw, bh, c, r),
+                None => tiles(bw, bh, side),
+            };
+            // A tile of a chosen grid goes at its own size.
+            let max_pixels = grid.first().map_or(max_pixels, |t| max_pixels.max(t.width() as u64 * t.height() as u64));
             let n = grid.len();
             // Every tile cut first: each comes from the enlarged picture alone.
             let mut cut = Vec::with_capacity(n);
@@ -287,7 +358,9 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
                 "compositeMs": now_ms() - composite, "totalMs": now_ms() - started});
             Ok((id, n, bw, bh, ms, template_id, timings))
         },
-        |(id, n, bw, bh, ms, template, timings)| json!({"layer": id.0, "tiles": n, "width": bw, "height": bh, "elapsedMs": ms, "template": template, "timings": timings}),
+        move |(id, n, bw, bh, ms, template, timings)| {
+            json!({"layer": id.0, "tiles": n, "grid": recorded_grid, "width": bw, "height": bh, "elapsedMs": ms, "template": template, "timings": timings})
+        },
     )
 }
 
@@ -302,6 +375,23 @@ mod tests {
         assert_eq!((t[0].x0, t[1].x0, t[2].x0), (0, 896, 1476), "steps of 1024 − 128, the last flush right");
         assert!(t.iter().all(|r| r.width() == 1024 && r.height() == 1000), "one row, the picture's height");
         assert_eq!(tiles(500, 300, 1024), vec![Rect::new(0, 0, 500, 300)], "a small picture is one tile");
+        // A chosen grid: 864x1152 enlarged 2x in 2x2 and 1x3, every neighbour sharing >= the strip.
+        let g = grid_tiles(1728, 2304, 2, 2);
+        assert_eq!(g, vec![Rect::new(0, 0, 928, 1216), Rect::new(800, 0, 1728, 1216), Rect::new(0, 1088, 928, 2304), Rect::new(800, 1088, 1728, 2304)]);
+        let g = grid_tiles(1728, 2304, 1, 3);
+        assert_eq!(g.iter().map(|r| (r.y0, r.height(), r.width())).collect::<Vec<_>>(), vec![(0, 864, 1728), (720, 864, 1728), (1440, 864, 1728)]);
+        assert_eq!(grid_tiles(500, 300, 1, 1), vec![Rect::new(0, 0, 500, 300)]);
+        // The automatic grid: 864x1152, 1232x816 and 1152x864 enlarged 2x take 2x2.
+        assert_eq!(auto_grid(1728, 2304), (2, 2));
+        assert_eq!(auto_grid(2464, 1632), (2, 2));
+        assert_eq!(auto_grid(2304, 1728), (2, 2));
+        assert_eq!(auto_grid(600, 400), (1, 1), "a picture within a tile is one tile");
+        for (w, h) in [(4000, 700), (700, 4000), (8000, 8000), (1728, 2304)] {
+            let (c, r) = auto_grid(w, h);
+            assert!(!((c == 1 || r == 1) && c * r >= 3), "{w}x{h}: no strip of three or more ({c}x{r})");
+            let t = grid_tiles(w, h, c, r)[0];
+            assert!(t.width() as u64 * t.height() as u64 <= MAX_TILE_PIXELS, "{w}x{h}: {c}x{r} tiles of {}x{}", t.width(), t.height());
+        }
         let w = |x| tile_weight(Rect::new(0, 0, 1024, 1000), [false, false, true, false], x, 10);
         assert_eq!(w(0), 1.0, "no neighbour on the left");
         assert!(w(1023) < 0.01 && w(1023 - 64) > 0.45 && w(1023 - 64) < 0.55, "fades out across the right strip");

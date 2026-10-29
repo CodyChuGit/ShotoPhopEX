@@ -129,6 +129,15 @@ cold and warm. A worker that refuses the batch is asked tile by tile. The same P
 also fixes Upscale to run as a background job: a nested `image.imageSize` used to switch the job
 off, so Upscale ran inline on the UI thread.
 
+**Upscale on fewer, larger tiles by default, 2026-10-29** (PhotoshopEX `perf/upscale-tiles`, the
+owner's call after the seam crops). The default tiling is now the fewest equal tiles of at most
+1.15 MP each, never a strip of three or more; `grid` names one and `tileMegapixels` asks for the
+old square tiles. 864x1152, 1232x816 and 1152x864 enlarged 2x take 2x2 where square
+megapixel tiles took six. One worker, seed 20, Restore 0.5, batched, each picture both ways and
+then again in the other order: portrait **30.3 to 24.2 s** (the first 6-tile run took 36.2 s),
+cat **30.0 to 24.3 s**, bird **29.7 to 24.8 s**, so 16 to 20 % faster. Strips of three at ~1.5 MP
+took 82 to 154 s in the prototype run. The crops are in `photocraft-tests\bench\upscale-tiles`.
+
 **The 5090 GEMM plan, rerun under the fixed boundary (a84ab70), 2026-10-29:** byte-identical to
 sm89 every time, but not a consistent win. In ABCCBA order the first sm120 worker gave Edit 4.81 s
 and Upscale 31.26 s, a tie and a loss against sm89's 4.83 / 30.81; the last gave 4.54 / 29.05,
