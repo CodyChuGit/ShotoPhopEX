@@ -1,11 +1,9 @@
-# PhotoshopEX app icon
+# PhotoCraftEX app icon
 
-A **Photoshop-style tile**: a dark navy rounded square with the letters "Ps" in light blue, the
-look of the Adobe application tiles. Since 2026-10-27 the owner's personal builds show "Ps"
-everywhere (the exe already did, `ps/`), drawn with `packaging/icon-tile.py`, which also draws
-the sister apps' tiles (VectorCraft "Ai", PdfCraft "Ac", SolidCraft "SW"). The "Ps" mark is
-Adobe's trademark: **before any published build, regenerate the "Px" tile**
-(`python -I packaging\icon-px.py .`), per the brand checklist in `docs/comfy/upstream.md`.
+A **"Pc" tile** (PhotoCraft): a dark navy rounded square with the letters "Pc" in light blue,
+drawn with `packaging/icon-tile.py`, which also draws the sister apps' tiles. Until 2026-10-29 the
+owner's builds showed a "Ps" tile here; it was redrawn as "Pc" so the repository carries no Adobe
+mark. The upstream-style "Px" tile can still be regenerated with `python -I packaging\icon-px.py .`.
 
 ## Palette
 
@@ -43,8 +41,8 @@ packaging scripts read them by name.
 ## Regenerate
 
 ```powershell
-python -I packaging\icon-px.py .
+python -I packaging\icon-tile.py . photocraft Pc "#001E36" "#31A8FF"
 cargo run -q -p xtask -- ico assets\app-icon\photocraft.ico target\icon-px\ico-16.png target\icon-px\ico-20.png target\icon-px\ico-24.png target\icon-px\ico-32.png target\icon-px\ico-40.png target\icon-px\ico-48.png target\icon-px\ico-64.png target\icon-px\ico-128.png target\icon-px\ico-256.png
 ```
 
-Change `LETTERS`, the colours or the font at the top of `icon-px.py`.
+Pass other letters or colours to `icon-tile.py`; `icon-px.py` draws the upstream-style "Px" tile.
