@@ -83,7 +83,7 @@ fn installed_fp8_patched_weight() -> Result<()> {
         [("attention", "transformer_blocks.0.attn.to_q"), ("mlp", "transformer_blocks.0.img_mlp.net.2"), ("modulation", "transformer_blocks.1.img_mod.1")]
     {
         let f = candle_core::safetensors::load(root.join(format!("fp8-patch-{label}.safetensors")), &dev)?;
-        let mut weight = Fp8Linear::new_full_precision(f["q"].clone(), &f["scale"])?.precise_scale().dequantized(DType::BF16)?;
+        let mut weight = Fp8Linear::new_full_precision(f["q"].clone(), &f["scale"])?.precise_scale().dequantized(candle_core::DType::BF16)?;
         let mut i = 0;
         while let Some(a) = f.get(&format!("a{i}")) {
             let b = &f[&format!("b{i}")];
@@ -104,8 +104,8 @@ fn installed_fp8_patched_weight() -> Result<()> {
         assert_eq!(scale.to_scalar::<f32>()?, f["expected_scale"].to_scalar::<f32>()?);
         assert_eq!(mismatches, 0, "{label}");
         let output = Fp8Linear::new_full_precision(q, &scale)?.precise_scale().forward(&f["input"])?;
-        let error = (output.to_dtype(DType::F32)? - f["output"].to_dtype(DType::F32)?)?.sqr()?.mean_all()?.to_scalar::<f32>()?;
-        let norm = f["output"].to_dtype(DType::F32)?.sqr()?.mean_all()?.to_scalar::<f32>()?;
+        let error = (output.to_dtype(candle_core::DType::F32)? - f["output"].to_dtype(candle_core::DType::F32)?)?.sqr()?.mean_all()?.to_scalar::<f32>()?;
+        let norm = f["output"].to_dtype(candle_core::DType::F32)?.sqr()?.mean_all()?.to_scalar::<f32>()?;
         let relative = (error / norm.max(1e-20)).sqrt();
         eprintln!("{label}: projection relative RMS {relative}");
         assert!(relative <= 0.01, "{label}: {relative}");

@@ -130,29 +130,6 @@ pub fn linear_add(x: &Tensor, weight: &Tensor, base: &Tensor, scale: f32) -> Res
     Ok(x.contiguous()?.apply_op3_no_bwd(&weight.contiguous()?, &base.contiguous()?, &GemmAdd(scale))?)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use candle_core::{DType, Device};
-
-    #[test]
-    fn accumulator_views_keep_their_aliases_and_offsets() -> Result<()> {
-        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
-        let x = Tensor::randn(0f32, 1., (9, 32), &dev)?.to_dtype(DType::BF16)?.narrow(0, 2, 5)?;
-        let w = Tensor::randn(0f32, 1., (24, 32), &dev)?.to_dtype(DType::BF16)?.narrow(0, 8, 16)?;
-        let slab = Tensor::ones((9, 16), DType::BF16, &dev)?;
-        let base = slab.narrow(0, 2, 5)?;
-        for scale in [0., 0.5, -1.] {
-            let got = linear_add(&x, &w, &base, scale)?.to_dtype(DType::F32)?;
-            let want = (x.to_dtype(DType::F32)?.matmul(&w.to_dtype(DType::F32)?.t()?)? * f64::from(scale))?.broadcast_add(&base.to_dtype(DType::F32)?)?;
-            let error = (got - want)?.abs()?.max_all()?.to_scalar::<f32>()?;
-            assert!(error < 0.125, "{error}");
-        }
-        assert_eq!(slab.to_dtype(DType::F32)?.sum_all()?.to_scalar::<f32>()?, 144.);
-        Ok(())
-    }
-}
-
 struct Gemm;
 impl candle_core::CustomOp2 for Gemm {
     fn name(&self) -> &'static str {
@@ -247,8 +224,8 @@ fn gemm(
             state.plans.insert(key, plan(m, n, k, alignments, state.handle)?);
         }
         let stream_key = stream.cu_stream() as usize;
-        if !state.workspaces.contains_key(&stream_key) {
-            state.workspaces.insert(stream_key, unsafe { dev.alloc::<u8>(WORKSPACE)? });
+        if let std::collections::hash_map::Entry::Vacant(slot) = state.workspaces.entry(stream_key) {
+            slot.insert(unsafe { dev.alloc::<u8>(WORKSPACE)? });
         }
         let plan = state.plans.get(&key).ok_or_else(|| err("missing plan"))?;
         let work = state.workspaces.get(&stream_key).ok_or_else(|| err("missing workspace"))?;
@@ -280,4 +257,27 @@ fn gemm(
         launch(&plan.algo)?;
     }
     Ok((CudaStorage::wrap_cuda_slice(out, dev), (m, n).into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::{DType, Device};
+
+    #[test]
+    fn accumulator_views_keep_their_aliases_and_offsets() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let x = Tensor::randn(0f32, 1., (9, 32), &dev)?.to_dtype(DType::BF16)?.narrow(0, 2, 5)?;
+        let w = Tensor::randn(0f32, 1., (24, 32), &dev)?.to_dtype(DType::BF16)?.narrow(0, 8, 16)?;
+        let slab = Tensor::ones((9, 16), DType::BF16, &dev)?;
+        let base = slab.narrow(0, 2, 5)?;
+        for scale in [0., 0.5, -1.] {
+            let got = linear_add(&x, &w, &base, scale)?.to_dtype(DType::F32)?;
+            let want = (x.to_dtype(DType::F32)?.matmul(&w.to_dtype(DType::F32)?.t()?)? * f64::from(scale))?.broadcast_add(&base.to_dtype(DType::F32)?)?;
+            let error = (got - want)?.abs()?.max_all()?.to_scalar::<f32>()?;
+            assert!(error < 0.125, "{error}");
+        }
+        assert_eq!(slab.to_dtype(DType::F32)?.sum_all()?.to_scalar::<f32>()?, 144.);
+        Ok(())
+    }
 }
