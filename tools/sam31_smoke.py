@@ -5,7 +5,7 @@ Run with ComfyUI's own Python, from anywhere:
     python -s tools/sam31_smoke.py --comfy <ComfyUI dir> --image <png> [--text fox] [--point x,y]
 
 It prints the module tree sizes, runs the SAM3_Detect node for a text prompt and a point prompt,
-and reports mask bounds and timings. This is the ground truth the ONNX export must reproduce.
+and reports mask bounds and timings. This is the ground truth the candle port (gn-segment) must reproduce.
 """
 import argparse
 import json

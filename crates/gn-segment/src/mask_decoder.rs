@@ -69,7 +69,7 @@ impl InteractiveHeads {
             object: Mlp::load(&l, &format!("{p}.pred_obj_score_head"), 1)?,
         })
     }
-    /// Match heads.onnx with descending-resolution FPNs and already-packed point labels.
+    /// The interactive heads, with descending-resolution FPNs and already-packed point labels.
     /// FPN shapes are `[1,256,288,288]`, `[1,256,144,144]`, `[1,256,72,72]`;
     /// the last includes the backbone's no-memory embedding. Coordinates are in 1008-space.
     /// `None` replaces has_mask=0; feedback is `[1,1,1008,1008]` unthresholded logits.
