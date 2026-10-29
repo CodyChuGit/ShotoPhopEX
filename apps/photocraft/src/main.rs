@@ -840,6 +840,10 @@ fn main() -> eframe::Result {
                 {
                     log::warn!("couldn't remember GPU backend {}: {e}", b.name());
                 }
+                // The default image model loads in the background (Preferences › AI Integrations).
+                if let Some(v) = photocraft_engine::generate_engine_cmds::warm_up_at_launch(&mut app.session) {
+                    log::info!("AI models warm-up: {v}");
+                }
             });
             if let Some((port, token, _)) = control {
                 let rx = control_server::start(port, token, cc.egui_ctx.clone());

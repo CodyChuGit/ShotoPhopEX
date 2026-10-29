@@ -3962,6 +3962,7 @@ curves	Smooth	スムーズ
 	Changing what is there? Switch to Edit	今あるものを変える場合は「編集」に切り替えてください
 	Describe the change…	変更内容を入力…
 	Enhance prompts	プロンプトを自動的に強化
+	Warm up AI models at launch	起動時にAIモデルを読み込んでおく
 	Enhance prompt	プロンプトを強化
 	Enhancing…	強化中…
 	The model could not improve this prompt	モデルはこのプロンプトを改善できませんでした

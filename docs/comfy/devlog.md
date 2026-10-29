@@ -4,6 +4,27 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29 (evening): warm up the AI models at launch; fewer Upscale tiles (prototype)
+
+The owner chose "try both" for the two optional speedups.
+- `feat/warmup` (genai-native `ae35245`, PhotoshopEX the same name). The preference
+  `integrations.warmUpAtLaunch` ("Warm up AI models at launch", on by default, in all 20
+  languages) makes the editor start the native worker after the first frame and load the
+  **default image template's** family. That's Krea 2 by default, not 2.1: the first text to
+  image uses the default, and only one family is resident. It runs `generate.engine.warmUp`
+  (`wait` for scripts), a worker run with `params.warmup` that loads and generates nothing.
+  - The VRAM guard is in the worker (`need_free`: the family's resident size plus 2 GB, asked
+    of the driver with nothing resident; the health reports no free memory before a pipeline
+    holds the context).
+  - Any other run cancels a warm-up in flight. A load already under way (Pipeline::load is
+    atomic) finishes first.
+  - Measured on fresh workers, first text to image at 864x1152: Krea 2 **12.6 to 3.6 s**
+    (the warm-up takes 6.1 s and holds 18.2 GB), 2.1 **15.3 to 3.7 s** (8.0 s, 25.0 GB).
+- `perf/upscale-tiles`: an opt-in Upscale `grid` ([columns, rows]). 2x2 is 28 to 32 % faster on
+  landscapes (cat 35.6 to 25.6 s, bird 34.0 to 23.2 s) and ties on the 3:4 portrait. Strips
+  of three (1.5 MP tiles) take 82 to 154 s. The crops are in
+  `photocraft-tests\bench\upscale-tiles`; the default waits for the owner's look.
+
 ## 2026-10-29 (late afternoon): Upscale in one batched request; Upscale back in the background
 
 Branches: genai-native `perf/upscale-batch` (`dce1ce3`, on `perf/gemm-plan-5090`) and PhotoshopEX

@@ -940,6 +940,11 @@ pub struct Integrations {
     /// `enhance`): names what the picture shows instead of "this", adds the detail the image
     /// models want. The bar's Enhance button does it on demand when this is off.
     pub enhance_prompts: bool,
+    /// Start the native worker when the editor opens and load the default image template's
+    /// models in the background (`generate.engine.warmUp`), so the first generation does not wait
+    /// for them; skipped when the card has too little free memory, given up when another
+    /// generation starts first.
+    pub warm_up_at_launch: bool,
     /// The native worker's runtime folders, `;`-separated: where ONNX Runtime
     /// (`onnxruntime.dll` / `libonnxruntime.so` and its providers) and the CUDA and cuDNN
     /// libraries live. Nothing is read from `PATH`. Empty = the `runtime` folder beside the
@@ -972,6 +977,7 @@ impl Default for Integrations {
             save_results_naming: "{model}_{date}_{seed}".into(),
             alerts: "off".into(),
             enhance_prompts: false,
+            warm_up_at_launch: true,
             runtime_path: String::new(),
             models_path: String::new(),
         }

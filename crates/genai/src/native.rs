@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use gn_engine::client::{ClientError, EngineClient};
 use gn_engine::protocol::{Blob, ErrorKind, RunRequest};
@@ -43,6 +43,19 @@ pub struct NativeBackend {
     /// Why the last start failed, until one succeeds.
     start_error: Mutex<Option<String>>,
     timeout_ms: AtomicU64,
+    /// Set by every run but a warm-up's: a warm-up in flight stops ([`Self::warm_up`]).
+    warm_cancel: AtomicBool,
+}
+
+/// What [`NativeBackend::warm_up`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WarmUp {
+    /// The template's models are loaded.
+    Warm,
+    /// Not loaded, and why (the card's free memory, an unhealthy worker).
+    Skipped(String),
+    /// Another request came first.
+    Cancelled,
 }
 
 const IDLE: u8 = 0;
@@ -137,6 +150,42 @@ impl NativeBackend {
             busy: AtomicU8::new(IDLE),
             start_error: Mutex::new(None),
             timeout_ms: AtomicU64::new(600_000),
+            warm_cancel: AtomicBool::new(false),
+        }
+    }
+
+    /// Start the worker and load `template`'s models ahead of the first request, when the card
+    /// has `need_free` bytes free (the VRAM guard; a card it cannot tell about is not warmed).
+    /// Any other run stops it: one that arrives meanwhile cancels the warm-up, which gives way
+    /// once the worker answers (a load in progress finishes first; the next request's own
+    /// family switch frees what it does not use).
+    pub fn warm_up(&self, template: &str, need_free: u64) -> Result<WarmUp> {
+        self.warm_cancel.store(false, Ordering::SeqCst);
+        let h = self.health();
+        if !h.ok {
+            return Ok(WarmUp::Skipped(h.error.unwrap_or_else(|| "the engine is not ready".into())));
+        }
+        struct Warm<'a>(&'a AtomicBool);
+        impl Progress for Warm<'_> {
+            fn report(&self, _fraction: f32, _message: &str) {}
+            fn cancelled(&self) -> bool {
+                self.0.load(Ordering::SeqCst)
+            }
+        }
+        if self.warm_cancel.load(Ordering::SeqCst) {
+            return Ok(WarmUp::Cancelled);
+        }
+        let mut req = Request::new(template, "");
+        req.params.insert("warmup".into(), Value::Bool(true));
+        // The worker checks the card's free memory before it loads (the guard).
+        req.params.insert("need_free".into(), Value::from(need_free));
+        match self.run(&req, &Warm(&self.warm_cancel)) {
+            Ok(r) => match r.texts.first().and_then(|t| t.strip_prefix("skipped: ")) {
+                Some(why) => Ok(WarmUp::Skipped(why.to_string())),
+                None => Ok(WarmUp::Warm),
+            },
+            Err(Error::Cancelled) => Ok(WarmUp::Cancelled),
+            Err(e) => Err(e),
         }
     }
 
@@ -394,6 +443,9 @@ impl GenerativeBackend for NativeBackend {
     }
 
     fn run(&self, req: &Request, progress: &dyn Progress) -> Result<Response> {
+        if !req.params.contains_key("warmup") {
+            self.warm_cancel.store(true, Ordering::SeqCst);
+        }
         let encode = std::time::Instant::now();
         let tpl = template::find(&req.template)?;
         let (image, mask, references, bytes) = blobs_of(req);

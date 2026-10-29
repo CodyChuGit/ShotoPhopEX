@@ -1158,6 +1158,9 @@ fn humanize(key: &str) -> String {
     if key == "modelsPath" {
         return "Models folder".into();
     }
+    if key == "warmUpAtLaunch" {
+        return "Warm up AI models at launch".into();
+    }
     // The auto-hide notice settings read best with their own labels (Interface › Notification, #2022).
     if key == "notificationAutoHide" {
         return "Auto Hide Notifications".into();
