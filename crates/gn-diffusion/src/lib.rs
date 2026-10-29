@@ -7,7 +7,9 @@
 //! answers RGBA whose alpha is the cut-out, the way the app's ComfyUI graphs do;
 //! `krea2-turbo/image` makes a picture with Krea 2 Turbo. All with ComfyUI's conventions (its
 //! noise for the seed, its `simple` schedule over each model's sigma table, its reference
-//! sizes), so the two routes agree picture for picture.
+//! sizes), so the two routes agree picture for picture. `moss-image/image` (and
+//! `moss-image/image-base`) make a picture with MOSS-Image on the official pipeline's
+//! conventions instead (`qir::moss`).
 //!
 //! The weights live under the model root: `qwen-image-2.1/` (Hugging Face's layout:
 //! `processor/ text_encoder/ transformer/ vae/`) with the INT8 DiT cache under `.qir-cache/`
@@ -34,6 +36,7 @@ use qwen_image_rs::edit2511_pipeline::{self, Edit2511Pipeline, Edit2511Request};
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::layered_pipeline::LayeredPipeline;
 use qwen_image_rs::lora::{LoraFile, LoraStack};
+use qwen_image_rs::moss::pipeline::{self as moss, MossPipeline, Variant as MossVariant};
 use qwen_image_rs::pipeline::{is_snapshot, Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule};
 use serde_json::{json, Value};
 
@@ -83,6 +86,13 @@ pub const TEMPLATE_LAYERS: &str = "qwen-layered/split";
 /// Its template's defaults: 20 steps, 3 layers.
 pub const LAYERS_STEPS: u32 = 20;
 pub const DEFAULT_LAYERS: u64 = 3;
+/// MOSS-Image (OpenMOSS, Apache-2.0) text to image from Comfy-Org's files: the SFT release, and
+/// the Base one (`qir::moss`).
+pub const TEMPLATE_MOSS: &str = "moss-image/image";
+pub const TEMPLATE_MOSS_BASE: &str = "moss-image/image-base";
+/// The official pipeline's defaults: 50 steps at CFG 3.
+pub const MOSS_STEPS: u32 = 50;
+pub const MOSS_GUIDANCE: f32 = 3.0;
 
 /// The model families served, one resident at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,10 +101,13 @@ pub enum Family {
     Krea2,
     Layered,
     Edit2511,
+    Moss(MossVariant),
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 25] = [
+pub const TEMPLATES: [(&str, &str, Family); 27] = [
+    (TEMPLATE_MOSS, "image", Family::Moss(MossVariant::Sft)),
+    (TEMPLATE_MOSS_BASE, "image", Family::Moss(MossVariant::Base)),
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
     (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
@@ -144,6 +157,7 @@ enum Resident {
     Krea2(Krea2Pipeline),
     Layered(LayeredPipeline),
     Edit2511(Edit2511Pipeline),
+    Moss(MossPipeline, MossVariant),
 }
 
 pub struct DiffusionEngine {
@@ -180,6 +194,9 @@ fn latent_space(f: Family) -> LatentSpace {
         Family::QwenImage21 => LatentSpace::QwenImage21,
         Family::Krea2 | Family::Edit2511 => LatentSpace::Wan21,
         Family::Layered => LatentSpace::Layered,
+        // Never read: MOSS runs without the previewer (no space for the FLUX.2 VAE yet), and
+        // Layered's has no tiny decoder to load for it.
+        Family::Moss(_) => LatentSpace::Layered,
     }
 }
 
@@ -286,7 +303,7 @@ impl DiffusionEngine {
             Resident::Krea2(p) => p.device(),
             Resident::Layered(p) => p.device(),
             Resident::Edit2511(p) => p.device(),
-            Resident::None => return,
+            Resident::Moss(..) | Resident::None => return,
         };
         if self.tiny.as_ref().is_some_and(|t| t.space() == space && t.on(dev)) {
             return;
@@ -358,6 +375,7 @@ impl DiffusionEngine {
             Resident::Krea2(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Layered(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Edit2511(p) => qwen_image_rs::device::trim_pool(p.device()),
+            Resident::Moss(p, _) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::None => {}
         }
     }
@@ -371,6 +389,7 @@ impl DiffusionEngine {
             Resident::Krea2(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Layered(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Edit2511(p) => qwen_image_rs::device::bind_thread(p.device()),
+            Resident::Moss(p, _) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::None => {}
         }
     }
@@ -386,6 +405,7 @@ impl DiffusionEngine {
             Resident::Qwen(p) => (p.device().clone(), p.dtype()),
             Resident::Krea2(p) => (p.device().clone(), p.dtype()),
             Resident::Edit2511(_) => (qwen_image_rs::edit2511_pipeline::cpu_device(), qwen_image_rs::edit2511_pipeline::adapter_dtype()),
+            Resident::Moss(..) => return Err(EngineError::new(ErrorKind::Unsupported, "MOSS-Image runs without LoRAs for now")),
             Resident::Layered(_) | Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
         };
         let mut layers = Vec::with_capacity(asks.len());
@@ -459,6 +479,7 @@ impl DiffusionEngine {
             Family::Krea2 => self.krea2_source().is_some(),
             Family::Layered => self.layered_available(),
             Family::Edit2511 => self.edit2511_available(),
+            Family::Moss(v) => moss::find_files(&self.models_root, v).is_some(),
         }
     }
 
@@ -491,6 +512,7 @@ impl DiffusionEngine {
             | (Resident::Krea2(_), Family::Krea2)
             | (Resident::Layered(_), Family::Layered)
             | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
+            (Resident::Moss(_, held), Family::Moss(v)) if *held == v => return Ok(()),
             (Resident::None, _) => {}
             _ => {
                 progress(0.0, "Unloading the other models");
@@ -563,6 +585,21 @@ impl DiffusionEngine {
                 }
                 report(0.0, "Loading Qwen-Image-Layered");
                 Resident::Layered(LayeredPipeline::load(&self.models_root).map_err(err)?)
+            }
+            Family::Moss(v) => {
+                let Some(files) = moss::find_files(&self.models_root, v) else {
+                    return Err(EngineError::new(
+                        ErrorKind::ModelMissing,
+                        format!(
+                            "no MOSS-Image in {}: Comfy-Org's diffusion_models/moss_image_{}_int8_convrot (or _bf16), \
+                             text_encoders/qwen3.5_9b_int8_convrot (or _bf16), vae/flux2-vae_small (or flux2-vae) and Qwen3.5's \
+                             tokenizer.json in text_encoders/qwen35_tokenizer/",
+                            self.models_root.display(),
+                            if v == MossVariant::Base { "base" } else { "sft" }
+                        ),
+                    ));
+                };
+                Resident::Moss(MossPipeline::load(&files, &mut report).map_err(err)?, v)
             }
         };
         Ok(())
@@ -941,6 +978,7 @@ impl Engine for DiffusionEngine {
             Resident::Krea2(p) => (vec![KREA2_DIR.to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Layered(p) => (vec!["qwen-image-layered".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Edit2511(p) => (vec!["qwen-image-edit-2511".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::Moss(p, _) => (vec!["moss-image".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
         };
         // The card's name where the driver gave one; the free memory only while a pipeline
         // holds the context (asking without one would create it).
@@ -1098,7 +1136,9 @@ impl Engine for DiffusionEngine {
             Family::Krea2 => KREA2_STEPS,
             Family::Layered => LAYERS_STEPS,
             Family::Edit2511 => 40,
+            Family::Moss(_) => MOSS_STEPS,
         };
+        let default_guidance = if matches!(family, Family::Moss(_)) { MOSS_GUIDANCE } else { 1.0 };
         let result: Result<Vec<Picture>, EngineError> = (|| {
             self.ensure_loaded(family, progress)?;
             if cancel.load(Ordering::SeqCst) {
@@ -1133,7 +1173,7 @@ impl Engine for DiffusionEngine {
                 height,
                 steps: if req.steps == 0 { default_steps } else { req.steps } as usize,
                 seed: req.seed,
-                guidance: if req.guidance > 0.0 { req.guidance } else { 1.0 },
+                guidance: if req.guidance > 0.0 { req.guidance } else { default_guidance },
                 schedule: Schedule::Comfy,
                 references,
                 loras,
@@ -1158,6 +1198,8 @@ impl Engine for DiffusionEngine {
                     p.generate_style_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Krea2(p), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                // No live preview for MOSS yet (its latent is the FLUX.2 VAE's).
+                (Resident::Moss(p, _), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::Edit2511(_) | Resident::Layered(_) | Resident::None, _) => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
             };
             log_previews(mode, &viewer);
@@ -1235,6 +1277,8 @@ pub fn has_models(dir: &Path) -> bool {
         || qwen_image_rs::comfy_files::find_krea2(dir).is_some()
         || qwen_image_rs::layered_files::LayeredFiles::resolve(dir).is_ok()
         || qwen_image_rs::edit2511_files::Edit2511Files::resolve(dir).is_ok()
+        || moss::find_files(dir, MossVariant::Sft).is_some()
+        || moss::find_files(dir, MossVariant::Base).is_some()
 }
 
 #[cfg(test)]
@@ -1363,6 +1407,41 @@ mod tests {
         let mut f = req(TEMPLATE_FILL, "fill");
         f.params.insert("batch".into(), json!([1]));
         assert!(matches!(&run(&mut e, &f), Err(EngineError { kind: ErrorKind::BadRequest, message }) if message.contains("batch")));
+    }
+
+    /// MOSS-Image's templates: text to image only, found by Comfy-Org's file names (a
+    /// subfolder deep), a typed error naming the files when they are not there.
+    #[test]
+    fn moss_templates_find_their_files() -> anyhow::Result<()> {
+        assert_eq!(task_of(TEMPLATE_MOSS), Some("image"));
+        assert_eq!(family_of(TEMPLATE_MOSS_BASE), Some(Family::Moss(MossVariant::Base)));
+        let root = std::env::temp_dir().join(format!("gn-moss-{}", std::process::id()));
+        let mut e = DiffusionEngine::new(root.clone(), false);
+        e.refused = None;
+        let r = e.run(&req(TEMPLATE_MOSS, "image"), &[], &mut |_, _| {}, &AtomicBool::new(false));
+        assert!(matches!(&r, Err(EngineError { kind: ErrorKind::ModelMissing, message }) if message.contains("MOSS-Image")), "{r:?}");
+        let files = [
+            "diffusion_models/moss/moss_image_sft_int8_convrot.safetensors",
+            "text_encoders/qwen3.5_9b_int8_convrot.safetensors",
+            "text_encoders/qwen35_tokenizer/tokenizer.json",
+            "vae/flux2-vae_small.safetensors",
+        ];
+        for f in files {
+            let path = root.join(f);
+            std::fs::create_dir_all(path.parent().ok_or_else(|| anyhow::anyhow!("no parent"))?)?;
+            std::fs::write(path, [])?;
+        }
+        let installed = e.index("")["installed"].to_string();
+        assert!(installed.contains(TEMPLATE_MOSS) && !installed.contains(TEMPLATE_MOSS_BASE), "{installed}");
+        assert!(has_models(&root));
+        // Only this test's explicitly created temporary directory is removed.
+        for f in files {
+            std::fs::remove_file(root.join(f))?;
+        }
+        for d in ["diffusion_models/moss", "diffusion_models", "text_encoders/qwen35_tokenizer", "text_encoders", "vae", ""] {
+            std::fs::remove_dir(root.join(d))?;
+        }
+        Ok(())
     }
 
     /// A Krea 2 edit runs with its edit LoRA in front of the request's own, once.

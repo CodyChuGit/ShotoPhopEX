@@ -43,6 +43,7 @@ mod lora_gemm;
 #[cfg(feature = "convrot")]
 pub mod lora_materialize;
 pub mod model;
+pub mod moss;
 pub mod pipeline;
 pub mod preview;
 pub mod profile;
