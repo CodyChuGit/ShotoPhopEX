@@ -1121,7 +1121,15 @@ impl LayeredDit {
 
     /// Reuse a prefaulted mapping so uploading weights does not repeat page faults.
     pub(crate) fn from_resident_file(file: crate::layered_files::TensorFile, device: &Device) -> Result<Self> {
-        Self::load(file.resident_builder(if device.is_cuda() { DType::BF16 } else { DType::F32 }, device)?)
+        let dt = if device.is_cuda() { DType::BF16 } else { DType::F32 };
+        // The INT8 conversion replaces each FP8 weight: read them one by one, or the packed ~19 GB
+        // FP8 region and the INT8 copies are on the card together (2026-10-29: Windows paged the
+        // 3-layer split to 222 s, the conversion to 12-15 s a load).
+        #[cfg(feature = "convrot")]
+        if device.is_cuda() && layered_int8() {
+            return Self::load(file.resident_builder_unpacked(dt, device));
+        }
+        Self::load(file.resident_builder(dt, device)?)
     }
 
     /// Keep only one block resident at a time, including when running on CPU.
