@@ -17,6 +17,9 @@ the workspace failures are the known GPU-preview ones (full_res_preview 3, patte
 1) and `photocraft-gpu` timing (unchanged crate, timing under another job's load). Native 2511
 has no cold glitch; empty-prompt Remove Background 5 of 5 on the GPU. Report:
 [`research/notes/comfyui-removal.md`](research/notes/comfyui-removal.md).
+Later the same night: Upscale 2× rerun natively 30.8 s warm against ComfyUI 0.43's 44.1 s with
+the Restore LoRA on both (0.70×, `benchmarks.md` §0); genai-native pinned at `1b0b152`
+(clippy clean, the eight old warnings; the Cargo.lock without the stale `patch.unused`).
 
 ## 2026-10-28 (overnight): Rust rebuild: no ONNX Runtime, the -Native zip from a clean profile
 
