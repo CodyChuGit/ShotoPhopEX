@@ -96,6 +96,25 @@ and its output back (exact). Blocks 0, 52 and 58 keep the flash kernel: their qu
 12–89 % off flash per token range (blocks 1 and 59: 0.4–3.1 %). ComfyUI 0.43's split: 124.8 s
 (§0, before this change); native now 92.6 s, **0.74×**.
 
+**Upscale without text-encoder evictions, 2026-10-29** (genai-native `perf/vae-decode`; the
+app's CLI, the 864×1152 portrait, Restore 0.5, seed 20, the bf16 text encoder as the app runs
+it, one fresh worker per build, the desktop holding ~3.4 GB of the card). With the desktop's
+share grown since the morning, each of Upscale's six tiles had evicted the 2.1 text encoder for
+its sampling (3.93 GB usable against 4.35 GB) and reloaded it for the next (5.1 s), which
+doubled the run. Now the f32 vision tower (~2.4 GB) gives way first and stays transient once it
+had to; the sampling keeps 256 MiB of driver headroom (a run whose tower stayed resident paged
+on Windows: 144.6 s cold).
+
+| Upscale 2× | before | after | output |
+|---|---|---|---|
+| warm | 56.3 s (12 text-encoder evictions) | **30.6 s** (none) | byte-identical |
+| cold | 60.3 s | **31.7 s** | byte-identical |
+| Edit warm (control) | 4.22 s | 4.17 s | byte-identical |
+
+ComfyUI 0.43's Upscale: 44.1 s, so native now **0.69×**. The Q8_0 text encoder (`--text-quant`)
+also removed the evictions (29.1 s) but moved Edit's output to 38.45 dB for no Edit gain, so it
+stays the low-VRAM option.
+
 **Upscale rerun, 2026-10-29** (`speed-table.ps1 -Only "upscale 2x" -UpscaleLora restore`, the
 cdcedbd8 CLI so both routes run, genai-native `8d4e86e`, ComfyUI 0.43, the app sending the
 Restore LoRA at 0.5 on both): native cold 51.7 s, **warm 30.8 s**; ComfyUI cold 63.3 s, warm
