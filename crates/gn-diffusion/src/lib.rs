@@ -173,12 +173,13 @@ fn preview_mode(m: gn_engine::protocol::PreviewMode) -> PreviewMode {
     }
 }
 
-/// The latent space a family samples in: Qwen-Image-2.1's own 64-channel VAE, or the Wan 2.1
-/// family's (Krea 2, Qwen-Image-Edit-2511, the Layered RGBA VAE).
+/// The latent space a family samples in: Qwen-Image-2.1's own 64-channel VAE, the Wan 2.1
+/// family's (Krea 2, Qwen-Image-Edit-2511), or the Layered RGBA VAE's.
 fn latent_space(f: Family) -> LatentSpace {
     match f {
         Family::QwenImage21 => LatentSpace::QwenImage21,
-        Family::Krea2 | Family::Layered | Family::Edit2511 => LatentSpace::Wan21,
+        Family::Krea2 | Family::Edit2511 => LatentSpace::Wan21,
+        Family::Layered => LatentSpace::Layered,
     }
 }
 
@@ -290,9 +291,11 @@ impl DiffusionEngine {
         if self.tiny.as_ref().is_some_and(|t| t.space() == space && t.on(dev)) {
             return;
         }
+        // A space no tiny decoder decodes (Layered) shows Fast without a word.
+        let Some(name) = space.tiny_file() else { return };
         self.tiny = None;
         let Some(file) = TinyDecoder::file(&self.models_root, space) else {
-            eprintln!("gn-diffusion: no {} under {}; Sharp previews show Fast", space.tiny_file(), self.models_root.join(TINY_DIR).display());
+            eprintln!("gn-diffusion: no {name} under {}; Sharp previews show Fast", self.models_root.join(TINY_DIR).display());
             return;
         };
         match TinyDecoder::load(&file, space, dev) {
@@ -672,11 +675,11 @@ impl DiffusionEngine {
         let result: Result<Vec<_>, EngineError> = (|| {
             self.ensure_loaded(Family::Layered, progress)?;
             let mode = preview_mode(req.preview);
-            self.ensure_tiny(mode, LatentSpace::Wan21);
+            self.ensure_tiny(mode, LatentSpace::Layered);
             let Resident::Layered(p) = &self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no pipeline")) };
             let mut report = |i: usize, n: usize| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Splitting");
             let mut sink = |f: Frame| preview(engine_preview(f));
-            let mut viewer = Previewer::new(mode, LatentSpace::Wan21, self.tiny.as_ref(), &mut sink);
+            let mut viewer = Previewer::new(mode, LatentSpace::Layered, self.tiny.as_ref(), &mut sink);
             let shown = (mode != PreviewMode::Off).then_some(&mut viewer as &mut dyn StepPreview);
             let out = p.split_previewed(&rgba, layers, &req.prompt, req.seed, steps, &mut report, shown, cancel).map_err(|e| {
                 if cancel.load(Ordering::SeqCst) {

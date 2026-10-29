@@ -43,25 +43,29 @@ pub const TINY_DIR: &str = "vae_approx";
 /// The latent space a pipeline samples in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LatentSpace {
-    /// 16 channels, 8× (the Wan 2.1 VAE and its relatives: Krea 2, Qwen-Image-Edit-2511, the
-    /// Layered RGBA VAE), normalised by Wan 2.1's per-channel statistics.
+    /// 16 channels, 8× (the Wan 2.1 VAE and its relatives: Krea 2, Qwen-Image-Edit-2511),
+    /// normalised by Wan 2.1's per-channel statistics.
     Wan21,
     /// 64 channels, 16× (Qwen-Image-2.1's VAE), normalised by its own statistics.
     QwenImage21,
+    /// Qwen-Image-Layered's RGBA VAE: 16 channels, 8×, but its own latent scale (Wan 2.1's
+    /// factors and taew2_1 give grey). Fast only: no tiny decoder matches it.
+    Layered,
 }
 
 impl LatentSpace {
-    /// The tiny decoder's file name under [`TINY_DIR`].
-    pub fn tiny_file(self) -> &'static str {
+    /// The tiny decoder's file name under [`TINY_DIR`], when one decodes this space.
+    pub fn tiny_file(self) -> Option<&'static str> {
         match self {
-            Self::Wan21 => "taew2_1.safetensors",
-            Self::QwenImage21 => "taeqi2_1.safetensors",
+            Self::Wan21 => Some("taew2_1.safetensors"),
+            Self::QwenImage21 => Some("taeqi2_1.safetensors"),
+            Self::Layered => None,
         }
     }
 
     pub fn channels(self) -> usize {
         match self {
-            Self::Wan21 => 16,
+            Self::Wan21 | Self::Layered => 16,
             Self::QwenImage21 => 64,
         }
     }
@@ -69,7 +73,7 @@ impl LatentSpace {
     /// Pixels per latent cell along a side.
     pub fn scale(self) -> usize {
         match self {
-            Self::Wan21 => 8,
+            Self::Wan21 | Self::Layered => 8,
             Self::QwenImage21 => 16,
         }
     }
@@ -79,9 +83,33 @@ impl LatentSpace {
         match self {
             Self::Wan21 => (&WAN21_RGB, WAN21_RGB_BIAS),
             Self::QwenImage21 => (&QWEN21_RGB, QWEN21_RGB_BIAS),
+            Self::Layered => (&LAYERED_RGB, LAYERED_RGB_BIAS),
         }
     }
 }
+
+/// Fitted here by least squares (`tests/fit_layered_rgb.rs`, 2026-10-29): two 864×1152 pictures
+/// split into three layers, each decoded layer averaged over the latent's 8×8 cells, the 63,966
+/// opaque cells against the normalised latent.
+const LAYERED_RGB: [[f32; 3]; 16] = [
+    [1.6850, 2.9788, 4.7393],
+    [-0.2873, -0.2436, -0.1137],
+    [1.1271, 0.5936, -0.0878],
+    [2.1219, 1.9036, 0.9615],
+    [-0.0528, -0.2833, -0.4493],
+    [1.2324, 0.3905, 0.0373],
+    [-1.9189, -1.7780, -1.1246],
+    [-0.6648, 0.0147, 0.3365],
+    [-3.3269, -3.6531, -4.2630],
+    [-1.1779, -0.3111, 0.1830],
+    [-0.7592, -0.1260, -0.4620],
+    [0.6080, 1.0463, 1.4395],
+    [-1.7267, -0.6338, -0.0953],
+    [0.0456, -0.1541, -0.0593],
+    [2.6103, 2.1575, 2.6603],
+    [1.7832, 1.5612, 1.4954],
+];
+const LAYERED_RGB_BIAS: [f32; 3] = [-1.1025, -1.2532, -1.8779];
 
 /// ComfyUI `latent_formats.Wan21.latent_rgb_factors` / `_bias` (read 2026-10-29, ComfyUI 0.43).
 const WAN21_RGB: [[f32; 3]; 16] = [
@@ -435,7 +463,7 @@ pub struct TinyDecoder {
 impl TinyDecoder {
     /// The file for `space` under `root/vae_approx/`, when there.
     pub fn file(root: &Path, space: LatentSpace) -> Option<PathBuf> {
-        Some(root.join(TINY_DIR).join(space.tiny_file())).filter(|p| p.is_file())
+        Some(root.join(TINY_DIR).join(space.tiny_file()?)).filter(|p| p.is_file())
     }
 
     /// Load `space`'s decoder from `file` onto `dev` (bf16 on CUDA, f32 on the CPU).
@@ -450,6 +478,7 @@ impl TinyDecoder {
         let net = match space {
             LatentSpace::Wan21 => TinyNet::Taehv(Box::new(Taehv::load(&vb.pp("decoder"))?)),
             LatentSpace::QwenImage21 => TinyNet::TaesdF16(Box::new(TaesdF16::load(&vb.pp("decoder").pp("layers"))?)),
+            LatentSpace::Layered => anyhow::bail!("no tiny decoder decodes the Layered VAE's latents"),
         };
         Ok(Self { space, dtype, dev: dev.clone(), net })
     }
@@ -483,7 +512,7 @@ impl TinyDecoder {
     pub fn peak_bytes(&self, pixels: usize) -> usize {
         let per_pixel = match self.space {
             // 64 channels × 9 taps at full size (bf16), plus two 64-channel activations.
-            LatentSpace::Wan21 => 64 * 9 * 2 + 4 * 64 * 2,
+            LatentSpace::Wan21 | LatentSpace::Layered => 64 * 9 * 2 + 4 * 64 * 2,
             // Its widest convolutions run at half size.
             LatentSpace::QwenImage21 => (64 * 9 * 2 + 4 * 64 * 2) / 4 + 16 * 4,
         };
@@ -548,9 +577,14 @@ impl StepPreview for Previewer<'_> {
         };
         let pixels = h * w * self.space.scale() * self.space.scale();
         for output in 0..n {
-            // Sharp only when the card has room for the decode; Fast otherwise.
-            let use_tiny = self.sharp()
-                && self.tiny.is_some_and(|t| crate::device::free_vram(x0.device()).is_none_or(|(free, _)| free >= t.peak_bytes(pixels)));
+            // Sharp only when the card has room for the decode; else Fast for the rest of the run
+            // (alternating sharp and coarse pictures would flicker).
+            let room = self.tiny.is_some_and(|t| crate::device::free_vram(x0.device()).is_none_or(|(free, _)| free >= t.peak_bytes(pixels)));
+            if self.sharp() && !room {
+                tracing::info!("preview: no room on the card for the tiny decoder; Fast for the rest of the run");
+                self.sharp_failed = true;
+            }
+            let use_tiny = self.sharp();
             let one = match x0.get(output) {
                 Ok(t) => t,
                 Err(e) => {
@@ -667,6 +701,7 @@ mod tests {
                 convw(&mut put, "decoder.layers.16", 64, 64, 3, false);
                 convw(&mut put, "decoder.layers.18", 64, 16, 3, true);
             }
+            LatentSpace::Layered => {}
         }
         map
     }
