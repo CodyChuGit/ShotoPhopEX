@@ -1,5 +1,3 @@
-# Any ComfyUI started here is external, for comparison benchmarks only; PhotoshopEX itself no longer uses ComfyUI.
-# The ComfyUI side needs the last ComfyUI-capable app commit cdcedbd8, or must drive ComfyUI's HTTP API directly (removed preferences/commands).
 # Rust rebuild R5 live check (goals/rust-rebuild.md §1.1, §1.2, §1.4): the portable zip of
 # `package.ps1 -Native`, unpacked into a fresh folder and run as a new user would, against the
 # native engine only. Every generative command of the feature table runs in its own CLI process
@@ -9,9 +7,9 @@
 # What "a new user" means here: nothing of this account reaches the run. APPDATA, LOCALAPPDATA,
 # USERPROFILE, TEMP and TMP point into $Work\profile (the qir cache, the preferences, the
 # generation library all start empty), PATH is Windows' own folders only (no CUDA toolkit, no
-# scoop, no Python), and every PHOTOCRAFT_*, GN_* and CUDA_* variable is cleared. ComfyUI is
-# neither running nor configured (comfyPath and comfyServer empty); the models come from
-# -Models, a ComfyUI `models` folder used as it is. A separate Windows account is the same test
+# scoop, no Python), and every PHOTOCRAFT_*, GN_* and CUDA_* variable is cleared. ComfyUI is not
+# running (PhotoshopEX has no ComfyUI route since 2026-10-29); the models come from -Models, a
+# ComfyUI `models` folder used as it is. A separate Windows account is the same test
 # with the account's own folders; this script does not create one.
 #
 # Prints one line per case (time, result or failure), then the python.exe check and the worker's
@@ -53,9 +51,8 @@ Get-ChildItem env: | Where-Object { $_.Name -match '^(PHOTOCRAFT_|GN_|CUDA_|CUDA
 $env:RUST_LOG = "info"
 
 function Q([object]$v) { (ConvertTo-Json $v -Compress -Depth 6).Replace(' ', '\u0020').Replace('"', '\"') }
-# Native only, nothing of ComfyUI; the runtime folder is the zip's own (runtimePath empty).
+# The runtime folder is the zip's own (runtimePath empty).
 $prefs = @{
-    "integrations.engine" = "native"; "integrations.comfyPath" = ""; "integrations.comfyServer" = ""
     "integrations.runtimePath" = ""; "integrations.modelsPath" = $Models
     "integrations.allowResearchModels" = $true; "integrations.enhancePrompts" = $false
 }
