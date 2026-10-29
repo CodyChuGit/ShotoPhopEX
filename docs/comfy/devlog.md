@@ -4,6 +4,17 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29 (evening): Upscale on fewer, larger tiles by default
+
+The owner chose the larger tiles after the seam crops (`photocraft-tests\bench\upscale-tiles`).
+On `perf/upscale-tiles`, `auto_grid` picks the fewest equal tiles of at most 1.15 MP each, never a
+strip of three or more, up to 16 per side (64 MP takes 9x9). An explicit `grid` overrides it,
+`tileMegapixels` asks for the old square tiles, and the result reports `grid`. The portrait, cat
+and bird at 2x take 2x2 instead of six tiles: 30.3 to 24.2 s, 30.0 to 24.3 s and 29.7 to 24.8 s
+(benchmarks.md §0). Recreate needs nothing: Upscale is not in the Generations library
+(`is_generative` leaves it out), so no Upscale record exists to replay. `feat/warmup` (warm-up at
+launch) is in the entry below, on its own branch.
+
 ## 2026-10-29 (late afternoon): Upscale in one batched request; Upscale back in the background
 
 Branches: genai-native `perf/upscale-batch` (`dce1ce3`, on `perf/gemm-plan-5090`) and PhotoshopEX
