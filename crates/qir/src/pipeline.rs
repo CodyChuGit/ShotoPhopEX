@@ -768,7 +768,7 @@ impl Pipeline {
         let conds = conds?;
         let mut out = Vec::with_capacity(reqs.len());
         for (i, (r, c)) in reqs.iter().zip(conds).enumerate() {
-            let mut report = |f: f32, m: &str| progress(0.1 + 0.9 * (i as f32 + f) / n, m);
+            let mut report = |f: f32, m: &str| progress(0.1 + 0.9 * (i as f32 + f) / n, &format!("Tile {}/{}: {m}", i + 1, reqs.len()));
             out.push(self.generate_with(r, Some(c), &mut report, cancel)?);
         }
         Ok(out)
