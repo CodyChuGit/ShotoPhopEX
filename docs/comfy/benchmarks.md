@@ -45,6 +45,11 @@ cold than warm (6.0 vs 10.3 s, 5.7 vs 10.1 s): something is recomputed on the se
 The three "different model" rows run 2511 on ComfyUI because `paint.remove`, `generate.angles`
 and a fill with references have no template parameter and ComfyUI's `auto` picks 2511 there.
 
+**Remove Background with an empty prompt** (2026-10-29, through the app, the gen-tshirt
+portrait, five unseeded runs on the native worker): 5 of 5 kept the man (511.8–515.5 k pixels,
+the same bounds), where before PhotoshopEX `49ecf6d3` (the subject named first) 3 of 5 kept
+nothing.
+
 **After genai-native `03fb72e`** (Codex: the text encoder stays resident instead of being
 reloaded on every picture request, an exact conditioning cache when only the seed changes, the
 vocabulary on the CPU, bounded VAE scratch; outputs within 0.06/255 of before;
@@ -94,7 +99,11 @@ genai-native `d40c536` (the 2511 port: a selectable alternative, not a default;
 | angles | 4 / 1 | 43.2 dB | 7.4 s | 4.5 s |
 | edit (base) | 40 / 4 | 36.6 dB | 90.5 s | 81.9 s |
 
-The pictures match. **After genai-native `8d4e86e`** (the 20 GB DiT kept resident between 2511
+The pictures match. The cold image-ref gap (27 dB) is ComfyUI's, not native's (2026-10-29):
+natively, a fresh worker's first image-ref and a second one at the same seed (42) are
+byte-identical, while ComfyUI's first dynamic call after a load runs on its transient bf16 patch
+before its resident fp8 copy; native always gives the resident answer, so nothing is changed.
+**After genai-native `8d4e86e`** (the 20 GB DiT kept resident between 2511
 requests instead of reloaded; outputs byte-identical) native is faster on every template: edit
 8.3 vs 8.4 s, fill 8.3 vs 8.8, remove 8.3 vs 8.5, expand 8.3 vs 8.5, fill-ref 20.3 vs 21.1,
 image-ref 20.4 vs 21.1, angles 4.4 vs 4.5, the 40-step edit 78.2 vs 81.9
