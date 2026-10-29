@@ -47,15 +47,15 @@ fn in_app_bundle(exe: &std::path::Path) -> bool {
 
 #[cfg(target_os = "macos")]
 const PNG: &[u8] = include_bytes!("../../../assets/app-icon/photocraft-1024.png");
-// Fork: the Ps-style tile (`assets/app-icon/ps/`) instead of upstream's kitsune.
+// Fork: the "Pc" tile (`assets/app-icon/pc/`) instead of upstream's kitsune.
 #[cfg(not(target_os = "macos"))]
-const PNG: &[u8] = include_bytes!("../../../assets/app-icon/ps/ps-256.png");
+const PNG: &[u8] = include_bytes!("../../../assets/app-icon/pc/pc-256.png");
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ICO: &[u8] = include_bytes!("../../../assets/app-icon/ps/ps.ico");
+    const ICO: &[u8] = include_bytes!("../../../assets/app-icon/pc/pc.ico");
     const WXS: &str = include_str!("../../../packaging/windows/photocraft.wxs");
 
     fn u16_at(b: &[u8], i: usize) -> usize {

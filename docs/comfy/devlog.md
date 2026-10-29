@@ -4,6 +4,21 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29: README around the generative features; the app icon reads "Pc"
+
+The owner asked for "Pc" in place of "Ps" (trademark), and for a README about the generative
+additions. The README now leads with the features (model and 5090 warm time each), a native
+vs ComfyUI chart (`docs/images/genai/bench-5090-{light,dark}.svg`) and table from
+`benchmarks.md` §0/§0b, install guides (build from source, and a prompt for a coding agent),
+the models table, the hardware-tier roadmap and the editor underneath. The README calls the product
+"PhotoCraftEX". The ArtCraft logo and community links are gone (`docs/brand/LICENSE-brand.txt`
+asks forks to remove them). The app icon, titlebar mark and exe icon are a navy/blue "Pc" tile
+(`packaging/icon-tile.py . photocraft Pc "#001E36" "#31A8FF"`); `assets/app-icon/ps/` became `pc/`.
+
+Still open: the 3090 column (nothing measured yet); screenshots and GIFs of Select Subject and a
+Qwen edit captured in the app; a published release for a one-click install. CI on GitHub can't
+fetch the private genai-native, so every Rust job fails there before compiling.
+
 ## 2026-10-29 (day): the speed pass on the 5090
 
 Branches (verified, not merged; the owner's OK pending): genai-native `perf/layered-attention`

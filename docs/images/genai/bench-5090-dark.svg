@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 492" width="880" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+<title>PhotoCraftEX native engine vs ComfyUI on an RTX 5090, warm seconds, lower is faster</title>
+<rect width="880" height="492" rx="12" fill="#1a1a19"/>
+<text x="24" y="34" font-size="18" font-weight="600" fill="#f0efec">Warm seconds per result on an RTX 5090 (lower is faster)</text>
+<text x="24" y="56" font-size="13" fill="#c3c2b7">864×1152, same model, seed and settings on both routes. 2026-10-28/29.</text>
+<rect x="24" y="66" width="12" height="12" rx="3" fill="#3987e5"/><text x="42" y="76" font-size="13" fill="#c3c2b7">PhotoCraftEX native (Rust)</text>
+<rect x="254" y="66" width="12" height="12" rx="3" fill="#d95926"/><text x="272" y="76" font-size="13" fill="#c3c2b7">ComfyUI (same GPU, --fast fp8)</text>
+<line x1="250.0" y1="88" x2="250.0" y2="458" stroke="#33332f" stroke-width="1"/>
+<text x="250.0" y="476" font-size="12" fill="#c3c2b7" text-anchor="middle">0 s</text>
+<line x1="374.4" y1="88" x2="374.4" y2="458" stroke="#33332f" stroke-width="1"/>
+<text x="374.4" y="476" font-size="12" fill="#c3c2b7" text-anchor="middle">10 s</text>
+<line x1="498.9" y1="88" x2="498.9" y2="458" stroke="#33332f" stroke-width="1"/>
+<text x="498.9" y="476" font-size="12" fill="#c3c2b7" text-anchor="middle">20 s</text>
+<line x1="623.3" y1="88" x2="623.3" y2="458" stroke="#33332f" stroke-width="1"/>
+<text x="623.3" y="476" font-size="12" fill="#c3c2b7" text-anchor="middle">30 s</text>
+<line x1="747.8" y1="88" x2="747.8" y2="458" stroke="#33332f" stroke-width="1"/>
+<text x="747.8" y="476" font-size="12" fill="#c3c2b7" text-anchor="middle">40 s</text>
+<text x="238" y="108.0" font-size="13" fill="#f0efec" text-anchor="end">Select by text (SAM 3.1)</text>
+<path d="M250,92 h-0.3 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h--0.3 z" fill="#3987e5"/>
+<text x="259.7" y="102" font-size="11" fill="#c3c2b7">0.3 s</text>
+<path d="M250,105 h3.5 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-3.5 z" fill="#d95926"/>
+<text x="263.5" y="115" font-size="11" fill="#c3c2b7">0.6 s</text>
+<text x="238" y="148.0" font-size="13" fill="#f0efec" text-anchor="end">Generative Fill</text>
+<path d="M250,132 h35.8 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-35.8 z" fill="#3987e5"/>
+<text x="295.8" y="142" font-size="11" fill="#c3c2b7">3.2 s</text>
+<path d="M250,145 h37.1 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-37.1 z" fill="#d95926"/>
+<text x="297.1" y="155" font-size="11" fill="#c3c2b7">3.3 s</text>
+<text x="238" y="188.0" font-size="13" fill="#f0efec" text-anchor="end">Text to image (Krea 2)</text>
+<path d="M250,172 h43.3 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-43.3 z" fill="#3987e5"/>
+<text x="303.3" y="182" font-size="11" fill="#c3c2b7">3.8 s</text>
+<path d="M250,185 h45.8 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-45.8 z" fill="#d95926"/>
+<text x="305.8" y="195" font-size="11" fill="#c3c2b7">4.0 s</text>
+<text x="238" y="228.0" font-size="13" fill="#f0efec" text-anchor="end">Text to image (Qwen-Image-2.1)</text>
+<path d="M250,212 h44.5 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-44.5 z" fill="#3987e5"/>
+<text x="304.5" y="222" font-size="11" fill="#c3c2b7">3.9 s</text>
+<path d="M250,225 h48.3 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-48.3 z" fill="#d95926"/>
+<text x="308.3" y="235" font-size="11" fill="#c3c2b7">4.2 s</text>
+<text x="238" y="268.0" font-size="13" fill="#f0efec" text-anchor="end">Generative Edit</text>
+<path d="M250,252 h59.5 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-59.5 z" fill="#3987e5"/>
+<text x="319.5" y="262" font-size="11" fill="#c3c2b7">5.1 s</text>
+<path d="M250,265 h65.7 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-65.7 z" fill="#d95926"/>
+<text x="325.7" y="275" font-size="11" fill="#c3c2b7">5.6 s</text>
+<text x="238" y="308.0" font-size="13" fill="#f0efec" text-anchor="end">Remove Background</text>
+<path d="M250,292 h59.5 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-59.5 z" fill="#3987e5"/>
+<text x="319.5" y="302" font-size="11" fill="#c3c2b7">5.1 s</text>
+<path d="M250,305 h64.4 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-64.4 z" fill="#d95926"/>
+<text x="324.4" y="315" font-size="11" fill="#c3c2b7">5.5 s</text>
+<text x="238" y="348.0" font-size="13" fill="#f0efec" text-anchor="end">Image from a reference</text>
+<path d="M250,332 h60.7 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-60.7 z" fill="#3987e5"/>
+<text x="320.7" y="342" font-size="11" fill="#c3c2b7">5.2 s</text>
+<path d="M250,345 h65.7 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-65.7 z" fill="#d95926"/>
+<text x="325.7" y="355" font-size="11" fill="#c3c2b7">5.6 s</text>
+<text x="238" y="388.0" font-size="13" fill="#f0efec" text-anchor="end">2511 edit, 8 steps</text>
+<path d="M250,372 h99.3 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-99.3 z" fill="#3987e5"/>
+<text x="359.3" y="382" font-size="11" fill="#c3c2b7">8.3 s</text>
+<path d="M250,385 h100.5 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-100.5 z" fill="#d95926"/>
+<text x="360.5" y="395" font-size="11" fill="#c3c2b7">8.4 s</text>
+<text x="238" y="428.0" font-size="13" fill="#f0efec" text-anchor="end">Upscale 2×</text>
+<path d="M250,412 h379.3 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-379.3 z" fill="#3987e5"/>
+<text x="639.3" y="422" font-size="11" fill="#c3c2b7">30.8 s</text>
+<path d="M250,425 h544.8 a4,4 0 0 1 4,4 v3 a4,4 0 0 1 -4,4 h-544.8 z" fill="#d95926"/>
+<text x="804.8" y="435" font-size="11" fill="#c3c2b7">44.1 s</text>
+</svg>

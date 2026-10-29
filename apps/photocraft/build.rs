@@ -6,8 +6,8 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // Fork: the Ps-style tile (`assets/app-icon/ps/`) instead of upstream's kitsune.
-    println!("cargo:rerun-if-changed=../../assets/app-icon/ps/ps.ico");
+    // Fork: the "Pc" tile (`assets/app-icon/pc/`) instead of upstream's kitsune.
+    println!("cargo:rerun-if-changed=../../assets/app-icon/pc/pc.ico");
     println!("cargo:rerun-if-env-changed=PHOTOCRAFT_REQUIRE_WINRES");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -33,7 +33,7 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=delayimp.lib");
     }
     let mut res = winresource::WindowsResource::new();
-    res.set_icon("../../assets/app-icon/ps/ps.ico")
+    res.set_icon("../../assets/app-icon/pc/pc.ico")
         .set("ProductName", "PhotoCraft")
         .set("FileDescription", "PhotoCraft image editor")
         .set("CompanyName", "Learning Machines LLC")
