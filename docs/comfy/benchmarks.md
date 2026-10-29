@@ -75,6 +75,50 @@ the flash kernel; tiles within 0.0036/255 of before, Krea 2 with a LoRA byte-ide
 **40.6 s** against ComfyUI's 39.0 s with the same Restore LoRA (1.04×; the six model calls are
 faster natively, the remainder is the app's per-tile work).
 
+**Split into Layers with SageAttention2, 2026-10-29** (genai-native `perf/layered-attention`;
+the 3-layer split of the 864×1152 portrait, seed 7, through the app's CLI, one fresh worker per
+variant, RTX 5090). Quality is judged by compositing the three layers back onto the input picture,
+the split's own job: the background layer's invented detail moves with any numeric change (int8
+and fp8 matmuls moved it as much as Sage2), so a per-layer comparison with the bf16 run measures
+divergence, not damage. Flash at two seeds sets the band.
+
+| Variant | Warm | Composite vs input |
+|---|---|---|
+| bf16 flash attention (before) | 137.2 s | 36.91 dB (seed 8: 139.1 s, 38.73 dB) |
+| **SageAttention2, blocks 0/52/58 on flash (now the default)** | **92.6 s (−33 %)** | **36.91 dB** |
+| fp8 tensor-core GEMM, activations scaled (rejected) | 133.0 s | 34.34 dB |
+| Sage2 + fp8 GEMM (rejected) | 106.2 s | 32.91 dB |
+| int8 ConvRot from the fp8 file (rejected: slow path) | 222.6 s | 36.04 dB |
+
+Sage2 takes V in f16 and Layered's values reach |23,680|: each head's V is scaled into f16's range
+and its output back (exact). Blocks 0, 52 and 58 keep the flash kernel: their queries/keys reach
+|796|, |45.5| and |80.5| where the rest stay at or under |21|, and on block 0 Sage2's INT8 was
+12–89 % off flash per token range (blocks 1 and 59: 0.4–3.1 %). ComfyUI 0.43's split: 124.8 s
+(§0, before this change); native now 92.6 s, **0.74×**.
+
+**Upscale without text-encoder evictions, 2026-10-29** (genai-native `perf/vae-decode`; the
+app's CLI, the 864×1152 portrait, Restore 0.5, seed 20, the bf16 text encoder as the app runs
+it, one fresh worker per build, the desktop holding ~3.4 GB of the card). With the desktop's
+share grown since the morning, each of Upscale's six tiles had evicted the 2.1 text encoder for
+its sampling (3.93 GB usable against 4.35 GB) and reloaded it for the next (5.1 s), which
+doubled the run. Now the f32 vision tower (~2.4 GB) gives way first and stays transient once it
+had to; the sampling keeps 256 MiB of driver headroom (a run whose tower stayed resident paged
+on Windows: 144.6 s cold).
+
+| Upscale 2× | before | after | output |
+|---|---|---|---|
+| warm | 56.3 s (12 text-encoder evictions) | **30.6 s** (none) | byte-identical |
+| cold | 60.3 s | **31.7 s** | byte-identical |
+| Edit warm (control) | 4.22 s | 4.17 s | byte-identical |
+
+ComfyUI 0.43's Upscale: 44.1 s, so native now **0.69×**. The Q8_0 text encoder (`--text-quant`)
+also removed the evictions (29.1 s) but moved Edit's output to 38.45 dB for no Edit gain, so it
+stays the low-VRAM option.
+
+**Qwen-Image-Edit-2511 with SageAttention2, 2026-10-29** (genai-native `e9a4ea1`, the same flash blocks as Layered after its own survey: 0 at |728|, 58 at |79|, 52 at |53|): Lightning-8 edit **8.09 to 7.25 s** warm (cold 43.3 to 33.0 s), the 40-step CFG 4 edit **94.4 to 86.8 s**; same seed against flash 26.8 / 35.8 dB (the snowflakes placed differently, composition, scarf and face alike) where a second seed is 14.9 / 14.5 dB.
+
+**Checked and not landed, 2026-10-29 afternoon.** The card runs **power-capped** under load (575 W default limit; SW Power Cap in 98 of 105 busy samples at 200 ms, mean 523 W, SM 2,653 MHz of 3,090, 61 C): compare only within one session. **CUDA graphs**: GPU utilisation averages 96.8 % while a 2.1 step runs, so launch and sync gaps are ~3 %. **The 5090 INT8 GEMM plan** (genai-native `perf/gemm-plan-5090`, `QIR_GEMM_PLAN=sm120`, opt-in): 3–11 % per GEMM in `tests/convrot_shapes.rs`, but end to end 2.1 text to image 3.56 -> 3.50 s and Edit 4.22 -> 4.39 s (byte-identical), within noise. **INT8 ConvRot for Layered** (parked): ConvRotLinear is 2.2–2.6x the bf16 matmul at M 8272 and 40000, but the split already peaks at 28.1 GB with bf16 linears; with INT8 it reached 31.97 GB and Windows paged it (both splits past the 600 s timeout).
+
 **Upscale rerun, 2026-10-29** (`speed-table.ps1 -Only "upscale 2x" -UpscaleLora restore`, the
 cdcedbd8 CLI so both routes run, genai-native `8d4e86e`, ComfyUI 0.43, the app sending the
 Restore LoRA at 0.5 on both): native cold 51.7 s, **warm 30.8 s**; ComfyUI cold 63.3 s, warm

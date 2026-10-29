@@ -19,6 +19,25 @@ Still open: the 3090 column (nothing measured yet); screenshots and GIFs of Sele
 Qwen edit captured in the app; a published release for a one-click install. CI on GitHub can't
 fetch the private genai-native, so every Rust job fails there before compiling.
 
+## 2026-10-29 (day): the speed pass on the 5090
+
+Branches (verified, not merged; the owner's OK pending): genai-native `perf/layered-attention`
+then `perf/vae-decode` (stacked, `e9a4ea1`), PhotoshopEX the same names (pinned).
+- Split into Layers on SageAttention2: 137.2 to 92.6 s warm (ComfyUI 124.8 s). Judged by
+  compositing the layers back onto the input (36.91 dB, inside flash's two-seed band): the
+  background layer's invented detail moves with any numeric change. Blocks 0/52/58 keep flash.
+- Upscale 2x 56.3 to 30.6 s warm, 60.3 to 31.7 s cold, byte-identical: the 2.1 f32 vision tower
+  gives way instead of the text encoder (which reloaded on every tile once the desktop held
+  ~3.4 GB); 256 MiB driver headroom against Windows paging; `warn_if_paging`.
+- 2511 on SageAttention2 too: Lightning-8 edit 8.09 to 7.25 s, the 40-step edit 94.4 to 86.8 s.
+- Rejected or skipped: fp8 GEMM for Layered (no gain once activations are scaled), int8 ConvRot
+  from the fp8 file (165 effective TOPS at M≈40k and a 12 s re-conversion per split), Q8_0 text
+  encoder as default (Edit moves 38 dB for no gain), NVFP4 (Krea 2 9 % faster, another sample per
+  seed), CUDA graphs (the GPU is busy ~97 % of a 2.1 step).
+- The card runs power-capped (575 W, SW Power Cap in 98 of 105 busy samples, 61 C).
+- Also on branches: `fix/model-names` (template file names, the picker's installed badges),
+  `cleanup/remove-onnx` (both repositories), genai-native `fix/cuda-test-build`.
+
 ## 2026-10-29: ComfyUI engine removed
 
 The owner's call. Every generative command runs on the native worker (`photocraft --engine`);

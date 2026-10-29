@@ -252,3 +252,22 @@ step, the dev log and roadmap updated.
   2511 has no cold glitch (cold and warm at one seed byte-identical; the 27 dB was ComfyUI's
   first call), and the empty-prompt Remove Background holds on the GPU (5 of 5). Report:
   [`research/notes/comfyui-removal.md`](../research/notes/comfyui-removal.md).
+- 2026-10-29, morning: the speed pass (every feature clearly faster than ComfyUI 0.43 on the
+  5090). Profiled every feature; first win: **Split into Layers on SageAttention2**, 137.2 to
+  92.6 s warm (ComfyUI 124.8 s), judged by compositing the layers back onto the input (36.91 dB,
+  inside flash's two-seed band) since the background layer diverges under any numeric change.
+  Blocks 0/52/58 keep flash (their q/k reach |796|/|45|/|80|); V scaled into f16's range.
+  Rejected: fp8 GEMM (no gain once activations are scaled), int8 from the fp8 file (slow path),
+  NVFP4 for now (Krea 2: 9 % faster, a different sample per seed; per-layer FP4 GEMM 1.7–2.0x
+  int8 alone, 1.1–1.6x with activation quantization). `benchmarks.md` §0; branches
+  `perf/layered-attention` in both repositories, not merged.
+- 2026-10-29, afternoon: Upscale 2x 56.3 to 30.6 s warm (60.3 to 31.7 cold), byte-identical
+  (`perf/vae-decode`: the 2.1 vision tower gives way instead of the text encoder; 256 MiB driver
+  headroom against Windows paging); 2511 on SageAttention2 (Lightning-8 edit 8.09 to 7.25 s, the
+  40-step edit 94.4 to 86.8 s). **Parked: INT8 ConvRot for Layered** (`QIR_LAYERED_INT8`, off).
+  ConvRotLinear itself is 2.2–2.6x bf16 at Layered's shapes (M 8272 and 40000), but the split
+  does not fit: with bf16 linears it already peaks at 28.1 GB (~19 GB of fp8 weights and ~9 GB of
+  activations); the INT8 weights and scales are as large, and with the desktop's ~3.4 GB every
+  temporary tips the 32 GB card into paging (222 s with the packed fp8 upload; tensor-by-tensor
+  loading still peaked at 31.97 GB and both splits hit the 600 s timeout). Revisit on a larger
+  card or with block streaming.
