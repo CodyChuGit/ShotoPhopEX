@@ -5,7 +5,7 @@ build (docs/comfy/upstream.md has the brand checklist).
 
 Usage: python -I icon-tile.py <repo-root> <name> <letters> <tile-hex> <letter-hex> [<app-id>]
 
-  photocraft  Ps  #001E36 #31A8FF   (Photoshop)
+  photocraft  Pc  #001E36 #31A8FF   (PhotoCraft; navy and blue, its own letters)
   vectorcraft Ai  #330000 #FF9A00   (Illustrator)
   pdfcraft    @ribbon  -  -        (Acrobat: a red ribbon "A" on a white tile)
   solidcraft  @cube    -  -        (SolidWorks: a red cube with S and W on its faces)
@@ -34,6 +34,7 @@ FONT = find_font(
     r"C:\Windows\Fonts\segoeuib.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
     "/Library/Fonts/Arial Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 )
 # The cube's letters: a black weight, as SolidWorks' mark.
@@ -216,8 +217,8 @@ def main():
     )
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
-        f'  <!-- {name} app icon for local builds: an Adobe-style tile with "{letters}"; rendered by\n'
-        '       packaging/icon-tile.py (Segoe UI Bold). Not for a published build. -->\n'
+        f'  <!-- {name} app icon: a rounded tile with "{letters}"; rendered by\n'
+        '       packaging/icon-tile.py (Segoe UI Bold, or the bold sans the system has). -->\n'
         f'  <rect width="512" height="512" rx="112" fill="{bg_hex}"/>\n'
         '  <text x="256" y="356" text-anchor="middle" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif"\n'
         f'        font-weight="700" font-size="287" fill="{fg_hex}">{letters}</text>\n'
