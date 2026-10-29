@@ -261,3 +261,13 @@ step, the dev log and roadmap updated.
   NVFP4 for now (Krea 2: 9 % faster, a different sample per seed; per-layer FP4 GEMM 1.7–2.0x
   int8 alone, 1.1–1.6x with activation quantization). `benchmarks.md` §0; branches
   `perf/layered-attention` in both repositories, not merged.
+- 2026-10-29, afternoon: Upscale 2x 56.3 to 30.6 s warm (60.3 to 31.7 cold), byte-identical
+  (`perf/vae-decode`: the 2.1 vision tower gives way instead of the text encoder; 256 MiB driver
+  headroom against Windows paging); 2511 on SageAttention2 (Lightning-8 edit 8.09 to 7.25 s, the
+  40-step edit 94.4 to 86.8 s). **Parked: INT8 ConvRot for Layered** (`QIR_LAYERED_INT8`, off).
+  ConvRotLinear itself is 2.2–2.6x bf16 at Layered's shapes (M 8272 and 40000), but the split
+  does not fit: with bf16 linears it already peaks at 28.1 GB (~19 GB of fp8 weights and ~9 GB of
+  activations); the INT8 weights and scales are as large, and with the desktop's ~3.4 GB every
+  temporary tips the 32 GB card into paging (222 s with the packed fp8 upload; tensor-by-tensor
+  loading still peaked at 31.97 GB and both splits hit the 600 s timeout). Revisit on a larger
+  card or with block streaming.
