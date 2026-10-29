@@ -41,9 +41,9 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 # through ONNX Runtime, plan Phase 1), pinned by commit; the repository is private for now, so
 # `.cargo/config.toml` fetches it with the system git. The runtime library itself is loaded at run
 # time from a folder the user names (`integrations.runtimePath`); nothing is linked.
-gn-engine = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "f2bf49672d4adae80466a7c161b3745d07792157" }
-gn-perception = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "f2bf49672d4adae80466a7c161b3745d07792157", default-features = false, features = ["engine"] }
-gn-diffusion = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "f2bf49672d4adae80466a7c161b3745d07792157", features = ["cuda"], optional = true }
+gn-engine = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "8d4e86e39e2839c1b934845ae9cc706c18cda288" }
+gn-perception = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "8d4e86e39e2839c1b934845ae9cc706c18cda288", default-features = false, features = ["engine"] }
+gn-diffusion = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "8d4e86e39e2839c1b934845ae9cc706c18cda288", features = ["cuda"], optional = true }
 # The worker's log: the engines speak `tracing`; with `RUST_LOG` set the worker writes their
 # phase timings (load, encode, sampling, decode) to its stderr.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
