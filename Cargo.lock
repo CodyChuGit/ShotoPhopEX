@@ -3247,7 +3247,7 @@ dependencies = [
 [[package]]
 name = "gn-diffusion"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=df81a612b633649f9e2d37ecd69beb5bf431c6b2#df81a612b633649f9e2d37ecd69beb5bf431c6b2"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
 dependencies = [
  "anyhow",
  "gn-engine",
@@ -3258,7 +3258,7 @@ dependencies = [
 [[package]]
 name = "gn-engine"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=df81a612b633649f9e2d37ecd69beb5bf431c6b2#df81a612b633649f9e2d37ecd69beb5bf431c6b2"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
 dependencies = [
  "serde",
  "serde_json",
@@ -3267,7 +3267,7 @@ dependencies = [
 [[package]]
 name = "gn-perception"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=df81a612b633649f9e2d37ecd69beb5bf431c6b2#df81a612b633649f9e2d37ecd69beb5bf431c6b2"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -3279,7 +3279,7 @@ dependencies = [
 [[package]]
 name = "gn-segment"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=df81a612b633649f9e2d37ecd69beb5bf431c6b2#df81a612b633649f9e2d37ecd69beb5bf431c6b2"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -6520,7 +6520,7 @@ dependencies = [
 [[package]]
 name = "qwen-image-rs"
 version = "0.0.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=df81a612b633649f9e2d37ecd69beb5bf431c6b2#df81a612b633649f9e2d37ecd69beb5bf431c6b2"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
 dependencies = [
  "anyhow",
  "candle-core",
