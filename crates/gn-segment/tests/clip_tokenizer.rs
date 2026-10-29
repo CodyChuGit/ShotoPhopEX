@@ -1,12 +1,12 @@
-//! The CLIP tokenizer assembled from ComfyUI's `sd1_tokenizer` gives the ONNX route's
-//! tokenizer.json's ids (skipped when either is absent).
+//! The CLIP tokenizer assembled from ComfyUI's `sd1_tokenizer` gives the same ids as
+//! the SAM 3.1 model folder's tokenizer.json (skipped when either is absent).
 
 use std::path::Path;
 
 use gn_segment::text::ClipTokenizer;
 
 #[test]
-fn the_assembled_clip_tokenizer_matches_the_onnx_routes() -> anyhow::Result<()> {
+fn the_assembled_clip_tokenizer_matches_the_tokenizer_json() -> anyhow::Result<()> {
     let dir = Path::new(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\comfy\sd1_tokenizer");
     let json = Path::new(r"C:\Users\5090\Documents\_eval\native-models\sam3.1\tokenizer.json");
     if !dir.is_dir() || !json.is_file() {
