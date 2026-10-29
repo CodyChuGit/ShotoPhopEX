@@ -945,10 +945,9 @@ pub struct Integrations {
     /// for them; skipped when the card has too little free memory, given up when another
     /// generation starts first.
     pub warm_up_at_launch: bool,
-    /// The native worker's runtime folders, `;`-separated: where ONNX Runtime
-    /// (`onnxruntime.dll` / `libonnxruntime.so` and its providers) and the CUDA and cuDNN
-    /// libraries live. Nothing is read from `PATH`. Empty = the `runtime` folder beside the
-    /// executable when a package put one there ([`Integrations::runtime_folders`]), else the
+    /// The native worker's runtime folders, `;`-separated: where NVIDIA's CUDA libraries
+    /// (cuBLAS, cuBLASLt, cuRAND, the CUDA runtime) live. Nothing is read from `PATH`. Empty =
+    /// the `runtime` folder beside the executable when a package put one there ([`Integrations::runtime_folders`]), else the
     /// worker serves no native model.
     pub runtime_path: String,
     /// The native worker's model root: a ComfyUI `models` folder (read as it is: its

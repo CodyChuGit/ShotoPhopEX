@@ -209,11 +209,9 @@ publications, comply with trade controls; no reverse engineering; **no ITAR, mil
 nuclear, espionage or weapons end uses**; suing Meta over the materials terminates the licence;
 Meta may change the terms with immediate effect. Outputs (masks) are not restricted. For an
 open-source editor this is workable: the app ships no weights, points the user at the gated
-download, and shows the licence summary once. **The native engine's ONNX graphs are a
-derivative of the same checkpoint** (exported on the user's machine by
-`genai-native/tools/export_sam31.py` from `sam3.1_multiplex_fp16.safetensors`, 2026-10-19), so
-they carry the same licence and are never shipped either; the app ships the export script and
-the runtime loader, the user owns the files. Sources: [Meta SAM 3 / 3.1 repo](https://github.com/facebookresearch/sam3) · [SAM License](https://github.com/facebookresearch/sam3/blob/main/LICENSE) · [ComfyUI SAM 3.1 guide (official)](https://docs.comfy.org/tutorials/utility/video-segment-sam3) · [ComfyUI PR #13408](https://github.com/Comfy-Org/ComfyUI/pull/13408) · [SAM 3.1 release note (third party)](https://the-agent-report.com/2026/05/meta-sam-3-1-video-detection-multiplexing-may21/) · [Ultralytics SAM 3 page](https://docs.ultralytics.com/models/sam-3).
+download, and shows the licence summary once. The native engine runs the same checkpoint
+(`sam3.1_multiplex_fp16.safetensors`) on candle as it is; the ONNX graphs exported from it
+(2026-10-19) and their export script were retired with the ONNX Runtime route on 2026-10-29. Sources: [Meta SAM 3 / 3.1 repo](https://github.com/facebookresearch/sam3) · [SAM License](https://github.com/facebookresearch/sam3/blob/main/LICENSE) · [ComfyUI SAM 3.1 guide (official)](https://docs.comfy.org/tutorials/utility/video-segment-sam3) · [ComfyUI PR #13408](https://github.com/Comfy-Org/ComfyUI/pull/13408) · [SAM 3.1 release note (third party)](https://the-agent-report.com/2026/05/meta-sam-3-1-video-detection-multiplexing-may21/) · [Ultralytics SAM 3 page](https://docs.ultralytics.com/models/sam-3).
 | SeedVR2, 4x-UltraSharp, SUPIR | upscalers | **verify** (SeedVR2 is reported Apache-2.0; 4x-UltraSharp CC BY-NC-SA; SUPIR non-commercial) | Generative Upscale lane; licences must be checked per model before listing. |
 
 Sources: [FLUX.2 / Z-Image on AWS (hands-on)](https://builder.aws.com/content/363GAtT4hAB7stB8mbva5H1h1Ab/running-flux-2-and-z-image-diffusion-models-on-aws-a-hands-on-implementation-guide) · [best ComfyUI models 2026](https://iimagined.ai/blog/best-comfyui-models-2026) · [open-model comparison](https://www.pixazo.ai/blog/top-open-source-image-generation-models).
