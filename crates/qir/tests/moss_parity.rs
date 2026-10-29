@@ -100,6 +100,12 @@ fn dit_velocity_matches() -> Result<()> {
         let (cos, rel) = compare(&v, &r[&format!("v_neg_skip_t{t}")])?;
         println!("DiT negative (block 22 skipped) t={t}: cosine {cos:.6}, relative RMS {rel:.4}");
         assert!(cos > 0.995, "negative t={t}: cosine {cos}");
+        // Both branches in one batched pass.
+        let (vp, vn) = dit.forward_pair(&x, t as f32, &pos, &neg, &[22])?;
+        let (cp, _) = compare(&vp, &r[&format!("v_pos_t{t}")])?;
+        let (cn, _) = compare(&vn, &r[&format!("v_neg_skip_t{t}")])?;
+        println!("DiT pair t={t}: positive cosine {cp:.6}, negative {cn:.6}");
+        assert!(cp > 0.995 && cn > 0.995, "pair t={t}: {cp} {cn}");
     }
     Ok(())
 }
