@@ -15,14 +15,10 @@ workspace = true
 fake-server = []
 # The native worker also serves Qwen-Image-2.1 text to image (`gn-diffusion`: candle + the CUDA
 # kernels of qwen-image-rs, plan Phase 2). Off by default: it needs nvcc, CUTLASS and a CUDA
-# toolkit to build (docs/comfy/dev-environment-windows.md); the SAM 3.1 route needs none of that.
-# With it, SAM 3.1 also runs on candle on the GPU from its checkpoint (no ONNX Runtime).
+# toolkit to build (docs/comfy/dev-environment-windows.md). With it, SAM 3.1 runs on candle on the
+# GPU from its checkpoint (Rust rebuild R1); a build without it has no SAM 3.1 backend (the worker
+# answers `select.*` requests ModelMissing).
 native-diffusion = ["dep:gn-diffusion", "gn-perception/cuda"]
-# SAM 3.1's exported graphs through ONNX Runtime, the route without nvcc (the apps turn it on
-# by default; the workspace takes this crate without defaults). The -Native package builds
-# without it: SAM 3.1 then runs on candle only and no `ort` is in the worker (Rust rebuild R1).
-sam-onnx = ["gn-perception/onnx"]
-default = ["sam-onnx"]
 
 [dependencies]
 photocraft-codecs = { workspace = true }
@@ -35,12 +31,12 @@ thiserror = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = { workspace = true }
 # The native engine's worker channel (plan-native-engine §3.4) and its perception models (SAM 3.1
-# through ONNX Runtime, plan Phase 1), pinned by commit; the repository is private for now, so
-# `.cargo/config.toml` fetches it with the system git. The runtime library itself is loaded at run
-# time from a folder the user names (`integrations.runtimePath`); nothing is linked.
-gn-engine = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "1b0b15253b50409bb76c8f24466200d8c2f72181" }
-gn-perception = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "1b0b15253b50409bb76c8f24466200d8c2f72181", default-features = false, features = ["engine"] }
-gn-diffusion = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "1b0b15253b50409bb76c8f24466200d8c2f72181", features = ["cuda"], optional = true }
+# on candle, plan Phase 1 / Rust rebuild R1), pinned by commit; the repository is private for now,
+# so `.cargo/config.toml` fetches it with the system git. The NVIDIA runtime libraries come from a
+# folder the user names (`integrations.runtimePath`), put on the worker's `PATH`.
+gn-engine = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "eeb4eb9eb9e5bb9da7bcd9599788879577d318df" }
+gn-perception = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "eeb4eb9eb9e5bb9da7bcd9599788879577d318df", default-features = false, features = ["engine"] }
+gn-diffusion = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "eeb4eb9eb9e5bb9da7bcd9599788879577d318df", features = ["cuda"], optional = true }
 # The worker's log: the engines speak `tracing`; with `RUST_LOG` set the worker writes their
 # phase timings (load, encode, sampling, decode) to its stderr.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }

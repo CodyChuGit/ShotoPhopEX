@@ -27,6 +27,62 @@ top-level; their hooks moved into upstream's new files. No ComfyUI code came bac
 **Still open**
 
 - Merge the PR into `photoshopex`, then rebuild on the PC.
+## 2026-10-29 (evening): Upscale on fewer, larger tiles by default
+
+The owner chose the larger tiles after the seam crops (`photocraft-tests\bench\upscale-tiles`).
+On `perf/upscale-tiles`, `auto_grid` picks the fewest equal tiles of at most 1.15 MP each, never a
+strip of three or more, up to 16 per side (64 MP takes 9x9). An explicit `grid` overrides it,
+`tileMegapixels` asks for the old square tiles, and the result reports `grid`. The portrait, cat
+and bird at 2x take 2x2 instead of six tiles: 30.3 to 24.2 s, 30.0 to 24.3 s and 29.7 to 24.8 s
+(benchmarks.md §0). Recreate needs nothing: Upscale is not in the Generations library
+(`is_generative` leaves it out), so no Upscale record exists to replay.
+
+## 2026-10-29 (evening): warm up the AI models at launch; fewer Upscale tiles (the tiles prototype)
+
+The owner chose "try both" for the two optional speedups.
+- `feat/warmup` (genai-native `ae35245`, PhotoshopEX the same name). The preference
+  `integrations.warmUpAtLaunch` ("Warm up AI models at launch", on by default, in all 20
+  languages) makes the editor start the native worker after the first frame and load the
+  **default image template's** family. That's Krea 2 by default, not 2.1: the first text to
+  image uses the default, and only one family is resident. It runs `generate.engine.warmUp`
+  (`wait` for scripts), a worker run with `params.warmup` that loads and generates nothing.
+  - The VRAM guard is in the worker (`need_free`: the family's resident size plus 2 GB, asked
+    of the driver with nothing resident; the health reports no free memory before a pipeline
+    holds the context).
+  - Any other run cancels a warm-up in flight. A load already under way (Pipeline::load is
+    atomic) finishes first.
+  - Measured on fresh workers, first text to image at 864x1152: Krea 2 **12.6 to 3.6 s**
+    (the warm-up takes 6.1 s and holds 18.2 GB), 2.1 **15.3 to 3.7 s** (8.0 s, 25.0 GB).
+- `perf/upscale-tiles`: an opt-in Upscale `grid` ([columns, rows]). 2x2 is 28 to 32 % faster on
+  landscapes (cat 35.6 to 25.6 s, bird 34.0 to 23.2 s) and ties on the 3:4 portrait. Strips
+  of three (1.5 MP tiles) take 82 to 154 s. The crops are in
+  `photocraft-tests\bench\upscale-tiles`; the owner then made larger tiles the default (entry above).
+
+## 2026-10-29 (late afternoon): Upscale in one batched request; Upscale back in the background
+
+Branches: genai-native `perf/upscale-batch` (`dce1ce3`, on `perf/gemm-plan-5090`) and PhotoshopEX
+`perf/upscale-batch` (pinned to it, on `perf/vae-decode`).
+- 1A: the app sends all of Upscale's tiles in one request to the native 2.1 edit (`params.batch`,
+  each tile's seed). `Pipeline::generate_batch` encodes every tile first, with the transient vision
+  tower loaded once instead of per tile, then samples each one. The result is byte-identical, warm
+  32.5 to 30.8 s and cold 33.8 to 31.8 s, measured in interleaved ABCCBA order with cooldowns
+  (benchmarks.md §0). It falls back to tile by tile when a worker refuses the batch or answers with
+  another count. Cancel and timeout are not retried. The time limit covers each tile.
+- Found along the way: Upscale had always run inline (blocking the UI) because its nested
+  `image.imageSize` reset `jobs.spawn`. `Session::dispatch` now restores the caller's flag. An
+  audit found no other command that runs a nested command before its job. A background job also
+  drops its pre-job nested journal entries on apply, so a recorded action replays Upscale once, not
+  Image Size first as well. The re-apply recipe is in commit `bfa7c493`'s message, since the
+  v0.17.0 merge moved those lines to 844/863.
+- The sm120 GEMM plan (boundary fixed in `a84ab70`) is byte-identical but not a consistent win
+  across three slots, so it stays opt-in.
+- Bench gotcha: dot-sourcing `native-worker.ps1 -Stop` resets its `$Models` default in the
+  caller's scope, and PowerShell names are case-insensitive, so name the caller's variable
+  something else (`$modelRoot`).
+
+Next (the owner's "try both"): `perf/upscale-tiles` (4 or 5 larger tiles, seam crops for the
+owner first) and `feat/warmup` (warm up the AI models at launch).
+
 ## 2026-10-29: README around the generative features; the app icon reads "Pc"
 
 The owner asked for "Pc" in place of "Ps" (trademark), and for a README about the generative
@@ -41,6 +97,41 @@ asks forks to remove them). The app icon, titlebar mark and exe icon are a navy/
 Still open: the 3090 column (nothing measured yet); screenshots and GIFs of Select Subject and a
 Qwen edit captured in the app; a published release for a one-click install. CI on GitHub can't
 fetch the private genai-native, so every Rust job fails there before compiling.
+
+## 2026-10-29 (day): the speed pass on the 5090
+
+Branches (verified, not merged; the owner's OK pending): genai-native `perf/layered-attention`
+then `perf/vae-decode` (stacked, `e9a4ea1`), PhotoshopEX the same names (pinned).
+- Split into Layers on SageAttention2: 137.2 to 92.6 s warm (ComfyUI 124.8 s). Judged by
+  compositing the layers back onto the input (36.91 dB, inside flash's two-seed band): the
+  background layer's invented detail moves with any numeric change. Blocks 0/52/58 keep flash.
+- Upscale 2x 56.3 to 30.6 s warm, 60.3 to 31.7 s cold, byte-identical: the 2.1 f32 vision tower
+  gives way instead of the text encoder (which reloaded on every tile once the desktop held
+  ~3.4 GB); 256 MiB driver headroom against Windows paging; `warn_if_paging`.
+- 2511 on SageAttention2 too: Lightning-8 edit 8.09 to 7.25 s, the 40-step edit 94.4 to 86.8 s.
+- Rejected or skipped: fp8 GEMM for Layered (no gain once activations are scaled), int8 ConvRot
+  from the fp8 file (165 effective TOPS at M≈40k and a 12 s re-conversion per split), Q8_0 text
+  encoder as default (Edit moves 38 dB for no gain), NVFP4 (Krea 2 9 % faster, another sample per
+  seed), CUDA graphs (the GPU is busy ~97 % of a 2.1 step).
+- The card runs power-capped (575 W, SW Power Cap in 98 of 105 busy samples, 61 C).
+- Also on branches: `fix/model-names` (template file names, the picker's installed badges),
+  `cleanup/remove-onnx` (both repositories), genai-native `fix/cuda-test-build`.
+
+## 2026-10-29: ONNX Runtime route removed (branch `cleanup/remove-onnx`)
+
+The owner's call: no `ort` anywhere. genai-native `cleanup/remove-onnx` deletes gn-perception's
+`onnx` feature, its `ort` dependency, the ONNX modules (runtime, sam3, sam31, tokenizer,
+resample), the `gn-sam` tool, `export_sam31.py`, gn-harness's `sam-ort` engine and gn-segment's
+ONNX comparison example and dev-dependencies; SAM 3.1 runs on candle exactly as before. Here:
+the `sam-onnx` features and `default`s of `photocraft`, `photocraft-cli` and `photocraft-genai`
+are gone (the apps have no default features, so `package.ps1 -Native` drops its
+`--no-default-features` with the same feature set), `runtime.ps1` loses `-Ort` / `-Cudnn` (CUDA
+libraries only), comments and `dev-environment-windows.md` no longer describe ONNX Runtime. A
+build without `native-diffusion` now has no SAM 3.1 backend (the worker answers ModelMissing);
+before, it ran the ONNX graphs. Gates against the local genai-native worktree (cargo `--config`
+patches): workspace check and clippy `-D warnings` clean, genai 14 + engine lib 1,928 pass,
+`xtask layers` / `wasm` OK. Open: bump `crates/genai/Cargo.toml`'s genai-native rev to the
+cleanup branch's commit once it merges (the pin here is unchanged).
 
 ## 2026-10-29: ComfyUI engine removed
 

@@ -660,7 +660,7 @@ pub(crate) fn gen_err(e: photocraft_genai::Error) -> EngineError {
 static NATIVE: std::sync::OnceLock<std::sync::Mutex<Option<Arc<photocraft_genai::native::NativeBackend>>>> = std::sync::OnceLock::new();
 
 /// SAM 3.1's precision on the worker's GPU: `f16` (1.9x the speed of f32; select by text on a
-/// new picture 273–278 ms through the app against ONNX Runtime's 249–346 ms, every mask at an
+/// new picture 273–278 ms through the app against the retired ONNX Runtime route's 249–346 ms, every mask at an
 /// IoU of at least 0.993 against ComfyUI's own f32 node: genai-native gn-segment F16.md), or
 /// `f32` with `PHOTOCRAFT_SAM_PRECISION=f32` (equal to ComfyUI's within 3 pixels). Not yet a
 /// preference: the owner decides whether it gets one.
@@ -778,6 +778,54 @@ pub(crate) fn native_start(s: &Session) -> Result<()> {
         let _ = b.health();
     });
     Ok(())
+}
+
+/// The card memory a warm-up wants free before it loads `template`'s models: what that family
+/// holds resident on the RTX 5090 plus 2 GB for the first generation's working set (measured
+/// 2026-10-29 from the worker's free memory before and after a warm-up).
+#[cfg(not(target_arch = "wasm32"))]
+fn warm_need(template: &str) -> u64 {
+    const GB: u64 = 1_000_000_000;
+    match template.split('/').next().unwrap_or("") {
+        t if t.starts_with("krea2") => WARM_KREA2_GB * GB,
+        _ => WARM_QWEN21_GB * GB,
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+const WARM_KREA2_GB: u64 = 20; // 18.2 GB resident
+#[cfg(not(target_arch = "wasm32"))]
+const WARM_QWEN21_GB: u64 = 27; // 25.0 GB resident
+
+/// Start the worker and load the default image template's models (`generate.engine.warmUp`):
+/// on a thread of its own, or with `wait` before returning (the bench). It is skipped on a card
+/// without the room ([`warm_need`]); any generation that starts meanwhile cancels it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_warm_up(s: &Session, wait: bool) -> Result<Value> {
+    use photocraft_genai::native::WarmUp;
+    let template = s.prefs().integrations.default_image_template.clone();
+    photocraft_genai::template::find(&template).map_err(gen_err)?;
+    native_backend(s)?;
+    let b = native_current(s).ok_or_else(|| EngineError::Other("no native worker".into()))?;
+    let need = warm_need(&template);
+    let warm = move || {
+        let started = std::time::Instant::now();
+        let r = b.warm_up(&template, need);
+        let ms = started.elapsed().as_millis() as u64;
+        match r {
+            Ok(WarmUp::Warm) => json!({"template": template, "state": "warm", "ms": ms}),
+            Ok(WarmUp::Skipped(why)) => json!({"template": template, "state": "skipped", "detail": why, "ms": ms}),
+            Ok(WarmUp::Cancelled) => json!({"template": template, "state": "cancelled", "ms": ms}),
+            Err(e) => json!({"template": template, "state": "failed", "detail": e.to_string(), "ms": ms}),
+        }
+    };
+    if wait {
+        return Ok(warm());
+    }
+    std::thread::Builder::new()
+        .name("warm-up".into())
+        .spawn(move || drop(warm()))
+        .map_err(|e| EngineError::Other(format!("could not start the warm-up: {e}")))?;
+    Ok(json!({"state": "started"}))
 }
 
 /// Stop the worker this process started (the next generative command starts a fresh one).
@@ -4386,9 +4434,13 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
     let health = backend.map(|b| b.health());
     let online = health.as_ref().is_some_and(|h| h.ok);
     let mut folders: BTreeMap<String, Option<Vec<String>>> = BTreeMap::new();
+    // The native worker's index names the templates it serves rather than model files (as in
+    // `resolve_auto`): a served template has every slot installed.
+    let served: Vec<String> = if online { backend.and_then(|b| b.model_files("").ok()).unwrap_or_default() } else { Vec::new() };
     let mut templates = Vec::new();
     for t in template::builtin() {
         let m = &t.meta;
+        let serves = served.iter().any(|s| s == &m.id);
         let mut slots = Vec::new();
         for slot in &m.models {
             let files = if online {
@@ -4396,7 +4448,7 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
             } else {
                 None
             };
-            let installed = files.as_ref().map(|f| f.iter().any(|x| x == &slot.default));
+            let installed = files.as_ref().map(|f| serves || f.iter().any(|x| x == &slot.default));
             let v = json!({"placeholder": slot.placeholder, "folder": slot.folder, "file": slot.default, "installed": installed});
             slots.push(v);
         }
@@ -4813,7 +4865,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Image.
             menu: &[],
             shortcut: None,
-            params: r#"{"scale":1..4=2,"tileMegapixels":0.25..2=1,"prompt"?:string,"template"?:string,"seed"?:int,"steps"?:int,"guidance"?:number,"loras"?:[{"file","strength"}],"restoreStrength":0..1.5=0.5,"name"?:string} → {"layer","tiles","width","height","elapsedMs","template"} (the document enlarged by scale the plain way (bicubic), then redrawn tile by tile by the edit model with a restore prompt (AusBoss's wording unless prompt is given): tiles of about tileMegapixels sharing a 128-px strip, each moved back onto its source and matched to its colours, the strips faded together; the redraw is a new layer above. Auto: Qwen-Image-2.1's edit on the native engine when it serves it (with the Restore LoRA at restoreStrength when the LoRA folder has qwen-image-2.1-restore.safetensors and no loras are given), else the edit default)"#,
+            params: r#"{"scale":1..4=2,"tileMegapixels"?:0.25..2,"prompt"?:string,"template"?:string,"seed"?:int,"steps"?:int,"guidance"?:number,"loras"?:[{"file","strength"}],"restoreStrength":0..1.5=0.5,"grid"?:[columns,rows],"name"?:string} → {"layer","tiles","grid","width","height","elapsedMs","template"} (the document enlarged by scale the plain way (bicubic), then redrawn tile by tile by the edit model with a restore prompt (AusBoss's wording unless prompt is given): by default the fewest equal tiles of at most ~1.15 MP each, never a strip of three or more, sharing at least a 128-px strip (grid [columns, rows], 1 to 16 each, names the tiling; tileMegapixels asks for square tiles of about that size instead), each moved back onto its source and matched to its colours, the strips faded together; the redraw is a new layer above. Auto: Qwen-Image-2.1's edit on the native engine when it serves it (with the Restore LoRA at restoreStrength when the LoRA folder has qwen-image-2.1-restore.safetensors and no loras are given), else the edit default)"#,
             enabled: edit_enabled,
             run: upscale::run_upscale,
             journal: true,

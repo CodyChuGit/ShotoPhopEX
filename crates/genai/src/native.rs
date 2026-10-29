@@ -5,18 +5,18 @@
 //! fresh one.
 //!
 //! With a runtime folder and a model root configured (`integrations.runtimePath`,
-//! `integrations.modelsPath`) the worker serves `gn-perception`'s engine: SAM 3.1 through ONNX
-//! Runtime (plan Phase 1), and, built with the `native-diffusion` feature, `gn-diffusion`'s:
+//! `integrations.modelsPath`) the worker serves `gn-perception`'s engine: SAM 3.1 on candle
+//! (plan Phase 1, Rust rebuild R1; a backend only with `native-diffusion`), and, built with the `native-diffusion` feature, `gn-diffusion`'s:
 //! Qwen-Image-2.1 text to image from the snapshot under the model root (plan Phase 2), the two
 //! behind one `gn_engine::Multi`. Without them it serves `gn-engine`'s fake engine, which is
 //! enough to route a request end to end (and to test the editor without a GPU). Pixels cross as
 //! binary frames; other values use the editor’s `Request`/`Response` types.
-//! The runtime folders go on the worker's `PATH` too: the CUDA libraries the diffusion engine
-//! links are found there, as the ONNX Runtime ones are.
+//! The runtime folders go on the worker's `PATH` too: the CUDA libraries candle links are found
+//! there.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use gn_engine::client::{ClientError, EngineClient};
 use gn_engine::protocol::{Blob, ErrorKind, RunRequest};
@@ -43,6 +43,19 @@ pub struct NativeBackend {
     /// Why the last start failed, until one succeeds.
     start_error: Mutex<Option<String>>,
     timeout_ms: AtomicU64,
+    /// Set by every run but a warm-up's: a warm-up in flight stops ([`Self::warm_up`]).
+    warm_cancel: AtomicBool,
+}
+
+/// What [`NativeBackend::warm_up`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WarmUp {
+    /// The template's models are loaded.
+    Warm,
+    /// Not loaded, and why (the card's free memory, an unhealthy worker).
+    Skipped(String),
+    /// Another request came first.
+    Cancelled,
 }
 
 const IDLE: u8 = 0;
@@ -137,6 +150,42 @@ impl NativeBackend {
             busy: AtomicU8::new(IDLE),
             start_error: Mutex::new(None),
             timeout_ms: AtomicU64::new(600_000),
+            warm_cancel: AtomicBool::new(false),
+        }
+    }
+
+    /// Start the worker and load `template`'s models ahead of the first request, when the card
+    /// has `need_free` bytes free (the VRAM guard; a card it cannot tell about is not warmed).
+    /// Any other run stops it: one that arrives meanwhile cancels the warm-up, which gives way
+    /// once the worker answers (a load in progress finishes first; the next request's own
+    /// family switch frees what it does not use).
+    pub fn warm_up(&self, template: &str, need_free: u64) -> Result<WarmUp> {
+        self.warm_cancel.store(false, Ordering::SeqCst);
+        let h = self.health();
+        if !h.ok {
+            return Ok(WarmUp::Skipped(h.error.unwrap_or_else(|| "the engine is not ready".into())));
+        }
+        struct Warm<'a>(&'a AtomicBool);
+        impl Progress for Warm<'_> {
+            fn report(&self, _fraction: f32, _message: &str) {}
+            fn cancelled(&self) -> bool {
+                self.0.load(Ordering::SeqCst)
+            }
+        }
+        if self.warm_cancel.load(Ordering::SeqCst) {
+            return Ok(WarmUp::Cancelled);
+        }
+        let mut req = Request::new(template, "");
+        req.params.insert("warmup".into(), Value::Bool(true));
+        // The worker checks the card's free memory before it loads (the guard).
+        req.params.insert("need_free".into(), Value::from(need_free));
+        match self.run(&req, &Warm(&self.warm_cancel)) {
+            Ok(r) => match r.texts.first().and_then(|t| t.strip_prefix("skipped: ")) {
+                Some(why) => Ok(WarmUp::Skipped(why.to_string())),
+                None => Ok(WarmUp::Warm),
+            },
+            Err(Error::Cancelled) => Ok(WarmUp::Cancelled),
+            Err(e) => Err(e),
         }
     }
 
@@ -394,6 +443,9 @@ impl GenerativeBackend for NativeBackend {
     }
 
     fn run(&self, req: &Request, progress: &dyn Progress) -> Result<Response> {
+        if !req.params.contains_key("warmup") {
+            self.warm_cancel.store(true, Ordering::SeqCst);
+        }
         let encode = std::time::Instant::now();
         let tpl = template::find(&req.template)?;
         let (image, mask, references, bytes) = blobs_of(req);
@@ -418,7 +470,10 @@ impl GenerativeBackend for NativeBackend {
         };
         let started = std::time::Instant::now();
         let encode_ms = encode.elapsed().as_millis() as u64;
-        let timeout = std::time::Duration::from_millis(self.timeout_ms.load(Ordering::Relaxed));
+        // A batch (Upscale's tiles) is one generation per seed, each given the whole limit.
+        let runs = req.params.get("batch").and_then(serde_json::Value::as_array).map_or(1, |a| a.len().max(1));
+        let limit = std::time::Duration::from_millis(self.timeout_ms.load(Ordering::Relaxed));
+        let timeout = limit.checked_mul(u32::try_from(runs).unwrap_or(u32::MAX)).unwrap_or(std::time::Duration::MAX);
         let deadline = Deadline { progress, started, timeout, expired: std::cell::Cell::new(false) };
         self.busy.store(RUNNING, Ordering::SeqCst);
         let _busy = Busy(&self.busy);
@@ -472,8 +527,8 @@ impl GenerativeBackend for NativeBackend {
     }
 }
 
-/// The worker flags the preferences translate into: `--runtime <dir;dir>` (where ONNX Runtime
-/// and the CUDA / cuDNN libraries live) and `--models <dir>` (the native model root, one
+/// The worker flags the preferences translate into: `--runtime <dir;dir>` (where the NVIDIA
+/// CUDA libraries live) and `--models <dir>` (the native model root, one
 /// subfolder per model). Empty preferences give no flags, and the worker serves the fake engine.
 pub fn worker_args(runtime_path: &str, models_path: &str) -> Vec<String> {
     let (r, m) = (runtime_path.trim(), models_path.trim());
@@ -488,8 +543,8 @@ pub fn runtime_dirs(runtime_path: &str) -> Vec<PathBuf> {
     runtime_path.split(';').map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from).collect()
 }
 
-/// The engines a worker with these flags serves: the perception engine (SAM 3.1 through ONNX
-/// Runtime) with `--runtime` and `--models`, the diffusion engine (Qwen-Image-2.1, with the
+/// The engines a worker with these flags serves: the perception engine (SAM 3.1 on candle)
+/// with `--runtime` and `--models`, the diffusion engine (Qwen-Image-2.1, with the
 /// `native-diffusion` feature) with `--models`. Empty without a model root.
 fn engines_for(args: &[String]) -> Vec<Box<dyn gn_engine::Engine>> {
     let mut engines: Vec<Box<dyn gn_engine::Engine>> = Vec::new();
@@ -568,8 +623,8 @@ fn missing_cuda_libraries(dirs: &[PathBuf]) -> Vec<&'static str> {
 /// given, binds a loopback port, prints the port line, serves until the editor says quit (or
 /// goes away; with `--stay` it outlives its clients, for a worker started by hand that many
 /// CLI processes join through `PHOTOCRAFT_NATIVE_ENGINE=port:token`). Returns the exit code.
-/// With `--runtime` and `--models` it serves the perception engine (SAM 3.1 through ONNX
-/// Runtime) and, when built with it, the diffusion engine; otherwise the fake engine.
+/// With `--runtime` and `--models` it serves the perception engine (SAM 3.1 on candle)
+/// and, when built with it, the diffusion engine; otherwise the fake engine.
 pub fn engine_main(args: &[String]) -> i32 {
     // The engines report through `tracing`; `RUST_LOG` (env_logger directives, `info` for the
     // phase timings) turns the worker's stderr into their log. Silent otherwise.

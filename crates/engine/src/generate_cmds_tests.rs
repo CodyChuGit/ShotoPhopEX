@@ -229,6 +229,22 @@ fn health_and_models_report_the_server() {
 }
 
 #[test]
+fn a_worker_that_lists_only_templates_marks_their_files_installed() {
+    // gn-diffusion's index names the templates it serves, not files: a served template's
+    // slots are installed and the others' are not, so the picker's badges follow the worker.
+    let missing = "qwen_image_layered_fp8mixed.safetensors".to_string();
+    let fake = FakeNative::start_with(Options { templates_only: true, missing_files: vec![missing.clone()], ..Default::default() }).unwrap();
+    let mut s = session(&fake.url);
+    let m = s.execute(MODELS, json!({})).unwrap();
+    let templates = m["templates"].as_array().unwrap();
+    let slot_installed = |t: &Value| t["models"].as_array().unwrap().iter().all(|s| s["installed"] == true);
+    for t in templates {
+        let lacks = t["models"].as_array().unwrap().iter().any(|s| s["file"] == missing.as_str());
+        assert_eq!(slot_installed(t), !lacks, "{}", t["id"]);
+    }
+}
+
+#[test]
 fn parameters_are_validated_before_anything_runs() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);

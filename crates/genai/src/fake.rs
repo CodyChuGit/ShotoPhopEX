@@ -20,6 +20,12 @@ pub struct Options {
     pub missing_files: Vec<String>,
     pub matte: Option<[f32; 4]>,
     pub enhanced_text: Option<String>,
+    /// The card's free memory as the health reports it (none: a card it cannot tell about).
+    pub vram_free: Option<u64>,
+    /// Answer a `batch` request with one picture, as a worker without batches would.
+    pub no_batch: bool,
+    /// The index lists the templates served and no per-folder files, as gn-diffusion's does.
+    pub templates_only: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -34,6 +40,9 @@ impl Default for Options {
             missing_files: Vec::new(),
             matte: None,
             enhanced_text: None,
+            vram_free: None,
+            no_batch: false,
+            templates_only: false,
         }
     }
 }
@@ -112,12 +121,23 @@ impl Engine for FakeEngine {
         "fake".into()
     }
     fn health(&mut self) -> Health {
-        Health { ok: true, engine: "fake".into(), device: "CPU fake".into(), vram_total: None, vram_free: None, resident: Vec::new(), detail: String::new() }
+        Health {
+            ok: true,
+            engine: "fake".into(),
+            device: "CPU fake".into(),
+            vram_total: None,
+            vram_free: self.options.vram_free,
+            resident: Vec::new(),
+            detail: String::new(),
+        }
     }
     fn index(&mut self, dir: &str) -> Value {
         let templates = crate::template::builtin();
         let installed: Vec<_> =
             templates.iter().filter(|t| !t.meta.models.iter().any(|m| self.options.missing_files.contains(&m.default))).map(|t| &t.meta.id).collect();
+        if self.options.templates_only {
+            return json!({"dir":dir,"installed":installed});
+        }
         let mut folders: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for t in &templates {
             for slot in &t.meta.models {
@@ -177,11 +197,41 @@ impl Engine for FakeEngine {
         if let Some(e) = &self.options.fail {
             return Err(EngineError::new(ErrorKind::Internal, e));
         }
+        // A warm-up loads (the delay above) and generates nothing, as the real worker answers one.
+        if req.params.get("warmup").and_then(Value::as_bool) == Some(true) {
+            let free = self.options.vram_free;
+            let text = match req.params.get("need_free").and_then(Value::as_u64) {
+                Some(need) if free.is_none_or(|f| f < need) => {
+                    format!("skipped: {:.1} GB free on the card, {:.1} GB wanted", free.unwrap_or(0) as f64 / 1e9, need as f64 / 1e9)
+                }
+                _ => "warm".into(),
+            };
+            return Ok((DoneInfo { images: Vec::new(), texts: vec![text], seed: req.seed, elapsed_ms: 0 }, Vec::new()));
+        }
         if req.task == "text" {
             let prompt = req.prompt.rsplit("Instruction: ").next().unwrap_or(&req.prompt).rsplit("Idea: ").next().unwrap_or(&req.prompt);
             let text = self.options.enhanced_text.clone().unwrap_or_else(|| format!("Enhanced: {prompt}"));
             return Ok((DoneInfo { images: Vec::new(), texts: vec![text], seed: req.seed, elapsed_ms: 0 }, Vec::new()));
         }
+        // A batch of edits, as the real worker answers one: each picture drawn alone.
+        if !self.options.no_batch && req.params.contains_key("batch") {
+            let mut descriptors = Vec::new();
+            let mut pictures = Vec::new();
+            for (k, b) in req.image.iter().chain(req.references.iter()).enumerate() {
+                let one = RunRequest { image: Some(b.clone()), references: Vec::new(), ..req.clone() };
+                let (_, mut drawn) = self.draw(&one, blobs)?;
+                descriptors.push(Blob { width: b.width, height: b.height, channels: 4, index: k as u32 });
+                pictures.push(drawn.swap_remove(0));
+            }
+            return Ok((DoneInfo { images: descriptors, texts: Vec::new(), seed: req.seed, elapsed_ms: 0 }, pictures));
+        }
+        let (descriptors, pictures) = self.draw(req, blobs)?;
+        Ok((DoneInfo { images: descriptors, texts: Vec::new(), seed: req.seed, elapsed_ms: 0 }, pictures))
+    }
+}
+impl FakeEngine {
+    /// The pictures a run returns: one per segment or layer, else one.
+    fn draw(&self, req: &RunRequest, blobs: &[Vec<u8>]) -> Result<(Vec<Blob>, Vec<Vec<u8>>), EngineError> {
         let (w, h) = req.image.as_ref().map(|b| (b.width, b.height)).unwrap_or((req.width.max(1), req.height.max(1)));
         let n = (w as usize)
             .checked_mul(h as usize)
@@ -236,7 +286,7 @@ impl Engine for FakeEngine {
             descriptors.push(Blob { width: w, height: h, channels, index: layer as u32 });
             pictures.push(data);
         }
-        Ok((DoneInfo { images: descriptors, texts: Vec::new(), seed: req.seed, elapsed_ms: 0 }, pictures))
+        Ok((descriptors, pictures))
     }
 }
 #[cfg(test)]
