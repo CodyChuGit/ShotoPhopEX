@@ -113,6 +113,19 @@ extern "C" {
         k: i32,
         stream: *mut std::ffi::c_void,
     ) -> i32;
+    // The same with MOSS-Image's SiTU of gate `g` and hidden `p` (quant_ops.cu `SituRow`).
+    #[allow(clippy::too_many_arguments)]
+    fn situ_rotate_quantize_rows_launch(
+        out: *mut u8,
+        g: *const std::ffi::c_void,
+        ld_g: std::ffi::c_long,
+        p: *const std::ffi::c_void,
+        ld_p: std::ffi::c_long,
+        row_scale: *mut f32,
+        m: i32,
+        k: i32,
+        stream: *mut std::ffi::c_void,
+    ) -> i32;
 }
 
 /// Largest K the fused rotate+quantize kernel takes (8 warps x 8 chunks x 256).
@@ -274,7 +287,10 @@ fn rotate_quantize_rows_fused(x: &Tensor) -> Result<(Tensor, Tensor)> {
 /// row-strided views (unit inner stride, `ld >= K`, see
 /// [`row_strided_2d`]) — two tensors or the column halves of one `(M, 2K)`
 /// merged GEMM output — so the product `h` is never materialized.
-struct SwiGluRotateQuantize;
+struct SwiGluRotateQuantize {
+    /// MOSS-Image's SiTU (`g` the gate, `p` the hidden) instead of SwiGLU.
+    situ: bool,
+}
 impl candle_core::CustomOp3 for SwiGluRotateQuantize {
     fn name(&self) -> &'static str {
         "swiglu-rotate-quantize-rows"
@@ -322,8 +338,9 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
             if !gp.is_multiple_of(16) || !pp.is_multiple_of(16) {
                 candle_core::bail!("swiglu-rotate-quantize: g/p views not 16-B aligned (g {gp:#x}, p {pp:#x})");
             }
+            let launch = if self.situ { situ_rotate_quantize_rows_launch } else { swiglu_rotate_quantize_rows_launch };
             let rc = unsafe {
-                swiglu_rotate_quantize_rows_launch(
+                launch(
                     op as *mut u8,
                     gp as *const std::ffi::c_void,
                     ld_g as std::ffi::c_long,
@@ -346,6 +363,10 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
 /// Fused SwiGLU + rotate + quantize: `g, p (M,K) bf16` (row-strided views
 /// allowed) -> (`rotated int8 of silu(g)*p (M,K) u8`, `row_scale (M,) f32`).
 fn swiglu_rotate_quantize_rows_fused(g: &Tensor, p: &Tensor) -> Result<(Tensor, Tensor)> {
+    gated_rotate_quantize_rows_fused(g, p, false)
+}
+
+fn gated_rotate_quantize_rows_fused(g: &Tensor, p: &Tensor, situ: bool) -> Result<(Tensor, Tensor)> {
     let (m, k) = g.dims2()?;
     anyhow::ensure!(p.dims2()? == (m, k), "swiglu-rotate-quantize: g {:?} vs p {:?}", g.dims(), p.dims());
     if m == 0 {
@@ -353,7 +374,7 @@ fn swiglu_rotate_quantize_rows_fused(g: &Tensor, p: &Tensor) -> Result<(Tensor, 
         return Ok((Tensor::zeros((0, k), candle_core::DType::U8, dev)?, Tensor::zeros(0, candle_core::DType::F32, dev)?));
     }
     let row_scale = Tensor::zeros(m, candle_core::DType::F32, g.device())?;
-    let x_i8 = g.apply_op3(p, &row_scale, SwiGluRotateQuantize)?;
+    let x_i8 = g.apply_op3(p, &row_scale, SwiGluRotateQuantize { situ })?;
     Ok((x_i8, row_scale))
 }
 
@@ -809,6 +830,14 @@ impl ConvRotLinear {
         let (g2, p2) = if dims.len() == 2 { (g.clone(), p.clone()) } else { (g.reshape((m, k))?, p.reshape((m, k))?) };
         let (x_i8, row_scale) = swiglu_rotate_quantize_rows_fused(&g2, &p2)?;
         self.gemm_dequant(&dims[..dims.len() - 1], &x_i8, &row_scale, out_ty)
+    }
+
+    /// [`Self::forward_swiglu`] with MOSS-Image's SiTU of the gate `g` and the hidden `h`, 2-D
+    /// row-strided views (the halves of the merged up|gate output) read in place.
+    pub fn forward_situ(&self, g: &Tensor, h: &Tensor, out_ty: EpilogueOut) -> Result<Tensor> {
+        let (m, _) = g.dims2()?;
+        let (x_i8, row_scale) = gated_rotate_quantize_rows_fused(g, h, true)?;
+        self.gemm_dequant(&[m], &x_i8, &row_scale, out_ty)
     }
 
     /// Shared head of the plain forwards: `quant` maps the `(M,K)` bf16

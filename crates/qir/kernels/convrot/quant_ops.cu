@@ -151,6 +151,28 @@ struct SwiGluRow {
   }
 };
 
+// MOSS-Image's SiTU, 4·tanh(g/4)·sigmoid(g) · 25·tanh(h/25), of a gate row `g` and a hidden row
+// `h`, the same way: f32, never stored.
+struct SituRow {
+  const __nv_bfloat16* g;
+  long ld_g;
+  const __nv_bfloat16* h;
+  long ld_h;
+  __device__ __forceinline__ void load(long row, int col, float (&v)[8]) const {
+    uint4 rg = *reinterpret_cast<const uint4*>(g + row * ld_g + col);
+    uint4 rh = *reinterpret_cast<const uint4*>(h + row * ld_h + col);
+    const __nv_bfloat162* hg = reinterpret_cast<const __nv_bfloat162*>(&rg);
+    const __nv_bfloat162* hh = reinterpret_cast<const __nv_bfloat162*>(&rh);
+#pragma unroll
+    for (int e = 0; e < 4; ++e) {
+      float2 a = __bfloat1622float2(hg[e]);
+      float2 b = __bfloat1622float2(hh[e]);
+      v[2 * e] = 4.0f * tanhf(a.x * 0.25f) / (1.0f + expf(-a.x)) * 25.0f * tanhf(b.x * 0.04f);
+      v[2 * e + 1] = 4.0f * tanhf(a.y * 0.25f) / (1.0f + expf(-a.y)) * 25.0f * tanhf(b.y * 0.04f);
+    }
+  }
+};
+
 // One CTA per row. Warp w handles chunks w, w + 8, ... (up to CPW of them),
 // keeping the rotated f32 values in registers until the row amax is known.
 // Same output contract as quantize_rows_fused_k: int8 bytes + row_scale[row]
@@ -273,4 +295,15 @@ extern "C" int swiglu_rotate_quantize_rows_launch(
   if (ld_g % 8 != 0 || ld_p % 8 != 0 || ld_g < K || ld_p < K) return 2;
   if (M <= 0) return 0;
   return launch_rotate_quantize(out, SwiGluRow{g, ld_g, p, ld_p}, row_scale, M, K, s);
+}
+
+// Fused SiTU + rotate + quantize, the SwiGLU launch's contract with `p` the hidden rows.
+extern "C" int situ_rotate_quantize_rows_launch(
+    unsigned char* out, const __nv_bfloat16* g, long ld_g, const __nv_bfloat16* p, long ld_p,
+    float* row_scale, int M, int K, cudaStream_t s) {
+  if (!rq_k_ok(K)) return 1;
+  if (((size_t)g & 15) != 0 || ((size_t)p & 15) != 0 || ((size_t)out & 7) != 0) return 2;
+  if (ld_g % 8 != 0 || ld_p % 8 != 0 || ld_g < K || ld_p < K) return 2;
+  if (M <= 0) return 0;
+  return launch_rotate_quantize(out, SituRow{g, ld_g, p, ld_p}, row_scale, M, K, s);
 }

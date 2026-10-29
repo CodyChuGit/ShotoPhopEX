@@ -195,13 +195,12 @@ impl MossPipeline {
         for i in 0..n {
             check()?;
             let t = sig[i] * 1000.0;
-            let pos = self.dit.forward(&x, t, &cond, &[])?;
             let v = match &uncond {
                 Some(u) => {
-                    let neg = self.dit.forward(&x, t, u, &[UNCOND_SKIP])?;
+                    let (pos, neg) = self.dit.forward_pair(&x, t, &cond, u, &[UNCOND_SKIP])?;
                     (&neg + ((pos - &neg)? * f64::from(req.guidance))?)?
                 }
-                None => pos,
+                None => self.dit.forward(&x, t, &cond, &[])?,
             };
             x = (x + (v * f64::from(sig[i + 1] - sig[i]))?)?;
             progress(0.05 + 0.85 * (i + 1) as f32 / n as f32, "Sampling");

@@ -213,6 +213,23 @@ pub enum QLinear {
 }
 
 impl QLinear {
+    /// `self(situ(hidden, gate))` for the merged `hg (M, 2F)` (hidden first), the activation
+    /// rotated and quantized straight from `hg` in one kernel when this is a ConvRot linear;
+    /// `None` otherwise (the caller applies SiTU itself).
+    pub fn forward_situ(&self, hg: &Tensor) -> Result<Option<Tensor>> {
+        match self {
+            #[cfg(feature = "convrot")]
+            Self::Convrot(l, None) => {
+                let f = hg.dim(1)? / 2;
+                Ok(Some(l.forward_situ(&hg.narrow(1, f, f)?, &hg.narrow(1, 0, f)?, crate::convrot::EpilogueOut::Bf16)?))
+            }
+            _ => {
+                let _ = hg;
+                Ok(None)
+            }
+        }
+    }
+
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         match self {
             Self::Dense(l) => Ok(l.forward(x)?),
