@@ -88,15 +88,34 @@ pub fn pixels(rgb: &RgbImage) -> Result<Tensor> {
 
 /// Kontext uses byte RGB internally, as the graph's Pillow resizer does.
 pub fn kontext(rgb: &RgbImage) -> Result<RgbImage> {
-    rgb_image(&resize_kontext(&pixels(rgb)?)?)
+    let ((w, h), (x, y, cw, ch)) = crate::edit2511_prep::kontext_geometry(rgb.height() as usize, rgb.width() as usize)?;
+    if x == 0 && y == 0 && cw == w && ch == h {
+        return Ok(rgb.clone());
+    }
+    // A seed change repeats the same graph resize before the conditioning cache lookup.
+    static CACHE: std::sync::OnceLock<Mutex<Option<(RgbImage, RgbImage)>>> = std::sync::OnceLock::new();
+    let mut slot = CACHE.get_or_init(|| Mutex::new(None)).lock().map_err(|_| anyhow::anyhow!("2511 Kontext lock poisoned"))?;
+    if let Some((input, output)) = slot.as_ref() {
+        if input == rgb {
+            return Ok(output.clone());
+        }
+    }
+    let output = rgb_image(&resize_kontext(&pixels(rgb)?)?)?;
+    if rgb.as_raw().len() <= 64 * 1024 * 1024 {
+        *slot = Some((rgb.clone(), output.clone()));
+    } else {
+        *slot = None;
+    }
+    Ok(output)
 }
+
 fn rgb_image(hwc: &Tensor) -> Result<RgbImage> {
     let (h, w, _) = hwc.dims3()?;
     let bytes = (hwc.clamp(0., 1.)? * 255.)?.to_dtype(DType::U8)?.to_device(&Device::Cpu)?.flatten_all()?.to_vec1::<u8>()?;
     RgbImage::from_raw(w as u32, h as u32, bytes).ok_or_else(|| anyhow::anyhow!("invalid RGB bytes"))
 }
 
-/// Only small conditioning survives between requests; large stages take the card in turn.
+/// Keep the DiT for seed changes; release it before uncached encoder work.
 pub struct Edit2511Pipeline {
     files: Edit2511Files,
     tokenizer: Tokenizer,
@@ -105,6 +124,7 @@ pub struct Edit2511Pipeline {
     conditioning: Mutex<Option<(ConditioningKey, Conditioning)>>,
     binding: Mutex<Option<(LoraStack, std::collections::BTreeMap<String, Tensor>)>>,
     target: Mutex<Option<(RgbImage, Tensor)>>,
+    resident: Mutex<Option<(LoraStack, LayeredDit)>>,
 }
 impl Edit2511Pipeline {
     pub fn load(root: impl AsRef<Path>) -> Result<Self> {
@@ -121,6 +141,7 @@ impl Edit2511Pipeline {
             conditioning: Mutex::new(None),
             binding: Mutex::new(None),
             target: Mutex::new(None),
+            resident: Mutex::new(None),
         })
     }
     pub fn device(&self) -> &Device {
@@ -159,6 +180,7 @@ impl Edit2511Pipeline {
             }
         }
         *slot = None;
+        let mut mark = phase_marks(&self.device);
         let references = {
             let vae = self.vae()?;
             req.references
@@ -170,6 +192,7 @@ impl Edit2511Pipeline {
                 .collect::<Result<Vec<_>>>()?
         };
         crate::device::trim_pool(&self.device);
+        mark("reference VAE load + encode")?;
         let pictures = {
             let vision = Qwen25Vision::from_file(&self.files.text_encoder)?;
             req.references
@@ -181,6 +204,7 @@ impl Edit2511Pipeline {
                 .collect::<Result<Vec<_>>>()?
         };
         crate::device::trim_pool(&self.device);
+        mark("vision load + encode")?;
         check()?;
         let (positive, negative) = {
             let text = Qwen25TextEncoder::from_edit_file(&self.files.text_encoder, self.dtype, &self.device)?;
@@ -191,6 +215,7 @@ impl Edit2511Pipeline {
         };
         drop(pictures);
         crate::device::trim_pool(&self.device);
+        mark("text load + encode")?;
         let value = Conditioning { references, positive, negative };
         let bytes = req.references.iter().map(|r| r.as_raw().len()).sum::<usize>().saturating_add(req.prompt.len()).saturating_add(req.negative.len());
         if !req.references.is_empty() && bytes <= 64 * 1024 * 1024 {
@@ -216,12 +241,27 @@ impl Edit2511Pipeline {
         check()?;
         anyhow::ensure!(req.references.len() <= 3 && req.cfg.is_finite() && req.cfg > 0., "invalid 2511 references or CFG");
         let schedule = edit2511_schedule(req.steps)?;
-        let mark = |stage: &str| {
-            if std::env::var("QIR_PROFILE").is_ok() {
-                eprintln!("2511 {stage}");
-            }
+        let mut mark = phase_marks(&self.device);
+        let mut resident = self.resident.lock().map_err(|_| anyhow::anyhow!("2511 resident lock poisoned"))?;
+        let conditioning_hit = self
+            .conditioning
+            .lock()
+            .map_err(|_| anyhow::anyhow!("2511 conditioning lock poisoned"))?
+            .as_ref()
+            .is_some_and(|(key, _)| !req.references.is_empty() && key == &ConditioningKey::new(req));
+        let target_hit = match &req.target {
+            None => true,
+            Some(rgb) => self.target.lock().map_err(|_| anyhow::anyhow!("2511 target lock poisoned"))?.as_ref().is_some_and(|(old, _)| old == rgb),
         };
-        mark("target VAE encode");
+        if std::env::var("QIR_EDIT2511_RESIDENT").is_ok_and(|v| v == "0")
+            || !conditioning_hit
+            || !target_hit
+            || resident.as_ref().is_some_and(|(stack, _)| !stack.same_adapters(&req.loras))
+        {
+            *resident = None;
+            crate::device::trim_pool(&self.device);
+        }
+        mark("residency check/release")?;
         let target = if let Some(rgb) = &req.target {
             self.target(rgb)?
         } else {
@@ -233,8 +273,9 @@ impl Edit2511Pipeline {
             Tensor::zeros((1, 16, 1, req.height / 8, req.width / 8), DType::F32, &self.device)?
         };
         crate::device::trim_pool(&self.device);
-        mark("reference/vision/text conditioning");
+        mark("target VAE encode/cache")?;
         let cond = self.conditioning(req, &check)?;
+        mark("conditioning/cache")?;
         let noise = Tensor::from_vec(torch_randn(req.seed, target.elem_count()).map_err(anyhow::Error::msg)?, target.shape(), &self.device)?;
         observe("noise", &noise)?;
         observe("target", &target)?;
@@ -249,25 +290,37 @@ impl Edit2511Pipeline {
         progress(0, req.steps);
         {
             check()?;
-            mark("DiT load");
-            let mut binding = self.binding.lock().map_err(|_| anyhow::anyhow!("2511 binding lock poisoned"))?;
-            let hit = binding.as_ref().is_some_and(|(stack, _)| stack.same_adapters(&req.loras));
-            if !hit {
-                *binding = None;
+            mark("sampler prepare")?;
+            if resident.is_none() {
+                let mut binding = self.binding.lock().map_err(|_| anyhow::anyhow!("2511 binding lock poisoned"))?;
+                let hit = binding.as_ref().is_some_and(|(stack, _)| stack.same_adapters(&req.loras));
+                if !hit {
+                    *binding = None;
+                }
+                let patches = if let Some((_, weights)) = binding.as_ref() { weights.clone() } else { std::collections::BTreeMap::new() };
+                let mut dit = LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?)?;
+                if !hit {
+                    mark("DiT load")?;
+                    dit.bind_loras(&req.loras)?;
+                    let weights = dit.materialized_weights()?;
+                    // Repack materialized allocations before retaining the model across requests.
+                    drop(dit);
+                    crate::device::trim_pool(&self.device);
+                    dit = LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, weights.clone())?)?;
+                    *binding = Some((req.loras.clone(), weights));
+                }
+                mark(if hit { "DiT load" } else { "LoRA materialize + snapshot" })?;
+                drop(binding);
+                *resident = Some((req.loras.clone(), dit));
+            } else {
+                mark("DiT resident hit")?;
             }
-            let patches = if let Some((_, weights)) = binding.as_ref() { weights.clone() } else { std::collections::BTreeMap::new() };
-            let mut dit = LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?)?;
-            if !hit {
-                mark("LoRA materialize");
-                dit.bind_loras(&req.loras)?;
-                *binding = Some((req.loras.clone(), dit.materialized_weights()?));
-            }
-            drop(binding);
+            let dit = &resident.as_ref().ok_or_else(|| anyhow::anyhow!("missing 2511 DiT"))?.1;
             crate::device::trim_pool(&self.device);
             let refs = cond.references.iter().map(|r| r.to_dtype(self.dtype).map_err(Into::into)).collect::<Result<Vec<_>>>()?;
             #[cfg(feature = "cuda")]
             let pool = crate::layered_pipeline::LayeredPool::retain(&self.device);
-            mark("denoise");
+            mark("denoise prepare")?;
             for i in 0..req.steps {
                 check()?;
                 let sigma = schedule.sigma(i);
@@ -294,17 +347,21 @@ impl Edit2511Pipeline {
                 if pool.is_some() {
                     self.device.synchronize()?;
                 }
+                mark(&format!("step {i}"))?;
+                crate::profile::report(&format!("2511 step {i}"));
                 progress(i + 1, req.steps);
             }
             self.device.synchronize()?;
         }
         crate::device::trim_pool(&self.device);
         check()?;
-        mark("VAE decode");
+        mark("denoise workspace release")?;
         let vae = self.vae()?;
         let decoded = vae.decode(&vae.denormalize(&latent.squeeze(2)?)?)?;
         observe("decoded", &decoded)?;
-        rgb_image(&((decoded.squeeze(0)?.permute((1, 2, 0))? + 1.)? / 2.)?)
+        let image = rgb_image(&((decoded.squeeze(0)?.permute((1, 2, 0))? + 1.)? / 2.)?)?;
+        mark("VAE load + decode + readback")?;
+        Ok(image)
     }
 }
 
@@ -332,6 +389,21 @@ pub fn key_seed(module: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn kontext_identity_and_cached_resize_preserve_rgb_bytes() -> Result<()> {
+        for size in [1024u32, 768] {
+            let image = RgbImage::from_fn(size, size, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8]));
+            let expected = rgb_image(&resize_kontext(&pixels(&image)?)?)?;
+            assert_eq!(kontext(&image)?, expected);
+            assert_eq!(kontext(&image)?, expected);
+            let mut changed = image.clone();
+            changed.put_pixel(size / 2, size / 2, image::Rgb([3, 7, 11]));
+            let expected = rgb_image(&resize_kontext(&pixels(&changed)?)?)?;
+            assert_eq!(kontext(&changed)?, expected);
+        }
+        Ok(())
+    }
+
     #[test]
     fn conditioning_key_tracks_only_encoder_inputs() {
         let mut req = Edit2511Request {
@@ -364,5 +436,19 @@ mod tests {
         req.cfg = 1.;
         req.references[0].put_pixel(0, 0, image::Rgb([1, 0, 0]));
         assert!(key != ConditioningKey::new(&req));
+    }
+}
+
+/// Synchronize only phase boundaries when requested.
+fn phase_marks(device: &Device) -> impl FnMut(&str) -> Result<()> + '_ {
+    let enabled = ["QIR_PROFILE", "QIR_PHASE_PROFILE"].iter().any(|key| std::env::var(key).is_ok_and(|v| v == "1"));
+    let mut last = std::time::Instant::now();
+    move |phase| {
+        if enabled {
+            device.synchronize()?;
+            eprintln!("2511 phase {phase}: {:.6} s", last.elapsed().as_secs_f64());
+            last = std::time::Instant::now();
+        }
+        Ok(())
     }
 }

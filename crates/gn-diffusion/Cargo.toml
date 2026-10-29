@@ -21,3 +21,6 @@ anyhow = "1"
 serde_json = { workspace = true }
 gn-engine = { path = "../gn-engine", version = "0.1.0" }
 qwen-image-rs = { path = "../qir", version = "0.0.0" }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

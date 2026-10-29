@@ -516,7 +516,11 @@ impl DiffusionEngine {
         cancel: &AtomicBool,
         started: Instant,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        let prepare_started = Instant::now();
         let mut ask = edit2511_request(req, blobs)?;
+        if ["QIR_PROFILE", "QIR_PHASE_PROFILE"].iter().any(|key| std::env::var(key).is_ok_and(|v| v == "1")) {
+            eprintln!("2511 phase worker image prepare: {:.6} s", prepare_started.elapsed().as_secs_f64());
+        }
         let (_, _, names) = edit2511_defaults(&req.model).ok_or_else(|| EngineError::new(ErrorKind::BadRequest, "unknown 2511 template"))?;
         let mut params = req.params.clone();
         let mut loras: Vec<Value> = names.iter().map(|n| json!({"file": n, "strength": 1.0})).collect();
@@ -712,9 +716,14 @@ fn edit2511_request(req: &RunRequest, blobs: &[Vec<u8>]) -> Result<Edit2511Reque
         return Err(bad("2511 supports denoise 1 only"));
     }
     let rgb = |b: &Blob, what: &str| -> Result<edit2511_pipeline::RgbImage, EngineError> {
-        let r = reference_of(b, blobs, what)?;
-        let bytes = r.rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
-        edit2511_pipeline::RgbImage::from_raw(r.width as u32, r.height as u32, bytes).ok_or_else(|| bad("invalid RGB blob"))
+        let input = bytes_of(b, blobs, what)?;
+        let bytes = match b.channels {
+            3 => input.to_vec(),
+            4 => input.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect(),
+            1 => input.iter().flat_map(|v| [*v, *v, *v]).collect(),
+            c => return Err(bad(&format!("the {what} has {c} channels (1, 3 or 4 expected)"))),
+        };
+        edit2511_pipeline::RgbImage::from_raw(b.width, b.height, bytes).ok_or_else(|| bad("invalid RGB blob"))
     };
     let suffix = req.model.strip_prefix("qwen-edit-2511/").ok_or_else(|| bad("invalid 2511 template"))?;
     let mut references = Vec::new();
@@ -1298,6 +1307,22 @@ mod edit2511_tests {
         assert_eq!(edit2511_defaults("qwen-edit-2511/remove-lightning-8"), Some((8, 1., vec![A[1], A[2]])));
         assert_eq!(edit2511_defaults("qwen-edit-2511/edit"), Some((40, 4., vec![])));
     }
+    #[test]
+    fn edit_rgb_inputs_preserve_coverage_and_ignore_alpha() -> anyhow::Result<()> {
+        for (channels, bytes, expected) in [
+            (1, vec![7, 11], vec![7, 7, 7, 11, 11, 11]),
+            (3, vec![1, 2, 3, 7, 11, 13], vec![1, 2, 3, 7, 11, 13]),
+            (4, vec![1, 2, 3, 0, 7, 11, 13, 128], vec![1, 2, 3, 7, 11, 13]),
+        ] {
+            let mut req: RunRequest = serde_json::from_value(json!({"model":"qwen-edit-2511/image-ref", "task":"image", "prompt":"sky", "seed":7}))?;
+            req.references.push(Blob { width: 2, height: 1, channels, index: 0 });
+            let ask = edit2511_request(&req, &[bytes]).map_err(|e| anyhow::anyhow!(e.message))?;
+            assert_eq!(ask.references[0].as_raw(), &expected);
+            assert!(edit2511_request(&req, &[vec![]]).is_err());
+        }
+        Ok(())
+    }
+
     #[test]
     fn graph_inputs_preserve_targets_and_prune_reference_slots() -> anyhow::Result<()> {
         let blob = Blob { width: 32, height: 48, channels: 3, index: 0 };

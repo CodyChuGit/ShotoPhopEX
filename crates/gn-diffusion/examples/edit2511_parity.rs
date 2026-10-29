@@ -3,6 +3,11 @@ use gn_diffusion::DiffusionEngine;
 use gn_engine::{protocol::RunRequest, server::Engine};
 use std::{path::PathBuf, sync::atomic::AtomicBool, time::Instant};
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_ansi(false)
+        .try_init()
+        .map_err(|e| anyhow::anyhow!("logging: {e}"))?;
     let manifest = std::env::args().nth(1).ok_or_else(|| anyhow::anyhow!("manifest path required"))?;
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(manifest)?)?;
     let root = value["models"].as_str().ok_or_else(|| anyhow::anyhow!("models required"))?;

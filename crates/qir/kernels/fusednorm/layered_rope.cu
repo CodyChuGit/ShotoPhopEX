@@ -80,9 +80,10 @@ extern "C" int qir_layered_head_norm(void* y, const void* x, const void* w, unsi
 
 // Keep candle's 1024-thread LayerNorm reduction and bf16 normalized value,
 // then apply the bf16 (1 + scale) and single-round addcmul without temporaries.
+template <bool Split = false>
 __global__ void layered_modulate_kernel(__nv_bfloat16* out, const __nv_bfloat16* x, const __nv_bfloat16* params,
                                          unsigned seq, unsigned width, unsigned param_width, unsigned param_batches,
-                                         unsigned shift_index, unsigned scale_index) {
+                                         unsigned shift_index, unsigned scale_index, unsigned split = 0) {
     const unsigned row = blockIdx.x;
     const unsigned tid = threadIdx.x;
     float sum = 0.f, square = 0.f;
@@ -109,7 +110,7 @@ __global__ void layered_modulate_kernel(__nv_bfloat16* out, const __nv_bfloat16*
     const float mean = sum / width;
     const float variance = square / width - mean * mean;
     const float inv = rsqrtf(variance + 1e-6f);
-    const unsigned batch = param_batches == 1 ? 0 : row / seq;
+    const unsigned batch = Split ? row / seq + ((row % seq >= split) ? param_batches / 2 : 0) : (param_batches == 1 ? 0 : row / seq);
     const __nv_bfloat16* p = params + batch * param_width;
     for (unsigned col = tid; col < width; col += 1024) {
         const float normalized = __bfloat162float(__float2bfloat16_rn((__bfloat162float(x[row * width + col]) - mean) * inv));
@@ -155,5 +156,34 @@ extern "C" int qir_layered_bias(void* x, const void* bias, size_t elements, unsi
     if (width % 8 != 0 || elements % 8 != 0) return 1;
     layered_bias_kernel<<<(elements / 8 + 255) / 256, 256, 0, static_cast<cudaStream_t>(stream)>>>(
         static_cast<__nv_bfloat16*>(x), static_cast<const __nv_bfloat16*>(bias), elements / 8, width, gelu);
+    return static_cast<int>(cudaGetLastError());
+}
+
+extern "C" int qir_edit2511_modulate(void* y, const void* x, const void* params, unsigned rows, unsigned seq, unsigned width,
+                                    unsigned param_width, unsigned param_batches, unsigned shift_index, unsigned split, void* stream) {
+    layered_modulate_kernel<true><<<rows, 1024, 0, static_cast<cudaStream_t>(stream)>>>(
+        static_cast<__nv_bfloat16*>(y), static_cast<const __nv_bfloat16*>(x), static_cast<const __nv_bfloat16*>(params),
+        seq, width, param_width, param_batches, shift_index, shift_index + 1, split);
+    return static_cast<int>(cudaGetLastError());
+}
+
+// Edit's residual rounds the product to bf16 before the addition.
+__global__ void edit2511_residual_kernel(__nv_bfloat16* y, const __nv_bfloat16* x, const __nv_bfloat16* v,
+                                       const __nv_bfloat16* p, size_t elements, unsigned seq, unsigned width,
+                                       unsigned param_width, unsigned batches, unsigned gate, unsigned split) {
+    const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= elements) return;
+    const unsigned row = i / width;
+    const unsigned batch = row / seq + ((row % seq >= split) ? batches : 0);
+    const float g = bf(p[batch * param_width + gate * width + i % width]);
+    y[i] = rb(__fadd_rn(bf(x[i]), bf(rb(__fmul_rn(bf(v[i]), g)))));
+}
+
+extern "C" int qir_edit2511_residual(void* y, const void* x, const void* v, const void* p, size_t elements,
+                                    unsigned seq, unsigned width, unsigned param_width, unsigned batches,
+                                    unsigned gate, unsigned split, void* stream) {
+    edit2511_residual_kernel<<<(elements + 255) / 256, 256, 0, static_cast<cudaStream_t>(stream)>>>(
+        static_cast<__nv_bfloat16*>(y), static_cast<const __nv_bfloat16*>(x), static_cast<const __nv_bfloat16*>(v),
+        static_cast<const __nv_bfloat16*>(p), elements, seq, width, param_width, batches, gate, split);
     return static_cast<int>(cudaGetLastError());
 }
