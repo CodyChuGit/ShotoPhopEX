@@ -51,6 +51,7 @@ pub fn family_style(family: &str) -> FamilyStyle {
         "sam3.1" => FamilyStyle { name: "SAM 3.1", color: hex(0x10b981), initial: 'S' },
         "qwen-image-layered" => FamilyStyle { name: "Qwen Image Layered", color: hex(0xeab308), initial: 'L' },
         "qwen3-vl" => FamilyStyle { name: "Qwen3-VL", color: hex(0x64748b), initial: 'V' },
+        "moss-image" => FamilyStyle { name: "MOSS-Image", color: hex(0x0d9488), initial: 'M' },
         f if f.starts_with("flux") => FamilyStyle { name: "FLUX", color: hex(0x0ea5e9), initial: 'F' },
         _ => FamilyStyle { name: "Other", color: None, initial: '•' },
     }

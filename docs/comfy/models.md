@@ -198,6 +198,35 @@ Krea 2's community licence is not acceptable, and the model for live/low-latency
 
 Sources: [Z-Image Turbo ComfyUI guide (thundercompute)](https://www.thundercompute.com/blog/z-image-turbo-comfyui) · [open-model survey (bentoml)](https://www.bentoml.com/blog/a-guide-to-open-source-image-generation-models).
 
+### MOSS-Image (permissive text-to-image with strong text rendering, native)
+
+OpenMOSS (MOSI.AI), technical report arXiv 2610.23374 (October 2026), **Apache-2.0** for the
+weights and the inference code (Hugging Face model cards of `OpenMOSS-Team/MOSS-Image-Base` and
+`-SFT`, read 2026-10-29). A ~5 B single-stream DiT (42 blocks, width 3072, shared AdaLN, a
+two-block text refiner, SiTU feed-forward), Qwen3.5-9B's language model as the text encoder
+(Apache-2.0; its last hidden state), the FLUX.2 small decoder (`flux2-vae_small`). Base and SFT
+(instruction-tuned, cleaner text grouping) share the architecture. Official sampling: 50 Euler
+steps, CFG 3, shift 5 snapped to the 1000-step training grid, the negative branch with block 22
+skipped, empty negative prompt; sides multiples of 16, about 1 to 2 MP recommended. Takes natural
+language, tag lists and a JSON layout (bounding boxes for text and objects, experimental).
+
+Files (Comfy-Org/MOSS-Image, Apache-2.0 repack, 2026-10): `diffusion_models/moss_image_{sft,base}_
+{int8_convrot,bf16}` (5.4 / 10.2 GB), `text_encoders/qwen3.5_9b_{int8_convrot,bf16,w4a8_gptq}`
+(9.8 / 19.3 / 7.3 GB), `vae/flux2-vae_small` (250 MB) and `flux2-vae` (336 MB), and `loras/` with
+an edit LoRA and a colour/depth control LoRA (not wired natively yet). Qwen3.5's `tokenizer.json`
+comes from `OpenMOSS-Team/MOSS-Image-SFT/tokenizer/` and goes in `text_encoders/qwen35_tokenizer/`.
+On this PC (2026-10-29): SFT int8 DiT, the int8 encoder, both VAEs and the tokenizer in
+`D:\PhotoCraftModels\moss-image`, junctioned into the ComfyUI `models` folder as `moss-image`
+subfolders (C: had 30 GB free). ComfyUI supports it from v0.43.0.
+
+Native (genai-native `qir::moss`, templates `moss-image/image` and `moss-image/image-base`):
+against the official pipeline on the same weights, encoder cosine 0.9996, DiT velocity cosine
+0.9999, VAE 60.7 dB (bf16 decode 60.0 dB), a 512² 20-step picture 25.3 dB (the same picture).
+Speed at 1024², 50 steps, CFG 3, warm, same GPU state: native 11.5–12.0 s of sampling, ComfyUI
+0.43 11.1 s (11.6 s in all); the first native port took 35.2 s (`devlog.md`). NVFP4 GEMMs at
+MOSS's shapes: ~1.4× the int8 ones with their activation quant, 13 % layer error against int8's
+1.2 % (the rebuild thread's bench, 2026-10-29).
+
 ## 2. Other models worth knowing
 
 | Model | What | Licence | Notes |

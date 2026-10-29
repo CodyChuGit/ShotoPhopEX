@@ -308,6 +308,10 @@ the side-by-side rewriter; learnt from AusBoss's Krea 2 clothing workflow, see
   tile with AusBoss's restore recipe; SeedVR2 as a non-redrawing "Enlarge 2×" still open.
 - ✅ 2026-10-27 **Remove with its shadow** on the 2.1 route (the change band) and the worker's
   chat key/value cache.
+- ✅ 2026-10-29 **MOSS-Image natively** (Apache-2.0, `moss-image/image` and `-base` text to image
+  from Comfy-Org's files, `models.md`) level with ComfyUI 0.43 (11.5–12.0 s vs 11.1 s of sampling
+  at 1024², 50 steps, same GPU state); ⬜ an opt-in NVFP4 Fast mode (owner's call), its edit and
+  control LoRAs, the JSON layout prompt in the Generate panel.
 - Taken from AusBoss's catalogue, in order (`research/notes/ausboss-catalogue-2026-10.md` §4):
   the 2.1 route for removals (measuring), realign to source, the differential composite
   ("remove with its shadow"), remove to its own layer, the rewriter on the resident encoder,

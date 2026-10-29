@@ -27,6 +27,31 @@ top-level; their hooks moved into upstream's new files. No ComfyUI code came bac
 **Still open**
 
 - Merge the PR into `photoshopex`, then rebuild on the PC.
+## 2026-10-29: MOSS-Image natively, level with ComfyUI
+
+The owner asked for "moss" on the native stack (nothing was in Downloads; MOSS-Image, OpenMOSS,
+Apache-2.0, was the only MOSS on the PC, in stable-diffusion.cpp). Weights from Comfy-Org/MOSS-Image
+(SFT int8 DiT, Qwen3.5-9B int8 encoder, FLUX.2 VAEs) and Qwen3.5's tokenizer.json in
+`D:\PhotoCraftModels\moss-image`, junctioned into the ComfyUI `models` folder (`models.md`).
+- genai-native `moss-image`, merged to main as aa5ccdf (on 92dc472): `qir::moss`: the Qwen3.5 hybrid encoder
+  (Gated DeltaNet in its chunked form, tested against the recurrence), the 5B DiT in one-pass
+  kernels (Krea 2's fused norms/RoPE/gates, SiTU inside the down projection's ConvRot quantize,
+  SageAttention2, both guidance branches batched), the official snapped shift-5 schedule with
+  the block-22 negative skip, the FLUX.2 small decoder in bf16; gn-diffusion templates
+  `moss-image/image` (SFT) and `moss-image/image-base`. Here: the two templates (metadata),
+  genai-native pinned at aa5ccdf. No live preview for MOSS yet (its latent is the FLUX.2 VAE's).
+- Parity against the official pipeline on the same weights (dequantized by ComfyUI; reference
+  script outside the repo): encoder cosine 0.9996, DiT 0.9999 (t=1000) / 0.9990 (t=500), VAE
+  60.0 dB in bf16, a 512² 20-step picture 25.3 dB (the same picture to the eye).
+- Speed at 1024², 50 steps, CFG 3, warm, against ComfyUI updated to v0.43.0 (the owner's ask;
+  0.39 had no MOSS): 35.2 s first port → 17.7 s one-pass blocks → 11.0 s SageAttention2 (05:40);
+  back to back with ComfyUI at 07:05 native 11.5–12.0 s against ComfyUI's 11.1 s (the GPU ran
+  ±4 % between runs that day). Dropped: cuBLASLt int8 GEMMs (no faster than the fused CUTLASS
+  epilogue). Through the app: a `native-diffusion` photocraft-cli made the 1024² picture from a
+  throwaway profile.
+- Open: an opt-in NVFP4 Fast mode (~20 % faster, visibly different samples; the owner's call),
+  the edit and colour/depth control LoRAs, the JSON layout prompt in the Generate panel.
+
 ## 2026-10-29 (evening): live preview while generating (Off / Fast / Sharp)
 
 The owner asked for both preview kinds as a setting. Branches: PhotoshopEX `feat/live-preview`
