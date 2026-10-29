@@ -27,5 +27,5 @@ pub mod server;
 
 pub use client::EngineClient;
 pub use multi::Multi;
-pub use protocol::{Blob, DoneInfo, ErrorKind, Health, Reply, Request, RunRequest};
+pub use protocol::{Blob, DoneInfo, ErrorKind, Health, Preview, PreviewMode, Reply, Request, RunRequest};
 pub use server::{Engine, EngineError, serve};

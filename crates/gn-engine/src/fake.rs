@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::protocol::{Blob, DoneInfo, ErrorKind, Health, RunRequest};
+use crate::protocol::{Blob, DoneInfo, ErrorKind, Health, Preview, RunRequest};
 use crate::server::{Engine, EngineError};
 
 pub struct FakeEngine {
@@ -48,6 +48,19 @@ impl Engine for FakeEngine {
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        self.run_previewed(req, blobs, progress, &mut |_| {}, cancel)
+    }
+
+    /// With `req.preview`: after each step a grey picture an eighth of the result's size (at
+    /// least 1×1) whose level rises with the step, as a `Fast` preview would arrive.
+    fn run_previewed(
+        &mut self,
+        req: &RunRequest,
+        blobs: &[Vec<u8>],
+        progress: &mut dyn FnMut(f32, &str),
+        preview: &mut dyn FnMut(Preview),
+        cancel: &AtomicBool,
+    ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
         if !self.installed.contains(&req.model) {
             return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not installed", req.model)));
         }
@@ -56,17 +69,23 @@ impl Engine for FakeEngine {
             self.resident.push(req.model.clone());
         }
         let steps = req.steps.clamp(1, 1000);
+        let (w, h) = match &req.image {
+            Some(b) => (b.width, b.height),
+            None => (req.width.max(1), req.height.max(1)),
+        };
         for i in 0..steps {
             if cancel.load(Ordering::SeqCst) {
                 return Err(EngineError::cancelled());
             }
             std::thread::sleep(Duration::from_millis(self.step_ms));
             progress((i + 1) as f32 / steps as f32, "Sampling");
+            if !req.preview.is_off() {
+                let (pw, ph) = ((w / 8).max(1), (h / 8).max(1));
+                let level = (255 * (i + 1) / steps) as u8;
+                let (_, rgba) = crate::server::solid(pw, ph, [level, level, level, 255]);
+                preview(Preview { step: i + 1, steps, output: 0, width: pw, height: ph, rgba });
+            }
         }
-        let (w, h) = match &req.image {
-            Some(b) => (b.width, b.height),
-            None => (req.width.max(1), req.height.max(1)),
-        };
         let out = match req.task.as_str() {
             "segment" => {
                 // Coverage: a disc of 30 % of the shorter side, centred.
