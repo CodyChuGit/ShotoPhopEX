@@ -916,6 +916,20 @@ impl Engine for DiffusionEngine {
         // 1's size, as ComfyUI's `TextEncodeQwenImage21` sizes its latent at `resolution 0`.
         // An expand is the exception: its one reference is the picture cut out of the canvas
         // and placed at its own position, and the target is the whole canvas.
+        // A batch of edits (Upscale's tiles): `params.batch` lists a seed for each picture, the
+        // picture and then each reference, and every one is edited alone with its seed.
+        let batch: Option<Vec<u64>> = match req.params.get("batch") {
+            None => None,
+            Some(v) => match v.as_array().and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<u64>>>()) {
+                Some(seeds) if task == "edit" && family == Family::QwenImage21 && seeds.len() == 1 + req.references.len() => Some(seeds),
+                _ => {
+                    return Err(EngineError::new(
+                        ErrorKind::BadRequest,
+                        format!("batch is a Qwen-Image-2.1 edit's seeds, one for the picture and one for each reference ({} given)", 1 + req.references.len()),
+                    ))
+                }
+            },
+        };
         let mut references: Vec<RefImage> = Vec::new();
         let mut canvas: Option<(usize, usize)> = None;
         match task {
@@ -939,7 +953,7 @@ impl Engine for DiffusionEngine {
                         references.push(reference_of(r, blobs, &format!("reference {}", i + 2))?);
                     }
                 }
-                if references.len() > MAX_PICTURES {
+                if batch.is_none() && references.len() > MAX_PICTURES {
                     return Err(EngineError::new(ErrorKind::BadRequest, format!("{} pictures; at most {MAX_PICTURES}", references.len())));
                 }
             }
@@ -967,7 +981,7 @@ impl Engine for DiffusionEngine {
             Family::Layered => LAYERS_STEPS,
             Family::Edit2511 => 40,
         };
-        let result: Result<Picture, EngineError> = (|| {
+        let result: Result<Vec<Picture>, EngineError> = (|| {
             self.ensure_loaded(family, progress)?;
             if cancel.load(Ordering::SeqCst) {
                 return Err(EngineError::cancelled());
@@ -1010,15 +1024,20 @@ impl Engine for DiffusionEngine {
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             let stop = || cancel.load(Ordering::SeqCst);
             let err = |e: anyhow::Error| EngineError::new(kind_of(&e), e.to_string());
-            match &self.resident {
-                Resident::Qwen(p) => p.generate(&ask, &mut report, &stop).map_err(err),
-                Resident::Krea2(p) if req.model == TEMPLATE_KREA2_STYLE => p.generate_style(&ask, &mut report, &stop).map_err(err),
-                Resident::Krea2(p) => p.generate(&ask, &mut report, &stop).map_err(err),
-                Resident::Edit2511(_) | Resident::Layered(_) | Resident::None => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
+            match (&self.resident, &batch) {
+                (Resident::Qwen(p), Some(seeds)) => {
+                    let asks: Vec<Request> =
+                        ask.references.iter().zip(seeds).map(|(r, &seed)| Request { references: vec![r.clone()], seed, ..ask.clone() }).collect();
+                    p.generate_batch(&asks, &mut report, &stop).map_err(err)
+                }
+                (Resident::Qwen(p), None) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Krea2(p), _) if req.model == TEMPLATE_KREA2_STYLE => p.generate_style(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Krea2(p), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Edit2511(_) | Resident::Layered(_) | Resident::None, _) => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
             }
         })();
         self.give_back();
-        let pic = match result {
+        let pics = match result {
             Ok(p) => p,
             Err(e) => {
                 exit_if_poisoned(&e.message);
@@ -1034,8 +1053,11 @@ impl Engine for DiffusionEngine {
             }
         };
         self.last_error = None;
-        let blob = Blob { width: pic.width, height: pic.height, channels: 4, index: 0 };
-        Ok((DoneInfo { images: vec![blob], texts: Vec::new(), seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, vec![pic.rgba]))
+        let images = pics.iter().enumerate().map(|(i, p)| Blob { width: p.width, height: p.height, channels: 4, index: i as u32 }).collect();
+        Ok((
+            DoneInfo { images, texts: Vec::new(), seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 },
+            pics.into_iter().map(|p| p.rgba).collect(),
+        ))
     }
 
     fn free(&mut self) {
@@ -1177,6 +1199,29 @@ mod tests {
         std::fs::remove_dir(root.join(LORA_DIR))?;
         std::fs::remove_dir(root)?;
         Ok(())
+    }
+
+    /// A batch is a 2.1 edit's seeds, one per picture, checked before the models load.
+    #[test]
+    fn a_batch_names_a_seed_for_each_picture() {
+        let mut e = DiffusionEngine::new(PathBuf::from("Z:/nowhere/models"), false);
+        e.refused = None;
+        let pic = || Blob { width: 2, height: 1, channels: 4, index: 0 };
+        let mut b = req(TEMPLATE_EDIT, "edit");
+        b.image = Some(pic());
+        b.references = vec![Blob { index: 1, ..pic() }, Blob { index: 2, ..pic() }];
+        let blobs = [vec![0; 8], vec![0; 8], vec![0; 8]];
+        let run = |e: &mut DiffusionEngine, b: &RunRequest| e.run(b, &blobs, &mut |_, _| {}, &AtomicBool::new(false));
+        b.params.insert("batch".into(), json!([1, 2]));
+        assert!(matches!(&run(&mut e, &b), Err(EngineError { kind: ErrorKind::BadRequest, message }) if message.contains("3 given")));
+        b.params.insert("batch".into(), json!([1, 2, "x"]));
+        assert!(matches!(&run(&mut e, &b), Err(EngineError { kind: ErrorKind::BadRequest, .. })));
+        b.params.insert("batch".into(), json!([1, 2, 3]));
+        let r = run(&mut e, &b);
+        assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
+        let mut f = req(TEMPLATE_FILL, "fill");
+        f.params.insert("batch".into(), json!([1]));
+        assert!(matches!(&run(&mut e, &f), Err(EngineError { kind: ErrorKind::BadRequest, message }) if message.contains("batch")));
     }
 
     /// A Krea 2 edit runs with its edit LoRA in front of the request's own, once.
