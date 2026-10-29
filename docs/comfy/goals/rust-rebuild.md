@@ -252,3 +252,12 @@ step, the dev log and roadmap updated.
   2511 has no cold glitch (cold and warm at one seed byte-identical; the 27 dB was ComfyUI's
   first call), and the empty-prompt Remove Background holds on the GPU (5 of 5). Report:
   [`research/notes/comfyui-removal.md`](../research/notes/comfyui-removal.md).
+- 2026-10-29, morning: the speed pass (every feature clearly faster than ComfyUI 0.43 on the
+  5090). Profiled every feature; first win: **Split into Layers on SageAttention2**, 137.2 to
+  92.6 s warm (ComfyUI 124.8 s), judged by compositing the layers back onto the input (36.91 dB,
+  inside flash's two-seed band) since the background layer diverges under any numeric change.
+  Blocks 0/52/58 keep flash (their q/k reach |796|/|45|/|80|); V scaled into f16's range.
+  Rejected: fp8 GEMM (no gain once activations are scaled), int8 from the fp8 file (slow path),
+  NVFP4 for now (Krea 2: 9 % faster, a different sample per seed; per-layer FP4 GEMM 1.7–2.0x
+  int8 alone, 1.1–1.6x with activation quantization). `benchmarks.md` §0; branches
+  `perf/layered-attention` in both repositories, not merged.
