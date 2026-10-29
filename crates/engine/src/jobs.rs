@@ -212,6 +212,9 @@ struct Running {
     label: String,
     params: Value,
     journal: bool,
+    /// Where the commands the job's command ran itself before starting it begin in the journal,
+    /// and those entries: applied, a replayable command stands for them (Upscale's Image Size).
+    nested: (usize, Vec<(String, Value)>),
     doc: Option<DocId>,
     /// The document as the job saw it: applying fails if it was edited meanwhile.
     snapshot: Option<Weak<Document>>,
@@ -400,6 +403,7 @@ pub fn run<T: Send + 'static>(
         label: label.to_string(),
         params: Value::Null,
         journal: true,
+        nested: (0, Vec::new()),
         doc,
         snapshot,
         ctx,
@@ -754,7 +758,8 @@ impl Session {
         let run_params = self.admit(id, spec, &params)?;
         self.coalesce_request = params.get("coalesce").and_then(Value::as_str).map(str::to_string);
         self.color_restrict = crate::channel_cmds::color_restriction(self, id, &run_params);
-        self.jobs.spawn = background;
+        // A command run on another's behalf runs inline, and its caller may still start its job.
+        let caller_spawns = std::mem::replace(&mut self.jobs.spawn, background);
         // Commands this one runs on its own behalf journal after this mark (#3067).
         let nested_from = self.journal.len();
         // A replayable command is recorded as one step, so recording pauses while it runs: an
@@ -770,7 +775,7 @@ impl Session {
         if self.actions.recording.is_none() {
             self.actions.recording = recording;
         }
-        self.jobs.spawn = false;
+        self.jobs.spawn = caller_spawns;
         self.coalesce_request = None;
         self.color_restrict = None;
         let pending = self.jobs.pending.take();
@@ -797,6 +802,7 @@ impl Session {
                 job.command = id.to_string();
                 job.params = params;
                 job.journal = spec.journal;
+                job.nested = (nested_from, self.journal.get(nested_from..).map(<[_]>::to_vec).unwrap_or_default());
                 let jid = job.id;
                 self.jobs.running.push(job);
                 Ok(Started::Job(jid))
@@ -888,7 +894,7 @@ impl Session {
     }
 
     fn apply_job(&mut self, job: &Running, apply: Option<Apply>, payload: Payload) -> Result<Value> {
-        let Running { label, doc, snapshot, coalesce, color_restrict, layers, command, params, journal, .. } = job;
+        let Running { label, doc, snapshot, coalesce, color_restrict, layers, command, params, journal, nested, .. } = job;
         let prev_active = self.active;
         let target = match doc {
             Some(d) => {
@@ -936,6 +942,24 @@ impl Session {
         // Restoring the viewed document first would attribute Fade and slice updates
         // to that document instead, when the user switched tabs mid-job.
         if r.is_ok() {
+            // As inline: the steps the command ran before its job go, when they are still there.
+            // They come before `nested_from`, which moves down with them.
+            let (from, steps) = nested;
+            let span = *from..from + steps.len();
+            let mut nested_from = nested_from;
+            if *journal
+                && !steps.is_empty()
+                && span.end <= nested_from
+                && crate::actions_cmds::replayable(command)
+                && self.journal.get(span.clone()).is_some_and(|s| s == steps.as_slice())
+            {
+                // A recording started after them keeps its place.
+                if let Some((mark, _)) = &mut self.actions.recording {
+                    *mark -= mark.saturating_sub(span.start).min(steps.len());
+                }
+                self.journal.drain(span);
+                nested_from -= steps.len();
+            }
             self.after_command(command, params.clone(), *journal, Some(nested_from));
         }
         // Give the user back the layers they selected while the job ran, unless the job chose a
