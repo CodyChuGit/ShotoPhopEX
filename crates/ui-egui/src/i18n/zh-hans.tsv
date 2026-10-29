@@ -2910,6 +2910,7 @@ curves	Smooth	平滑
 	Changing what is there? Switch to Edit	要改变现有内容？请切换到“编辑”
 	Describe the change…	描述要做的更改…
 	Enhance prompts	自动优化提示词
+	Warm up AI models at launch	启动时预加载 AI 模型
 	Enhance prompt	优化提示词
 	Enhancing…	正在优化…
 	The model could not improve this prompt	模型无法优化此提示词

@@ -20,6 +20,8 @@ pub struct Options {
     pub missing_files: Vec<String>,
     pub matte: Option<[f32; 4]>,
     pub enhanced_text: Option<String>,
+    /// The card's free memory as the health reports it (none: a card it cannot tell about).
+    pub vram_free: Option<u64>,
     /// Answer a `batch` request with one picture, as a worker without batches would.
     pub no_batch: bool,
 }
@@ -36,6 +38,7 @@ impl Default for Options {
             missing_files: Vec::new(),
             matte: None,
             enhanced_text: None,
+            vram_free: None,
             no_batch: false,
         }
     }
@@ -115,7 +118,15 @@ impl Engine for FakeEngine {
         "fake".into()
     }
     fn health(&mut self) -> Health {
-        Health { ok: true, engine: "fake".into(), device: "CPU fake".into(), vram_total: None, vram_free: None, resident: Vec::new(), detail: String::new() }
+        Health {
+            ok: true,
+            engine: "fake".into(),
+            device: "CPU fake".into(),
+            vram_total: None,
+            vram_free: self.options.vram_free,
+            resident: Vec::new(),
+            detail: String::new(),
+        }
     }
     fn index(&mut self, dir: &str) -> Value {
         let templates = crate::template::builtin();
@@ -179,6 +190,17 @@ impl Engine for FakeEngine {
         }
         if let Some(e) = &self.options.fail {
             return Err(EngineError::new(ErrorKind::Internal, e));
+        }
+        // A warm-up loads (the delay above) and generates nothing, as the real worker answers one.
+        if req.params.get("warmup").and_then(Value::as_bool) == Some(true) {
+            let free = self.options.vram_free;
+            let text = match req.params.get("need_free").and_then(Value::as_u64) {
+                Some(need) if free.is_none_or(|f| f < need) => {
+                    format!("skipped: {:.1} GB free on the card, {:.1} GB wanted", free.unwrap_or(0) as f64 / 1e9, need as f64 / 1e9)
+                }
+                _ => "warm".into(),
+            };
+            return Ok((DoneInfo { images: Vec::new(), texts: vec![text], seed: req.seed, elapsed_ms: 0 }, Vec::new()));
         }
         if req.task == "text" {
             let prompt = req.prompt.rsplit("Instruction: ").next().unwrap_or(&req.prompt).rsplit("Idea: ").next().unwrap_or(&req.prompt);

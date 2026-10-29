@@ -780,6 +780,51 @@ pub(crate) fn native_start(s: &Session) -> Result<()> {
     Ok(())
 }
 
+/// The card memory a warm-up wants free before it loads `template`'s models: what that family
+/// holds resident on the RTX 5090 plus 2 GB for the first generation's working set (measured
+/// 2026-10-29 from the worker's free memory before and after a warm-up).
+#[cfg(not(target_arch = "wasm32"))]
+fn warm_need(template: &str) -> u64 {
+    const GB: u64 = 1_000_000_000;
+    match template.split('/').next().unwrap_or("") {
+        t if t.starts_with("krea2") => WARM_KREA2_GB * GB,
+        _ => WARM_QWEN21_GB * GB,
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+const WARM_KREA2_GB: u64 = 20; // 18.2 GB resident
+#[cfg(not(target_arch = "wasm32"))]
+const WARM_QWEN21_GB: u64 = 27; // 25.0 GB resident
+
+/// Start the worker and load the default image template's models (`generate.engine.warmUp`):
+/// on a thread of its own, or with `wait` before returning (the bench). It is skipped on a card
+/// without the room ([`warm_need`]); any generation that starts meanwhile cancels it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_warm_up(s: &Session, wait: bool) -> Result<Value> {
+    use photocraft_genai::native::WarmUp;
+    let template = s.prefs().integrations.default_image_template.clone();
+    photocraft_genai::template::find(&template).map_err(gen_err)?;
+    native_backend(s)?;
+    let b = native_current(s).ok_or_else(|| EngineError::Other("no native worker".into()))?;
+    let need = warm_need(&template);
+    let warm = move || {
+        let started = std::time::Instant::now();
+        let r = b.warm_up(&template, need);
+        let ms = started.elapsed().as_millis() as u64;
+        match r {
+            Ok(WarmUp::Warm) => json!({"template": template, "state": "warm", "ms": ms}),
+            Ok(WarmUp::Skipped(why)) => json!({"template": template, "state": "skipped", "detail": why, "ms": ms}),
+            Ok(WarmUp::Cancelled) => json!({"template": template, "state": "cancelled", "ms": ms}),
+            Err(e) => json!({"template": template, "state": "failed", "detail": e.to_string(), "ms": ms}),
+        }
+    };
+    if wait {
+        return Ok(warm());
+    }
+    std::thread::Builder::new().name("warm-up".into()).spawn(move || drop(warm())).map_err(|e| EngineError::Other(format!("could not start the warm-up: {e}")))?;
+    Ok(json!({"state": "started"}))
+}
+
 /// Stop the worker this process started (the next generative command starts a fresh one).
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn native_stop(s: &Session) {
