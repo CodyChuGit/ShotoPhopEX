@@ -1154,6 +1154,7 @@ mod tests {
             mask: None,
             references: Vec::new(),
             params: BTreeMap::new(),
+            preview: Default::default(),
         }
     }
 

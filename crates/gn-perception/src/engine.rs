@@ -453,6 +453,7 @@ mod tests {
             mask: None,
             references: Vec::new(),
             params,
+            preview: Default::default(),
         }
     }
 
