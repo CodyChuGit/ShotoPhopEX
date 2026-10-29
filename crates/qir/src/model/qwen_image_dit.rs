@@ -73,6 +73,10 @@ struct LayeredLinear {
     /// `QIR_LAYERED_FP8_GEMM=1` (an experiment, off by default): the same weight through the
     /// e4m3 × e4m3 tensor-core GEMM instead of the file's full-precision bf16 multiply.
     fast: Option<crate::fp8::Fp8Linear>,
+    /// `QIR_LAYERED_INT8=1` (an experiment, off by default): the fp8 weight dequantized once and
+    /// requantized to ConvRot INT8 (so double-quantized), replacing the fp8 copy on the device.
+    #[cfg(feature = "convrot")]
+    int8: Option<crate::convrot::ConvRotLinear>,
     bias: Tensor,
     original: Option<(Tensor, Option<Tensor>)>,
     #[cfg(feature = "cuda")]
@@ -110,12 +114,22 @@ impl LayeredLinear {
         #[cfg(feature = "cuda")]
         let lt = if gpu.is_some() && std::env::var("QIR_LAYERED_GEMM").map_or(true, |v| v != "cublas") { Some(cuda_gemm::handle(vb.device())?) } else { None };
         let fast = fast_fp8(&fp8)?;
+        #[cfg(feature = "convrot")]
+        let (int8, fp8, gpu) = match gpu {
+            Some(l) if layered_int8() && input.is_multiple_of(crate::model::rotation::GROUP) && output.is_multiple_of(8) => {
+                let r = crate::model::rotation::regular_hadamard_256(vb.device())?;
+                (Some(crate::convrot::ConvRotLinear::from_weight(&l.dequantized(DType::BF16)?, &r)?), None, None)
+            }
+            gpu => (None, fp8, gpu),
+        };
         Ok(Self {
             original: None,
             dense,
             fp8,
             gpu,
             fast,
+            #[cfg(feature = "convrot")]
+            int8,
             bias: vb.get(output, "bias")?,
             #[cfg(feature = "cuda")]
             lt,
@@ -126,6 +140,8 @@ impl LayeredLinear {
         if pairs.is_empty() && self.original.is_none() {
             return Ok(());
         }
+        #[cfg(feature = "convrot")]
+        anyhow::ensure!(self.int8.is_none(), "{module}: LoRAs are not supported with QIR_LAYERED_INT8=1");
         let device = self.bias.device();
         if self.original.is_none() {
             let (w, scale) = if let Some((w, s)) = &self.fp8 {
@@ -199,10 +215,22 @@ impl LayeredLinear {
     }
 
     fn forward_impl(&self, x: &Tensor, gelu: bool) -> Result<Tensor> {
+        #[cfg(feature = "convrot")]
+        if let Some(c) = &self.int8 {
+            let flops = 2.0 * x.elem_count() as f64 * self.bias.elem_count() as f64;
+            let y = crate::profile::scope("layered int8 convrot", flops, x.device(), || c.forward(x))?;
+            return linear_bias(y, &self.bias, gelu);
+        }
         if let Some(f) = &self.fast {
             let k = x.dim(D::Minus1)?;
             if x.dtype() == DType::BF16 && x.elem_count() / k >= 1024 {
-                return linear_bias(f.forward(x)?, &self.bias, gelu);
+                // The GEMM casts x to e4m3 at scale 1, which saturates Qwen-Image's activations
+                // (the first measurement came out as noise): scale x's largest magnitude to e4m3's
+                // 448 first and the output back. Two wide reductions, not one over the tensor.
+                let rows = x.reshape(((), k))?;
+                let s = (rows.abs()?.max_keepdim(1)?.max_keepdim(0)?.to_dtype(DType::F32)? / 448.0)?.maximum(1e-12)?.to_dtype(x.dtype())?;
+                let y = f.forward(&x.broadcast_div(&s.reshape(())?)?)?.broadcast_mul(&s.reshape(())?)?;
+                return linear_bias(y, &self.bias, gelu);
             }
         }
         if let Some(l) = &self.gpu {
@@ -235,6 +263,13 @@ impl LayeredLinear {
         };
         linear_bias(y, &self.bias, gelu)
     }
+}
+
+/// `QIR_LAYERED_INT8=1`: ConvRot INT8 for the Layered DiT's fp8 linears (see `LayeredLinear::int8`).
+#[cfg(feature = "convrot")]
+fn layered_int8() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("QIR_LAYERED_INT8").is_ok_and(|v| v.trim() == "1"))
 }
 
 /// The e4m3 tensor-core linear for a CUDA fp8 weight when `QIR_LAYERED_FP8_GEMM=1`.
@@ -665,6 +700,22 @@ impl LayeredBlock {
         padding: Option<(usize, usize)>,
         split: Option<usize>,
     ) -> Result<(Tensor, Tensor)> {
+        self.forward_block(image, text, temb, rope, padding, split, true)
+    }
+
+    /// [`Self::forward_split`]; `sage_ok` lets the attention take SageAttention2 when it is on
+    /// (the first block's queries and keys are too wide for its INT8: see [`sage_block`]).
+    #[allow(clippy::too_many_arguments)]
+    fn forward_block(
+        &self,
+        image: &Tensor,
+        text: &Tensor,
+        temb: &Tensor,
+        rope: &LayeredRope,
+        padding: Option<(usize, usize)>,
+        split: Option<usize>,
+        sage_ok: bool,
+    ) -> Result<(Tensor, Tensor)> {
         if let Some(n) = split {
             anyhow::ensure!(n > 0 && n < image.dim(1)? && temb.dim(0)? == 2 * image.dim(0)?, "invalid zero-timestep split");
         }
@@ -682,7 +733,7 @@ impl LayeredBlock {
         let k = rope.apply(&Tensor::cat(&[tk, ik], 2)?)?;
         let v = Tensor::cat(&[tv, iv], 2)?;
         let (b, _, s, _) = q.dims4()?;
-        let attention = joint_attention(&q, &k, &v, padding)?.reshape((b, s, WIDTH))?;
+        let attention = joint_attention_mode(&q, &k, &v, padding, sage_ok)?.reshape((b, s, WIDTH))?;
         let nt = text.dim(1)?;
         Ok((
             self.image.finish_split(image, &attention.narrow(1, nt, image.dim(1)?)?, &im, split)?,
@@ -695,13 +746,15 @@ impl LayeredBlock {
 #[cfg(feature = "sage2")]
 const V_F16_RANGE: f64 = 16384.0;
 
-/// SageAttention2 for the Layered DiT with `QIR_LAYERED_SAGE=1` (an experiment, off by default:
-/// 2026-10-29, the 3-layer split at 864x1152 lost detail in its background layer, 12.4 dB from
-/// the bf16 flash kernel's, and the per-call V range check made it slower, 167 s against 134).
+/// SageAttention2 for the Layered DiT unless `QIR_LAYERED_SAGE=0` (the bf16 flash kernel then).
+/// 2026-10-29, the 3-layer split at 864x1152 on the RTX 5090: 91.6 s warm against flash's
+/// 137.2–139.1 s; the layers composited back onto the input at 36.99 dB against flash's 36.91 and
+/// 38.73 dB at two seeds (the per-layer comparison with flash is not the measure: the background
+/// layer's invented detail moves with any numeric change, int8 and fp8 matmuls included).
 #[cfg(feature = "sage2")]
 fn layered_sage() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("QIR_LAYERED_SAGE").is_ok_and(|v| v.trim() == "1"))
+    *ON.get_or_init(|| std::env::var("QIR_LAYERED_SAGE").map_or(true, |v| v.trim() != "0"))
 }
 
 /// The joint attention with SageAttention2 (INT8 QK, FP8 PV). `q,k,v` are `(B,H,S,D)` with RoPE
@@ -717,15 +770,18 @@ fn sage2_joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(us
     let lane = |q: &Tensor, k: &Tensor, v: &Tensor| -> Result<Tensor> {
         let (q, k) = (q.transpose(1, 2)?, k.transpose(1, 2)?);
         // SA2 takes V in f16, and Qwen-Image's values outgrow f16's range (65504) where bf16
-        // holds them: scale V into range first and the output back (attention is linear in V).
-        let range = (v.abs()?.flatten_all()?.max(0)?.to_dtype(DType::F32)? / V_F16_RANGE)?.maximum(1f64)?;
+        // holds them: scale each head's V into range first and its output back (attention is
+        // linear in V). The range is per (lane, head), `(B,H,1,1)`: a max over D then over S, two
+        // wide reductions (one over the whole tensor ran on a single block, ~60 ms a call).
+        let range = (v.abs()?.max_keepdim(3)?.max_keepdim(2)?.to_dtype(DType::F32)? / V_F16_RANGE)?.maximum(1f64)?;
+        let back = range.transpose(1, 2)?.to_dtype(DType::BF16)?; // (B,1,H,1) for the (B,S,H,D) output
         let v = v.broadcast_div(&range.to_dtype(v.dtype())?)?.to_dtype(DType::F16)?.transpose(1, 2)?;
         let (qc, qs) = identity(q.dim(1)?)?;
         let (kc, ks) = identity(k.dim(1)?)?;
         let q = rope_quant(&q, &qc, &qs, Role::Query)?;
         let k = rope_quant(&k, &kc, &ks, Role::Key)?;
         let v = quant_v(&v, accum)?;
-        Ok(attention(&q, &k, &v, scale, false)?.broadcast_mul(&range.to_dtype(DType::BF16)?)?)
+        Ok(attention(&q, &k, &v, scale, false)?.broadcast_mul(&back)?)
     };
     let Some((positive, negative)) = padding else { return lane(q, k, v) };
     let tokens = positive.max(negative);
@@ -743,34 +799,113 @@ fn sage2_joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(us
     Ok(Tensor::cat(&lanes, 0)?)
 }
 
-/// Exact bidirectional attention; cap temporary scores by chunking queries.
-fn joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>) -> Result<Tensor> {
-    crate::profile::scope("layered joint_attention", 0.0, q.device(), || joint_attention_impl(q, k, v, padding))
+/// The bf16 flash kernel's joint attention; a shorter CFG lane masks its padded keys.
+#[cfg(feature = "flash")]
+fn flash_joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>, scale: f32) -> Result<Tensor> {
+    let Some((positive, negative)) = padding else { return crate::flash::layered_attention(q, k, v, scale, None) };
+    let tokens = positive.max(negative);
+    let mut lanes = Vec::with_capacity(2);
+    for (lane, valid) in [positive, negative].into_iter().enumerate() {
+        let bias = (valid < tokens).then_some(crate::flash::KeyBias { rows_from: 0, keys: (valid, tokens), log_boost: f32::NEG_INFINITY });
+        lanes.push(crate::flash::layered_attention(&q.narrow(0, lane, 1)?, &k.narrow(0, lane, 1)?, &v.narrow(0, lane, 1)?, scale, bias)?);
+    }
+    Ok(Tensor::cat(&lanes, 0)?)
 }
 
-fn joint_attention_impl(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>) -> Result<Tensor> {
+/// `QIR_LAYERED_SAGE_CHECK=<image tokens per frame>` (a debug switch): the frame size that
+/// splits the joint sequence into text, the latent frames and the reference frame.
+#[cfg(all(feature = "sage2", feature = "flash"))]
+fn sage_check_frame() -> Option<usize> {
+    static FRAME: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *FRAME.get_or_init(|| std::env::var("QIR_LAYERED_SAGE_CHECK").ok().and_then(|v| v.trim().parse().ok()).filter(|n: &usize| *n > 0))
+}
+
+/// The debug comparison: on blocks 0 and 59 of steps 0, 10 and 19 (one joint attention per block
+/// and step with batched CFG), SA2 against the flash kernel on the same q, k, v, the relative
+/// RMS error per token range (text, each latent frame, the reference frame, per CFG lane) and
+/// the largest |q|, |k|, |v|, logged at info.
+#[cfg(all(feature = "sage2", feature = "flash"))]
+fn sage_check(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>, scale: f32, frame: usize) -> Result<()> {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (step, block) = (call / BLOCKS, call % BLOCKS);
+    if ![0, 10, 19].contains(&step) {
+        return Ok(());
+    }
+    let amax = |t: &Tensor| -> Result<f32> { Ok(t.abs()?.max_keepdim(3)?.max_keepdim(2)?.max_keepdim(1)?.flatten_all()?.max(0)?.to_dtype(DType::F32)?.to_scalar::<f32>()?) };
+    // Every block's range; the error comparison on the first two and the last.
+    if ![0, 1, BLOCKS - 1].contains(&block) {
+        tracing::info!(step, block, max_q = amax(q)?, max_k = amax(k)?, max_v = amax(v)?, "layered sage range");
+        return Ok(());
+    }
+    let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? else { return Ok(()) };
+    let reference = flash_joint_attention(q, k, v, padding, scale)?.to_dtype(DType::F32)?; // (B,S,H,D)
+    let sage = sage2_joint_attention(q, k, v, padding, scale, accum)?.to_dtype(DType::F32)?;
+    let s = q.dim(2)?;
+    let images = s / frame; // whole frames after the text: the latent frames and the reference
+    let text = s - images * frame;
+    let mut ranges = vec![("text".to_string(), 0, text)];
+    for f in 0..images {
+        let name = if f + 1 == images { "reference".to_string() } else { format!("frame{f}") };
+        ranges.push((name, text + f * frame, frame));
+    }
+    let mut parts = Vec::new();
+    for lane in 0..q.dim(0)? {
+        for (name, start, len) in &ranges {
+            let r = reference.narrow(0, lane, 1)?.narrow(1, *start, *len)?;
+            let d = (sage.narrow(0, lane, 1)?.narrow(1, *start, *len)? - &r)?;
+            let err = (d.sqr()?.sum_all()?.to_scalar::<f32>()? / r.sqr()?.sum_all()?.to_scalar::<f32>()?.max(1e-30)).sqrt();
+            parts.push(format!("L{lane} {name} {err:.4}"));
+        }
+    }
+    tracing::info!(step, block, max_q = amax(q)?, max_k = amax(k)?, max_v = amax(v)?, errors = parts.join(", "), "layered sage check");
+    Ok(())
+}
+
+/// Whether block `i` may use SageAttention2: not the [`FLASH_BLOCKS`].
+fn sage_block(i: usize) -> bool {
+    !FLASH_BLOCKS.contains(&i)
+}
+
+/// The blocks that keep the flash kernel under SageAttention2: those whose queries or keys
+/// pass |32|. Measured 2026-10-29 (`QIR_LAYERED_SAGE_CHECK`, the 3-layer split of an 864x1152
+/// portrait, steps 0, 10 and 19, both CFG lanes): block 0 reaches |796| (q) / |636| (k), where
+/// SA2's per-block INT8 was 12–89 % off the flash kernel per token range; block 58 reaches |80.5|
+/// and block 52 |45.5|; every other block stays at or under |21| (most |13–19|), and SA2 was
+/// within 0.4–3.1 % on blocks 1 and 59 for the text, every latent frame and the reference.
+const FLASH_BLOCKS: &[usize] = &[0, 52, 58];
+
+/// Exact bidirectional attention; cap temporary scores by chunking queries.
+#[cfg(test)]
+fn joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>) -> Result<Tensor> {
+    joint_attention_mode(q, k, v, padding, true)
+}
+
+/// [`joint_attention`]; `sage_ok` false keeps this call on the flash kernel whatever the switch.
+fn joint_attention_mode(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>, sage_ok: bool) -> Result<Tensor> {
+    crate::profile::scope("layered joint_attention", 0.0, q.device(), || joint_attention_impl(q, k, v, padding, sage_ok))
+}
+
+fn joint_attention_impl(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>, sage_ok: bool) -> Result<Tensor> {
     let scale = 1.0 / (HEAD_DIM as f64).sqrt();
     if let Some((positive, negative)) = padding {
         anyhow::ensure!(q.dim(0)? == 2 && positive > 0 && negative > 0 && positive.max(negative) < q.dim(2)?, "invalid CFG padding");
     }
+    #[cfg(all(feature = "sage2", feature = "flash"))]
+    if q.device().is_cuda() && q.dtype() == DType::BF16 {
+        if let Some(frame) = sage_check_frame() {
+            sage_check(q, k, v, padding, scale as f32, frame)?;
+        }
+    }
     #[cfg(feature = "sage2")]
-    if q.device().is_cuda() && q.dtype() == DType::BF16 && layered_sage() {
+    if q.device().is_cuda() && q.dtype() == DType::BF16 && sage_ok && layered_sage() {
         if let crate::sage2::AttentionImpl::Sage2(accum) = crate::sage2::attention_impl()? {
             return sage2_joint_attention(q, k, v, padding, scale as f32, accum);
         }
     }
     #[cfg(feature = "flash")]
     if q.device().is_cuda() && q.dtype() == DType::BF16 {
-        if let Some((positive, negative)) = padding {
-            let tokens = positive.max(negative);
-            let mut lanes = Vec::with_capacity(2);
-            for (lane, valid) in [positive, negative].into_iter().enumerate() {
-                let bias = (valid < tokens).then_some(crate::flash::KeyBias { rows_from: 0, keys: (valid, tokens), log_boost: f32::NEG_INFINITY });
-                lanes.push(crate::flash::layered_attention(&q.narrow(0, lane, 1)?, &k.narrow(0, lane, 1)?, &v.narrow(0, lane, 1)?, scale as f32, bias)?);
-            }
-            return Ok(Tensor::cat(&lanes, 0)?);
-        }
-        return crate::flash::layered_attention(q, k, v, scale as f32, None);
+        return flash_joint_attention(q, k, v, padding, scale as f32);
     }
     let keys = k.to_dtype(DType::F32)?.transpose(2, 3)?.contiguous()?;
     let values = v.to_dtype(DType::F32)?.contiguous()?;
@@ -1044,13 +1179,15 @@ impl LayeredDit {
     ) -> Result<Tensor> {
         let (mut img, mut txt) = self.input.project(img_tokens, txt_tokens)?;
         let temb = self.input.timestep(timestep, additional_t_cond)?;
-        for block in &self.blocks {
-            (img, txt) = block.forward_split(&img, &txt, &temb, rope, padding, split)?;
+        // SageAttention2 was measured on Qwen-Image-Layered only; 2511 keeps the flash kernel.
+        let layered = self.kind == DitKind::Layered;
+        for (i, block) in self.blocks.iter().enumerate() {
+            (img, txt) = block.forward_block(&img, &txt, &temb, rope, padding, split, layered && sage_block(i))?;
         }
         if let Some(vb) = &self.streamed {
             for i in 0..BLOCKS {
                 let block = LayeredBlock::load(vb.pp(format!("transformer_blocks.{i}")))?;
-                (img, txt) = block.forward_split(&img, &txt, &temb, rope, padding, split)?;
+                (img, txt) = block.forward_block(&img, &txt, &temb, rope, padding, split, layered && sage_block(i))?;
             }
         }
         let temb = if split.is_some() { temb.narrow(0, 0, img.dim(0)?)? } else { temb };
