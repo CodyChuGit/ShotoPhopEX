@@ -104,6 +104,7 @@ pub mod flick_pan;
 mod font_preview;
 pub mod frame_tool;
 pub mod gallery_ui;
+pub mod gen_preview;
 pub mod generate_hub;
 pub mod generate_panel;
 pub mod generations_panel;

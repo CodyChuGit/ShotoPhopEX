@@ -202,12 +202,69 @@ pub struct Timings {
     pub download_ms: u64,
 }
 
+/// Whether a run shows pictures of itself while it samples (`integrations.previewWhileGenerating`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PreviewMode {
+    /// No pictures until the result.
+    #[default]
+    Off,
+    /// The model's estimate at the latent's grid (1/8 or 1/16 of the result), next to free.
+    Fast,
+    /// The estimate through a tiny decoder, up to the result's size, every few steps (`Fast`
+    /// where the model has none).
+    Sharp,
+}
+
+impl PreviewMode {
+    /// The preference's spellings.
+    pub const NAMES: &'static [&'static str] = &["off", "fast", "sharp"];
+
+    pub fn is_off(self) -> bool {
+        self == Self::Off
+    }
+
+    /// `off`, `fast` or `sharp` (any case, spaces trimmed); `None` otherwise.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "fast" => Some(Self::Fast),
+            "sharp" => Some(Self::Sharp),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Fast => "fast",
+            Self::Sharp => "sharp",
+        }
+    }
+}
+
+/// A picture of a run in progress: the model's current estimate, at whatever size the backend
+/// chose (smaller than the result for [`PreviewMode::Fast`]); the editor scales it over the
+/// result's place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preview {
+    pub image: Rgba8,
+    /// Steps finished, of `steps`.
+    pub step: u32,
+    pub steps: u32,
+    /// Which result it shows: a split's layer (0 = the background), 0 for a single picture.
+    pub output: u32,
+}
+
 /// Progress and cancellation, implemented by the engine's job context.
 pub trait Progress {
     /// `fraction` in `0.0..=1.0` with a short status (empty keeps the previous one).
     fn report(&self, fraction: f32, message: &str);
     /// Checked between steps; a backend stops and returns [`Error::Cancelled`] when true.
     fn cancelled(&self) -> bool;
+    /// A picture of the run so far (only when the backend was asked for previews). Ignored
+    /// unless the implementor shows it.
+    fn preview(&self, _preview: &Preview) {}
 }
 
 /// A [`Progress`] that ignores everything (tests, the CLI's inline runs).
@@ -294,6 +351,18 @@ mod tests {
         let s = Rgba8::solid(2, 1, [1, 2, 3, 4]).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(s.get(1, 0), Some([1, 2, 3, 4]));
         assert_eq!(s.get(2, 0), None);
+    }
+
+    #[test]
+    fn preview_modes_parse_and_serialize_as_the_preference_spells_them() {
+        for name in PreviewMode::NAMES {
+            let m = PreviewMode::parse(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(m.as_str(), *name);
+            assert_eq!(serde_json::to_value(m).ok(), Some(serde_json::Value::String((*name).to_string())));
+        }
+        assert_eq!(PreviewMode::parse(" Sharp "), Some(PreviewMode::Sharp));
+        assert_eq!(PreviewMode::parse("blurry"), None);
+        assert!(PreviewMode::default().is_off());
     }
 
     #[test]

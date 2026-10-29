@@ -19,10 +19,11 @@
 //!   message naming the job (queries and document-independent commands still run).
 
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use photocraft_doc::{DocId, Document, LayerId};
+use photocraft_geom::Rect;
 use photocraft_raster::Interrupt;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -84,7 +85,40 @@ struct Shared {
     /// `fetch_max` keeps progress monotonic even with several reporting threads.
     progress: AtomicU32,
     message: Mutex<String>,
+    /// Where the next pictures of a generation land ([`JobCtx::preview_at`],
+    /// [`JobCtx::preview_places`]): one place for every picture, or one per output.
+    preview_at: Mutex<Vec<Rect>>,
+    /// The latest pictures of a generation in progress ([`JobCtx::show_preview`]): one, or with
+    /// a place per output the latest of each output.
+    preview: Mutex<Vec<JobPreview>>,
 }
+
+/// A picture of a generation in progress, for the canvas to draw over the place its result will
+/// take until the result replaces it (`integrations.previewWhileGenerating`). The picture is
+/// usually smaller than `rect` (the model's latent grid) and is drawn scaled over it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JobPreview {
+    /// Where the result lands, in document pixels: the fill/edit/expand area, the canvas for a
+    /// new layer or a split, the tile of an upscale (the tile `output` numbers, when one request
+    /// carries several). It may reach past the canvas (an expand).
+    pub rect: Rect,
+    /// Straight RGBA8, `width × height × 4` bytes.
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<Vec<u8>>,
+    /// Steps finished, of `steps`.
+    pub step: u32,
+    pub steps: u32,
+    /// Which result: a split's layer (0 = the background), a batched request's picture (the
+    /// tile it lists `output`-th); 0 for a single result.
+    pub output: u32,
+    /// Unique across every job of the process: a new picture has a new version, so a viewer
+    /// uploads it once.
+    pub version: u64,
+}
+
+/// [`JobPreview::version`]'s source.
+static PREVIEW_VERSION: AtomicU64 = AtomicU64::new(0);
 
 impl std::fmt::Debug for JobCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -134,6 +168,69 @@ impl JobCtx {
     /// The latest status message.
     pub fn message(&self) -> String {
         self.shared.message.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Pictures shown from now on ([`Self::show_preview`]) land on `rect` (document pixels). A
+    /// job that never names a place shows none.
+    pub fn preview_at(&self, rect: Rect) {
+        self.preview_places(vec![rect]);
+    }
+
+    /// One request that makes several pictures in place (Upscale's batched tiles): the picture
+    /// numbered `output` lands on `places[output]`, and each output keeps its latest picture so
+    /// all of them show at once. Pictures shown so far are dropped.
+    pub fn preview_places(&self, places: Vec<Rect>) {
+        *self.shared.preview_at.lock().unwrap_or_else(PoisonError::into_inner) = places;
+        self.clear_preview();
+    }
+
+    /// Keep `rgba` (straight RGBA8, `width × height`) as the job's latest picture, over the place
+    /// [`Self::preview_at`] named (or, with [`Self::preview_places`], output `output`'s place,
+    /// replacing only that output's picture). Ignored without a place, once cancelled, or when
+    /// the bytes do not match the size.
+    pub fn show_preview(&self, width: u32, height: u32, rgba: Vec<u8>, step: u32, steps: u32, output: u32) {
+        let (rect, per_output) = {
+            let places = self.shared.preview_at.lock().unwrap_or_else(PoisonError::into_inner);
+            match places.as_slice() {
+                [] => return,
+                [one] => (*one, false),
+                many => match many.get(output as usize) {
+                    Some(r) => (*r, true),
+                    None => return,
+                },
+            }
+        };
+        let fits = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4)) == Some(rgba.len());
+        if !fits || width == 0 || height == 0 || rect.is_empty() || self.cancelled() {
+            return;
+        }
+        let version = PREVIEW_VERSION.fetch_add(1, Ordering::Relaxed) + 1;
+        let p = JobPreview { rect, width, height, rgba: Arc::new(rgba), step, steps, output, version };
+        let mut shown = self.shared.preview.lock().unwrap_or_else(PoisonError::into_inner);
+        if per_output {
+            shown.retain(|q| q.output != output);
+            shown.push(p);
+        } else {
+            *shown = vec![p];
+        }
+    }
+
+    /// The job's latest picture, if it showed one and it was not cleared since.
+    pub fn preview(&self) -> Option<JobPreview> {
+        self.shared.preview.lock().unwrap_or_else(PoisonError::into_inner).iter().max_by_key(|p| p.version).cloned()
+    }
+
+    /// Every picture the job shows now: one, or the latest of each output with a place of its
+    /// own ([`Self::preview_places`]), in output order.
+    pub fn previews(&self) -> Vec<JobPreview> {
+        let mut v = self.shared.preview.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        v.sort_by_key(|p| p.output);
+        v
+    }
+
+    /// Drop the pictures (the job ended: its result, or nothing, replaces them).
+    pub fn clear_preview(&self) {
+        self.shared.preview.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     /// Run `f` with an algorithm-level [`Interrupt`] whose progress maps onto `lo..hi` of this
@@ -694,6 +791,25 @@ impl Session {
         self.active().and_then(|st| self.job_on(st.doc.id))
     }
 
+    /// The latest picture of the generation running on document `doc`, with the place its
+    /// result will take ([`JobPreview`]); `None` when no job there shows one. The canvas draws
+    /// it over the document each frame until the job ends (cheap: the pixels are shared).
+    pub fn job_preview(&self, doc: DocId) -> Option<JobPreview> {
+        self.jobs.running.iter().filter(|r| r.doc == Some(doc)).find_map(|r| r.ctx.preview())
+    }
+
+    /// Every picture the generation running on `doc` shows now, each over its own place: one,
+    /// or one per tile of a batched Upscale request. Empty when none.
+    pub fn job_previews(&self, doc: DocId) -> Vec<JobPreview> {
+        self.jobs.running.iter().filter(|r| r.doc == Some(doc)).map(|r| r.ctx.previews()).find(|v| !v.is_empty()).unwrap_or_default()
+    }
+
+    /// The latest picture of running job `id` (the Generations panel's row, or a job that makes
+    /// a new document and so has no canvas yet).
+    pub fn job_preview_of(&self, id: JobId) -> Option<JobPreview> {
+        self.jobs.running.iter().find(|r| r.id == id).and_then(|r| r.ctx.preview())
+    }
+
     /// Wait for background workers of cancelled jobs to exit (tests and benchmarks measure
     /// cancel latency with it). Native only; returns at once on wasm.
     pub fn join_cancelled_jobs(&mut self) {
@@ -980,6 +1096,8 @@ impl Session {
     }
 
     fn end_job(&mut self, job: &Running, outcome: JobOutcome) {
+        // The result (or the unchanged document) replaces the picture of the run in progress.
+        job.ctx.clear_preview();
         self.generation_job_ended(job.id, job.doc, &outcome);
         let (state, result, error) = match &outcome {
             JobOutcome::Done(v) => ("done", Some(v.clone()), None),

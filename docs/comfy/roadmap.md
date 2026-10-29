@@ -112,8 +112,12 @@ the area, the result above it. The picker's installed badges: the bar starts a b
 `generate.models` probe (`async: true`) and marks templates whose files the server lacks "(not
 installed)". The control-protocol script test of the DoD is
 `generative_bar_tests::the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations`
-(select → `ui.set` → generate → `ui.inspect`, against the fake server). Still open: preview
-frames.
+(select → `ui.set` → generate → `ui.inspect`, against the fake server). ~~Still open: preview
+frames.~~ **Closed 2026-10-29:** live previews from the native worker, Preferences › AI
+Integrations › "Preview while generating: Off / Fast / Sharp" (default Fast), drawn over the
+result's place (fill/edit/expand area, the canvas, each Upscale tile) and as the Generations
+row's thumbnail; branch `feat/live-preview` (genai-native `feat/live-preview-2`). Open: MOSS-Image
+(its own branch), a split's layers side by side, a new document's canvas preview.
 
 **Performance pass 2026-10-09** (numbers in [`benchmarks.md`](benchmarks.md)): Lightning tiers
 for 2511 with `defaultFillTemplate = auto` picking the 8-step tier when its LoRA is installed, a
