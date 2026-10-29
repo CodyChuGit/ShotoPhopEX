@@ -158,9 +158,28 @@ impl Weights {
 
     /// The linear `module` (`.weight`, optional `.bias`): ConvRot INT8 or dense.
     pub fn linear(&self, module: &str) -> Result<QLinear> {
-        let bias = if self.vb.contains_tensor(&format!("{module}.bias")) { Some(self.get(&format!("{module}.bias"))?) } else { None };
+        self.linear_rows(module, None)
+    }
+
+    /// [`Self::linear`] with its output rows reordered: row `i` of the result is the file's row
+    /// `rows[i]` (a reordering of the output channels, exact for INT8 and dense alike).
+    pub fn linear_rows(&self, module: &str, rows: Option<&[usize]>) -> Result<QLinear> {
+        let mut bias = if self.vb.contains_tensor(&format!("{module}.bias")) { Some(self.get(&format!("{module}.bias"))?) } else { None };
+        let index = match rows {
+            Some(r) => Some(Tensor::from_vec(r.iter().map(|&i| i as u32).collect::<Vec<_>>(), r.len(), &self.dev)?),
+            None => None,
+        };
+        if let (Some(b), Some(ix)) = (&bias, &index) {
+            bias = Some(b.index_select(ix, 0)?);
+        }
         if self.is_quantized(module) {
-            let p = self.prequantized(module)?;
+            let mut p = self.prequantized(module)?;
+            if let Some(r) = rows {
+                anyhow::ensure!(r.len() == p.out_features && r.iter().all(|&i| i < p.out_features), "{module}: a row order of {} for {} rows", r.len(), p.out_features);
+                let k = p.in_features;
+                p.weight_i8 = r.iter().flat_map(|&i| p.weight_i8[i * k..(i + 1) * k].iter().copied()).collect();
+                p.col_scale = r.iter().map(|&i| p.col_scale[i]).collect();
+            }
             #[cfg(feature = "convrot")]
             if self.convrot {
                 let (q, s) = p.tensors(&self.dev)?;
@@ -169,7 +188,12 @@ impl Weights {
             let w = dequantize(&p)?.to_dtype(self.dtype)?.to_device(&self.dev)?;
             return Ok(QLinear::Dense(candle_nn::Linear::new(w, bias)));
         }
-        Ok(QLinear::Dense(candle_nn::Linear::new(self.get(&format!("{module}.weight"))?, bias)))
+        let w = self.get(&format!("{module}.weight"))?;
+        let w = match &index {
+            Some(ix) => w.index_select(ix, 0)?,
+            None => w,
+        };
+        Ok(QLinear::Dense(candle_nn::Linear::new(w, bias)))
     }
 }
 

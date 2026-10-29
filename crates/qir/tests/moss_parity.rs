@@ -108,15 +108,23 @@ fn dit_velocity_matches() -> Result<()> {
 #[ignore = "needs MOSS-Image's weights and ref_moss.py's outputs"]
 fn vae_decode_matches() -> Result<()> {
     let (dev, _) = dev()?;
-    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[files().vae], DType::F32, &dev)? };
-    let vae = Flux2Decoder::load(vb)?;
     let r = reference("run_cat_512x512_s20_seed42.safetensors")?;
-    let img = vae.decode(&r["latent"].to_device(&dev)?)?; // (1, 3, H, W) in [-1, 1]
-    let ours = ((img.squeeze(0)?.permute((1, 2, 0))?.to_device(&Device::Cpu)? + 1.0)? * 0.5)?;
     let theirs = r["img"].squeeze(0)?;
-    let p = psnr(&ours, &theirs)?;
-    println!("VAE decode: PSNR {p:.2} dB against ComfyUI's");
-    assert!(p > 40.0, "PSNR {p}");
+    for dt in [DType::F32, DType::BF16] {
+        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[files().vae], dt, &dev)? };
+        let vae = Flux2Decoder::load(vb)?;
+        let latent = r["latent"].to_device(&dev)?;
+        let _ = vae.decode(&latent)?;
+        dev.synchronize()?;
+        let t0 = std::time::Instant::now();
+        let img = vae.decode(&latent)?; // (1, 3, H, W) in [-1, 1]
+        dev.synchronize()?;
+        let secs = t0.elapsed().as_secs_f32();
+        let ours = ((img.squeeze(0)?.permute((1, 2, 0))?.to_dtype(DType::F32)?.to_device(&Device::Cpu)? + 1.0)? * 0.5)?;
+        let p = psnr(&ours, &theirs)?;
+        println!("VAE decode {dt:?}: PSNR {p:.2} dB against ComfyUI's, {secs:.3} s at 512²");
+        assert!(p > 40.0, "PSNR {p}");
+    }
     Ok(())
 }
 
@@ -148,6 +156,7 @@ fn picture_matches() -> Result<()> {
 #[test]
 #[ignore = "needs MOSS-Image's weights"]
 fn picture_at_the_defaults() -> Result<()> {
+    let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
     let p = MossPipeline::load(&files(), &mut |_, _| {})?;
     let mut req = Request::new(std::env::var("MOSS_PROMPT").unwrap_or_else(|_| {
         "A wide view of a refrigerator beside a kitchen counter with a fruit bowl. A small sticky note on the refrigerator door is handwritten: \"Buy milk and eggs!\"".into()
