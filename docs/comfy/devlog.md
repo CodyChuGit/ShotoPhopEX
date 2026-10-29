@@ -12,8 +12,8 @@ strip of three or more, up to 16 per side (64 MP takes 9x9). An explicit `grid` 
 `tileMegapixels` asks for the old square tiles, and the result reports `grid`. The portrait, cat
 and bird at 2x take 2x2 instead of six tiles: 30.3 to 24.2 s, 30.0 to 24.3 s and 29.7 to 24.8 s
 (benchmarks.md §0). Recreate needs nothing: Upscale is not in the Generations library
-(`is_generative` leaves it out), so no Upscale record exists to replay. `feat/warmup` (warm-up at
-launch) is in the entry below, on its own branch.
+(`is_generative` leaves it out), so no Upscale record exists to replay. The warm-up at launch
+is on `feat/warmup`, with its own entry there.
 
 ## 2026-10-29 (late afternoon): Upscale in one batched request; Upscale back in the background
 
