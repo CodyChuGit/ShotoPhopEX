@@ -1,7 +1,9 @@
 # Hardware tiers: long-term goals
 
-The owner's direction (2026-10-29): make every generative feature fast on the RTX 5090 first,
-then bring it to smaller machines in tiers. **The current work is the 5090 tier only**; the rest
+The owner's direction (2026-10-29), in his words: "super optimized for 5090, then 3090, then
+constrain to 16gb runnable in 3 tiers. Lastly 4th tier mac conversion too with omlx probably"; a
+Mac must fit in 16 GB of RAM, with a "super MOSS" version for 8 GB, the system's own RAM included.
+So: three NVIDIA tiers (5090, 3090, 16 GB), then a fourth, the Mac (probably through oMLX). **The current work is the 5090 tier only**; the rest
 is recorded here so the 5090 work does not close doors on it.
 
 ## The tiers, in order
