@@ -50,7 +50,7 @@ fn research_templates_need_the_opt_in() {
     assert!(prompt.contains("a red bicycle") && prompt.contains("image 2"), "wrapped as a local-edit instruction: {prompt}");
     assert_eq!(g["steps"], 25, "2.1 default");
     assert_eq!(g["guidance"], 1.0);
-    assert_eq!(g["params"]["models"]["unet"], "qwen_image_2.1_int8_convrot.safetensors");
+    assert_eq!(g["params"]["models"]["unet"], "qwen_image_2.1_bf16.safetensors");
     assert_eq!(g["params"]["models"]["vae"], "qwen_image_2.1_vae_bf16.safetensors");
 }
 

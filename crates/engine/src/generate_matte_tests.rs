@@ -192,7 +192,7 @@ fn without_the_research_opt_in_remove_background_uses_the_permissive_detector() 
     assert!(s.active().unwrap().doc.selection.is_some());
     assert_eq!(fake.state().runs[2].request["prompt"], "the main subject");
     // Research allowed but the 2.1 files missing: `auto` still falls back to the detector.
-    let bare = FakeNative::start_with(Options { missing_files: vec!["qwen_image_2.1_int8_convrot.safetensors".into()], ..Options::default() }).unwrap();
+    let bare = FakeNative::start_with(Options { missing_files: vec!["qwen_image_2.1_bf16.safetensors".into()], ..Options::default() }).unwrap();
     let mut s = session(&bare.url);
     let r = s.execute(REMOVE_BG, json!({"prompt": "the boat"})).unwrap();
     assert_eq!(r["template"], "sam3.1/segment");

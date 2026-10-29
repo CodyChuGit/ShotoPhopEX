@@ -4365,9 +4365,13 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
     let health = backend.map(|b| b.health());
     let online = health.as_ref().is_some_and(|h| h.ok);
     let mut folders: BTreeMap<String, Option<Vec<String>>> = BTreeMap::new();
+    // The native worker's index names the templates it serves rather than model files (as in
+    // `resolve_auto`): a served template has every slot installed.
+    let served: Vec<String> = if online { backend.and_then(|b| b.model_files("").ok()).unwrap_or_default() } else { Vec::new() };
     let mut templates = Vec::new();
     for t in template::builtin() {
         let m = &t.meta;
+        let serves = served.iter().any(|s| s == &m.id);
         let mut slots = Vec::new();
         for slot in &m.models {
             let files = if online {
@@ -4375,7 +4379,7 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
             } else {
                 None
             };
-            let installed = files.as_ref().map(|f| f.iter().any(|x| x == &slot.default));
+            let installed = files.as_ref().map(|f| serves || f.iter().any(|x| x == &slot.default));
             let v = json!({"placeholder": slot.placeholder, "folder": slot.folder, "file": slot.default, "installed": installed});
             slots.push(v);
         }

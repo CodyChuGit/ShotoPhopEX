@@ -24,6 +24,8 @@ pub struct Options {
     pub vram_free: Option<u64>,
     /// Answer a `batch` request with one picture, as a worker without batches would.
     pub no_batch: bool,
+    /// The index lists the templates served and no per-folder files, as gn-diffusion's does.
+    pub templates_only: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -40,6 +42,7 @@ impl Default for Options {
             enhanced_text: None,
             vram_free: None,
             no_batch: false,
+            templates_only: false,
         }
     }
 }
@@ -132,6 +135,9 @@ impl Engine for FakeEngine {
         let templates = crate::template::builtin();
         let installed: Vec<_> =
             templates.iter().filter(|t| !t.meta.models.iter().any(|m| self.options.missing_files.contains(&m.default))).map(|t| &t.meta.id).collect();
+        if self.options.templates_only {
+            return json!({"dir":dir,"installed":installed});
+        }
         let mut folders: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for t in &templates {
             for slot in &t.meta.models {

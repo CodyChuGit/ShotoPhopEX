@@ -2,6 +2,11 @@
 
 Current engine (2026-10-29): native worker only; ComfyUI removed. Historical phases below describe the fork’s development. See [removal report](research/notes/comfyui-removal.md).
 
+Hardware tiers (the owner's long-term goal, 2026-10-29; [`goals/hardware-tiers.md`](goals/hardware-tiers.md)):
+🟡 RTX 5090 (the current focus: every feature clearly faster than ComfyUI) · ⬜ RTX 3090 (int8
+only) · ⬜ 16 GB NVIDIA cards (4-bit, one model resident) · ⬜ Mac 16 GB (MLX 4-bit) · ⬜ Mac 8 GB
+(a "super MOSS").
+
 Status legend: ✅ done · 🟡 in progress · ⬜ not started. Updated 2026-10-09.
 
 Each phase ends with something a user can run. Every phase obeys upstream's gates
