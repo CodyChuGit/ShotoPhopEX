@@ -100,7 +100,10 @@ pub fn gemm_plan(m: usize, n: usize, k: usize) -> GemmPlan {
 /// One ~1 MP lane at 864x1152 (3888 image rows plus the text) sits just under [`TUNED_M`]; the
 /// 5090's plan starts here.
 const LANE_M: usize = 3584;
-/// Two lanes or one lane with its reference (~7900-8300 rows) up to this M.
+/// One lane's plan up to this M; from it, two lanes or one lane with its reference (~7900-8300
+/// rows, measured), up to [`PAIR_M`].
+const LANE_END_M: usize = 6144;
+/// Two lanes or one lane with its reference up to this M.
 const PAIR_M: usize = 12288;
 
 /// The RTX 5090's plan (`tests/convrot_shapes.rs gemm_plans_on_this_card`, 2026-10-29: every
@@ -117,7 +120,7 @@ pub fn gemm_plan_sm120(m: usize, n: usize, k: usize) -> GemmPlan {
         GemmPlan::single(2)
     } else if m < LANE_M {
         GemmPlan::single(0)
-    } else if m < LARGE_M {
+    } else if m < LANE_END_M {
         if n >= 16384 {
             GemmPlan::single(3)
         } else {
