@@ -129,6 +129,22 @@ cold and warm. A worker that refuses the batch is asked tile by tile. The same P
 also fixes Upscale to run as a background job: a nested `image.imageSize` used to switch the job
 off, so Upscale ran inline on the UI thread.
 
+**Split into Layers on INT8 linears, 2026-10-29 night** (speed pass 2, genai-native
+`perf/split-int8` `16adfc4`, on top of the resident DiT). Split's DiT now runs ConvRot INT8
+linears by default: each fp8 weight is dequantized once at load and requantized.
+`QIR_LAYERED_INT8=0` keeps fp8. 2511, which binds LoRAs, stays on fp8. The earlier INT8 attempt
+paged the card at load, and the cause was a missing synchronize, not the INT8 weights: the
+conversion ran asynchronously and hundreds of linears' freed bf16 temporaries were still pending,
+with free VRAM falling ~2.3 GB per 60 linears. Synchronized per linear, the DiT loads with ~3 GB
+free and step 0 has 3.1 GB to spare. Measured in ABBA order with cooldowns, both runs resident,
+seed 7, 3 layers at ~1 MP: warm **86.3 to 61.9 s** (85.9 / 86.5 / 86.1 / 86.6 against 60.5 /
+61.1 / 59.9 / 66.0), denoise 84.8 to 58.4 s, cold 91.4 to 67.9–80.4 s. Quality: the layers
+composited back onto the input give **37.25 dB** against fp8's 36.91, coverage 0.999. Against
+fp8, the picture's own layer is 44.5 dB and the empty third layer 47.1 dB. The first layer is
+invented background on this picture under both, and it moves with any numeric change (2.65 dB),
+as noted for SageAttention2. The INT8 resident set is still ~7.6 GB above fp8's (free after load
+2.9–3.4 GB against 10.95), probably allocator granularity; not chased further.
+
 **Split into Layers with the DiT resident, 2026-10-29 night** (speed pass 2, genai-native
 `perf/split-resident` `9e10f13`). The Layered DiT (~20 GB) and VAE stay on the card between
 splits, and the prompt's text conditioning is kept. The app always sends its default split

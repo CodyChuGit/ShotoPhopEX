@@ -4,6 +4,18 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-29 (night): speed pass 2, item 2: Split on INT8 linears
+
+Branch `perf/split-int8` in both repos, stacked on `perf/split-resident` (genai-native `16adfc4`).
+Split's DiT runs ConvRot INT8 linears by default. Warm 86.3 to 61.9 s, composite against the input
+37.25 dB against 36.91 (benchmarks.md §0). The paging that parked INT8 earlier was an unsynchronized
+conversion queue (the freed bf16 temporaries were still pending), not the weights; a synchronize per
+converted linear fixed it. The flag is scoped to `LayeredDit::from_resident_file`, because 2511
+shares `LayeredLinear` and binds LoRAs, which INT8 refuses. Checked: a 2511 Lightning-8 edit on the
+same worker still runs. `QIR_LAYERED_INT8=0` opts out.
+Open: the INT8 resident set is ~7.6 GB above fp8's (free after load ~3 GB against 11 GB). If larger
+splits page, that's where to look.
+
 ## 2026-10-29 (night): speed pass 2, item 1: Split keeps its DiT resident
 
 Speed pass 2 started from genai-native main `aa5ccdf` and photoshopex `72efc7dd`. Branch
