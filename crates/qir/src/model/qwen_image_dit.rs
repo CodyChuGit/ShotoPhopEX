@@ -23,13 +23,13 @@ pub fn checkpoint_builder(path: impl AsRef<std::path::Path>, device: &Device) ->
 
 /// The checkpoint, a CPU overlay of patched tensors, and an INT8 cache file ([`crate::int8_cache`])
 /// read before either.
-struct Checkpoint(candle_core::safetensors::MmapedSafetensors, std::collections::BTreeMap<String, Tensor>, Option<candle_core::safetensors::MmapedSafetensors>);
+struct Checkpoint(candle_core::safetensors::MmapedSafetensors, std::collections::BTreeMap<String, Tensor>, Option<crate::layered_files::TensorFile>);
 
-/// The checkpoint with an INT8 cache entry's prequantized linears read first.
-pub fn checkpoint_builder_cached(path: impl AsRef<std::path::Path>, device: &Device, cache: &std::path::Path) -> Result<VarBuilder<'static>> {
-    // SAFETY: installed checkpoints and finished cache entries are not modified while mapped.
+/// The checkpoint with an INT8 cache entry's prequantized linears read first (pass the mapping
+/// that prefetched it, or every page faults again).
+pub fn checkpoint_builder_cached(path: impl AsRef<std::path::Path>, device: &Device, cached: crate::layered_files::TensorFile) -> Result<VarBuilder<'static>> {
+    // SAFETY: installed checkpoints are not modified while mapped.
     let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(path)? };
-    let cached = unsafe { candle_core::safetensors::MmapedSafetensors::new(cache)? };
     Ok(VarBuilder::from_backend(
         Box::new(Checkpoint(tensors, std::collections::BTreeMap::new(), Some(cached))),
         if device.is_cuda() { DType::BF16 } else { DType::F32 },
@@ -58,8 +58,8 @@ impl candle_nn::var_builder::SimpleBackend for Checkpoint {
     }
 
     fn get_unchecked(&self, name: &str, dtype: DType, device: &Device) -> candle_core::Result<Tensor> {
-        if let Some(cached) = self.2.as_ref().filter(|c| c.get(name).is_ok()) {
-            return cached.load(name, device)?.to_dtype(dtype);
+        if let Some(cached) = self.2.as_ref().filter(|c| c.contains(name)) {
+            return cached.tensor(name, device).map_err(|e| candle_core::Error::Msg(e.to_string()))?.to_dtype(dtype);
         }
         let host = name.ends_with(".comfy_quant") || name.ends_with(".weight_scale");
         let device = if host { &Device::Cpu } else { device };
@@ -70,7 +70,7 @@ impl candle_nn::var_builder::SimpleBackend for Checkpoint {
     }
 
     fn contains_tensor(&self, name: &str) -> bool {
-        self.2.as_ref().is_some_and(|c| c.get(name).is_ok()) || self.0.get(name).is_ok()
+        self.2.as_ref().is_some_and(|c| c.contains(name)) || self.0.get(name).is_ok()
     }
 }
 
@@ -1233,20 +1233,25 @@ impl LayeredDit {
     /// Every block resident, read from the checkpoint as `open_streamed` reads it (fp8 kept
     /// until each matmul): about 20 GB on the GPU, for a worker that splits more than once.
     pub fn open_resident(path: impl AsRef<std::path::Path>, device: &Device, cache: Option<&std::path::Path>) -> Result<Self> {
-        Self::from_resident_file(crate::layered_files::TensorFile::open(path)?, device, cache)
+        Self::from_resident_file(crate::layered_files::TensorFile::open(path)?, device, cache, None)
     }
 
     /// Reuse a prefaulted mapping so uploading weights does not repeat page faults. With `cache`
     /// (an [`crate::int8_cache`] entry) an INT8 load reads the entry when it exists and writes it
-    /// after converting when it does not.
-    pub(crate) fn from_resident_file(file: crate::layered_files::TensorFile, device: &Device, cache: Option<&std::path::Path>) -> Result<Self> {
+    /// after converting when it does not; `entry` is that entry's prefaulted mapping, if any.
+    pub(crate) fn from_resident_file(
+        file: crate::layered_files::TensorFile,
+        device: &Device,
+        cache: Option<&std::path::Path>,
+        entry: Option<crate::layered_files::TensorFile>,
+    ) -> Result<Self> {
         let dt = if device.is_cuda() { DType::BF16 } else { DType::F32 };
         // The INT8 conversion replaces each FP8 weight: read them one by one, or the packed ~19 GB
         // FP8 region and the INT8 copies are on the card together (2026-10-29: Windows paged the
         // 3-layer split to 222 s, the conversion to 12-15 s a load).
         #[cfg(feature = "convrot")]
         if device.is_cuda() && layered_int8_wanted() {
-            let cached = match cache.filter(|p| p.is_file()).map(crate::layered_files::TensorFile::open) {
+            let cached = match entry.map(Ok).or_else(|| cache.filter(|p| p.is_file()).map(crate::layered_files::TensorFile::open)) {
                 Some(Ok(entry)) => Some(entry),
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "unreadable INT8 cache entry; converting");
@@ -1268,7 +1273,7 @@ impl LayeredDit {
             }
             return Ok(dit);
         }
-        let _ = cache;
+        let _ = (cache, entry);
         Self::load(file.resident_builder(dt, device)?)
     }
 

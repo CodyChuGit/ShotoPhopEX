@@ -293,6 +293,17 @@ impl Edit2511Pipeline {
             crate::device::trim_pool(&self.device);
         }
         mark("residency check/release")?;
+        // The model kept between requests carries its LoRAs merged into the weights, so it can run
+        // INT8 linears; the load that binds and materializes them stays fp8. An INT8 cache entry
+        // for these LoRAs holds the merged, converted linears; its pages fault in while the
+        // encoders run.
+        let int8 = edit2511_int8();
+        let cache = if resident.is_none() && int8 && self.device.is_cuda() {
+            self.int8_cache.as_ref().and_then(|dir| crate::int8_cache::entry(dir, &self.files.diffusion, &req.loras).ok())
+        } else {
+            None
+        };
+        let warm = cache.as_ref().filter(|p| p.is_file()).and_then(|p| crate::layered_pipeline::LayeredPrefetch::start(p.clone()));
         let target = if let Some(rgb) = &req.target {
             self.target(rgb)?
         } else {
@@ -323,18 +334,15 @@ impl Edit2511Pipeline {
             check()?;
             mark("sampler prepare")?;
             if resident.is_none() {
-                // The model kept between requests carries its LoRAs merged into the weights, so it
-                // can run INT8 linears; the load that binds and materializes them stays fp8.
-                let int8 = edit2511_int8();
-                // An INT8 cache entry for these LoRAs holds the merged, converted linears: read as
-                // they are, it skips the fp8 load, the materialize and the conversion.
-                let cache = if int8 && self.device.is_cuda() {
-                    self.int8_cache.as_ref().and_then(|dir| crate::int8_cache::entry(dir, &self.files.diffusion, &req.loras).ok())
-                } else {
-                    None
-                };
+                // Read as they are, the cached linears skip the fp8 load, the materialize and the
+                // conversion; the prefetch's mapping is kept so its pages do not fault again.
+                let warmed = warm.and_then(|w| w.finish().ok());
                 if let Some(entry) = cache.as_ref().filter(|p| p.is_file()) {
-                    match crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, entry).and_then(LayeredDit::load_int8) {
+                    let cached = match warmed {
+                        Some(file) => Ok(file),
+                        None => crate::layered_files::TensorFile::open(entry),
+                    };
+                    match cached.and_then(|file| crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, file)).and_then(LayeredDit::load_int8) {
                         Ok(dit) => {
                             mark("DiT load (INT8 cache)")?;
                             *resident = Some((req.loras.clone(), dit));
