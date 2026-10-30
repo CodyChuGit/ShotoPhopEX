@@ -152,6 +152,12 @@ The pictures are in `photocraft-tests\bench\sp2-step-cache` (`sheet.png`). MOSS 
   230–232 TFLOPS; the best of the top-8 heuristic algos is 1–3 % faster, under 1 % a picture.
 - **The 2.1 prefix pass's causal mask built on the device:** byte-identical, no change; the
   warm prefix is already ~0.2 s.
+- **Split's and 2511's q, k and v sharing one rotated INT8 activation** (they quantized the same
+  input three times): byte-identical, but warm Split 60.5 to 67.1 s (ABBA, consistent) and 2511
+  Lightning-8 unchanged (4.53 / 4.52 s), so dropped. ConvRot's quantize is 3–26 % of an INT8
+  linear (M 8272: 0.07 ms against a 0.29 ms GEMM at K 3072, 0.30 against 0.89 at K 12288).
+  Fusing it into the producing kernels would save only the separate pass, about 3–4 % end to end
+  by estimate, for new kernels in the shared ConvRot code; not done.
 
 **Qwen-Image-Edit-2511 on INT8 linears, 2026-10-30** (speed pass 2, genai-native `perf/2511-int8`
 `6a35b91`, on the Split INT8 change). 2511's resident DiT, with its LoRAs already merged into the
