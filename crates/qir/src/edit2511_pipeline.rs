@@ -128,6 +128,8 @@ pub struct Edit2511Pipeline {
     binding: Mutex<Option<(LoraStack, std::collections::BTreeMap<String, Tensor>)>>,
     target: Mutex<Option<(RgbImage, Tensor)>>,
     resident: Mutex<Option<(LoraStack, LayeredDit)>>,
+    /// The [`crate::int8_cache`] folder; `None` when `QIR_INT8_CACHE=0`.
+    int8_cache: Option<std::path::PathBuf>,
 }
 impl Edit2511Pipeline {
     pub fn load(root: impl AsRef<Path>) -> Result<Self> {
@@ -145,6 +147,7 @@ impl Edit2511Pipeline {
             binding: Mutex::new(None),
             target: Mutex::new(None),
             resident: Mutex::new(None),
+            int8_cache: crate::int8_cache::enabled().then(|| crate::int8_cache::dir(root.as_ref())),
         })
     }
     pub fn device(&self) -> &Device {
@@ -320,37 +323,59 @@ impl Edit2511Pipeline {
             check()?;
             mark("sampler prepare")?;
             if resident.is_none() {
-                let mut binding = self.binding.lock().map_err(|_| anyhow::anyhow!("2511 binding lock poisoned"))?;
-                let hit = binding.as_ref().is_some_and(|(stack, _)| stack.same_adapters(&req.loras));
-                if !hit {
-                    *binding = None;
-                }
-                let patches = if let Some((_, weights)) = binding.as_ref() { weights.clone() } else { std::collections::BTreeMap::new() };
                 // The model kept between requests carries its LoRAs merged into the weights, so it
                 // can run INT8 linears; the load that binds and materializes them stays fp8.
                 let int8 = edit2511_int8();
-                let resident_load = |patches| -> Result<LayeredDit> {
-                    let vb = crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?;
-                    if int8 {
-                        LayeredDit::load_int8(vb)
-                    } else {
-                        LayeredDit::load(vb)
-                    }
+                // An INT8 cache entry for these LoRAs holds the merged, converted linears: read as
+                // they are, it skips the fp8 load, the materialize and the conversion.
+                let cache = if int8 && self.device.is_cuda() {
+                    self.int8_cache.as_ref().and_then(|dir| crate::int8_cache::entry(dir, &self.files.diffusion, &req.loras).ok())
+                } else {
+                    None
                 };
-                let mut dit = if hit { resident_load(patches)? } else { LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?)? };
-                if !hit {
-                    mark("DiT load")?;
-                    dit.bind_loras(&req.loras)?;
-                    let weights = dit.materialized_weights()?;
-                    // Repack materialized allocations before retaining the model across requests.
-                    drop(dit);
-                    crate::device::trim_pool(&self.device);
-                    dit = resident_load(weights.clone())?;
-                    *binding = Some((req.loras.clone(), weights));
+                if let Some(entry) = cache.as_ref().filter(|p| p.is_file()) {
+                    match crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, entry).and_then(LayeredDit::load_int8) {
+                        Ok(dit) => {
+                            mark("DiT load (INT8 cache)")?;
+                            *resident = Some((req.loras.clone(), dit));
+                        }
+                        Err(e) => tracing::warn!(error = %e, "unreadable INT8 cache entry; converting"),
+                    }
                 }
-                mark(if hit { "DiT load" } else { "LoRA materialize + snapshot" })?;
-                drop(binding);
-                *resident = Some((req.loras.clone(), dit));
+                if resident.is_none() {
+                    let mut binding = self.binding.lock().map_err(|_| anyhow::anyhow!("2511 binding lock poisoned"))?;
+                    let hit = binding.as_ref().is_some_and(|(stack, _)| stack.same_adapters(&req.loras));
+                    if !hit {
+                        *binding = None;
+                    }
+                    let patches = if let Some((_, weights)) = binding.as_ref() { weights.clone() } else { std::collections::BTreeMap::new() };
+                    let resident_load = |patches| -> Result<LayeredDit> {
+                        let vb = crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?;
+                        if int8 {
+                            LayeredDit::load_int8(vb)
+                        } else {
+                            LayeredDit::load(vb)
+                        }
+                    };
+                    let mut dit = if hit { resident_load(patches)? } else { LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?)? };
+                    if !hit {
+                        mark("DiT load")?;
+                        dit.bind_loras(&req.loras)?;
+                        let weights = dit.materialized_weights()?;
+                        // Repack materialized allocations before retaining the model across requests.
+                        drop(dit);
+                        crate::device::trim_pool(&self.device);
+                        dit = resident_load(weights.clone())?;
+                        *binding = Some((req.loras.clone(), weights));
+                    }
+                    #[cfg(feature = "convrot")]
+                    if let Some(entry) = &cache {
+                        crate::int8_cache::write_in_background(entry, dit.int8_weights()?);
+                    }
+                    mark(if hit { "DiT load" } else { "LoRA materialize + snapshot" })?;
+                    drop(binding);
+                    *resident = Some((req.loras.clone(), dit));
+                }
             } else {
                 mark("DiT resident hit")?;
             }
