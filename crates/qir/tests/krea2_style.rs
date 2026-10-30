@@ -1,4 +1,4 @@
-//! Complete-tensor ComfyUI CPU regression oracles from tools/krea2_style_fixtures.py.
+//! Complete-tensor ComfyUI CPU regression oracles from krea2_style_fixtures.py (restore: docs/no-python.md).
 use candle_core::{DType, Device, Tensor};
 use qwen_image_rs::lora::{LoraFile, LoraStack};
 use qwen_image_rs::model::krea2::{self, Krea2Config, Krea2Dit};
@@ -83,7 +83,7 @@ fn editplus_chat_override_is_exact() -> anyhow::Result<()> {
 }
 
 #[test]
-#[ignore = "regenerate large complete preprocessing tensors with tools/krea2_style_fixtures.py"]
+#[ignore = "regenerate large complete preprocessing tensors with krea2_style_fixtures.py (restore: docs/no-python.md)"]
 fn stock_editplus_preprocessing() -> anyhow::Result<()> {
     use qwen_image_rs::model::vision;
     use qwen_image_rs::pipeline::RefImage;
@@ -161,7 +161,7 @@ impl candle_nn::var_builder::SimpleBackend for CpuCheckpoint {
 }
 
 #[test]
-#[ignore = "installed 4B encoder, ~20 GiB RAM; regenerate tools/krea2_style_encoder_fixtures.py first"]
+#[ignore = "installed 4B encoder, ~20 GiB RAM; regenerate krea2_style_encoder_fixtures.py (restore: docs/no-python.md) first"]
 fn installed_style_encoder() -> anyhow::Result<()> {
     use qwen_image_rs::model::{text_encoder, vision};
     use qwen_image_rs::pipeline::RefImage;
@@ -219,7 +219,7 @@ fn installed_style_encoder() -> anyhow::Result<()> {
 }
 
 #[test]
-#[ignore = "installed RGB Wan VAE at EditPlus megapixel size; regenerate tools/krea2_style_model_fixtures.py first"]
+#[ignore = "installed RGB Wan VAE at EditPlus megapixel size; regenerate krea2_style_model_fixtures.py (restore: docs/no-python.md) first"]
 fn installed_style_reference_latents() -> anyhow::Result<()> {
     use qwen_image_rs::{model::wan_vae::WanVae, pipeline::RefImage};
     let dev = Device::Cpu;

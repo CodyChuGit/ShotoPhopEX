@@ -1,4 +1,4 @@
-//! Regenerate with tools/qir_wan_vae_fixtures.py; checkpoint paths can be overridden
+//! Regenerate with qir_wan_vae_fixtures.py (restore: docs/no-python.md); checkpoint paths can be overridden
 //! with QIR_LAYERED_VAE and QIR_RGB_VAE. Missing checkpoints skip parity only.
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;

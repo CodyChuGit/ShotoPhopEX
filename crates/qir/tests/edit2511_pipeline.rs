@@ -71,7 +71,7 @@ fn staged_binding_overlay_reloads_exact_weights() -> Result<()> {
 
 #[cfg(feature = "fp8")]
 #[test]
-#[ignore = "requires tools/edit2511_lora_probe.py and a free CUDA device"]
+#[ignore = "requires ComfyUI LowVramPatch captures (edit2511_lora_probe.py, removed; docs/no-python.md) and a free CUDA device"]
 fn installed_fp8_patched_weight() -> Result<()> {
     use qwen_image_rs::{
         edit2511_pipeline::key_seed,

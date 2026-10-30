@@ -310,7 +310,7 @@ enum Command {
         /// The vae/ directory (holds config.json + *.safetensors).
         #[arg(long)]
         weights: std::path::PathBuf,
-        /// A packed latent saved by scripts/oracle.py (`*.latent.pt`).
+        /// A packed latent saved by the diffusers oracle (`*.latent.pt`).
         #[arg(long)]
         latent: std::path::PathBuf,
         /// Decode the VAE in bf16 (default: f32 reference).
@@ -508,6 +508,62 @@ enum Command {
         #[arg(long)]
         roundtrip: Option<std::path::PathBuf>,
     },
+    /// Parity and regression gates: compare a run's outputs with a reference (CPU only).
+    Compare {
+        #[command(subcommand)]
+        what: CompareCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompareCommand {
+    /// PSNR and largest byte difference of two same-size PNGs (RGB when both are opaque).
+    Png { ours: std::path::PathBuf, reference: std::path::PathBuf },
+    /// Cosine, max |a-b| and MSE of two latents (safetensors key `latent`). Batched lanes are
+    /// not bit-reproducible (INT8 split-K atomics, batch-dependent GEMM tiling), so this gates
+    /// self-consistency of a seed across batch sizes, not bit-exactness.
+    Latent {
+        a: std::path::PathBuf,
+        b: std::path::PathBuf,
+        /// Lowest passing cosine (self-consistency runs at about 0.9999).
+        #[arg(long, default_value_t = 0.99)]
+        threshold: f64,
+    },
+    /// The `dit-forward` oracle gate: our `output` tensor against the oracle's.
+    Dit {
+        ours: std::path::PathBuf,
+        oracle: std::path::PathBuf,
+        /// The trailing rows that are image tokens (1024² is 4096).
+        #[arg(long, default_value_t = 4096)]
+        image_tokens: usize,
+    },
+    /// Layered RGBA outputs, `<prefix>-1..3.png` in each folder, never resized.
+    Layered {
+        native: std::path::PathBuf,
+        reference: std::path::PathBuf,
+        #[arg(long, default_value = "native")]
+        native_prefix: String,
+        #[arg(long, default_value = "comfy")]
+        reference_prefix: String,
+        /// Fail above this RGB mean error (bytes, over visible pixels) or below --iou-limit.
+        #[arg(long)]
+        rgb_limit: Option<f64>,
+        #[arg(long, default_value_t = 0.99)]
+        iou_limit: f64,
+        #[arg(long, default_value_t = 127)]
+        visible_alpha_threshold: u8,
+        /// Place both on a common transparent canvas (top-left) when sizes differ.
+        #[arg(long)]
+        pad_canvas: bool,
+    },
+    /// Raw `*.rgba` artifacts (bench and LoRA tile dumps) in two folders, matched by name.
+    Raw {
+        before: std::path::PathBuf,
+        after: std::path::PathBuf,
+        /// Allowed RGB mean error in bytes.
+        #[arg(long, default_value_t = 1.0)]
+        limit: f64,
+    },
 }
 
 fn main() -> Result<()> {
@@ -605,6 +661,7 @@ fn main() -> Result<()> {
         Command::PrequantizeText { weights, out } => prequantize_text(&weights, &out),
         Command::PrequantizeConvrot { weights, out, convrot_cache } => prequantize_convrot(&weights, out.as_deref(), convrot_cache.as_deref()),
         Command::VaeEncode { weights, image, bf16, out, roundtrip } => vae_encode(&weights, &image, bf16, &out, roundtrip.as_deref()),
+        Command::Compare { what } => compare(what),
         Command::VisionForward { weights, inputs, grid_h, grid_w, out } => vision_forward(&weights, &inputs, grid_h, grid_w, &out),
         Command::Krea2Cond { weights, tokenizer, prompt, out } => krea2_cond(&weights, &tokenizer, &prompt, &out),
         Command::WanVaeDecode { weights, latent, bf16, out } => wan_vae_decode(&weights, &latent, bf16, &out),
@@ -2075,6 +2132,55 @@ fn prequantize_text(weights: &std::path::Path, out: &std::path::Path) -> Result<
     let mut f = std::fs::File::create(out)?;
     gguf_file::write(&mut f, &[], &refs)?;
     println!("wrote {} tensors ({n_q8} Q8_0 linears + {} F16) -> {}", refs.len(), refs.len() - n_q8, out.display());
+    Ok(())
+}
+
+/// `qir compare`: print the measurements and fail (exit 1) when the gate does not pass.
+fn compare(what: CompareCommand) -> Result<()> {
+    use qwen_image_rs::compare;
+    let passed = match what {
+        CompareCommand::Png { ours, reference } => {
+            let (psnr, max) = compare::png(&ours, &reference)?;
+            println!("psnr_db={psnr:.2} maxabs={max} identical={}", psnr.is_infinite());
+            true
+        }
+        CompareCommand::Latent { a, b, threshold } => {
+            let (sa, a) = compare::tensor(&a, "latent")?;
+            let (sb, b) = compare::tensor(&b, "latent")?;
+            anyhow::ensure!(a.len() == b.len(), "shape mismatch {sa:?} vs {sb:?}");
+            let (cos, maxabs, mse) = compare::stats(&a, &b);
+            let ok = cos > threshold;
+            println!("cosine={cos:.7} maxabs={maxabs:.6} mse={mse:.3e} (thr={threshold}) -> {}", if ok { "OK" } else { "DIVERGED" });
+            ok
+        }
+        CompareCommand::Dit { ours, oracle, image_tokens } => {
+            let (cos, mse, per_token) = compare::dit(&ours, &oracle, image_tokens)?;
+            println!("overall_cos={cos:.6} mse={mse:.6e} per_token_cos_mean={per_token:.6}");
+            true
+        }
+        CompareCommand::Layered { native, reference, native_prefix, reference_prefix, rgb_limit, iou_limit, visible_alpha_threshold, pad_canvas } => {
+            let mut ok = true;
+            for i in 1..=3 {
+                let a = native.join(format!("{native_prefix}-{i}.png"));
+                let b = reference.join(format!("{reference_prefix}-{i}.png"));
+                let l = compare::layer(i, &a, &b, visible_alpha_threshold, pad_canvas)?;
+                println!("{}", serde_json::to_string(&l)?);
+                if let Some(limit) = rgb_limit {
+                    ok &= l.rgb_mae <= limit && l.alpha_iou >= iou_limit;
+                }
+            }
+            ok
+        }
+        CompareCommand::Raw { before, after, limit } => {
+            let rows = compare::raw_dirs(&before, &after, limit)?;
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+            rows.iter().all(|r| r.pass)
+        }
+    };
+    if !passed {
+        eprintln!("compare: gate failed");
+        std::process::exit(1);
+    }
     Ok(())
 }
 
