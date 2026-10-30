@@ -2,7 +2,9 @@
 //! model): the ConvRot INT8 linears a resident load converts from the fp8 file (with 2511's LoRAs
 //! merged first), saved once and read back as they are, so a later load skips the fp8 read, the
 //! LoRA materialize and the conversion. The entry is keyed by the checkpoint and every LoRA file
-//! (path, size, mtime, strength) and [`FORMAT`]; a few entries per model are kept ([`KEEP`]).
+//! (path, size, mtime, strength) and [`FORMAT`]. An entry is ~19 GB: one per model is kept
+//! ([`KEEP`]), all of them within [`MAX_GB`], and none is written that would leave the disk with
+//! less than [`MIN_FREE_GB`] free.
 
 use std::path::{Path, PathBuf};
 
@@ -13,12 +15,20 @@ use crate::Result;
 
 /// Bumped when the cached tensors' meaning changes (the rotation, the quantizer, the names).
 pub const FORMAT: &str = "qir-layered-int8-v1";
-/// Entries kept per checkpoint (one per LoRA set); the oldest go first.
-pub const KEEP: usize = 3;
+/// Entries kept per checkpoint, one per LoRA set (`QIR_INT8_CACHE_KEEP`).
+pub const KEEP: usize = 1;
+/// Total size of all entries in GiB; the least recently used go first (`QIR_INT8_CACHE_MAX_GB`).
+pub const MAX_GB: u64 = 60;
+/// Free space in GiB a write must leave on the disk (`QIR_INT8_CACHE_MIN_FREE_GB`).
+pub const MIN_FREE_GB: u64 = 30;
 
 /// Whether the cache is used (`QIR_INT8_CACHE=0` turns it off).
 pub fn enabled() -> bool {
     std::env::var("QIR_INT8_CACHE").map_or(true, |v| v.trim() != "0")
+}
+
+fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
 }
 
 /// The cache folder for `models_root`, as the worker's ConvRot cache: under
@@ -48,13 +58,22 @@ pub fn entry(dir: &Path, checkpoint: &Path, loras: &LoraStack) -> Result<PathBuf
     Ok(dir.join(format!("{stem}-int8-{:016x}.safetensors", crate::convrot_cache::fnv1a64(key.as_bytes()))))
 }
 
-/// Save `weights` (CPU tensors) at `path` atomically, then drop all but the newest [`KEEP`]
-/// entries of the same checkpoint.
-pub fn write(path: &Path, weights: Vec<(String, Tensor)>) -> Result<()> {
+/// Save `weights` (CPU tensors) at `path` atomically and evict ([`evictions`]); `false` when it
+/// was not written because the disk would be left with less than [`MIN_FREE_GB`] free.
+pub fn write(path: &Path, weights: Vec<(String, Tensor)>) -> Result<bool> {
+    let size: u64 = weights.iter().map(|(_, t)| (t.elem_count() * t.dtype().size_in_bytes()) as u64).sum();
+    let dir = path.parent().ok_or_else(|| anyhow::anyhow!("INT8 cache entry has no folder"))?;
+    std::fs::create_dir_all(dir)?;
+    let free = fs2::available_space(dir)?;
+    let min_free = env_or("QIR_INT8_CACHE_MIN_FREE_GB", MIN_FREE_GB) << 30;
+    if free.saturating_sub(size) < min_free {
+        tracing::info!(path = %path.display(), free_gib = free >> 30, entry_gib = size >> 30, min_free_gib = min_free >> 30, "INT8 cache entry not written: too little free space");
+        return Ok(false);
+    }
     let map: std::collections::HashMap<String, Tensor> = weights.into_iter().collect();
     crate::convrot_cache::write_atomic(path, |tmp| Ok(candle_core::safetensors::save(&map, tmp)?))?;
     prune(path);
-    Ok(())
+    Ok(true)
 }
 
 /// [`write`] on its own thread, so the request that converted does not wait for the disk; a
@@ -67,7 +86,8 @@ pub fn write_in_background(path: &Path, weights: Vec<(String, Tensor)>) {
     let spawned = std::thread::Builder::new().name("int8-cache-write".into()).spawn(move || {
         let t0 = std::time::Instant::now();
         match write(&path, weights) {
-            Ok(()) => tracing::info!(path = %path.display(), write_s = t0.elapsed().as_secs_f64(), "INT8 cache entry written"),
+            Ok(true) => tracing::info!(path = %path.display(), write_s = t0.elapsed().as_secs_f64(), "INT8 cache entry written"),
+            Ok(false) => {}
             Err(e) => tracing::warn!(path = %path.display(), error = %e, "INT8 cache write failed"),
         }
     });
@@ -76,18 +96,59 @@ pub fn write_in_background(path: &Path, weights: Vec<(String, Tensor)>) {
     }
 }
 
-fn prune(path: &Path) {
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name().map(|n| n.to_string_lossy().into_owned())) else { return };
-    let Some(prefix) = name.rsplit_once("-int8-").map(|(p, _)| format!("{p}-int8-")) else { return };
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut entries: Vec<(std::time::SystemTime, PathBuf)> = rd
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix) && e.file_name().to_string_lossy().ends_with(".safetensors"))
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-        .collect();
+/// Mark an entry as just used, so eviction takes the least recently used first.
+pub fn touch(path: &Path) {
+    if let Ok(f) = std::fs::File::options().write(true).open(path) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+}
+
+fn checkpoint_of(path: &Path) -> Option<String> {
+    path.file_name()?.to_string_lossy().rsplit_once("-int8-").map(|(stem, _)| stem.to_string())
+}
+
+/// The entries to delete once `newest` is written, from `(last used, path, bytes)`: past `keep`
+/// of its checkpoint, then the least recently used of the rest until all fit in `cap` bytes.
+/// `newest` always stays.
+fn evictions(mut entries: Vec<(std::time::SystemTime, PathBuf, u64)>, newest: &Path, keep: usize, cap: u64) -> Vec<PathBuf> {
+    let own = checkpoint_of(newest);
     entries.sort_by_key(|e| std::cmp::Reverse(e.0));
-    for (_, old) in entries.into_iter().skip(KEEP) {
-        tracing::info!(path = %old.display(), "removing an old INT8 cache entry");
+    let mut total = entries.iter().find(|e| e.1 == newest).map_or(0, |e| e.2);
+    let mut kept_own = 1;
+    let mut out = Vec::new();
+    for (_, path, len) in entries {
+        if path == newest {
+            continue;
+        }
+        let same = own.is_some() && checkpoint_of(&path) == own;
+        if (same && kept_own >= keep) || total + len > cap {
+            out.push(path);
+            continue;
+        }
+        kept_own += usize::from(same);
+        total += len;
+    }
+    out
+}
+
+fn prune(newest: &Path) {
+    let Some(dir) = newest.parent() else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let entries = rd
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.contains("-int8-") && name.ends_with(".safetensors")
+        })
+        .filter_map(|e| {
+            let md = e.metadata().ok()?;
+            Some((md.modified().ok()?, e.path(), md.len()))
+        })
+        .collect();
+    let keep = env_or("QIR_INT8_CACHE_KEEP", KEEP).max(1);
+    let cap = env_or("QIR_INT8_CACHE_MAX_GB", MAX_GB) << 30;
+    for old in evictions(entries, newest, keep, cap) {
+        tracing::info!(path = %old.display(), "removing an INT8 cache entry");
         let _ = std::fs::remove_file(old);
     }
 }
@@ -116,18 +177,43 @@ mod tests {
     }
 
     #[test]
-    fn writing_keeps_the_newest_entries_of_one_checkpoint() {
+    fn eviction_keeps_per_checkpoint_then_fits_the_cap_by_last_use() {
+        let at = |s: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s);
+        let p = |n: &str| PathBuf::from(format!("{n}.safetensors"));
+        let entries = vec![
+            (at(1), p("a-int8-1"), 19),
+            (at(5), p("a-int8-2"), 19),
+            (at(4), p("b-int8-1"), 19),
+            (at(2), p("c-int8-1"), 19),
+            (at(3), p("d-int8-1"), 19),
+        ];
+        // a-int8-2 is new: the older a goes (one per checkpoint), then 60 fits a-2, b and d.
+        let mut out = evictions(entries.clone(), &p("a-int8-2"), 1, 60);
+        out.sort();
+        assert_eq!(out, vec![p("a-int8-1"), p("c-int8-1")]);
+        // Two per checkpoint and room for all: nothing goes.
+        assert!(evictions(entries.clone(), &p("a-int8-2"), 2, 1000).is_empty());
+        // The new entry stays even when it alone is over the cap.
+        assert_eq!(evictions(vec![(at(1), p("a-int8-1"), 99)], &p("a-int8-1"), 1, 60), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn writing_replaces_the_checkpoints_older_entry() {
         let d = tmpdir("prune");
         let other = d.join("other-int8-0.safetensors");
         std::fs::write(&other, b"x").unwrap();
         let t = Tensor::zeros(4, candle_core::DType::U8, &candle_core::Device::Cpu).unwrap();
-        for i in 0..(KEEP + 2) {
-            write(&d.join(format!("dit-int8-{i}.safetensors")), vec![("w".into(), t.clone())]).unwrap();
+        // The free-space guard applies to the test folder's disk too.
+        let free = fs2::available_space(&d).unwrap();
+        for i in 0..3 {
+            let written = write(&d.join(format!("dit-int8-{i}.safetensors")), vec![("w".into(), t.clone())]).unwrap();
+            assert_eq!(written, free >= MIN_FREE_GB << 30);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let left: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("dit-int8-")).collect();
-        assert_eq!(left.len(), KEEP);
-        assert!(!left.contains(&"dit-int8-0.safetensors".to_string()));
+        if free >= MIN_FREE_GB << 30 {
+            assert_eq!(left, vec!["dit-int8-2.safetensors".to_string()]);
+        }
         assert!(other.exists());
     }
 }

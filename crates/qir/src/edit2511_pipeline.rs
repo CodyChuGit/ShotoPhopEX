@@ -345,6 +345,7 @@ impl Edit2511Pipeline {
                     match cached.and_then(|file| crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, file)).and_then(LayeredDit::load_int8) {
                         Ok(dit) => {
                             mark("DiT load (INT8 cache)")?;
+                            crate::int8_cache::touch(entry);
                             *resident = Some((req.loras.clone(), dit));
                         }
                         Err(e) => tracing::warn!(error = %e, "unreadable INT8 cache entry; converting"),
