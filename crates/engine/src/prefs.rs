@@ -1050,8 +1050,9 @@ pub struct Integrations {
     pub warm_up_at_launch: bool,
     /// Fast draft: Generative Fill and Edit on a Qwen-Image-Edit-2511 template of 20 steps or more
     /// run with the native worker's first-block step cache, reusing most of the model on steps
-    /// that change little (the 40-step edit 39.4 to 24.8 s, the detail slightly softer). Off by
-    /// default.
+    /// that change little (the 40-step edit 39.4 to 24.8 s, the detail slightly softer); Split
+    /// into Layers too (3 layers 59.6 to 43.9 s, the composite unchanged to the eye, the faintest
+    /// layer different). Off by default.
     pub fast_draft: bool,
     /// What the canvas shows while a generation samples, over the place its result will take
     /// (`photocraft_genai::PreviewMode`): `off` (nothing until the result), `fast` (the model's
