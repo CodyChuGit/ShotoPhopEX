@@ -195,6 +195,22 @@ impl KLinear {
     fn load(in_c: usize, out_c: usize, bias: bool, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
         if q.fp8.is_some() && !bias {
             if let Some(l) = crate::fp8::load_linear(in_c, out_c, q.fp8, &vb)? {
+                // `QIR_KREA2_FP_INT8=1` (a measurement, off by default): the file's full-precision
+                // layers (attention gate, `wo`, `down`) on ConvRot INT8 instead of bf16.
+                #[cfg(feature = "convrot")]
+                if l.is_full_precision()
+                    && vb.device().is_cuda()
+                    && full_precision_int8()
+                    && in_c.is_multiple_of(crate::model::rotation::GROUP)
+                    && out_c.is_multiple_of(8)
+                {
+                    let r = crate::model::rotation::regular_hadamard_256(vb.device())?;
+                    let c = crate::convrot::ConvRotLinear::from_weight(&l.dequantized(DType::BF16)?, &r)?;
+                    drop(l);
+                    // Each conversion finished before the next (see Layered's INT8 load).
+                    vb.device().synchronize()?;
+                    return Ok(Self::Convrot(c));
+                }
                 return Ok(Self::Fp8(l));
             }
         }
@@ -225,6 +241,12 @@ impl KLinear {
             Self::Fp8(l) => l.forward(x),
         }
     }
+}
+
+#[cfg(feature = "convrot")]
+fn full_precision_int8() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("QIR_KREA2_FP_INT8").is_ok_and(|v| v.trim() == "1"))
 }
 
 /// RMSNorm with the `(1 + scale)` weight (the scale is stored zero-centred), in f32.
