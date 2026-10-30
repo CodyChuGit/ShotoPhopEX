@@ -129,6 +129,23 @@ cold and warm. A worker that refuses the batch is asked tile by tile. The same P
 also fixes Upscale to run as a background job: a nested `image.imageSize` used to switch the job
 off, so Upscale ran inline on the UI thread.
 
+**Qwen-Image-Edit-2511 on INT8 linears, 2026-10-30** (speed pass 2, genai-native `perf/2511-int8`
+`6a35b91`, on the Split INT8 change). 2511's resident DiT, with its LoRAs already merged into the
+weights, runs ConvRot INT8 linears by default. The load that binds and materializes the LoRAs
+stays fp8; the reload with the merged weights converts. `QIR_2511_INT8=0` keeps fp8. Measured in
+ABBA order with cooldowns, seed 16, 864x1152, "Make it winter" on the portrait:
+
+| 2511 edit, warm | fp8 | INT8 | same seed vs fp8 | a second seed (17) vs 16, fp8 |
+|---|---|---|---|---|
+| Lightning-8 | 7.16 / 7.15 / 7.15 / 7.15 s | **4.41 / 4.41 / 4.42 / 4.40 s** | 22.1 dB | 14.4 dB |
+| 40-step, CFG 4 | 65.9 / 65.9 s | **38.2 / 38.0 s** | 36.3 dB | 16.3 dB |
+
+Cold, Lightning-8 went from 31.9–34.5 to 30.4–30.8 s and the 40-step from 84.2–84.4 to 58.1–58.3 s.
+Looked at side by side: on Lightning-8, scarf, pattern, pose and light match, and the snowflakes
+and the knit's stripes shift; the 40-step is near-identical. **The CFG pair in one batched
+forward was tried and not kept**: on the 40-step edit (INT8, ABBA) batched took 39.5 s against
+37.9 s for two forwards, and it moved the picture (35.6 dB). Each forward already has ~8k tokens.
+
 **Split into Layers on INT8 linears, 2026-10-29 night** (speed pass 2, genai-native
 `perf/split-int8` `16adfc4`, on top of the resident DiT). Split's DiT now runs ConvRot INT8
 linears by default: each fp8 weight is dequantized once at load and requantized.

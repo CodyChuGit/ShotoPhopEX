@@ -4,6 +4,14 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-30: speed pass 2, item 3: 2511 on INT8 linears
+
+Branch `perf/2511-int8` in both repos, stacked on `perf/split-int8` (genai-native `6a35b91`).
+2511's resident DiT, its LoRAs merged, runs ConvRot INT8 linears by default (`LayeredDit::load_int8`).
+Lightning-8 edit 7.15 to 4.41 s, 40-step 65.9 to 38.1 s warm. Same seed against fp8: 22.1 and 36.3 dB,
+against seed bands of 14.4 and 16.3 (benchmarks.md §0). The CFG pair batched in one forward was
+measured and dropped (4 % slower, 35.6 dB). `QIR_2511_INT8=0` opts out.
+
 ## 2026-10-29 (night): speed pass 2, item 2: Split on INT8 linears
 
 Branch `perf/split-int8` in both repos, stacked on `perf/split-resident` (genai-native `16adfc4`).
