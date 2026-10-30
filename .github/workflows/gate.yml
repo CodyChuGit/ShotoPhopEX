@@ -2,14 +2,14 @@ name: "Gate"
 
 # A copy of storytold/craft-common-actions/.github/workflows/gate.yml at fa5ef187, kept here so the
 # gate can fetch the private genai-native dependency: a called workflow's inputs cannot carry a
-# secret, and the shared one takes none. The only change is the `GENAI_NATIVE_TOKEN` secret and the
-# git environment that uses it (see ci.yml). Upstream fixes to the shared gate have to be copied by
-# hand.
+# secret, and the shared one takes none. The only change is the `GENAI_NATIVE_DEPLOY_KEY` secret and
+# the step that installs it (.github/actions/genai-native-key). Upstream fixes to the shared gate
+# have to be copied by hand.
 on:
   workflow_call:
     secrets:
-      GENAI_NATIVE_TOKEN:
-        description: "Read access to CodyChuGit/genai-native, for cargo's git fetch"
+      GENAI_NATIVE_DEPLOY_KEY:
+        description: "Private half of a read-only deploy key on CodyChuGit/genai-native, for cargo's git fetch"
         required: false
     inputs:
       packages:
@@ -111,15 +111,15 @@ jobs:
       CARGO_INCREMENTAL: 0
       CARGO_NET_RETRY: 10
       RUST_BACKTRACE: 1
-      # cargo fetches git dependencies with the git CLI (.cargo/config.toml); this sends the token
-      # for genai-native and nothing else.
-      GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.GENAI_NATIVE_TOKEN }}@github.com/CodyChuGit/genai-native.insteadOf
-      GIT_CONFIG_VALUE_0: https://github.com/CodyChuGit/genai-native
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # cargo fetches git dependencies with the git CLI (.cargo/config.toml).
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
 
       - name: Check out craft-fonts
         if: inputs.craft-fonts-ref != ''

@@ -34,12 +34,6 @@ env:
   # bypasses that, lp fails loudly on a printer that does not exist.
   PHOTOCRAFT_NO_PRINT: "1"
   LPDEST: photocraft-no-such-printer
-  # photocraft-genai depends on CodyChuGit/genai-native, a private repository. cargo fetches git
-  # dependencies with the git CLI (.cargo/config.toml), so these point that one URL at a
-  # read-only token from the GENAI_NATIVE_TOKEN secret. Other git traffic is untouched.
-  GIT_CONFIG_COUNT: "1"
-  GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.GENAI_NATIVE_TOKEN }}@github.com/CodyChuGit/genai-native.insteadOf
-  GIT_CONFIG_VALUE_0: https://github.com/CodyChuGit/genai-native
 
 # A newer push to a PR branch cancels its older run. Every push to main gets a run of its own that
 # is never cancelled, so each state of main is checked to the end. Adding any label but `full-ci`
@@ -67,14 +61,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: genai-native token is set
-        env:
-          TOKEN: ${{ secrets.GENAI_NATIVE_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::error::The GENAI_NATIVE_TOKEN secret is missing: cargo cannot fetch the private CodyChuGit/genai-native dependency. Add a fine-grained token with read-only Contents access to that repository under Settings > Secrets and variables > Actions."
-            exit 1
-          fi
+      # photocraft-genai depends on CodyChuGit/genai-native, a private repository; every job that
+      # runs cargo installs its read-only deploy key right after checkout.
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
       - name: Git dependencies come from storytold or genai-native
         run: |
           set -euo pipefail
@@ -138,7 +129,7 @@ jobs:
     # The shared gate plus the genai-native token (see gate.yml).
     uses: ./.github/workflows/gate.yml
     secrets:
-      GENAI_NATIVE_TOKEN: ${{ secrets.GENAI_NATIVE_TOKEN }}
+      GENAI_NATIVE_DEPLOY_KEY: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
     with:
       # egui/winit/rfd.
       packages: >-
@@ -190,6 +181,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
 
       - name: Check out craft-fonts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -278,6 +272,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
 
       - name: Install Linux build dependencies
         uses: storytold/craft-common-actions/actions/install-apt-packages@main
@@ -322,6 +319,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -352,6 +352,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
@@ -423,6 +426,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # nightly
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -451,6 +457,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
       - name: Install Linux build dependencies
         uses: storytold/craft-common-actions/actions/install-apt-packages@main
         with:
@@ -485,6 +494,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
