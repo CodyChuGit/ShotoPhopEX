@@ -718,6 +718,7 @@ impl DiffusionEngine {
             let mut sink = |f: Frame| preview(engine_preview(f));
             let mut viewer = Previewer::new(mode, LatentSpace::Layered, self.tiny.as_ref(), &mut sink);
             let shown = (mode != PreviewMode::Off).then_some(&mut viewer as &mut dyn StepPreview);
+            p.set_step_cache(req.params.get("step_cache").and_then(Value::as_f64).map(|t| t as f32));
             let out = p.split_previewed(&rgba, layers, &req.prompt, req.seed, steps, &mut report, shown, cancel).map_err(|e| {
                 if cancel.load(Ordering::SeqCst) {
                     EngineError::cancelled()
