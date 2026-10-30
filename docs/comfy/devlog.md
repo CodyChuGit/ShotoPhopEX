@@ -4,6 +4,24 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-30 (night): Fast draft; Krea 2's full-precision layers measured
+
+- **Fast draft** (the owner's call; `integrations.fastDraft`, off by default, in all 20 languages):
+  Generative Fill and Edit on a Qwen-Image-Edit-2511 template of 20 steps or more send the
+  worker `params.step_cache = 0.05` (genai-native `0118813`; no environment variable). Through the
+  app, the 40-step edit at 864x1152 went from 37.9 s to 24.6 s warm, 32.5 dB against off, with 18
+  of 40 steps cached per branch. Repeats are byte-identical. Lightning tiers and other models are
+  untouched.
+- **Krea 2's three full-precision layers** (attention gate, `wo`, `down`), measure-only, on the
+  local branch `perf/krea2-fp-int8`, 28 t2i cases at the 30 dB / SSIM 0.90 gate:
+  - native fp8 against ComfyUI fp8: 19 of 28
+  - INT8 against ComfyUI: **17**, and 21 against native fp8
+  - fp8 with per-token activation scaling against ComfyUI: 14, and 18 against native fp8
+  - warm 1024² time: fp8 3.68 s, INT8 2.75 s, token-scaled fp8 3.90 s
+
+  INT8 is 25 % faster but two cases short of today's parity, so it is not landed; the worst four
+  are the same street and architecture scenes that native fp8 already misses.
+
 ## 2026-10-30: speed pass 2, follow-ups: an opt-in step cache; three dead ends
 
 Branch `perf/step-cache`, stacked on `perf/2511-int8` (genai-native `0f7bc5f`). There's an opt-in
