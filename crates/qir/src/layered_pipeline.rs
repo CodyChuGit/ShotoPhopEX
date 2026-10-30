@@ -319,6 +319,9 @@ impl LayeredPipeline {
                     };
                     // Finish uploads and release loading scratch before the denoising working set.
                     crate::device::trim_pool(&self.device);
+                    if let Some((free, total)) = crate::device::free_vram(&self.device) {
+                        tracing::info!(driver_free_mib = free >> 20, total_mib = total >> 20, "layered DiT loaded");
+                    }
                     d
                 }
             };
