@@ -157,6 +157,11 @@ impl Fp8Linear {
         Ok(Self { w, scale, scales, full: true, precise_scale: false })
     }
 
+    /// Whether this layer multiplies in bf16 (the file's `full_precision_matrix_mult`).
+    pub fn is_full_precision(&self) -> bool {
+        self.full
+    }
+
     pub(crate) fn precise_scale_mut(&mut self) {
         self.precise_scale = true;
     }
