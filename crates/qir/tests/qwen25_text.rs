@@ -1,4 +1,4 @@
-//! Regenerate fixtures with tools/qir_qwen25_fixtures.py using portable Python -I.
+//! Regenerate fixtures with qir_qwen25_fixtures.py (restore: docs/no-python.md) using portable Python -I.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -257,7 +257,7 @@ fn edit_token_spans_and_three_axis_positions() -> anyhow::Result<()> {
 }
 
 #[test]
-#[ignore = "streams the installed 7B encoder on CPU; regenerate qwen25_edit_full.safetensors with tools/qir_qwen25_edit_fixtures.py first"]
+#[ignore = "streams the installed 7B encoder on CPU; regenerate qwen25_edit_full.safetensors with qir_qwen25_edit_fixtures.py (restore: docs/no-python.md) first"]
 fn comfy_cpu_edit_encoder_parity() -> anyhow::Result<()> {
     let dev = Device::Cpu;
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen25_edit_full.safetensors");

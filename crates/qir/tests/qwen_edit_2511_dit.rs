@@ -60,7 +60,7 @@ fn packed_positions_rope() -> anyhow::Result<()> {
 }
 
 #[test]
-#[ignore = "installed 2511 checkpoint; regenerate real fixture with tools/qwen_edit_2511_fixtures.py --full; CPU, one block at a time"]
+#[ignore = "installed 2511 checkpoint; regenerate real fixture with qwen_edit_2511_fixtures.py (restore: docs/no-python.md) --full; CPU, one block at a time"]
 fn selected_checkpoint_modules() -> anyhow::Result<()> {
     let f = fixture("geometry")?;
     let real = fixture("real")?;
