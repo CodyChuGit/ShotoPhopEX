@@ -188,15 +188,13 @@ fn preview_mode(m: gn_engine::protocol::PreviewMode) -> PreviewMode {
 }
 
 /// The latent space a family samples in: Qwen-Image-2.1's own 64-channel VAE, the Wan 2.1
-/// family's (Krea 2, Qwen-Image-Edit-2511), or the Layered RGBA VAE's.
+/// family's (Krea 2, Qwen-Image-Edit-2511), the Layered RGBA VAE's, or FLUX.2's (MOSS-Image).
 fn latent_space(f: Family) -> LatentSpace {
     match f {
         Family::QwenImage21 => LatentSpace::QwenImage21,
         Family::Krea2 | Family::Edit2511 => LatentSpace::Wan21,
         Family::Layered => LatentSpace::Layered,
-        // Never read: MOSS runs without the previewer (no space for the FLUX.2 VAE yet), and
-        // Layered's has no tiny decoder to load for it.
-        Family::Moss(_) => LatentSpace::Layered,
+        Family::Moss(_) => LatentSpace::Flux2,
     }
 }
 
@@ -303,7 +301,8 @@ impl DiffusionEngine {
             Resident::Krea2(p) => p.device(),
             Resident::Layered(p) => p.device(),
             Resident::Edit2511(p) => p.device(),
-            Resident::Moss(..) | Resident::None => return,
+            Resident::Moss(p, _) => p.device(),
+            Resident::None => return,
         };
         if self.tiny.as_ref().is_some_and(|t| t.space() == space && t.on(dev)) {
             return;
@@ -1198,8 +1197,7 @@ impl Engine for DiffusionEngine {
                     p.generate_style_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Krea2(p), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
-                // No live preview for MOSS yet (its latent is the FLUX.2 VAE's).
-                (Resident::Moss(p, _), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::Edit2511(_) | Resident::Layered(_) | Resident::None, _) => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
             };
             log_previews(mode, &viewer);

@@ -16,6 +16,7 @@ use super::text::{self, Qwen35Text, TextConfig};
 use super::vae::{self, Flux2Decoder};
 use super::weights::Weights;
 use crate::pipeline::{Cancelled, Picture, Request, Timings};
+use crate::preview::StepPreview;
 use crate::Result;
 
 /// The official defaults.
@@ -159,6 +160,19 @@ impl MossPipeline {
 
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+        self.generate_previewed(req, progress, None, cancel)
+    }
+
+    /// [`Self::generate`], showing the denoised estimate `(1, 128, h/16, w/16)` (the FLUX.2
+    /// VAE's normalised packed space, `crate::preview::LatentSpace::Flux2`) to `preview` after
+    /// the steps it asks for; the picture is the same either way.
+    pub fn generate_previewed(
+        &self,
+        req: &Request,
+        progress: &mut dyn FnMut(f32, &str),
+        mut preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
         crate::device::bind_thread(&self.dev);
         anyhow::ensure!(req.steps > 0, "at least one step");
         let (w, h) = (req.width, req.height);
@@ -202,6 +216,14 @@ impl MossPipeline {
                 }
                 None => self.dit.forward(&x, t, &cond, &[])?,
             };
+            if let Some(p) = preview.as_deref_mut() {
+                if p.wants(i + 1, n) {
+                    match (&v * f64::from(sig[i])).and_then(|sv| &x - sv) {
+                        Ok(x0) => p.show(i + 1, n, &x0),
+                        Err(e) => tracing::warn!(error = %e, "preview skipped"),
+                    }
+                }
+            }
             x = (x + (v * f64::from(sig[i + 1] - sig[i]))?)?;
             progress(0.05 + 0.85 * (i + 1) as f32 / n as f32, "Sampling");
         }
