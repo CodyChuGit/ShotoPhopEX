@@ -905,6 +905,8 @@ fn edit2511_request(req: &RunRequest, blobs: &[Vec<u8>]) -> Result<Edit2511Reque
         steps: if req.steps == 0 { steps } else { req.steps } as usize,
         cfg: if req.guidance > 0. { req.guidance } else { cfg },
         loras: LoraStack::default(),
+        // The app's Fast draft: a first-block step cache at this threshold.
+        step_cache: req.params.get("step_cache").and_then(Value::as_f64).map(|t| t as f32),
     })
 }
 
