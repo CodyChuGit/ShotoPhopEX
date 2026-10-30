@@ -37,6 +37,9 @@ pub struct Edit2511Request {
     pub steps: usize,
     pub cfg: f32,
     pub loras: LoraStack,
+    /// The first-block step cache's threshold ([`crate::model::qwen_image_dit::StepCache`], the
+    /// app's Fast draft); `None` follows `QIR_STEP_CACHE`, unset = off.
+    pub step_cache: Option<f32>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -358,7 +361,11 @@ impl Edit2511Pipeline {
             let pool = crate::layered_pipeline::LayeredPool::retain(&self.device);
             mark("denoise prepare")?;
             // `QIR_STEP_CACHE=<threshold>`: a first-block step cache per CFG branch (changes the picture).
-            let mut step_caches = (crate::model::qwen_image_dit::StepCache::from_env(), crate::model::qwen_image_dit::StepCache::from_env());
+            let cache = || match req.step_cache {
+                Some(t) => crate::model::qwen_image_dit::StepCache::new(t),
+                None => crate::model::qwen_image_dit::StepCache::from_env(),
+            };
+            let mut step_caches = (cache(), cache());
             for i in 0..req.steps {
                 check()?;
                 let sigma = schedule.sigma(i);
@@ -483,6 +490,7 @@ mod tests {
             steps: 8,
             cfg: 1.,
             loras: LoraStack::default(),
+            step_cache: None,
         };
         let key = ConditioningKey::new(&req);
         req.seed = 8;

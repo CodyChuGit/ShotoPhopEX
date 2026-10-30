@@ -295,8 +295,12 @@ pub struct StepCache {
 impl StepCache {
     /// From `QIR_STEP_CACHE`, a positive threshold; `None` when unset or invalid.
     pub fn from_env() -> Option<Self> {
-        let threshold = std::env::var("QIR_STEP_CACHE").ok()?.trim().parse::<f32>().ok().filter(|t| t.is_finite() && *t > 0.0)?;
-        Some(Self { threshold, first: None, rest: None, steps: 0, hits: 0 })
+        Self::new(std::env::var("QIR_STEP_CACHE").ok()?.trim().parse::<f32>().ok()?)
+    }
+
+    /// A cache at `threshold`; `None` unless it is finite and positive.
+    pub fn new(threshold: f32) -> Option<Self> {
+        (threshold.is_finite() && threshold > 0.0).then_some(Self { threshold, first: None, rest: None, steps: 0, hits: 0 })
     }
 }
 
