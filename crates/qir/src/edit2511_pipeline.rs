@@ -323,7 +323,18 @@ impl Edit2511Pipeline {
                     *binding = None;
                 }
                 let patches = if let Some((_, weights)) = binding.as_ref() { weights.clone() } else { std::collections::BTreeMap::new() };
-                let mut dit = LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?)?;
+                // The model kept between requests carries its LoRAs merged into the weights, so it
+                // can run INT8 linears; the load that binds and materializes them stays fp8.
+                let int8 = edit2511_int8();
+                let resident_load = |patches| -> Result<LayeredDit> {
+                    let vb = crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?;
+                    if int8 {
+                        LayeredDit::load_int8(vb)
+                    } else {
+                        LayeredDit::load(vb)
+                    }
+                };
+                let mut dit = if hit { resident_load(patches)? } else { LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?)? };
                 if !hit {
                     mark("DiT load")?;
                     dit.bind_loras(&req.loras)?;
@@ -331,7 +342,7 @@ impl Edit2511Pipeline {
                     // Repack materialized allocations before retaining the model across requests.
                     drop(dit);
                     crate::device::trim_pool(&self.device);
-                    dit = LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, weights.clone())?)?;
+                    dit = resident_load(weights.clone())?;
                     *binding = Some((req.loras.clone(), weights));
                 }
                 mark(if hit { "DiT load" } else { "LoRA materialize + snapshot" })?;
@@ -354,6 +365,8 @@ impl Edit2511Pipeline {
                 observe(&format!("step_{i}.input"), &input)?;
                 let t = Tensor::from_slice(&[sigma], 1, &self.device)?;
                 let x = input.to_dtype(self.dtype)?;
+                // Two forwards: one batched CFG pair was 4 % slower at 864x1152 (each forward has
+                // ~8k tokens already) and moved the picture (35.6 dB), 2026-10-30.
                 let positive = dit.forward_latents(&x, &refs, &cond.positive, &t)?;
                 observe(&format!("step_{i}.positive"), &positive)?;
                 check()?;
@@ -412,6 +425,14 @@ pub fn key_seed(module: &str) -> u64 {
 }
 
 /// Synchronize only phase boundaries when requested.
+/// The resident 2511 DiT (its LoRAs merged) on ConvRot INT8 linears unless `QIR_2511_INT8=0`:
+/// on the RTX 5090 at 864x1152 the Lightning-8 edit 7.15 to 4.41 s and the 40-step CFG 4 edit
+/// 65.9 to 38.1 s warm; same seed against fp8 22.1 / 36.3 dB where a second seed is 14.4 / 16.3
+/// (2026-10-30: the same scarf, pose and light, the snowflakes and the knit's stripes shifted).
+fn edit2511_int8() -> bool {
+    std::env::var("QIR_2511_INT8").map_or(true, |v| v.trim() != "0")
+}
+
 fn phase_marks(device: &Device) -> impl FnMut(&str) -> Result<()> + '_ {
     let enabled = ["QIR_PROFILE", "QIR_PHASE_PROFILE"].iter().any(|key| std::env::var(key).is_ok_and(|v| v == "1"));
     let mut last = std::time::Instant::now();
