@@ -1334,6 +1334,21 @@ impl LayeredDit {
         self.forward_selected(img_tokens, txt_tokens, timestep, additional_t_cond, rope, padding, None)
     }
 
+    /// [`Self::forward_prepared`] with a first-block step cache ([`StepCache`]) over its lanes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_prepared_cached(
+        &self,
+        img_tokens: &Tensor,
+        txt_tokens: &Tensor,
+        timestep: &Tensor,
+        additional_t_cond: Option<&Tensor>,
+        rope: &LayeredRope,
+        padding: Option<(usize, usize)>,
+        cache: Option<&mut StepCache>,
+    ) -> Result<Tensor> {
+        self.forward_cached_steps(img_tokens, txt_tokens, timestep, additional_t_cond, rope, padding, None, cache)
+    }
+
     /// Latent boundary for editing; returns cropped target velocity only.
     pub fn forward_latents(&self, target: &Tensor, references: &[Tensor], text: &Tensor, timestep: &Tensor) -> Result<Tensor> {
         self.forward_latents_cached(target, references, text, timestep, None)
