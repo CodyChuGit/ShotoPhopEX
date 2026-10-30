@@ -4,6 +4,19 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-30 (overnight): live previews for MOSS-Image (review PRs, not merged)
+
+The owner's overnight item 3. genai-native#10 (`moss-preview`, c2737f2) and this repo's #15
+(the pin and `models.md`). MOSS samples in the FLUX.2 VAE's normalised, 2×2-packed 128-channel
+space (`qir::preview::LatentSpace::Flux2`): Fast unpacks to 32 channels at 8× and applies
+ComfyUI's `Flux2` factors; Sharp decodes every third step with madebyollin's TAEF2 (MIT, 10.7 MB,
+`vae_approx/taef2.safetensors`, installed on this PC; 35.1 dB against the full decode on a final
+latent). On a clean GPU slot at 1024², 50 steps, CFG 3: off 10.56 s, Fast 10.62 s (+0.6 %, 49
+frames), Sharp 11.77 s (+11 %, 16 frames), the picture byte-identical in all three; moss_parity
+unchanged. Earlier runs that night overlapped the speed thread's Krea timings (VRAM full, decode
+7–84 s): Sharp then fell back to Fast as designed. Open: merge genai-native#10 first, then
+re-pin #15 to its merge commit.
+
 ## 2026-10-29 (later): upstream PhotoCraft v0.17.0 merged
 
 Merged storytold/photocraft `v0.17.0` (from v0.11.1+172; about 4,000 commits: egui 0.37, engine
