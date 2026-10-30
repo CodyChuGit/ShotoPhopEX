@@ -1048,6 +1048,11 @@ pub struct Integrations {
     /// for them; skipped when the card has too little free memory, given up when another
     /// generation starts first.
     pub warm_up_at_launch: bool,
+    /// Fast draft: Generative Fill and Edit on a Qwen-Image-Edit-2511 template of 20 steps or more
+    /// run with the native worker's first-block step cache, reusing most of the model on steps
+    /// that change little (the 40-step edit 39.4 to 24.8 s, the detail slightly softer). Off by
+    /// default.
+    pub fast_draft: bool,
     /// What the canvas shows while a generation samples, over the place its result will take
     /// (`photocraft_genai::PreviewMode`): `off` (nothing until the result), `fast` (the model's
     /// estimate at its latent grid, next to free; the default) or `sharp` (through a tiny decoder,
@@ -1085,6 +1090,7 @@ impl Default for Integrations {
             alerts: "off".into(),
             enhance_prompts: false,
             warm_up_at_launch: true,
+            fast_draft: false,
             preview_while_generating: "fast".into(),
             runtime_path: String::new(),
             models_path: String::new(),
