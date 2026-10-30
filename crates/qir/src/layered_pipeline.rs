@@ -91,6 +91,8 @@ pub struct LayeredPipeline {
     vae: std::sync::Mutex<Option<std::sync::Arc<WanVae>>>,
     /// The last prompt's text conditioning: (prompt, positive, negative).
     conditioning: std::sync::Mutex<Option<(String, Tensor, Tensor)>>,
+    /// The [`crate::int8_cache`] folder; `None` when `QIR_INT8_CACHE=0`.
+    int8_cache: Option<std::path::PathBuf>,
 }
 
 impl LayeredPipeline {
@@ -113,6 +115,7 @@ impl LayeredPipeline {
             dit: std::sync::Mutex::new(None),
             vae: std::sync::Mutex::new(None),
             conditioning: std::sync::Mutex::new(None),
+            int8_cache: crate::int8_cache::enabled().then(|| crate::int8_cache::dir(root)),
         })
     }
 
@@ -310,9 +313,10 @@ impl LayeredPipeline {
                 Some(d) => d,
                 None => {
                     let d = if self.device.is_cuda() {
+                        let cache = self.int8_cache.as_ref().and_then(|dir| crate::int8_cache::entry(dir, &self.files.diffusion, &Default::default()).ok());
                         match prefetch {
-                            Some(prefetch) => LayeredDit::from_resident_file(prefetch.finish()?, &self.device)?,
-                            None => LayeredDit::open_resident(&self.files.diffusion, &self.device)?,
+                            Some(prefetch) => LayeredDit::from_resident_file(prefetch.finish()?, &self.device, cache.as_deref())?,
+                            None => LayeredDit::open_resident(&self.files.diffusion, &self.device, cache.as_deref())?,
                         }
                     } else {
                         LayeredDit::open_streamed(&self.files.diffusion, &self.device)?

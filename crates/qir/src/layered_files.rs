@@ -189,7 +189,13 @@ impl TensorFile {
     /// Every tensor uploaded on its own when it is read, so a weight the loader replaces (the
     /// INT8 conversion) frees its FP8 bytes at once instead of keeping the whole packed region.
     pub fn resident_builder_unpacked(self, dt: DType, device: &Device) -> VarBuilder<'static> {
-        VarBuilder::from_backend(Box::new(ResidentFile { file: self, packed: None }), dt, device.clone())
+        VarBuilder::from_backend(Box::new(ResidentFile { file: self, packed: None, cache: None }), dt, device.clone())
+    }
+
+    /// [`Self::resident_builder_unpacked`] with an INT8 cache entry ([`crate::int8_cache`]) read
+    /// first, so its linears load prequantized.
+    pub fn resident_builder_cached(self, cache: TensorFile, dt: DType, device: &Device) -> VarBuilder<'static> {
+        VarBuilder::from_backend(Box::new(ResidentFile { file: self, packed: None, cache: Some(cache) }), dt, device.clone())
     }
 
     /// Upload a contiguous FP8 region once; individual matrices become zero-copy device views.
@@ -206,7 +212,7 @@ impl TensorFile {
             }
             _ => None,
         };
-        Ok(VarBuilder::from_backend(Box::new(ResidentFile { file: self, packed }), dt, device.clone()))
+        Ok(VarBuilder::from_backend(Box::new(ResidentFile { file: self, packed, cache: None }), dt, device.clone()))
     }
 
     fn check(&self, name: &str, shape: &[usize], dt: &str) -> Result<()> {
@@ -254,6 +260,7 @@ impl TensorFile {
 struct ResidentFile {
     file: TensorFile,
     packed: Option<(u64, Tensor)>,
+    cache: Option<TensorFile>,
 }
 
 impl candle_nn::var_builder::SimpleBackend for ResidentFile {
@@ -267,6 +274,9 @@ impl candle_nn::var_builder::SimpleBackend for ResidentFile {
 
     fn get_unchecked(&self, name: &str, dt: DType, device: &Device) -> candle_core::Result<Tensor> {
         let load = || -> Result<Tensor> {
+            if let Some(cache) = self.cache.as_ref().filter(|c| c.contains(name)) {
+                return Ok(cache.tensor(name, device)?.to_dtype(dt)?);
+            }
             let info = self.file.tensors.get(name).ok_or_else(|| anyhow::anyhow!("missing checkpoint tensor {name}"))?;
             if info.dtype == "F8_E4M3" {
                 if let Some((start, packed)) = &self.packed {
@@ -282,7 +292,7 @@ impl candle_nn::var_builder::SimpleBackend for ResidentFile {
     }
 
     fn contains_tensor(&self, name: &str) -> bool {
-        self.file.contains(name)
+        self.cache.as_ref().is_some_and(|c| c.contains(name)) || self.file.contains(name)
     }
 }
 
