@@ -4,6 +4,16 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-30: speed pass 2, follow-ups: an opt-in step cache; three dead ends
+
+Branch `perf/step-cache`, stacked on `perf/2511-int8` (genai-native `0f7bc5f`). There's an opt-in
+first-block step cache for 2511 (`QIR_STEP_CACHE=<threshold>`, one per CFG branch). On the 40-step
+edit: 39.4 s off, 24.8 s at 0.05 (32.5 dB, hard to tell apart), 16.9 s at 0.1, 12.3 s at 0.2 (the
+snow mostly gone). It's measure-only; the default path is unchanged. Checked and not landed, details
+in benchmarks.md §0: Krea's bf16 weight cache (−2 % for 9.6 GB), a cuBLASLt autotune (candle's GEMM
+is at the bf16 ceiling already), and a device-built causal mask for 2.1's prefix (already ~0.2 s).
+Next: the activation quantize fused into its producing kernels, with a MOSS regression.
+
 ## 2026-10-30: speed pass 2, item 3: 2511 on INT8 linears
 
 Branch `perf/2511-int8` in both repos, stacked on `perf/split-int8` (genai-native `6a35b91`).

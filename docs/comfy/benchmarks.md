@@ -129,6 +129,30 @@ cold and warm. A worker that refuses the batch is asked tile by tile. The same P
 also fixes Upscale to run as a background job: a nested `image.imageSize` used to switch the job
 off, so Upscale ran inline on the UI thread.
 
+**A first-block step cache for 2511, opt-in, 2026-10-30** (genai-native `perf/step-cache`
+`0f7bc5f`, measure-only: `QIR_STEP_CACHE=<threshold>`, off by default, and the default path is
+unchanged). Each step runs the first block. When that block's residual moved less than the
+threshold since the last full step (mean |Δ| / mean |previous|), the other 59 blocks' residual
+from that step is reused. There is one cache per CFG branch. The 40-step CFG 4 edit (INT8,
+864x1152, seed 16, one worker per threshold):
+
+| threshold | warm | steps cached of 40 | PSNR vs off | looked at |
+|---|---|---|---|---|
+| off | 39.4 s | 0 | — | — |
+| 0.05 | **24.8 s** | 18 | 32.5 dB | barely different: the snow slightly softer |
+| 0.1 | 16.9 s | 27 | 30.0 dB | fewer snowflakes, softer knit |
+| 0.2 | 12.3 s | 32 | 26.1 dB | most of the snow gone, detail lost |
+
+The pictures are in `photocraft-tests\bench\sp2-step-cache` (`sheet.png`). MOSS isn't on
+`LayeredDit` and would need its own hook; not done.
+**Also checked this pass and not landed:**
+- **Krea 2's full-precision layers' bf16 weights cached:** byte-identical, but warm 3.677 to
+  3.651 s for 9.6 GB more VRAM.
+- **A per-shape cuBLASLt autotune at Krea's bf16 shapes:** candle's matmul already reaches
+  230–232 TFLOPS; the best of the top-8 heuristic algos is 1–3 % faster, under 1 % a picture.
+- **The 2.1 prefix pass's causal mask built on the device:** byte-identical, no change; the
+  warm prefix is already ~0.2 s.
+
 **Qwen-Image-Edit-2511 on INT8 linears, 2026-10-30** (speed pass 2, genai-native `perf/2511-int8`
 `6a35b91`, on the Split INT8 change). 2511's resident DiT, with its LoRAs already merged into the
 weights, runs ConvRot INT8 linears by default. The load that binds and materializes the LoRAs
