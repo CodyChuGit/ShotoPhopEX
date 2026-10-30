@@ -1268,8 +1268,10 @@ impl LayeredDit {
             let dit = Self::load(vb);
             INT8_LOAD.store(false, std::sync::atomic::Ordering::Relaxed);
             let dit = dit?;
-            if let (Some(path), false) = (cache, hit) {
-                crate::int8_cache::write_in_background(path, dit.int8_weights()?);
+            match (cache, hit) {
+                (Some(path), true) => crate::int8_cache::touch(path),
+                (Some(path), false) => crate::int8_cache::write_in_background(path, dit.int8_weights()?),
+                (None, _) => {}
             }
             return Ok(dit);
         }
