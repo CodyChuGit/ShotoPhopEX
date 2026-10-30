@@ -73,7 +73,7 @@ struct LayeredLinear {
     /// `QIR_LAYERED_FP8_GEMM=1` (an experiment, off by default): the same weight through the
     /// e4m3 × e4m3 tensor-core GEMM instead of the file's full-precision bf16 multiply.
     fast: Option<crate::fp8::Fp8Linear>,
-    /// `QIR_LAYERED_INT8=1` (an experiment, off by default): the fp8 weight dequantized once and
+    /// Split's DiT (`QIR_LAYERED_INT8=0` opts out; never 2511's): the fp8 weight dequantized once and
     /// requantized to ConvRot INT8 (so double-quantized), replacing the fp8 copy on the device.
     #[cfg(feature = "convrot")]
     int8: Option<crate::convrot::ConvRotLinear>,
@@ -118,7 +118,22 @@ impl LayeredLinear {
         let (int8, fp8, gpu) = match gpu {
             Some(l) if layered_int8() && input.is_multiple_of(crate::model::rotation::GROUP) && output.is_multiple_of(8) => {
                 let r = crate::model::rotation::regular_hadamard_256(vb.device())?;
-                (Some(crate::convrot::ConvRotLinear::from_weight(&l.dequantized(DType::BF16)?, &r)?), None, None)
+                let c = crate::convrot::ConvRotLinear::from_weight(&l.dequantized(DType::BF16)?, &r)?;
+                drop(l);
+                // Wait for each conversion: queued ahead, the freed bf16 and rotated copies of
+                // hundreds of linears are still pending and the load filled the 32 GB card (the
+                // 1-step split paged to 248 s; synchronized here, 13 s, 2026-10-29).
+                vb.device().synchronize()?;
+                static CONVERTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let n = CONVERTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if n.is_multiple_of(60) && std::env::var("QIR_LAYERED_INT8_TRACE").is_ok_and(|v| v == "1") {
+                    let _ = vb.device().synchronize();
+                    let before = crate::device::free_vram(vb.device()).map_or(0, |(f, _)| f >> 20);
+                    crate::device::trim_pool(vb.device());
+                    let after = crate::device::free_vram(vb.device()).map_or(0, |(f, _)| f >> 20);
+                    tracing::info!(converted = n, free_mib = before, free_after_trim_mib = after, "layered int8 conversion");
+                }
+                (Some(c), None, None)
             }
             gpu => (None, fp8, gpu),
         };
@@ -141,7 +156,7 @@ impl LayeredLinear {
             return Ok(());
         }
         #[cfg(feature = "convrot")]
-        anyhow::ensure!(self.int8.is_none(), "{module}: LoRAs are not supported with QIR_LAYERED_INT8=1");
+        anyhow::ensure!(self.int8.is_none(), "{module}: LoRAs are not supported on the INT8 linears");
         let device = self.bias.device();
         if self.original.is_none() {
             let (w, scale) = if let Some((w, s)) = &self.fp8 {
@@ -265,11 +280,23 @@ impl LayeredLinear {
     }
 }
 
-/// `QIR_LAYERED_INT8=1`: ConvRot INT8 for the Layered DiT's fp8 linears (see `LayeredLinear::int8`).
+/// Set while [`LayeredDit::from_resident_file`] loads Split's DiT with ConvRot INT8 linears
+/// (`LayeredLinear::int8`); 2511's loads, which bind LoRAs, keep the fp8 linears.
+#[cfg(feature = "convrot")]
+static INT8_LOAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(feature = "convrot")]
 fn layered_int8() -> bool {
+    INT8_LOAD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Split's DiT on ConvRot INT8 linears unless `QIR_LAYERED_INT8=0`: 86.3 to 61.9 s a warm split
+/// on the RTX 5090 (864x1152, 3 layers), the composite against the input 37.25 dB against fp8's
+/// 36.91 (2026-10-29).
+#[cfg(feature = "convrot")]
+fn layered_int8_wanted() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("QIR_LAYERED_INT8").is_ok_and(|v| v.trim() == "1"))
+    *ON.get_or_init(|| std::env::var("QIR_LAYERED_INT8").map_or(true, |v| v.trim() != "0"))
 }
 
 /// The e4m3 tensor-core linear for a CUDA fp8 weight when `QIR_LAYERED_FP8_GEMM=1`.
@@ -1126,8 +1153,11 @@ impl LayeredDit {
         // FP8 region and the INT8 copies are on the card together (2026-10-29: Windows paged the
         // 3-layer split to 222 s, the conversion to 12-15 s a load).
         #[cfg(feature = "convrot")]
-        if device.is_cuda() && layered_int8() {
-            return Self::load(file.resident_builder_unpacked(dt, device));
+        if device.is_cuda() && layered_int8_wanted() {
+            INT8_LOAD.store(true, std::sync::atomic::Ordering::Relaxed);
+            let dit = Self::load(file.resident_builder_unpacked(dt, device));
+            INT8_LOAD.store(false, std::sync::atomic::Ordering::Relaxed);
+            return dit;
         }
         Self::load(file.resident_builder(dt, device)?)
     }
