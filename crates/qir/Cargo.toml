@@ -33,6 +33,8 @@ half = "2"
 # read-only map of the source file.
 float8 = "0.7"
 memmap2 = "0.9"
+# The INT8 cache's free-space guard (src/int8_cache.rs).
+fs2 = "0.4"
 # Only for its `cudnn` module (feature `cudnn`); unifies with candle's cudarc 0.19.
 # Deliberately NOT candle-core/cudnn: candle's own cuDNN conv uses default math
 # (FP32 SIMT kernels for bf16) and is slower than its im2col path.
