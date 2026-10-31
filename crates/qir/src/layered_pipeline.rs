@@ -93,6 +93,8 @@ pub struct LayeredPipeline {
     conditioning: std::sync::Mutex<Option<(String, Tensor, Tensor)>>,
     /// The [`crate::int8_cache`] folder; `None` when `QIR_INT8_CACHE=0`.
     int8_cache: Option<std::path::PathBuf>,
+    /// The next splits' first-block step cache threshold as f32 bits (0: `QIR_STEP_CACHE`).
+    step_cache: std::sync::atomic::AtomicU32,
 }
 
 impl LayeredPipeline {
@@ -116,7 +118,14 @@ impl LayeredPipeline {
             vae: std::sync::Mutex::new(None),
             conditioning: std::sync::Mutex::new(None),
             int8_cache: crate::int8_cache::enabled().then(|| crate::int8_cache::dir(root)),
+            step_cache: std::sync::atomic::AtomicU32::new(0),
         })
+    }
+
+    /// The first-block step cache threshold for the splits that follow (the app's Fast draft;
+    /// changes the layers); `None` follows `QIR_STEP_CACHE`, unset = off.
+    pub fn set_step_cache(&self, threshold: Option<f32>) {
+        self.step_cache.store(threshold.filter(|t| t.is_finite() && *t > 0.0).map_or(0, f32::to_bits), Ordering::Relaxed);
     }
 
     /// The VAE, kept between splits when resident.
@@ -338,6 +347,12 @@ impl LayeredPipeline {
             mark("DiT load")?;
             #[cfg(feature = "cuda")]
             let pool = LayeredPool::retain(&self.device);
+            let cache = || match self.step_cache.load(Ordering::Relaxed) {
+                0 => crate::model::qwen_image_dit::StepCache::from_env(),
+                bits => crate::model::qwen_image_dit::StepCache::new(f32::from_bits(bits)),
+            };
+            // One cache over the batched CFG lanes, one per lane otherwise.
+            let mut step_caches = (cache(), cache());
             for i in 0..steps {
                 check()?;
                 let packed = patchify(&latent)?.to_dtype(self.dtype)?;
@@ -346,13 +361,13 @@ impl LayeredPipeline {
                 let time = layered_timestep(schedule.sigma(i), &self.device)?;
                 let (pos, neg) = if let Some(texts) = &texts {
                     let input = Tensor::cat(&[&input, &input], 0)?;
-                    let velocities = dit.forward_prepared(&input, texts, &time, None, &rope, (nn != nt).then_some((nt, nn)))?.narrow(1, 0, count)?;
+                    let velocities = dit.forward_prepared_cached(&input, texts, &time, None, &rope, (nn != nt).then_some((nt, nn)), step_caches.0.as_mut())?.narrow(1, 0, count)?;
                     (velocities.narrow(0, 0, 1)?, velocities.narrow(0, 1, 1)?)
                 } else {
-                    let pos = dit.forward_prepared(&input, &positive, &time, None, &rope, None)?.narrow(1, 0, count)?;
+                    let pos = dit.forward_prepared_cached(&input, &positive, &time, None, &rope, None, step_caches.0.as_mut())?.narrow(1, 0, count)?;
                     check()?;
                     let neg_rope = neg_rope.as_ref().ok_or_else(|| anyhow::anyhow!("missing negative RoPE"))?;
-                    let neg = dit.forward_prepared(&input, &negative, &time, None, neg_rope, None)?.narrow(1, 0, count)?;
+                    let neg = dit.forward_prepared_cached(&input, &negative, &time, None, neg_rope, None, step_caches.1.as_mut())?.narrow(1, 0, count)?;
                     (pos, neg)
                 };
                 let pos = unpatchify(&pos, frames, lh, lw)?.to_dtype(DType::F32)?;
@@ -391,6 +406,9 @@ impl LayeredPipeline {
             // Finish checkpoint use before freeing its storage and loading the decoder.
             self.device.synchronize()?;
             mark("denoise")?;
+            if let Some(c) = &step_caches.0 {
+                tracing::info!(steps = c.steps, hits = c.hits, negative_hits = step_caches.1.as_ref().map_or(0, |n| n.hits), "layered step cache");
+            }
             crate::profile::report("layered steps 1..");
             if self.resident {
                 *self.dit.lock().unwrap_or_else(|e| e.into_inner()) = Some(dit);
