@@ -1,0 +1,31 @@
+name: genai-native deploy key
+description: >-
+  Lets cargo fetch the private CodyChuGit/genai-native git dependency: installs a read-only deploy
+  key for that one repository and points its https URL at SSH. Other git traffic is untouched.
+inputs:
+  key:
+    description: "The deploy key's private half (the GENAI_NATIVE_DEPLOY_KEY secret)"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install the genai-native deploy key
+      shell: bash
+      env:
+        KEY: ${{ inputs.key }}
+      run: |
+        set -euo pipefail
+        if [ -z "$KEY" ]; then
+          echo "::error::The GENAI_NATIVE_DEPLOY_KEY secret is missing: cargo cannot fetch the private CodyChuGit/genai-native dependency. Add a read-only deploy key to genai-native and its private half as this repository's GENAI_NATIVE_DEPLOY_KEY Actions secret."
+          exit 1
+        fi
+        dir="$HOME/.genai-native"
+        mkdir -p "$dir"
+        printf '%s\n' "$KEY" > "$dir/key"
+        chmod 600 "$dir/key"
+        # GitHub's published host key (docs: "GitHub's SSH key fingerprints").
+        echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$dir/known_hosts"
+        # Windows: Git's sh and either ssh build accept C:/... paths.
+        if command -v cygpath > /dev/null; then dir=$(cygpath -m "$dir"); fi
+        git config --global url."ssh://git@github.com/CodyChuGit/genai-native".insteadOf "https://github.com/CodyChuGit/genai-native"
+        echo "GIT_SSH_COMMAND=ssh -i '$dir/key' -o IdentitiesOnly=yes -o UserKnownHostsFile='$dir/known_hosts' -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
