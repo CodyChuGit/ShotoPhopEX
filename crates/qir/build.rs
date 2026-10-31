@@ -31,6 +31,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/convrot/int8_gemm.cu");
     println!("cargo:rerun-if-changed=kernels/convrot/quant_ops.cu");
     println!("cargo:rerun-if-changed=kernels/convrot/lora_weight.cu");
+    println!("cargo:rerun-if-changed=kernels/convrot/vae_conv.cu");
     println!("cargo:rerun-if-env-changed=CUTLASS_DIR");
     println!("cargo:rerun-if-env-changed=CUDA_COMPUTE_CAP");
     // The architecture the kernels (ours and candle's PTX) were built for, so the engine can
@@ -46,6 +47,7 @@ fn main() {
             .file("kernels/convrot/int8_gemm.cu")
             .file("kernels/convrot/quant_ops.cu")
             .file("kernels/convrot/lora_weight.cu")
+            .file("kernels/convrot/vae_conv.cu")
             .compile("convrot_int8");
         println!("cargo:rustc-link-lib=dylib=cudart");
     }
