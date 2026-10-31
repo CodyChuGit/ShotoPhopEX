@@ -51,6 +51,9 @@ pub enum LatentSpace {
     /// Qwen-Image-Layered's RGBA VAE: 16 channels, 8×, but its own latent scale (Wan 2.1's
     /// factors and taew2_1 give grey). Fast only: no tiny decoder matches it.
     Layered,
+    /// The FLUX.2 VAE's (MOSS-Image): 128 channels at 16×, its 32 channels 2×2-packed and
+    /// batch-normalised; unpacked to 32 channels at 8× for the factors and the tiny decoder.
+    Flux2,
 }
 
 impl LatentSpace {
@@ -60,6 +63,7 @@ impl LatentSpace {
             Self::Wan21 => Some("taew2_1.safetensors"),
             Self::QwenImage21 => Some("taeqi2_1.safetensors"),
             Self::Layered => None,
+            Self::Flux2 => Some("taef2.safetensors"),
         }
     }
 
@@ -67,6 +71,7 @@ impl LatentSpace {
         match self {
             Self::Wan21 | Self::Layered => 16,
             Self::QwenImage21 => 64,
+            Self::Flux2 => 128,
         }
     }
 
@@ -74,19 +79,72 @@ impl LatentSpace {
     pub fn scale(self) -> usize {
         match self {
             Self::Wan21 | Self::Layered => 8,
-            Self::QwenImage21 => 16,
+            Self::QwenImage21 | Self::Flux2 => 16,
         }
     }
 
-    /// The latent-to-RGB factors (one row per channel) and the bias; RGB in `[-1, 1]`.
+    /// The latent-to-RGB factors (one row per channel, after [`unpack`] for FLUX.2) and the
+    /// bias; RGB in `[-1, 1]`.
     fn factors(self) -> (&'static [[f32; 3]], [f32; 3]) {
         match self {
             Self::Wan21 => (&WAN21_RGB, WAN21_RGB_BIAS),
             Self::QwenImage21 => (&QWEN21_RGB, QWEN21_RGB_BIAS),
             Self::Layered => (&LAYERED_RGB, LAYERED_RGB_BIAS),
+            Self::Flux2 => (&FLUX2_RGB, FLUX2_RGB_BIAS),
         }
     }
 }
+
+/// A FLUX.2 latent `(…, 128, h, w)` as its 32 channels at `(2h, 2w)`: channel `4c + 2i + j` of a
+/// cell goes to `(2y + i, 2x + j)` of channel `c` (the packing MOSS-Image samples in).
+fn unpack(x: &Tensor) -> Result<Tensor> {
+    let dims = x.dims().to_vec();
+    let lead: Vec<usize> = dims[..dims.len() - 3].to_vec();
+    let (c, h, w) = (dims[dims.len() - 3], dims[dims.len() - 2], dims[dims.len() - 1]);
+    let n: usize = lead.iter().product();
+    let y = x.reshape((n, c / 4, 2, 2, h, w))?.permute((0, 1, 4, 2, 5, 3))?.contiguous()?;
+    let mut out = lead;
+    out.extend([c / 4, 2 * h, 2 * w]);
+    Ok(y.reshape(out)?)
+}
+
+/// ComfyUI `latent_formats.Flux2.latent_rgb_factors` / `_bias` (read 2026-10-30, ComfyUI 0.43),
+/// for the unpacked 32 channels.
+const FLUX2_RGB: [[f32; 3]; 32] = [
+    [0.0058, 0.0113, 0.0073],
+    [0.0495, 0.0443, 0.0836],
+    [-0.0099, 0.0096, 0.0644],
+    [0.2144, 0.3009, 0.3652],
+    [0.0166, -0.0039, -0.0054],
+    [0.0157, 0.0103, -0.0160],
+    [-0.0398, 0.0902, -0.0235],
+    [-0.0052, 0.0095, 0.0109],
+    [-0.3527, -0.2712, -0.1666],
+    [-0.0301, -0.0356, -0.0180],
+    [-0.0107, 0.0078, 0.0013],
+    [0.0746, 0.0090, -0.0941],
+    [0.0156, 0.0169, 0.0070],
+    [-0.0034, -0.0040, -0.0114],
+    [0.0032, 0.0181, 0.0080],
+    [-0.0939, -0.0008, 0.0186],
+    [0.0018, 0.0043, 0.0104],
+    [0.0284, 0.0056, -0.0127],
+    [-0.0024, -0.0022, -0.0030],
+    [0.1207, -0.0026, 0.0065],
+    [0.0128, 0.0101, 0.0142],
+    [0.0137, -0.0072, -0.0007],
+    [0.0095, 0.0092, -0.0059],
+    [0.0000, -0.0077, -0.0049],
+    [-0.0465, -0.0204, -0.0312],
+    [0.0095, 0.0012, -0.0066],
+    [0.0290, -0.0034, 0.0025],
+    [0.0220, 0.0169, -0.0048],
+    [-0.0332, -0.0457, -0.0468],
+    [-0.0085, 0.0389, 0.0609],
+    [-0.0076, 0.0003, -0.0043],
+    [-0.0111, -0.0460, -0.0614],
+];
+const FLUX2_RGB_BIAS: [f32; 3] = [-0.0329, -0.0718, -0.0851];
 
 /// Fitted here by least squares (`tests/fit_layered_rgb.rs`, 2026-10-29): two 864×1152 pictures
 /// split into three layers, each decoded layer averaged over the latent's 8×8 cells, the 63,966
@@ -247,8 +305,10 @@ fn factor_tensors(space: LatentSpace, dev: &Device) -> Result<(Tensor, Tensor)> 
 
 /// One latent `(C, H, W)` as RGB `(3, H, W)` in `[0, 1]` through the factors.
 pub fn latent_to_rgb(space: LatentSpace, x0: &Tensor) -> Result<Tensor> {
-    let (c, h, w) = x0.dims3()?;
+    let (c, _, _) = x0.dims3()?;
     anyhow::ensure!(c == space.channels(), "a {c}-channel latent for a {}-channel space", space.channels());
+    let x0 = if space == LatentSpace::Flux2 { unpack(x0)? } else { x0.clone() };
+    let (c, h, w) = x0.dims3()?;
     let (m, b) = factor_tensors(space, x0.device())?;
     let flat = x0.to_dtype(DType::F32)?.reshape((c, h * w))?;
     let rgb = m.matmul(&flat)?.broadcast_add(&b)?;
@@ -447,9 +507,85 @@ impl TaesdF16 {
     }
 }
 
+/// TAESD's block with a mid-block pooled branch (`x += conv(relu(gn(conv(x))))`, the 4-group
+/// GroupNorm at 4× the width) in front of the plain block.
+struct PoolBlock {
+    block: Block,
+    p0: Conv2d,
+    gn: candle_nn::GroupNorm,
+    p3: Conv2d,
+}
+
+impl PoolBlock {
+    fn load(vb: &VarBuilder, n: usize) -> Result<Self> {
+        Ok(Self {
+            block: Block::load(vb, n)?,
+            p0: conv(&vb.pp("pool.0"), n, 4 * n, 1, false)?,
+            gn: candle_nn::group_norm(4, 4 * n, 1e-5, vb.pp("pool.1"))?,
+            p3: conv(&vb.pp("pool.3"), 4 * n, n, 1, false)?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let pooled = self.p3.forward(&self.gn.forward(&self.p0.forward(x)?)?.relu()?)?;
+        self.block.forward(&(x + pooled)?)
+    }
+}
+
+/// madebyollin's TAEF2 decoder for FLUX.2 latents (`taef2`, MIT; `decoder.layers.N` is TAESD's
+/// layer N + 1): the unpacked 32 channels at 8× in, RGB out.
+struct Taef2 {
+    c0: Conv2d,
+    s1: [PoolBlock; 3],
+    c6: Conv2d,
+    s2: [Block; 3],
+    c11: Conv2d,
+    s3: [Block; 3],
+    c16: Conv2d,
+    b17: Block,
+    c18: Conv2d,
+}
+
+impl Taef2 {
+    fn load(vb: &VarBuilder) -> Result<Self> {
+        let b = |i: usize| Block::load(&vb.pp(i.to_string()), 64);
+        let pb = |i: usize| PoolBlock::load(&vb.pp(i.to_string()), 64);
+        Ok(Self {
+            c0: conv(&vb.pp("0"), 32, 64, 3, true)?,
+            s1: [pb(2)?, pb(3)?, pb(4)?],
+            c6: conv(&vb.pp("6"), 64, 64, 3, false)?,
+            s2: [b(7)?, b(8)?, b(9)?],
+            c11: conv(&vb.pp("11"), 64, 64, 3, false)?,
+            s3: [b(12)?, b(13)?, b(14)?],
+            c16: conv(&vb.pp("16"), 64, 64, 3, false)?,
+            b17: b(17)?,
+            c18: conv(&vb.pp("18"), 64, 3, 3, true)?,
+        })
+    }
+
+    /// `(1, 128, h, w)` → `(1, 3, 16h, 16w)` in `[0, 1]`-ish.
+    fn decode(&self, z: &Tensor) -> Result<Tensor> {
+        let mut x = self.c0.forward(&soft_clamp(&unpack(z)?)?)?.relu()?;
+        for b in &self.s1 {
+            x = b.forward(&x)?;
+        }
+        x = self.c6.forward(&up2(&x)?)?;
+        for b in &self.s2 {
+            x = b.forward(&x)?;
+        }
+        x = self.c11.forward(&up2(&x)?)?;
+        for b in &self.s3 {
+            x = b.forward(&x)?;
+        }
+        x = self.b17.forward(&self.c16.forward(&up2(&x)?)?)?;
+        Ok(self.c18.forward(&x)?)
+    }
+}
+
 enum TinyNet {
     Taehv(Box<Taehv>),
     TaesdF16(Box<TaesdF16>),
+    Taef2(Box<Taef2>),
 }
 
 /// A tiny decoder on the device, for Sharp previews.
@@ -479,6 +615,7 @@ impl TinyDecoder {
             LatentSpace::Wan21 => TinyNet::Taehv(Box::new(Taehv::load(&vb.pp("decoder"))?)),
             LatentSpace::QwenImage21 => TinyNet::TaesdF16(Box::new(TaesdF16::load(&vb.pp("decoder").pp("layers"))?)),
             LatentSpace::Layered => anyhow::bail!("no tiny decoder decodes the Layered VAE's latents"),
+            LatentSpace::Flux2 => TinyNet::Taef2(Box::new(Taef2::load(&vb.pp("decoder").pp("layers"))?)),
         };
         Ok(Self { space, dtype, dev: dev.clone(), net })
     }
@@ -503,6 +640,7 @@ impl TinyDecoder {
         let rgb = match &self.net {
             TinyNet::Taehv(n) => n.decode(&z)?,
             TinyNet::TaesdF16(n) => n.decode(&z)?,
+            TinyNet::Taef2(n) => n.decode(&z)?,
         };
         Ok(rgb.squeeze(0)?.to_dtype(DType::F32)?)
     }
@@ -512,7 +650,7 @@ impl TinyDecoder {
     pub fn peak_bytes(&self, pixels: usize) -> usize {
         let per_pixel = match self.space {
             // 64 channels × 9 taps at full size (bf16), plus two 64-channel activations.
-            LatentSpace::Wan21 | LatentSpace::Layered => 64 * 9 * 2 + 4 * 64 * 2,
+            LatentSpace::Wan21 | LatentSpace::Layered | LatentSpace::Flux2 => 64 * 9 * 2 + 4 * 64 * 2,
             // Its widest convolutions run at half size.
             LatentSpace::QwenImage21 => (64 * 9 * 2 + 4 * 64 * 2) / 4 + 16 * 4,
         };
@@ -701,9 +839,56 @@ mod tests {
                 convw(&mut put, "decoder.layers.16", 64, 64, 3, false);
                 convw(&mut put, "decoder.layers.18", 64, 16, 3, true);
             }
+            LatentSpace::Flux2 => {
+                convw(&mut put, "decoder.layers.0", 32, 64, 3, true);
+                for i in [2, 3, 4, 7, 8, 9, 12, 13, 14, 17] {
+                    for c in [0, 2, 4] {
+                        convw(&mut put, &format!("decoder.layers.{i}.conv.{c}"), 64, 64, 3, true);
+                    }
+                }
+                for i in [2, 3, 4] {
+                    convw(&mut put, &format!("decoder.layers.{i}.pool.0"), 64, 256, 1, false);
+                    put(format!("decoder.layers.{i}.pool.1.weight"), &[256]);
+                    put(format!("decoder.layers.{i}.pool.1.bias"), &[256]);
+                    convw(&mut put, &format!("decoder.layers.{i}.pool.3"), 256, 64, 1, false);
+                }
+                for i in [6, 11, 16] {
+                    convw(&mut put, &format!("decoder.layers.{i}"), 64, 64, 3, false);
+                }
+                convw(&mut put, "decoder.layers.18", 64, 3, 3, true);
+            }
             LatentSpace::Layered => {}
         }
         map
+    }
+
+    /// FLUX.2's Fast picture is the factor map of the unpacked latent: channel `4c + 2i + j` of
+    /// a cell at `(2y + i, 2x + j)` of channel `c`, then the 32-channel factors.
+    #[test]
+    fn flux2_fast_unpacks_then_maps() {
+        let x0 = rand(&[128, 2, 3], 3);
+        let rgb = latent_to_rgb(LatentSpace::Flux2, &x0).unwrap();
+        assert_eq!(rgb.dims(), &[3, 4, 6]);
+        let got = rgb.to_vec3::<f32>().unwrap();
+        let x = x0.to_vec3::<f32>().unwrap();
+        for (k, plane) in got.iter().enumerate() {
+            for (py, row) in plane.iter().enumerate() {
+                for (px, value) in row.iter().enumerate() {
+                    let (y, i, xx, j) = (py / 2, py % 2, px / 2, px % 2);
+                    let v: f32 = FLUX2_RGB_BIAS[k] + (0..32).map(|c| FLUX2_RGB[c][k] * x[4 * c + 2 * i + j][y][xx]).sum::<f32>();
+                    let want = ((v + 1.0) * 0.5).clamp(0.0, 1.0);
+                    assert!((value - want).abs() < 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_taef2_decodes_to_the_picture_size() {
+        let vb = VarBuilder::from_tensors(weights(LatentSpace::Flux2), DType::F32, &Device::Cpu);
+        let tiny = TinyDecoder::from_vb(&vb, LatentSpace::Flux2, DType::F32, &Device::Cpu).unwrap();
+        let out = tiny.decode(&rand(&[128, 2, 3], 5)).unwrap();
+        assert_eq!(out.dims(), &[3, 32, 48]);
     }
 
     /// TAEHV the way its reference runs a clip: every frame through every layer in turn, each
