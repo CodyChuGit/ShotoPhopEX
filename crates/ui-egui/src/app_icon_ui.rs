@@ -190,14 +190,13 @@ pub fn remove(app: &mut PhotocraftApp, name: &str) -> Result<Value, String> {
 
 /// Choose Image…: any file the codecs read.
 fn choose(app: &mut PhotocraftApp) -> Result<Value, String> {
-    let (name, bytes) = app.pick_file_bytes().ok_or_else(|| "cancelled".to_string())??;
-    add_image(app, &name, &bytes)
+    app.pick_file_bytes(|app, name, bytes| add_image(app, &name, &bytes))
 }
 
 /// Paste Image: the clipboard's image.
 fn paste(app: &mut PhotocraftApp) -> Result<Value, String> {
     let get = app.services.clipboard_get_image.as_mut().ok_or("no clipboard here")?;
-    let (w, h, px) = get().ok_or("the clipboard holds no image")?;
+    let (w, h, px) = get()?.ok_or("the clipboard holds no image")?;
     if w == 0 || h == 0 || px.len() != w as usize * h as usize * 4 {
         return Err("the clipboard's image is empty".into());
     }
@@ -324,13 +323,13 @@ fn tile(ui: &mut egui::Ui, t: &Tokens, tex: &TextureHandle, selected: bool, name
     if selected {
         p.rect_stroke(rect, t.radius_sm, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
     }
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name));
     resp.on_hover_text(name)
 }
 
 /// The gallery's thumbnails, by (name, PNG length), uploaded once.
 fn thumbnail(ctx: &egui::Context, key: &str, png: &[u8]) -> Option<TextureHandle> {
-    let id = egui::Id::new(("app-icon-thumb", key, png.len()));
+    let id = egui::Id::unique(("app-icon-thumb", key, png.len()));
     if let Some(tex) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
         return Some(tex);
     }
@@ -368,7 +367,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut url = app.ui.app_icon.url.clone();
     let mut action = None;
     let mut open = true;
-    egui::Window::new(tl!("App Icon")).id(egui::Id::new("app-icon")).open(&mut open).resizable(false).default_width(300.0).show(ctx, |ui| {
+    egui::Window::new(tl!("App Icon")).id(egui::Id::unique("app-icon")).open(&mut open).resizable(false).default_width(300.0).show(ctx, |ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         ui.horizontal_wrapped(|ui| {
             if let Some(tex) = &builtin

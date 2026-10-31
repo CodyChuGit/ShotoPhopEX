@@ -24,7 +24,7 @@ fn decode() -> egui::ColorImage {
 
 /// Where the fork's custom app icon (`app_icon_ui`) keeps its texture while one is chosen.
 pub(crate) fn custom_id() -> Id {
-    Id::new("photocraft-brand-mark-custom")
+    Id::unique("photocraft-brand-mark-custom")
 }
 
 /// The icon texture, uploaded on first use and kept in the context (a custom icon wins).
