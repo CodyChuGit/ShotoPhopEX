@@ -194,6 +194,17 @@ pub fn click_command(l: &Layer, kind: MaskKind, m: egui::Modifiers) -> Option<(S
     Some((format!("{}.enabled", kind.command()), json!({"layer": l.id.0, "enabled": !enabled})))
 }
 
+/// What double-clicking `l`'s layer-mask thumbnail does: with Preferences › Tools › Double Click
+/// Layer Mask Launches Select and Mask, load the mask as the selection and open Select and Mask;
+/// otherwise show the Properties panel. A null params value runs the menu item (its dialog).
+pub fn double_click_actions(app: &PhotocraftApp, l: &Layer) -> Vec<(String, Value)> {
+    if app.session.prefs().tools.double_click_layer_mask_launches_select_and_mask {
+        vec![("select.loadSelection".into(), load_params(l, MaskKind::Pixel, egui::Modifiers::NONE)), ("select.selectAndMask".into(), Value::Null)]
+    } else {
+        vec![("window.panel.properties".into(), json!({"on": true}))]
+    }
+}
+
 /// The `select.loadSelection` params for a ⌘-click on mask thumbnail `kind` (⌘⇧ add, ⌘⌥
 /// subtract, ⌘⇧⌥ intersect).
 pub fn load_params(l: &Layer, kind: MaskKind, m: egui::Modifiers) -> Value {

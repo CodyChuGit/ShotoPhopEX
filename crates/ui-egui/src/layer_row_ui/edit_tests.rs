@@ -106,7 +106,9 @@ fn text_name_still_renames_and_mask_double_click_does_not_edit_text() {
     let at = masks.iter().find(|(kind, _)| *kind == crate::mask_thumbs_ui::MaskKind::Pixel).unwrap().1.center();
     double_click(&mut h, at);
     assert!(h.state().ui.text_edit.is_none());
-    assert!(h.state().ui.dialogs.is_empty());
+    // It opens Select and Mask on the mask instead (Preferences › Tools).
+    let dialogs: Vec<_> = h.state().ui.dialogs.iter().map(|d| d.fields.get("__command").cloned()).collect();
+    assert_eq!(dialogs, [Some(json!("select.refineEdge"))]);
 }
 
 #[test]

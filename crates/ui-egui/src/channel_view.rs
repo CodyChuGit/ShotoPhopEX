@@ -103,7 +103,8 @@ pub fn render(doc: &Document, v: &ChannelView, r: Rect, factor: u32, in_color: b
             .into_iter()
             .map(|rgba| {
                 let mut native = from_rgba(&fmt, rgba);
-                if shown.len() == 1 && !in_color {
+                // Only RGB and CMYK channels have a colour of their own (Photoshop's Lab stays gray).
+                if shown.len() == 1 && !(in_color && matches!(mode, ColorMode::Rgb | ColorMode::Cmyk)) {
                     let x = native[shown[0]];
                     // Ink channels read dark where there is ink.
                     let g = if mode == ColorMode::Cmyk { 1.0 - x } else { x };
@@ -200,7 +201,7 @@ pub fn ensure(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize) -> Optio
         }
         return None;
     }
-    let in_color = false;
+    let in_color = app.session.prefs().interface.show_channels_in_color;
     let key = view_key(&view, in_color);
     // Never exceed what the GPU accepts (egui panics on oversized textures).
     let max_side = (ctx.input(|i| i.max_texture_side) as u32).clamp(256, MAX_SIDE);

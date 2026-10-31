@@ -1797,8 +1797,10 @@ mod tests {
         let values = prefs::Preferences::default().to_json();
         assert!(has_visible_fields(&values, "general"));
         assert!(has_visible_fields(&values, "fileHandling"));
+        assert!(has_visible_fields(&values, "type"));
+        assert!(has_visible_fields(&values, "enhancedControls"));
         // Every setting of these sections is still unimplemented.
-        for section in ["type", "enhancedControls", "integrations", "scratchDisks"] {
+        for section in ["integrations", "scratchDisks"] {
             assert!(!has_visible_fields(&values, section), "{section}");
         }
         // Camera Raw Defaults shows only "Open in Camera Raw" so far.
@@ -1810,11 +1812,11 @@ mod tests {
         assert!(!prefs::is_hidden("interface.uiFontSize"));
         // Hidden values still round-trip through the dialog untouched.
         let (mut app, _) = app_with_store();
-        app.run("prefs.set", json!({"values": {"type.smartQuotes": false}})).unwrap();
+        app.run("prefs.set", json!({"values": {"type.missingGlyphProtection": false}})).unwrap();
         let id = open_preferences(&mut app, "type");
         let fields = app.ui.dialogs.iter().find(|d| d.id == id).map(|d| d.fields.clone()).unwrap();
         confirm(&mut app, &fields).unwrap();
-        assert!(!app.session.prefs().type_.smart_quotes);
+        assert!(!app.session.prefs().type_.missing_glyph_protection);
     }
 
     #[test]
@@ -1893,7 +1895,7 @@ mod tests {
         };
 
         let (mut app, store) = app_with_store();
-        app.run("prefs.set", json!({"values": {"interface.language": "en", "type.smartQuotes": false}})).unwrap();
+        app.run("prefs.set", json!({"values": {"interface.language": "en", "type.missingGlyphProtection": false}})).unwrap();
         let id = open_preferences(&mut app, "interface");
         let mut h = Harness::builder().with_size(vec2(1280.0, 800.0)).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
@@ -1914,7 +1916,7 @@ mod tests {
         assert_eq!(h.state().session.prefs().performance.history_states, 12);
         assert_eq!(h.state().ui.theme, ThemeKind::StudioLight);
         assert_eq!(h.ctx.fonts(|f| f.definitions().font_data["Inter"].tweak.scale), 16.0 / 12.0);
-        assert!(!h.state().session.prefs().type_.smart_quotes, "hidden settings round-trip unchanged");
+        assert!(!h.state().session.prefs().type_.missing_glyph_protection, "hidden settings round-trip unchanged");
         let d = h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap();
         assert_eq!(d.fields["section"], "interface");
         assert_eq!(d.fields["values"]["performance"]["historyStates"], 12);

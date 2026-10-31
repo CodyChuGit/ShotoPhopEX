@@ -452,3 +452,34 @@ fn command_t_while_typing_toggles_the_character_panel() {
     assert!(h.state().ui.text_edit.is_some(), "still editing");
     assert_ne!(crate::view_cmds::checked(h.state(), "window.panel.character"), before, "the Character panel toggled");
 }
+
+/// Preferences › Type: Use Smart Quotes curls typed quotes, and Use ESC Key to Commit Text
+/// decides whether Esc keeps the typing (on) or undoes it (off).
+#[test]
+fn smart_quotes_and_esc_follow_the_type_preferences() {
+    for esc_commits in [true, false] {
+        let mut app = new_app();
+        app.run("prefs.set", json!({"values": {"type.useEscToCommit": esc_commits}})).unwrap();
+        let layers = app.session.active().unwrap().doc.layers.len();
+        let mut h = harness(1.0, app);
+        click(&mut h, Pos2::new(400.0, 400.0));
+        let id = LayerId(h.state().ui.text_edit.as_ref().expect("editing").layer);
+        h.event(egui::Event::Text("\"It's\" 'x'".into()));
+        h.run_steps(1);
+        assert_eq!(text(h.state(), id).text, "\u{201C}It\u{2019}s\u{201D} \u{2018}x\u{2019}");
+        key(&mut h, egui::Key::Escape);
+        assert!(h.state().ui.text_edit.is_none(), "Esc ends the edit");
+        let doc = &h.state().session.active().unwrap().doc;
+        assert_eq!(doc.layer(id).is_some(), esc_commits, "esc_commits={esc_commits}");
+        assert_eq!(doc.layers.len(), layers + usize::from(esc_commits));
+    }
+    // Off: quotes stay straight.
+    let mut app = new_app();
+    app.run("prefs.set", json!({"values": {"type.smartQuotes": false}})).unwrap();
+    let mut h = harness(1.0, app);
+    click(&mut h, Pos2::new(400.0, 400.0));
+    let id = LayerId(h.state().ui.text_edit.as_ref().expect("editing").layer);
+    h.event(egui::Event::Text("\"It's\"".into()));
+    h.run_steps(1);
+    assert_eq!(text(h.state(), id).text, "\"It's\"");
+}

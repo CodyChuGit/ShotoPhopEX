@@ -440,7 +440,8 @@ pub struct PhotocraftApp {
     /// Type tool layout cache: ((doc, revision, layer), layout).
     pub(crate) type_layout: Option<((u64, u64, u64), std::sync::Arc<photocraft_text::TextLayout>)>,
     /// Channel thumbnails for one document snapshot; view-only revisions reuse their pixels.
-    channel_thumbs: Option<(DocId, std::sync::Weak<Document>, Vec<egui::TextureHandle>)>,
+    /// Channels panel thumbnails: the document, its snapshot, Show Channels in Color, the textures.
+    channel_thumbs: Option<(DocId, std::sync::Weak<Document>, bool, Vec<egui::TextureHandle>)>,
     /// Channels panel overlays / channel views drawn over the canvas, per document id.
     pub(crate) channel_views: HashMap<u64, channel_view::Cache>,
     /// Selection outline keyed by (document, mask identity × step × visible region).
@@ -872,7 +873,12 @@ impl PhotocraftApp {
         };
         let path = match path {
             Some(p) => p,
-            None => self.services.pick_save.as_mut().and_then(|f| f(&suggested)).ok_or("cancelled")?,
+            None => {
+                let picked = self.services.pick_save.as_mut().and_then(|f| f(&suggested)).ok_or("cancelled")?;
+                // Preferences › File Handling › Use Lower Case Extension: `.PSD` typed in the
+                // dialog saves as `.psd`.
+                if self.session.prefs().file_handling.lowercase_extension { lowercase_extension(&picked) } else { picked }
+            }
         };
         // A layered TIFF asks about its layers first (Preferences › File Handling); the save
         // continues from the prompt.
@@ -1156,6 +1162,41 @@ fn read_dropped(f: &(dyn egui::DroppedFile + Send + Sync)) -> Result<Vec<u8>, St
     f.bytes()
 }
 
+/// Colour channel `k` of an sRGB thumbnail pixel as the Channels panel shows it: gray (CMYK inks
+/// dark where there is ink), or with `in_color` (Preferences › Interface › Show Channels in
+/// Color) an RGB or CMYK channel alone in its own colour.
+fn channel_thumb_px(fmt: &photocraft_color::PixelFormat, k: usize, rgb: [u8; 3], in_color: bool) -> egui::Color32 {
+    let cmyk = fmt.mode == photocraft_doc::ColorMode::Cmyk;
+    let rgba = [rgb[0], rgb[1], rgb[2], 255].map(|v| f32::from(v) / 255.0);
+    let mut native = photocraft_raster::from_rgba(fmt, rgba);
+    let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    if in_color && (cmyk || fmt.mode == photocraft_doc::ColorMode::Rgb) {
+        // The channel alone: no light (RGB) or no ink (CMYK) in the others.
+        let colors = fmt.mode.color_channels();
+        for (j, v) in native[..colors].iter_mut().enumerate() {
+            if j != k {
+                *v = 0.0;
+            }
+        }
+        let c = photocraft_raster::to_rgba(fmt, &native).map(to_u8);
+        return egui::Color32::from_rgb(c[0], c[1], c[2]);
+    }
+    let x = native.get(k).copied().unwrap_or(0.0);
+    egui::Color32::from_gray(to_u8(if cmyk { 1.0 - x } else { x }))
+}
+
+/// `path` with its file extension (after the last `.` of the file name) in lower case.
+fn lowercase_extension(path: &str) -> String {
+    let name_start = path.rfind(['/', '\\']).map_or(0, |i| i + 1);
+    match path[name_start..].rfind('.') {
+        Some(dot) if dot > 0 => {
+            let at = name_start + dot;
+            format!("{}{}", &path[..at], path[at..].to_lowercase())
+        }
+        _ => path.to_string(),
+    }
+}
+
 /// On the web, dropped-file bytes arrive asynchronously; the web shell handles drops itself.
 #[cfg(target_arch = "wasm32")]
 fn read_dropped(_f: &dyn egui::DroppedFile) -> Result<Vec<u8>, String> {
@@ -1388,7 +1429,9 @@ impl PhotocraftApp {
         // View-only commands bump revision without changing pixels. Keeping a Weak pins allocation
         // identity against address reuse without retaining the document's pixel data.
         let snapshot = std::sync::Arc::downgrade(&doc);
-        if !matches!(&self.channel_thumbs, Some((d, old, _)) if *d == id && old.ptr_eq(&snapshot)) {
+        // Preferences › Interface › Show Channels in Color.
+        let in_color = self.session.prefs().interface.show_channels_in_color;
+        if !matches!(&self.channel_thumbs, Some((d, old, c, _)) if *d == id && old.ptr_eq(&snapshot) && *c == in_color) {
             let comp = photocraft_compose::thumbnail(&doc, 56);
             let (w, h) = (comp.width as usize, comp.height as usize);
             let side = w.max(h);
@@ -1408,16 +1451,7 @@ impl PhotocraftApp {
             let mut texs = vec![make(&|p| egui::Color32::from_rgb(p[0], p[1], p[2]), "composite")];
             if colors > 1 {
                 for k in 0..colors {
-                    let cmyk = fmt.mode == photocraft_doc::ColorMode::Cmyk;
-                    texs.push(make(
-                        &|p| {
-                            let rgba = [p[0], p[1], p[2], 255].map(|v| f32::from(v) / 255.0);
-                            let x = photocraft_raster::from_rgba(&fmt, rgba)[k];
-                            let g = if cmyk { 1.0 - x } else { x };
-                            egui::Color32::from_gray((g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
-                        },
-                        &format!("c{k}"),
-                    ));
+                    texs.push(make(&|p| channel_thumb_px(&fmt, k, [p[0], p[1], p[2]], in_color), &format!("c{k}")));
                 }
             }
             // Alpha channels and the Quick Mask, sampled at thumbnail resolution.
@@ -1435,9 +1469,9 @@ impl PhotocraftApp {
                 }
                 texs.push(ctx.load_texture(format!("chan-a{i}"), egui::ColorImage::new([side, side], px), egui::TextureOptions::LINEAR));
             }
-            self.channel_thumbs = Some((id, snapshot, texs));
+            self.channel_thumbs = Some((id, snapshot, in_color, texs));
         }
-        self.channel_thumbs.as_ref().map(|(_, _, t)| t.iter().map(|t| t.id()).collect()).unwrap_or_default()
+        self.channel_thumbs.as_ref().map(|(_, _, _, t)| t.iter().map(|t| t.id()).collect()).unwrap_or_default()
     }
 }
 
@@ -1523,6 +1557,31 @@ mod stamp_tests;
 
 #[cfg(test)]
 mod polygon_lasso_tests;
+
+#[cfg(test)]
+mod channel_thumb_tests {
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+
+    use super::channel_thumb_px;
+
+    #[test]
+    fn channels_show_gray_or_in_their_colour() {
+        let rgb = PixelFormat::RGBA8;
+        let orange = [255, 128, 0];
+        assert_eq!(channel_thumb_px(&rgb, 0, orange, false), egui::Color32::from_gray(255));
+        assert_eq!(channel_thumb_px(&rgb, 1, orange, false), egui::Color32::from_gray(128));
+        assert_eq!(channel_thumb_px(&rgb, 0, orange, true), egui::Color32::from_rgb(255, 0, 0));
+        assert_eq!(channel_thumb_px(&rgb, 1, orange, true), egui::Color32::from_rgb(0, 128, 0));
+        // CMYK: white has no ink, so every channel is white in colour too; Lab stays gray.
+        let cmyk = PixelFormat::new(ColorMode::Cmyk, SampleType::U8, false);
+        assert_eq!(channel_thumb_px(&cmyk, 0, [255, 255, 255], true), egui::Color32::from_rgb(255, 255, 255));
+        let cyan = channel_thumb_px(&cmyk, 0, [0, 255, 255], true);
+        assert!(cyan.r() < 64 && cyan.g() > 128 && cyan.b() > 128, "the cyan plate is cyan: {cyan:?}");
+        let lab = PixelFormat::new(ColorMode::Lab, SampleType::U8, false);
+        let a = channel_thumb_px(&lab, 1, orange, true);
+        assert!(a.r() == a.g() && a.g() == a.b(), "Lab channels stay gray: {a:?}");
+    }
+}
 
 #[cfg(test)]
 mod clipboard_tests {

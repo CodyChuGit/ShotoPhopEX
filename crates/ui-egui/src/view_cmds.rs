@@ -472,7 +472,9 @@ fn run(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Res
         let (vis, cur) = panel_state(app, panel);
         // Like Photoshop: choosing a visible panel's menu item again hides it. A collapsed
         // group is expanded instead, so the menu item always brings the panel back (#129).
-        if *vis && *cur == tab && !collapsed && !id.starts_with("type.panels.") {
+        // `"on"` shows (true) or hides (false) the panel instead of toggling it.
+        let showing = *vis && *cur == tab && !collapsed && !id.starts_with("type.panels.");
+        if !flag_param(p, showing) {
             *vis = false;
         } else {
             *vis = true;

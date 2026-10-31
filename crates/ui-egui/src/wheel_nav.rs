@@ -4,7 +4,7 @@
 //! - ⌥/Alt + wheel zooms around the pointer in gentle steps, about 5% per wheel notch.
 //! - Preferences › General › Zoom with Scroll Wheel swaps the two: the wheel zooms and
 //!   ⌥/Alt + wheel scrolls.
-//! - A trackpad pinch zooms around the pointer.
+//! - A trackpad pinch zooms around the pointer (Preferences › Enhanced Controls can turn it off).
 //!
 //! [`configure`] makes egui fold ⌘/Ctrl + wheel into a sideways scroll as it does ⇧ + wheel, so
 //! only a real pinch (egui's `Event::Zoom`, or a touch screen) reaches `zoom_delta`. macOS and
@@ -128,8 +128,9 @@ fn alt_id() -> Id {
 }
 
 /// Read this frame's wheel input. Call it every frame (hovered or not) so the Alt state of the
-/// gesture follows the latest wheel event.
-pub fn read(ctx: &Context, zoom_with_wheel: bool) -> Option<Wheel> {
+/// gesture follows the latest wheel event. `pinch` off (Preferences › Enhanced Controls › Zoom
+/// with Trackpad Pinch) ignores pinches.
+pub fn read(ctx: &Context, zoom_with_wheel: bool, pinch: bool) -> Option<Wheel> {
     let notch = ctx.options(|o| o.input_options.line_scroll_speed);
     let (scroll, zoom_delta, latest) = ctx.input(|i| {
         let latest = i.events.iter().rev().find_map(|e| match e {
@@ -145,7 +146,7 @@ pub fn read(ctx: &Context, zoom_with_wheel: bool) -> Option<Wheel> {
         }
         None => ctx.data(|d| d.get_temp::<bool>(alt_id())).unwrap_or(false),
     };
-    classify(Input { scroll, zoom_delta, alt, zoom_with_wheel, notch })
+    classify(Input { scroll, zoom_delta: if pinch { zoom_delta } else { 1.0 }, alt, zoom_with_wheel, notch })
 }
 
 #[cfg(test)]
@@ -153,6 +154,18 @@ mod tests {
     use egui::TouchPhase;
 
     use super::*;
+
+    /// Preferences › Enhanced Controls › Zoom with Trackpad Pinch off: a pinch does nothing.
+    #[test]
+    fn the_pinch_preference_turns_pinch_zoom_off() {
+        let ctx = Context::default();
+        let mut got = (None, None);
+        let mut out = ctx.run_ui(RawInput { events: vec![Event::Zoom(1.5)], ..Default::default() }, |ui| {
+            got = (read(ui.ctx(), false, true), read(ui.ctx(), false, false));
+        });
+        out.textures_delta.clear();
+        assert_eq!(got, (Some(Wheel::Zoom(1.5)), None));
+    }
 
     fn input(scroll: Vec2, alt: bool) -> Input {
         Input { scroll, zoom_delta: 1.0, alt, zoom_with_wheel: false, notch: 40.0 }
@@ -178,7 +191,7 @@ mod tests {
             if legacy {
                 fold_legacy_pinch(&ctx, &mut raw);
             }
-            let mut out = ctx.run_ui(raw, |ui| match read(ui.ctx(), zoom_with_wheel) {
+            let mut out = ctx.run_ui(raw, |ui| match read(ui.ctx(), zoom_with_wheel, true) {
                 Some(Wheel::Pan(d)) => pan += d,
                 Some(Wheel::Zoom(f)) => zoom *= f,
                 None => {}

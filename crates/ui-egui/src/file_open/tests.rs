@@ -596,3 +596,20 @@ fn notices_render_without_panicking() {
     out.textures_delta.clear();
     assert_eq!(app.ui.notices.len(), 2);
 }
+
+/// Preferences › File Handling › Use Lower Case Extension: an extension typed in capitals in the
+/// Save As dialog is written in lower case (off: as typed). The folder keeps its case.
+#[test]
+fn save_as_lowercases_the_extension_with_the_preference() {
+    for (lower, expect) in [(true, "/Pics.V2/Cat.psd"), (false, "/Pics.V2/Cat.PSD")] {
+        let (mut app, written) = app_with(None, Some("/Pics.V2/Cat.PSD".into()));
+        app.run("file.new", json!({"width": 4, "height": 4})).unwrap();
+        app.run("prefs.set", json!({"values": {"fileHandling.lowercaseExtension": lower}})).unwrap();
+        let (path, _) = app.save_as(None).unwrap();
+        assert_eq!(path, expect);
+        assert_eq!(written.borrow().last().map(|(p, _)| p.clone()).as_deref(), Some(expect));
+    }
+    assert_eq!(crate::lowercase_extension("/a.B/README"), "/a.B/README");
+    assert_eq!(crate::lowercase_extension(r"C:\X\.Hidden"), r"C:\X\.Hidden");
+    assert_eq!(crate::lowercase_extension("x.Tar.GZ"), "x.Tar.gz");
+}

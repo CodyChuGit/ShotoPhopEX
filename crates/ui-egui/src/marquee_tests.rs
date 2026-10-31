@@ -303,3 +303,15 @@ fn cmd_alt_drag_floats_a_copy() {
     assert!(alpha(&d, 12, 20) == 1.0, "the original stays");
     assert!(alpha(&d, 50, 20) == 1.0, "the copy dropped 25 px right");
 }
+
+/// Preferences › Tools › Show Transformation Values off: no size readout while dragging.
+#[test]
+fn the_readout_follows_the_show_transformation_values_preference() {
+    let mut h = harness(Tool::RectMarquee);
+    h.state_mut().run("prefs.set", json!({"values": {"tools.showTransformationValues": false}})).unwrap();
+    press_at(&mut h, 50.0, 50.0, Modifiers::NONE);
+    move_to(&mut h, 150.0, 90.0);
+    assert!(h.query_by_label("W:").is_none() && h.query_by_label_contains(" px").is_none(), "no readout");
+    release_at(&mut h, 150.0, 90.0, Modifiers::NONE);
+    assert_eq!(selection(&h), Rect::new(50, 50, 150, 90), "the marquee still selects");
+}
