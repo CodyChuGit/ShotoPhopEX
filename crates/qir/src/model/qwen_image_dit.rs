@@ -940,7 +940,8 @@ fn sparse_selection(q: &Tensor, k: &Tensor, scale: f32, tau: f32, min_ratio: f32
     static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     if CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(60) && std::env::var("QIR_LAYERED_SPARSE_STATS").is_ok_and(|v| v == "1") {
         let rows = scores.elem_count() / nk;
-        let kept: i64 = selection.narrow(0, 0, rows)?.to_dtype(DType::I64)?.sum_all()?.to_scalar()?;
+        // Summed on the host: candle has no CUDA cast from I32.
+        let kept: i64 = selection.narrow(0, 0, rows)?.to_vec1::<i32>()?.iter().map(|&c| i64::from(c)).sum();
         tracing::info!(kept_fraction = kept as f64 / (rows * nk) as f64, key_blocks = nk, "layered block-sparse attention");
     }
     Ok(selection)
@@ -2106,6 +2107,15 @@ mod layered_tests {
             assert!(row.windows(2).all(|w| w[0] < w[1]) && row[0] == 0 && row[c as usize - 1] == nk as i32 - 1, "row {r}: {row:?}");
         }
         assert!(bytes(&attention_sparse(&q, &k, &v, 0.088, &some)?)?.iter().all(|x| x.is_finite()));
+        // The pooled selection Split builds from the bf16 (B,H,S,D) q and k, text keys forced.
+        let (qh, kh) = (x(1.0)?.transpose(1, 2)?, x(1.0)?.transpose(1, 2)?);
+        let pooled = sparse_selection(&qh, &kh, 0.088, 0.5, 0.1, 100)?;
+        let counts = pooled.narrow(0, 0, rows)?.to_vec1::<i32>()?;
+        let table = pooled.narrow(0, rows, rows * nk)?.to_vec1::<i32>()?;
+        for (r, &c) in counts.iter().enumerate() {
+            let row = &table[r * nk..r * nk + c as usize];
+            assert!(row[..2] == [0, 1] && row[c as usize - 1] == nk as i32 - 1, "row {r}: {row:?}");
+        }
         Ok(())
     }
 
