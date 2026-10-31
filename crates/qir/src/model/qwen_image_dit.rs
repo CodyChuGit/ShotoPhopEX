@@ -15,13 +15,27 @@ pub fn checkpoint_builder(path: impl AsRef<std::path::Path>, device: &Device) ->
     // SAFETY: installed checkpoints must not be modified while a split is running.
     let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(path)? };
     Ok(VarBuilder::from_backend(
-        Box::new(Checkpoint(tensors, std::collections::BTreeMap::new())),
+        Box::new(Checkpoint(tensors, std::collections::BTreeMap::new(), None)),
         if device.is_cuda() { DType::BF16 } else { DType::F32 },
         device.clone(),
     ))
 }
 
-struct Checkpoint(candle_core::safetensors::MmapedSafetensors, std::collections::BTreeMap<String, Tensor>);
+/// The checkpoint, a CPU overlay of patched tensors, and an INT8 cache file ([`crate::int8_cache`])
+/// read before either.
+struct Checkpoint(candle_core::safetensors::MmapedSafetensors, std::collections::BTreeMap<String, Tensor>, Option<crate::layered_files::TensorFile>);
+
+/// The checkpoint with an INT8 cache entry's prequantized linears read first (pass the mapping
+/// that prefetched it, or every page faults again).
+pub fn checkpoint_builder_cached(path: impl AsRef<std::path::Path>, device: &Device, cached: crate::layered_files::TensorFile) -> Result<VarBuilder<'static>> {
+    // SAFETY: installed checkpoints are not modified while mapped.
+    let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(path)? };
+    Ok(VarBuilder::from_backend(
+        Box::new(Checkpoint(tensors, std::collections::BTreeMap::new(), Some(cached))),
+        if device.is_cuda() { DType::BF16 } else { DType::F32 },
+        device.clone(),
+    ))
+}
 
 /// Overlay a bound CPU FP8 snapshot when staged residency reloads the same adapters.
 pub fn checkpoint_builder_patched(
@@ -31,7 +45,7 @@ pub fn checkpoint_builder_patched(
 ) -> Result<VarBuilder<'static>> {
     // SAFETY: installed checkpoints remain immutable during inference.
     let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(path)? };
-    Ok(VarBuilder::from_backend(Box::new(Checkpoint(tensors, patches)), if device.is_cuda() { DType::BF16 } else { DType::F32 }, device.clone()))
+    Ok(VarBuilder::from_backend(Box::new(Checkpoint(tensors, patches, None)), if device.is_cuda() { DType::BF16 } else { DType::F32 }, device.clone()))
 }
 
 impl candle_nn::var_builder::SimpleBackend for Checkpoint {
@@ -44,6 +58,9 @@ impl candle_nn::var_builder::SimpleBackend for Checkpoint {
     }
 
     fn get_unchecked(&self, name: &str, dtype: DType, device: &Device) -> candle_core::Result<Tensor> {
+        if let Some(cached) = self.2.as_ref().filter(|c| c.contains(name)) {
+            return cached.tensor(name, device).map_err(|e| candle_core::Error::Msg(e.to_string()))?.to_dtype(dtype);
+        }
         let host = name.ends_with(".comfy_quant") || name.ends_with(".weight_scale");
         let device = if host { &Device::Cpu } else { device };
         if let Some(tensor) = self.1.get(name) {
@@ -53,7 +70,7 @@ impl candle_nn::var_builder::SimpleBackend for Checkpoint {
     }
 
     fn contains_tensor(&self, name: &str) -> bool {
-        self.0.get(name).is_ok()
+        self.2.as_ref().is_some_and(|c| c.contains(name)) || self.0.get(name).is_ok()
     }
 }
 
@@ -85,6 +102,25 @@ struct LayeredLinear {
 
 impl LayeredLinear {
     fn load(input: usize, output: usize, vb: VarBuilder<'_>) -> Result<Self> {
+        // An INT8 cache's prequantized weight ([`LayeredDit::int8_weights`]) loads as it is.
+        #[cfg(feature = "convrot")]
+        if vb.contains_tensor("weight_i8") && vb.device().is_cuda() {
+            let r = crate::model::rotation::regular_hadamard_256(vb.device())?;
+            let q = vb.get_unchecked_dtype("weight_i8", DType::U8)?;
+            anyhow::ensure!(q.dims2()? == (output, input), "incorrect cached INT8 weight shape");
+            let scales = vb.get_unchecked_dtype("col_scale", DType::F32)?;
+            return Ok(Self {
+                original: None,
+                dense: None,
+                fp8: None,
+                gpu: None,
+                fast: None,
+                int8: Some(crate::convrot::ConvRotLinear::from_prequantized(q, scales, &r)?),
+                bias: vb.get(output, "bias")?,
+                #[cfg(feature = "cuda")]
+                lt: None,
+            });
+        }
         let fp8 = if vb.contains_tensor("weight_scale") {
             let bytes = vb.get_unchecked_dtype("comfy_quant", DType::U8)?.to_vec1::<u8>()?;
             let quant: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -1164,25 +1200,82 @@ impl LayeredDit {
         Ok(weights)
     }
 
-    /// Every block resident, read from the checkpoint as `open_streamed` reads it (fp8 kept
-    /// until each matmul): about 20 GB on the GPU, for a worker that splits more than once.
-    pub fn open_resident(path: impl AsRef<std::path::Path>, device: &Device) -> Result<Self> {
-        Self::from_resident_file(crate::layered_files::TensorFile::open(path)?, device)
+    /// The INT8 linears' weights on the CPU (`{module}.weight_i8` U8 and `{module}.col_scale`
+    /// f32, ConvRot's prequantized form), for a cache that [`LayeredLinear::load`] reads back as
+    /// they are; empty when no linear is INT8.
+    #[cfg(feature = "convrot")]
+    pub fn int8_weights(&self) -> Result<Vec<(String, Tensor)>> {
+        let mut weights = Vec::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            for (text, stream) in [(false, &block.image), (true, &block.text)] {
+                let prefix = format!("transformer_blocks.{i}");
+                let name = if text { "txt" } else { "img" };
+                for (suffix, linear) in [
+                    (format!("{name}_mod.1"), &stream.modulation),
+                    (format!("attn.{}", if text { "add_q_proj" } else { "to_q" }), &stream.q),
+                    (format!("attn.{}", if text { "add_k_proj" } else { "to_k" }), &stream.k),
+                    (format!("attn.{}", if text { "add_v_proj" } else { "to_v" }), &stream.v),
+                    (format!("attn.{}", if text { "to_add_out" } else { "to_out.0" }), &stream.out),
+                    (format!("{name}_mlp.net.0.proj"), &stream.up),
+                    (format!("{name}_mlp.net.2"), &stream.down),
+                ] {
+                    if let Some(c) = &linear.int8 {
+                        let (q, scales) = c.export()?;
+                        weights.push((format!("{prefix}.{suffix}.weight_i8"), q.to_device(&Device::Cpu)?));
+                        weights.push((format!("{prefix}.{suffix}.col_scale"), scales.to_device(&Device::Cpu)?));
+                    }
+                }
+            }
+        }
+        Ok(weights)
     }
 
-    /// Reuse a prefaulted mapping so uploading weights does not repeat page faults.
-    pub(crate) fn from_resident_file(file: crate::layered_files::TensorFile, device: &Device) -> Result<Self> {
+    /// Every block resident, read from the checkpoint as `open_streamed` reads it (fp8 kept
+    /// until each matmul): about 20 GB on the GPU, for a worker that splits more than once.
+    pub fn open_resident(path: impl AsRef<std::path::Path>, device: &Device, cache: Option<&std::path::Path>) -> Result<Self> {
+        Self::from_resident_file(crate::layered_files::TensorFile::open(path)?, device, cache, None)
+    }
+
+    /// Reuse a prefaulted mapping so uploading weights does not repeat page faults. With `cache`
+    /// (an [`crate::int8_cache`] entry) an INT8 load reads the entry when it exists and writes it
+    /// after converting when it does not; `entry` is that entry's prefaulted mapping, if any.
+    pub(crate) fn from_resident_file(
+        file: crate::layered_files::TensorFile,
+        device: &Device,
+        cache: Option<&std::path::Path>,
+        entry: Option<crate::layered_files::TensorFile>,
+    ) -> Result<Self> {
         let dt = if device.is_cuda() { DType::BF16 } else { DType::F32 };
         // The INT8 conversion replaces each FP8 weight: read them one by one, or the packed ~19 GB
         // FP8 region and the INT8 copies are on the card together (2026-10-29: Windows paged the
         // 3-layer split to 222 s, the conversion to 12-15 s a load).
         #[cfg(feature = "convrot")]
         if device.is_cuda() && layered_int8_wanted() {
+            let cached = match entry.map(Ok).or_else(|| cache.filter(|p| p.is_file()).map(crate::layered_files::TensorFile::open)) {
+                Some(Ok(entry)) => Some(entry),
+                Some(Err(e)) => {
+                    tracing::warn!(error = %e, "unreadable INT8 cache entry; converting");
+                    None
+                }
+                None => None,
+            };
+            let hit = cached.is_some();
+            let vb = match cached {
+                Some(entry) => file.resident_builder_cached(entry, dt, device),
+                None => file.resident_builder_unpacked(dt, device),
+            };
             INT8_LOAD.store(true, std::sync::atomic::Ordering::Relaxed);
-            let dit = Self::load(file.resident_builder_unpacked(dt, device));
+            let dit = Self::load(vb);
             INT8_LOAD.store(false, std::sync::atomic::Ordering::Relaxed);
-            return dit;
+            let dit = dit?;
+            match (cache, hit) {
+                (Some(path), true) => crate::int8_cache::touch(path),
+                (Some(path), false) => crate::int8_cache::write_in_background(path, dit.int8_weights()?),
+                (None, _) => {}
+            }
+            return Ok(dit);
         }
+        let _ = (cache, entry);
         Self::load(file.resident_builder(dt, device)?)
     }
 

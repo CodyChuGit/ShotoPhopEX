@@ -91,6 +91,8 @@ pub struct LayeredPipeline {
     vae: std::sync::Mutex<Option<std::sync::Arc<WanVae>>>,
     /// The last prompt's text conditioning: (prompt, positive, negative).
     conditioning: std::sync::Mutex<Option<(String, Tensor, Tensor)>>,
+    /// The [`crate::int8_cache`] folder; `None` when `QIR_INT8_CACHE=0`.
+    int8_cache: Option<std::path::PathBuf>,
 }
 
 impl LayeredPipeline {
@@ -113,6 +115,7 @@ impl LayeredPipeline {
             dit: std::sync::Mutex::new(None),
             vae: std::sync::Mutex::new(None),
             conditioning: std::sync::Mutex::new(None),
+            int8_cache: crate::int8_cache::enabled().then(|| crate::int8_cache::dir(root)),
         })
     }
 
@@ -258,8 +261,11 @@ impl LayeredPipeline {
         // A resident DiT is used as it is when the prompt's conditioning is kept too.
         let kept = self.dit.lock().unwrap_or_else(|e| e.into_inner()).is_some()
             && self.conditioning.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|(p, _, _)| p == prompt);
+        let cache = if self.device.is_cuda() { self.int8_cache.as_ref().and_then(|dir| crate::int8_cache::entry(dir, &self.files.diffusion, &Default::default()).ok()) } else { None };
+        // With an INT8 cache entry the linears come from it, so its pages are the ones to fault.
+        let cached = cache.as_ref().is_some_and(|p| p.is_file());
         let prefetch = if !kept && self.device.is_cuda() && std::env::var("QIR_LAYERED_PREFETCH").map_or(true, |v| v != "0") {
-            LayeredPrefetch::start(self.files.diffusion.clone())
+            LayeredPrefetch::start(cache.clone().filter(|_| cached).unwrap_or_else(|| self.files.diffusion.clone()))
         } else {
             None
         };
@@ -311,8 +317,12 @@ impl LayeredPipeline {
                 None => {
                     let d = if self.device.is_cuda() {
                         match prefetch {
-                            Some(prefetch) => LayeredDit::from_resident_file(prefetch.finish()?, &self.device)?,
-                            None => LayeredDit::open_resident(&self.files.diffusion, &self.device)?,
+                            Some(prefetch) if !cached => LayeredDit::from_resident_file(prefetch.finish()?, &self.device, cache.as_deref(), None)?,
+                            prefetch => {
+                                // The entry's prefaulted mapping (a failed prefetch only costs the faults).
+                                let entry = prefetch.and_then(|p| p.finish().ok());
+                                LayeredDit::from_resident_file(TensorFile::open(&self.files.diffusion)?, &self.device, cache.as_deref(), entry)?
+                            }
                         }
                     } else {
                         LayeredDit::open_streamed(&self.files.diffusion, &self.device)?
@@ -405,13 +415,13 @@ impl LayeredPipeline {
 }
 
 /// Fault checkpoint pages concurrently with conditioning; cancel and join on every exit.
-struct LayeredPrefetch {
+pub(crate) struct LayeredPrefetch {
     task: Option<std::thread::JoinHandle<Result<TensorFile>>>,
     stop: std::sync::Arc<AtomicBool>,
 }
 
 impl LayeredPrefetch {
-    fn start(path: std::path::PathBuf) -> Option<Self> {
+    pub(crate) fn start(path: std::path::PathBuf) -> Option<Self> {
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let cancelled = stop.clone();
         let task = std::thread::Builder::new()
@@ -425,7 +435,7 @@ impl LayeredPrefetch {
         Some(Self { task: Some(task), stop })
     }
 
-    fn finish(mut self) -> Result<TensorFile> {
+    pub(crate) fn finish(mut self) -> Result<TensorFile> {
         self.task
             .take()
             .ok_or_else(|| anyhow::anyhow!("missing Layered prefetch task"))?

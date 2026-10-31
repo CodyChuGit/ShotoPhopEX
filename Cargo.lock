@@ -1891,6 +1891,7 @@ dependencies = [
  "clap",
  "cudarc 0.19.9",
  "float8",
+ "fs2",
  "half",
  "image",
  "memmap2",
