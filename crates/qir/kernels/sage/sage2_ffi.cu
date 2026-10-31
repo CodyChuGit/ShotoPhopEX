@@ -556,12 +556,13 @@ static uint32_t s2_total_blocks(const S2Tasks &P) {
   return n;
 }
 
-template <MaskMode MM, bool F16_ACCUM>
+template <MaskMode MM, bool F16_ACCUM, bool SPARSE = false>
 static cudaError_t launch_attn(const int8_t *q, const int8_t *k, const int8_t *v,
                                __nv_bfloat16 *o, const float *qs, const float *ks,
                                const float *vs, int B, int Hq, int Hk, int qo,
                                int kv, int lpad, uint32_t sbz_o, uint32_t sseq_o,
-                               uint32_t sh_o, float sm_scale, cudaStream_t st) {
+                               uint32_t sh_o, float sm_scale, cudaStream_t st,
+                               const int32_t *lut = nullptr, const int32_t *lut_count = nullptr) {
   constexpr int CTA_Q = 128, CTA_K = 64, WARP_Q = 32, WARP_K = 64;
   const uint32_t sbz_q = (uint32_t)Hq * qo * D, sh_q = (uint32_t)qo * D, sseq_q = D;
   const uint32_t sbz_k = (uint32_t)Hk * kv * D, sh_k = (uint32_t)kv * D, sseq_k = D;
@@ -573,7 +574,7 @@ static cudaError_t launch_attn(const int8_t *q, const int8_t *k, const int8_t *v
                                      QuantGranularity::kPerThread,
                                      QuantGranularity::kPerThread, float, true,
                                      __nv_bfloat16, ComputeUnit::kCudaCore, MM, false,
-                                     true, false, F16_ACCUM>;
+                                     true, false, F16_ACCUM, SPARSE>;
   cudaError_t e = cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
   if (e != cudaSuccess) return e;
   dim3 grid((qo + CTA_Q - 1) / CTA_Q, Hq, B);
@@ -581,8 +582,91 @@ static cudaError_t launch_attn(const int8_t *q, const int8_t *k, const int8_t *v
   kf<<<grid, block, smem, st>>>((int8_t *)q, (int8_t *)k, (int8_t *)v, o, nullptr,
                                 (float *)qs, (float *)ks, (float *)vs, nullptr, qo, kv,
                                 Hq / Hk, sbz_q, sseq_q, sh_q, sbz_k, sseq_k, sh_k,
-                                sbz_v, sh_v, sd_v, sbz_o, sseq_o, sh_o, sm_scale);
+                                sbz_v, sh_v, sd_v, sbz_o, sseq_o, sh_o, sm_scale, lut, lut_count);
   return cudaGetLastError();
+}
+
+// Block-sparse selection, one CTA per (query block, head, lane): `scores` (B,H,nq,nk) f32 holds
+// the pooled q·k logits of a row; their softmax over the nk key blocks is kept from the largest
+// down until `tau` of the mass is in (at least `min_keep` blocks), plus the first `forced`
+// blocks (the text keys) and the last one (the partial tile). `lut` gets the kept blocks in
+// ascending order, `count` how many. nk <= SEL_N.
+constexpr int SEL_N = 1024;
+__global__ void Sage2BlockSelectKernel(const float *__restrict__ scores, int32_t *__restrict__ lut,
+                                       int32_t *__restrict__ count, uint32_t nk, float tau,
+                                       uint32_t min_keep, uint32_t forced) {
+  __shared__ float val[SEL_N];
+  __shared__ int32_t idx[SEL_N];
+  __shared__ uint8_t keep[SEL_N];
+  __shared__ float red[32];
+  const uint32_t row = (blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
+  const float *s = scores + (size_t)row * nk;
+  const uint32_t t = threadIdx.x, nt = blockDim.x;
+  float mx = -INFINITY;
+  for (uint32_t i = t; i < SEL_N; i += nt) {
+    val[i] = i < nk ? s[i] : -INFINITY;
+    idx[i] = (int32_t)i;
+    keep[i] = 0;
+    mx = fmaxf(mx, val[i]);
+  }
+  for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+  if ((t & 31) == 0) red[t >> 5] = mx;
+  __syncthreads();
+  if (t < 32) {
+    float m = t < (nt + 31) / 32 ? red[t] : -INFINITY;
+    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+    if (t == 0) red[0] = m;
+  }
+  __syncthreads();
+  mx = red[0];
+  __syncthreads();
+  float sum = 0.f;
+  for (uint32_t i = t; i < SEL_N; i += nt) {
+    val[i] = i < nk ? __expf(val[i] - mx) : 0.f;
+    sum += val[i];
+  }
+  for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+  if ((t & 31) == 0) red[t >> 5] = sum;
+  __syncthreads();
+  if (t == 0) {
+    float total = 0.f;
+    for (uint32_t w = 0; w < (nt + 31) / 32; w++) total += red[w];
+    red[0] = total;
+  }
+  __syncthreads();
+  const float total = red[0];
+  // Bitonic sort, descending by probability.
+  for (uint32_t size = 2; size <= SEL_N; size <<= 1) {
+    for (uint32_t stride = size >> 1; stride > 0; stride >>= 1) {
+      for (uint32_t i = t; i < SEL_N; i += nt) {
+        const uint32_t j = i ^ stride;
+        if (j > i) {
+          const bool desc = (i & size) == 0;
+          if ((val[i] < val[j]) == desc) {
+            const float fv = val[i]; val[i] = val[j]; val[j] = fv;
+            const int32_t iv = idx[i]; idx[i] = idx[j]; idx[j] = iv;
+          }
+        }
+      }
+      __syncthreads();
+    }
+  }
+  if (t == 0) {
+    float acc = 0.f;
+    uint32_t n = 0;
+    while (n < nk && (n < min_keep || acc < tau * total)) {
+      acc += val[n];
+      keep[idx[n]] = 1;
+      n++;
+    }
+    for (uint32_t i = 0; i < forced && i < nk; i++) keep[i] = 1;
+    keep[nk - 1] = 1;
+    int32_t *out = lut + (size_t)row * nk;
+    int32_t c = 0;
+    for (uint32_t i = 0; i < nk; i++)
+      if (keep[i]) out[c++] = (int32_t)i;
+    count[row] = c;
+  }
 }
 
 } // namespace sage2
@@ -671,6 +755,37 @@ extern "C" int sage2_attn_launch(const void *q_i8, const void *k_i8,
                                                         v_scale, B, Hq, Hk, qo, kv, lpad,
                                                         sbz_o, sseq_o, sh_o, sm_scale, st);
   }
+  return (int)e;
+}
+
+// Block-sparse SA2 (non-causal): `sage2_block_select_launch` builds `lut` (B,Hq,nq,nk) and
+// `count` (B,Hq,nq) from pooled logits `scores` (B,Hq,nq,nk), nq = ceil(qo/128), nk =
+// ceil(kv/64) <= 1024; `sage2_attn_sparse_launch` is `sage2_attn_launch` visiting only them.
+extern "C" int sage2_block_select_launch(const float *scores, int32_t *lut, int32_t *count,
+                                         int B, int H, int nq, int nk, float tau,
+                                         int min_keep, int forced, void *stream) {
+  if (nk <= 0 || nk > SEL_N) return (int)cudaErrorInvalidValue;
+  Sage2BlockSelectKernel<<<dim3(nq, H, B), 256, 0, (cudaStream_t)stream>>>(
+      scores, lut, count, (uint32_t)nk, tau, (uint32_t)min_keep, (uint32_t)forced);
+  return (int)cudaGetLastError();
+}
+
+extern "C" int sage2_attn_sparse_launch(const void *q_i8, const void *k_i8,
+                                        const void *v_fp8, void *o_bf16,
+                                        const float *q_scale, const float *k_scale,
+                                        const float *v_scale, int B, int Hq, int Hk,
+                                        int qo, int kv, int lpad, unsigned sbz_o,
+                                        unsigned sseq_o, unsigned sh_o, float sm_scale,
+                                        int f16_accum, const int32_t *lut,
+                                        const int32_t *count, void *stream) {
+  auto q = (const int8_t *)q_i8;
+  auto k = (const int8_t *)k_i8;
+  auto v = (const int8_t *)v_fp8;
+  auto o = (__nv_bfloat16 *)o_bf16;
+  cudaStream_t st = (cudaStream_t)stream;
+  cudaError_t e = f16_accum
+      ? launch_attn<MaskMode::kNone, true, true>(q, k, v, o, q_scale, k_scale, v_scale, B, Hq, Hk, qo, kv, lpad, sbz_o, sseq_o, sh_o, sm_scale, st, lut, count)
+      : launch_attn<MaskMode::kNone, false, true>(q, k, v, o, q_scale, k_scale, v_scale, B, Hq, Hk, qo, kv, lpad, sbz_o, sseq_o, sh_o, sm_scale, st, lut, count);
   return (int)e;
 }
 
