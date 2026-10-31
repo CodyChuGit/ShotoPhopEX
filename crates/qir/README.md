@@ -316,17 +316,18 @@ src/main.rs       CLI                               src/loader/           safete
 kernels/convrot/  INT8 GEMM (CUTLASS EVT), rotate/quant kernels
 kernels/sage/     SageAttention v1/v2 launchers, RoPE; vendor/ = thu-ml kernels (Apache-2.0)
 kernels/fusednorm/ fused norm / residual / VAE norm kernels
-scripts/          check.sh (Mac CPU checks) · host.sh (drive the GPU host) · setup-host.sh
-                  convert.sh (weight conversion) · oracle.py (diffusers references)
-                  compare_dit.py · compare_latent.py · compare_png.py
+scripts/          check.sh (CPU checks) · convert.sh (weight conversion)
+src/compare.rs    `qir compare png|latent|dit|layered|raw`: the parity gates
 docs/             WEIGHTS.md · PHASES.md · sample images
 ```
 
 ## Validation
 
 - `scripts/check.sh`: fmt, clippy `-D warnings`, check, unit tests on the CPU build (macOS).
-- `scripts/oracle.py`: regenerates the diffusers reference set (fixed seeds: latents, embeddings, images).
-- `dit-forward` + `scripts/compare_dit.py`, `vae-decode` + `scripts/compare_png.py`: oracle parity.
+- The diffusers reference set (fixed seeds: latents, embeddings, images) was made once by a
+  Python oracle, no longer in the tree; `docs/no-python.md` at the repository root says how
+  to restore it.
+- `dit-forward` + `qir compare dit`, `vae-decode` + `qir compare png`: oracle parity.
 - `*-test` verbs: every custom kernel checked bit-for-bit or by cosine against a
   reference, including on offset views and NaN-poisoned shared memory.
 
