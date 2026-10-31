@@ -158,6 +158,68 @@ fn picture_matches() -> Result<()> {
     Ok(())
 }
 
+/// TAEF2 (Sharp previews) on the reference's final latent against the full decoder's picture,
+/// and the Fast factor map's, both at the picture's size.
+#[test]
+#[ignore = "needs ref_moss.py's outputs and vae_approx/taef2.safetensors"]
+fn taef2_previews_the_picture() -> Result<()> {
+    use qwen_image_rs::preview::{latent_to_rgb, LatentSpace, TinyDecoder};
+    let (dev, _) = dev()?;
+    let models = PathBuf::from(std::env::var("MOSS_TINY_ROOT").unwrap_or_else(|_| r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models".into()));
+    let file = TinyDecoder::file(&models, LatentSpace::Flux2).ok_or_else(|| anyhow::anyhow!("no taef2 under {}", models.display()))?;
+    let tiny = TinyDecoder::load(&file, LatentSpace::Flux2, &dev)?;
+    let r = reference("run_cat_512x512_s20_seed42.safetensors")?;
+    let z = r["latent"].squeeze(0)?.to_device(&dev)?; // (128, 32, 32)
+    let theirs = r["img"].squeeze(0)?.permute((2, 0, 1))?; // (3, 512, 512) in [0, 1]
+    let sharp = tiny.decode(&z)?.to_device(&Device::Cpu)?;
+    let fast = latent_to_rgb(LatentSpace::Flux2, &z)?.unsqueeze(0)?.upsample_nearest2d(512, 512)?.squeeze(0)?.to_device(&Device::Cpu)?;
+    let (ps, pf) = (psnr(&sharp, &theirs)?, psnr(&fast, &theirs)?);
+    println!("previews of the final latent against the full decode: Sharp (TAEF2) {ps:.2} dB, Fast (factors, nearest up) {pf:.2} dB");
+    image::save_buffer(
+        root().join("ref_out").join("preview_taef2_final.png"),
+        &(sharp.permute((1, 2, 0))? * 255.0)?.round()?.clamp(0f32, 255f32)?.to_dtype(DType::U8)?.flatten_all()?.to_vec1::<u8>()?,
+        512,
+        512,
+        image::ColorType::Rgb8,
+    )?;
+    assert!(ps > 20.0 && ps > pf, "Sharp {ps} dB, Fast {pf} dB");
+    Ok(())
+}
+
+/// Live previews at the defaults (Fast, then Sharp with `vae_approx/taef2.safetensors` from
+/// `MOSS_TINY_ROOT`, default ComfyUI's `models`): the picture the same as without them, the
+/// frames sent and what they cost, saved beside the reference outputs.
+#[test]
+#[ignore = "needs MOSS-Image's weights"]
+fn previews_leave_the_picture_alone() -> Result<()> {
+    use qwen_image_rs::preview::{Frame, LatentSpace, PreviewMode, Previewer, TinyDecoder};
+    let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::new("info")).try_init();
+    let p = MossPipeline::load(&files(), &mut |_, _| {})?;
+    let mut req = Request::new("A wide view of a refrigerator beside a kitchen counter with a fruit bowl. A small sticky note on the refrigerator door is handwritten: \"Buy milk and eggs!\"");
+    (req.width, req.height, req.seed, req.guidance) = (1024, 1024, 42, qwen_image_rs::moss::pipeline::GUIDANCE);
+    req.steps = qwen_image_rs::moss::pipeline::STEPS;
+    req.negative = String::new();
+    let plain = p.generate(&req, &mut |_, _| {}, &|| false)?;
+    println!("previews off: {:?}", plain.timings);
+    let models = PathBuf::from(std::env::var("MOSS_TINY_ROOT").unwrap_or_else(|_| r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models".into()));
+    let tiny = TinyDecoder::file(&models, LatentSpace::Flux2).map(|f| TinyDecoder::load(&f, LatentSpace::Flux2, p.device())).transpose()?;
+    let out = root().join("ref_out");
+    for (mode, name) in [(PreviewMode::Fast, "fast"), (PreviewMode::Sharp, "sharp")] {
+        let mut frames: Vec<Frame> = Vec::new();
+        let mut sink = |f: Frame| frames.push(f);
+        let mut viewer = Previewer::new(mode, LatentSpace::Flux2, tiny.as_ref(), &mut sink);
+        let pic = p.generate_previewed(&req, &mut |_, _| {}, Some(&mut viewer), &|| false)?;
+        let (shown, spent) = (viewer.shown, viewer.spent);
+        assert_eq!(pic.rgba, plain.rgba, "{name} previews changed the picture");
+        println!("previews {name}: {shown} frames, {spent:?} making them, {:?}", pic.timings);
+        for f in frames.iter().filter(|f| f.step == 9 || f.step == 24 || f.step == 39) {
+            let path = out.join(format!("preview_{name}_step{}.png", f.step));
+            image::save_buffer(&path, &f.rgba, f.width as u32, f.height as u32, image::ColorType::Rgba8)?;
+        }
+    }
+    Ok(())
+}
+
 /// The official defaults at 1024², for the timings (no reference to compare with).
 #[test]
 #[ignore = "needs MOSS-Image's weights"]

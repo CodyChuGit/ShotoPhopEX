@@ -1,4 +1,4 @@
-//! CPU oracle: tools/qwen_image_dit_fixtures.py (ComfyUI embedded Python, -I).
+//! CPU oracle: qwen_image_dit_fixtures.py (restore: docs/no-python.md) (ComfyUI embedded Python, -I).
 //! Two generated layers plus composite: [1,16,3,32,32], sin(i*0.017)*0.7;
 //! reference [1,16,1,32,32], cos(i*0.013)*0.4; text [1,12,3584], sin(i*0.019)*0.3.
 //! Independent blocks use image sin(i*0.007)*0.2, text cos(i*0.011)*0.2,
