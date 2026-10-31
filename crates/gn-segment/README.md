@@ -44,33 +44,22 @@ and return early otherwise. No checkpoint is distributed with this crate.
 Synthetic headers test missing/mismatched shapes without any tensor payload.
 The text test also accepts `GN_SAM31_CHECKPOINT` to override its checkpoint path.
 
-## Regenerate fixtures
+## Fixtures
 
-From the repository root, using ComfyUI's embedded Python with torch, torchvision
-and safetensors installed:
+The fixtures under `tests/fixtures/` were generated once with ComfyUI's own modules (CPU, f32)
+and are committed; the tests need nothing else. The Python generators are no longer in the
+tree. `docs/no-python.md` at the repository root lists them and how to restore one.
 
-```powershell
-& 'C:\Users\5090\ComfyUI\ComfyUI_windows_portable\python_embeded\python.exe' -I tools/gn_segment_fixtures.py
-```
-
-The script writes deterministic float32 inputs and expected outputs under
-`tests/fixtures/`, with torch/torchvision versions in safetensors metadata. It
-covers inside, edge, partly outside and tiny boxes; resize down by 3.5 and 4,
+The step 1 fixtures are deterministic float32 inputs and expected outputs, with
+torch/torchvision versions in safetensors metadata. They cover inside, edge, partly outside and tiny boxes; resize down by 3.5 and 4,
 up by 2, non-square and mixed directions, singleton and identity sizes; and
 channel LayerNorm. Fixtures total less than 2 MB. Rust tests load them through
-candle's safe safetensors loader; Python is only needed for regeneration.
+candle's safe safetensors loader.
 
-For text fixtures, run:
-
-```powershell
-& 'C:\Users\5090\ComfyUI\ComfyUI_windows_portable\python_embeded\python.exe' -I crates/gn-segment/tools/gn_segment_text_fixtures.py
-```
-
-The generator uses ComfyUI's SAM CLIP configuration, key conversion and CLIP
-forward implementation, followed by the checkpoint resizer in f32. It compares
+For the text fixtures, the generator used ComfyUI's SAM CLIP configuration, key conversion and CLIP
+forward implementation, followed by the checkpoint resizer in f32. It compared
 ComfyUI's first-window IDs to the exact gn-perception tokenization procedure
-using its tokenizer JSON. Override `--comfy`, `--checkpoint` or `--tokenizer` as
-needed. Four prompts cover padding and a full context. `text.safetensors` stores
+using its tokenizer JSON. Four prompts cover padding and a full context. `text.safetensors` stores
 IDs, boolean masks as U8 0/1 (Candle cannot load safetensors BOOL), and resized
 features, totaling about 130 KiB. Metadata includes prompts, tokenizer SHA-256,
 PyTorch version, checkpoint name and tokenization comparison results.
@@ -366,4 +355,3 @@ Changed files (all under `crates/gn-segment`; existing integration tests / fixtu
 - `src/text.rs`
 - `src/vision.rs`
 - `src/weights.rs`
-- `tools/sam31_observe.py`

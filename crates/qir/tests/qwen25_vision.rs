@@ -1,4 +1,4 @@
-//! Full fixtures: portable Python -I tools/qir_qwen25_vision_fixtures.py.
+//! Full fixtures: portable Python -I qir_qwen25_vision_fixtures.py (restore: docs/no-python.md).
 use candle_core::{DType, Device, Tensor};
 use qwen_image_rs::model::qwen25_vision::{preprocess, resize_editplus, window_index, Qwen25Vision};
 use std::path::PathBuf;
