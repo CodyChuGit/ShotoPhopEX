@@ -113,6 +113,19 @@ extern "C" {
         k: i32,
         stream: *mut std::ffi::c_void,
     ) -> i32;
+    // gelu(x + bias) as the Layered bias kernel stores it, then rotation + quantize
+    // (quant_ops.cu `BiasGeluRow`); x rows `ld` elements apart. Same return codes.
+    #[allow(clippy::too_many_arguments)]
+    fn bias_gelu_rotate_quantize_rows_launch(
+        out: *mut u8,
+        x: *const std::ffi::c_void,
+        ld: std::ffi::c_long,
+        bias: *const std::ffi::c_void,
+        row_scale: *mut f32,
+        m: i32,
+        k: i32,
+        stream: *mut std::ffi::c_void,
+    ) -> i32;
     // The same with MOSS-Image's SiTU of gate `g` and hidden `p` (quant_ops.cu `SituRow`).
     #[allow(clippy::too_many_arguments)]
     fn situ_rotate_quantize_rows_launch(
@@ -354,6 +367,68 @@ impl candle_core::CustomOp3 for SwiGluRotateQuantize {
             };
             if rc != 0 {
                 candle_core::bail!("swiglu_rotate_quantize_rows_launch failed rc={rc} (M={m}, K={k}, ld_g={ld_g}, ld_p={ld_p})");
+            }
+        }
+        Ok((CudaStorage::wrap_cuda_slice(out, dev), (m, k).into()))
+    }
+}
+
+/// Fused bias + GELU + rotate + quantize: `x (M,K) bf16` (a row-strided view allowed), `bias
+/// (K,) bf16`, `row_scale (M,) f32` written in place -> rotated int8 of the Layered bias
+/// kernel's `gelu(x + bias)`, byte for byte, without storing it.
+struct BiasGeluRotateQuantize;
+impl candle_core::CustomOp3 for BiasGeluRotateQuantize {
+    fn name(&self) -> &'static str {
+        "bias-gelu-rotate-quantize-rows"
+    }
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+        candle_core::bail!("cuda-only")
+    }
+    fn cuda_fwd(
+        &self,
+        x: &CudaStorage,
+        x_l: &Layout,
+        b: &CudaStorage,
+        b_l: &Layout,
+        rs: &CudaStorage,
+        rs_l: &Layout,
+    ) -> candle_core::Result<(CudaStorage, Shape)> {
+        let dev = x.device().clone();
+        let (m, k) = x_l.shape().dims2()?;
+        if k == 0 || !k.is_multiple_of(crate::model::rotation::GROUP) || k > ROTATE_QUANT_MAX_K {
+            candle_core::bail!("bias-gelu-rotate-quantize: K={k} must be a positive multiple of 256 and <= {ROTATE_QUANT_MAX_K}");
+        }
+        if b_l.shape().dims1()? != k || rs_l.shape().dims1()? != m {
+            candle_core::bail!("bias-gelu-rotate-quantize: bias len != K={k} or row_scale len != M={m}");
+        }
+        let (xo, ld) = row_strided_2d(x_l, "bias-gelu-rotate-quantize x")?;
+        let bo = dense_byte_offset::<half::bf16>(b_l, "bias-gelu-rotate-quantize bias")?;
+        let ro = dense_byte_offset::<f32>(rs_l, "bias-gelu-rotate-quantize row_scale")?;
+        let x = x.as_cuda_slice::<half::bf16>()?;
+        let b = b.as_cuda_slice::<half::bf16>()?;
+        let rs = rs.as_cuda_slice::<f32>()?;
+        let stream = dev.cuda_stream();
+        let out = unsafe { dev.alloc::<u8>(m * k)? };
+        {
+            let (xp, _a) = x.device_ptr(&stream);
+            let (bp, _b) = b.device_ptr(&stream);
+            let (rp, _c) = rs.device_ptr(&stream);
+            let (op, _d) = out.device_ptr(&stream);
+            let (xp, bp, rp) = (xp + 2 * xo as u64, bp + bo, rp + ro);
+            let rc = unsafe {
+                bias_gelu_rotate_quantize_rows_launch(
+                    op as *mut u8,
+                    xp as *const std::ffi::c_void,
+                    ld as std::ffi::c_long,
+                    bp as *const std::ffi::c_void,
+                    rp as *mut f32,
+                    m as i32,
+                    k as i32,
+                    stream.cu_stream() as *mut std::ffi::c_void,
+                )
+            };
+            if rc != 0 {
+                candle_core::bail!("bias_gelu_rotate_quantize_rows_launch failed rc={rc} (M={m}, K={k}, ld={ld})");
             }
         }
         Ok((CudaStorage::wrap_cuda_slice(out, dev), (m, k).into()))
@@ -838,6 +913,22 @@ impl ConvRotLinear {
         let (m, _) = g.dims2()?;
         let (x_i8, row_scale) = gated_rotate_quantize_rows_fused(g, h, true)?;
         self.gemm_dequant(&[m], &x_i8, &row_scale, out_ty)
+    }
+
+    /// The Layered MLP's down projection on the up projection's raw output `x (..., K)` and its
+    /// `bias (K,)`: the input is `gelu(x + bias)` exactly as the separate bias kernel stores it,
+    /// computed inside the rotate + quantize, so the output equals `forward` of that input.
+    pub fn forward_bias_gelu(&self, x: &Tensor, bias: &Tensor, out_ty: EpilogueOut) -> Result<Tensor> {
+        self.forward_with(x, out_ty, |x2: &Tensor| {
+            let (m, k) = x2.dims2()?;
+            if m == 0 {
+                let dev = x2.device();
+                return Ok((Tensor::zeros((0, k), candle_core::DType::U8, dev)?, Tensor::zeros(0, candle_core::DType::F32, dev)?));
+            }
+            let row_scale = Tensor::zeros(m, candle_core::DType::F32, x2.device())?;
+            let x_i8 = x2.apply_op3(bias, &row_scale, BiasGeluRotateQuantize)?;
+            Ok((x_i8, row_scale))
+        })
     }
 
     /// Shared head of the plain forwards: `quant` maps the `(M,K)` bf16
