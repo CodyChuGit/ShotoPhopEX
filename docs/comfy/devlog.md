@@ -16,6 +16,63 @@ frames), Sharp 11.77 s (+11 %, 16 frames), the picture byte-identical in all thr
 unchanged. Earlier runs that night overlapped the speed thread's Krea timings (VRAM full, decode
 7–84 s): Sharp then fell back to Fast as designed. Open: merge genai-native#10 first, then
 re-pin #15 to its merge commit.
+## 2026-10-30 (night): Fast draft; Krea 2's full-precision layers measured
+
+- **Fast draft** (the owner's call; `integrations.fastDraft`, off by default, in all 20 languages):
+  Generative Fill and Edit on a Qwen-Image-Edit-2511 template of 20 steps or more send the
+  worker `params.step_cache = 0.05` (genai-native `0118813`; no environment variable). Through the
+  app, the 40-step edit at 864x1152 went from 37.9 s to 24.6 s warm, 32.5 dB against off, with 18
+  of 40 steps cached per branch. Repeats are byte-identical. Lightning tiers and other models are
+  untouched.
+- **Krea 2's three full-precision layers** (attention gate, `wo`, `down`), measure-only, on the
+  local branch `perf/krea2-fp-int8`, 28 t2i cases at the 30 dB / SSIM 0.90 gate:
+  - native fp8 against ComfyUI fp8: 19 of 28
+  - INT8 against ComfyUI: **17**, and 21 against native fp8
+  - fp8 with per-token activation scaling against ComfyUI: 14, and 18 against native fp8
+  - warm 1024² time: fp8 3.68 s, INT8 2.75 s, token-scaled fp8 3.90 s
+
+  INT8 is 25 % faster but two cases short of today's parity, so it is not landed; the worst four
+  are the same street and architecture scenes that native fp8 already misses.
+
+## 2026-10-30: speed pass 2, follow-ups: an opt-in step cache; three dead ends
+
+Branch `perf/step-cache`, stacked on `perf/2511-int8` (genai-native `0f7bc5f`). There's an opt-in
+first-block step cache for 2511 (`QIR_STEP_CACHE=<threshold>`, one per CFG branch). On the 40-step
+edit: 39.4 s off, 24.8 s at 0.05 (32.5 dB, hard to tell apart), 16.9 s at 0.1, 12.3 s at 0.2 (the
+snow mostly gone). It's measure-only; the default path is unchanged. Checked and not landed, details
+in benchmarks.md §0: Krea's bf16 weight cache (−2 % for 9.6 GB), a cuBLASLt autotune (candle's GEMM
+is at the bf16 ceiling already), and a device-built causal mask for 2.1's prefix (already ~0.2 s).
+Next: the activation quantize fused into its producing kernels, with a MOSS regression.
+
+## 2026-10-30: speed pass 2, item 3: 2511 on INT8 linears
+
+Branch `perf/2511-int8` in both repos, stacked on `perf/split-int8` (genai-native `6a35b91`).
+2511's resident DiT, its LoRAs merged, runs ConvRot INT8 linears by default (`LayeredDit::load_int8`).
+Lightning-8 edit 7.15 to 4.41 s, 40-step 65.9 to 38.1 s warm. Same seed against fp8: 22.1 and 36.3 dB,
+against seed bands of 14.4 and 16.3 (benchmarks.md §0). The CFG pair batched in one forward was
+measured and dropped (4 % slower, 35.6 dB). `QIR_2511_INT8=0` opts out.
+
+## 2026-10-29 (night): speed pass 2, item 2: Split on INT8 linears
+
+Branch `perf/split-int8` in both repos, stacked on `perf/split-resident` (genai-native `16adfc4`).
+Split's DiT runs ConvRot INT8 linears by default. Warm 86.3 to 61.9 s, composite against the input
+37.25 dB against 36.91 (benchmarks.md §0). The paging that parked INT8 earlier was an unsynchronized
+conversion queue (the freed bf16 temporaries were still pending), not the weights; a synchronize per
+converted linear fixed it. The flag is scoped to `LayeredDit::from_resident_file`, because 2511
+shares `LayeredLinear` and binds LoRAs, which INT8 refuses. Checked: a 2511 Lightning-8 edit on the
+same worker still runs. `QIR_LAYERED_INT8=0` opts out.
+Open: the INT8 resident set is ~7.6 GB above fp8's (free after load ~3 GB against 11 GB). If larger
+splits page, that's where to look.
+
+## 2026-10-29 (night): speed pass 2, item 1: Split keeps its DiT resident
+
+Speed pass 2 started from genai-native main `aa5ccdf` and photoshopex `72efc7dd`. Branch
+`perf/split-resident` in both repos (genai-native `9e10f13`, pinned here). `LayeredPipeline` keeps
+the DiT and the VAE resident between splits, plus a one-entry conditioning cache for the prompt.
+The app sends `SPLIT_DEFAULT_PROMPT`, so warm splits hit it. A cache miss drops the DiT before
+the text encoder loads. Warm Split 91.9 to 86.0 s, layers byte-identical (benchmarks.md §0).
+`QIR_LAYERED_RESIDENT=0` restores per-split loads.
+The denoise (84.4 s of 86) is what's left; item 2 (INT8 linears without paging) is next.
 ## 2026-10-31: Generate panel redesign (UI/UX pass)
 
 Window › Generate's full form was a loose stack: a mode strip of pills, a prompt with two icons

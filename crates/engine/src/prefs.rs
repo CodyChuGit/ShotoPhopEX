@@ -1048,6 +1048,12 @@ pub struct Integrations {
     /// for them; skipped when the card has too little free memory, given up when another
     /// generation starts first.
     pub warm_up_at_launch: bool,
+    /// Fast draft: Generative Fill and Edit on a Qwen-Image-Edit-2511 template of 20 steps or more
+    /// run with the native worker's first-block step cache, reusing most of the model on steps
+    /// that change little (the 40-step edit 39.4 to 24.8 s, the detail slightly softer); Split
+    /// into Layers too (3 layers 59.6 to 43.9 s, the composite unchanged to the eye, the faintest
+    /// layer different). Off by default.
+    pub fast_draft: bool,
     /// What the canvas shows while a generation samples, over the place its result will take
     /// (`photocraft_genai::PreviewMode`): `off` (nothing until the result), `fast` (the model's
     /// estimate at its latent grid, next to free; the default) or `sharp` (through a tiny decoder,
@@ -1060,7 +1066,8 @@ pub struct Integrations {
     pub runtime_path: String,
     /// The native worker's model root: a ComfyUI `models` folder (read as it is: its
     /// `diffusion_models/`, `text_encoders/`, `vae/`, `loras/`, `checkpoints/`), or the worker's
-    /// own folders (one subfolder per model). This folder must be set explicitly.
+    /// own folders (one subfolder per model). Empty = a folder found as [`Integrations::models_root`]
+    /// describes, else none.
     pub models_path: String,
 }
 
@@ -1085,6 +1092,7 @@ impl Default for Integrations {
             alerts: "off".into(),
             enhance_prompts: false,
             warm_up_at_launch: true,
+            fast_draft: false,
             preview_while_generating: "fast".into(),
             runtime_path: String::new(),
             models_path: String::new(),
@@ -1101,9 +1109,13 @@ impl Integrations {
         if p.is_empty() { bundled_runtime().unwrap_or_default() } else { p.to_string() }
     }
 
-    /// The required Models folder, using the existing weights layout.
+    /// The Models folder: [`Self::models_path`], or when that is empty the first folder of
+    /// `PHOTOCRAFT_MODELS`, `GN_MODELS` (the native worker's own variable) and the `models` folder
+    /// next to this executable, so a fresh install or a package that ships one needs no manual
+    /// step. Empty when there is none.
     pub fn models_root(&self) -> String {
-        self.models_path.trim().to_string()
+        let p = self.models_path.trim();
+        if p.is_empty() { detected_models().unwrap_or_default() } else { p.to_string() }
     }
 
     /// Whether the native worker can serve models: runtime folders and a model root.
@@ -1127,6 +1139,25 @@ fn comfy_models(dir: &str) -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = dir;
+        None
+    }
+}
+
+/// The Models folder found without a preference ([`Integrations::models_root`]), looked up once.
+fn detected_models() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let env =
+                ["PHOTOCRAFT_MODELS", "GN_MODELS"].into_iter().filter_map(|k| std::env::var_os(k)).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+            let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("models")));
+            env.chain(beside).find(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned())
+        })
+        .clone()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
         None
     }
 }

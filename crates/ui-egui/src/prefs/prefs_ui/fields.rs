@@ -62,6 +62,9 @@ pub(super) fn humanize(key: &str) -> String {
     if key == "warmUpAtLaunch" {
         return "Warm up AI models at launch".into();
     }
+    if key == "fastDraft" {
+        return "Fast draft (faster, slightly softer detail)".into();
+    }
     // The auto-hide notice settings read best with their own labels (Interface › Notification, #2022).
     if key == "notificationAutoHide" {
         return "Auto Hide Notifications".into();

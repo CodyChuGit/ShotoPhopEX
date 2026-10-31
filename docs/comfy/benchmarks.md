@@ -129,6 +129,80 @@ cold and warm. A worker that refuses the batch is asked tile by tile. The same P
 also fixes Upscale to run as a background job: a nested `image.imageSize` used to switch the job
 off, so Upscale ran inline on the UI thread.
 
+**A first-block step cache for 2511, opt-in, 2026-10-30** (genai-native `perf/step-cache`
+`0f7bc5f`, measure-only: `QIR_STEP_CACHE=<threshold>`, off by default, and the default path is
+unchanged). Each step runs the first block. When that block's residual moved less than the
+threshold since the last full step (mean |Δ| / mean |previous|), the other 59 blocks' residual
+from that step is reused. There is one cache per CFG branch. The 40-step CFG 4 edit (INT8,
+864x1152, seed 16, one worker per threshold):
+
+| threshold | warm | steps cached of 40 | PSNR vs off | looked at |
+|---|---|---|---|---|
+| off | 39.4 s | 0 | — | — |
+| 0.05 | **24.8 s** | 18 | 32.5 dB | barely different: the snow slightly softer |
+| 0.1 | 16.9 s | 27 | 30.0 dB | fewer snowflakes, softer knit |
+| 0.2 | 12.3 s | 32 | 26.1 dB | most of the snow gone, detail lost |
+
+The pictures are in `photocraft-tests\bench\sp2-step-cache` (`sheet.png`). MOSS isn't on
+`LayeredDit` and would need its own hook; not done.
+**Also checked this pass and not landed:**
+- **Krea 2's full-precision layers' bf16 weights cached:** byte-identical, but warm 3.677 to
+  3.651 s for 9.6 GB more VRAM.
+- **A per-shape cuBLASLt autotune at Krea's bf16 shapes:** candle's matmul already reaches
+  230–232 TFLOPS; the best of the top-8 heuristic algos is 1–3 % faster, under 1 % a picture.
+- **The 2.1 prefix pass's causal mask built on the device:** byte-identical, no change; the
+  warm prefix is already ~0.2 s.
+- **Split's and 2511's q, k and v sharing one rotated INT8 activation** (they quantized the same
+  input three times): byte-identical, but warm Split 60.5 to 67.1 s (ABBA, consistent) and 2511
+  Lightning-8 unchanged (4.53 / 4.52 s), so dropped. ConvRot's quantize is 3–26 % of an INT8
+  linear (M 8272: 0.07 ms against a 0.29 ms GEMM at K 3072, 0.30 against 0.89 at K 12288).
+  Fusing it into the producing kernels would save only the separate pass, about 3–4 % end to end
+  by estimate, for new kernels in the shared ConvRot code; not done.
+
+**Qwen-Image-Edit-2511 on INT8 linears, 2026-10-30** (speed pass 2, genai-native `perf/2511-int8`
+`6a35b91`, on the Split INT8 change). 2511's resident DiT, with its LoRAs already merged into the
+weights, runs ConvRot INT8 linears by default. The load that binds and materializes the LoRAs
+stays fp8; the reload with the merged weights converts. `QIR_2511_INT8=0` keeps fp8. Measured in
+ABBA order with cooldowns, seed 16, 864x1152, "Make it winter" on the portrait:
+
+| 2511 edit, warm | fp8 | INT8 | same seed vs fp8 | a second seed (17) vs 16, fp8 |
+|---|---|---|---|---|
+| Lightning-8 | 7.16 / 7.15 / 7.15 / 7.15 s | **4.41 / 4.41 / 4.42 / 4.40 s** | 22.1 dB | 14.4 dB |
+| 40-step, CFG 4 | 65.9 / 65.9 s | **38.2 / 38.0 s** | 36.3 dB | 16.3 dB |
+
+Cold, Lightning-8 went from 31.9–34.5 to 30.4–30.8 s and the 40-step from 84.2–84.4 to 58.1–58.3 s.
+Looked at side by side: on Lightning-8, scarf, pattern, pose and light match, and the snowflakes
+and the knit's stripes shift; the 40-step is near-identical. **The CFG pair in one batched
+forward was tried and not kept**: on the 40-step edit (INT8, ABBA) batched took 39.5 s against
+37.9 s for two forwards, and it moved the picture (35.6 dB). Each forward already has ~8k tokens.
+
+**Split into Layers on INT8 linears, 2026-10-29 night** (speed pass 2, genai-native
+`perf/split-int8` `16adfc4`, on top of the resident DiT). Split's DiT now runs ConvRot INT8
+linears by default: each fp8 weight is dequantized once at load and requantized.
+`QIR_LAYERED_INT8=0` keeps fp8. 2511, which binds LoRAs, stays on fp8. The earlier INT8 attempt
+paged the card at load, and the cause was a missing synchronize, not the INT8 weights: the
+conversion ran asynchronously and hundreds of linears' freed bf16 temporaries were still pending,
+with free VRAM falling ~2.3 GB per 60 linears. Synchronized per linear, the DiT loads with ~3 GB
+free and step 0 has 3.1 GB to spare. Measured in ABBA order with cooldowns, both runs resident,
+seed 7, 3 layers at ~1 MP: warm **86.3 to 61.9 s** (85.9 / 86.5 / 86.1 / 86.6 against 60.5 /
+61.1 / 59.9 / 66.0), denoise 84.8 to 58.4 s, cold 91.4 to 67.9–80.4 s. Quality: the layers
+composited back onto the input give **37.25 dB** against fp8's 36.91, coverage 0.999. Against
+fp8, the picture's own layer is 44.5 dB and the empty third layer 47.1 dB. The first layer is
+invented background on this picture under both, and it moves with any numeric change (2.65 dB),
+as noted for SageAttention2. The INT8 resident set is still ~7.6 GB above fp8's (free after load
+2.9–3.4 GB against 10.95), probably allocator granularity; not chased further.
+
+**Split into Layers with the DiT resident, 2026-10-29 night** (speed pass 2, genai-native
+`perf/split-resident` `9e10f13`). The Layered DiT (~20 GB) and VAE stay on the card between
+splits, and the prompt's text conditioning is kept. The app always sends its default split
+prompt, so a warm split loads nothing. A new prompt drops the DiT for the text encoder, since the
+two don't fit 32 GB together. One binary, `QIR_LAYERED_RESIDENT=0` against the default, ABBA
+order, 45 s cooldowns, seed 7, 3 layers at ~1 MP, a cold split and two warm per worker: warm
+**91.9 to 86.0 s** (91.6 / 92.2 / 91.7 / 92.1 against 85.7 / 86.2 / 85.7 / 86.2). The phases
+gone are the text encode (2.6 s, its load included), the DiT load (3.2 s) and the VAE loads
+(0.3 s). The 84.4 s denoise is unchanged. Every layer is **byte-identical** to the per-split
+loads.
+
 **Upscale on fewer, larger tiles by default, 2026-10-29** (PhotoshopEX `perf/upscale-tiles`, the
 owner's call after the seam crops). The default tiling is now the fewest equal tiles of at most
 1.15 MP each, never a strip of three or more; `grid` names one and `tileMegapixels` asks for the
