@@ -280,6 +280,30 @@ impl LayeredLinear {
     }
 }
 
+/// A first-block step cache for one CFG branch (an experiment, off unless
+/// `QIR_STEP_CACHE=<threshold>`): each step runs the first block; when its residual moved less
+/// than `threshold` (mean |Δ| / mean |previous|) since the last full step, the other blocks'
+/// residual from that step is reused instead of running them. Changes the picture.
+pub struct StepCache {
+    threshold: f32,
+    first: Option<Tensor>,
+    rest: Option<Tensor>,
+    pub steps: usize,
+    pub hits: usize,
+}
+
+impl StepCache {
+    /// From `QIR_STEP_CACHE`, a positive threshold; `None` when unset or invalid.
+    pub fn from_env() -> Option<Self> {
+        Self::new(std::env::var("QIR_STEP_CACHE").ok()?.trim().parse::<f32>().ok()?)
+    }
+
+    /// A cache at `threshold`; `None` unless it is finite and positive.
+    pub fn new(threshold: f32) -> Option<Self> {
+        (threshold.is_finite() && threshold > 0.0).then_some(Self { threshold, first: None, rest: None, steps: 0, hits: 0 })
+    }
+}
+
 /// Set while [`LayeredDit::from_resident_file`] loads Split's DiT with ConvRot INT8 linears
 /// (`LayeredLinear::int8`); 2511's loads, which bind LoRAs, keep the fp8 linears.
 #[cfg(feature = "convrot")]
@@ -1219,12 +1243,17 @@ impl LayeredDit {
 
     /// Latent boundary for editing; returns cropped target velocity only.
     pub fn forward_latents(&self, target: &Tensor, references: &[Tensor], text: &Tensor, timestep: &Tensor) -> Result<Tensor> {
+        self.forward_latents_cached(target, references, text, timestep, None)
+    }
+
+    /// [`Self::forward_latents`] with a first-block step cache ([`StepCache`]) for this CFG branch.
+    pub fn forward_latents_cached(&self, target: &Tensor, references: &[Tensor], text: &Tensor, timestep: &Tensor, cache: Option<&mut StepCache>) -> Result<Tensor> {
         let packed = PackedImages::new(self.kind, target, references)?;
         let tp = text_positions(target.dim(0)?, text.dim(1)?, packed.rows, packed.cols, target.device())?;
         let rope = LayeredRope::new(&Tensor::cat(&[&tp, &packed.positions], 1)?, target.dtype())?;
         let split = (self.kind == DitKind::Edit2511 && !references.is_empty()).then_some(packed.target_tokens);
         let timestep = if split.is_some() { Tensor::cat(&[timestep, &(timestep * 0.0)?], 0)? } else { timestep.clone() };
-        let velocity = self.forward_selected(&packed.tokens, text, &timestep, None, &rope, None, split)?.narrow(1, 0, packed.target_tokens)?;
+        let velocity = self.forward_cached_steps(&packed.tokens, text, &timestep, None, &rope, None, split, cache)?.narrow(1, 0, packed.target_tokens)?;
         Ok(unpatchify(&velocity, target.dim(2)?, packed.rows * 2, packed.cols * 2)?.narrow(3, 0, target.dim(3)?)?.narrow(4, 0, target.dim(4)?)?)
     }
 
@@ -1239,6 +1268,21 @@ impl LayeredDit {
         padding: Option<(usize, usize)>,
         split: Option<usize>,
     ) -> Result<Tensor> {
+        self.forward_cached_steps(img_tokens, txt_tokens, timestep, additional_t_cond, rope, padding, split, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_cached_steps(
+        &self,
+        img_tokens: &Tensor,
+        txt_tokens: &Tensor,
+        timestep: &Tensor,
+        additional_t_cond: Option<&Tensor>,
+        rope: &LayeredRope,
+        padding: Option<(usize, usize)>,
+        split: Option<usize>,
+        cache: Option<&mut StepCache>,
+    ) -> Result<Tensor> {
         let (mut img, mut txt) = self.input.project(img_tokens, txt_tokens)?;
         let temb = self.input.timestep(timestep, additional_t_cond)?;
         // SageAttention2 for both models (each can opt out: QIR_LAYERED_SAGE=0, QIR_2511_SAGE=0).
@@ -1246,8 +1290,43 @@ impl LayeredDit {
             DitKind::Layered => true,
             DitKind::Edit2511 => edit2511_sage(),
         };
-        for (i, block) in self.blocks.iter().enumerate() {
-            (img, txt) = block.forward_block(&img, &txt, &temb, rope, padding, split, layered && sage_block(i))?;
+        match cache {
+            Some(c) if self.blocks.len() > 1 => {
+                // The first block always runs; when its residual moved less than the threshold
+                // since the last full step, the other blocks' residual from that step stands in.
+                let input = img.clone();
+                (img, txt) = self.blocks[0].forward_block(&img, &txt, &temb, rope, padding, split, layered && sage_block(0))?;
+                let first = (&img - &input)?;
+                c.steps += 1;
+                let hit = match (&c.first, &c.rest) {
+                    (Some(prev), Some(_)) => {
+                        let num = (&first - prev)?.abs()?.to_dtype(DType::F32)?.mean_all()?.to_scalar::<f32>()?;
+                        let den = prev.abs()?.to_dtype(DType::F32)?.mean_all()?.to_scalar::<f32>()?;
+                        den > 0.0 && num / den < c.threshold
+                    }
+                    _ => false,
+                };
+                let reused = match (hit, &c.rest) {
+                    (true, Some(rest)) => Some((&img + rest)?),
+                    _ => None,
+                };
+                if let Some(next) = reused {
+                    img = next;
+                    c.hits += 1;
+                } else {
+                    let after_first = img.clone();
+                    for (i, block) in self.blocks.iter().enumerate().skip(1) {
+                        (img, txt) = block.forward_block(&img, &txt, &temb, rope, padding, split, layered && sage_block(i))?;
+                    }
+                    c.rest = Some((&img - &after_first)?);
+                    c.first = Some(first);
+                }
+            }
+            _ => {
+                for (i, block) in self.blocks.iter().enumerate() {
+                    (img, txt) = block.forward_block(&img, &txt, &temb, rope, padding, split, layered && sage_block(i))?;
+                }
+            }
         }
         if let Some(vb) = &self.streamed {
             for i in 0..BLOCKS {

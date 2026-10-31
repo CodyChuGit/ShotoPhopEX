@@ -37,6 +37,9 @@ pub struct Edit2511Request {
     pub steps: usize,
     pub cfg: f32,
     pub loras: LoraStack,
+    /// The first-block step cache's threshold ([`crate::model::qwen_image_dit::StepCache`], the
+    /// app's Fast draft); `None` follows `QIR_STEP_CACHE`, unset = off.
+    pub step_cache: Option<f32>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -357,6 +360,12 @@ impl Edit2511Pipeline {
             #[cfg(feature = "cuda")]
             let pool = crate::layered_pipeline::LayeredPool::retain(&self.device);
             mark("denoise prepare")?;
+            // `QIR_STEP_CACHE=<threshold>`: a first-block step cache per CFG branch (changes the picture).
+            let cache = || match req.step_cache {
+                Some(t) => crate::model::qwen_image_dit::StepCache::new(t),
+                None => crate::model::qwen_image_dit::StepCache::from_env(),
+            };
+            let mut step_caches = (cache(), cache());
             for i in 0..req.steps {
                 check()?;
                 let sigma = schedule.sigma(i);
@@ -367,10 +376,10 @@ impl Edit2511Pipeline {
                 let x = input.to_dtype(self.dtype)?;
                 // Two forwards: one batched CFG pair was 4 % slower at 864x1152 (each forward has
                 // ~8k tokens already) and moved the picture (35.6 dB), 2026-10-30.
-                let positive = dit.forward_latents(&x, &refs, &cond.positive, &t)?;
+                let positive = dit.forward_latents_cached(&x, &refs, &cond.positive, &t, step_caches.0.as_mut())?;
                 observe(&format!("step_{i}.positive"), &positive)?;
                 check()?;
-                let negative = cond.negative.as_ref().map(|n| dit.forward_latents(&x, &refs, n, &t)).transpose()?;
+                let negative = cond.negative.as_ref().map(|n| dit.forward_latents_cached(&x, &refs, n, &t, step_caches.1.as_mut())).transpose()?;
                 if let Some(n) = &negative {
                     observe(&format!("step_{i}.negative"), n)?;
                 }
@@ -388,6 +397,9 @@ impl Edit2511Pipeline {
                 mark(&format!("step {i}"))?;
                 crate::profile::report(&format!("2511 step {i}"));
                 progress(i + 1, req.steps);
+            }
+            if let Some(c) = &step_caches.0 {
+                tracing::info!(steps = c.steps, hits = c.hits, negative_hits = step_caches.1.as_ref().map_or(0, |n| n.hits), "2511 step cache");
             }
             self.device.synchronize()?;
         }
@@ -478,6 +490,7 @@ mod tests {
             steps: 8,
             cfg: 1.,
             loras: LoraStack::default(),
+            step_cache: None,
         };
         let key = ConditioningKey::new(&req);
         req.seed = 8;
