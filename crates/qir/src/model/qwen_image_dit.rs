@@ -1162,6 +1162,19 @@ impl LayeredDit {
         Self::load(file.resident_builder(dt, device)?)
     }
 
+    /// [`Self::load`] with ConvRot INT8 linears on CUDA: for a DiT whose LoRAs are already merged
+    /// into its weights (the INT8 linears refuse a later binding).
+    pub fn load_int8(vb: VarBuilder<'static>) -> Result<Self> {
+        #[cfg(feature = "convrot")]
+        if vb.device().is_cuda() {
+            INT8_LOAD.store(true, std::sync::atomic::Ordering::Relaxed);
+            let dit = Self::load(vb);
+            INT8_LOAD.store(false, std::sync::atomic::Ordering::Relaxed);
+            return dit;
+        }
+        Self::load(vb)
+    }
+
     /// Keep only one block resident at a time, including when running on CPU.
     pub fn open_streamed(path: impl AsRef<std::path::Path>, device: &Device) -> Result<Self> {
         let vb = checkpoint_builder(path, device)?;
