@@ -145,7 +145,8 @@ impl PhotocraftApp {
     ///
     /// A bare file name (export dialogs, an untitled document) starts in the folder the active
     /// document was last saved or exported to through a dialog, else beside the document
-    /// (#1826, #1866). A caller's explicit directory is kept. The chosen folder is remembered for
+    /// (#1826, #1866), else (a new document) in the last folder any save dialog chose, which the
+    /// preferences keep across restarts. A caller's explicit directory is kept. The chosen folder is remembered for
     /// the document the dialog was asked for.
     pub(crate) fn pick_save(&mut self, suggested: &str, then: impl FnOnce(&mut Self, String) -> Result<Value, String> + 'static) -> Result<Value, String> {
         let mut suggested = std::path::PathBuf::from(suggested);
@@ -157,6 +158,7 @@ impl PhotocraftApp {
             && let Some(dir) = doc
                 .and_then(|d| self.save_dirs.get(&d).cloned())
                 .or_else(|| self.session.active().and_then(|d| d.path.as_deref()).and_then(|p| std::path::Path::new(p).parent()).map(Path::to_path_buf))
+                .or_else(|| Some(&self.session.prefs().last_save_folder).filter(|f| !f.is_empty()).map(std::path::PathBuf::from))
         {
             suggested = dir.join(suggested);
         }
@@ -173,6 +175,11 @@ impl PhotocraftApp {
                     && let Some(dir) = Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty())
                 {
                     app.save_dirs.insert(doc, dir.to_path_buf());
+                    let dir = dir.to_string_lossy();
+                    if app.session.prefs().last_save_folder != dir {
+                        let dir = dir.into_owned();
+                        app.session.prefs.edit(|p| p.last_save_folder = dir);
+                    }
                 }
                 then(app, path)
             }
