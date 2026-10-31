@@ -77,6 +77,32 @@ extern "C" {
         f16_accum: i32,
         stream: *mut c_void,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn sage2_block_select_launch(scores: *const f32, lut: *mut i32, count: *mut i32, b: i32, h: i32, nq: i32, nk: i32, tau: f32, min_keep: i32, forced: i32, stream: *mut c_void) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn sage2_attn_sparse_launch(
+        q_i8: *const c_void,
+        k_i8: *const c_void,
+        v_fp8: *const c_void,
+        o_bf16: *mut c_void,
+        q_scale: *const f32,
+        k_scale: *const f32,
+        v_scale: *const f32,
+        b: i32,
+        hq: i32,
+        hk: i32,
+        qo: i32,
+        kv: i32,
+        lpad: i32,
+        sbz_o: u32,
+        sseq_o: u32,
+        sh_o: u32,
+        sm_scale: f32,
+        f16_accum: i32,
+        lut: *const i32,
+        count: *const i32,
+        stream: *mut c_void,
+    ) -> i32;
 }
 
 /// Head dim the kernels are instantiated for.
@@ -385,6 +411,8 @@ struct Attn2 {
     sq: usize,
     hk: usize,
     skv: usize,
+    /// Block-sparse: the [`block_select`] tensor (counts then the lookup table), non-causal.
+    sparse: Option<Tensor>,
 }
 
 impl candle_core::CustomOp3 for Attn2 {
@@ -437,6 +465,49 @@ impl candle_core::CustomOp3 for Attn2 {
             let qsp = (qp as usize + Sage2Qk::int8_bytes(b, hq, sq)) as *const f32;
             let ksp = (kp as usize + Sage2Qk::int8_bytes(b, hk, skv)) as *const f32;
             let vsp = (vp as usize + Sage2V::fp8_bytes(b, hk, skv)) as *const f32;
+            if let Some(sel) = &self.sparse {
+                if self.causal {
+                    candle_core::bail!("sage2-attn: block-sparse attention is non-causal only");
+                }
+                let rows = b * hq * sq.div_ceil(128);
+                if sel.dtype() != DType::I32 || sel.elem_count() != rows * (1 + skv.div_ceil(V_TILE)) {
+                    candle_core::bail!("sage2-attn: block selection does not match the operands");
+                }
+                let (st, sl) = sel.storage_and_layout();
+                let candle_core::Storage::Cuda(cs) = &*st else { candle_core::bail!("sage2-attn: block selection is not on CUDA") };
+                let s = cs.as_cuda_slice::<i32>()?.slice(sl.start_offset()..);
+                let (sp, _e) = s.device_ptr(&stream);
+                let count = sp as *const i32;
+                let lut = (sp as usize + rows * std::mem::size_of::<i32>()) as *const i32;
+                let rc = unsafe {
+                    sage2_attn_sparse_launch(
+                        qp as *const c_void,
+                        kp as *const c_void,
+                        vp as *const c_void,
+                        op as *mut c_void,
+                        qsp,
+                        ksp,
+                        vsp,
+                        b as i32,
+                        hq as i32,
+                        hk as i32,
+                        sq as i32,
+                        skv as i32,
+                        Sage2V::lpad(skv) as i32,
+                        (sq * hq * D) as u32,
+                        (hq * D) as u32,
+                        D as u32,
+                        self.scale,
+                        (self.accum == PvAccum::F16) as i32,
+                        lut,
+                        count,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                };
+                drop((_a, _b, _c, _d, _e));
+                check_rc(rc, "sage2_attn_sparse_launch")?;
+                return Ok((CudaStorage::wrap_cuda_slice(o, dev), (b, sq, hq, D).into()));
+            }
             rc = unsafe {
                 sage2_attn_launch(
                     qp as *const c_void,
@@ -527,8 +598,81 @@ pub fn attention(q: &Sage2Qk, k: &Sage2Qk, v: &Sage2V, scale: f32, causal: bool)
         sq: q.n,
         hk: k.h,
         skv: k.n,
+        sparse: None,
     };
     Ok(q.packed.apply_op3(&k.packed, &v.packed, op)?)
+}
+
+/// [`attention`] (non-causal) visiting only the key blocks `selection` ([`block_select`]) keeps
+/// for each 128-query block.
+pub fn attention_sparse(q: &Sage2Qk, k: &Sage2Qk, v: &Sage2V, scale: f32, selection: &Tensor) -> Result<Tensor> {
+    if q.role != Role::Query || k.role != Role::Key || q.b != k.b || k.b != v.b || k.h != v.h || k.n != v.n || q.h != k.h {
+        anyhow::bail!("sage2::attention_sparse: operand dims disagree");
+    }
+    let op = Attn2 { scale, causal: false, accum: v.accum, b: q.b, hq: q.h, sq: q.n, hk: k.h, skv: k.n, sparse: Some(selection.clone()) };
+    Ok(q.packed.apply_op3(&k.packed, &v.packed, op)?)
+}
+
+/// The key blocks block-sparse attention keeps, from pooled logits `scores` `(B, H, nq, nk)`
+/// f32 (nq = ceil(queries / 128), nk = ceil(keys / 64) <= 1024): per row, the softmax over key
+/// blocks from the largest down until `tau` of it is in (at least `min_keep`), plus the first
+/// `forced` blocks and the last. An I32 tensor: B*H*nq counts, then the `(B,H,nq,nk)` table.
+pub fn block_select(scores: &Tensor, tau: f32, min_keep: usize, forced: usize) -> Result<Tensor> {
+    let (b, h, nq, nk) = scores.dims4()?;
+    anyhow::ensure!(scores.dtype() == DType::F32 && nk > 0 && nk <= 1024, "sage2::block_select: f32 scores with 1..=1024 key blocks");
+    Ok(scores.contiguous()?.apply_op1(BlockSelect { b, h, nq, nk, tau, min_keep, forced })?)
+}
+
+struct BlockSelect {
+    b: usize,
+    h: usize,
+    nq: usize,
+    nk: usize,
+    tau: f32,
+    min_keep: usize,
+    forced: usize,
+}
+
+impl candle_core::CustomOp1 for BlockSelect {
+    fn name(&self) -> &'static str {
+        "sage2-block-select"
+    }
+
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+        candle_core::bail!("sage2-block-select is CUDA-only")
+    }
+
+    fn cuda_fwd(&self, s: &CudaStorage, l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+        let dev = s.device().clone();
+        let stream = dev.cuda_stream();
+        let rows = self.b * self.h * self.nq;
+        let scores = s.as_cuda_slice::<f32>()?.slice(l.start_offset()..);
+        let out = unsafe { dev.alloc::<i32>(rows * (1 + self.nk))? };
+        let rc;
+        {
+            let (sp, _a) = scores.device_ptr(&stream);
+            let (op, _b) = out.device_ptr(&stream);
+            let count = op as *mut i32;
+            let lut = (op as usize + rows * std::mem::size_of::<i32>()) as *mut i32;
+            rc = unsafe {
+                sage2_block_select_launch(
+                    sp as *const f32,
+                    lut,
+                    count,
+                    self.b as i32,
+                    self.h as i32,
+                    self.nq as i32,
+                    self.nk as i32,
+                    self.tau,
+                    self.min_keep as i32,
+                    self.forced as i32,
+                    stream.cu_stream() as *mut c_void,
+                )
+            };
+        }
+        check_rc(rc, "sage2_block_select_launch")?;
+        Ok((CudaStorage::wrap_cuda_slice(out, dev), (rows * (1 + self.nk),).into()))
+    }
 }
 
 /// The DiT's block-causal attention with SA2. `qh,kh` PRE-rope `(B,S,H,D)`
