@@ -2,9 +2,10 @@
 //! the chosen template's capabilities (`generate.models`): a reference deck when the template
 //! takes reference images, aspect and size pickers for text to image, a count, the Enhance wand,
 //! and a Generate button that shows the time estimate (`generate_cmds::estimate_seconds`, the
-//! formula the CLI and scripts use) and turns into Cancel while the job runs. A mode strip picks
-//! Image · Fill · Edit · Expand. When the dock squeezes the group it shows one row: mode, prompt,
-//! Generate.
+//! formula the CLI and scripts use) and turns into Cancel while the job runs. A segmented switch
+//! picks Image · Fill · Edit · Expand; below it the form reads top to bottom in sections
+//! (References, Prompt, Settings) with one full-width Generate at the end. When the dock squeezes
+//! the group it shows one row: mode, prompt, Generate.
 //!
 //! The task bar under a selection (`generative_bar`) is this panel's compact form: both read and
 //! write [`GeneratePanel`]'s prompt, per-mode template and count, so they never disagree. Every
@@ -32,7 +33,7 @@ pub const MAX_PROMPT: usize = 4000;
 /// Below this content height the group shows its one-row compact form.
 const COMPACT_BELOW: f32 = 150.0;
 /// Reference thumbnails in the deck.
-const THUMB: f32 = 36.0;
+const THUMB: f32 = 48.0;
 
 /// One template as the panel needs it (from `generate.models`, without contacting the server).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -721,9 +722,19 @@ fn running_job(app: &PhotocraftApp) -> Option<photocraft_engine::jobs::JobInfo> 
 
 fn generate_button(app: &PhotocraftApp, ui: &mut egui::Ui, action: &mut Option<Action>, width: f32) {
     if let Some(j) = running_job(app) {
-        let label = format!("{} · {:.0}%", tl!("Cancel"), j.progress.clamp(0.0, 1.0) * 100.0);
-        if widgets::secondary_button(ui, &label, width).clicked() {
+        let progress = j.progress.clamp(0.0, 1.0);
+        let label = format!("{} · {:.0}%", tl!("Cancel"), progress * 100.0);
+        let r = widgets::secondary_button(ui, &label, width);
+        if r.clicked() {
             *action = Some(Action::Cancel(j.id));
+        }
+        // The full form: a progress line under the button.
+        if width > 0.0 {
+            let t = Tokens::get(ui.ctx());
+            let (bar, _) = ui.allocate_exact_size(vec2(r.rect.width(), 3.0), Sense::hover());
+            ui.painter().rect_filled(bar, 1.5, t.field_border);
+            let done = Rect::from_min_size(bar.min, vec2(bar.width() * progress, bar.height()));
+            ui.painter().rect_filled(done, 1.5, t.accent);
         }
         return;
     }
@@ -780,102 +791,301 @@ fn compact_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, _t: &Tokens, action: 
     });
 }
 
+/// Height of the panel's controls (segmented controls, the model pill).
+const ROW_H: f32 = 26.0;
+/// The settings' label column.
+const LABEL_W: f32 = 64.0;
+/// Space between the panel's sections.
+const SECTION_GAP: f32 = 12.0;
+
+/// The full form, top to bottom: the mode switch, what blocks the mode (a callout), the
+/// references, the prompt composer (its own toolbar: Enhance, the large editor, the counter), the
+/// negative prompt behind a disclosure, the settings as labelled rows, LoRAs, and one full-width
+/// Generate with the estimate (Cancel and a progress line while it runs).
 fn full(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, action: &mut Option<Action>) {
     let mode = app.ui.generate.mode.clone();
+    ui.spacing_mut().item_spacing.y = 6.0;
     // First run: no Models folder yet (nothing to migrate from an old ComfyUI install).
     if app.session.prefs().integrations.models_root().is_empty() {
-        ui.label(RichText::new(tl!("Choose the folder that holds your model weights to use the generative tools")).small().color(t.text_faint));
-        if widgets::secondary_button(ui, tl!("Set Models Folder…"), 0.0).clicked() {
+        callout(ui, t, "folder-open", tl!("Choose the folder that holds your model weights to use the generative tools"), t.accent);
+        let w = ui.available_width();
+        if widgets::secondary_button(ui, tl!("Set Models Folder…"), w).clicked() {
             *action = Some(Action::OpenModelsFolder);
         }
-        ui.add_space(4.0);
+        ui.add_space(SECTION_GAP);
     }
-    // The mode strip.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for m in MODES {
-            if widgets::pill_tab(ui, mode_label(m), mode == m).clicked() && mode != m {
-                *action = Some(Action::Mode(m.to_string()));
-            }
-        }
-    });
+    mode_switch(ui, &mode, action);
     if let Some(why) = blocked(app, &mode) {
-        ui.label(RichText::new(why).small().color(t.text_faint));
+        callout(ui, t, "info", why, t.warning);
     }
-    ui.add_space(4.0);
-    // The reference deck: its own row above the prompt, when the template takes references.
+    ui.add_space(SECTION_GAP);
+
+    // References: their own section above the prompt, when the template takes them.
     let template = effective_template(app, &mode);
     let refs_max = refs_limit(app, &mode);
-    let has_refs = matches!(mode.as_str(), "image" | "edit" | "fill") && !app.ui.generate.references.is_empty();
+    let n_refs = app.ui.generate.references.len();
+    let has_refs = matches!(mode.as_str(), "image" | "edit" | "fill") && n_refs > 0;
     if refs_max > 0 || has_refs {
+        let color = if n_refs as u32 > refs_max { t.danger } else { t.text_faint };
+        section(ui, t, tl!("References"), Some((format!("{n_refs} / {refs_max}"), color)));
         deck(app, ui, t, refs_max, action);
+        ui.add_space(SECTION_GAP);
     }
-    // The prompt: grows from two to six rows; the counter; Enter / Ctrl+Enter.
-    let rows = app.ui.generate.prompt.lines().count().clamp(2, 6);
-    let enter_generates = app.session.prefs().integrations.enter_to_generate;
-    let field_id = egui::Id::unique("generate-prompt");
-    let submit = submitted(ui, app, field_id, enter_generates);
-    ui.horizontal(|ui| {
-        let w = (ui.available_width() - 24.0).max(80.0);
-        let field = egui::TextEdit::multiline(&mut app.ui.generate.prompt)
-            .hint_text(hint(&mode))
-            .desired_rows(rows)
-            .desired_width(w)
-            .char_limit(MAX_PROMPT * 2)
-            .id(field_id);
-        let resp = ui.add(field);
-        if std::mem::take(&mut app.ui.generate.focus) {
-            resp.request_focus();
+
+    section(ui, t, tl!("Prompt"), None);
+    composer(app, ui, t, &mode, action);
+    if mode != "expand" {
+        let open = app.ui.generate.show_negative;
+        if disclosure(ui, t, tl!("Negative prompt"), open).clicked() {
+            app.ui.generate.show_negative = !open;
         }
-        ui.vertical(|ui| {
-            if icons::button(ui, "scaling", 20.0, false, tl!("Open the prompt in a larger editor")).clicked() {
-                *action = Some(Action::OpenEditor(true));
-            }
-            let enhancing = app.ui.generate.enhance_job.is_some();
-            let can = !enhancing && !app.ui.generate.prompt.trim().is_empty();
-            if icons::button(ui, "wand-sparkles", 20.0, enhancing, tl!("Enhance prompt")).clicked() && can {
-                *action = Some(Action::Enhance);
-            }
-        });
-    });
-    if submit {
-        *action = Some(Action::Generate);
+        if app.ui.generate.show_negative {
+            ui.add(
+                egui::TextEdit::singleline(&mut app.ui.generate.negative)
+                    .hint_text(tl!("What to avoid…"))
+                    .desired_width(f32::INFINITY)
+                    .id_salt("generate-negative"),
+            );
+        }
     }
-    // Counter and the negative prompt's disclosure.
-    let n = app.ui.generate.prompt.chars().count();
-    ui.horizontal(|ui| {
-        if mode != "expand" {
-            let label = if app.ui.generate.show_negative { tl!("Hide negative prompt") } else { tl!("Negative prompt") };
-            if ui.link(RichText::new(label).small().color(t.text_dim)).clicked() {
-                app.ui.generate.show_negative = !app.ui.generate.show_negative;
-            }
-        }
-        if app.ui.generate.enhance_job.is_some() {
-            ui.label(RichText::new(tl!("Enhancing…")).small().color(t.accent));
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let color = if n > MAX_PROMPT { t.danger } else { t.text_faint };
-            ui.label(RichText::new(format!("{n} / {MAX_PROMPT}")).small().color(color));
-        });
-    });
-    if app.ui.generate.show_negative && mode != "expand" {
-        ui.add(
-            egui::TextEdit::singleline(&mut app.ui.generate.negative)
-                .hint_text(tl!("What to avoid…"))
-                .desired_width(f32::INFINITY)
-                .id_salt("generate-negative"),
-        );
-    }
-    ui.add_space(4.0);
-    options_row(app, ui, &mode, &template, action);
-    ui.add_space(4.0);
+    ui.add_space(SECTION_GAP);
+
+    section(ui, t, tl!("Settings"), None);
+    settings(app, ui, t, &mode, &template);
+    lora_rows(app, ui, &mode, &template);
+    ui.add_space(SECTION_GAP);
+
+    // The one primary action, full width; Clear all and the shortcut under it.
+    let w = ui.available_width();
+    generate_button(app, ui, action, w);
     ui.horizontal(|ui| {
         if ui.link(RichText::new(tl!("Clear all")).small().color(t.text_dim)).clicked() {
             *action = Some(Action::ClearAll);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            generate_button(app, ui, action, 150.0);
+            let key = if cfg!(target_os = "macos") { "Cmd+Enter" } else { "Ctrl+Enter" };
+            let hint = if app.session.prefs().integrations.enter_to_generate { tl!("Enter to generate") } else { key };
+            ui.label(RichText::new(hint).small().color(t.text_faint));
         });
+    });
+}
+
+/// One option of a [`segmented`] control.
+struct Seg<'a, T> {
+    value: T,
+    label: &'a str,
+    icon: Option<&'static str>,
+    tip: Option<&'a str>,
+}
+
+impl<'a, T> Seg<'a, T> {
+    fn new(value: T, label: &'a str) -> Self {
+        Self { value, label, icon: None, tip: None }
+    }
+    fn icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+    fn tip(mut self, tip: &'a str) -> Self {
+        self.tip = Some(tip);
+        self
+    }
+}
+
+/// A segmented control `width` wide (0: the available width): equal segments in one track, the
+/// chosen one raised. A segment too narrow for its icon and label shows the icon alone (the label
+/// moves to the tooltip). Returns the option clicked, when it is not the current one.
+fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, current: &T, options: &[Seg<'_, T>], width: f32) -> Option<T> {
+    let t = Tokens::get(ui.ctx());
+    let width = if width > 0.0 { width } else { ui.available_width() };
+    let (track, track_resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::hover());
+    let r = t.radius_sm;
+    ui.painter().rect_filled(track, r, t.field);
+    ui.painter().rect_stroke(track, r, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    let n = options.len().max(1) as f32;
+    let seg_w = (track.width() - 4.0) / n;
+    let enabled = ui.is_enabled();
+    let mut picked = None;
+    for (i, o) in options.iter().enumerate() {
+        let rect = Rect::from_min_size(pos2(track.left() + 2.0 + seg_w * i as f32, track.top() + 2.0), vec2(seg_w, ROW_H - 4.0));
+        let resp = ui.interact(rect, track_resp.id.with(i), Sense::click());
+        let selected = o.value == *current;
+        if selected {
+            widgets::surface(ui, rect, t.hover, true);
+            if !t.bevel {
+                ui.painter().rect_stroke(rect, (r - 1.0).max(0.0), Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+            }
+        } else if resp.hovered() && enabled {
+            ui.painter().rect_filled(rect, (r - 1.0).max(0.0), t.hover.gamma_multiply(0.5));
+        } else if i > 0 && options.get(i - 1).is_none_or(|p| p.value != *current) {
+            // A divider between two unselected segments.
+            let x = rect.left();
+            ui.painter().line_segment([pos2(x, rect.top() + 5.0), pos2(x, rect.bottom() - 5.0)], Stroke::new(1.0, t.separator));
+        }
+        if resp.has_focus() {
+            ui.painter().rect_stroke(rect, r, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+        }
+        let color = if !enabled {
+            t.text_faint
+        } else if selected {
+            t.text
+        } else {
+            t.text_dim
+        };
+        let font = crate::theme::medium(12.0);
+        let galley = ui.painter().layout_no_wrap(o.label.to_string(), font, color);
+        let icon_w = if o.icon.is_some() { 18.0 } else { 0.0 };
+        let fits = icon_w + galley.size().x + 8.0 <= rect.width();
+        let show_label = fits || o.icon.is_none();
+        let content_w = if show_label { icon_w + galley.size().x } else { 14.0 };
+        let mut x = rect.center().x - content_w / 2.0;
+        if let Some(icon) = o.icon {
+            let ir = Rect::from_min_size(pos2(x, rect.center().y - 7.0), vec2(14.0, 14.0));
+            icons::paint(ui, ir, icon, 14.0, color);
+            x += icon_w;
+        }
+        if show_label {
+            ui.painter().with_clip_rect(rect.shrink(2.0)).galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, color);
+        }
+        let label = o.label.to_string();
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, &label));
+        let resp = match (o.tip, show_label) {
+            (Some(tip), true) => resp.on_hover_text(tip),
+            (Some(tip), false) => resp.on_hover_text(format!("{}\n{tip}", o.label)),
+            (None, false) => resp.on_hover_text(o.label),
+            (None, true) => resp,
+        };
+        if resp.clicked() && enabled && !selected {
+            picked = Some(o.value.clone());
+        }
+    }
+    picked
+}
+
+/// Image · Fill · Edit · Expand, with the Generate hub's icons.
+fn mode_switch(ui: &mut egui::Ui, mode: &str, action: &mut Option<Action>) {
+    let icon = |m: &str| match m {
+        "fill" => "square-dashed",
+        "edit" => "wand-sparkles",
+        "expand" => "scaling",
+        _ => "image",
+    };
+    let options: Vec<Seg<'_, String>> = MODES.iter().map(|m| Seg::new(m.to_string(), mode_label(m)).icon(icon(m))).collect();
+    if let Some(m) = segmented(ui, &mode.to_string(), &options, 0.0) {
+        *action = Some(Action::Mode(m));
+    }
+}
+
+/// A section's title in small capitals, with an optional note at the right (a count).
+fn section(ui: &mut egui::Ui, t: &Tokens, title: &str, right: Option<(String, egui::Color32)>) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title.to_uppercase()).font(crate::theme::semibold(10.5)).color(t.text_faint));
+        if let Some((note, color)) = right {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(note).small().color(color));
+            });
+        }
+    });
+}
+
+/// A tinted note with an icon (what blocks the mode, the first-run Models folder).
+fn callout(ui: &mut egui::Ui, t: &Tokens, icon: &str, text: &str, color: egui::Color32) {
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.12))
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.45)))
+        .corner_radius(t.radius_sm)
+        .inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 6 })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+                icons::paint(ui, r, icon, 14.0, color);
+                ui.add(egui::Label::new(RichText::new(text).small().color(t.text)).wrap());
+            });
+        });
+}
+
+/// A chevron and a label that open and close what follows (the negative prompt).
+fn disclosure(ui: &mut egui::Ui, t: &Tokens, label: &str, open: bool) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(12.0), t.text_dim);
+    let (rect, resp) = ui.allocate_exact_size(vec2(18.0 + galley.size().x, 20.0), Sense::click());
+    let color = if resp.hovered() { t.text } else { t.text_dim };
+    let chevron = Rect::from_min_size(pos2(rect.left(), rect.center().y - 7.0), vec2(14.0, 14.0));
+    icons::paint(ui, chevron, if open { "chevron-down" } else { "chevron-right" }, 12.0, color);
+    ui.painter().galley_with_override_text_color(pos2(rect.left() + 18.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    if resp.has_focus() {
+        ui.painter().rect_stroke(rect.expand(2.0), t.radius_sm, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+    }
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, open, label));
+    resp
+}
+
+/// The prompt in one framed box (the accent frame while it has the keyboard) with its toolbar
+/// inside: Enhance, the large editor, and the counter. Grows from three to eight rows.
+fn composer(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, mode: &str, action: &mut Option<Action>) {
+    let rows = app.ui.generate.prompt.lines().count().clamp(3, 8);
+    let enter_generates = app.session.prefs().integrations.enter_to_generate;
+    let field_id = egui::Id::unique("generate-prompt");
+    let submit = submitted(ui, app, field_id, enter_generates);
+    let focused = ui.ctx().memory(|m| m.has_focus(field_id));
+    let border = if focused { t.accent } else { t.field_border };
+    egui::Frame::new()
+        .fill(t.field)
+        .stroke(Stroke::new(1.0, border))
+        .corner_radius(t.radius_sm)
+        .inner_margin(egui::Margin { left: 8, right: 4, top: 6, bottom: 2 })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let field = egui::TextEdit::multiline(&mut app.ui.generate.prompt)
+                .hint_text(hint(mode))
+                .desired_rows(rows)
+                .desired_width(f32::INFINITY)
+                .char_limit(MAX_PROMPT * 2)
+                .frame(egui::Frame::NONE)
+                .id(field_id);
+            let resp = ui.add(field);
+            if std::mem::take(&mut app.ui.generate.focus) {
+                resp.request_focus();
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let enhancing = app.ui.generate.enhance_job.is_some();
+                let can = !enhancing && !app.ui.generate.prompt.trim().is_empty();
+                let tip = if can || enhancing { tl!("Enhance prompt") } else { tl!("Type a prompt first") };
+                if icons::button(ui, "wand-sparkles", 24.0, enhancing, tip).clicked() && can {
+                    *action = Some(Action::Enhance);
+                }
+                if icons::button(ui, "maximize-2", 24.0, false, tl!("Open the prompt in a larger editor")).clicked() {
+                    *action = Some(Action::OpenEditor(true));
+                }
+                if enhancing {
+                    ui.label(RichText::new(tl!("Enhancing…")).small().color(t.accent));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(4.0);
+                    let n = app.ui.generate.prompt.chars().count();
+                    let color = if n > MAX_PROMPT { t.danger } else { t.text_faint };
+                    ui.label(RichText::new(format!("{n} / {MAX_PROMPT}")).small().color(color));
+                });
+            });
+        });
+    if submit {
+        *action = Some(Action::Generate);
+    }
+}
+
+/// One settings row: the name in a fixed column (elided when a translation is longer), then
+/// the control in the rest of the width.
+fn setting_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.allocate_ui_with_layout(vec2(LABEL_W, ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_size(vec2(LABEL_W, ROW_H));
+            widgets::elided_label(ui, label, LABEL_W);
+        });
+        add(ui);
     });
 }
 
@@ -895,100 +1105,145 @@ fn model_pill(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str, width: f32
     }
 }
 
-/// Preferences › AI Integrations › Quality as a menu beside the model: what Auto optimises for
-/// (Best = the full-step base templates and no 4-bit weights; Balanced = the 8-step Lightning
-/// tier; Fast = the 4-step tier where one exists). A chosen template is left alone.
+/// Preferences › AI Integrations › Quality beside the model: what Auto optimises for (Best = the
+/// full-step base templates and no 4-bit weights; Balanced = the 8-step Lightning tier; Fast =
+/// the 4-step tier where one exists). A chosen template is left alone.
 fn quality_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    let mut q = photocraft_engine::generate_cmds::quality(&app.session).to_string();
+    let q = photocraft_engine::generate_cmds::quality(&app.session).to_string();
     let options = [
-        ("best".to_string(), "Best", "Auto takes the full-step model and keeps the 4-bit weights off"),
-        ("balanced".to_string(), "Balanced", "Auto takes the 8-step Lightning tier when the server has it"),
-        ("fast".to_string(), "Fast", "Auto takes the 4-step tier where there is one"),
+        Seg::new("best".to_string(), tl!("Best")).tip(tl!("Auto takes the full-step model and keeps the 4-bit weights off")),
+        Seg::new("balanced".to_string(), tl!("Balanced")).tip(tl!("Auto takes the 8-step Lightning tier when the server has it")),
+        Seg::new("fast".to_string(), tl!("Fast")).tip(tl!("Auto takes the 4-step tier where there is one")),
     ];
-    if widgets::dropdown_with_tooltips(ui, "generate-quality", tl!("Quality"), &mut q, &options, 92.0) {
+    if let Some(q) = segmented(ui, &q, &options, 0.0) {
         let _ = app.run("prefs.set", json!({"path": "integrations.quality", "value": q}));
     }
 }
 
-/// Model, aspect, size, count (and the expand pads / the image destination).
-fn options_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str, template: &str, _action: &mut Option<Action>) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        model_pill(app, ui, mode, 170.0);
-        quality_pick(app, ui);
-        if mode == "image" {
-            let m = info(app, template).cloned().unwrap_or_default();
+/// The settings rows: model and quality, then what the mode takes (aspect and size, the count,
+/// where the picture goes, the fill's widen and denoise, the expand's sides).
+fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, mode: &str, template: &str) {
+    setting_row(ui, tl!("Model"), |ui| {
+        let w = ui.available_width();
+        model_pill(app, ui, mode, w);
+    });
+    setting_row(ui, tl!("Quality"), |ui| quality_pick(app, ui));
+    let m = info(app, template).cloned().unwrap_or_default();
+    if mode == "image" {
+        setting_row(ui, tl!("Aspect"), |ui| {
             let mut aspect = app.ui.generate.aspect.clone();
             let aspects: Vec<(String, &str)> =
                 m.aspects.iter().map(|a| (a.clone(), a.as_str())).chain(std::iter::once(("custom".to_string(), tl!("Custom")))).collect();
-            if widgets::dropdown(ui, "generate-aspect", tl!("Aspect Ratio"), &mut aspect, &aspects, 70.0) {
-                app.ui.generate.aspect = aspect.clone();
+            let w = ui.available_width();
+            if widgets::dropdown(ui, "generate-aspect", tl!("Aspect Ratio"), &mut aspect, &aspects, w) {
+                app.ui.generate.aspect = aspect;
             }
-            if aspect == "custom" {
+        });
+        setting_row(ui, tl!("Size"), |ui| {
+            if app.ui.generate.aspect == "custom" {
                 let (lo, hi) = (m.size_min.max(64) as f32, if m.size_max == 0 { 2048.0 } else { m.size_max as f32 });
+                let fw = ((ui.available_width() - 20.0) / 2.0).clamp(52.0, 90.0);
                 let mut w = app.ui.generate.width as f32;
                 let mut h = app.ui.generate.height as f32;
-                widgets::value_field(ui, &mut w, lo..=hi, "", 52.0);
-                ui.label("×");
-                widgets::value_field(ui, &mut h, lo..=hi, "", 52.0);
+                widgets::value_field(ui, &mut w, lo..=hi, "px", fw).on_hover_text(tl!("Width"));
+                ui.label(RichText::new("×").color(t.text_dim));
+                widgets::value_field(ui, &mut h, lo..=hi, "px", fw).on_hover_text(tl!("Height"));
                 app.ui.generate.width = w.round() as u32;
                 app.ui.generate.height = h.round() as u32;
             } else {
-                let mut size = app.ui.generate.size.clone();
-                let sizes: Vec<(String, &str)> = SIZES.iter().filter(|(_, v)| m.size_max == 0 || *v <= m.size_max).map(|(k, _)| (k.to_string(), *k)).collect();
-                if widgets::dropdown(ui, "generate-size", tl!("Size"), &mut size, &sizes, 56.0) {
-                    app.ui.generate.size = size;
+                let options: Vec<Seg<'_, String>> =
+                    SIZES.iter().filter(|(_, v)| m.size_max == 0 || *v <= m.size_max).map(|(k, _)| Seg::new(k.to_string(), k)).collect();
+                if let Some(s) = segmented(ui, &app.ui.generate.size, &options, 0.0) {
+                    app.ui.generate.size = s;
                 }
             }
+        });
+        // What it will make, on the template's grid.
+        let (w, h) = image_size(app);
+        setting_row(ui, "", |ui| {
+            ui.label(RichText::new(format!("{w} × {h} px")).small().color(t.text_faint));
+        });
+    }
+    if mode != "expand" {
+        let max = m.counts_max.clamp(1, 4) as u8;
+        let n = app.ui.generate.count.clamp(1, max);
+        app.ui.generate.count = n;
+        if max > 1 {
+            setting_row(ui, tl!("Count"), |ui| {
+                let options: Vec<Seg<'_, u8>> =
+                    [(1u8, "1"), (2, "2"), (3, "3"), (4, "4")].into_iter().filter(|(c, _)| *c <= max).map(|(c, l)| Seg::new(c, l)).collect();
+                if let Some(c) = segmented(ui, &n, &options, 0.0) {
+                    app.ui.generate.count = c;
+                }
+            });
         }
-        if mode != "expand" {
-            let max = info(app, template).map_or(4, |m| m.counts_max).clamp(1, 4) as u8;
-            let mut n = app.ui.generate.count.clamp(1, max);
-            let counts: Vec<(u8, &str)> = [(1u8, "1"), (2, "2"), (3, "3"), (4, "4")].into_iter().filter(|(c, _)| *c <= max).collect();
-            widgets::dropdown(ui, "generate-count", tl!("Count"), &mut n, &counts, 40.0);
-            app.ui.generate.count = n;
-        }
-        if mode == "fill" {
-            // Widen the selection first (the fill's `grow`): room for a bulkier replacement.
-            ui.label(RichText::new(tl!("Widen")).small());
+    }
+    if mode == "image" && app.session.active().is_some() {
+        setting_row(ui, tl!("Output"), |ui| {
+            let into = if app.ui.generate.into == "layer" { "layer".to_string() } else { "document".to_string() };
+            let options = [
+                Seg::new("document".to_string(), tl!("Document")).icon("file-plus").tip(tl!("A new document")),
+                Seg::new("layer".to_string(), tl!("Layer")).icon("layers").tip(tl!("A new layer over the open picture")),
+            ];
+            if let Some(x) = segmented(ui, &into, &options, 0.0) {
+                app.ui.generate.into = x;
+            }
+        });
+    }
+    if mode == "fill" {
+        // Widen the selection first (the fill's `grow`): room for a bulkier replacement.
+        setting_row(ui, tl!("Widen"), |ui| {
+            let max = photocraft_engine::generate_cmds::MAX_GROW as f32;
             let mut g = app.ui.generate.grow as f32;
-            widgets::value_field(ui, &mut g, 0.0..=photocraft_engine::generate_cmds::MAX_GROW as f32, "px", 56.0)
+            widgets::value_field(ui, &mut g, 0.0..=max, "px", 72.0)
                 .on_hover_text(tl!("Widen the selection by this many pixels before the fill, so a bulkier replacement has room"));
-            app.ui.generate.grow = g.round().clamp(0.0, photocraft_engine::generate_cmds::MAX_GROW as f32) as u32;
-            // How much is redrawn, where the template's sampler takes it (the 2511 fills).
-            if photocraft_engine::generate_cmds::takes_denoise(template) {
-                ui.label(RichText::new(tl!("Denoise")).small());
+            app.ui.generate.grow = g.round().clamp(0.0, max) as u32;
+        });
+        // How much is redrawn, where the template's sampler takes it (the 2511 fills).
+        if photocraft_engine::generate_cmds::takes_denoise(template) {
+            setting_row(ui, tl!("Denoise"), |ui| {
                 let mut d = app.ui.generate.denoise;
-                widgets::value_field_prec(ui, &mut d, 0.05..=1.0, "", 46.0, 2)
+                widgets::value_field_prec(ui, &mut d, 0.05..=1.0, "", 72.0, 2)
                     .on_hover_text(tl!("How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape"));
                 app.ui.generate.denoise = d.clamp(0.05, 1.0);
-            }
+            });
         }
-    });
-    if mode == "image" && app.session.active().is_some() {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            let into = app.ui.generate.into.clone();
-            if widgets::pill_tab(ui, tl!("New document"), into != "layer").clicked() {
-                app.ui.generate.into = "document".into();
-            }
-            if widgets::pill_tab(ui, tl!("Layer"), into == "layer").clicked() {
-                app.ui.generate.into = "layer".into();
-            }
-        });
     }
     if mode == "expand" {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for (i, label) in [tl!("Left"), tl!("Top"), tl!("Right"), tl!("Bottom")].into_iter().enumerate() {
-                ui.label(RichText::new(label).small());
-                let mut v = app.ui.generate.expand[i] as f32;
-                widgets::value_field(ui, &mut v, 0.0..=4096.0, "", 46.0);
-                app.ui.generate.expand[i] = v.round() as u32;
-            }
-        });
+        expand_sides(app, ui, t);
     }
-    lora_rows(app, ui, mode, template);
+}
+
+/// A side of the expand, in pixels.
+fn side_field(ui: &mut egui::Ui, v: &mut u32, name: &str) {
+    let mut f = *v as f32;
+    widgets::value_field_named(ui, name, &mut f, 0.0..=4096.0, "px", 64.0).on_hover_text(name);
+    *v = f.round() as u32;
+}
+
+/// The expand's four sides around a diagram of the result: the picture (grey) inside the grown
+/// canvas (accent), to scale.
+fn expand_sides(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens) {
+    let mut e = app.ui.generate.expand;
+    ui.label(RichText::new(tl!("Pixels to add on each side")).small().color(t.text_faint));
+    ui.vertical_centered(|ui| side_field(ui, &mut e[1], tl!("Top")));
+    ui.horizontal(|ui| {
+        let gap = ui.spacing().item_spacing.x;
+        let box_w = (ui.available_width() - 2.0 * (64.0 + gap)).max(40.0);
+        side_field(ui, &mut e[0], tl!("Left"));
+        let (r, _) = ui.allocate_exact_size(vec2(box_w, 52.0), Sense::hover());
+        let (dw, dh) = app.session.active().map_or((1.0, 1.0), |d| (d.doc.size.width.max(1) as f32, d.doc.size.height.max(1) as f32));
+        let (nw, nh) = (dw + (e[0] + e[2]) as f32, dh + (e[1] + e[3]) as f32);
+        let s = ((r.width() - 4.0) / nw).min((r.height() - 4.0) / nh).max(0.0);
+        let outer = Rect::from_center_size(r.center(), vec2(nw * s, nh * s));
+        let inner = Rect::from_min_size(outer.min + vec2(e[0] as f32 * s, e[1] as f32 * s), vec2(dw * s, dh * s));
+        ui.painter().rect_filled(outer, 2.0, t.accent.gamma_multiply(0.22));
+        ui.painter().rect_stroke(outer, 2.0, Stroke::new(1.0, t.accent), StrokeKind::Inside);
+        ui.painter().rect_filled(inner, 1.0, t.text_faint);
+        side_field(ui, &mut e[2], tl!("Right"));
+    });
+    ui.vertical_centered(|ui| side_field(ui, &mut e[3], tl!("Bottom")));
+    app.ui.generate.expand = e;
 }
 
 /// The LoRA rows of the template's family (`generate.loras`), when the template runs on the
@@ -1010,17 +1265,19 @@ fn lora_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str, template: &
             let entry = app.ui.generate.loras.entry(f.clone()).or_insert((false, 1.0));
             ui.horizontal(|ui| {
                 ui.checkbox(&mut entry.0, f.strip_suffix(".safetensors").unwrap_or(f));
-                widgets::value_field_prec(ui, &mut entry.1, 0.0..=1.5, "", 46.0, 2).on_hover_text(tl!("Strength"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    widgets::value_field_prec(ui, &mut entry.1, 0.0..=1.5, "", 52.0, 2).on_hover_text(tl!("Strength"));
+                });
             });
         }
     });
 }
 
-/// The reference deck: thumbnails with × and context menus, and the + menu.
+/// The reference deck: thumbnails with × and context menus, then an Add tile with the + menu.
 fn deck(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, max: u32, action: &mut Option<Action>) {
     let refs = app.ui.generate.references.clone();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+    let body = |ui: &mut egui::Ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         for (i, spec) in refs.iter().enumerate() {
             let (rect, resp) = ui.allocate_exact_size(vec2(THUMB, THUMB), Sense::click());
             widgets::checker(ui.painter(), rect, 4.0);
@@ -1028,14 +1285,24 @@ fn deck(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, max: u32, action
                 Some(tex) => {
                     ui.painter().image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
                 }
-                None => icons::paint(ui, rect, "image", 16.0, t.text_faint),
+                None => icons::paint(ui, rect, "image", 18.0, t.text_faint),
             }
             let over = i as u32 >= max;
-            ui.painter().rect_stroke(rect, 3.0, Stroke::new(1.0, if over { t.danger } else { t.separator }), StrokeKind::Inside);
-            ui.painter().text(rect.left_bottom() + vec2(3.0, -2.0), Align2::LEFT_BOTTOM, (i + 1).to_string(), FontId::proportional(9.0), egui::Color32::WHITE);
+            let stroke = if over {
+                Stroke::new(1.5, t.danger)
+            } else if resp.hovered() {
+                Stroke::new(1.0, t.accent)
+            } else {
+                Stroke::new(1.0, t.separator)
+            };
+            ui.painter().rect_stroke(rect, t.radius_sm, stroke, StrokeKind::Inside);
+            // The number the prompt can refer to ("image 2"), on a dark chip so it reads on any picture.
+            let chip = Rect::from_min_size(rect.left_bottom() + vec2(2.0, -14.0), vec2(12.0, 12.0));
+            ui.painter().rect_filled(chip, 3.0, egui::Color32::from_black_alpha(160));
+            ui.painter().text(chip.center(), Align2::CENTER_CENTER, (i + 1).to_string(), FontId::proportional(9.0), egui::Color32::WHITE);
             if resp.hovered() {
-                let x = Rect::from_min_size(pos2(rect.right() - 13.0, rect.top() + 1.0), vec2(12.0, 12.0));
-                ui.painter().circle_filled(x.center(), 6.0, t.chrome.gamma_multiply(0.9));
+                let x = Rect::from_min_size(pos2(rect.right() - 15.0, rect.top() + 2.0), vec2(13.0, 13.0));
+                ui.painter().circle_filled(x.center(), 6.5, t.chrome.gamma_multiply(0.92));
                 icons::paint(ui, x, "x", 9.0, t.text);
                 if resp.clicked() && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| x.contains(p)) {
                     *action = Some(Action::RemoveRef(i));
@@ -1056,14 +1323,42 @@ fn deck(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, max: u32, action
             });
         }
         if (refs.len() as u32) < max.max(1) {
-            let plus = icons::button(ui, "plus", THUMB, false, tl!("Add a reference image"));
+            // The Add tile: a dashed square with a plus, the size of a thumbnail.
+            let (rect, plus) = ui.allocate_exact_size(vec2(THUMB, THUMB), Sense::click());
+            if plus.hovered() {
+                ui.painter().rect_filled(rect, t.radius_sm, t.hover);
+            }
+            let color = if plus.hovered() { t.text } else { t.text_dim };
+            dashed_rect(ui.painter(), rect.shrink(0.5), Stroke::new(1.0, if plus.hovered() { t.accent } else { t.field_border }));
+            icons::paint(ui, rect, "plus", 16.0, color);
+            let tip = tl!("Add a reference image");
+            plus.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
+            let plus = plus.on_hover_text(tip);
             egui::Popup::menu(&plus).show(|ui| add_menu(app, ui, action));
         }
         if refs.is_empty() {
-            ui.label(RichText::new(tl!("Reference images (optional)")).small().color(t.text_faint));
+            ui.allocate_ui_with_layout(vec2(ui.available_width().max(60.0), THUMB), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(tl!("Optional: a layer, a file or a past generation to guide the result")).small().color(t.text_faint))
+                        .wrap(),
+                );
+            });
         }
-    });
-    ui.add_space(4.0);
+    };
+    // Empty, the hint sits beside the Add tile; with thumbnails the row wraps.
+    if refs.is_empty() {
+        ui.horizontal(body);
+    } else {
+        ui.horizontal_wrapped(body);
+    }
+}
+
+/// A dashed outline (the Add tile).
+fn dashed_rect(p: &egui::Painter, r: Rect, stroke: Stroke) {
+    let pts = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+    for w in pts.windows(2) {
+        p.extend(egui::Shape::dashed_line(&[w[0], w[1]], stroke, 4.0, 3.0));
+    }
 }
 
 fn add_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui, action: &mut Option<Action>) {
