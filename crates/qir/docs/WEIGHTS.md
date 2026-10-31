@@ -92,6 +92,7 @@ qwen-image-rs generate --model <snapshot> --prompt "..." \
 
 ## 4. Optional: regenerate the validation oracle
 
-`scripts/oracle.py` runs the original diffusers model (fixed seed) and saves the
-reference latents/images every port phase is validated against. Needs the Python
-venv from `scripts/setup-host.sh`. Not required to run inference.
+The reference latents/images every port phase is validated against came from the original
+diffusers model (fixed seed), run by a Python oracle that is no longer in the tree. Not
+required to run inference or the tests; `docs/no-python.md` at the repository root says how
+to restore it.

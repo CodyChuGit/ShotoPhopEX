@@ -1,4 +1,4 @@
-//! ComfyUI oracle fixtures: tools/edit2511_fixtures.py (portable Python, CPU).
+//! ComfyUI oracle fixtures: edit2511_fixtures.py (restore: docs/no-python.md) (portable Python, CPU).
 use candle_core::{DType, Device, Tensor};
 use qwen_image_rs::{
     edit2511_files::{adapter_inventory, AdapterModule, Edit2511Files, ADAPTER_NAMES},
@@ -62,7 +62,7 @@ fn small_comfy_preparation() -> anyhow::Result<()> {
     Ok(())
 }
 #[test]
-#[ignore = "regenerate full CPU ComfyUI fixtures with tools/edit2511_fixtures.py"]
+#[ignore = "regenerate full CPU ComfyUI fixtures with edit2511_fixtures.py (restore: docs/no-python.md)"]
 fn full_comfy_preparation() -> anyhow::Result<()> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target-edit2511/fixtures");
     for case in ["portrait", "landscape", "odd", "large_portrait", "large_landscape"] {
