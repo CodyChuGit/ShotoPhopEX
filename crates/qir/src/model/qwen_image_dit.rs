@@ -737,9 +737,29 @@ impl Stream {
         let gate = params.narrow(1, 2 * WIDTH, WIDTH)?.unsqueeze(1)?;
         let x = if self.image { add_product(x, &gate, &projected)? } else { (x + projected.broadcast_mul(&gate)?)? };
         let normalized = if editing { Self::modulate_edit(&x, params, 3)? } else { Self::modulate(&x, params, 3)? };
-        let hidden = if editing { self.up.forward_gelu_precise(&normalized)? } else { self.up.forward_gelu(&normalized)? };
-        let mlp = if editing { self.down.forward_precise(&hidden)? } else { self.down.forward(&hidden)? };
+        let mlp = if editing { self.down.forward_precise(&self.up.forward_gelu_precise(&normalized)?)? } else { self.mlp(&normalized)? };
         add_product(&x, &params.narrow(1, 5 * WIDTH, WIDTH)?.unsqueeze(1)?, &mlp)
+    }
+
+    /// `down(gelu(up(x)))`. With both on INT8 linears the up projection's bias and GELU run
+    /// inside the down projection's activation quantize ([`crate::convrot::ConvRotLinear::forward_bias_gelu`]),
+    /// the same bytes without the hidden activation's write and read (`QIR_LAYERED_MLP_FUSE=0`
+    /// keeps them separate).
+    fn mlp(&self, x: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "convrot")]
+        if let (Some(up), Some(down)) = (&self.up.int8, &self.down.int8) {
+            static FUSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if x.device().is_cuda() && x.dtype() == DType::BF16 && *FUSE.get_or_init(|| std::env::var("QIR_LAYERED_MLP_FUSE").map_or(true, |v| v.trim() != "0")) {
+                let k = x.dim(D::Minus1)?;
+                let (rows, hidden, out) = ((x.elem_count() / k) as f64, self.up.bias.elem_count() as f64, self.down.bias.elem_count() as f64);
+                let raw = crate::profile::scope("layered int8 convrot", 2.0 * rows * k as f64 * hidden, x.device(), || up.forward(x))?;
+                let y = crate::profile::scope("layered int8 convrot", 2.0 * rows * hidden * out, x.device(), || {
+                    down.forward_bias_gelu(&raw, &self.up.bias, crate::convrot::EpilogueOut::Bf16)
+                })?;
+                return linear_bias(y, &self.down.bias, false);
+            }
+        }
+        self.down.forward(&self.up.forward_gelu(x)?)
     }
 }
 
@@ -2074,6 +2094,23 @@ mod layered_tests {
                 assert!(err < 0.01, "padding lane {lane}: {err}");
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(all(feature = "convrot", feature = "fusednorm"))]
+    fn fused_mlp_bias_gelu_quantize_is_the_separate_path_byte_for_byte() -> Result<()> {
+        use crate::convrot::{ConvRotLinear, EpilogueOut};
+        let dev = Device::new_cuda(0)?;
+        let r = crate::model::rotation::regular_hadamard_256(&dev)?;
+        let w = |n: usize, k: usize| -> Result<Tensor> { Ok(Tensor::randn(0f32, 0.05, (n, k), &dev)?.to_dtype(DType::BF16)?) };
+        let (up, down) = (ConvRotLinear::from_weight(&w(1024, 512)?, &r)?, ConvRotLinear::from_weight(&w(256, 1024)?, &r)?);
+        let bias = Tensor::randn(0f32, 0.5, 1024, &dev)?.to_dtype(DType::BF16)?;
+        let x = Tensor::randn(0f32, 1.0, (2, 37, 512), &dev)?.to_dtype(DType::BF16)?;
+        let bytes = |t: &Tensor| -> Result<Vec<f32>> { Ok(t.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?) };
+        let separate = down.forward(&linear_bias(up.forward(&x)?, &bias, true)?)?;
+        let fused = down.forward_bias_gelu(&up.forward(&x)?, &bias, EpilogueOut::Bf16)?;
+        assert_eq!(bytes(&fused)?, bytes(&separate)?);
         Ok(())
     }
 
