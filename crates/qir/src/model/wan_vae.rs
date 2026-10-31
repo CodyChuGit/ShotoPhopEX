@@ -27,8 +27,8 @@ pub const LATENT_CHANNELS: usize = 16;
 /// Pixels per latent cell on a side.
 pub const SCALE: usize = 8;
 
-/// A stride-1 convolution with padding k/2: on CUDA in bf16, with channels in multiples of 8,
-/// an implicit GEMM ([`crate::vae_conv`]); else candle's im2col + GEMM.
+/// A stride-1 convolution with padding k/2: the decoder's on CUDA in bf16, with channels in
+/// multiples of 8, an implicit GEMM ([`crate::vae_conv`]); else candle's im2col + GEMM.
 struct VaeConv {
     conv: Conv2d,
     /// The weight in the implicit GEMM's KRSC layout, when the convolution takes that path.
@@ -36,10 +36,31 @@ struct VaeConv {
     krsc: Option<Tensor>,
 }
 
+std::thread_local! {
+    static DECODER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, the convolutions built are the decoder's ([`VaeConv`] takes the implicit GEMM
+/// only for those).
+struct DecoderConvs;
+
+impl DecoderConvs {
+    fn enter() -> Self {
+        DECODER.with(|d| d.set(true));
+        Self
+    }
+}
+
+impl Drop for DecoderConvs {
+    fn drop(&mut self) {
+        DECODER.with(|d| d.set(false));
+    }
+}
+
 impl VaeConv {
     fn new(w: Tensor, b: Tensor, k: usize) -> Result<Self> {
         #[cfg(feature = "convrot")]
-        let krsc = if crate::vae_conv::enabled() && crate::vae_conv::supports(&w) { Some(crate::vae_conv::krsc(&w)?) } else { None };
+        let krsc = if DECODER.with(|d| d.get()) && crate::vae_conv::enabled() && crate::vae_conv::supports(&w) { Some(crate::vae_conv::krsc(&w)?) } else { None };
         Ok(Self {
             conv: Conv2d::new(w, Some(b), Conv2dConfig { padding: k / 2, ..Default::default() }),
             #[cfg(feature = "convrot")]
@@ -315,6 +336,10 @@ impl WanVae {
         mult.extend(dim_mult.iter().rev());
         let dims: Vec<usize> = mult.iter().map(|m| dim * m).collect(); // [384, 384, 384, 192, 96]
         let d = vb.pp("decoder");
+        // The decoder's convolutions may take the implicit GEMM; the encoder's stay on candle's,
+        // so an edit's or a split's conditioning is bit-identical either way (the model amplifies
+        // a last-bit change of its input into a visibly different picture).
+        let _decoder = DecoderConvs::enter();
         let conv2 = conv_last_tap(z, z, 1, 1, vb.pp("conv2"))?;
         let conv1 = conv_last_tap(z, dims[0], 3, 3, d.pp("conv1"))?;
         let m = d.pp("middle");
@@ -339,13 +364,16 @@ impl WanVae {
         }
         let last = dims[dims.len() - 1];
         let h = d.pp("head");
+        let head_norm = RmsNorm::load(last, h.pp("0"))?;
+        let head_conv = conv_last_tap(last, image_channels, 3, 3, h.pp("2"))?;
+        drop(_decoder);
         Ok(Self {
             conv2,
             conv1,
             middle,
             ups,
-            head_norm: RmsNorm::load(last, h.pp("0"))?,
-            head_conv: conv_last_tap(last, image_channels, 3, 3, h.pp("2"))?,
+            head_norm,
+            head_conv,
             encoder: if vb.contains_tensor("encoder.conv1.weight") { Some(WanEncoder::load(image_channels, vb.clone())?) } else { None },
             device: vb.device().clone(),
             dtype: vb.dtype(),
