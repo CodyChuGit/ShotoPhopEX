@@ -122,6 +122,10 @@ impl Bench {
                 Some((g, rs)) => {
                     g.refresh(doc.id.0, doc, Some(r), None);
                     let _ = rs.device.poll(eframe::wgpu::PollType::Wait { submission_index: None, timeout: None });
+                    // A lost device makes every later refresh a no-op: report it rather than time it.
+                    if let Some(f) = g.fault() {
+                        return Err(f.to_string());
+                    }
                 }
                 None => {
                     std::hint::black_box(photocraft_compose::render(doc, r));
@@ -140,6 +144,10 @@ impl Bench {
             Some((g, rs)) => {
                 g.refresh(doc.id.0, doc, damage, None);
                 let _ = rs.device.poll(eframe::wgpu::PollType::Wait { submission_index: None, timeout: None });
+                // A lost device makes every later refresh a no-op: report it rather than time it.
+                if let Some(f) = g.fault() {
+                    return Err(f.to_string());
+                }
             }
             None => {
                 let r = damage.unwrap_or(doc.bounds()).intersect(&doc.bounds());
