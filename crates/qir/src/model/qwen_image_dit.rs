@@ -820,8 +820,12 @@ impl LayeredBlock {
         let k = rope.apply(&Tensor::cat(&[tk, ik], 2)?)?;
         let v = Tensor::cat(&[tv, iv], 2)?;
         let (b, _, s, _) = q.dims4()?;
-        let attention = joint_attention_mode(&q, &k, &v, padding, sage_ok)?.reshape((b, s, WIDTH))?;
         let nt = text.dim(1)?;
+        // Block-sparse attention (an opt-in experiment) keeps the text keys; only Split's calls.
+        SPARSE_TEXT.with(|t| t.set(split.is_none().then_some(nt)));
+        let attention = joint_attention_mode(&q, &k, &v, padding, sage_ok);
+        SPARSE_TEXT.with(|t| t.set(None));
+        let attention = attention?.reshape((b, s, WIDTH))?;
         Ok((
             self.image.finish_split(image, &attention.narrow(1, nt, image.dim(1)?)?, &im, split)?,
             self.text.finish_mode(text, &attention.narrow(1, 0, nt)?, &tm, split.is_some())?,
@@ -854,7 +858,13 @@ fn sage2_joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(us
     let identity = |n: usize| -> Result<(Tensor, Tensor)> {
         Ok((Tensor::ones((n, HEAD_DIM / 2), DType::BF16, q.device())?, Tensor::zeros((n, HEAD_DIM / 2), DType::BF16, q.device())?))
     };
-    let lane = |q: &Tensor, k: &Tensor, v: &Tensor| -> Result<Tensor> {
+    let sparse = SPARSE_TEXT.with(|t| t.get()).and_then(|nt| sparse_config().map(|c| (nt, c)));
+    // `text`: this lane's text tokens (the keys block-sparse attention always keeps).
+    let lane = |q: &Tensor, k: &Tensor, v: &Tensor, text: usize| -> Result<Tensor> {
+        let selection = match sparse {
+            Some((_, (tau, min_ratio))) => Some(sparse_selection(q, k, scale, tau, min_ratio, text)?),
+            None => None,
+        };
         let (q, k) = (q.transpose(1, 2)?, k.transpose(1, 2)?);
         // SA2 takes V in f16, and Qwen-Image's values outgrow f16's range (65504) where bf16
         // holds them: scale each head's V into range first and its output back (attention is
@@ -868,9 +878,14 @@ fn sage2_joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(us
         let q = rope_quant(&q, &qc, &qs, Role::Query)?;
         let k = rope_quant(&k, &kc, &ks, Role::Key)?;
         let v = quant_v(&v, accum)?;
-        Ok(attention(&q, &k, &v, scale, false)?.broadcast_mul(&back)?)
+        let out = match &selection {
+            Some(sel) => crate::sage2::attention_sparse(&q, &k, &v, scale, sel)?,
+            None => attention(&q, &k, &v, scale, false)?,
+        };
+        Ok(out.broadcast_mul(&back)?)
     };
-    let Some((positive, negative)) = padding else { return lane(q, k, v) };
+    let text = sparse.map_or(0, |(nt, _)| nt);
+    let Some((positive, negative)) = padding else { return lane(q, k, v, text) };
     let tokens = positive.max(negative);
     let mut lanes = Vec::with_capacity(2);
     for (i, valid) in [positive, negative].into_iter().enumerate() {
@@ -878,12 +893,67 @@ fn sage2_joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(us
         lanes.push(if valid < tokens {
             let n = k.dim(2)?;
             let keep = |x: &Tensor| -> Result<Tensor> { Ok(Tensor::cat(&[x.narrow(2, 0, valid)?, x.narrow(2, tokens, n - tokens)?], 2)?) };
-            lane(&q, &keep(&k)?, &keep(&v)?)?
+            lane(&q, &keep(&k)?, &keep(&v)?, valid)?
         } else {
-            lane(&q, &k, &v)?
+            lane(&q, &k, &v, valid)?
         });
     }
     Ok(Tensor::cat(&lanes, 0)?)
+}
+
+std::thread_local! {
+    /// The text tokens of the joint attention call in flight when it may go block-sparse.
+    static SPARSE_TEXT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// `QIR_LAYERED_SPARSE=<tau>` (an experiment, off by default; changes the layers): Split's
+/// SageAttention2 visits, per 128-query block, the 64-key blocks holding `tau` of the pooled
+/// attention, at least `QIR_LAYERED_SPARSE_MIN` of them (a fraction, default 0.1), the text keys
+/// and the last block.
+#[cfg(feature = "sage2")]
+fn sparse_config() -> Option<(f32, f32)> {
+    static CFG: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
+    *CFG.get_or_init(|| {
+        let tau = std::env::var("QIR_LAYERED_SPARSE").ok()?.trim().parse::<f32>().ok().filter(|t| *t > 0.0 && *t <= 1.0)?;
+        let min = std::env::var("QIR_LAYERED_SPARSE_MIN").ok().and_then(|v| v.trim().parse::<f32>().ok()).filter(|m| (0.0..=1.0).contains(m)).unwrap_or(0.1);
+        tracing::info!(tau, min_ratio = min, "layered block-sparse attention");
+        Some((tau, min))
+    })
+}
+
+/// The kept key blocks ([`crate::sage2::block_select`]) for `(B,H,S,D)` `q`, `k`: each 128-query
+/// block's mean against each 64-key block's mean, scaled. `QIR_LAYERED_SPARSE_STATS=1` logs the
+/// kept fraction of every 60th call (a device sync).
+#[cfg(feature = "sage2")]
+fn sparse_selection(q: &Tensor, k: &Tensor, scale: f32, tau: f32, min_ratio: f32, text: usize) -> Result<Tensor> {
+    let pool = |x: &Tensor, block: usize| -> Result<Tensor> {
+        let (b, h, s, d) = x.dims4()?;
+        let n = s.div_ceil(block);
+        let x = if n * block > s { x.pad_with_zeros(2, 0, n * block - s)? } else { x.clone() };
+        Ok(x.reshape((b, h, n, block, d))?.mean(3)?.to_dtype(DType::F32)?)
+    };
+    let (pq, pk) = (pool(q, 128)?, pool(k, 64)?);
+    let nk = pk.dim(2)?;
+    let scores = (pq.matmul(&pk.transpose(2, 3)?.contiguous()?)? * f64::from(scale))?;
+    let min_keep = ((nk as f32 * min_ratio).ceil() as usize).max(1);
+    let selection = crate::sage2::block_select(&scores, tau, min_keep, text.div_ceil(64))?;
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    if CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(60) && std::env::var("QIR_LAYERED_SPARSE_STATS").is_ok_and(|v| v == "1") {
+        let rows = scores.elem_count() / nk;
+        let kept: i64 = selection.narrow(0, 0, rows)?.to_dtype(DType::I64)?.sum_all()?.to_scalar()?;
+        tracing::info!(kept_fraction = kept as f64 / (rows * nk) as f64, key_blocks = nk, "layered block-sparse attention");
+    }
+    Ok(selection)
+}
+
+#[cfg(not(feature = "sage2"))]
+fn sparse_config() -> Option<(f32, f32)> {
+    None
+}
+
+#[cfg(not(feature = "sage2"))]
+fn sparse_selection(_: &Tensor, _: &Tensor, _: f32, _: f32, _: f32, _: usize) -> Result<Tensor> {
+    anyhow::bail!("block-sparse attention needs the sage2 feature")
 }
 
 /// The bf16 flash kernel's joint attention; a shorter CFG lane masks its padded keys.
@@ -2003,6 +2073,39 @@ mod layered_tests {
                 assert!(err < 0.01, "padding lane {lane}: {err}");
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "sage2")]
+    fn block_sparse_attention_keeping_every_block_is_the_dense_kernel() -> Result<()> {
+        use crate::sage2::{attention, attention_sparse, block_select, quant_v, rope_quant, PvAccum, Role};
+        let dev = Device::new_cuda(0)?;
+        // 700 tokens: 6 query blocks and 11 key blocks, the last of each partial.
+        let (b, h, n) = (1, 2, 700);
+        let x = |seed: f64| -> Result<Tensor> { Ok((Tensor::randn(0f32, 1.0, (b, n, h, 128), &dev)? * seed)?.to_dtype(DType::BF16)?) };
+        let (cos, sin) = (Tensor::ones((n, 64), DType::BF16, &dev)?, Tensor::zeros((n, 64), DType::BF16, &dev)?);
+        let q = rope_quant(&x(1.0)?, &cos, &sin, Role::Query)?;
+        let k = rope_quant(&x(1.0)?, &cos, &sin, Role::Key)?;
+        let v = quant_v(&x(0.5)?.to_dtype(DType::F16)?, PvAccum::F16)?;
+        let (nq, nk) = (n.div_ceil(128), n.div_ceil(64));
+        let scores = Tensor::randn(0f32, 1.0, (b, h, nq, nk), &dev)?;
+        let bytes = |t: &Tensor| -> Result<Vec<f32>> { Ok(t.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?) };
+        let dense = bytes(&attention(&q, &k, &v, 0.088, false)?)?;
+        let all = block_select(&scores, 1.0, nk, 0)?;
+        assert_eq!(bytes(&attention_sparse(&q, &k, &v, 0.088, &all)?)?, dense, "every block kept");
+        // A sparse selection: the counts lie between the forced blocks and all, the table ascends
+        // and ends on the last block, and the output stays finite.
+        let some = block_select(&scores, 0.3, 2, 1)?;
+        let rows = b * h * nq;
+        let counts = some.narrow(0, 0, rows)?.to_vec1::<i32>()?;
+        let table = some.narrow(0, rows, rows * nk)?.to_vec1::<i32>()?;
+        for (r, &c) in counts.iter().enumerate() {
+            assert!((2..=nk as i32).contains(&c), "row {r}: {c} blocks");
+            let row = &table[r * nk..r * nk + c as usize];
+            assert!(row.windows(2).all(|w| w[0] < w[1]) && row[0] == 0 && row[c as usize - 1] == nk as i32 - 1, "row {r}: {row:?}");
+        }
+        assert!(bytes(&attention_sparse(&q, &k, &v, 0.088, &some)?)?.iter().all(|x| x.is_finite()));
         Ok(())
     }
 

@@ -42,15 +42,21 @@
 #define MMA_SV_K 32
 
 template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, DataType DTypeQK, QuantGranularity Q_GRAN, QuantGranularity K_GRAN,
-        typename DTypeSVAccum = float, bool use_inst_buffer = false, typename DTypeOut = half, ComputeUnit DenominatorAccumUnit, MaskMode mask_mode = MaskMode::kNone, bool return_lse = false, bool fuse_v_scale=false, bool fuse_v_mean=false, bool use_pv_fp16_accu=false>
+        typename DTypeSVAccum = float, bool use_inst_buffer = false, typename DTypeOut = half, ComputeUnit DenominatorAccumUnit, MaskMode mask_mode = MaskMode::kNone, bool return_lse = false, bool fuse_v_scale=false, bool fuse_v_mean=false, bool use_pv_fp16_accu=false, bool kSparse=false>
 __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restrict__ K, int8_t *__restrict__ V, DTypeOut *__restrict__ O, float *__restrict__ Lse,
                       float *__restrict__ Q_scale, float *__restrict__ K_scale, float *__restrict__ V_scale, float *__restrict__ V_mean,
                       const uint32_t qo_len, const uint32_t kv_len, const uint32_t num_kv_groups,
-                      const uint32_t stride_bz_q, const uint32_t stride_seq_q, const uint32_t stride_h_q, 
+                      const uint32_t stride_bz_q, const uint32_t stride_seq_q, const uint32_t stride_h_q,
                       const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
                       const uint32_t stride_bz_v, const uint32_t stride_h_v, const uint32_t stride_d_v,
                       const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
-                      float sm_scale)
+                      float sm_scale,
+                      // LOCAL PATCH (qwen-image-rs, block-sparse): with kSparse, each query
+                      // block visits only the key blocks listed in its row of `lut`
+                      // ((B, Hq, gridDim.x, ceil(kv_len / CTA_K)) ascending, the last key block
+                      // last), `lut_count` of them; K, V, the K scale and the mask index follow
+                      // the listed block. Unused (null) otherwise.
+                      const int32_t *__restrict__ lut = nullptr, const int32_t *__restrict__ lut_count = nullptr)
 {
   // compile time check
   static_assert(DTypeQK == DataType::kInt8 || DTypeQK == DataType::kInt4, "DTypeQK must be int8 or int4");
@@ -219,7 +225,18 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
   uint32_t Q_load_idx_lane_base = bx * CTA_Q + CTA_Q / num_warps * warp_id + lane_id / global_to_shared_line_lanes_QK;
   uint32_t K_load_idx_lane_base = CTA_K / num_warps * warp_id + lane_id / global_to_shared_line_lanes_QK;
 
-  const uint32_t num_iterations = div_ceil(
+  // LOCAL PATCH (block-sparse): the listed key block `i` of this query block.
+  const uint32_t lut_row = (batch_id * num_qo_heads + head_id) * gridDim.x + bx;
+  const int32_t *lut_blocks = kSparse ? lut + (size_t)lut_row * div_ceil(kv_len, CTA_K) : nullptr;
+  auto blk = [&](uint32_t i) -> uint32_t { if constexpr (kSparse) { return (uint32_t)lut_blocks[i]; } else { return i; } };
+  int8_t *const K_lane_base0 = K_lane_base_ptr;
+  int8_t *const V_lane_base0 = V_lane_base_ptr;
+  const uint32_t K_load_idx0 = K_load_idx_lane_base;
+  const uint32_t K_idx0 = K_idx_lane_base;
+  auto seek_k = [&](uint32_t i) { if constexpr (kSparse) { K_lane_base_ptr = K_lane_base0 + (size_t)blk(i) * CTA_K * stride_seq_k; K_load_idx_lane_base = K_load_idx0 + blk(i) * CTA_K; } };
+  auto seek_v = [&](uint32_t i) { if constexpr (kSparse) { V_lane_base_ptr = V_lane_base0 + (size_t)blk(i) * CTA_K; } };
+
+  const uint32_t num_iterations = kSparse ? (uint32_t)lut_count[lut_row] : div_ceil(
       mask_mode == MaskMode::kCausal
           ? min(kv_len, (bx + 1) * CTA_Q)
           : kv_len,
@@ -245,6 +262,7 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
   }
 
   // load K with predicate
+  seek_k(0);
   load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
     &K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
   cp_async::commit_group();
@@ -252,14 +270,15 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
   float q_scale = Q_scale[q_scale_idx];
 
   float original_sm_scale = sm_scale;
-  float dequant_scale = q_scale * K_scale[k_scale_idx + 0 * k_scale_advance_offset];
+  float dequant_scale = q_scale * K_scale[k_scale_idx + blk(0) * k_scale_advance_offset];
 
   sm_scale = original_sm_scale * dequant_scale;
 
   // load V
   // ! we assume that V is padded. If not, there might be illegal memory access or nan issue.
-  // for fp16: 
+  // for fp16:
   // load_global_to_share                stride_seq_v
+  seek_v(0);
   load_fp8_V_global_to_share<global_to_shared_line_lanes_V, global_to_shared_copy_lines_per_warp_V, V_smem_iters_row, V_smem_iters_col, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, CTA_K>(
     &V_lane_base_ptr, V_smem_offset_load, stride_d_v, smem_V);
   cp_async::commit_group();
@@ -327,11 +346,12 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
     __syncthreads();
 
     // load K without predicate
+    seek_k(iter);
     load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
       &K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K);
     cp_async::commit_group();
 
-    dequant_scale = q_scale * K_scale[k_scale_idx + iter * k_scale_advance_offset];
+    dequant_scale = q_scale * K_scale[k_scale_idx + blk(iter) * k_scale_advance_offset];
     sm_scale = original_sm_scale * dequant_scale;
     
     // ensure V is ready
@@ -359,8 +379,9 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
     }
     __syncthreads();
     // load V
-    // for fp16: 
+    // for fp16:
     // load_global_to_share                stride_seq_v
+    seek_v(iter);
     load_fp8_V_global_to_share<global_to_shared_line_lanes_V, global_to_shared_copy_lines_per_warp_V, V_smem_iters_row, V_smem_iters_col, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, CTA_K>(
       &V_lane_base_ptr, V_smem_offset_load, stride_d_v, smem_V);
     cp_async::commit_group();
@@ -403,6 +424,10 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
       }
     }
 
+    if constexpr (kSparse)
+    {
+      K_idx_lane_base = K_idx0 + blk(num_iterations - 2) * CTA_K;
+    }
     if constexpr (mask_mode == MaskMode::kCausal)
     {
       apply_causal_mask<num_tiles_q, num_tiles_k>(Q_idx_lane_base, K_idx_lane_base, RS_f32);
@@ -435,11 +460,12 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
     __syncthreads();
 
     // load K with predicate
+    seek_k(num_iterations - 1);
     load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
       &K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
     cp_async::commit_group();
 
-    dequant_scale = q_scale * K_scale[k_scale_idx + (num_iterations - 1) * k_scale_advance_offset];
+    dequant_scale = q_scale * K_scale[k_scale_idx + blk(num_iterations - 1) * k_scale_advance_offset];
     sm_scale = original_sm_scale * dequant_scale;
 
     // ensure V is ready
@@ -468,8 +494,9 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
 
     __syncthreads();
     // load V
-    // for fp16: 
+    // for fp16:
     // load_global_to_share                stride_seq_v
+    seek_v(num_iterations - 1);
     load_fp8_V_global_to_share<global_to_shared_line_lanes_V, global_to_shared_copy_lines_per_warp_V, V_smem_iters_row, V_smem_iters_col, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, CTA_K>(
       &V_lane_base_ptr, V_smem_offset_load, stride_d_v, smem_V);
     cp_async::commit_group();
@@ -510,6 +537,10 @@ __global__ void qk_int_sv_f8_attn_kernel(int8_t *__restrict__ Q, int8_t *__restr
       }
     }
 
+    if constexpr (kSparse)
+    {
+      K_idx_lane_base = K_idx0 + blk(num_iterations - 1) * CTA_K;
+    }
     if constexpr (mask_mode == MaskMode::kCausal)
     {
       apply_causal_mask<num_tiles_q, num_tiles_k>(Q_idx_lane_base, K_idx_lane_base, RS_f32);
