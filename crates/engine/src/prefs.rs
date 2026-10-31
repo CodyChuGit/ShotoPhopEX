@@ -1149,7 +1149,8 @@ fn detected_models() -> Option<String> {
     {
         static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
         DIR.get_or_init(|| {
-            let env = ["PHOTOCRAFT_MODELS", "GN_MODELS"].into_iter().filter_map(|k| std::env::var_os(k)).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+            let env =
+                ["PHOTOCRAFT_MODELS", "GN_MODELS"].into_iter().filter_map(|k| std::env::var_os(k)).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
             let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("models")));
             env.chain(beside).find(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned())
         })
