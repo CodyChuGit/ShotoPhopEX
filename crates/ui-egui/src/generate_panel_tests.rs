@@ -307,3 +307,44 @@ fn denoise_goes_with_a_2511_fill_and_never_with_the_2_1_one() {
     h.run_steps(2);
     assert!(set(h.state_mut(), &json!({"generatePanel": {"denoise": 2.0}})).is_err(), "0.05 to 1");
 }
+
+/// The panel in every theme and mode at a dock's width, as PNGs in the folder that
+/// `PHOTOCRAFT_GENERATE_SNAPSHOTS` names (pixel review, not a golden test; skipped without it).
+#[test]
+fn capture_generate_panel_snapshots() {
+    let Some(directory) = std::env::var_os("PHOTOCRAFT_GENERATE_SNAPSHOTS").map(std::path::PathBuf::from) else { return };
+    let _gpu = photocraft_testkit::gpu_lock();
+    std::fs::create_dir_all(&directory).unwrap();
+    let fake = FakeNative::start().unwrap();
+    for kind in crate::theme::ThemeKind::ALL {
+        for mode in MODES {
+            let (mut a, base, _) = app(&fake.url);
+            a.ui.generate.mode = mode.into();
+            a.ui.generate.prompt = "a lighthouse on a cliff at dusk, warm light, long exposure".into();
+            if mode == "fill" {
+                a.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 24, "height": 16})).unwrap();
+            }
+            if mode == "image" {
+                a.ui.generate.references.push(json!({"layer": base}));
+            }
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(vec2(320.0, 760.0)).wgpu().build_ui_state(
+                move |ui, app: &mut PhotocraftApp| {
+                    if !ready {
+                        egui_extras::install_image_loaders(ui.ctx());
+                        crate::theme::install_fonts(ui.ctx());
+                        crate::theme::apply(ui.ctx(), kind);
+                        ready = true;
+                        return;
+                    }
+                    let t = Tokens::get(ui.ctx());
+                    ui.painter().rect_filled(ui.max_rect(), 0.0, t.card);
+                    egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| panel(app, ui));
+                },
+                a,
+            );
+            h.run_steps(6);
+            h.render().unwrap().save(directory.join(format!("generate-{}-{mode}.png", kind.id()))).unwrap();
+        }
+    }
+}
