@@ -1353,6 +1353,9 @@ pub struct Preferences {
     pub script_events: crate::automate_cmds::ScriptEvents,
     /// Layer Mask Display Options: the layer mask rubylith's colour and opacity.
     pub layer_mask_overlay: LayerMaskOverlay,
+    /// The folder last saved or exported to through a save dialog, where a document with no
+    /// folder of its own (a new, untitled one) starts its first save. Empty before any save.
+    pub last_save_folder: String,
 }
 
 impl Preferences {
