@@ -56,6 +56,8 @@ pub mod sage;
 #[cfg(feature = "sage2")]
 pub mod sage2;
 pub mod seed;
+#[cfg(feature = "convrot")]
+pub mod vae_conv;
 #[cfg(feature = "fusednorm")]
 pub mod vae_fused;
 

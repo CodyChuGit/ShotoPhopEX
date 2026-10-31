@@ -27,20 +27,51 @@ pub const LATENT_CHANNELS: usize = 16;
 /// Pixels per latent cell on a side.
 pub const SCALE: usize = 8;
 
+/// A stride-1 convolution with padding k/2: on CUDA in bf16, with channels in multiples of 8,
+/// an implicit GEMM ([`crate::vae_conv`]); else candle's im2col + GEMM.
+struct VaeConv {
+    conv: Conv2d,
+    /// The weight in the implicit GEMM's KRSC layout, when the convolution takes that path.
+    #[cfg(feature = "convrot")]
+    krsc: Option<Tensor>,
+}
+
+impl VaeConv {
+    fn new(w: Tensor, b: Tensor, k: usize) -> Result<Self> {
+        #[cfg(feature = "convrot")]
+        let krsc = if crate::vae_conv::enabled() && crate::vae_conv::supports(&w) { Some(crate::vae_conv::krsc(&w)?) } else { None };
+        Ok(Self {
+            conv: Conv2d::new(w, Some(b), Conv2dConfig { padding: k / 2, ..Default::default() }),
+            #[cfg(feature = "convrot")]
+            krsc,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "convrot")]
+        if let (Some(krsc), Some(bias)) = (&self.krsc, self.conv.bias()) {
+            if x.dtype() == DType::BF16 {
+                return crate::vae_conv::conv2d_nchw(x, krsc, bias);
+            }
+        }
+        Ok(self.conv.forward(x)?)
+    }
+}
+
 /// A causal 3-D convolution's last temporal tap as a 2-D convolution (`weight` is
 /// `(O, I, kt, kh, kw)`).
-fn conv_last_tap(in_c: usize, out_c: usize, k: usize, kt: usize, vb: VarBuilder) -> Result<Conv2d> {
+fn conv_last_tap(in_c: usize, out_c: usize, k: usize, kt: usize, vb: VarBuilder) -> Result<VaeConv> {
     let w = vb.get((out_c, in_c, kt, k, k), "weight")?;
     let w = w.i((.., .., kt - 1))?.contiguous()?; // (O, I, k, k)
     let b = vb.get(out_c, "bias")?;
-    Ok(Conv2d::new(w, Some(b), Conv2dConfig { padding: k / 2, ..Default::default() }))
+    VaeConv::new(w, b, k)
 }
 
 /// A plain 2-D convolution (`weight` `(O, I, k, k)`).
-fn conv2d(in_c: usize, out_c: usize, k: usize, vb: VarBuilder) -> Result<Conv2d> {
+fn conv2d(in_c: usize, out_c: usize, k: usize, vb: VarBuilder) -> Result<VaeConv> {
     let w = vb.get((out_c, in_c, k, k), "weight")?;
     let b = vb.get(out_c, "bias")?;
-    Ok(Conv2d::new(w, Some(b), Conv2dConfig { padding: k / 2, ..Default::default() }))
+    VaeConv::new(w, b, k)
 }
 
 /// Wan's `RMS_norm` over the channel axis: `x / ‖x‖₂ · √C · gamma`.
@@ -74,10 +105,10 @@ fn silu(x: &Tensor) -> Result<Tensor> {
 /// `ResidualBlock`: norm, SiLU, conv3, norm, SiLU, conv3, plus the (projected) input.
 struct ResidualBlock {
     norm1: RmsNorm,
-    conv1: Conv2d,
+    conv1: VaeConv,
     norm2: RmsNorm,
-    conv2: Conv2d,
-    shortcut: Option<Conv2d>,
+    conv2: VaeConv,
+    shortcut: Option<VaeConv>,
 }
 
 impl ResidualBlock {
@@ -106,8 +137,8 @@ impl ResidualBlock {
 /// `AttentionBlock`: one head over the frame's pixels.
 struct AttentionBlock {
     norm: RmsNorm,
-    to_qkv: Conv2d,
-    proj: Conv2d,
+    to_qkv: VaeConv,
+    proj: VaeConv,
     dim: usize,
 }
 
@@ -133,7 +164,7 @@ impl AttentionBlock {
 /// `Resample` upsampling for one frame: nearest 2× then a 3×3 convolution to half the
 /// channels (the `upsample3d` kind's temporal convolution never runs on a first frame).
 struct Upsample {
-    conv: Conv2d,
+    conv: VaeConv,
 }
 
 impl Upsample {
@@ -143,7 +174,7 @@ impl Upsample {
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let (_, _, h, w) = x.dims4()?;
-        Ok(self.conv.forward(&x.upsample_nearest2d(h * 2, w * 2)?)?)
+        self.conv.forward(&x.upsample_nearest2d(h * 2, w * 2)?)
     }
 }
 
@@ -173,6 +204,8 @@ impl Downsample {
     }
 }
 
+// A handful per encoder, built once: the size difference costs nothing.
+#[allow(clippy::large_enum_variant)]
 enum Down {
     Res(ResidualBlock),
     Sample(Downsample),
@@ -182,12 +215,12 @@ enum Down {
 /// `2·z` channels, then the VAE's own 1×1 `conv1` (the quantisation convolution); the mean is
 /// the first `z` channels.
 struct WanEncoder {
-    conv1: Conv2d,
+    conv1: VaeConv,
     downs: Vec<Down>,
     middle: (ResidualBlock, AttentionBlock, ResidualBlock),
     head_norm: RmsNorm,
-    head_conv: Conv2d,
-    quant: Conv2d,
+    head_conv: VaeConv,
+    quant: VaeConv,
 }
 
 impl WanEncoder {
@@ -249,12 +282,12 @@ impl WanEncoder {
 /// The decoder: `conv2` (the VAE's post-quantisation 1×1), `conv1`, the middle, the upsamples,
 /// the head.
 pub struct WanVae {
-    conv2: Conv2d,
-    conv1: Conv2d,
+    conv2: VaeConv,
+    conv1: VaeConv,
     middle: (ResidualBlock, AttentionBlock, ResidualBlock),
     ups: Vec<Up>,
     head_norm: RmsNorm,
-    head_conv: Conv2d,
+    head_conv: VaeConv,
     /// Present when the file has `encoder.*` (ComfyUI's `wan_2.1_vae` does): an edit's picture
     /// goes in through it.
     encoder: Option<WanEncoder>,
