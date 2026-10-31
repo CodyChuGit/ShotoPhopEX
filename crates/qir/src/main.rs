@@ -58,6 +58,13 @@ enum Command {
         /// Text tokens per lane (the prompt length after the system prefix).
         #[arg(long, default_value_t = 21)]
         txt: usize,
+        /// The Layered/2511 DiT's shapes (width 3072, MLP 12288) at `--m` rows instead, plus
+        /// the whole `ConvRotLinear::forward` (activation rotate + quantize + GEMM) per shape.
+        #[arg(long)]
+        layered: bool,
+        /// Rows for `--layered` (Split at 864x1152, 3 layers, CFG batched: ~39k).
+        #[arg(long, default_value_t = 8272)]
+        m: usize,
     },
     /// Time Krea 2's linear shapes three ways (bf16 matmul, fp8 dequantized + bf16, fp8
     /// matmul through cuBLASLt): launches back to back, one synchronise per shape.
@@ -572,7 +579,8 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Smoke { n } => smoke(n),
         Command::ConvrotTest => convrot_test(),
-        Command::GemmBench { iters, batch, txt } => gemm_bench(iters, batch, txt),
+        Command::GemmBench { iters, layered: true, m, .. } => layered_gemm_bench(iters, m),
+        Command::GemmBench { iters, batch, txt, .. } => gemm_bench(iters, batch, txt),
         Command::Fp8Bench { iters, m } => fp8_bench(iters, m),
         Command::SageTest => sage_test(),
         Command::FusednormTest => fusednorm_test(),
@@ -1651,6 +1659,49 @@ fn gemm_bench(iters: usize, batch: usize, txt: usize) -> Result<()> {
     #[cfg(not(feature = "convrot"))]
     {
         let _ = (iters, batch, txt);
+        anyhow::bail!("build with --features convrot (needs CUTLASS_DIR)")
+    }
+}
+
+/// `gemm-bench --layered`: the Layered DiT's INT8 linears at `m` rows, the GEMM alone per launch
+/// plan and the whole forward (rotate + quantize + GEMM, one synchronise per shape).
+fn layered_gemm_bench(iters: usize, m: usize) -> Result<()> {
+    #[cfg(feature = "convrot")]
+    {
+        use candle_core::{DType, Device, Tensor};
+        use qwen_image_rs::convrot::{bench_gemm_plans, gemm_plan, ConvRotLinear, EpilogueOut, GemmPlan, GEMM_CONFIGS};
+        let shapes = [
+            (m, 3072, 3072),  // q / k / v / out
+            (m, 12288, 3072), // MLP up
+            (m, 3072, 12288), // MLP down
+        ];
+        let plans: Vec<GemmPlan> = (0..GEMM_CONFIGS.len() as u8).map(GemmPlan::single).collect();
+        for (m, n, k, times, _) in bench_gemm_plans(&shapes, &plans, EpilogueOut::Bf16, iters)? {
+            let flop = 2.0 * (m * n * k) as f64;
+            let cells: Vec<String> = times.iter().enumerate().map(|(i, t)| t.map_or(format!("{i}:n/a"), |ms| format!("{i}:{ms:.3}ms/{:.0}T", flop / ms / 1e9))).collect();
+            println!("gemm M={m} N={n} K={k} [selected {}] {}", gemm_plan(m, n, k).main, cells.join(" "));
+        }
+        let dev = Device::new_cuda(0)?;
+        let r = qwen_image_rs::model::rotation::regular_hadamard_256(&dev)?;
+        for &(m, n, k) in &shapes {
+            let w = Tensor::randn(0f32, 1f32, (n, k), &dev)?.to_dtype(DType::BF16)?;
+            let x = Tensor::randn(0f32, 1f32, (m, k), &dev)?.to_dtype(DType::BF16)?;
+            let linear = ConvRotLinear::from_weight(&w, &r)?;
+            linear.forward(&x)?;
+            dev.synchronize()?;
+            let t0 = std::time::Instant::now();
+            for _ in 0..iters {
+                linear.forward(&x)?;
+            }
+            dev.synchronize()?;
+            let ms = t0.elapsed().as_secs_f64() * 1e3 / iters as f64;
+            println!("forward M={m} N={n} K={k}: {ms:.3} ms, {:.0} TOPS", 2.0 * (m * n * k) as f64 / ms / 1e9);
+        }
+        Ok(())
+    }
+    #[cfg(not(feature = "convrot"))]
+    {
+        let _ = (iters, m);
         anyhow::bail!("build with --features convrot (needs CUTLASS_DIR)")
     }
 }
