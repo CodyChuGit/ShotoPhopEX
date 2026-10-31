@@ -14,7 +14,7 @@ Writes, under <repo-root>/assets/app-icon/: <name>.svg and <name>-small.svg (tex
 <name>-1024.png (Apple's padded grid), <name>-macos-512.png, <name>.icns, <name>.ico (16-256 px),
 hicolor/<s>x<s>/apps/<app-id>.png for 16..512 and hicolor/scalable/apps/<app-id>.svg. app-id
 defaults to ai.storyteller.<name>. Geometry as packaging/icon-px.py: a 512-unit tile with rx=112,
-cropped 22 units a side for Windows and Linux, padded to 636 units for macOS.
+full bleed for Windows and Linux (no crop, so the corners stay round, as upstream #4478), padded to 636 units for macOS.
 """
 import os
 import sys
@@ -126,7 +126,7 @@ def cube():
     """A SolidWorks-style mark: a red isometric cube, "S" on its left face, "W" on its right."""
     px = 512 * SCALE
     img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
-    # The drawing's 860-unit square onto 86 % of the tile, centred: clear of the corner crop.
+    # The drawing's 860-unit square onto 86 % of the tile, centred: clear of the rounded corners.
     k = SCALE * 512 / 860 * 0.86
     o = SCALE * 512 * 0.07
     p = lambda x, y: (o + x * k, o + y * k)  # noqa: E731
@@ -201,15 +201,13 @@ def main():
     out = os.path.join(root, "assets", "app-icon")
     # `@cube` and `@ribbon` draw the SolidWorks- and Acrobat-style marks instead of letters.
     full = cube() if letters == "@cube" else ribbon() if letters == "@ribbon" else tile(letters, bg, fg)
-    c = 22 * SCALE
-    tight = full.crop((c, c, full.width - c, full.height - c))
     mac = padded(full, 636, 62)
 
     save(mac, os.path.join(out, f"{name}-1024.png"), 1024)
     save(mac, os.path.join(out, f"{name}-macos-512.png"), 512)
     for s in (16, 24, 32, 48, 64, 128, 256, 512):
-        save(tight, os.path.join(out, "hicolor", f"{s}x{s}", "apps", f"{app_id}.png"), s)
-    tight.resize((256, 256), Image.LANCZOS).save(
+        save(full, os.path.join(out, "hicolor", f"{s}x{s}", "apps", f"{app_id}.png"), s)
+    full.resize((256, 256), Image.LANCZOS).save(
         os.path.join(out, f"{name}.ico"), format="ICO", sizes=[(s, s) for s in (16, 20, 24, 32, 40, 48, 64, 128, 256)]
     )
     mac.resize((1024, 1024), Image.LANCZOS).save(
