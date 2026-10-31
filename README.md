@@ -87,6 +87,7 @@ on.
 | **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying on the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
 | **Split into Layers** | Decompose a flat picture into separate RGBA layers | Qwen-Image-Layered | **92.6 s** (3 layers) |
 | **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", or a click | SAM 3.1 | **0.3 s** |
+| **MOSS-Image** | Permissive (Apache-2.0) text to image with strong text rendering | MOSS-Image SFT, 5B | 11.0 s (1024², 50 steps) |
 | **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
 Times are warm, through the app, at 864×1152 (about 1 MP). Bold rows are faster than ComfyUI on
@@ -96,9 +97,12 @@ first image right after launch takes 3.6 s (Krea 2) or 3.7 s (2.1) instead of 12
 
 **How it feels in the app**
 
-- **Window › Generate** is a prompt box in the dock: pick Image, Fill, Edit or Expand, drop
-  reference pictures on it, choose a model (Auto names the one it will use) and press
-  **Generate** (Ctrl+Enter).
+- **Window › Generate** is the panel in the dock: a switch for Image, Fill, Edit or Expand, then
+  References (drop pictures on it), Prompt and Settings (model, quality, size, count), and one
+  **Generate** button (Ctrl+Enter). Auto names the model it will use.
+- **Live preview** paints the picture on the canvas as it forms, step by step. Fast (the default)
+  costs nothing measurable; Sharp decodes a full-size preview every third step for about 0.2 s a
+  run. The finished picture is byte-identical either way.
 - **Under any selection**, a task bar offers Fill or Edit right where you are working.
 - **The Variations strip** at the canvas edge keeps the last runs as tiles: keep one, drop one, or
   ask for more like it.
@@ -135,7 +139,7 @@ repeated request would hit ComfyUI's cache). ComfyUI ran with `--fast fp8_matrix
 | 2511 full-quality edit (40 steps, CFG 4) | 86.8 s | 81.9 s | 0.94× | pending |
 | Generative Upscale 2× | **24.2 s** | 44.1 s | 1.82× | pending |
 | Split into Layers (3 layers, Qwen-Image-Layered) | **92.6 s** | 124.8 s | 1.35× | pending |
-| MOSS-Image (1024², 50 steps, in progress) | 11.0 s | 10.8 s | 0.98× | pending |
+| MOSS-Image (1024², 50 steps) | 11.0 s | 10.8 s | 0.98× | pending |
 
 **RTX 5090:** 32 GB, Windows 11, measured 2026-10-28 and 2026-10-29. Upscale was measured
 against ComfyUI 0.43 with the same Restore LoRA at 0.5; natively it now runs 2×2 tiles of up to
@@ -281,11 +285,15 @@ folders).
 | `loras/` | `Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors`, `…-4steps-…` | `lightx2v/Qwen-Image-Edit-2511-Lightning` | 2511 at 8 or 4 steps |
 | `loras/` | `qwen-image-edit-2511-multiple-angles-lora.safetensors` | `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` | 2511 Angles |
 | `loras/` | `krea2_style_reference.safetensors` | `ostris/krea2_turbo_style_reference` | Krea 2 style reference |
+| `diffusion_models/` | `moss_image_sft_int8_convrot.safetensors` | `Comfy-Org/MOSS-Image` | MOSS-Image |
+| `text_encoders/` | `qwen3.5_9b_int8_convrot.safetensors`, plus `qwen35_tokenizer/tokenizer.json` | `Comfy-Org/MOSS-Image`; the tokenizer from `OpenMOSS-Team/MOSS-Image-SFT` | MOSS-Image's text encoder |
+| `vae/` | `flux2-vae_small.safetensors` | `Comfy-Org/MOSS-Image` | MOSS-Image |
+| `vae_approx/` | `taew2_1.safetensors`, `taeqi2_1.safetensors` | madebyollin (MIT) | optional: Sharp live previews |
 
 **Licences matter.** Qwen-Image-2.1 is under the Qwen Research License (research and evaluation;
 commercial use needs Alibaba's agreement), and research models are on by default in this build.
 Krea 2 and SAM 3.1 are under their own community licences. Qwen-Image-Edit-2511,
-Qwen-Image-Layered and the Lightning and Angles LoRAs are Apache-2.0. The full catalogue, with
+Qwen-Image-Layered, MOSS-Image and the Lightning and Angles LoRAs are Apache-2.0. The full catalogue, with
 sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comfy/models.md).
 
 ## 🗺️ Roadmap
@@ -308,7 +316,8 @@ precision plan rather than a one-size build.
 - [x] LoRAs on every route, merged into the resident weights
 - [ ] **Speed pass:** clearly faster than ComfyUI everywhere, starting with Split into Layers and Upscale
 - [ ] **Precision study:** int8 vs fp8 vs NVFP4 per model, kept only where the pictures hold
-- [ ] **MOSS-Image** (Apache-2.0, 5B): ported and matching ComfyUI, being merged
+- [x] **MOSS-Image** (Apache-2.0, 5B), native and level with ComfyUI
+- [x] **Live previews** while generating, at no measurable cost
 - [ ] **A published release:** a portable zip and an installer, with a first-run "Get models" page that downloads the defaults
 - [ ] **RTX 3090 tier**, with its own benchmark column above
 - [ ] **16 GB tier and Mac**, sharing one "one model at a time, 4-bit" loading pattern
@@ -324,7 +333,7 @@ flowchart LR
     UI["Editor UI<br/>(egui, wgpu canvas)"] --> CMD["Command engine<br/>generate.* · select.by*"]
     CLI["photocraft-cli · MCP"] --> CMD
     CMD -->|"prompt + pixels + mask<br/>(gn-engine protocol)"| W["Native worker<br/>photocraft --engine"]
-    W --> K["Rust model code<br/>Qwen-Image · Krea 2 · SAM 3.1<br/>int8 / fp8 CUDA kernels"]
+    W --> K["Rust model code<br/>Qwen-Image · Krea 2 · MOSS · SAM 3.1<br/>int8 / fp8 CUDA kernels"]
     K --> M[("Models folder<br/>ComfyUI layout")]
     W -->|"RGBA result"| CMD
     CMD --> L["New masked layer<br/>+ Generations library"]

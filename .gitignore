@@ -12,3 +12,6 @@ target/
 *.log
 __pycache__/
 /target-app
+
+# CI only: the genai-native deploy key the FreeBSD job copies into its VM workspace.
+/.ci-genai-native/

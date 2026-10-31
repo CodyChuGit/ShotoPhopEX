@@ -61,6 +61,14 @@ The app sends `SPLIT_DEFAULT_PROMPT`, so warm splits hit it. A cache miss drops 
 the text encoder loads. Warm Split 91.9 to 86.0 s, layers byte-identical (benchmarks.md §0).
 `QIR_LAYERED_RESIDENT=0` restores per-split loads.
 The denoise (84.4 s of 86) is what's left; item 2 (INT8 linears without paging) is next.
+## 2026-10-31: a new document's first save starts in the last folder saved to
+
+Open dialogs already start in the most recent file's folder (#1889) and save dialogs where the
+document was last saved, or beside it (#1826). An untitled document had neither, so its first
+save started wherever the OS chose. `Preferences.last_save_folder` (`lastSaveFolder`, not in the
+dialog) now keeps the folder of the last save dialog and `file_dialog.rs` `pick_save` falls back
+to it; it survives a restart. Scorecard: 201 preferences, 12 unread (unchanged).
+
 ## 2026-10-31: Generate panel redesign (UI/UX pass)
 
 Window › Generate's full form was a loose stack: a mode strip of pills, a prompt with two icons

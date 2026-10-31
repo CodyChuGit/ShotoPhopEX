@@ -16,6 +16,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/freebsd.yml
+      - .github/workflows/freebsd-shared.yml
       - packaging/freebsd/**
       - packaging/env.sh
   workflow_dispatch:
@@ -29,8 +30,10 @@ permissions:
 
 jobs:
   freebsd:
-    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
-    uses: storytold/craft-common-actions/.github/workflows/freebsd.yml@main
+    # The shared workflow plus the genai-native deploy key (see freebsd-shared.yml).
+    uses: ./.github/workflows/freebsd-shared.yml
+    secrets:
+      GENAI_NATIVE_DEPLOY_KEY: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
     with:
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       cargo-build-extra-args: "--features heif"

@@ -154,7 +154,10 @@ impl Compositor {
         let resident_views: Vec<&wgpu::TextureView> = bound.keys.iter().map(|k| self.residents.get(k).map_or(dummy, |r| &r.view)).collect();
         let mut bg1 = Vec::with_capacity(plan.passes.len());
         for (i, p) in plan.passes.iter().enumerate() {
-            if i < first_pass || p.kernel.entry().is_none() {
+            // A pass clipped away from every chunk is never drawn (most layers of a many-layer
+            // document, for an edit of a small area): don't build its bind group.
+            let drawn = p.clip.is_none_or(|clip| chunks.iter().any(|c| !clip.intersect(c).is_empty()));
+            if i < first_pass || p.kernel.entry().is_none() || !drawn {
                 bg1.push(None);
                 continue;
             }
