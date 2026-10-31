@@ -178,6 +178,10 @@ enum KLinear {
     Full(Linear),
     #[cfg(feature = "convrot")]
     Convrot(crate::convrot::ConvRotLinear),
+    /// A full-precision layer as a low-rank part `l1 (out, r) · l2 (r, in)` in bf16 plus ConvRot
+    /// INT8 of the rest (SVDQuant's split), so the INT8 grid only covers the residual.
+    #[cfg(feature = "convrot")]
+    LowRank(crate::convrot::ConvRotLinear, Tensor, Tensor),
     /// The file's own e4m3 weight (ComfyUI's `fp8_scaled` repacks), `crate::fp8`.
     Fp8(Fp8Linear),
 }
@@ -195,8 +199,8 @@ impl KLinear {
     fn load(in_c: usize, out_c: usize, bias: bool, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
         if q.fp8.is_some() && !bias {
             if let Some(l) = crate::fp8::load_linear(in_c, out_c, q.fp8, &vb)? {
-                // `QIR_KREA2_FP_INT8=1` (a measurement, off by default): the file's full-precision
-                // layers (attention gate, `wo`, `down`) on ConvRot INT8 instead of bf16.
+                // The file's full-precision layers (attention gate, `wo`, `down`) on ConvRot INT8
+                // with a low-rank correction instead of bf16 ([`full_precision_int8`]).
                 #[cfg(feature = "convrot")]
                 if l.is_full_precision()
                     && vb.device().is_cuda()
@@ -205,8 +209,15 @@ impl KLinear {
                     && out_c.is_multiple_of(8)
                 {
                     let r = crate::model::rotation::regular_hadamard_256(vb.device())?;
-                    let c = crate::convrot::ConvRotLinear::from_weight(&l.dequantized(DType::BF16)?, &r)?;
+                    let w = l.dequantized(DType::BF16)?;
                     drop(l);
+                    if let Some(rank) = full_precision_rank() {
+                        let (l1, l2, rest) = low_rank_split(&w, rank)?;
+                        let c = crate::convrot::ConvRotLinear::from_weight(&rest, &r)?;
+                        vb.device().synchronize()?;
+                        return Ok(Self::LowRank(c, l1, l2));
+                    }
+                    let c = crate::convrot::ConvRotLinear::from_weight(&w, &r)?;
                     // Each conversion finished before the next (see Layered's INT8 load).
                     vb.device().synchronize()?;
                     return Ok(Self::Convrot(c));
@@ -238,15 +249,91 @@ impl KLinear {
             Self::Full(l) => Ok(l.forward(x)?),
             #[cfg(feature = "convrot")]
             Self::Convrot(c) => c.forward(x),
+            #[cfg(feature = "convrot")]
+            Self::LowRank(c, l1, l2) => {
+                let low = x.broadcast_matmul(&l2.t()?)?.broadcast_matmul(&l1.t()?)?;
+                Ok((c.forward(x)? + low)?)
+            }
             Self::Fp8(l) => l.forward(x),
         }
     }
 }
 
+/// The full-precision layers on INT8 with a rank-64 correction unless `QIR_KREA2_FP_INT8=0`:
+/// the 28-case t2i suite against ComfyUI's fp8 picture at the same parity as the fp8 recipe
+/// (19/28; mean 27.52 against 27.57 dB), 3.7 to 2.9 s a 1024² picture on the RTX 5090
+/// (2026-10-31; without the correction 17/28).
 #[cfg(feature = "convrot")]
 fn full_precision_int8() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("QIR_KREA2_FP_INT8").is_ok_and(|v| v.trim() == "1"))
+    *ON.get_or_init(|| std::env::var("QIR_KREA2_FP_INT8").map_or(true, |v| v.trim() != "0"))
+}
+
+/// `QIR_KREA2_FP_LOWRANK=<rank>`: the low-rank part's rank for the full-precision INT8 layers,
+/// 64 by default; 0 leaves the plain INT8 layers.
+#[cfg(feature = "convrot")]
+fn full_precision_rank() -> Option<usize> {
+    static RANK: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *RANK.get_or_init(|| {
+        let rank = std::env::var("QIR_KREA2_FP_LOWRANK").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(64usize);
+        (rank > 0 && rank <= 256).then_some(rank)
+    })
+}
+
+/// `w (out, in)` as `l1 (out, r) · l2 (r, in)` plus the rest, all bf16: a randomized range
+/// finder (a fixed Gaussian sketch, two power iterations, CholeskyQR2 in f32) gives `l1` with
+/// orthonormal columns spanning `w`'s dominant output directions, `l2 = l1ᵀ w`.
+#[cfg(feature = "convrot")]
+fn low_rank_split(w: &Tensor, rank: usize) -> Result<(Tensor, Tensor, Tensor)> {
+    let (out, inp) = w.dims2()?;
+    let wf = w.to_dtype(DType::F32)?;
+    let sketch = crate::comfy::torch_randn(0x5eed_10a2, inp * rank).map_err(anyhow::Error::msg)?;
+    let mut y = wf.matmul(&Tensor::from_vec(sketch, (inp, rank), w.device())?)?; // (out, r)
+    for _ in 0..2 {
+        y = orthonormal(&y)?;
+        y = wf.matmul(&wf.t()?.matmul(&y)?)?;
+    }
+    let q = orthonormal(&orthonormal(&y)?)?; // (out, r)
+    let l2 = q.t()?.matmul(&wf)?; // (r, in)
+    let rest = (&wf - q.matmul(&l2)?)?;
+    anyhow::ensure!(q.dims2()? == (out, rank) && l2.dims2()? == (rank, inp), "low-rank split shapes");
+    Ok((q.to_dtype(DType::BF16)?, l2.to_dtype(DType::BF16)?, rest.to_dtype(DType::BF16)?))
+}
+
+/// Columns of `y (n, k)` orthonormalized by one Cholesky QR step: `G = yᵀy = RᵀR` (k×k, on the
+/// host), `y R⁻¹`. Applied twice where it matters (CholeskyQR2) for f32 accuracy.
+#[cfg(feature = "convrot")]
+#[allow(clippy::needless_range_loop)] // triangular index arithmetic reads clearer as indices
+fn orthonormal(y: &Tensor) -> Result<Tensor> {
+    let (_, k) = y.dims2()?;
+    let g = y.t()?.matmul(y)?.to_vec2::<f32>()?;
+    // Shifted Cholesky G + σI = L Lᵀ (L lower), in f64: σ keeps a rank-deficient sketch (more
+    // columns than the weight's strong directions) finite; the second pass restores
+    // orthonormality.
+    let shift = 1e-5 * (0..k).map(|i| f64::from(g[i][i])).sum::<f64>() / k as f64;
+    let mut l = vec![vec![0f64; k]; k];
+    for i in 0..k {
+        for j in 0..=i {
+            let s: f64 = (0..j).map(|p| l[i][p] * l[j][p]).sum();
+            let v = f64::from(g[i][j]) + if i == j { shift } else { 0.0 } - s;
+            if i == j {
+                l[i][i] = v.max(1e-20).sqrt();
+            } else {
+                l[i][j] = v / l[j][j];
+            }
+        }
+    }
+    // R = Lᵀ; R⁻¹ is upper triangular: solve R X = I column by column.
+    let mut inv = vec![vec![0f64; k]; k];
+    for col in 0..k {
+        for row in (0..k).rev() {
+            let rhs = if row == col { 1.0 } else { 0.0 };
+            let s: f64 = (row + 1..k).map(|p| l[p][row] * inv[p][col]).sum();
+            inv[row][col] = (rhs - s) / l[row][row];
+        }
+    }
+    let flat: Vec<f32> = inv.iter().flat_map(|r| r.iter().map(|&v| v as f32)).collect();
+    Ok(y.matmul(&Tensor::from_vec(flat, (k, k), y.device())?)?)
 }
 
 /// RMSNorm with the `(1 + scale)` weight (the scale is stored zero-centred), in f32.
@@ -989,6 +1076,33 @@ impl Krea2Dit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The low-rank split reconstructs the weight, its `l1` is orthonormal, and on a weight with
+    /// a strong rank-16 part the rest is small.
+    #[test]
+    #[cfg(feature = "convrot")]
+    fn low_rank_split_takes_the_dominant_directions() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        let (out, inp) = (512, 768);
+        let a = Tensor::randn(0f32, 1.0, (out, 16), &dev)?;
+        let b = Tensor::randn(0f32, 1.0, (16, inp), &dev)?;
+        let w = (a.matmul(&b)? + Tensor::randn(0f32, 0.01, (out, inp), &dev)?)?.to_dtype(DType::BF16)?;
+        let (l1, l2, rest) = low_rank_split(&w, 32)?;
+        let f = |t: &Tensor| t.to_dtype(DType::F32);
+        let back = (f(&l1)?.matmul(&f(&l2)?)? + f(&rest)?)?;
+        let norm = |t: &Tensor| -> Result<f32> { Ok(t.sqr()?.sum_all()?.to_scalar::<f32>()?.sqrt()) };
+        let wf = f(&w)?;
+        let (err, wn) = (norm(&(&back - &wf)?)?, norm(&wf)?);
+        // Rank 32 asked of a rank-16 weight: the extra columns come out zero, so `l1ᵀ l1` is a
+        // projector (each column orthonormal or zero), not the identity.
+        let gram = f(&l1)?.t()?.matmul(&f(&l1)?)?;
+        let ortho = norm(&(gram.matmul(&gram)? - &gram)?)?;
+        let rn = norm(&f(&rest)?)?;
+        assert!(err < 0.01 * wn, "reconstruction {err} of {wn} (orthonormality {ortho}, rest {rn})");
+        assert!(ortho < 0.05, "orthonormal l1: {ortho}");
+        assert!(rn < 0.05 * wn, "the rank-16 part is in l1·l2: rest {rn} of {wn}");
+        Ok(())
+    }
 
     #[test]
     fn the_shape_follows_the_file() {
