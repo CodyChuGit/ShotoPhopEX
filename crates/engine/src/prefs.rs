@@ -1066,7 +1066,8 @@ pub struct Integrations {
     pub runtime_path: String,
     /// The native worker's model root: a ComfyUI `models` folder (read as it is: its
     /// `diffusion_models/`, `text_encoders/`, `vae/`, `loras/`, `checkpoints/`), or the worker's
-    /// own folders (one subfolder per model). This folder must be set explicitly.
+    /// own folders (one subfolder per model). Empty = a folder found as [`Integrations::models_root`]
+    /// describes, else none.
     pub models_path: String,
 }
 
@@ -1108,9 +1109,13 @@ impl Integrations {
         if p.is_empty() { bundled_runtime().unwrap_or_default() } else { p.to_string() }
     }
 
-    /// The required Models folder, using the existing weights layout.
+    /// The Models folder: [`Self::models_path`], or when that is empty the first folder of
+    /// `PHOTOCRAFT_MODELS`, `GN_MODELS` (the native worker's own variable) and the `models` folder
+    /// next to this executable, so a fresh install or a package that ships one needs no manual
+    /// step. Empty when there is none.
     pub fn models_root(&self) -> String {
-        self.models_path.trim().to_string()
+        let p = self.models_path.trim();
+        if p.is_empty() { detected_models().unwrap_or_default() } else { p.to_string() }
     }
 
     /// Whether the native worker can serve models: runtime folders and a model root.
@@ -1134,6 +1139,24 @@ fn comfy_models(dir: &str) -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = dir;
+        None
+    }
+}
+
+/// The Models folder found without a preference ([`Integrations::models_root`]), looked up once.
+fn detected_models() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let env = ["PHOTOCRAFT_MODELS", "GN_MODELS"].into_iter().filter_map(|k| std::env::var_os(k)).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+            let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("models")));
+            env.chain(beside).find(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned())
+        })
+        .clone()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
         None
     }
 }
