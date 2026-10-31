@@ -1,0 +1,214 @@
+name: "Windows ARM64"
+
+# A copy of storytold/craft-common-actions/.github/workflows/windows-arm64.yml at 8bb4e5ab, kept here
+# so the package job can fetch the private genai-native dependency (as gate.yml does). The only
+# change is the `GENAI_NATIVE_DEPLOY_KEY` secret and the step that installs it. Upstream fixes have to
+# be copied by hand.
+
+on:
+  workflow_call:
+    secrets:
+      GENAI_NATIVE_DEPLOY_KEY:
+        description: "Private half of a read-only deploy key on CodyChuGit/genai-native, for cargo's git fetch"
+        required: false
+    inputs:
+      app-name:
+        description: "Application name (e.g. photocraft, artcraft-launcher)"
+        type: string
+        required: true
+      app-dir:
+        description: "Installation folder name inside ProgramFiles or LocalAppData (e.g. PhotoCraft)"
+        type: string
+        required: true
+      install-relative-path:
+        description: "Install path below LocalAppData (per-user) or ProgramFiles (per-machine), independent of app-dir"
+        type: string
+        required: false
+        default: ""
+      install-scope:
+        description: "Explicit perUser or perMachine context; empty preserves legacy installer defaults"
+        type: string
+        required: false
+        default: ""
+      main-binary:
+        description: "Name of the main executable file"
+        type: string
+        required: false
+        default: ""
+      cli-binary:
+        description: "Name of the CLI executable file"
+        type: string
+        required: false
+        default: ""
+      is-per-user:
+        description: "Whether the installer is per-user (e.g. for craft-launcher)"
+        type: boolean
+        required: false
+        default: false
+      wix-version:
+        description: "Version of WiX to install"
+        type: string
+        required: false
+        default: "5.0.2"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  package:
+    name: package (cross-compiled on x64)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # cargo fetches git dependencies with the git CLI (.cargo/config.toml).
+      - uses: ./.github/actions/genai-native-key
+        with:
+          key: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
+      - name: Check out craft-i18n
+        uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: windows-arm64-package
+      - name: Install WiX
+        uses: storytold/craft-common-actions/actions/install-wix@main
+        with:
+          wix-version: ${{ inputs.wix-version }}
+      - name: Build and package (unsigned)
+        shell: pwsh
+        env:
+          DIST: ${{ github.workspace }}\dist\arm64
+        run: ./packaging/windows/package.ps1 -Arch arm64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.app-name }}-windows-arm64
+          path: dist/arm64/*
+          if-no-files-found: error
+          retention-days: 7
+
+  install:
+    name: install and run on ARM64
+    needs: package
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.app-name }}-windows-arm64
+          path: dist
+      - name: Install the MSI, check it, run it, uninstall it
+        shell: pwsh
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          APP_DIR: ${{ inputs.app-dir }}
+          MAIN_BINARY: ${{ inputs.main-binary }}
+          CLI_BINARY: ${{ inputs.cli-binary }}
+          IS_PER_USER: ${{ inputs.is-per-user }}
+          INSTALL_RELATIVE_PATH: ${{ inputs.install-relative-path }}
+          INSTALL_SCOPE: ${{ inputs.install-scope }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mainExeName = if ($env:MAIN_BINARY -ne '') { $env:MAIN_BINARY } else { "$env:APP_NAME.exe" }
+          $cliExeName = if ($env:CLI_BINARY -ne '') { $env:CLI_BINARY } else { "$env:APP_NAME-cli.exe" }
+          # Require single path components before installing or running anything.
+          foreach ($name in $env:APP_DIR, $mainExeName, $cliExeName) {
+            if ([string]::IsNullOrEmpty($name) -or $name -match '[<>:"/\\|?*\x00-\x1F]' -or $name -match '[. ]\z') {
+              throw 'app-dir and executable names must be nonempty names without paths, invalid Windows filename characters, or trailing dots/spaces'
+            }
+          }
+          # Keep display/registry/shortcut names separate from the nested install path.
+          $scope = [string]$env:INSTALL_SCOPE
+          if ($scope -notin '', 'perUser', 'perMachine') { throw 'install-scope must be perUser or perMachine' }
+          if ($env:IS_PER_USER -eq 'true' -and $scope -eq 'perMachine') { throw 'A per-user-only installer cannot request machine scope' }
+          $perUser = $scope -eq 'perUser' -or ($scope -eq '' -and $env:IS_PER_USER -eq 'true')
+          $relativePath = [string]$env:INSTALL_RELATIVE_PATH
+          if (-not $relativePath) { $relativePath = if ($perUser) { "Programs\$env:APP_DIR" } else { $env:APP_DIR } }
+          # Split with StringSplitOptions.None so leading, trailing and doubled separators fail.
+          $parts = $relativePath.Split([char[]]@('/', '\'), [StringSplitOptions]::None)
+          foreach ($part in $parts) {
+            if ([string]::IsNullOrEmpty($part) -or $part -in '.', '..' -or $part -match '[<>:"|?*\x00-\x1F]' -or $part -match '[. ]\z') {
+              throw 'install-relative-path must contain only safe relative Windows path components'
+            }
+          }
+          $installDirectory = if ($perUser) { $env:LOCALAPPDATA } else { $env:ProgramFiles }
+          foreach ($part in $parts) { $installDirectory = Join-Path $installDirectory $part }
+          $scopeProperties = @()
+          if ($scope -eq 'perUser') { $scopeProperties = @('ALLUSERS=2', 'MSIINSTALLPERUSER=1') }
+          if ($scope -eq 'perMachine') { $scopeProperties = @('ALLUSERS=1', 'MSIINSTALLPERUSER=""') }
+          $msi = (Get-ChildItem dist/*.msi | Select-Object -First 1).FullName
+
+          if ($env:IS_PER_USER -eq "true") {
+            $startLnk = Join-Path ([Environment]::GetFolderPath('Programs')) "$env:APP_DIR.lnk"
+            $deskLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "$env:APP_DIR.lnk"
+            $key = "HKCU:\Software\Learning Machines LLC\$env:APP_DIR"
+            function Install([string[]] $props) {
+              $p = Start-Process msiexec.exe -ArgumentList (@('/i', "`"$msi`"", '/qn', '/l*v', 'install.log') + $scopeProperties + $props) -Wait -PassThru
+              if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "msiexec /i exited $($p.ExitCode)" }
+            }
+            function Uninstall([string] $exe) {
+              $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
+              if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
+              foreach ($left in $exe, $startLnk, $deskLnk) { if (Test-Path -LiteralPath $left) { throw "uninstall left $left behind" } }
+              if ((Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue).InstallDir) { throw "uninstall left InstallDir in $key" }
+              Write-Output 'ok uninstalled'
+            }
+            function Expect([bool] $ok, [string] $what) { if (-not $ok) { Get-Content install.log -Tail 60; throw $what }; Write-Output "ok $what" }
+
+            Install @()
+            $exe = Join-Path $installDirectory $mainExeName
+            Expect (Test-Path -LiteralPath $exe) "installed in default folder: $exe"
+            $bytes = [System.IO.File]::ReadAllBytes($exe)
+            $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+            Expect ($machine -eq 0xAA64) "the exe is ARM64 (machine 0x$('{0:X}' -f $machine))"
+            Expect (Test-Path -LiteralPath $startLnk) "Start Menu shortcut: $startLnk"
+            Expect (Test-Path -LiteralPath $deskLnk) "desktop shortcut: $deskLnk"
+            Uninstall $exe
+
+            $dir = Join-Path $env:LOCALAPPDATA "$env:APP_DIR Test Folder"
+            Install @("INSTALLFOLDER=`"$dir\`"", 'INSTALLDESKTOPSHORTCUT=0')
+            $exe = Join-Path $dir $mainExeName
+            Expect (Test-Path -LiteralPath $exe) "installed in chosen folder: $exe"
+            Expect (Test-Path -LiteralPath $startLnk) "Start Menu shortcut: $startLnk"
+            Expect (-not (Test-Path -LiteralPath $deskLnk)) 'no desktop shortcut when not wanted'
+            Uninstall $exe
+            Expect (-not (Test-Path -LiteralPath $dir)) 'uninstall removed chosen folder'
+          } else {
+            $p = Start-Process msiexec.exe -ArgumentList (@('/i', "`"$msi`"", '/qn', '/l*v', 'install.log') + $scopeProperties) -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "msiexec /i exited $($p.ExitCode)" }
+            $dir = $installDirectory
+
+            $exeList = @($mainExeName)
+            if ($cliExeName -ne '' -and $cliExeName -ne $mainExeName) {
+              $exeList += $cliExeName
+            }
+            foreach ($exe in $exeList) {
+              $path = Join-Path $dir $exe
+              if (-not (Test-Path -LiteralPath $path)) { throw "$exe not installed in $dir" }
+              $bytes = [System.IO.File]::ReadAllBytes($path)
+              $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+              if ($machine -ne 0xAA64) { throw "$exe is for machine 0x$('{0:X}' -f $machine), not ARM64" }
+              Write-Output "ok $path (ARM64)"
+            }
+
+            if ($cliExeName -ne '') {
+              $cli = Join-Path $dir $cliExeName
+              if (Test-Path -LiteralPath $cli) {
+                $out = & $cli --version 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) { Write-Output $out; throw "$cli --version exited $LASTEXITCODE" }
+                Write-Output "ok $cliExeName --version: $($out.Trim())"
+              }
+            }
+
+            $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
+            if (Test-Path -LiteralPath (Join-Path $dir $mainExeName)) { throw "uninstall left $mainExeName behind" }
+            Write-Output 'ok uninstalled'
+          }

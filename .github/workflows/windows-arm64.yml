@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/windows-arm64.yml
+      - .github/workflows/windows-arm64-shared.yml
       - packaging/windows/**
   schedule:
     - cron: "41 4 * * *"
@@ -26,8 +27,10 @@ permissions:
 
 jobs:
   windows-arm64:
-    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
-    uses: storytold/craft-common-actions/.github/workflows/windows-arm64.yml@main
+    # The shared workflow at 8bb4e5ab plus the genai-native deploy key (see windows-arm64-shared.yml).
+    uses: ./.github/workflows/windows-arm64-shared.yml
+    secrets:
+      GENAI_NATIVE_DEPLOY_KEY: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
     with:
       app-name: photocraft
       app-dir: PhotoCraft

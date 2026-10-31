@@ -1,0 +1,329 @@
+name: "FreeBSD"
+
+# A copy of storytold/craft-common-actions/.github/workflows/freebsd.yml at 2b3fb9dc, kept here so the
+# VM build can fetch the private genai-native dependency. The only changes are the
+# `GENAI_NATIVE_DEPLOY_KEY` secret, a host step that puts its read-only deploy key in the workspace
+# (which the VM receives), and the genai-native git setup at the top of the two VM build steps.
+# Upstream fixes have to be copied by hand.
+
+on:
+  workflow_call:
+    secrets:
+      GENAI_NATIVE_DEPLOY_KEY:
+        description: "Private half of a read-only deploy key on CodyChuGit/genai-native, for cargo's git fetch"
+        required: false
+    inputs:
+      architectures:
+        description: 'JSON architecture array; empty selects x86_64 for PRs and both architectures otherwise'
+        type: string
+        required: false
+        default: ""
+      craft-fonts-ref:
+        # The suite's craft-fonts pin, as in release.yml.
+        description: "The commit ref for storytold/craft-fonts. Defaults to the suite's pin; empty builds without craft-fonts"
+        type: string
+        required: false
+        default: "bfcbf714e45a3ea8e98f88ab2b7971372a576414"
+      require-craft-fonts:
+        description: "Require the supplied craft-fonts checkout during builds and tests"
+        type: boolean
+        required: false
+        default: false
+      freebsd-release:
+        description: "FreeBSD OS release version to run in the VM"
+        type: string
+        required: false
+        default: "15.1-STABLE"
+      cargo-test-extra-args:
+        description: "Extra arguments to append to cargo test (shell-style quoting, no shell expansion)"
+        type: string
+        required: false
+        default: ""
+      cargo-build-extra-args:
+        description: "Extra arguments to append to cargo build (shell-style quoting, no shell expansion)"
+        type: string
+        required: false
+        default: ""
+      skip-tests:
+        description: "Skip running tests (e.g. if the VM lacks GPU/oracle dependencies)"
+        type: boolean
+        required: false
+        default: false
+      run-package-check:
+        description: "Run packaging/freebsd/package.sh and verify produced tarball"
+        type: boolean
+        required: false
+        default: false
+      custom-test-command:
+        description: "Custom test commands to run instead of default cargo test"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  freebsd:
+    name: FreeBSD 15 ${{ matrix.arch }} (build + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.architectures != '' && inputs.architectures || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && '["x86_64"]' || '["x86_64","aarch64"]')) }}
+    env:
+      CARGO_BUILD_EXTRA_ARGS: ${{ inputs.cargo-build-extra-args }}
+      CARGO_TEST_EXTRA_ARGS: ${{ inputs.cargo-test-extra-args }}
+      CUSTOM_TEST_COMMAND: ${{ inputs.custom-test-command }}
+      CARGO_HOME: /var/tmp/craft-cargo
+      CARGO_TARGET_DIR: /var/tmp/craft-target
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The VM gets a copy of the workspace, so the key goes there; the VM steps below use it.
+      - name: Put the genai-native deploy key in the workspace
+        env:
+          KEY: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEY" ]; then
+            echo "::error::The GENAI_NATIVE_DEPLOY_KEY secret is missing: cargo cannot fetch the private CodyChuGit/genai-native dependency."
+            exit 1
+          fi
+          mkdir -p .ci-genai-native
+          printf '%s\n' "$KEY" > .ci-genai-native/key
+          chmod 600 .ci-genai-native/key
+          # GitHub's published host key (docs: "GitHub's SSH key fingerprints").
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > .ci-genai-native/known_hosts
+      - name: Check out craft-fonts
+        if: inputs.craft-fonts-ref != ''
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@main
+        with:
+          ref: ${{ inputs.craft-fonts-ref }}
+      - name: Check out craft-i18n
+        uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
+      # The architecture is interpolated into the guest's shell source below.
+      - name: Validate the architecture
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ARCH" in
+            x86_64|aarch64) ;;
+            *) echo "::error::unsupported architecture '$ARCH' (use x86_64 or aarch64)"; exit 1 ;;
+          esac
+      - name: Start the FreeBSD VM
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: ${{ inputs.freebsd-release == '15.1-STABLE' && '15.1' || inputs.freebsd-release }}
+          # Always an x86_64 guest, which KVM accelerates: aarch64 is cross-compiled in it,
+          # because an emulated aarch64 guest compiles about 23 times slower (#33).
+          usesh: true
+          cpu: 4
+          mem: 12288
+          copyback: false
+          envs: "CARGO_HOME CARGO_TARGET_DIR CARGO_INCREMENTAL CARGO_BUILD_JOBS CARGO_BUILD_EXTRA_ARGS CARGO_TEST_EXTRA_ARGS CUSTOM_TEST_COMMAND"
+          prepare: |
+            # Keep rustup/proxies outside the Cargo data cache.
+            unset CARGO_HOME CARGO_TARGET_DIR
+            if [ "${{ matrix.arch }}" = aarch64 ]; then
+              # The host compiler and the aarch64 standard library come from the amd64 and
+              # aarch64 lang/rust packages, which must be the same build. "latest" can build
+              # them days apart; the quarterly branch keeps them in step.
+              mkdir -p /usr/local/etc/pkg/repos
+              printf 'FreeBSD-ports: { url: "https://pkg.FreeBSD.org/${ABI}/quarterly" }\n' > /usr/local/etc/pkg/repos/FreeBSD.conf
+              pkg update -f -q
+            fi
+            pkg install -y bash git curl pkgconf cmake-core python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib dejavu
+            # aarch64-unknown-freebsd is a tier-3 Rust target: rustup publishes no toolchain
+            # or standard library for it ("installer for platform not found"), so use
+            # FreeBSD's lang/rust package.
+            if [ "${{ matrix.arch }}" = aarch64 ]; then
+              pkg install -y rust
+            else
+              curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+            fi
+      - name: Set up the aarch64 cross toolchain
+        if: matrix.arch == 'aarch64'
+        shell: freebsd {0}
+        run: |
+          set -eu
+          # Stable Rust, no -Zbuild-std: the aarch64 standard library is copied from FreeBSD's
+          # aarch64 lang/rust package, and C code links with base clang and lld against an
+          # arm64 sysroot (base.txz plus the libraries the prepare step installs).
+          target=aarch64-unknown-freebsd
+          X=/var/tmp/craft-cross
+          S=$X/sysroot
+          mkdir -p "$X/db" "$X/cache" "$S"
+          release=$(freebsd-version -u | sed 's/-p[0-9]*$//')
+          P="-o ABI=FreeBSD:${release%%.*}:aarch64 -o OSVERSION=$(uname -U) -o PKG_DBDIR=$X/db -o PKG_CACHEDIR=$X/cache -o IGNORE_OSVERSION=yes"
+          pkg $P update -q
+          host=$(pkg query %v rust)
+          cross=$(pkg $P rquery %v rust)
+          if [ "$host" != "$cross" ]; then
+            echo "error: lang/rust is $host for amd64 but $cross for aarch64; the standard library must match the compiler" >&2
+            exit 1
+          fi
+          pkg $P fetch -y -q rust
+          # pkg links each name-version.pkg to its hashed file.
+          tar -xf "$X/cache/rust-$cross.pkg" -C "$X" --include "*usr/local/lib/rustlib/$target/*"
+          cp -R "$X/usr/local/lib/rustlib/$target" /usr/local/lib/rustlib/
+          base=https://download.freebsd.org/releases/arm64/aarch64/$release
+          fetch -q -o "$X/MANIFEST" "$base/MANIFEST"
+          fetch -q -o "$X/base.txz" "$base/base.txz"
+          if [ "$(awk '$1 == "base.txz" { print $2 }' "$X/MANIFEST")" != "$(sha256 -q "$X/base.txz")" ]; then
+            echo "error: arm64 base.txz does not match its MANIFEST" >&2
+            exit 1
+          fi
+          tar -xf "$X/base.txz" -C "$S" ./lib ./usr/lib ./usr/include ./usr/libdata
+          # The libraries the prepare step installs; the build tools and fonts stay host-only.
+          pkg $P fetch -y -q -d libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
+          for p in "$X"/cache/*.pkg; do
+            [ ! -L "$p" ] || continue
+            case "$p" in */rust-*) continue ;; esac
+            tar -xf "$p" -C "$S" --exclude '+*'
+          done
+          for tool in cc c++; do
+            printf '#!/bin/sh\nexec %s --target=%s%s --sysroot=%s -fuse-ld=lld -I%s/usr/local/include -L%s/usr/local/lib -Wl,-rpath-link,%s/usr/local/lib "$@"\n' \
+              "$tool" "$target" "${release%%-*}" "$S" "$S" "$S" "$S" > "$X/$tool"
+            chmod +x "$X/$tool"
+          done
+          cat > "$X/env" <<EOF
+          export CARGO_BUILD_TARGET=$target
+          export CARGO_TARGET_AARCH64_UNKNOWN_FREEBSD_LINKER=$X/cc
+          export CC_aarch64_unknown_freebsd=$X/cc CXX_aarch64_unknown_freebsd=$X/c++ AR_aarch64_unknown_freebsd=/usr/bin/ar
+          export PKG_CONFIG_ALLOW_CROSS=1 PKG_CONFIG_SYSROOT_DIR=$S PKG_CONFIG_LIBDIR=$S/usr/local/libdata/pkgconfig:$S/usr/libdata/pkgconfig
+          EOF
+          rustc --print target-libdir --target "$target"
+      - name: Restore FreeBSD Cargo cache
+        id: cargo-cache
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: storytold/craft-common-actions/actions/freebsd-cargo-cache@main
+        with:
+          configuration: ${{ toJSON(inputs) }}
+          source-hash: ${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/build.rs', '.cargo/**', 'rust-toolchain*', 'packaging/**', '.github/workflows/freebsd.yml') }}
+      - name: Build and test
+        shell: freebsd {0}
+        run: |
+          set -eu
+          # Only rustup writes this; the lang/rust package installs into /usr/local/bin.
+          [ ! -f "$HOME/.cargo/env" ] || . "$HOME/.cargo/env"
+          # A failed restore may leave partial files. Rebuild from an empty cache.
+          if [ "${{ steps.cargo-cache.outcome }}" = failure ]; then
+            rm -rf /var/tmp/craft-target /var/tmp/craft-cargo/registry /var/tmp/craft-cargo/git
+          fi
+          git config --global --add safe.directory "*"
+          rustc --version
+          # The genai-native deploy key from the workspace (see the host step above).
+          chmod 600 .ci-genai-native/key
+          git config --global url."ssh://git@github.com/CodyChuGit/genai-native".insteadOf "https://github.com/CodyChuGit/genai-native"
+          export GIT_SSH_COMMAND="ssh -i $PWD/.ci-genai-native/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$PWD/.ci-genai-native/known_hosts -o StrictHostKeyChecking=yes"
+          if [ -d craft-fonts ]; then
+            export CRAFT_FONTS_DIR="$PWD/craft-fonts"
+          fi
+          if [ "${{ inputs.require-craft-fonts }}" = "true" ]; then
+            if [ ! -d craft-fonts ]; then
+              echo "error: required craft-fonts checkout is missing" >&2
+              exit 1
+            fi
+            export CRAFT_FONTS_REQUIRED=1
+          fi
+          if [ -f craft-i18n.rev ]; then export CRAFT_I18N_DIR="$PWD/craft-i18n" CRAFT_I18N_REQUIRED=1; fi
+          # Written by "Set up the aarch64 cross toolchain": cargo then builds for aarch64.
+          [ ! -f /var/tmp/craft-cross/env ] || . /var/tmp/craft-cross/env
+          # Tests run as an ordinary user: root is never refused a file, so a test that expects
+          # "permission denied" fails as root, and a permission bug root would hide goes unseen.
+          as_tester() {
+            if [ "$(id -u)" -ne 0 ]; then sh -eu; return; fi
+            id craft-test >/dev/null 2>&1 || pw useradd craft-test -m -s /bin/sh
+            # rustup's toolchains stay under /root; tests write the target, Cargo's cache and the checkout.
+            rustup_home=${RUSTUP_HOME:-$HOME/.rustup}
+            chmod 755 /root
+            chown -R craft-test "$CARGO_TARGET_DIR" "$CARGO_HOME" "$PWD"
+            HOME=/home/craft-test RUSTUP_HOME=$rustup_home su -m craft-test -c 'sh -eu'
+          }
+          # Keep argument data out of shell source, including the tester's shell below.
+          CARGO_PROFILE_DEV_DEBUG=0 python3 - <<'PY'
+          import os
+          import shlex
+
+          os.execvp("cargo", ["cargo", "build", "--workspace", "--all-targets", "--locked",
+                              *shlex.split(os.environ["CARGO_BUILD_EXTRA_ARGS"])])
+          PY
+          if [ "${{ inputs.skip-tests }}" != "true" ]; then
+            if [ "${{ matrix.arch }}" = aarch64 ]; then
+              # The build above compiled every test target; an x86_64 guest cannot run them.
+              echo "::notice title=FreeBSD aarch64::cross-compiled on x86_64: tests built, not run"
+            elif [ "${{ inputs.custom-test-command != '' }}" = "true" ]; then
+              # Isolate the command list: an early failure in an && chain must not
+              # be hidden by a later successful packaging command in this script.
+              # The command text travels as data in the environment, never in this script's source.
+              printf '%s\n' "$CUSTOM_TEST_COMMAND" | as_tester || exit "$?"
+            else
+              as_tester <<'CRAFT_TESTS'
+          CARGO_PROFILE_DEV_DEBUG=0 python3 - <<'PY'
+          import os
+          import shlex
+
+          os.execvp("cargo", ["cargo", "test", "--workspace", "--locked",
+                              *shlex.split(os.environ["CARGO_TEST_EXTRA_ARGS"])])
+          PY
+          CRAFT_TESTS
+            fi
+          fi
+      # package.sh builds for the guest's own architecture, so the cross-compiled aarch64
+      # leg stops after the build.
+      - name: Checkpoint tests and restore the release profile
+        id: package-cache
+        continue-on-error: true
+        timeout-minutes: 10
+        if: inputs.run-package-check && matrix.arch != 'aarch64'
+        uses: storytold/craft-common-actions/actions/freebsd-cargo-cache@main
+        with:
+          phase: package
+          configuration: ${{ toJSON(inputs) }}
+          source-hash: ${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/build.rs', '.cargo/**', 'rust-toolchain*', 'packaging/**', '.github/workflows/freebsd.yml') }}
+      - name: Build and validate the FreeBSD package
+        if: inputs.run-package-check && matrix.arch != 'aarch64'
+        shell: freebsd {0}
+        run: |
+          set -eu
+          [ ! -f "$HOME/.cargo/env" ] || . "$HOME/.cargo/env"
+          # The genai-native deploy key from the workspace (see the host step above).
+          chmod 600 .ci-genai-native/key
+          git config --global url."ssh://git@github.com/CodyChuGit/genai-native".insteadOf "https://github.com/CodyChuGit/genai-native"
+          export GIT_SSH_COMMAND="ssh -i $PWD/.ci-genai-native/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$PWD/.ci-genai-native/known_hosts -o StrictHostKeyChecking=yes"
+          # Required even if the optional cache checkpoint failed before cleanup.
+          rm -rf /var/tmp/craft-target/debug
+          if [ "${{ steps.package-cache.outcome }}" = failure ]; then
+            rm -rf /var/tmp/craft-target/release
+          fi
+          if [ -d craft-fonts ]; then export CRAFT_FONTS_DIR="$PWD/craft-fonts"; fi
+          if [ "${{ inputs.require-craft-fonts }}" = true ]; then export CRAFT_FONTS_REQUIRED=1; fi
+          if [ -f craft-i18n.rev ]; then export CRAFT_I18N_DIR="$PWD/craft-i18n" CRAFT_I18N_REQUIRED=1; fi
+          if [ ! -f packaging/freebsd/package.sh ]; then
+            echo "error: requested FreeBSD packaging script is missing" >&2
+            exit 1
+          fi
+          CARGO_BUILD_JOBS=4 bash packaging/freebsd/package.sh
+          # Check every produced archive; an unmatched glob or unreadable tarball
+          # must fail instead of turning a requested package check into a no-op.
+          for archive in dist/release/*-freebsd-${{ matrix.arch }}.tar.gz; do
+            if [ ! -f "$archive" ]; then
+              echo "error: no FreeBSD ${{ matrix.arch }} package was produced" >&2
+              exit 1
+            fi
+            tar -tzf "$archive"
+          done
+      - name: Save FreeBSD Cargo cache
+        if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.cargo-cache.outputs.key != '' && steps.cargo-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: storytold/craft-common-actions/actions/freebsd-cargo-cache@main
+        with:
+          phase: save
+          configuration: ${{ toJSON(inputs) }}
+          source-hash: ${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/build.rs', '.cargo/**', 'rust-toolchain*', 'packaging/**', '.github/workflows/freebsd.yml') }}
+          key: ${{ steps.cargo-cache.outputs.key }}
