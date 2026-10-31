@@ -61,6 +61,28 @@ The app sends `SPLIT_DEFAULT_PROMPT`, so warm splits hit it. A cache miss drops 
 the text encoder loads. Warm Split 91.9 to 86.0 s, layers byte-identical (benchmarks.md §0).
 `QIR_LAYERED_RESIDENT=0` restores per-split loads.
 The denoise (84.4 s of 86) is what's left; item 2 (INT8 linears without paging) is next.
+## 2026-10-31: Generate panel redesign (UI/UX pass)
+
+Window › Generate's full form was a loose stack: a mode strip of pills, a prompt with two icons
+stacked beside it, an unlabelled row of dropdowns that wrapped unpredictably (at a 320 pt dock the
+Expand pads ran off the panel's right edge), and a 150 pt Generate button floating at the right.
+Now (`generate_panel.rs`, `full`):
+
+- A segmented mode switch (icons from the Generate hub), full width; what blocks the mode is a
+  tinted callout, not faint text.
+- Sections with small-caps titles: References (with "n / max"), Prompt, Settings.
+- The prompt is one framed composer (accent frame while focused) with its toolbar inside: Enhance,
+  the large editor, the counter. The negative prompt is behind a chevron disclosure.
+- Settings are labelled rows in a fixed label column: Model, Quality (segmented Best · Balanced ·
+  Fast), Aspect, Size (segmented, with the resulting pixel size under it), Count (segmented),
+  Output (Document · Layer), Widen and Denoise for Fill. Expand's four sides sit around a to-scale
+  diagram of the picture inside the grown canvas.
+- One full-width Generate with the estimate; while it runs, Cancel with the percent and a progress
+  line. Clear all and the shortcut hint under it.
+
+Behaviour, commands and `ui.set`/`ui.inspect.generatePanel` are unchanged; the one-row compact form
+is unchanged. `capture_generate_panel_snapshots` renders every theme × mode to PNGs when
+`PHOTOCRAFT_GENERATE_SNAPSHOTS` names a folder (skipped otherwise).
 
 ## 2026-10-29 (later): upstream PhotoCraft v0.17.0 merged
 
