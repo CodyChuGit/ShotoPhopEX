@@ -256,6 +256,7 @@ impl PhotocraftApp {
         crate::generate_hub::tick(self, &ctx);
         crate::generate_hub::window(self, &ctx);
         crate::angles_ui::window(self, &ctx);
+        crate::app_icon_ui::window(self, &ctx);
         crate::generative_bar::show(self, &ctx);
         dialogs::show(self, &ctx);
         layers_panel_ui::show_dialog(self, &ctx);

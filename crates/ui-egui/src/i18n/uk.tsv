@@ -4425,3 +4425,13 @@ curves	Smooth	Згладити
 	Font size presets	Набори розмірів шрифту
 	Leading presets	Набори інтерліньяжу
 	Tracking presets	Набори трекінгу
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Значок програми…
+	App Icon	Значок програми
+	Built-in	Вбудований
+	Choose Image…	Вибрати зображення…
+	Paste Image	Вставити зображення
+	Image address (https://…)	Адреса зображення (https://…)
+	Download	Завантажити
+	Downloading…	Завантаження…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Підійде будь-яке зображення: його вписано в квадрат. Клацніть значок правою кнопкою, щоб вилучити його.

@@ -132,6 +132,10 @@ fn invoke_early_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str,
     if let Some(r) = crate::angles_ui::menu(app, id, params) {
         return Some(r);
     }
+    // Edit › Preferences › App Icon… (fork): the window, or a change from automation.
+    if let Some(r) = crate::app_icon_ui::menu(app, ctx, id, params) {
+        return Some(r);
+    }
     // Select › Subject goes through SAM 3.1 when a server answers (`retouch_ui::select_subject`).
     if id == "select.subject" && params.as_object().is_none_or(|o| o.is_empty()) {
         return Some(crate::retouch_ui::select_subject(app));

@@ -63,8 +63,12 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 }
                 if !system {
                     let side = if t.pro { 18.0 } else { 20.0 };
-                    let (mark, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+                    let (mark, mark_resp) = ui.allocate_exact_size(vec2(side, side), Sense::click());
                     crate::brand::paint_mark(ui, mark);
+                    // Fork: one click on the mark opens Edit › Preferences › App Icon….
+                    if mark_resp.on_hover_text(tl!("App Icon…")).clicked() {
+                        app.ui.app_icon.open = true;
+                    }
                     ui.add_space(6.0);
                 }
                 // With the macOS menu bar the menus are at the top of the screen instead. Either way

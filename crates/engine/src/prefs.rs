@@ -1334,6 +1334,27 @@ pub struct Preferences {
     pub script_events: crate::automate_cmds::ScriptEvents,
     /// Layer Mask Display Options: the layer mask rubylith's colour and opacity.
     pub layer_mask_overlay: LayerMaskOverlay,
+    /// Fork: Edit › Preferences › App Icon…'s custom icons (owned by the shell's `app_icon_ui`).
+    pub app_icon: AppIcon,
+}
+
+/// The user's own app icons: any image they chose, pasted or downloaded, kept here as a PNG so it
+/// travels with the preferences (desktop and web alike). Nothing ships in the repository.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppIcon {
+    /// The name of the icon in use; empty (or a name not in `icons`) is the built-in one.
+    pub active: String,
+    pub icons: Vec<CustomIcon>,
+}
+
+/// One custom app icon.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CustomIcon {
+    pub name: String,
+    /// Base64 of a square PNG, at most 256 px.
+    pub png: String,
 }
 
 impl Preferences {

@@ -3402,3 +3402,13 @@ curves	Smooth	平滑
 	Font size presets	字号预设
 	Leading presets	行距预设
 	Tracking presets	字距调整预设
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	应用图标…
+	App Icon	应用图标
+	Built-in	内置
+	Choose Image…	选择图像…
+	Paste Image	粘贴图像
+	Image address (https://…)	图像地址 (https://…)
+	Download	下载
+	Downloading…	正在下载…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	任何图片都可以，会被放入正方形中。右键单击图标可将其删除。

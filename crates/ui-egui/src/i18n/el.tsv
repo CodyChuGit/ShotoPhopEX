@@ -4417,3 +4417,13 @@ curves	Smooth	Εξομάλυνση
 	Font size presets	Προεπιλογές μεγέθους γραμματοσειράς
 	Leading presets	Προεπιλογές διάστιχου
 	Tracking presets	Προεπιλογές διαστήματος χαρακτήρων
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Εικονίδιο εφαρμογής…
+	App Icon	Εικονίδιο εφαρμογής
+	Built-in	Ενσωματωμένο
+	Choose Image…	Επιλογή εικόνας…
+	Paste Image	Επικόλληση εικόνας
+	Image address (https://…)	Διεύθυνση εικόνας (https://…)
+	Download	Λήψη
+	Downloading…	Λήψη…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Οποιαδήποτε εικόνα κάνει· προσαρμόζεται σε τετράγωνο. Δεξί κλικ σε ένα εικονίδιο για αφαίρεση.

@@ -3934,3 +3934,13 @@ curves	Smooth	매끄럽게
 	Font size presets	글꼴 크기 사전 설정
 	Leading presets	행간 사전 설정
 	Tracking presets	자간 사전 설정
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	앱 아이콘…
+	App Icon	앱 아이콘
+	Built-in	기본 제공
+	Choose Image…	이미지 선택…
+	Paste Image	이미지 붙여넣기
+	Image address (https://…)	이미지 주소 (https://…)
+	Download	다운로드
+	Downloading…	다운로드 중…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	어떤 그림이든 사용할 수 있으며 정사각형에 맞춰집니다. 아이콘을 마우스 오른쪽 버튼으로 클릭하면 제거됩니다.

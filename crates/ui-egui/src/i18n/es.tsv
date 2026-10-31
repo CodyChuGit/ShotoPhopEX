@@ -4673,3 +4673,13 @@ navigator	Zoom	Zoom
 	Font size presets	Valores predefinidos de tamaño de fuente
 	Leading presets	Valores predefinidos de interlineado
 	Tracking presets	Valores predefinidos de tracking
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Icono de la aplicación…
+	App Icon	Icono de la aplicación
+	Built-in	Integrado
+	Choose Image…	Elegir imagen…
+	Paste Image	Pegar imagen
+	Image address (https://…)	Dirección de la imagen (https://…)
+	Download	Descargar
+	Downloading…	Descargando…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Sirve cualquier imagen; se ajusta a un cuadrado. Haga clic con el botón derecho en un icono para quitarlo.

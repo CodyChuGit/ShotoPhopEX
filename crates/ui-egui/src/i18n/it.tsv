@@ -4828,3 +4828,13 @@ shape	Appearance	Aspetto
 	Font size presets	Predefiniti dimensione font
 	Leading presets	Predefiniti interlinea
 	Tracking presets	Predefiniti spaziatura
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Icona dell’app…
+	App Icon	Icona dell’app
+	Built-in	Integrata
+	Choose Image…	Scegli immagine…
+	Paste Image	Incolla immagine
+	Image address (https://…)	Indirizzo dell’immagine (https://…)
+	Download	Scarica
+	Downloading…	Download in corso…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Va bene qualsiasi immagine; viene adattata in un quadrato. Fai clic destro su un’icona per rimuoverla.

@@ -1,6 +1,6 @@
 # Generative benchmarks (comfy-photocraft)
 
-Measured 2026-10-09 with [`bench/bench-fill.ps1`](bench/bench-fill.ps1) on the development PC:
+Measured 2026-10-09 with `bench/bench-fill.ps1` (local) on the development PC:
 RTX 5090 (32 GB, driver 617.42), ComfyUI 0.39.0 portable, Python 3.13.14, torch 2.14.0+cu130.
 Same image (the 1024² lighthouse, `q21-image.png`), a 384×320 selection with a 25 % margin (a
 576×512 request), the same prompt. `ms` is `generate.fill`'s own wall time; the breakdown comes
@@ -12,7 +12,7 @@ numbers are milliseconds. The raw CSVs and the output PNGs sit in
 ## 0. Native vs ComfyUI, every feature at 1 MP (2026-10-28)
 
 The owner's goal of 2026-10-28: every native feature at least as fast as its ComfyUI route at
-the same settings and size, parity kept. [`bench/scripts/speed-table.ps1`](bench/scripts/speed-table.ps1):
+the same settings and size, parity kept. `bench/scripts/speed-table.ps1` (the owner's local script, not in the repository):
 an 864×1152 portrait (the owner's usual 1 MP 3:4 size), the same template, seed and settings on
 both routes, wall seconds through the app's CLI. "Cold" is a case's first run (its model loads
 after whatever ran before), "warm" the second, with a new seed (ComfyUI answers a repeated
@@ -785,7 +785,7 @@ lever on real photographs; the fill model's capacity at its working size is. The
 a different fill model: the native Krea 2 port with AnyPaint's inpainting recipe (plan §9).
 
 The stock photographs' sources, authors and licences are kept in
-[`bench/stock-sources.txt`](bench/stock-sources.txt).
+`bench/stock-sources.txt` (local).
 
 **What moved the stock set** (the same night, the nine failing scenes' half strokes under each
 change, `-Suffix` runs of `robust-strokes.ps1`):

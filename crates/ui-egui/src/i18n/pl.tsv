@@ -4335,3 +4335,13 @@ curves	Smooth	Wygładź
 	Font size presets	Ustawienia wstępne rozmiaru czcionki
 	Leading presets	Ustawienia wstępne interlinii
 	Tracking presets	Ustawienia wstępne światła
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Ikona aplikacji…
+	App Icon	Ikona aplikacji
+	Built-in	Wbudowana
+	Choose Image…	Wybierz obraz…
+	Paste Image	Wklej obraz
+	Image address (https://…)	Adres obrazu (https://…)
+	Download	Pobierz
+	Downloading…	Pobieranie…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Pasuje każdy obraz; zostanie dopasowany do kwadratu. Kliknij ikonę prawym przyciskiem, aby ją usunąć.

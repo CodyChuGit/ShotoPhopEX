@@ -773,8 +773,42 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         // Set by main, which starts loading the store before the window opens.
         preset_store: None,
         is_wayland: false,
+        download: Some(download),
         ..recovery_services(recovery_dir())
     }
+}
+
+/// The largest download App Icon › Download takes (an icon, not a photo library).
+const DOWNLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Fork: fetch an image for Edit › Preferences › App Icon…. The app builds no TLS stack, so this
+/// asks the system's `curl` (Windows 10 1803+, macOS and Linux ship it), with a time and size cap.
+fn download(url: &str) -> Result<Vec<u8>, String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("the address must start with https:// or http://".into());
+    }
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args(["--fail", "--silent", "--show-error", "--location", "--max-time", "30", "--max-filesize"])
+        .arg(DOWNLOAD_MAX_BYTES.to_string())
+        .args(["--proto", "=http,https", "--"])
+        .arg(url)
+        .stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        // No console window flashing up behind the app (CREATE_NO_WINDOW).
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().map_err(|e| format!("couldn't run curl: {e}"))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("curl: ").to_string();
+        return Err(if why.is_empty() { format!("the download failed ({})", out.status) } else { why });
+    }
+    if out.stdout.is_empty() {
+        return Err("the address returned nothing".into());
+    }
+    Ok(out.stdout)
 }
 
 /// Preferences ▸ General ▸ Beep When Done: the platform's default information beep.

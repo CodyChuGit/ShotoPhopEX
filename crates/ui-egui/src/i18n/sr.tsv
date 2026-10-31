@@ -4783,3 +4783,13 @@ shape	Appearance	Izgled
 	Font size presets	Unapred podešene veličine fonta
 	Leading presets	Unapred podešeni proredi
 	Tracking presets	Unapred podešeni razmaci slova
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Ikona aplikacije…
+	App Icon	Ikona aplikacije
+	Built-in	Ugrađena
+	Choose Image…	Izaberi sliku…
+	Paste Image	Nalepi sliku
+	Image address (https://…)	Adresa slike (https://…)
+	Download	Preuzmi
+	Downloading…	Preuzimanje…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Odgovara bilo koja slika; uklapa se u kvadrat. Desni klik na ikonu je uklanja.

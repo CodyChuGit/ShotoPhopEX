@@ -3741,3 +3741,13 @@ curves	Smooth	Glätten
 	Font size presets	Schriftgrößen-Vorgaben
 	Leading presets	Zeilenabstand-Vorgaben
 	Tracking presets	Laufweiten-Vorgaben
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	App-Symbol…
+	App Icon	App-Symbol
+	Built-in	Integriert
+	Choose Image…	Bild auswählen…
+	Paste Image	Bild einfügen
+	Image address (https://…)	Bildadresse (https://…)
+	Download	Herunterladen
+	Downloading…	Wird heruntergeladen…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Jedes Bild geht; es wird in ein Quadrat eingepasst. Rechtsklick auf ein Symbol entfernt es.

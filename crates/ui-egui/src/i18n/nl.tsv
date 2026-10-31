@@ -4471,3 +4471,13 @@ curves	Smooth	Vloeiend maken
 	Font size presets	Voorinstellingen lettergrootte
 	Leading presets	Voorinstellingen interlinie
 	Tracking presets	Voorinstellingen spatiëring
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	App-pictogram…
+	App Icon	App-pictogram
+	Built-in	Ingebouwd
+	Choose Image…	Afbeelding kiezen…
+	Paste Image	Afbeelding plakken
+	Image address (https://…)	Afbeeldingsadres (https://…)
+	Download	Downloaden
+	Downloading…	Bezig met downloaden…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Elke afbeelding werkt; ze wordt in een vierkant gepast. Klik met rechts op een pictogram om het te verwijderen.
