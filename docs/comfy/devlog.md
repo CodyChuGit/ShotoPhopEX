@@ -4,6 +4,17 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-10-31: speed pass 3 merged; genai-native pinned at e53bab0
+
+- genai-native #11 (INT8 disk cache), #13 (Split step cache), #14 (block-sparse attention,
+  opt-in, off), #15 (MLP fusion), #16 (VAE decoder implicit GEMM) and #17 (Krea 2 INT8 + rank-64
+  correction, on by default) merged; main `e53bab0` verified on the 5090 (CUDA clippy, qir lib,
+  moss_parity 7/7, layered, preview_live). Numbers: benchmarks.md, "Speed pass 3".
+- The app pins `e53bab0`; Fast draft also runs Split into Layers (step cache 0.10). An empty
+  Models folder falls back to `PHOTOCRAFT_MODELS`, `GN_MODELS` or `<exe dir>/models`.
+- Open: why the owner's running app saw an empty Models folder although preferences.json sets one
+  (the file loads with it set); block-sparse attention stays a measurement.
+
 ## 2026-10-30 (night): Fast draft; Krea 2's full-precision layers measured
 
 - **Fast draft** (the owner's call; `integrations.fastDraft`, off by default, in all 20 languages):

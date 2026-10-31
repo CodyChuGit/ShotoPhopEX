@@ -159,6 +159,25 @@ The pictures are in `photocraft-tests\bench\sp2-step-cache` (`sheet.png`). MOSS 
   Fusing it into the producing kernels would save only the separate pass, about 3–4 % end to end
   by estimate, for new kernels in the shared ConvRot code; not done.
 
+**Speed pass 3, 2026-10-30/31** (genai-native main `e53bab0`; RTX 5090, 864x1152 unless noted,
+fresh workers, warm means):
+
+| change | before | after | picture |
+|---|---|---|---|
+| INT8 disk cache (2511 / Split DiT, `QIR_INT8_CACHE`) | 2511 L8 cold 35.4 s; Split DiT load 7.35 s | 17.8 s; 6.03 s | byte-identical |
+| Fast draft on Split (step cache 0.10) | 59.2 s | 40.2 s | composite 37.18 dB (37.25 off) |
+| Layered MLP bias + GELU fused into the down quantize | Split 59.2 s | 57.5 s | byte-identical |
+| Wan VAE decoder convolutions as implicit GEMM | decode Krea 0.356, 2511 0.432, Split 0.94 s | 0.232, 0.307, 0.57 s | ≥ 56 dB |
+| Krea 2 full-precision layers on INT8 + rank-64 correction | 3.7 s a 1024² picture, DiT load 6.25 s | 2.9 s, 5.39 s | t2i suite vs ComfyUI 19/28 both (27.52 vs 27.57 dB) |
+| Block-sparse attention on Split (opt-in `QIR_LAYERED_SPARSE`, off) | 57.5 s | τ 0.95/0.9/0.8: 54.2/52.3/50.4 s | composite 28–31 dB, layers reorganized: not used |
+
+Tried and not landed: batching the per-linear INT8 conversion sync (with the cache it only runs on
+a first load), pinned double-buffered uploads (upload 4.2 to 2.7 s for 27 GiB, wall clock
+unchanged: the load waits on the 19 GB file), a pinned RAM copy of the last model (the OS file
+cache already holds it on a 64 GB machine). Split's per-step budget after the INT8 pass: attention
+~47 % (SageAttention2 at ~425 TFLOPS), INT8 linears ~38 % (~600 TOPS, the best tile at M ≈ 39k),
+the rest ~15 %.
+
 **Qwen-Image-Edit-2511 on INT8 linears, 2026-10-30** (speed pass 2, genai-native `perf/2511-int8`
 `6a35b91`, on the Split INT8 change). 2511's resident DiT, with its LoRAs already merged into the
 weights, runs ConvRot INT8 linears by default. The load that binds and materializes the LoRAs
