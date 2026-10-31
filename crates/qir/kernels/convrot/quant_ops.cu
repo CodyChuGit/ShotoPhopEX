@@ -173,6 +173,31 @@ struct SituRow {
   }
 };
 
+// The Layered MLP's hidden row: gelu(x + bias) of the up projection's raw bf16 output `x`,
+// exactly as `layered_bias_kernel` (fusednorm/layered_rope.cu) stores it: the bias sum rounded
+// to bf16, then candle's bf16 GELU, so the quantized bytes match the unfused path while the
+// hidden activation is never written.
+struct BiasGeluRow {
+  const __nv_bfloat16* x;
+  long ld;
+  const __nv_bfloat16* bias;
+  __device__ __forceinline__ void load(long row, int col, float (&v)[8]) const {
+    uint4 raw = *reinterpret_cast<const uint4*>(x + row * ld + col);
+    const __nv_bfloat16* h = reinterpret_cast<const __nv_bfloat16*>(&raw);
+#pragma unroll
+    for (int e = 0; e < 8; ++e) {
+      __nv_bfloat16 z = __float2bfloat16_rn(__bfloat162float(h[e]) + __bfloat162float(bias[col + e]));
+      const __nv_bfloat16 square = z * z;
+      const __nv_bfloat16 cube = square * z;
+      const __nv_bfloat16 alpha = z + __float2bfloat16_rn(0.044715f) * cube;
+      const __nv_bfloat16 phase = __float2bfloat16_rn(0.7978845608028654f) * alpha;
+      const __nv_bfloat16 tangent = __float2bfloat16_rn(tanhf(__bfloat162float(phase)));
+      z = (__float2bfloat16_rn(0.5f) * z) * (__float2bfloat16_rn(1.f) + tangent);
+      v[e] = __bfloat162float(z);
+    }
+  }
+};
+
 // One CTA per row. Warp w handles chunks w, w + 8, ... (up to CPW of them),
 // keeping the rotated f32 values in registers until the row amax is known.
 // Same output contract as quantize_rows_fused_k: int8 bytes + row_scale[row]
@@ -295,6 +320,17 @@ extern "C" int swiglu_rotate_quantize_rows_launch(
   if (ld_g % 8 != 0 || ld_p % 8 != 0 || ld_g < K || ld_p < K) return 2;
   if (M <= 0) return 0;
   return launch_rotate_quantize(out, SwiGluRow{g, ld_g, p, ld_p}, row_scale, M, K, s);
+}
+
+// Fused bias + GELU + rotate + quantize of the Layered MLP's raw up projection `x` (rows `ld`
+// apart) and its `bias` (K): the rotate launch's contract.
+extern "C" int bias_gelu_rotate_quantize_rows_launch(
+    unsigned char* out, const __nv_bfloat16* x, long ld, const __nv_bfloat16* bias,
+    float* row_scale, int M, int K, cudaStream_t s) {
+  if (!rq_k_ok(K)) return 1;
+  if (((size_t)x & 15) != 0 || ((size_t)out & 7) != 0 || ld % 8 != 0 || ld < K) return 2;
+  if (M <= 0) return 0;
+  return launch_rotate_quantize(out, BiasGeluRow{x, ld, bias}, row_scale, M, K, s);
 }
 
 // Fused SiTU + rotate + quantize, the SwiGLU launch's contract with `p` the hidden rows.
