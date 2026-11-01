@@ -20,7 +20,7 @@ use std::sync::Arc;
 use photocraft_algo::selection::{self as sel, SelectionMode};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerId, LayerMask, Size};
-use photocraft_genai::template::{self, License, Template};
+use photocraft_genai::template::{self, Template};
 use photocraft_genai::{GenerativeBackend, Gray8, Health, Request, Rgba8, Task};
 use photocraft_geom::Rect;
 use photocraft_raster::Surface;
@@ -2096,7 +2096,7 @@ pub(crate) struct Common {
     pub(crate) name: Option<String>,
 }
 
-pub(crate) fn plan_common(s: &Session, cmd: &str, p: &Value, default_template: &str, task: Task, default_model: &str) -> Result<Common> {
+pub(crate) fn plan_common(_s: &Session, cmd: &str, p: &Value, default_template: &str, task: Task, default_model: &str) -> Result<Common> {
     let prompt = opt_str(cmd, p, "prompt", MAX_PROMPT_CHARS)?
         .map(str::trim)
         .filter(|t| !t.is_empty())
@@ -2108,13 +2108,8 @@ pub(crate) fn plan_common(s: &Session, cmd: &str, p: &Value, default_template: &
     if template.meta.task != task {
         return Err(bad(cmd, format!("template `{template_id}` is a {:?} template, not {task:?}", template.meta.task)));
     }
-    let integrations = &s.prefs().integrations;
-    if template.meta.license == License::Research && !integrations.allow_research_models {
-        return Err(EngineError::Other(format!(
-            "`{}` uses a research-only model; turn on Allow Research-Only Models in Preferences › AI Integrations to use it",
-            template.meta.id
-        )));
-    }
+    // Every model is the owner's own files: a research licence is shown in the picker, never a
+    // reason to refuse a request (owner's call, 2026-11-01).
     let seed = parse_seed(cmd, p)?;
     // 0 (the generated dialog's default) means the template's own step count.
     let steps = opt_num(cmd, p, "steps", 0.0, 250.0)?.map_or(0, |x| x.round() as u32);
@@ -4525,7 +4520,8 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
         let eta = eta_for.and_then(|(w, h, c, r)| estimate_seconds(&m.id, w, h, c, r));
         templates.push(json!({
             "id": m.id, "name": m.name, "family": m.family, "task": m.task, "license": m.license, "licenseNote": m.license_note,
-            "allowed": m.license != License::Research || allow_research,
+            // Never gated on the licence (the owner's own files); `license` says which it is.
+            "allowed": true,
             "defaults": {"steps": m.defaults.steps, "guidance": m.defaults.guidance},
             "needsImage": m.needs_image, "needsMask": m.needs_mask, "models": slots,
             "creator": m.creator, "description": m.description, "badges": m.badges, "references": m.references,
@@ -4602,13 +4598,7 @@ fn run_similar(s: &mut Session, p: &Value) -> Result<Value> {
         })?;
         return run_image(s, &q);
     }
-    let template = template::find(&info.template).map_err(|e| bad(SIMILAR, e.to_string()))?;
-    if template.meta.license == License::Research && !s.prefs().integrations.allow_research_models {
-        return Err(EngineError::Other(format!(
-            "`{}` uses a research-only model; turn on Allow Research-Only Models in Preferences › AI Integrations to use it",
-            template.meta.id
-        )));
-    }
+    template::find(&info.template).map_err(|e| bad(SIMILAR, e.to_string()))?;
     let canvas = d.doc.bounds();
     let rect = Rect::new(info.rect[0], info.rect[1], info.rect[0].saturating_add(info.rect[2]), info.rect[1].saturating_add(info.rect[3])).intersect(&canvas);
     if rect.is_empty() {

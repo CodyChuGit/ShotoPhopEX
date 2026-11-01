@@ -1025,9 +1025,10 @@ pub struct Integrations {
     pub default_image_template: String,
     /// Seconds a generation may take before it is interrupted.
     pub generative_timeout_secs: u32,
-    /// Offer models whose licence allows research use only (Qwen-Image-2.1). On by default in
-    /// PhotoshopEX since 2026-10-28 (the owner's call: 2.1 and Krea 2 run everything natively, no
-    /// ComfyUI); a build for others must turn it off again (`docs/comfy/upstream.md` checklist).
+    /// Let Auto pick models whose licence allows research use only (Qwen-Image-2.1's native
+    /// routes, the matte model). On by default. It never blocks, hides or greys out a model: every
+    /// model is the owner's own files and any one can be chosen or requested whatever this says
+    /// (the owner's call, 2026-11-01); the picker shows the licence as a badge only.
     pub allow_research_models: bool,
     /// When the generative task bar (the Generate panel's compact form) shows under a
     /// selection: `auto` = while the Generate panel is collapsed or hidden, `always`, `never`.

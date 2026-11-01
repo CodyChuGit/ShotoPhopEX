@@ -64,6 +64,14 @@ pub struct ModelInfo {
 pub struct GeneratePanel {
     /// `image`, `fill`, `edit` or `expand`.
     pub mode: String,
+    /// A mode was picked (the person, a menu or a script) since the canvas last changed what it
+    /// asks for; until then the panel shows the one that fits the canvas ([`context_mode`]).
+    #[serde(skip)]
+    pub mode_chosen: bool,
+    /// The mode the canvas asked for when the panel last looked: a change (a selection made or
+    /// dropped, the last document closed or one opened) puts the panel back on the fitting mode.
+    #[serde(skip)]
+    pub context: Option<&'static str>,
     /// Image mode: `document` (a new document) or `layer` (a layer over the canvas).
     pub into: String,
     pub prompt: String,
@@ -135,6 +143,8 @@ impl Default for GeneratePanel {
     fn default() -> Self {
         Self {
             mode: "image".into(),
+            mode_chosen: false,
+            context: None,
             into: "document".into(),
             prompt: String::new(),
             negative: String::new(),
@@ -554,8 +564,30 @@ pub fn visible(app: &PhotocraftApp) -> bool {
 pub fn focus_mode(app: &mut PhotocraftApp, mode: &str) {
     if MODES.contains(&mode) {
         app.ui.generate.mode = mode.to_string();
+        app.ui.generate.mode_chosen = true;
     }
     app.ui.generate.focus = true;
+}
+
+/// The panel shows the mode that fits the canvas: Image with no document, Fill over a selection,
+/// Edit otherwise. A mode picked by hand holds until the canvas asks for another one, so a
+/// selection made after picking Image still opens Fill. (On the Image page an instruction for
+/// the open picture, "close her eyes", made a new picture instead of changing that one.)
+fn context_mode(app: &mut PhotocraftApp) {
+    let fits = match app.session.active() {
+        None => "image",
+        Some(d) if d.doc.selection.as_ref().is_some_and(|s| !s.content_bounds().is_empty()) => "fill",
+        Some(_) => "edit",
+    };
+    let p = &mut app.ui.generate;
+    let changed = p.context.is_some_and(|c| c != fits);
+    p.context = Some(fits);
+    if changed {
+        p.mode_chosen = false;
+    }
+    if !p.mode_chosen {
+        p.mode = fits.to_string();
+    }
 }
 
 /// How many references `mode` takes now: the chosen template's limit; with Auto in image or
@@ -609,6 +641,7 @@ pub fn add_dropped(app: &mut PhotocraftApp, files: Vec<egui::DroppedFileHandle>)
 /// The dock group's body.
 pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     load_catalog(app);
+    context_mode(app);
     app.ui.generate.drawn_frame = Some(app.frame);
     let t = Tokens::get(ui.ctx());
     let mut action: Option<Action> = None;
@@ -658,6 +691,7 @@ fn apply(app: &mut PhotocraftApp, a: Action) {
         }
         Action::Mode(m) => {
             app.ui.generate.mode = m.clone();
+            app.ui.generate.mode_chosen = true;
             // The bar follows for the modes it has.
             if m == "fill" || m == "edit" {
                 app.ui.generative_bar.mode = m;
@@ -1538,6 +1572,7 @@ pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
     if let Some(m) = o.get("mode") {
         let m = m.as_str().filter(|m| MODES.contains(m)).ok_or("generatePanel.mode must be image, fill, edit or expand")?;
         next.mode = m.to_string();
+        next.mode_chosen = true;
     }
     if let Some(x) = o.get("into") {
         next.into = x.as_str().filter(|x| *x == "document" || *x == "layer").ok_or("generatePanel.into must be document or layer")?.to_string();

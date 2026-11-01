@@ -103,10 +103,9 @@ fn the_panel_lists_the_pages_templates_with_estimates_and_the_probe_marks_missin
     assert!(l8.eta.is_some_and(|e| e > 0.0));
     let base = items.iter().find(|i| i.id == "qwen-edit-2511/fill").unwrap();
     assert_eq!(base.installed, Some(true));
+    // A research licence is a badge, never a block, whatever the preference says.
     let research = items.iter().find(|i| i.id == "qwen-2.1/fill").unwrap();
-    assert!(research.research && !research.allowed);
-    app.session.edit_prefs(|p| p.integrations.allow_research_models = true);
-    assert!(crate::generate_panel::picker_items(&app, "fill", false).iter().find(|i| i.id == "qwen-2.1/fill").unwrap().allowed);
+    assert!(research.research && research.allowed);
     // The generated dialog of Generate Image carries the rows and draws the pill.
     let dialog = crate::filter_dialog::open(&mut app, "generate.image").unwrap();
     let fields = app.ui.dialogs.iter().find(|d| d.id == dialog).unwrap().fields.clone();

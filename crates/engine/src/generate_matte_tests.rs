@@ -141,15 +141,15 @@ fn as_selection_loads_the_matte_as_the_selection_and_leaves_the_layer_alone() {
 }
 
 #[test]
-fn remove_background_validates_and_is_gated_like_the_other_research_templates() {
+fn remove_background_validates_and_runs_the_research_matte_by_name() {
     let fake = matte_server();
     let mut s = session(&fake.url);
     for p in [json!({"asSelection": "yes"}), json!({"mode": "xor"}), json!({"sampleAllLayers": 1}), json!({"template": "qwen-edit-2511/fill"})] {
         assert!(matches!(s.execute(REMOVE_BG, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
+    // The research preference off only steers Auto: the matte model asked for by name runs.
     s.edit_prefs(|p| p.integrations.allow_research_models = false);
-    let e = s.execute(REMOVE_BG, json!({"template": "qwen-2.1/matte"})).unwrap_err().to_string();
-    assert!(e.contains("research-only"), "{e}");
+    assert_eq!(s.execute(REMOVE_BG, json!({"template": "qwen-2.1/matte"})).unwrap()["template"], "qwen-2.1/matte");
     s.edit_prefs(|p| p.integrations.allow_research_models = true);
     // A fully transparent answer: the model "kept nothing", and nothing changes.
     let empty = FakeNative::start_with(Options { matte: Some([0.0, 0.0, 0.0, 0.0]), ..Options::default() }).unwrap();

@@ -815,13 +815,12 @@ fn resampling_is_lanczos_for_pixels_and_tent_for_masks() {
 }
 
 #[test]
-fn research_templates_are_gated_by_the_preference() {
-    // No research-only template ships yet; the gate is exercised through its message path.
+fn the_default_fill_template_is_permissive() {
     let fake = FakeNative::start().unwrap();
     let s = session(&fake.url);
     assert!(!s.prefs().integrations.allow_research_models);
     let t = template::find(DEFAULT_FILL_TEMPLATE).unwrap();
-    assert_eq!(t.meta.license, License::Permissive);
+    assert_eq!(t.meta.license, photocraft_genai::template::License::Permissive);
 }
 
 /// The job keeps a backend's latest picture over the place the work named, drops one with no
