@@ -147,6 +147,26 @@ impl Progress for Deadline<'_> {
 /// How a run that lost its worker mid-way begins its error.
 const STOPPED: &str = "the engine stopped";
 
+/// The worker's log moves to `<name>.1` (replacing the last one) at a start once it is past this.
+const LOG_ROTATE_BYTES: u64 = 16 << 20;
+
+/// The worker's log at `path` for this start, appended to: it was truncated at every start, and a
+/// restart lost the owner's own failing Split runs from it (2026-11-01). Past `rotate_at` bytes it
+/// moves to `<name>.1` first; each start is marked with a line. `None` when it cannot be opened
+/// (the worker then runs without a log).
+fn open_log(path: &std::path::Path, rotate_at: u64) -> Option<std::fs::File> {
+    use std::io::Write;
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > rotate_at) {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        let _ = std::fs::rename(path, PathBuf::from(old));
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).ok()?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let _ = writeln!(f, "=== worker start (unix time {secs}, editor pid {}) ===", std::process::id());
+    Some(f)
+}
+
 /// `attempt`, and once more when it lost its worker mid-run and a fresh one can be started
 /// (`respawns`) and the run was not cancelled.
 fn retry_after_stop<T>(respawns: bool, progress: &dyn Progress, attempt: impl Fn() -> Result<T>) -> Result<T> {
@@ -230,8 +250,9 @@ impl NativeBackend {
         PREVIEW_MODES.get(usize::from(self.preview.load(Ordering::Relaxed))).copied().unwrap_or_default()
     }
 
-    /// Write the worker's stderr to `path` (truncated at each start), with `RUST_LOG=info`
-    /// unless this process sets its own, so the engine's phase timings and refusals are there.
+    /// Write the worker's stderr to `path` (appended to across starts, [`open_log`]), with
+    /// `RUST_LOG=info` unless this process sets its own, so the engine's phase timings and
+    /// refusals are there.
     pub fn with_log(mut self, path: PathBuf) -> Self {
         self.log = Some(path);
         self
@@ -308,7 +329,7 @@ impl NativeBackend {
                 return Err(Error::Unavailable("the engine is gone".into()));
             }
             let prev = self.busy.swap(STARTING, Ordering::SeqCst);
-            let log = self.log.as_ref().and_then(|p| std::fs::File::create(p).ok());
+            let log = self.log.as_deref().and_then(|p| open_log(p, LOG_ROTATE_BYTES));
             let spawned = EngineClient::spawn_logged(&self.program, &self.args, &self.token, &self.env(), log);
             self.busy.store(prev, Ordering::SeqCst);
             let mut start_error = self.start_error.lock().unwrap_or_else(|e| e.into_inner());
@@ -915,6 +936,28 @@ mod tests {
         if std::env::var_os("RUST_LOG").is_none() {
             assert!(logged.env().iter().any(|(k, v)| k == "RUST_LOG" && v == "info"));
         }
+    }
+
+    #[test]
+    fn the_worker_log_is_kept_across_starts_and_rotates_when_large() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("pc-worker-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("engine.log");
+        // Two starts: the first run's lines stay, each start is marked.
+        writeln!(open_log(&log, 1 << 20).unwrap(), "first run").unwrap();
+        writeln!(open_log(&log, 1 << 20).unwrap(), "second run").unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("first run") && text.contains("second run"), "{text}");
+        assert_eq!(text.matches("=== worker start").count(), 2, "{text}");
+        // Past the limit the log moves to `.1` and a fresh one starts.
+        writeln!(open_log(&log, 16).unwrap(), "third run").unwrap();
+        let rotated = std::fs::read_to_string(dir.join("engine.log.1")).unwrap();
+        assert!(rotated.contains("second run"), "{rotated}");
+        let fresh = std::fs::read_to_string(&log).unwrap();
+        assert!(fresh.contains("third run") && !fresh.contains("first run"), "{fresh}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
