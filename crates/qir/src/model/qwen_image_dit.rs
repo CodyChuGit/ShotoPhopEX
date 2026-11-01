@@ -1351,6 +1351,7 @@ impl LayeredDit {
                 None => None,
             };
             let hit = cached.is_some();
+            let checkpoint = file.path().to_path_buf();
             let vb = match cached {
                 Some(entry) => file.resident_builder_cached(entry, dt, device),
                 None => file.resident_builder_unpacked(dt, device),
@@ -1361,13 +1362,55 @@ impl LayeredDit {
             let dit = dit?;
             match (cache, hit) {
                 (Some(path), true) => crate::int8_cache::touch(path),
-                (Some(path), false) => crate::int8_cache::write_in_background(path, dit.int8_weights()?),
+                (Some(path), false) => {
+                    return Self::reload_from_entry(dit, path, device, |entry| {
+                        let file = crate::layered_files::TensorFile::open(&checkpoint)?;
+                        INT8_LOAD.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let dit = Self::load(file.resident_builder_cached(entry, dt, device));
+                        INT8_LOAD.store(false, std::sync::atomic::Ordering::Relaxed);
+                        dit
+                    })
+                }
                 (None, _) => {}
             }
             return Ok(dit);
         }
         let _ = (cache, entry);
         Self::load(file.resident_builder(dt, device)?)
+    }
+
+    /// After a converting INT8 load: write the cache entry now and load the model back from it
+    /// with `load`, so it sits in the memory a cache hit gets. Trimmed, the conversion's
+    /// temporaries still left the pool fragmented: Split's DiT loaded with no driver-free memory
+    /// and Windows paged every step (45 s a step instead of 1.5, the split past the editor's 600 s,
+    /// on each cache miss), where a hit in the same process had 3.4 GB free (2026-11-01). A write
+    /// that is refused or fails keeps the converted model.
+    #[cfg(feature = "convrot")]
+    pub(crate) fn reload_from_entry(
+        dit: Self,
+        path: &std::path::Path,
+        device: &Device,
+        load: impl FnOnce(crate::layered_files::TensorFile) -> Result<Self>,
+    ) -> Result<Self> {
+        let t0 = std::time::Instant::now();
+        let weights = dit.int8_weights()?;
+        if weights.is_empty() {
+            return Ok(dit);
+        }
+        match crate::int8_cache::write(path, weights) {
+            Ok(true) => {}
+            Ok(false) => return Ok(dit),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "INT8 cache write failed; keeping the converted model");
+                return Ok(dit);
+            }
+        }
+        let written = t0.elapsed().as_secs_f64();
+        drop(dit);
+        crate::device::trim_pool(device);
+        let dit = load(crate::layered_files::TensorFile::open(path)?)?;
+        tracing::info!(path = %path.display(), write_s = written, reload_s = t0.elapsed().as_secs_f64() - written, "INT8 cache entry written; the model reloaded from it");
+        Ok(dit)
     }
 
     /// [`Self::load`] with ConvRot INT8 linears on CUDA: for a DiT whose LoRAs are already merged

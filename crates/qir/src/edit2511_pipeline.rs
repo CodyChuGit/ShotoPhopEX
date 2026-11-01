@@ -379,7 +379,11 @@ impl Edit2511Pipeline {
                     }
                     #[cfg(feature = "convrot")]
                     if let Some(entry) = &cache {
-                        crate::int8_cache::write_in_background(entry, dit.int8_weights()?);
+                        // Read back from the entry it writes, as a cache hit loads (see
+                        // `reload_from_entry`: a converting load leaves the pool fragmented).
+                        dit = LayeredDit::reload_from_entry(dit, entry, &self.device, |file| {
+                            crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, file).and_then(LayeredDit::load_int8)
+                        })?;
                     }
                     mark(if hit { "DiT load" } else { "LoRA materialize + snapshot" })?;
                     drop(binding);
