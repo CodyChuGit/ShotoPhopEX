@@ -1,5 +1,5 @@
-//! Template selection: the research-licence gate and the default-template preferences, with the
-//! Qwen-Image-2.1 templates as the research-only examples.
+//! Template selection: research-licence templates (never refused; the Qwen-Image-2.1 ones as the
+//! examples) and the default-template preferences.
 
 use photocraft_genai::fake::FakeNative;
 use serde_json::json;
@@ -23,29 +23,23 @@ fn session(url: &str) -> Session {
 }
 
 #[test]
-fn research_templates_need_the_opt_in() {
+fn research_templates_run_whatever_the_preference_says() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
-    for (cmd, template) in [(FILL, "qwen-2.1/fill"), (IMAGE, "qwen-2.1/image")] {
-        let e = s.execute(cmd, json!({"prompt": "x", "template": template})).unwrap_err();
-        assert!(e.to_string().contains("research-only"), "{cmd}: {e}");
-    }
-    assert!(fake.state().runs.is_empty(), "refused before any request");
-    // The listing says which templates are allowed right now.
+    // The preference off only steers Auto: a research template asked for by name runs, and the
+    // listing allows every template, the licence a note.
+    let r = s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image"})).unwrap();
+    assert_eq!(r["template"], "qwen-2.1/image");
     let m = s.execute(MODELS, json!({})).unwrap();
     for t in m["templates"].as_array().unwrap() {
         let research = t["license"] == "research";
-        assert_eq!(t["allowed"], !research, "{}", t["id"]);
+        assert_eq!(t["allowed"], true, "{}", t["id"]);
         assert!(!research || t["licenseNote"].as_str().unwrap().contains("Qwen Research License"), "{}", t["id"]);
     }
-
-    s.edit_prefs(|p| p.integrations.allow_research_models = true);
-    let m = s.execute(MODELS, json!({})).unwrap();
-    assert!(m["templates"].as_array().unwrap().iter().all(|t| t["allowed"] == true));
     let r = s.execute(FILL, json!({"prompt": "a red bicycle", "template": "qwen-2.1/fill", "seed": 1})).unwrap();
     assert_eq!(r["template"], "qwen-2.1/fill");
     let st = fake.state();
-    let g = &st.runs[0].request;
+    let g = &st.runs[1].request;
     let prompt = g["prompt"].as_str().unwrap();
     assert!(prompt.contains("a red bicycle") && prompt.contains("image 2"), "wrapped as a local-edit instruction: {prompt}");
     assert_eq!(g["steps"], 25, "2.1 default");
@@ -84,12 +78,12 @@ fn the_default_template_preferences_pick_the_template() {
     assert!(matches!(e, EngineError::BadParams { .. }) && e.to_string().contains("nope/fill"), "{e}");
     s.edit_prefs(|p| p.integrations.default_fill_template = "krea2-turbo/image".into());
     assert!(matches!(s.execute(FILL, json!({"prompt": "x"})), Err(EngineError::BadParams { .. })));
-    // The research gate applies to preferences too.
+    // A research template named by the preference runs with the research preference off too.
     s.edit_prefs(|p| {
         p.integrations.default_fill_template = "qwen-2.1/fill".into();
         p.integrations.allow_research_models = false;
     });
-    assert!(s.execute(FILL, json!({"prompt": "x"})).unwrap_err().to_string().contains("research-only"));
+    assert_eq!(s.execute(FILL, json!({"prompt": "x"})).unwrap()["template"], "qwen-2.1/fill");
 }
 
 #[test]

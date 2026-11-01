@@ -39,7 +39,7 @@ fn the_menu_opens_the_bar_and_generate_runs_the_fill_with_variations() {
     generate_runs_the_variations(&mut app, &ctx, &fake);
     ui_set_drives_the_bar(&mut app, &ctx, &fake);
     edit_mode_runs_generate_edit(&mut app, &ctx, &fake);
-    research_templates_wait_for_the_preference(&mut app, &ctx, &fake);
+    research_templates_run_whatever_the_preference_says(&mut app, &ctx, &fake);
 }
 
 fn menu_opens_the_bar(app: &mut PhotocraftApp, ctx: &egui::Context, fake: &FakeNative) {
@@ -53,7 +53,7 @@ fn menu_opens_the_bar(app: &mut PhotocraftApp, ctx: &egui::Context, fake: &FakeN
     assert!(app.ui.dialogs.is_empty(), "the bar replaces the generated dialog");
     let ids: Vec<&str> = app.ui.generative_bar.templates.iter().map(|t| t.id.as_str()).collect();
     assert!(ids.contains(&"qwen-edit-2511/fill") && ids.contains(&"qwen-2.1/fill"), "{ids:?}");
-    assert!(!app.ui.generative_bar.templates.iter().find(|t| t.id == "qwen-2.1/fill").unwrap().allowed, "research template gated");
+    assert!(app.ui.generative_bar.templates.iter().find(|t| t.id == "qwen-2.1/fill").unwrap().allowed, "a research licence never gates");
     assert!(fake.state().runs.is_empty(), "listing templates queues nothing");
     // The installed badges: the probe (inline here) found every file of the built-in templates.
     assert!(app.ui.generative_bar.templates.iter().all(|t| t.installed == Some(true)), "{:?}", app.ui.generative_bar.templates);
@@ -162,10 +162,9 @@ fn edit_mode_runs_generate_edit(app: &mut PhotocraftApp, ctx: &egui::Context, fa
     );
 }
 
-fn research_templates_wait_for_the_preference(app: &mut PhotocraftApp, _ctx: &egui::Context, _fake: &FakeNative) {
-    // A research template is refused by the engine until the preference allows it.
-    assert!(generate(app).is_err());
-    app.session.edit_prefs(|p| p.integrations.allow_research_models = true);
+fn research_templates_run_whatever_the_preference_says(app: &mut PhotocraftApp, _ctx: &egui::Context, _fake: &FakeNative) {
+    // A research template runs with the research preference off: it only steers Auto.
+    assert!(!app.session.prefs().integrations.allow_research_models);
     generate(app).unwrap();
     let run = crate::variations_strip::bundles(app).first().cloned().unwrap();
     assert_eq!(run.layers.len(), 3);

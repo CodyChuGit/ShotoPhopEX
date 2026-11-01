@@ -68,6 +68,7 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
     let (mut app, _, hat) = app(&fake.url);
     app.ui.generate.prompt = "make it night".into();
     app.ui.generate.mode = "fill".into();
+    app.ui.generate.mode_chosen = true;
     assert!(request(&app).is_err(), "Fill needs a selection");
     assert_eq!(refs_limit(&app, "fill"), 2, "Auto: the fill-from-reference template's deck");
     app.run("select.rect", json!({"x": 4, "y": 4, "width": 20, "height": 20})).unwrap();
@@ -88,6 +89,7 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
     app.ui.generate.grow = 0;
     app.ui.generate.references.clear();
     app.ui.generate.mode = "edit".into();
+    app.ui.generate.mode_chosen = true;
     assert_eq!(refs_limit(&app, "edit"), 2);
     add_reference(&mut app, json!({"layer": hat}));
     let (cmd, q) = request(&app).unwrap();
@@ -100,6 +102,7 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
     assert_eq!(app.ui.generate.references.len(), 2);
     assert!(app.ui.status.contains("at most 2"), "{}", app.ui.status);
     app.ui.generate.mode = "expand".into();
+    app.ui.generate.mode_chosen = true;
     app.ui.generate.expand = [0, 0, 32, 0];
     let (cmd, q) = request(&app).unwrap();
     assert_eq!(cmd, "generate.expand");
@@ -107,6 +110,7 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
     app.ui.generate.expand = [0; 4];
     assert!(request(&app).is_err(), "nothing to expand");
     app.ui.generate.mode = "image".into();
+    app.ui.generate.mode_chosen = true;
     app.ui.generate.into = "layer".into();
     app.ui.generate.references.clear();
     assert_eq!(request(&app).unwrap().1["target"], "layer");
@@ -117,6 +121,7 @@ fn the_button_shows_the_formula_estimate() {
     let fake = FakeNative::start().unwrap();
     let (mut app, _, _) = app(&fake.url);
     app.ui.generate.mode = "image".into();
+    app.ui.generate.mode_chosen = true;
     app.ui.generate.template.insert("image".into(), "krea2-turbo/image".into());
     app.ui.generate.aspect = "3:2".into();
     app.ui.generate.size = "1.5K".into();
@@ -134,6 +139,7 @@ fn the_button_shows_the_formula_estimate() {
     assert_eq!(image_size(&app), (992, 2048));
     // Edit counts the picture at the size it is sent.
     app.ui.generate.mode = "edit".into();
+    app.ui.generate.mode_chosen = true;
     let edit = estimate(&app, "edit").unwrap();
     // Auto follows the Quality preference (`best` by default: the full-step edit template).
     let auto = photocraft_engine::generate_cmds::likely_auto("generate.edit", photocraft_engine::generate_cmds::quality(&app.session));
@@ -204,6 +210,7 @@ fn enter_generates_only_when_the_preference_says_so_and_ctrl_enter_always() {
     let fake = FakeNative::start().unwrap();
     let (mut a, _, _) = app(&fake.url);
     a.ui.generate.mode = "image".into();
+    a.ui.generate.mode_chosen = true;
     a.ui.generate.into = "layer".into();
     a.ui.generate.template.insert("image".into(), "krea2-turbo/image".into());
     a.ui.generate.prompt = "a lighthouse".into();
@@ -222,6 +229,46 @@ fn enter_generates_only_when_the_preference_says_so_and_ctrl_enter_always() {
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     assert_eq!(fake.state().runs.len(), 2, "Enter generates with the preference on");
+}
+
+#[test]
+fn the_panel_opens_on_edit_over_an_open_picture_and_fill_over_a_selection() {
+    let fake = FakeNative::start().unwrap();
+    // A picture, no selection: Edit (an instruction changes the open picture).
+    let (a, _, _) = app(&fake.url);
+    let h = harness(a, 420.0);
+    assert_eq!(h.state().ui.generate.mode, "edit");
+    assert!(!h.state().ui.generate.mode_chosen, "a default, not a choice");
+    // With a selection: Fill.
+    let (mut a, _, _) = app(&fake.url);
+    a.run("select.rect", json!({"x": 4, "y": 4, "width": 20, "height": 20})).unwrap();
+    let h = harness(a, 420.0);
+    assert_eq!(h.state().ui.generate.mode, "fill");
+    // No document: Image.
+    let mut s = photocraft_engine::Session::new();
+    s.edit_prefs(|p| {
+        p.integrations.models_path = fake.url.clone();
+        p.integrations.runtime_path = "fake".into();
+    });
+    let h = harness(PhotocraftApp::new(s, crate::Services::default()), 420.0);
+    assert_eq!(h.state().ui.generate.mode, "image");
+}
+
+#[test]
+fn a_mode_the_person_picks_stays_whatever_the_canvas_holds() {
+    use egui_kittest::kittest::Queryable;
+    let fake = FakeNative::start().unwrap();
+    let (a, _, _) = app(&fake.url);
+    let mut h = harness(a, 420.0);
+    assert_eq!(h.state().ui.generate.mode, "edit");
+    h.get_by_label("Image").click();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.generate.mode, "image");
+    assert!(h.state().ui.generate.mode_chosen);
+    // A selection later does not move it to Fill.
+    h.state_mut().run("select.rect", json!({"x": 4, "y": 4, "width": 20, "height": 20})).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.generate.mode, "image");
 }
 
 #[test]
@@ -274,6 +321,7 @@ fn the_lora_rows_list_the_templates_family_and_a_run_sends_the_ones_switched_on(
         p.integrations.allow_research_models = true;
     });
     a.ui.generate.mode = "edit".into();
+    a.ui.generate.mode_chosen = true;
     a.ui.generate.template.insert("edit".into(), "qwen-2.1/edit".into());
     a.ui.generate.prompt = "restore the photo".into();
     let mut h = harness(a, 520.0);
@@ -296,6 +344,7 @@ fn denoise_goes_with_a_2511_fill_and_never_with_the_2_1_one() {
     a.session.edit_prefs(|p| p.integrations.allow_research_models = true);
     a.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 24, "height": 16})).unwrap();
     a.ui.generate.mode = "fill".into();
+    a.ui.generate.mode_chosen = true;
     a.ui.generate.prompt = "a red hat".into();
     a.ui.generate.template.insert("fill".into(), "qwen-edit-2511/fill-lightning-8".into());
     assert!(request(&a).unwrap().1.get("denoise").is_none(), "1 is the template's own");
@@ -320,6 +369,7 @@ fn capture_generate_panel_snapshots() {
         for mode in MODES {
             let (mut a, base, _) = app(&fake.url);
             a.ui.generate.mode = mode.into();
+            a.ui.generate.mode_chosen = true;
             a.ui.generate.prompt = "a lighthouse on a cliff at dusk, warm light, long exposure".into();
             if mode == "fill" {
                 a.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 24, "height": 16})).unwrap();

@@ -4,6 +4,23 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-01: the Generate panel opens on the mode the canvas asks for; no licence gates
+
+- The owner selected one eye, typed "close her eyes" in the Generate panel and got a whole new
+  picture: the panel always opened on Image (text to image, the canvas ignored). Until a mode is
+  picked in the session it now opens on Fill over a selection, Edit with a picture open, Image with
+  nothing open (`GeneratePanel::mode_chosen`); a mode picked by the person, a menu or a script
+  sticks.
+- The owner's rule (2026-11-01): every model is his own files, so nothing is refused, hidden or
+  greyed out for its licence. The research-only error is gone from fill/image/edit/similar, the
+  model listing allows every template (the licence stays a badge and a note), and
+  `allowResearchModels` (on by default) only says whether Auto may pick a research model.
+- Standing rules from the owner: measure speed in the running app and run reliability passes in the
+  app itself, not only the CLI and cargo tests.
+- Owner's machine: tools started from the Claude desktop app write `%APPDATA%` into the package's
+  `LocalCache`; the owner's real preferences are reached through `\\localhost\C$\Users\5090\AppData`.
+  The "empty Models folder" was that: his real file had none.
+
 ## 2026-10-31: speed pass 3 merged; genai-native pinned at e53bab0
 
 - genai-native #11 (INT8 disk cache), #13 (Split step cache), #14 (block-sparse attention,

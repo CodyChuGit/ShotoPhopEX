@@ -347,6 +347,7 @@ pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
             Some(m) if m == MODE_FILL || m == MODE_EDIT => {
                 app.ui.generative_bar.mode = m.to_string();
                 app.ui.generate.mode = m.to_string();
+                app.ui.generate.mode_chosen = true;
             }
             _ => return Err("generativeMode must be \"fill\" or \"edit\"".into()),
         }
@@ -528,6 +529,7 @@ fn idle(
     if crate::widgets::dropdown(ui, "generative-mode", tl!("Mode"), &mut mode, &[(MODE_FILL.to_string(), "Fill"), (MODE_EDIT.to_string(), "Edit")], 64.0) {
         bar.mode = mode.clone();
         shared.mode = mode.clone();
+        shared.mode_chosen = true;
     }
     // The prompt; Enter generates.
     let hint = if mode == MODE_EDIT { tl!("Describe the change…") } else { tl!("Describe what to generate…") };
