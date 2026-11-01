@@ -1095,3 +1095,35 @@ fn an_old_comfyui_install_becomes_the_models_folder_once() {
     assert_eq!(s.prefs().integrations.models_root(), "");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A saved Memory Usage is kept as stored, and means the same on desktop; only the web build
+/// caps what it honours.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_history_budget_is_the_stored_memory_usage_on_native() {
+    for mb in [0u32, 1, 1536, 8192, 65536, u32::MAX] {
+        let p = Performance { memory_usage_mb: mb, ..Performance::default() };
+        assert_eq!(p.effective_memory_usage_mb(), mb);
+        assert_eq!(p.history_budget_bytes(), (mb as usize) << 20, "{mb} MB");
+    }
+    let mut s = Session::new();
+    s.load_prefs_json(r#"{"performance": {"memoryUsageMb": 8192}}"#).unwrap();
+    assert_eq!(s.prefs().performance.memory_usage_mb, 8192);
+    assert_eq!(s.prefs().performance.history_budget_bytes(), 8192 << 20);
+}
+
+/// The web build honours Memory Usage up to its cap: below and at it as stored, above it the cap.
+#[test]
+fn the_web_build_caps_memory_usage() {
+    for (stored, honoured) in [
+        (0, 0),
+        (1024, 1024),
+        (WASM_MEMORY_USAGE_CAP_MB, WASM_MEMORY_USAGE_CAP_MB),
+        (WASM_MEMORY_USAGE_CAP_MB + 1, WASM_MEMORY_USAGE_CAP_MB),
+        (8192, WASM_MEMORY_USAGE_CAP_MB),
+        (u32::MAX, WASM_MEMORY_USAGE_CAP_MB),
+    ] {
+        assert_eq!(honoured_memory_usage_mb(stored, true), honoured, "web, {stored} MB");
+        assert_eq!(honoured_memory_usage_mb(stored, false), stored, "desktop, {stored} MB");
+    }
+}

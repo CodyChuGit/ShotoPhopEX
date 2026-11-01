@@ -72,6 +72,27 @@ The app sends `SPLIT_DEFAULT_PROMPT`, so warm splits hit it. A cache miss drops 
 the text encoder loads. Warm Split 91.9 to 86.0 s, layers byte-identical (benchmarks.md §0).
 `QIR_LAYERED_RESIDENT=0` restores per-split loads.
 The denoise (84.4 s of 86) is what's left; item 2 (INT8 linears without paging) is next.
+
+## 2026-10-31: upstream PhotoCraft v0.18.0 merged
+
+Merged storytold/photocraft `v0.18.0` into `photoshopex` (37 conflicts). Kept the fork's Pc
+branding (README, app icon) and generative modules and tests; took upstream's new modules
+(`brush_mode_menu`, `startup_report`), memory-usage prefs and packaging changes. No ComfyUI code
+came back.
+
+- Upstream's new `windows_and_linux_icons_keep_the_round_corners` test (#4478) failed on the Pc
+  tile: `packaging/icon-tile.py` cropped 22 units for Windows and Linux. It now renders the full
+  tile, as upstream does; the hicolor PNGs and `photocraft.ico` were re-rendered from
+  `photocraft-1024.png` (same letterforms, no font change).
+- `docs/scorecard.md` regenerated; i18n TSVs merged and deduplicated.
+- Tests (cloud, no GPU): failures are wgpu, missing CJK glyphs, and three
+  `font_commit_tests` cases that pick the container's system "Inter Display" over "Inter"; the
+  fork does not touch the type tool.
+
+**Still open**
+
+- Merge the PR into `photoshopex`, then rebuild and run the GPU tests on the 5090.
+
 ## 2026-10-31: a new document's first save starts in the last folder saved to
 
 Open dialogs already start in the most recent file's folder (#1889) and save dialogs where the

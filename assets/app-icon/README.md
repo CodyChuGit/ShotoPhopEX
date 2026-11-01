@@ -16,8 +16,8 @@ mark. The upstream-style "Px" tile can still be regenerated with `python -I pack
 
 A 512-unit tile (`viewBox="0 0 512 512"`), rounded square with `rx=112`, no border, the letters
 set in Segoe UI Bold at 56 % of the tile, centred. The macOS renders pad it onto Apple's
-824/1024 icon grid; the Windows and Linux renders crop 22 units off each side, as the previous
-icon did, so the packaging scripts need no change.
+824/1024 icon grid; the Windows and Linux renders use the full tile with no crop, so
+the rounded corners stay transparent (upstream #4478 made the same change to its icon).
 
 ## Provenance
 
