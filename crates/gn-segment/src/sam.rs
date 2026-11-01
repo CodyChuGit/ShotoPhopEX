@@ -135,13 +135,17 @@ impl Sam31 {
     }
     /// Select CUDA compute precision explicitly; F16 remains experimental until its parity gate passes.
     pub fn load_with_dtype(path: impl AsRef<Path>, device: &Device, dtype: candle_core::DType) -> Result<Self> {
-        let ck = Checkpoint::open(path)?.with_compute_dtype(dtype)?;
+        Self::from_checkpoint(&Checkpoint::open(path)?.with_compute_dtype(dtype)?, device)
+    }
+    /// The model from a checkpoint already read (a caller that frees the model and loads it
+    /// again keeps the checkpoint: reading the 1.6 GB file was most of a reload).
+    pub fn from_checkpoint(ck: &Checkpoint, device: &Device) -> Result<Self> {
         Ok(Self {
-            vision: Vision::from_checkpoint(&ck, device)?,
-            text: TextEncoder::from_checkpoint(&ck, device)?,
-            geometry: Geometry::from_checkpoint(&ck, device)?,
-            detector: Detector::from_checkpoint(&ck, device)?,
-            heads: InteractiveHeads::from_checkpoint(&ck, device)?,
+            vision: Vision::from_checkpoint(ck, device)?,
+            text: TextEncoder::from_checkpoint(ck, device)?,
+            geometry: Geometry::from_checkpoint(ck, device)?,
+            detector: Detector::from_checkpoint(ck, device)?,
+            heads: InteractiveHeads::from_checkpoint(ck, device)?,
             tokenizer: None,
             device: device.clone(),
         })

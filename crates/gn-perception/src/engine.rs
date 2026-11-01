@@ -77,6 +77,11 @@ pub struct PerceptionEngine {
     /// mask at IoU >= 0.993 against ComfyUI's own f32 node (gn-segment F16.md). f32 otherwise.
     half: bool,
     sam: Option<Model>,
+    /// SAM 3.1's checkpoint as read (1.6 GB of host memory), kept when the model gives the
+    /// device back: reading the file was 0.8 s of the 0.7–1.1 s reload every Remove stroke after a
+    /// diffusion run paid (2026-11-01).
+    #[cfg(feature = "candle")]
+    checkpoint: Option<gn_segment::weights::Checkpoint>,
     /// The last picture embedded: a content hash and its embedding.
     cache: Option<(u64, Emb)>,
     last_error: Option<String>,
@@ -85,7 +90,17 @@ pub struct PerceptionEngine {
 impl PerceptionEngine {
     pub fn new(runtime_dirs: Vec<PathBuf>, models_root: PathBuf, cpu: bool) -> Self {
         let device = if cpu { Device::Cpu } else { Device::Cuda { ordinal: 0 } };
-        PerceptionEngine { runtime_dirs, models_root, device, half: false, sam: None, cache: None, last_error: None }
+        PerceptionEngine {
+            runtime_dirs,
+            models_root,
+            device,
+            half: false,
+            sam: None,
+            #[cfg(feature = "candle")]
+            checkpoint: None,
+            cache: None,
+            last_error: None,
+        }
     }
 
     /// SAM 3.1's compute precision on CUDA: f16 when `half`, else f32 (the CPU is always f32).
@@ -111,7 +126,11 @@ impl PerceptionEngine {
             };
             let t0 = Instant::now();
             let dtype = if self.half && device.is_cuda() { candle_core::DType::F16 } else { candle_core::DType::F32 };
-            let mut sam = gn_segment::sam::Sam31::load_with_dtype(&checkpoint, &device, dtype).map_err(candle_error)?;
+            if self.checkpoint.is_none() {
+                self.checkpoint = Some(gn_segment::weights::Checkpoint::open(&checkpoint).and_then(|c| c.with_compute_dtype(dtype)).map_err(candle_error)?);
+            }
+            let ck = self.checkpoint.as_ref().ok_or_else(|| EngineError::new(ErrorKind::Internal, "no SAM 3.1 checkpoint"))?;
+            let mut sam = gn_segment::sam::Sam31::from_checkpoint(ck, &device).map_err(candle_error)?;
             sam.set_tokenizer(&tokenizer).map_err(candle_error)?;
             eprintln!("gn-perception: SAM 3.1 on candle in {dtype:?} ({}) loaded in {:.1} s", checkpoint.display(), t0.elapsed().as_secs_f32());
             self.sam = Some(Model::Candle(Box::new(sam)));
