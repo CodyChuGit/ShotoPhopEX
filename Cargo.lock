@@ -3409,7 +3409,7 @@ dependencies = [
 [[package]]
 name = "gn-diffusion"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=e53bab03ed454737101f01cf8996f273c451f7d6#e53bab03ed454737101f01cf8996f273c451f7d6"
 dependencies = [
  "anyhow",
  "gn-engine",
@@ -3420,7 +3420,7 @@ dependencies = [
 [[package]]
 name = "gn-engine"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=e53bab03ed454737101f01cf8996f273c451f7d6#e53bab03ed454737101f01cf8996f273c451f7d6"
 dependencies = [
  "serde",
  "serde_json",
@@ -3429,7 +3429,7 @@ dependencies = [
 [[package]]
 name = "gn-perception"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=e53bab03ed454737101f01cf8996f273c451f7d6#e53bab03ed454737101f01cf8996f273c451f7d6"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -3441,7 +3441,7 @@ dependencies = [
 [[package]]
 name = "gn-segment"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=e53bab03ed454737101f01cf8996f273c451f7d6#e53bab03ed454737101f01cf8996f273c451f7d6"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -5667,7 +5667,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -6845,7 +6845,7 @@ dependencies = [
 [[package]]
 name = "qwen-image-rs"
 version = "0.0.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce#aa5ccdf59d6e17ec4911680143c4c53cf1bb8fce"
+source = "git+https://github.com/CodyChuGit/genai-native.git?rev=e53bab03ed454737101f01cf8996f273c451f7d6#e53bab03ed454737101f01cf8996f273c451f7d6"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -6854,6 +6854,7 @@ dependencies = [
  "cc",
  "clap",
  "float8",
+ "fs2",
  "half",
  "image",
  "memmap2",

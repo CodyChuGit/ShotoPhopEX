@@ -219,6 +219,11 @@ On this PC (2026-10-29): SFT int8 DiT, the int8 encoder, both VAEs and the token
 `D:\PhotoCraftModels\moss-image`, junctioned into the ComfyUI `models` folder as `moss-image`
 subfolders (C: had 30 GB free). ComfyUI supports it from v0.43.0.
 
+Live previews (2026-10-30): Fast uses ComfyUI's `Flux2` latent→RGB factors on the unpacked 32
+channels; Sharp uses madebyollin's **TAEF2** (MIT, https://huggingface.co/madebyollin/taef2,
+`taef2.safetensors` 10.7 MB, SHA-256 `701D31C0ECBEF3B609FE236E2E3A65FFB17F3A94237ACDD771E8EA3194DF557A`)
+in the Models folder's `vae_approx/`; 35.1 dB against the full FLUX.2 decode on a final latent.
+
 Native (genai-native `qir::moss`, templates `moss-image/image` and `moss-image/image-base`):
 against the official pipeline on the same weights, encoder cosine 0.9996, DiT velocity cosine
 0.9999, VAE 60.7 dB (bf16 decode 60.0 dB), a 512² 20-step picture 25.3 dB (the same picture).
