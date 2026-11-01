@@ -4,6 +4,29 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-01 (late): Split into Layers from the menu split nothing
+
+- The owner: "the layers were not split basically". The generated dialog (Edit › Split into
+  Layers, the Generate Hub card) read Split's optional `maxPixels` (`4096..4194304?`, no default)
+  as a slider at its minimum and sent 4096: every Split from the menu sampled a 64-px thumbnail
+  (48×64 for his 452×678 picture), the three layers overlapping blurs (87–93 % of the covered
+  pixels shared). The engine call without `maxPixels` (the CLI, automation, the earlier checks)
+  used the 640-px working size, which is why they looked fine. `maxPixels` now sits in braces like
+  `seed`, so the dialog leaves it out; a ui test fails any generative dialog's optional range
+  without a default. In the app on his picture: 416×640, a face layer, a body layer and the
+  background plate. Contact sheets: `photocraft-tests\remove-2026-11-01\shots\split-*`.
+- Fast draft (step cache, 8 of 20 steps) did not change the separation (portrait, seed 11: the
+  person on one layer either way). At about 1 MP (`maxPixels` 1000000) the portrait came back
+  worse (a whole-picture layer and red blobs): 640 px, the model's size, is the right default.
+- genai-native pinned at cf85edf (#21, #22, from the owner's "look for more things like this"):
+  SAM 3.1 keeps its read checkpoint in host memory when it gives the device back, so each Remove
+  stroke's SAM reload is 0.3 s instead of 0.7–0.8 s (the first after launch 1.1 s); the Layered
+  and 2511 prefetch faults pages on every core, so Split's DiT is ready about 2 s sooner (warm,
+  after a 2.1 edit: 10.9–11.8 s to 8.8–10.4 s; Split 20.2–21.3 s to 18.2–20.3 s). Measured and
+  dropped: caching Krea 2's low-rank split (its load is I/O), previews (no real cost), MOSS mapped
+  loads (I8 tensors candle cannot name). #23 (drop the chat head before the encoder) stays open:
+  no gain shown in the app.
+
 ## 2026-11-01 (evening): Remove after an image generation, 25 s to 13 s
 
 - The owner: "remove tool is still really slow". Measured in his app (his preferences, generative
