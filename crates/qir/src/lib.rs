@@ -49,6 +49,7 @@ pub mod moss;
 pub mod pipeline;
 pub mod preview;
 pub mod profile;
+pub mod q8;
 #[cfg(feature = "sage")]
 pub mod rope;
 #[cfg(feature = "sage")]
