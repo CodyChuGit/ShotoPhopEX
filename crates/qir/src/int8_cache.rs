@@ -76,25 +76,6 @@ pub fn write(path: &Path, weights: Vec<(String, Tensor)>) -> Result<bool> {
     Ok(true)
 }
 
-/// [`write`] on its own thread, so the request that converted does not wait for the disk; a
-/// failure is logged and the next load converts again.
-pub fn write_in_background(path: &Path, weights: Vec<(String, Tensor)>) {
-    if weights.is_empty() {
-        return;
-    }
-    let path = path.to_path_buf();
-    let spawned = std::thread::Builder::new().name("int8-cache-write".into()).spawn(move || {
-        let t0 = std::time::Instant::now();
-        match write(&path, weights) {
-            Ok(true) => tracing::info!(path = %path.display(), write_s = t0.elapsed().as_secs_f64(), "INT8 cache entry written"),
-            Ok(false) => {}
-            Err(e) => tracing::warn!(path = %path.display(), error = %e, "INT8 cache write failed"),
-        }
-    });
-    if let Err(e) = spawned {
-        tracing::warn!(error = %e, "INT8 cache writer did not start");
-    }
-}
 
 /// Mark an entry as just used, so eviction takes the least recently used first.
 pub fn touch(path: &Path) {
