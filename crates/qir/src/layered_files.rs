@@ -152,6 +152,10 @@ impl TensorFile {
         std::hint::black_box(touched);
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.tensors.contains_key(name)
     }
