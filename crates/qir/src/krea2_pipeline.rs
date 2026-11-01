@@ -155,7 +155,7 @@ impl Krea2Pipeline {
         let t0 = Instant::now();
         let dit_files =
             if fp8.is_some() { raw } else { crate::convrot_cache::resolve_file_set(&files.dit_key, raw, opts.convrot, &opts.cache, &Policy::krea2())? };
-        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&dit_files, dtype, &dev)? };
+        let vb = crate::mapped::var_builder(&dit_files, dtype, &dev, |_| true)?;
         let dit = Krea2Dit::load_with(&Krea2Config::default(), opts.convrot, fp8.as_ref(), vb)?;
         tracing::info!(
             load_s = t0.elapsed().as_secs_f32(),
@@ -527,6 +527,7 @@ fn rgb_image(p: &RefImage) -> Result<image::RgbImage> {
 }
 
 fn load_text_encoder(files: &[PathBuf], dev: &Device, dtype: DType) -> Result<QwenTextEncoder> {
-    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(files, dtype, dev)? };
+    // The language model faulted in on every core first ([`crate::mapped`]), not the vision tower.
+    let vb = crate::mapped::var_builder(files, dtype, dev, |n| n.starts_with("model.") && !n.starts_with("model.visual."))?;
     QwenTextEncoder::load_at(&TextConfig::qwen3vl_4b(), false, vb.pp("model")).context("the Qwen3-VL-4B encoder")
 }
