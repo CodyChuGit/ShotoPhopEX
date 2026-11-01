@@ -665,11 +665,14 @@ impl Pipeline {
             let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, self.dtype, &self.dev)? };
             let cfg = TextConfig::default();
             let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp(self.src.lm_root()).pp("norm"))?;
-            let w = vb.get((cfg.vocab_size, cfg.hidden_size), "lm_head.weight").context("the text encoder has no lm_head (a text-only repack?)")?;
             let head = if matches!(self.dev, Device::Cuda(_)) {
-                candle_core::quantized::QMatMul::from_qtensor(candle_core::quantized::QTensor::quantize(&w, candle_core::quantized::GgmlDType::Q8_0)?)?
+                // Read on the CPU and quantized on every core ([`crate::q8`]): candle's own
+                // quantize of the CUDA copy ran on one thread, 10.2 s a load.
+                let host = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, self.dtype, &Device::Cpu)? };
+                let w = host.get((cfg.vocab_size, cfg.hidden_size), "lm_head.weight").context("the text encoder has no lm_head (a text-only repack?)")?;
+                candle_core::quantized::QMatMul::from_qtensor(crate::q8::quantize_q8_0(&w, &self.dev)?)?
             } else {
-                candle_core::quantized::QMatMul::Tensor(w)
+                candle_core::quantized::QMatMul::Tensor(vb.get((cfg.vocab_size, cfg.hidden_size), "lm_head.weight").context("the text encoder has no lm_head (a text-only repack?)")?)
             };
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "language-model head loaded");
             *slot = Some(ChatHead { norm, head });
