@@ -3687,6 +3687,7 @@ curves	Smooth	매끄럽게
 	Describe the change…	변경 내용을 설명하세요…
 	Enhance prompts	프롬프트 자동 개선
 	Warm up AI models at launch	시작할 때 AI 모델 미리 불러오기
+	Fast draft (faster, slightly softer detail)	빠른 초안(더 빠르게, 디테일은 약간 부드럽게)
 	Enhance prompt	프롬프트 개선
 	Enhancing…	개선 중…
 	The model could not improve this prompt	모델이 이 프롬프트를 개선하지 못했습니다

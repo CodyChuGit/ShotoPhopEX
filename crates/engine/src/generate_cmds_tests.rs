@@ -941,3 +941,26 @@ fn the_preview_preference_defaults_to_fast_and_round_trips() {
     restored.edit_prefs(|p| p.integrations.preview_while_generating = "blurry".into());
     assert_eq!(preview_mode(&restored.prefs().integrations), photocraft_genai::PreviewMode::Fast);
 }
+
+/// Fast draft: a 2511 edit of 20 steps or more asks the worker for its step cache at
+/// `FAST_DRAFT_STEP_CACHE`; off, or on a Lightning tier, it does not.
+#[test]
+fn fast_draft_sets_the_step_cache_on_a_2511_full_edit_only() {
+    assert!(fast_draft_applies("qwen-edit-2511/edit", 0), "the template's own 40 steps");
+    assert!(!fast_draft_applies("qwen-edit-2511/edit-lightning-8", 0));
+    assert!(!fast_draft_applies("qwen-2.1/edit", 25), "only 2511");
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    let edit = |s: &mut Session, template: &str| {
+        s.execute(EDIT, json!({"prompt": "make it winter", "template": template, "wholePicture": true, "seed": 3, "enhance": false})).unwrap();
+    };
+    edit(&mut s, "qwen-edit-2511/edit");
+    s.edit_prefs(|p| p.integrations.fast_draft = true);
+    edit(&mut s, "qwen-edit-2511/edit");
+    edit(&mut s, "qwen-edit-2511/edit-lightning-8");
+    let st = fake.state();
+    let cache = |i: usize| st.runs[i].run.params.get("step_cache").cloned();
+    assert_eq!(cache(0), None, "off by default");
+    assert_eq!(cache(1), Some(json!(FAST_DRAFT_STEP_CACHE)));
+    assert_eq!(cache(2), None, "not on the 8-step tier");
+}

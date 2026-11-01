@@ -101,3 +101,16 @@ fn split_sizes_validates_and_has_no_similar() {
     });
     assert!(!empty.is_enabled(SPLIT));
 }
+
+#[test]
+fn fast_draft_sets_the_splits_step_cache() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.execute(SPLIT, json!({"layers": 2, "seed": 5})).unwrap();
+    s.edit_prefs(|p| p.integrations.fast_draft = true);
+    s.execute(SPLIT, json!({"layers": 2, "seed": 5})).unwrap();
+    let st = fake.state();
+    let cache = |i: usize| st.runs[i].run.params.get("step_cache").cloned();
+    assert_eq!(cache(0), None, "off by default");
+    assert_eq!(cache(1), Some(json!(FAST_DRAFT_SPLIT_STEP_CACHE)));
+}

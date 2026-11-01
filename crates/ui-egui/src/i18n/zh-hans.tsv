@@ -3141,6 +3141,7 @@ curves	Smooth	平滑
 	Describe the change…	描述要做的更改…
 	Enhance prompts	自动优化提示词
 	Warm up AI models at launch	启动时预加载 AI 模型
+	Fast draft (faster, slightly softer detail)	快速草稿（更快，细节略柔和）
 	Enhance prompt	优化提示词
 	Enhancing…	正在优化…
 	The model could not improve this prompt	模型无法优化此提示词

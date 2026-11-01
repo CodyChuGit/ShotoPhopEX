@@ -110,6 +110,25 @@ pub(crate) struct Tuning {
     /// the old sheen, 0.8 changes little, the 8-step tier hardly moves below 1 (measured
     /// 2026-10-27). `None`: the template's own (1).
     pub denoise: Option<f64>,
+    /// `integrations.fastDraft`: a 2511 template of 20 steps or more runs with the worker's
+    /// first-block step cache ([`FAST_DRAFT_STEP_CACHE`]; Split into Layers has its own).
+    pub fast_draft: bool,
+}
+
+/// The step-cache threshold Fast draft asks for: the 2511 40-step edit at 864x1152 39.4 to
+/// 24.8 s, 32.5 dB against the full run, the snow slightly softer (2026-10-30).
+pub(crate) const FAST_DRAFT_STEP_CACHE: f64 = 0.05;
+
+/// The step-cache threshold Fast draft asks for on Split into Layers: 3 layers at 864x1152 59.6
+/// to 43.9 s warm, the composite against the picture 37.18 dB (37.25 without); the layer the
+/// model gives the least changes most (2026-10-30).
+pub(crate) const FAST_DRAFT_SPLIT_STEP_CACHE: f64 = 0.10;
+
+/// Whether Fast draft applies to `template` at `steps`: a Qwen-Image-Edit-2511 template that is
+/// not one of its few-step Lightning tiers.
+pub(crate) fn fast_draft_applies(template: &str, steps: u32) -> bool {
+    let steps = if steps == 0 { template::find(template).map_or(0, |t| t.meta.defaults.steps) } else { steps };
+    template.starts_with("qwen-edit-2511/") && steps >= 20
 }
 
 /// Whether `template`'s sampler takes a `denoise` (the 2511 fill templates; Qwen-Image-2.1's
@@ -135,6 +154,7 @@ impl Default for Tuning {
             remove_margin: REMOVE_MARGIN,
             name_shadow: NAME_SHADOW,
             denoise: None,
+            fast_draft: false,
         }
     }
 }
@@ -176,6 +196,7 @@ impl Tuning {
             remove_margin,
             name_shadow,
             denoise,
+            fast_draft: false,
         })
     }
 
@@ -1738,7 +1759,7 @@ fn plan_fill(s: &Session, p: &Value) -> Result<FillPlan> {
         Some(_) => return Err(bad(FILL, format!("`grow` must be a whole number of pixels, 0 to {MAX_GROW}"))),
     };
     let erase = opt_bool(FILL, p, "erase", template.meta.erase_selection)?;
-    let tuning = Tuning::from_params(FILL, p)?;
+    let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::from_params(FILL, p)? };
     Ok(FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow, erase, tuning })
 }
 
@@ -2774,7 +2795,10 @@ fn fill_region(
     ctx.check()?;
     // An expand template crops the model's reference to the picture: its rectangle inside the
     // request, in the request's (possibly resampled) pixels.
-    let params = request_params(&tuning, outpaint.as_ref(), rect, (w, h), (rw, rh));
+    let mut params = request_params(&tuning, outpaint.as_ref(), rect, (w, h), (rw, rh));
+    if tuning.fast_draft && fast_draft_applies(&template_id, steps) {
+        params.insert("step_cache".to_string(), json!(FAST_DRAFT_STEP_CACHE));
+    }
     // An edit template has no noise mask: the picture goes alone and the selection only masks
     // the result layer.
     let wants_mask = |id: &str| template::find(id).map(|t| t.meta.needs_mask).unwrap_or(true);
@@ -3869,7 +3893,7 @@ fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
     // picks among templates with the same slots.
     let refs = crate::generate_refs::plan(s, EDIT, p, &template)?;
     // An edit tunes nothing but its LoRAs (its templates bind no sampler; the size cap is its own).
-    let tuning = Tuning { loras: loras_of(EDIT, p)?, ..Tuning::default() };
+    let tuning = Tuning { loras: loras_of(EDIT, p)?, fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
     Ok(FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow: 0, erase: false, tuning })
 }
 
@@ -4234,6 +4258,8 @@ struct SplitPlan {
     all_layers: bool,
     /// `maxPixels`: the working size by pixel count instead of the 640 px side.
     max_pixels: Option<u64>,
+    /// `integrations.fastDraft`: the worker's step cache ([`FAST_DRAFT_SPLIT_STEP_CACHE`]).
+    fast_draft: bool,
 }
 
 fn plan_split(s: &Session, p: &Value) -> Result<SplitPlan> {
@@ -4252,7 +4278,7 @@ fn plan_split(s: &Session, p: &Value) -> Result<SplitPlan> {
     };
     let all_layers = opt_bool(SPLIT, p, "sampleAllLayers", true)?;
     let max_pixels = opt_num(SPLIT, p, "maxPixels", 4096.0, 4_194_304.0)?.map(|m| m as u64);
-    Ok(SplitPlan { common, layers, all_layers, max_pixels })
+    Ok(SplitPlan { common, layers, all_layers, max_pixels, fast_draft: s.prefs().integrations.fast_draft })
 }
 
 fn split_enabled(s: &Session) -> std::result::Result<(), String> {
@@ -4267,7 +4293,7 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_split(s, p)?;
     // The worker serves it when it has the files (Qwen-Image-Layered is Apache-2.0: no opt-in).
     let backend = backend(s)?;
-    let SplitPlan { common, layers, all_layers, max_pixels } = plan;
+    let SplitPlan { common, layers, all_layers, max_pixels, fast_draft } = plan;
     let Common { template, prompt, negative, seed, steps, guidance, models, name } = common;
     let tid = template.meta.id.clone();
     let tid_out = tid.clone();
@@ -4303,6 +4329,9 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
             let image = if (rw, rh) == (w, h) { image } else { resize_rgba8(&image, rw, rh)? };
             let mut params = BTreeMap::new();
             params.insert("layers".to_string(), json!(layers));
+            if fast_draft {
+                params.insert("step_cache".to_string(), json!(FAST_DRAFT_SPLIT_STEP_CACHE));
+            }
             let req = Request {
                 template: tid.clone(),
                 prompt: prompt.clone(),
