@@ -4,7 +4,7 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
-## 2026-11-01 (evening): Remove after an image generation, 25 s to 18 s
+## 2026-11-01 (evening): Remove after an image generation, 25 s to 13 s
 
 - The owner: "remove tool is still really slow". Measured in his app (his preferences, generative
   `paint.remove` on the stock photos, seed 42, `remove-2026-11-01\` beside the reliability pass):
@@ -15,8 +15,15 @@ can pick up.
 - genai-native #19, pinned here: the chat head's Q8_0 is quantized on every core with candle's own
   blocks (candle quantized the CUDA copy on one thread). Head 10.2 s to 1.5 s; Remove after a Krea
   image: hat 24.7 to 19.1 s, watch 27.3 to 17.8 s; same names, byte-identical results.
+- genai-native #20, pinned here too: model loads fault their pages in on every core, then upload
+  from the mapping (candle's mapped VarBuilder soft-faulted each page as it copied: 3.4 GB/s on a
+  file already in the cache). 2.1 text encoder 4.5–6.1 to 2.6–2.8 s, DiT 3.0–3.4 to 2.4 s, vision
+  tower 0.65 to 0.45 s; Remove after a Krea image 12.2–13.6 s (hat, watch, cone), byte-identical
+  removals and seeded Krea images. The first run after a launch can still find the files out of the
+  cache (encoder 5.3 s once: about 57 GB of models share his 62 GB).
 - The heavy jobs in his log (6–7 samplings at about 1 MP, 24 reference encodes) were Upscale tiles.
-- Open: the text encoder and DiT reload (about 9 s of the 18) is host-to-device upload, next.
+- Left: a swap-Remove is now encoder 2.7 + DiT 2.4 + SAM 1.1 + head 1.35 + VAE and vision 0.75 s
+  of loads and about 4.5 s of removal.
 
 ## 2026-11-01: in-app reliability pass; Split no longer pages on an INT8 cache miss
 
