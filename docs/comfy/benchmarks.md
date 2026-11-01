@@ -736,6 +736,13 @@ genai-native #20 then faults each load's pages in on every core before uploading
 Krea 2's reload logs 1.5 s for its encoder and 2.9 s for its DiT. Removals and seeded Krea images
 byte-identical before and after.
 
+genai-native #21 keeps SAM 3.1's read checkpoint (1.6 GB of host memory) when the perception
+engine gives the device back: SAM's reload on each later Remove stroke went from 0.7–0.8 s to
+0.3 s (reading the checkpoint was 0.8 s of it; the first load after a launch stays 1.1 s). #22
+faults the Layered and 2511 checkpoints' pages on every core: Split at 640 px after a 2.1 edit,
+warm, three runs each, the DiT ready at 8.8–10.4 s instead of 10.9–11.8 s and the Split done in
+18.2–20.3 s instead of 20.2–21.3 s.
+
 ## 5i. Content-Aware Fill, Remove and Spot Healing through the model (PhotoshopEX, 2026-10-21)
 
 The lighthouse picture's red boat (`final-fill-s11.png`, 1024², the 200×120 rectangle at

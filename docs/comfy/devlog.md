@@ -18,6 +18,14 @@ can pick up.
 - Fast draft (step cache, 8 of 20 steps) did not change the separation (portrait, seed 11: the
   person on one layer either way). At about 1 MP (`maxPixels` 1000000) the portrait came back
   worse (a whole-picture layer and red blobs): 640 px, the model's size, is the right default.
+- genai-native pinned at cf85edf (#21, #22, from the owner's "look for more things like this"):
+  SAM 3.1 keeps its read checkpoint in host memory when it gives the device back, so each Remove
+  stroke's SAM reload is 0.3 s instead of 0.7–0.8 s (the first after launch 1.1 s); the Layered
+  and 2511 prefetch faults pages on every core, so Split's DiT is ready about 2 s sooner (warm,
+  after a 2.1 edit: 10.9–11.8 s to 8.8–10.4 s; Split 20.2–21.3 s to 18.2–20.3 s). Measured and
+  dropped: caching Krea 2's low-rank split (its load is I/O), previews (no real cost), MOSS mapped
+  loads (I8 tensors candle cannot name). #23 (drop the chat head before the encoder) stays open:
+  no gain shown in the app.
 
 ## 2026-11-01 (evening): Remove after an image generation, 25 s to 13 s
 
