@@ -4,6 +4,22 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-01: upstream PhotoCraft v0.19.0 merged
+
+Merged storytold/photocraft `v0.19.0` (231 commits since v0.18.0) into `photoshopex` (26
+conflicts, 22 of them i18n TSVs, merged and deduplicated). Kept the fork's README, app icon and
+generative tools; no ComfyUI code came back.
+
+- Remove tool: upstream now turns off "Create a new layer" when painting into a mask or a
+  channel (`remove_params(o, composite)`); the fork's Generative and Best of two options stay
+  in `remove_options`, with the new rule applied there.
+- `crates/engine/Cargo.toml`: both `photocraft-genai` and upstream's new `base64` dependency.
+- `docs/scorecard.md` regenerated (11 of 206).
+
+**Still open**
+
+- Merge the PR into `photoshopex`, then rebuild and run the GPU tests on the 5090.
+
 ## 2026-11-01 (late): Split into Layers from the menu split nothing
 
 - The owner: "the layers were not split basically". The generated dialog (Edit › Split into
