@@ -140,16 +140,26 @@ impl TensorFile {
         Ok(Self { path: path.to_path_buf(), start: 8 + len, tensors, map })
     }
 
-    /// Resolve mapping faults while the VAE and text encoder use the GPU.
+    /// Resolve mapping faults while the VAE and text encoder use the GPU, on up to 16 threads (a
+    /// contiguous share of the pages each): one thread faulted the 19 GB Split entry at about
+    /// 3 GB/s, the DiT load waiting on it (see [`crate::mapped`] for the measured rates).
     pub(crate) fn prefetch(&self, stop: &std::sync::atomic::AtomicBool) {
-        let mut touched = 0u8;
-        for page in self.map.chunks(4096) {
-            if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+        let share = self.map.len().div_ceil(threads).max(1 << 20);
+        std::thread::scope(|s| {
+            for part in self.map.chunks(share) {
+                s.spawn(move || {
+                    let mut touched = 0u8;
+                    for page in part.chunks(4096) {
+                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        touched ^= page[0];
+                    }
+                    std::hint::black_box(touched);
+                });
             }
-            touched ^= page[0];
-        }
-        std::hint::black_box(touched);
+        });
     }
 
     pub fn path(&self) -> &Path {
