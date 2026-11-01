@@ -4,6 +4,21 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-01 (late): Split into Layers from the menu split nothing
+
+- The owner: "the layers were not split basically". The generated dialog (Edit › Split into
+  Layers, the Generate Hub card) read Split's optional `maxPixels` (`4096..4194304?`, no default)
+  as a slider at its minimum and sent 4096: every Split from the menu sampled a 64-px thumbnail
+  (48×64 for his 452×678 picture), the three layers overlapping blurs (87–93 % of the covered
+  pixels shared). The engine call without `maxPixels` (the CLI, automation, the earlier checks)
+  used the 640-px working size, which is why they looked fine. `maxPixels` now sits in braces like
+  `seed`, so the dialog leaves it out; a ui test fails any generative dialog's optional range
+  without a default. In the app on his picture: 416×640, a face layer, a body layer and the
+  background plate. Contact sheets: `photocraft-tests\remove-2026-11-01\shots\split-*`.
+- Fast draft (step cache, 8 of 20 steps) did not change the separation (portrait, seed 11: the
+  person on one layer either way). At about 1 MP (`maxPixels` 1000000) the portrait came back
+  worse (a whole-picture layer and red blobs): 640 px, the model's size, is the right default.
+
 ## 2026-11-01 (evening): Remove after an image generation, 25 s to 13 s
 
 - The owner: "remove tool is still really slow". Measured in his app (his preferences, generative
