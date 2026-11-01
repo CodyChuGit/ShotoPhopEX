@@ -423,7 +423,7 @@ impl Pipeline {
                 crate::convrot_cache::resolve_file_set(&f.dit, vec![f.dit.clone()], opts.convrot, &opts.cache, &crate::convrot_cache::Policy::qwen_image_21())?
             }
         };
-        let dit_vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
+        let dit_vb = crate::mapped::var_builder(&files, dtype, &dev, |_| true)?;
         let dit = QwenImageDit::load(32, 64, false, opts.convrot, dit_vb)?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "DiT loaded");
 
@@ -668,7 +668,7 @@ impl Pipeline {
             let head = if matches!(self.dev, Device::Cuda(_)) {
                 // Read on the CPU and quantized on every core ([`crate::q8`]): candle's own
                 // quantize of the CUDA copy ran on one thread, 10.2 s a load.
-                let host = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, self.dtype, &Device::Cpu)? };
+                let host = crate::mapped::var_builder(&files, self.dtype, &Device::Cpu, |n| n == "lm_head.weight")?;
                 let w = host.get((cfg.vocab_size, cfg.hidden_size), "lm_head.weight").context("the text encoder has no lm_head (a text-only repack?)")?;
                 candle_core::quantized::QMatMul::from_qtensor(crate::q8::quantize_q8_0(&w, &self.dev)?)?
             } else {
@@ -1020,9 +1020,12 @@ pub fn load_text_encoder(model: &Path, dev: &Device, dtype: DType, quant_text: b
 /// The Qwen3-VL vision tower (f32) from the text encoder's files.
 fn load_vision(src: &Source, dev: &Device) -> Result<VisionTower> {
     let files = src.text_files()?;
-    let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, dev)? };
+    let vb32 = crate::mapped::var_builder(&files, DType::F32, dev, |n| n.starts_with(VISION_ROOT))?;
     VisionTower::load(&VisionConfig::default(), vb32.pp("model").pp("visual"))
 }
+
+/// Where the vision tower's tensors sit in the text encoder's files (both layouts).
+const VISION_ROOT: &str = "model.visual.";
 
 /// [`load_text_encoder`] from either source (ComfyUI's single file roots the language model at
 /// `model`).
@@ -1032,7 +1035,10 @@ fn load_text_from(src: &Source, dev: &Device, dtype: DType, quant_text: bool, te
         QwenTextEncoder::load_gguf(&TextConfig::default(), qvb)?
     } else {
         let files = src.text_files()?;
-        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
+        // The language model's tensors faulted in on every core first ([`crate::mapped`]), not
+        // the vision tower's (ComfyUI's repack roots both at `model`) or the chat head's.
+        let root = format!("{}.", src.lm_root());
+        let vb = crate::mapped::var_builder(&files, dtype, dev, |n| n.starts_with(&root) && !n.starts_with(VISION_ROOT))?;
         QwenTextEncoder::load_at(&TextConfig::default(), quant_text, vb.pp(src.lm_root()))?
     };
     if dev.is_cuda() && std::env::var("QIR_CPU_EMBEDDING").map_or(true, |v| v != "0") {

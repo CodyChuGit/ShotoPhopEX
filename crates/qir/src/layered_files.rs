@@ -156,6 +156,59 @@ impl TensorFile {
         &self.path
     }
 
+    /// The tensor names, in the header's order.
+    pub fn names(&self) -> Vec<String> {
+        self.tensors.keys().cloned().collect()
+    }
+
+    /// Fault the whole mapping in on `threads` threads (each a contiguous share of the pages).
+    pub fn prefault_parallel(&self, threads: usize) {
+        self.prefault_where(|_| true, threads);
+    }
+
+    /// Fault in the payload of the tensors `keep` names, on `threads` threads, each an equal
+    /// share of those bytes.
+    pub fn prefault_where(&self, keep: impl Fn(&str) -> bool, threads: usize) {
+        let ranges: Vec<(usize, usize)> = self
+            .tensors
+            .iter()
+            .filter(|(n, _)| keep(n))
+            .filter_map(|(_, i)| Some((usize::try_from(self.start + i.data_offsets[0]).ok()?, usize::try_from(self.start + i.data_offsets[1]).ok()?)))
+            .collect();
+        let total: usize = ranges.iter().map(|(a, b)| b - a).sum();
+        let share = total.div_ceil(threads.max(1)).max(1 << 20);
+        let mut parts: Vec<Vec<(usize, usize)>> = vec![Vec::new()];
+        let mut filled = 0;
+        for (mut a, b) in ranges {
+            while a < b {
+                let take = (b - a).min(share - filled);
+                if let Some(p) = parts.last_mut() {
+                    p.push((a, a + take));
+                }
+                filled += take;
+                a += take;
+                if filled >= share {
+                    parts.push(Vec::new());
+                    filled = 0;
+                }
+            }
+        }
+        let map = &self.map;
+        std::thread::scope(|s| {
+            for part in parts.iter().filter(|p| !p.is_empty()) {
+                s.spawn(move || {
+                    let mut touched = 0u8;
+                    for (a, b) in part {
+                        for page in map.get(*a..*b).unwrap_or_default().chunks(4096) {
+                            touched ^= page[0];
+                        }
+                    }
+                    std::hint::black_box(touched);
+                });
+            }
+        });
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.tensors.contains_key(name)
     }
