@@ -7,10 +7,13 @@ can pick up.
 ## 2026-11-01: the Generate panel opens on the mode the canvas asks for; no licence gates
 
 - The owner selected one eye, typed "close her eyes" in the Generate panel and got a whole new
-  picture: the panel always opened on Image (text to image, the canvas ignored). Until a mode is
-  picked in the session it now opens on Fill over a selection, Edit with a picture open, Image with
-  nothing open (`GeneratePanel::mode_chosen`); a mode picked by the person, a menu or a script
-  sticks.
+  picture: the panel always opened on Image (text to image, the canvas ignored). It now shows
+  Fill over a selection, Edit with a picture open, Image with nothing open. A mode picked by the
+  person, a menu or a script holds until the canvas asks for another one (`GeneratePanel::context`:
+  a selection made or dropped, the last document closed or one opened), so picking Image once
+  cannot leave a later eye selection on Image. Found by the in-app reliability pass: with the pick
+  sticking for the whole session, closing every document left the panel on Edit and Ctrl+Enter did
+  nothing.
 - The owner's rule (2026-11-01): every model is his own files, so nothing is refused, hidden or
   greyed out for its licence. The research-only error is gone from fill/image/edit/similar, the
   model listing allows every template (the licence stays a badge and a note), and

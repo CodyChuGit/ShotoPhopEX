@@ -255,20 +255,27 @@ fn the_panel_opens_on_edit_over_an_open_picture_and_fill_over_a_selection() {
 }
 
 #[test]
-fn a_mode_the_person_picks_stays_whatever_the_canvas_holds() {
+fn a_picked_mode_holds_until_the_canvas_asks_for_another() {
     use egui_kittest::kittest::Queryable;
     let fake = FakeNative::start().unwrap();
     let (a, _, _) = app(&fake.url);
     let mut h = harness(a, 420.0);
     assert_eq!(h.state().ui.generate.mode, "edit");
     h.get_by_label("Image").click();
-    h.run_steps(2);
-    assert_eq!(h.state().ui.generate.mode, "image");
+    h.run_steps(4);
+    assert_eq!(h.state().ui.generate.mode, "image", "the pick holds while the canvas is the same");
     assert!(h.state().ui.generate.mode_chosen);
-    // A selection later does not move it to Fill.
+    // Selecting one eye after picking Image means Fill: the canvas asks for it.
     h.state_mut().run("select.rect", json!({"x": 4, "y": 4, "width": 20, "height": 20})).unwrap();
     h.run_steps(2);
-    assert_eq!(h.state().ui.generate.mode, "image");
+    assert_eq!(h.state().ui.generate.mode, "fill");
+    // A pick over the selection holds too, and dropping the selection goes back to Edit.
+    h.get_by_label("Expand").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.generate.mode, "expand");
+    h.state_mut().run("select.deselect", json!({})).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.generate.mode, "edit");
 }
 
 #[test]
