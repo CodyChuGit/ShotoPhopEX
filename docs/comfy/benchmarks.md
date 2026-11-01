@@ -535,6 +535,12 @@ The detector route softens its mask with the classical edge refinement instead (
 CFG 2.5 means two passes a step, like the 2511 base; the official 640 px working size keeps it
 to about a minute. The layers come back resampled to the canvas.
 
+**INT8 cache miss, in the app (2026-11-01, RTX 5090, 864x1152, 3 layers).** Before genai-native
+#18 a miss (entry moved aside) loaded the converted DiT with 0 MiB driver-free; Windows paged
+every step (about 45 s each) and the split ran past the editor's 600 s. With the converted model
+reloaded from the entry it writes: 80.4 s on the miss (10.7 GB driver-free after the reload), 40.2 s
+on the next run (a hit); a hit before the fix, in the same worker after a 2.1 edit: 65-73 s.
+
 ## 5c. Generative Edit and the automatic purge
 
 `generate.edit` sends the whole 1024² lighthouse at 0.75 MP through the official 2511 edit
