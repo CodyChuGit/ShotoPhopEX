@@ -4,7 +4,7 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
-## 2026-11-01 (night): Split tries three seeds and keeps the best-separated
+## 2026-11-01 (night): Split can try several seeds and keep the best-separated
 
 - With the dialog fixed, the owner's picture still split badly at most seeds. ComfyUI's own
   Qwen-Image-Layered graph (shift 1.0, euler/simple, 20 steps, CFG 2.5, the same sizes and prompt)
@@ -12,7 +12,8 @@ can pick up.
   of 10 on the portrait, against 7 and 10 of 10 through the native worker. So the model, not the
   port; the native route's optimisations (INT8, the MLP fusion, the VAE GEMM, sparse attention)
   changed nothing either (switched off through their variables, which do reach the worker).
-- `generate.splitLayers` takes `tries` (1–4, 3 by default and in the dialog): seeds in a row, the
+- `generate.splitLayers` takes `tries` (1–4; 1 by default, the owner's choice, with a Tries slider
+  in the dialog defaulting to 1): seeds in a row, the
   split whose layers above the background hold the most of the picture kept (`split_separation`;
   each try's score in the result's `separation`). On his picture from seeds 1, 4 and 7: 8.2 s for
   one try, 24.0 s for three (about 8 s a further try, the conditioning and the DiT resident); the

@@ -4261,10 +4261,10 @@ struct SplitPlan {
 
 /// Most seeds one Split tries (`tries`).
 const MAX_SPLIT_TRIES: u32 = 4;
-/// Seeds a Split tries unless told otherwise: on the owner's picture three seeds in a row gave at
-/// least one foreground layer every time, one seed at 7 of 10, at about 8 s a further try
-/// (2026-11-01).
-const DEFAULT_SPLIT_TRIES: u32 = 3;
+/// Seeds a Split tries unless told otherwise: one, the owner's choice (2026-11-01), with Tries in
+/// the dialog for more. On his picture three seeds in a row gave at least one foreground layer
+/// every time, one seed at 7 of 10, at about 8 s a further try.
+const DEFAULT_SPLIT_TRIES: u32 = 1;
 
 /// How well a split separates the picture, for choosing between seeds: each layer above the
 /// background (the first) whose opaque share (alpha above half) is neither nearly none nor
@@ -4884,7 +4884,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"layers":int=3,"prompt":text,"negative":text,"sampleAllLayers":bool=true,"maxPixels":{4096..4194304?=the 640-px working size},"tries":1..4=3,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=qwen-layered/split},"model":{file?},"name":{str?}} → {"layers":[id],"count","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (a layered model (Qwen-Image-Layered, Apache-2.0) decomposes the picture into `layers` RGBA layers, the background first, each a new layer above the active one with the alpha the model gave it; prompt = a description of the picture, empty = a generic instruction; sampleAllLayers false sends the active layer alone; the picture goes out at 640 px on its longer side, or at maxPixels pixels (1000000 = 864x1152 at 3:4), and the layers come back resampled; tries = seeds run in a row (seed, seed+1, …), the split whose layers above the background hold the most of the picture kept (`separation` in the result: each try's score), each further try about one sampling more; a background job; needs the native worker with the layered model's files)"#,
+            params: r#"{"layers":int=3,"prompt":text,"negative":text,"sampleAllLayers":bool=true,"maxPixels":{4096..4194304?=the 640-px working size},"tries":1..4=1,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=qwen-layered/split},"model":{file?},"name":{str?}} → {"layers":[id],"count","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (a layered model (Qwen-Image-Layered, Apache-2.0) decomposes the picture into `layers` RGBA layers, the background first, each a new layer above the active one with the alpha the model gave it; prompt = a description of the picture, empty = a generic instruction; sampleAllLayers false sends the active layer alone; the picture goes out at 640 px on its longer side, or at maxPixels pixels (1000000 = 864x1152 at 3:4), and the layers come back resampled; tries = seeds run in a row (seed, seed+1, …), the split whose layers above the background hold the most of the picture kept (`separation` in the result: each try's score), each further try about one sampling more; a background job; needs the native worker with the layered model's files)"#,
             enabled: split_enabled,
             run: run_split,
             journal: true,

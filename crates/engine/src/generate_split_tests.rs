@@ -128,10 +128,8 @@ fn split_tries_runs_that_many_seeds_and_keeps_the_best_separated() {
     assert!(r["seed"].as_u64().is_some_and(|seed| (10..13).contains(&seed)), "{r}");
     assert_eq!(r["count"], 3, "one split's layers placed, not every try's");
     drop(st);
-    // Three tries are the default, one when asked; more than four, or a fraction, is refused.
-    let three = s.execute(SPLIT, json!({"seed": 1})).unwrap();
-    assert_eq!(three["separation"].as_array().map(Vec::len), Some(3));
-    let one = s.execute(SPLIT, json!({"seed": 1, "tries": 1})).unwrap();
+    // One try is the default (the owner's choice); more than four, or a fraction, is refused.
+    let one = s.execute(SPLIT, json!({"seed": 1})).unwrap();
     assert_eq!(one["separation"].as_array().map(Vec::len), Some(1));
     assert!(s.execute(SPLIT, json!({"tries": 5})).is_err());
     assert!(s.execute(SPLIT, json!({"tries": 1.5})).is_err());
