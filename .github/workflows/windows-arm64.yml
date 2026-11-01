@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/windows-arm64.yml
+      - .github/workflows/windows-arm64-shared.yml
       - packaging/windows/**
   schedule:
     - cron: "41 4 * * *"
@@ -26,8 +27,10 @@ permissions:
 
 jobs:
   windows-arm64:
-    # Immutable supporting workflow revision until the new install contract lands upstream.
-    uses: storytold/craft-common-actions/.github/workflows/windows-arm64.yml@8bb4e5ab95443171104ad88113fe1ef9b0e5ce3f
+    # The shared workflow at 8bb4e5ab plus the genai-native deploy key (see windows-arm64-shared.yml).
+    uses: ./.github/workflows/windows-arm64-shared.yml
+    secrets:
+      GENAI_NATIVE_DEPLOY_KEY: ${{ secrets.GENAI_NATIVE_DEPLOY_KEY }}
     with:
       app-name: photocraft
       app-dir: PhotoCraft

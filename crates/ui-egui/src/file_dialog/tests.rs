@@ -707,13 +707,15 @@ fn save_dialogs_remember_where_each_document_was_last_saved() {
     assert_eq!(suggested(&open), joined("/renders", "third.png"));
     answer(&open, None);
     app.poll_file_dialog(&ctx, None);
-    // Another document has its own memory: untitled, it starts wherever the shell defaults.
+    // Another document has its own memory: untitled, it starts in the last folder saved to,
+    // which the preferences keep across restarts.
     app.run("file.new", json!({"width": 4, "height": 4})).unwrap();
     let second = app.session.active().unwrap().doc.id;
     assert_ne!(first, second);
+    assert_eq!(app.session.prefs().last_save_folder, "/renders");
     app.pick_save("fresh.png", |_, _| Ok(Value::Null)).unwrap();
     app.poll_file_dialog(&ctx, None);
-    assert_eq!(suggested(&open), "fresh.png");
+    assert_eq!(suggested(&open), joined("/renders", "fresh.png"));
     answer(&open, Some(FileDialogAnswer::SaveTo("/other/fresh.png".into())));
     app.poll_file_dialog(&ctx, None);
     assert_eq!(app.save_dirs.get(&second).map(|p| p.to_string_lossy().into_owned()).as_deref(), Some("/other"));
@@ -1471,4 +1473,16 @@ fn save_a_copy_appends_copy_unless_the_preference_says_not_to() {
             open.borrow().first().map(|(r, _)| r.clone())
         );
     }
+}
+
+#[test]
+fn import_variable_data_sets_menu_asks_for_a_csv_and_imports_it() {
+    let (mut app, open, _) = app();
+    let ctx = egui::Context::default();
+    assert_eq!(crate::menus::invoke(&mut app, &ctx, "file.import.variableDataSets", json!({})).unwrap(), json!({"fileDialog": "open"}));
+    app.poll_file_dialog(&ctx, None);
+    assert!(matches!(open.borrow().as_slice(), [(FileDialogRequest::Open { multiple: false, extensions: Some(e), .. }, _)] if e == &["csv", "txt"]));
+    answer(&open, Some(FileDialogAnswer::Contents("sets.csv".into(), b"headline\nHello\nWorld\n".to_vec())));
+    app.poll_file_dialog(&ctx, None);
+    assert_eq!(app.session.active().map(|d| d.doc.variables.data_sets.len()), Some(2));
 }
