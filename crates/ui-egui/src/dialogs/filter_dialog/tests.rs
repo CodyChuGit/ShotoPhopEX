@@ -1627,3 +1627,29 @@ fn result_notes_after_the_arrow_are_not_parameters() {
     assert_eq!(object_body("none"), "none");
     assert_eq!(object_body("{}"), "");
 }
+
+#[test]
+fn a_generative_dialog_never_turns_an_optional_range_into_its_minimum() {
+    // Split into Layers' `maxPixels` was `4096..4194304?`: the dialog read it as a slider at
+    // its minimum and sent 4096, so every Split from the menu sampled a 64-px thumbnail and
+    // the layers came back unsplit (2026-11-01). An optional range a dialog shows needs its
+    // default written; one it should not send goes in braces, as `seed` does.
+    for command in ["generate.fill", "generate.image", "generate.expand", "generate.edit", "generate.removeBackground", "generate.splitLayers", "select.byText"] {
+        let spec = photocraft_engine::commands::find(command).unwrap_or_else(|| panic!("{command} is registered"));
+        for p in parse_spec(spec.params) {
+            if !matches!(p.kind, Kind::Range { .. }) {
+                continue;
+            }
+            let at = spec.params.find(&format!("\"{}\":", p.key)).unwrap_or_else(|| panic!("{command}.{}", p.key));
+            let rest = &spec.params[at + p.key.len() + 3..];
+            let segment = &rest[..rest.find(|c| c == ',' || c == '}').unwrap_or(rest.len())];
+            assert!(!segment.trim_end().ends_with('?') || segment.contains('='), "{command}.{}: an optional range with no default ({segment})", p.key);
+        }
+    }
+    assert!(
+        parse_spec(photocraft_engine::commands::find("generate.splitLayers").map(|c| c.params).unwrap_or_default())
+            .iter()
+            .all(|p| p.key != "maxPixels" || !matches!(p.kind, Kind::Range { .. })),
+        "Split's maxPixels is left to the engine (its 640-px working size), not a slider"
+    );
+}
