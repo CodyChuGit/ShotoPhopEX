@@ -486,7 +486,7 @@ fn branded(s: &str) -> &str {
     }
     static INTERNED: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
     let mut map = INTERNED.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    *map.entry(s.to_owned()).or_insert_with(|| Box::leak(brand(s).into_owned().into_boxed_str()))
+    map.entry(s.to_owned()).or_insert_with(|| Box::leak(brand(s).into_owned().into_boxed_str()))
 }
 
 /// Fill `{name}` placeholders. Unknown placeholders are left as written.
