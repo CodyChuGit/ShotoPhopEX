@@ -4654,3 +4654,13 @@ cameraRaw	Yellow	Sárga
 	Select and Mask was closed: another layer was selected	A Kijelölés és maszk bezárult: másik réteg lett kijelölve
 	Drag to move the selected path	Húzza a kijelölt útvonal mozgatásához
 	Edit Brush…	Ecset szerkesztése…
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Alkalmazásikon…
+	App Icon	Alkalmazásikon
+	Built-in	Beépített
+	Choose Image…	Kép kiválasztása…
+	Paste Image	Kép beillesztése
+	Image address (https://…)	Kép címe (https://…)
+	Download	Letöltés
+	Downloading…	Letöltés folyamatban…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Bármilyen kép jó; négyzetbe illesztjük. Az ikon eltávolításához kattintson rá a jobb gombbal.

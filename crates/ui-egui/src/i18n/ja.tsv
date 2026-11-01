@@ -4422,3 +4422,13 @@ curves	Smooth	スムーズ
 	Select and Mask was closed: another layer was selected	「選択とマスク」を閉じました: 別のレイヤーが選択されました
 	Drag to move the selected path	ドラッグして選択したパスを移動
 	Edit Brush…	ブラシを編集…
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	アプリアイコン…
+	App Icon	アプリアイコン
+	Built-in	内蔵
+	Choose Image…	画像を選択…
+	Paste Image	画像をペースト
+	Image address (https://…)	画像のアドレス (https://…)
+	Download	ダウンロード
+	Downloading…	ダウンロード中…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	どんな画像でも使えます。正方形に収められます。右クリックでアイコンを削除します。

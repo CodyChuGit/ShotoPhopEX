@@ -12,11 +12,11 @@ below are from that commit and will drift, the symbol names will not.
 
 ## 0. How to work this plan
 
-**Read first, in order:** [`../../CLAUDE.md`](../../CLAUDE.md) (this checkout, its rules),
+**Read first, in order:** `CLAUDE.md` (the owner's local file: this checkout's rules),
 [`../../AGENTS.md`](../../AGENTS.md) (upstream's rules: never crash, everything is a command, thin
 data-driven UI, never break wasm, tests are the gate), [`codebase-orientation.md`](codebase-orientation.md),
 [`architecture.md`](architecture.md), [`artcraft-study.md`](artcraft-study.md) §3 and §6, the top
-entries of [`devlog.md`](devlog.md), and [`dev-environment-windows.md`](dev-environment-windows.md).
+entries of [`devlog.md`](devlog.md), and `dev-environment-windows.md` (local to the development PC).
 
 **Rules that bind every phase**
 

@@ -2,6 +2,8 @@
 //! (`assets/app-icon/pc/`, see its README) in place of the "Px" tile
 //! in `assets/app-icon/`. The PNG carries the icon's rounded corners; it is decoded once per
 //! context into a mipmapped texture, so it stays crisp at the title bar's size on any display scale.
+//! Fork: a custom icon chosen in Edit › Preferences › App Icon… (`app_icon_ui`) replaces it, and a
+//! click on the mark opens that window.
 
 use egui::{Color32, Context, Id, Rect, TextureHandle, TextureOptions, Ui, pos2};
 use photocraft_codecs::{ChannelLayout, SampleType};
@@ -20,8 +22,16 @@ fn decode() -> egui::ColorImage {
     }
 }
 
-/// The icon texture, uploaded on first use and kept in the context.
+/// Where the fork's custom app icon (`app_icon_ui`) keeps its texture while one is chosen.
+pub(crate) fn custom_id() -> Id {
+    Id::unique("photocraft-brand-mark-custom")
+}
+
+/// The icon texture, uploaded on first use and kept in the context (a custom icon wins).
 fn texture(ctx: &Context) -> TextureHandle {
+    if let Some(tex) = ctx.data(|d| d.get_temp::<TextureHandle>(custom_id())) {
+        return tex;
+    }
     let id = Id::unique("photocraft-brand-mark");
     if let Some(tex) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
         return tex;

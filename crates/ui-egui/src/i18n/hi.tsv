@@ -585,3 +585,13 @@ cameraRaw	Yellow	पीला
 	Select and Mask was closed: its document is no longer the active one	चयन और मास्क बंद कर दिया गया: उसका दस्तावेज़ अब सक्रिय नहीं है
 	Select and Mask was closed: another layer was selected	चयन और मास्क बंद कर दिया गया: दूसरी लेयर चुनी गई
 	Edit Brush…	ब्रश संपादित करें…
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	ऐप आइकन…
+	App Icon	ऐप आइकन
+	Built-in	अंतर्निहित
+	Choose Image…	छवि चुनें…
+	Paste Image	छवि चिपकाएँ
+	Image address (https://…)	छवि का पता (https://…)
+	Download	डाउनलोड करें
+	Downloading…	डाउनलोड हो रहा है…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	कोई भी चित्र चलेगा; उसे एक वर्ग में फ़िट किया जाता है। हटाने के लिए आइकन पर राइट-क्लिक करें।

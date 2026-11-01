@@ -100,6 +100,26 @@ document was last saved, or beside it (#1826). An untitled document had neither,
 save started wherever the OS chose. `Preferences.last_save_folder` (`lastSaveFolder`, not in the
 dialog) now keeps the folder of the last save dialog and `file_dialog.rs` `pick_save` falls back
 to it; it survives a restart. Scorecard: 201 preferences, 12 unread (unchanged).
+## 2026-10-31: App Icon (any image, one click) and the owner's local files out of the tree
+
+Ported from `claude/project-thread-c7hno9` (8883a1af, ddbe96ae), which branched before the v0.17.0
+merge, onto photoshopex. The title-bar look (no Discord button, wheel zooms) was already here from
+9e75bf43, so only these two parts came over:
+
+- Edit › Preferences › App Icon… (`edit.appIcon`, `app_icon_ui.rs`), also a click on the title
+  bar's mark: Built-in plus the user's own icons (click to use, right-click to remove), Choose
+  Image…, Paste Image, and an address with Download (`Services::download`, the system `curl`,
+  30 s and 20 MB, http/https only). Pictures are fitted into a square of at most 256 px and kept
+  as PNGs in the preferences (`appIcon`), at most 12; applied live to the mark and the
+  window/taskbar icon. The exe's file icon stays the built-in "Pc" tile. Automation:
+  `edit.appIcon {use | remove | add}`, `ui.inspect.appIcon`. Strings in all 21 catalogs (the 8
+  catalogs added since were translated here).
+- Untracked and gitignored, kept on the owner's PC: `docs/comfy/bench/`, `packaging/icon-px.py`,
+  `CLAUDE.md`, `docs/comfy/dev-environment-windows.md`. Links to them in docs now name them as
+  local files; older devlog entries still mention them by path, as history.
+
+Open: not tried by hand in the running app. The Ps tile's PNGs remain in photoshopex's history
+(9e75bf43, before 70ad043a redrew it as "Pc"); scrubbing them would mean rewriting photoshopex.
 
 ## 2026-10-31: Generate panel redesign (UI/UX pass)
 

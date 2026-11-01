@@ -3768,3 +3768,13 @@ curves	Smooth	Glätten
 	Select and Mask was closed: its document is no longer the active one	Auswählen und maskieren wurde geschlossen: Das zugehörige Dokument ist nicht mehr aktiv
 	Select and Mask was closed: another layer was selected	Auswählen und maskieren wurde geschlossen: Es wurde eine andere Ebene ausgewählt
 	Edit Brush…	Pinsel bearbeiten…
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	App-Symbol…
+	App Icon	App-Symbol
+	Built-in	Integriert
+	Choose Image…	Bild auswählen…
+	Paste Image	Bild einfügen
+	Image address (https://…)	Bildadresse (https://…)
+	Download	Herunterladen
+	Downloading…	Wird heruntergeladen…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Jedes Bild geht; es wird in ein Quadrat eingepasst. Rechtsklick auf ein Symbol entfernt es.

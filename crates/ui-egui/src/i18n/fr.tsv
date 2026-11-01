@@ -4779,3 +4779,13 @@ shape	Appearance	Apparence
 	Select and Mask was closed: its document is no longer the active one	Sélectionner et masquer a été fermé : son document n’est plus le document actif
 	Select and Mask was closed: another layer was selected	Sélectionner et masquer a été fermé : un autre calque a été sélectionné
 	Edit Brush…	Modifier le pinceau…
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Icône de l’application…
+	App Icon	Icône de l’application
+	Built-in	Intégrée
+	Choose Image…	Choisir une image…
+	Paste Image	Coller l’image
+	Image address (https://…)	Adresse de l’image (https://…)
+	Download	Télécharger
+	Downloading…	Téléchargement…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	N’importe quelle image convient ; elle est ajustée dans un carré. Clic droit sur une icône pour la supprimer.

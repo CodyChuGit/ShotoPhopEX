@@ -93,6 +93,7 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("window.toggle.generate", "Generate", &["Window"], None),
     ("window.toggle.generations", "Generations", &["Window"], None),
     ("help.generativeFeatures", "Generative Features…", &["Help"], None),
+    ("edit.appIcon", "App Icon…", &["Edit", "Preferences"], None),
     ("edit.search", "Search…", &["Edit"], Some("Cmd+F")),
     ("help.discord", "Join the ArtCraft Discord…", &["Help"], None),
     ("help.website", "PhotoCraft Website", &["Help"], None),

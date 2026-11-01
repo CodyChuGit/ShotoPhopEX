@@ -304,6 +304,8 @@ pub type QuitFn = Box<dyn FnMut()>;
 
 /// Where the OS pointer is now, in egui points within the window; `None` when unknown.
 pub type CursorPosFn = Box<dyn FnMut(&egui::Context) -> Option<egui::Pos2>>;
+/// Fetch a URL's bytes (fork: App Icon › Download); a plain function so it can run on a thread.
+pub type DownloadFn = fn(&str) -> Result<Vec<u8>, String>;
 
 /// Whether Caps Lock is toggled on, read from the OS. `None` where the platform cannot
 /// report it (native Wayland): the cursor then follows the cursor preference (#1758).
@@ -436,6 +438,8 @@ pub struct Services {
     pub read_displays: Option<monitor_status::ReadDisplaysFn>,
     /// The macOS menu bar, when the desktop app installed one; the in-window menus are hidden then.
     pub native_menu: Option<native_menu::NativeMenu>,
+    /// Fork: downloads for Edit › Preferences › App Icon… (desktop; the web has none).
+    pub download: Option<DownloadFn>,
     /// Ends the app once leaving is settled (nothing unsaved, or the prompt answered), instead of
     /// letting eframe close the window. macOS: `-[NSApplication terminate:]`. Closing the window
     /// while AppKit's run loop is still going crashes or hangs Touch Bar Macs (#1575, #1458).

@@ -4468,3 +4468,13 @@ cameraData	Lens	Lens
 	Underlying Layer:	Alttaki Katman:
 	Drag to move the selected path	Seçili yolu taşımak için sürükleyin
 	Edit Brush…	Fırçayı Düzenle…
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Uygulama Simgesi…
+	App Icon	Uygulama Simgesi
+	Built-in	Yerleşik
+	Choose Image…	Görüntü Seç…
+	Paste Image	Görüntüyü Yapıştır
+	Image address (https://…)	Görüntü adresi (https://…)
+	Download	İndir
+	Downloading…	İndiriliyor…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Her resim olur; bir kareye sığdırılır. Kaldırmak için simgeye sağ tıklayın.

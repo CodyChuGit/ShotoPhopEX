@@ -17,7 +17,7 @@ once and do it right". Every section below answers one of those four sentences.
 
 ## 0. How to work this plan
 
-**Read first, in order:** [`../../CLAUDE.md`](../../CLAUDE.md), [`../../AGENTS.md`](../../AGENTS.md)
+**Read first, in order:** `CLAUDE.md` (the owner's local file), [`../../AGENTS.md`](../../AGENTS.md)
 (never crash, everything is a command, tests are the gate, never break wasm), the research report
 [`research/Native inference for PhotoCraft on RTX 5090.md`](research/Native%20inference%20for%20PhotoCraft%20on%20RTX%205090.md)
 and its five notes in `research/notes/`, [`architecture.md`](architecture.md),

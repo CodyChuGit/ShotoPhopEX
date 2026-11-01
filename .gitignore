@@ -15,3 +15,8 @@ __pycache__/
 
 # CI only: the genai-native deploy key the FreeBSD job copies into its VM workspace.
 /.ci-genai-native/
+# Fork: the owner's local files, kept on disk but out of the distributed repository
+/docs/comfy/bench/
+/packaging/icon-px.py
+/CLAUDE.md
+/docs/comfy/dev-environment-windows.md

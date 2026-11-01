@@ -26,6 +26,7 @@ mod brush_mode_menu;
 // PhotoshopEX: the generative features (top-level modules, outside upstream's folders).
 pub mod alerts;
 pub mod angles_ui;
+pub mod app_icon_ui;
 pub mod engine_ui;
 pub mod gen_preview;
 pub mod generate_hub;

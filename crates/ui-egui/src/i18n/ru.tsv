@@ -4940,3 +4940,13 @@ shape	Appearance	Оформление
 	Select and Mask was closed: its document is no longer the active one	Окно «Выделение и маска» закрыто: его документ больше не активен
 	Select and Mask was closed: another layer was selected	Окно «Выделение и маска» закрыто: выбран другой слой
 	Edit Brush…	Изменить кисть…
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Значок приложения…
+	App Icon	Значок приложения
+	Built-in	Встроенный
+	Choose Image…	Выбрать изображение…
+	Paste Image	Вставить изображение
+	Image address (https://…)	Адрес изображения (https://…)
+	Download	Загрузить
+	Downloading…	Загрузка…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Подойдёт любое изображение: оно вписывается в квадрат. Щёлкните значок правой кнопкой, чтобы удалить его.

@@ -4243,3 +4243,13 @@ curves	Smooth	Làm mượt
 	Select and Mask was closed: another layer was selected	Đã đóng Chọn và Mặt nạ: một lớp khác đã được chọn
 	Select Layer Under Cursor	Chọn lớp dưới con trỏ
 	Edit Brush…	Chỉnh sửa cọ…
+# Fork: Edit › Preferences › App Icon… (app_icon_ui.rs)
+	App Icon…	Biểu tượng ứng dụng…
+	App Icon	Biểu tượng ứng dụng
+	Built-in	Tích hợp sẵn
+	Choose Image…	Chọn ảnh…
+	Paste Image	Dán ảnh
+	Image address (https://…)	Địa chỉ ảnh (https://…)
+	Download	Tải xuống
+	Downloading…	Đang tải xuống…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Ảnh nào cũng được; ảnh sẽ được đặt vừa trong một hình vuông. Nhấp chuột phải vào biểu tượng để xóa.
