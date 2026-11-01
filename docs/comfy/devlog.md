@@ -4,6 +4,25 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-01: in-app reliability pass; Split no longer pages on an INT8 cache miss
+
+- The owner's rule: reliability is measured in the running app. 27 cases through the control
+  channel, the way the panel is used (prompt, Ctrl+Enter), with his real preferences. Table,
+  screenshots and raw rows in `C:\Users\5090\ComfyUI\photocraft-tests\reliability-2026-11-01\`
+  (`RESULTS.md`). Fill, Edit (Auto, 2511, 2.1, Krea 2), Image (Krea 2, 2.1, MOSS), live preview
+  Off/Fast/Sharp, Fast draft, Expand, LoRAs, a layer reference, Upscale, cancel, switching
+  documents mid-job, undo/redo, layer edits and the PSD round-trip passed. Three failures, two bugs:
+  - The panel kept a hand-picked mode for the whole session (fixed in #28, see below).
+  - **Split into Layers timed out at 600 s** on every INT8 cache miss: the first split after a
+    build that changes the entry key, or on a fresh cache. The converting load left the CUDA pool
+    fragmented, the DiT loaded with 0 MiB driver-free and Windows paged every step (about 45 s
+    instead of 1.5). genai-native #18: write the entry, drop, trim, reload from it; 2511's
+    converting load too. Pinned here. In the app, forcing a miss: 80.4 s (10.7 GB driver-free
+    after the reload); the next split, a hit, 40.2 s.
+- Open, the owner's call: Expand's soft dithered edge shows a grainy ghost where the model
+  redraws the blend band differently from the original (the grain was his 2026-10-09 request).
+  Options in `RESULTS.md`.
+
 ## 2026-11-01: the Generate panel opens on the mode the canvas asks for; no licence gates
 
 - The owner selected one eye, typed "close her eyes" in the Generate panel and got a whole new
