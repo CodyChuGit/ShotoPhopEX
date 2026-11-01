@@ -708,6 +708,26 @@ swap (28 s against 150 s, the same garment); one reference on a fill costs about
 on an edit (benchmarks §5g). Not yet judged over more seeds, and `erase: false` on the
 reference template is untested live.
 
+## 5j. The Remove tool in the app, per stage (PhotoshopEX, 2026-11-01)
+
+The owner's app and preferences (Quality fast, preview Sharp, Fast draft on, Auto: qwen-2.1/edit,
+25 steps, two variations at up to 0.75 MP), generative `paint.remove` with seed 42 over the stock
+photos' objects (`robust-strokes.ps1`'s serpentine), stage times from the job's progress messages
+every 100 ms, RTX 5090.
+
+| Case | warm | after a Krea 2 image, before #19 | after, #19 |
+|---|---|---|---|
+| ring (small worn item) | 4.6 s | | |
+| hat (worn item) | 4.6 s | 24.7 s | 19.1 s |
+| watch (wearer: four names tried) | 5.7 s | 27.3 s | 17.8 s |
+| bicycle (large) | 11.7 s | | |
+
+Warm: naming (the 8B's chat) 0.3–0.7 s, SAM 0.7 s to load and 0.2 s a find, each 2.1 edit about
+1 s (2.9 s for the bicycle's 0.75 MP), the judge 0.2 s. After an image the swap reloads the 2.1
+text encoder (5.0–7.2 s), the DiT (3.1 s), VAE and vision tower (1.0 s), SAM (1.1 s) and the chat
+head (10.2 s before genai-native #19, 1.5 s after: its Q8_0 now quantized on every core). The
+results before and after #19 are byte-identical.
+
 ## 5i. Content-Aware Fill, Remove and Spot Healing through the model (PhotoshopEX, 2026-10-21)
 
 The lighthouse picture's red boat (`final-fill-s11.png`, 1024², the 200×120 rectangle at
