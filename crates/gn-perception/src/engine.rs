@@ -153,7 +153,7 @@ fn candle_error(e: anyhow::Error) -> EngineError {
 
 #[cfg(feature = "candle")]
 fn candle_opts(o: Options) -> gn_segment::sam::Options {
-    gn_segment::sam::Options { threshold: o.threshold, max_detections: o.max_detections, refine_iterations: o.refine_iterations }
+    gn_segment::sam::Options { threshold: o.threshold, max_detections: o.max_detections, refine_iterations: o.refine_iterations, soft: o.soft }
 }
 
 #[cfg(feature = "candle")]
@@ -256,7 +256,8 @@ fn route_of(model: &str) -> Option<Route> {
 }
 
 fn coverage_blob(inst: &Instance, w: u32, h: u32, index: u32) -> (Blob, Vec<u8>) {
-    let bytes: Vec<u8> = inst.mask.iter().map(|v| if *v > 0.5 { 255 } else { 0 }).collect();
+    // Binary masks come out 0 or 255 as before; soft ones keep their coverage.
+    let bytes: Vec<u8> = inst.mask.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).collect();
     (Blob { width: w, height: h, channels: 1, index }, bytes)
 }
 
@@ -313,6 +314,7 @@ impl Engine for PerceptionEngine {
             threshold: num(&req.params, "threshold").unwrap_or(0.5),
             max_detections: num(&req.params, "maxDetections").map_or(1, |m| m.max(1.0) as usize),
             refine_iterations: num(&req.params, "refineIterations").map_or(2, |r| r.max(0.0) as usize),
+            soft: num(&req.params, "softEdge").map_or(0.0, |t| t.clamp(0.0, 64.0)),
         };
         let positives = points_param(req.params.get("points"));
         let negatives = points_param(req.params.get("negatives"));
