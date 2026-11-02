@@ -69,10 +69,13 @@ impl Config {
             serde_json::Value::Array(a) => a.first().and_then(|x| x.as_u64()).map_or(def, |x| x as usize),
             x => x.as_u64().map_or(def, |x| x as usize),
         };
+        // transformers fills VitDet's own defaults (768 wide, 12 heads) for keys a checkpoint
+        // leaves out, as hustvl's base config does; the top-level `hidden_size` names the width.
+        let hidden = num(b, "hidden_size", num(v, "hidden_size", VITDET_HIDDEN));
         Config {
-            hidden_size: num(b, "hidden_size", d.hidden_size),
+            hidden_size: hidden,
             num_layers: num(b, "num_hidden_layers", d.num_layers),
-            num_heads: num(b, "num_attention_heads", d.num_heads),
+            num_heads: num(b, "num_attention_heads", if hidden == VITDET_HIDDEN { VITDET_HEADS } else { (hidden / 64).max(1) }),
             mlp_ratio: num(b, "mlp_ratio", d.mlp_ratio),
             patch_size: size(b, "patch_size", d.patch_size),
             pretrain_image_size: size(b, "pretrain_image_size", d.pretrain_image_size),
@@ -87,6 +90,10 @@ impl Config {
         }
     }
 }
+
+/// VitDet's default width and heads (what transformers assumes when a config omits them).
+const VITDET_HIDDEN: usize = 768;
+const VITDET_HEADS: usize = 12;
 
 /// A conv with its BatchNorm folded in (inference statistics), then optionally ReLU.
 struct ConvBn {
@@ -547,6 +554,20 @@ fn erode_or_dilate(m: &[bool], w: usize, h: usize, r: usize, erode: bool) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configs_read_like_transformers() -> Result<()> {
+        // hustvl's base config leaves the backbone's width and heads to VitDet's defaults.
+        let base: serde_json::Value = serde_json::from_str(
+            r#"{"backbone_config":{"image_size":512,"num_channels":4,"residual_block_indices":[2,5,8,11],"use_relative_position_embeddings":true,"window_block_indices":[0,1,3,4,6,7,9,10],"window_size":14},"convstream_hidden_sizes":[48,96,192],"fusion_hidden_sizes":[256,128,64,32],"hidden_size":768}"#,
+        )?;
+        let c = Config::from_json(&base);
+        assert_eq!((c.hidden_size, c.num_heads, c.window_size, c.image_size), (768, 12, 14, 512));
+        let small: serde_json::Value = serde_json::from_str(r#"{"backbone_config":{"hidden_size":384,"num_attention_heads":6},"hidden_size":384}"#)?;
+        let c = Config::from_json(&small);
+        assert_eq!((c.hidden_size, c.num_heads), (384, 6));
+        Ok(())
+    }
 
     #[test]
     fn trimap_bands_the_edge() -> Result<()> {
