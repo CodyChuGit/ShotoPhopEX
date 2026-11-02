@@ -20,6 +20,66 @@ can pick up.
   (Inter Display Bold in the cloud; a Segoe UI re-render on Windows is one command). The App Icon
   picker's built-in entry is the new tile.
 
+## 2026-11-01: upstream PhotoCraft v0.19.0 merged
+
+Merged storytold/photocraft `v0.19.0` (231 commits since v0.18.0) into `photoshopex` (26
+conflicts, 22 of them i18n TSVs, merged and deduplicated). Kept the fork's README, app icon and
+generative tools; no ComfyUI code came back.
+
+- Remove tool: upstream now turns off "Create a new layer" when painting into a mask or a
+  channel (`remove_params(o, composite)`); the fork's Generative and Best of two options stay
+  in `remove_options`, with the new rule applied there.
+- `crates/engine/Cargo.toml`: both `photocraft-genai` and upstream's new `base64` dependency.
+- `docs/scorecard.md` regenerated (11 of 206).
+
+**Still open**
+
+- Merge the PR into `photoshopex`, then rebuild and run the GPU tests on the 5090.
+
+## 2026-11-01 (late): Split into Layers from the menu split nothing
+
+- The owner: "the layers were not split basically". The generated dialog (Edit › Split into
+  Layers, the Generate Hub card) read Split's optional `maxPixels` (`4096..4194304?`, no default)
+  as a slider at its minimum and sent 4096: every Split from the menu sampled a 64-px thumbnail
+  (48×64 for his 452×678 picture), the three layers overlapping blurs (87–93 % of the covered
+  pixels shared). The engine call without `maxPixels` (the CLI, automation, the earlier checks)
+  used the 640-px working size, which is why they looked fine. `maxPixels` now sits in braces like
+  `seed`, so the dialog leaves it out; a ui test fails any generative dialog's optional range
+  without a default. In the app on his picture: 416×640, a face layer, a body layer and the
+  background plate. Contact sheets: `photocraft-tests\remove-2026-11-01\shots\split-*`.
+- Fast draft (step cache, 8 of 20 steps) did not change the separation (portrait, seed 11: the
+  person on one layer either way). At about 1 MP (`maxPixels` 1000000) the portrait came back
+  worse (a whole-picture layer and red blobs): 640 px, the model's size, is the right default.
+- genai-native pinned at cf85edf (#21, #22, from the owner's "look for more things like this"):
+  SAM 3.1 keeps its read checkpoint in host memory when it gives the device back, so each Remove
+  stroke's SAM reload is 0.3 s instead of 0.7–0.8 s (the first after launch 1.1 s); the Layered
+  and 2511 prefetch faults pages on every core, so Split's DiT is ready about 2 s sooner (warm,
+  after a 2.1 edit: 10.9–11.8 s to 8.8–10.4 s; Split 20.2–21.3 s to 18.2–20.3 s). Measured and
+  dropped: caching Krea 2's low-rank split (its load is I/O), previews (no real cost), MOSS mapped
+  loads (I8 tensors candle cannot name). #23 (drop the chat head before the encoder) stays open:
+  no gain shown in the app.
+
+## 2026-11-01 (evening): Remove after an image generation, 25 s to 13 s
+
+- The owner: "remove tool is still really slow". Measured in his app (his preferences, generative
+  `paint.remove` on the stock photos, seed 42, `remove-2026-11-01\` beside the reliability pass):
+  a warm Remove is 4.6–5.7 s (bicycle 11.7 s: naming 0.3–0.7 s, SAM 0.2 s a find plus a 0.7 s
+  load, two 2.1 edits of about 1 s, the judge 0.2 s). The first Remove after an image generation
+  was 24.7–27.3 s: the swap from Krea 2 to Qwen-Image-2.1 reloads the text encoder (5–7 s), the
+  DiT (3 s), the vision tower and VAE (1 s), SAM (1.1 s) and the chat head (10.2 s).
+- genai-native #19, pinned here: the chat head's Q8_0 is quantized on every core with candle's own
+  blocks (candle quantized the CUDA copy on one thread). Head 10.2 s to 1.5 s; Remove after a Krea
+  image: hat 24.7 to 19.1 s, watch 27.3 to 17.8 s; same names, byte-identical results.
+- genai-native #20, pinned here too: model loads fault their pages in on every core, then upload
+  from the mapping (candle's mapped VarBuilder soft-faulted each page as it copied: 3.4 GB/s on a
+  file already in the cache). 2.1 text encoder 4.5–6.1 to 2.6–2.8 s, DiT 3.0–3.4 to 2.4 s, vision
+  tower 0.65 to 0.45 s; Remove after a Krea image 12.2–13.6 s (hat, watch, cone), byte-identical
+  removals and seeded Krea images. The first run after a launch can still find the files out of the
+  cache (encoder 5.3 s once: about 57 GB of models share his 62 GB).
+- The heavy jobs in his log (6–7 samplings at about 1 MP, 24 reference encodes) were Upscale tiles.
+- Left: a swap-Remove is now encoder 2.7 + DiT 2.4 + SAM 1.1 + head 1.35 + VAE and vision 0.75 s
+  of loads and about 4.5 s of removal.
+
 ## 2026-11-01: in-app reliability pass; Split no longer pages on an INT8 cache miss
 
 - The owner's rule: reliability is measured in the running app. 27 cases through the control

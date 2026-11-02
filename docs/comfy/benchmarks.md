@@ -708,6 +708,41 @@ swap (28 s against 150 s, the same garment); one reference on a fill costs about
 on an edit (benchmarks §5g). Not yet judged over more seeds, and `erase: false` on the
 reference template is untested live.
 
+## 5j. The Remove tool in the app, per stage (ShotoPhopEX, 2026-11-01)
+
+The owner's app and preferences (Quality fast, preview Sharp, Fast draft on, Auto: qwen-2.1/edit,
+25 steps, two variations at up to 0.75 MP), generative `paint.remove` with seed 42 over the stock
+photos' objects (`robust-strokes.ps1`'s serpentine), stage times from the job's progress messages
+every 100 ms, RTX 5090.
+
+| Case | warm | after a Krea 2 image, before #19 | after #19 | after #19 and #20 |
+|---|---|---|---|---|
+| cone (small object) | | | | 12.2 s |
+| ring (small worn item) | 4.6 s | | | |
+| hat (worn item) | 4.6 s | 24.7 s | 15.8–19.1 s | 12.4 s |
+| watch (wearer: four names tried) | 5.7 s | 27.3 s | 17.8–17.9 s | 13.6 s |
+| bicycle (large) | 11.7 s | | | |
+
+Warm: naming (the 8B's chat) 0.3–0.7 s, SAM 0.7 s to load and 0.2 s a find, each 2.1 edit about
+1 s (2.9 s for the bicycle's 0.75 MP), the judge 0.2 s. After an image the swap reloads the 2.1
+text encoder (5.0–7.2 s), the DiT (3.1 s), VAE and vision tower (1.0 s), SAM (1.1 s) and the chat
+head (10.2 s before genai-native #19, 1.5 s after: its Q8_0 now quantized on every core). The
+results before and after #19 are byte-identical.
+
+genai-native #20 then faults each load's pages in on every core before uploading from the mapping
+(`tests/load_bench.rs` on the 16.3 GB Qwen3-VL 8B, in the file cache: candle's mapped VarBuilder
+5.0 s at 3.4 GB/s, prefaulted on 8 threads 2.34 s). In the app the 2.1 text encoder went from
+4.5–6.1 s to 2.6–2.8 s, the DiT from 3.0–3.4 s to 2.4 s, the vision tower from 0.65 s to 0.45 s;
+Krea 2's reload logs 1.5 s for its encoder and 2.9 s for its DiT. Removals and seeded Krea images
+byte-identical before and after.
+
+genai-native #21 keeps SAM 3.1's read checkpoint (1.6 GB of host memory) when the perception
+engine gives the device back: SAM's reload on each later Remove stroke went from 0.7–0.8 s to
+0.3 s (reading the checkpoint was 0.8 s of it; the first load after a launch stays 1.1 s). #22
+faults the Layered and 2511 checkpoints' pages on every core: Split at 640 px after a 2.1 edit,
+warm, three runs each, the DiT ready at 8.8–10.4 s instead of 10.9–11.8 s and the Split done in
+18.2–20.3 s instead of 20.2–21.3 s.
+
 ## 5i. Content-Aware Fill, Remove and Spot Healing through the model (ShotoPhopEX, 2026-10-21)
 
 The lighthouse picture's red boat (`final-fill-s11.png`, 1024², the 200×120 rectangle at
