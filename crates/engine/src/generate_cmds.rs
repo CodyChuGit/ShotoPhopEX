@@ -355,6 +355,9 @@ pub(crate) enum EnhanceKind {
     /// A fill on Krea 2 AnyPaint: the crop with the selection flattened to grey; describe the
     /// whole finished picture with the user's words in the grey area.
     FillScene,
+    /// A picture: list the separate things in its foreground that are not people or animals
+    /// (Split into Layers with no prompt, after the people).
+    Things,
 }
 
 /// The worker's chat `encoder` that answers on Krea 2's Qwen3-VL-4B (genai-native
@@ -388,6 +391,9 @@ const ENHANCE_CUT_REQUEST: &str = "Which edges of this picture cut off its main 
 /// description of the whole picture after its instruction (AusBoss's model card, read
 /// 2026-11-03), so the caption names the subject as well as the setting; never who a person
 /// is (it named Cody's sitter, which goes into the prompt and the layer's info).
+/// The system turn of [`EnhanceKind::Things`]; `{k}` is the most things asked for.
+const ENHANCE_THINGS_SYSTEM: &str = "You see a picture. List the separate physical things in its foreground that a designer would put on their own layers and that are not people or animals (for example a table, a cup, a bicycle, a vase of flowers), nearest to the camera first, as short noun phrases of one to three words each, separated by commas, at most {k} of them. Leave out walls, floors, the sky, the ground, and anything a person wears or holds. Reply with the list only: no sentence, no numbers, no full stop.";
+
 const ENHANCE_SCENE_SYSTEM: &str = "You see a picture. Describe all of it in one or two plain sentences, as a caption: the main subject (who or what, pose, clothing, how much of them the frame shows) and the setting, background, lighting and style. Never name or identify a person, even a famous one: describe people only by how they look. Reply with the description only.";
 
 /// The user turn of [`EnhanceKind::Scene`].
@@ -470,6 +476,30 @@ pub(crate) fn clean_enhanced(texts: &[String]) -> Option<String> {
 /// could not run it (no encoder file, down). An edit or fill is rewritten with the picture in
 /// view when one is given, blind otherwise. The rewriter goes straight to the backend: its
 /// small encoder is not a model switch worth a purge, and it is the file Krea 2 loads anyway.
+/// The things the vision-language model lists in `picture`'s foreground (at most `k`, nearest
+/// first, [`EnhanceKind::Things`]), as short phrases with no leading article; empty when it
+/// could not run or said nothing usable.
+pub(crate) fn list_things(backend: &dyn GenerativeBackend, picture: &Rgba8, k: usize, seed: u64, progress: &JobProgress) -> Vec<String> {
+    let k = k.clamp(1, 12);
+    let said = enhance_prompt(backend, EnhanceKind::Things, "List the things.", Some(picture), Some(&k.to_string()), seed, progress).ok().flatten();
+    let Some(said) = said else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    for raw in said.split([',', '\n', ';']) {
+        let t = raw.trim().trim_matches(|c: char| c == '.' || c == '"' || c == '-' || c == '*').trim();
+        let t = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ');
+        let t = t.strip_prefix("the ").or_else(|| t.strip_prefix("a ")).or_else(|| t.strip_prefix("an ")).unwrap_or(t).trim();
+        let words = t.split_whitespace().count();
+        if t.is_empty() || words > 4 || t.chars().count() > 40 || out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
+            continue;
+        }
+        out.push(t.to_lowercase());
+        if out.len() >= k {
+            break;
+        }
+    }
+    out
+}
+
 pub(crate) fn enhance_prompt(
     backend: &dyn GenerativeBackend,
     kind: EnhanceKind,
@@ -503,6 +533,7 @@ pub(crate) fn enhance_prompt(
         EnhanceKind::CutEdges => ENHANCE_CUT_SYSTEM.to_string(),
         EnhanceKind::Scene => ENHANCE_SCENE_SYSTEM.to_string(),
         EnhanceKind::FillScene => ENHANCE_FILL_SCENE_SYSTEM.to_string(),
+        EnhanceKind::Things => ENHANCE_THINGS_SYSTEM.replace("{k}", place.unwrap_or("6")),
     };
     let mut params = BTreeMap::new();
     params.insert("system".to_string(), Value::String(system));
@@ -537,7 +568,7 @@ pub(crate) fn enhance_prompt(
 
 pub(crate) const SPLIT: &str = "generate.splitLayers";
 /// Split into Layers asks for at most this many layers (the background and the subjects).
-const MAX_SPLIT_LAYERS: u32 = 8;
+const MAX_SPLIT_LAYERS: u32 = 12;
 
 /// The PSD additional-layer-info key a generative layer keeps its [`GenerativeInfo`] under
 /// (JSON). An unmodelled block, so it survives PSD round trips and `Layer::duplicate`.
@@ -1580,19 +1611,23 @@ fn removal_job(
 /// 12-megapixel portrait kept them in place on every route, measured in the app 2026-11-03).
 pub(crate) const BACKGROUND_PROMPT: &str = "the empty background continued seamlessly: the same wall, floor and light as around it, with nobody there";
 
+/// What Split's grey-box fill asks for behind a subject with others still behind it (the
+/// peel): the scene continued as it would look with that one gone, nothing new.
+pub(crate) const PEEL_PROMPT: &str = "the picture continued behind what stood in the grey area: the same scene, the people and things around it completed as they would look with it gone, the same wall, furniture and light, nothing new added";
+
 /// Split's background fill for a large subject: a plain fill of [`BACKGROUND_PROMPT`] with the
 /// hole flattened to grey in what the model sees (`erase`), on Qwen-Image-2.1's fill when it is
 /// served, else the fill order. Seeing the subject, every fill route handed it back; seeing a
 /// grey box, the 2.1 fill continued the curtain behind the owner's portrait (measured in the
 /// app 2026-11-03).
-fn background_job(s: &Session, label: &str, seed: Option<u64>, tuning: Tuning) -> Result<FillJob> {
+fn background_job(s: &Session, label: &str, seed: Option<u64>, tuning: Tuning, prompt: &str) -> Result<FillJob> {
     let default_model = s.prefs().integrations.default_edit_model.clone();
     let (base, auto) = match native21_auto(s, FILL, false) {
         Some(t) => (t.to_string(), false),
         None => (DEFAULT_FILL_TEMPLATE.to_string(), true),
     };
     let Common { template, prompt, negative, seed, steps, guidance, models, .. } =
-        plan_common(s, FILL, &json!({"prompt": BACKGROUND_PROMPT, "seed": seed}), &base, Task::Fill, &default_model)?;
+        plan_common(s, FILL, &json!({"prompt": prompt, "seed": seed}), &base, Task::Fill, &default_model)?;
     let backend = backend(s)?;
     Ok(FillJob {
         thinker: Arc::clone(&backend),
@@ -4775,7 +4810,13 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let name = opt_str(SPLIT, p, "name", 200)?.map(str::to_string);
     let edges = split_subjects::Edges::parse(opt_str(SPLIT, p, "edges", 40)?).map_err(|e| bad(SPLIT, e))?;
-    split_subjects::run(s, split_subjects::SubjectsPlan { prompt, subjects: (layers - 1).min(split_subjects::MAX_SUBJECTS), seed, name, edges })
+    let complete = opt_bool(SPLIT, p, "complete", true)?;
+    let order = split_subjects::Order::parse(opt_str(SPLIT, p, "order", 40)?).map_err(|e| bad(SPLIT, e))?;
+    let group = split_subjects::Group::parse(opt_str(SPLIT, p, "group", 40)?).map_err(|e| bad(SPLIT, e))?;
+    split_subjects::run(
+        s,
+        split_subjects::SubjectsPlan { prompt, subjects: (layers - 1).min(split_subjects::MAX_SUBJECTS), seed, name, edges, complete, order, group },
+    )
 }
 
 /// Edit › Purge › Generative Models: the server unloads its models and frees their memory. A
@@ -5216,7 +5257,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"layers":2..8=3,"prompt":text,"seed":{u64?=random},"name":{str?},"edges":{str?=auto}} → {"layers":[id],"count","subjects","foundBy","template","seed","width","height","fillMs","ms","edges"} (SAM 3.1 finds what the picture is of (prompt = what to cut out, e.g. "the dog"; empty = the main subject, then a person, an animal, an object) and each instance, the largest first and up to layers - 1 of them, becomes its own layer with the picture's pixels and an edge-refined alpha, above one background layer: the picture with the subjects repainted away by the generative removal (the fill template the preferences give); new layers above the active one, one undo step; a background job; needs the native worker with SAM 3.1 and a fill model)"#,
+            params: r#"{"layers":2..12=3,"prompt":text,"complete":bool=true,"seed":{u64?=random},"name":{str?},"edges":{str?=auto},"order":{str?=auto},"group":{str?=auto}} → {"layers":[id],"count","subjects":[{"layer","name","term","bounds":[x,y,w,h],"pixels","completed"}],"incomplete":[name],"order","foundBy","template","seed","width","height","fillMs","ms","edges"} (SAM 3.1 finds what the picture is of (prompt = what to cut out, a list such as "person, cup, table" or "the dog"; a term "cup:2" asks for at most two; empty = the people, then animals, then the foreground things the vision-language model names) and each instance, up to layers - 1 of them, becomes its own layer with the picture's pixels and an edge-refined alpha, above one background layer; with complete (the default) the subjects are peeled off nearest first and the fill paints what each one hid, so every layer is whole and the background has nobody left in it; without it one fill repaints all the subjects at once and each layer holds its visible part; the layers stack in depth order (order: auto = who hides whom from the masks, then the lower bottom edge; size = largest lowest; found = as found); group: auto = instances that overlap by half become one layer, touching = any that touch, none; a subject whose hole the fill could not clear keeps the picture's own pixels and is listed in incomplete; when none could be cleared nothing is changed; new layers above the active one, one undo step; a background job; needs the native worker with SAM 3.1 and a fill model)"#,
             enabled: split_enabled,
             run: run_split,
             journal: true,

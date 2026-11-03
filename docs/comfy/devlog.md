@@ -4,6 +4,30 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-03: Split into Layers peels the scene nearest first, every subject completed
+
+Split into Layers now takes a crowd (the café photo in the thread: seven people, a table, cups,
+cards). The prompt is a list of terms ("person, cup:2, the dog"); with none, SAM 3.1 is asked
+for the people, then the animals, then the foreground things Qwen3-VL lists for the picture (a
+new `EnhanceKind::Things`), then Select Subject's fallbacks. The detections are cleaned (specks,
+whole-frame masks, duplicates by IoU, a part inside a whole, touching groups), matted, and
+ordered front to back (`generate_split_order.rs`): the bend of each contact boundary (the
+occluder's edge is the straight one), then the bottom edge, size and nested boxes, as a
+topological sort that drops the weakest edge of a cycle. Then the subjects are peeled nearest
+first: each is cut out, its hole filled (the named removal, then the grey-box backdrop fill,
+five tries), the detector run again on the result to catch a subject painted back (a detection
+mostly in the hole that continues no subject behind), and the subjects behind grow into what the
+fill completed and are matted again. `complete=false` keeps the one-fill flat split. Layers are
+named "Background", "Person 1" (the one furthest back) … "Cup"; `layers` goes to 12; the result
+lists each subject with its term, bounds and whether it was completed, and `incomplete` names
+the ones every fill painted back (left in the background). When no subject could be cleared,
+nothing changes. The fake worker has an occlusion model (`Options::occlusion`, a filled
+rectangle is gone and the ones behind show whole) so the tests cover completion. The dialog
+offers 2, 3, 4, 6, 8 and 12 layers and a "Complete hidden parts" switch. The master spec and
+one-shot prompt are `docs/comfy/goals/split-into-layers.md`.
+Open: the in-app run on the café photo (numbers are added to this entry after it); a depth
+model as the primary order cue; the README's Split row once #51 lands.
+
 ## 2026-11-03: genai-native pinned at 780b73e (MOSS loads on every core, the chat head cached)
 
 genai-native #28 gathers MOSS-Image's INT8 linears from a mapping on every core: a warm load of

@@ -42,6 +42,7 @@ const PLACED: &[&str] = &[
     "variations",
     "edge",
     "layers",
+    "complete",
     "tries",
     "grow",
     "asSelection",
@@ -107,7 +108,7 @@ fn intro(cmd: &str) -> (&'static str, &'static str) {
         "generate.expand" => ("scaling", tl!("Grows the canvas and paints the new area to continue the picture.")),
         "generate.edit" => ("wand-sparkles", tl!("Changes the picture by instruction. The result is a new layer above it.")),
         "generate.removeBackground" => ("eraser", tl!("Masks out the background and keeps the subject. No pixels are changed.")),
-        _ => ("layers", tl!("Puts each subject on its own layer above the background.")),
+        _ => ("layers", tl!("Puts each subject on its own layer, the nearest on top, over a background painted whole.")),
     }
 }
 
@@ -119,7 +120,7 @@ fn prompt_text(cmd: &str) -> (&'static str, &'static str) {
         "generate.expand" => (tl!("Prompt (optional)"), tl!("What the new area shows. Empty: continue the scene.")),
         "generate.edit" => (tl!("Instruction"), tl!("What to change, e.g. make the sky stormy, turn the boat blue…")),
         "generate.removeBackground" => (tl!("Subject"), tl!("What to keep, e.g. the lighthouse. Empty: the main subject.")),
-        _ => (tl!("Subject"), tl!("What to cut out, e.g. the dog. Empty: the main subject.")),
+        _ => (tl!("Subjects"), tl!("What to cut out, as a list, e.g. person, the dog, cup:2. Empty: the people, animals and things in front.")),
     }
 }
 
@@ -425,11 +426,18 @@ fn settings(ui: &mut egui::Ui, t: &Tokens, f: &mut Map<String, Value>, cmd: &str
             _ => None,
         });
         let (lo, hi) = range.unwrap_or((2, 6));
-        let hi = hi.min(lo + 6);
         let cur = int(f, "layers").clamp(lo, hi);
-        let labels: Vec<String> = (lo..=hi).map(|n| n.to_string()).collect();
+        // Up to seven stops: every count on a short range; on a long one (Split's 2..12) the
+        // small counts, then wider steps, and the count set now if it is none of those.
+        let mut stops: Vec<i64> = if hi - lo <= 6 { (lo..=hi).collect() } else { vec![lo, lo + 1, lo + 2, lo + 4, lo + 6, hi] };
+        if !stops.contains(&cur) {
+            stops.push(cur);
+            stops.sort_unstable();
+        }
+        let labels: Vec<String> = stops.iter().map(|n| n.to_string()).collect();
         setting_row(ui, tl!("Layers"), |ui| {
-            let options: Vec<Seg<'_, i64>> = (lo..=hi).zip(labels.iter()).map(|(n, l)| Seg::new(n, l.as_str())).collect();
+            let options: Vec<Seg<'_, i64>> =
+                stops.iter().zip(labels.iter()).map(|(n, l)| Seg::new(*n, l.as_str()).tip(tl!("The background and up to this many subjects"))).collect();
             if let Some(n) = segmented(ui, &cur, &options, 0.0) {
                 f.insert("layers".into(), json!(n));
             }
@@ -493,8 +501,13 @@ fn settings(ui: &mut egui::Ui, t: &Tokens, f: &mut Map<String, Value>, cmd: &str
         });
     }
     // Switches, each with a line on what it does.
-    let switches: [(&str, &str, &str); 5] = [
+    let switches: [(&str, &str, &str); 6] = [
         ("transparent", tl!("Transparent background"), tl!("The subject alone, where the model can make one")),
+        (
+            "complete",
+            tl!("Complete hidden parts"),
+            tl!("Paint what a nearer subject hid behind each one, so every layer is whole. Off: one fill, each layer keeps only what shows"),
+        ),
         ("wholePicture", tl!("Ignore the selection"), tl!("The edit shows over the whole picture")),
         ("fillAsEdit", tl!("Fill by instruction"), tl!("Qwen-Image 2.1: the selection is replaced by name, e.g. replace the cup with a vase")),
         ("sampleAllLayers", tl!("Sample all layers"), tl!("Use what is visible, not the active layer alone")),
