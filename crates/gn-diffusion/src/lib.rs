@@ -54,6 +54,15 @@ pub const TEMPLATE_EDIT: &str = "qwen-2.1/edit";
 pub const TEMPLATE_FILL: &str = "qwen-2.1/fill";
 /// The expand template: the prefilled canvas (image 1) and the mask of the new area (image 2).
 pub const TEMPLATE_EXPAND: &str = "qwen-2.1/expand";
+/// Generative Expand with AusBoss's Qwen-Image-2.1 Outpaint LoRA (`ausboss/Qwen-Image-2.1-
+/// Outpaint-LoRA` v2, Qwen Research licence, BYOM): image 1 is the whole grown canvas with the
+/// new area flat `#808080` and the picture where it stays, the target takes its size (an edit
+/// at ComfyUI's `resolution 0`), no noise mask; the LoRA keeps the picture in place (its card:
+/// 32 of 32 renders against 3 of 16 for plain 2.1) and paints the grey. Served when that file
+/// is under the model root's `loras/`.
+pub const TEMPLATE_OUTPAINT: &str = "qwen-2.1/outpaint";
+/// The LoRA [`TEMPLATE_OUTPAINT`] runs with (added to a request's own LoRAs).
+pub const QWEN21_OUTPAINT_LORA: &str = "qwen-image-2.1-outpaint-v2.safetensors";
 /// The matte template: the picture alone, the answer's alpha is the cut-out (the 2.1 VAE
 /// decodes RGBA).
 pub const TEMPLATE_MATTE: &str = "qwen-2.1/matte";
@@ -105,7 +114,8 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 27] = [
+pub const TEMPLATES: [(&str, &str, Family); 28] = [
+    (TEMPLATE_OUTPAINT, "expand", Family::QwenImage21),
     (TEMPLATE_MOSS, "image", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_BASE, "image", Family::Moss(MossVariant::Base)),
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
@@ -229,12 +239,18 @@ fn gpu_and_refusal() -> (Option<qwen_image_rs::device::Gpu>, Option<String>) {
 /// A request's params with [`KREA2_EDIT_LORA`] at strength 1 in front of its own `loras`,
 /// unless the request already names that file (at its own strength).
 fn with_edit_lora(params: &std::collections::BTreeMap<String, Value>) -> std::collections::BTreeMap<String, Value> {
+    with_lora_first(params, KREA2_EDIT_LORA)
+}
+
+/// A request's params with `file` at strength 1 in front of its own `loras`, unless the
+/// request already names that file (at its own strength).
+fn with_lora_first(params: &std::collections::BTreeMap<String, Value>, file: &str) -> std::collections::BTreeMap<String, Value> {
     let mut out = params.clone();
     let mut list = params.get("loras").and_then(Value::as_array).cloned().unwrap_or_default();
     let named =
-        list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == KREA2_EDIT_LORA)));
+        list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == file)));
     if !named {
-        list.insert(0, json!({"file": KREA2_EDIT_LORA, "strength": 1.0}));
+        list.insert(0, json!({"file": file, "strength": 1.0}));
     }
     out.insert("loras".into(), Value::Array(list));
     out
@@ -495,6 +511,7 @@ impl DiffusionEngine {
                     && (*f != Family::Edit2511
                         || edit2511_defaults(t).is_some_and(|(_, _, names)| names.iter().all(|n| self.models_root.join("loras").join(n).is_file())))
                     && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file()))
+                    && (*t != TEMPLATE_OUTPAINT || self.lora_path(QWEN21_OUTPAINT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_KREA2_STYLE
                         || (self.lora_path(KREA2_STYLE_LORA).is_ok_and(|p| p.is_file())
                             && self.krea2_source().is_some_and(|p| krea2_pipeline::is_snapshot(&p) || p.join("vae/qwen_image_vae.safetensors").is_file())))
@@ -1094,7 +1111,10 @@ impl Engine for DiffusionEngine {
             "edit" | "fill" | "expand" | "matte" => {
                 let Some(image) = &req.image else { return Err(EngineError::new(ErrorKind::BadRequest, format!("{} needs the picture", req.model))) };
                 let picture = reference_of(image, blobs, "picture")?;
-                if task == "expand" {
+                if req.model == TEMPLATE_OUTPAINT {
+                    // The grey canvas is image 1 as it is, the target its size.
+                    references.push(picture);
+                } else if task == "expand" {
                     canvas = Some((picture.width / 16 * 16, picture.height / 16 * 16));
                     references.push(placed_picture(&picture, &req.params)?);
                 } else {
@@ -1156,6 +1176,8 @@ impl Engine for DiffusionEngine {
             let krea2_edit = req.model == TEMPLATE_KREA2_EDIT;
             let params = if krea2_edit {
                 with_edit_lora(&req.params)
+            } else if req.model == TEMPLATE_OUTPAINT {
+                with_lora_first(&req.params, QWEN21_OUTPAINT_LORA)
             } else if req.model == TEMPLATE_KREA2_STYLE {
                 with_style_lora(&req.params)?
             } else {
@@ -1507,6 +1529,21 @@ mod tests {
         let off: BTreeMap<String, Value> =
             [("ref_x", 70u64), ("ref_y", 0), ("ref_w", 10), ("ref_h", 10)].into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
         assert!(placed_picture(&canvas, &off).is_err(), "outside the canvas");
+    }
+
+    #[test]
+    fn an_outpaint_runs_its_lora_first_once() {
+        assert_eq!((task_of(TEMPLATE_OUTPAINT), family_of(TEMPLATE_OUTPAINT)), (Some("expand"), Some(Family::QwenImage21)));
+        let mut p = BTreeMap::new();
+        p.insert("loras".to_string(), json!([{"file": "style.safetensors", "strength": 0.5}]));
+        let out = with_lora_first(&p, QWEN21_OUTPAINT_LORA);
+        assert_eq!(out["loras"][0]["file"].as_str(), Some(QWEN21_OUTPAINT_LORA));
+        assert_eq!(out["loras"][1]["file"].as_str(), Some("style.safetensors"));
+        // Named by the request at its own strength: not added again.
+        p.insert("loras".to_string(), json!([{"file": format!("loras/{QWEN21_OUTPAINT_LORA}"), "strength": 0.8}]));
+        let out = with_lora_first(&p, QWEN21_OUTPAINT_LORA);
+        assert_eq!(out["loras"].as_array().map(Vec::len), Some(1));
+        assert_eq!(out["loras"][0]["strength"].as_f64(), Some(0.8));
     }
 
     #[test]
