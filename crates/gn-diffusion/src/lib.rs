@@ -72,6 +72,14 @@ pub const KREA2_STYLE_LORA: &str = "krea2_style_reference.safetensors";
 pub const TEMPLATE_KREA2_EDIT: &str = "krea2-turbo/edit";
 /// The LoRA [`TEMPLATE_KREA2_EDIT`] runs with (added to a request's own LoRAs).
 pub const KREA2_EDIT_LORA: &str = "krea2_general_edit_v2.safetensors";
+/// Krea 2 Turbo inpainting with the AnyPaint LoRA (yijunwang2/krea2-anypaint; Krea 2
+/// Community License, BYOM): the picture with the area flattened to its median colour as a
+/// reference registered over the whole canvas and in the encoder's view, the known pixels kept
+/// by the sampler's noise mask (AusBoss's "Krea 2 Inpaint Masked" workflow). Served when that
+/// file is under the model root's `loras/`.
+pub const TEMPLATE_KREA2_FILL: &str = "krea2-turbo/fill";
+/// The LoRA [`TEMPLATE_KREA2_FILL`] runs with (added to a request's own LoRAs).
+pub const KREA2_ANYPAINT_LORA: &str = "krea2_anypaint_rank32.safetensors";
 /// Its card's `ref_boost` for edits at 8 steps and CFG 1; a request's `ref_boost` overrides it.
 pub const KREA2_REF_BOOST: f32 = 4.0;
 /// The app's prompt rewriter and judge with the picture in view, and without: answered by the
@@ -105,7 +113,8 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 27] = [
+pub const TEMPLATES: [(&str, &str, Family); 28] = [
+    (TEMPLATE_KREA2_FILL, "fill", Family::Krea2),
     (TEMPLATE_MOSS, "image", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_BASE, "image", Family::Moss(MossVariant::Base)),
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
@@ -229,12 +238,18 @@ fn gpu_and_refusal() -> (Option<qwen_image_rs::device::Gpu>, Option<String>) {
 /// A request's params with [`KREA2_EDIT_LORA`] at strength 1 in front of its own `loras`,
 /// unless the request already names that file (at its own strength).
 fn with_edit_lora(params: &std::collections::BTreeMap<String, Value>) -> std::collections::BTreeMap<String, Value> {
+    with_lora_first(params, KREA2_EDIT_LORA)
+}
+
+/// A request's params with `file` at strength 1 in front of its own `loras`, unless the
+/// request already names that file (at its own strength).
+fn with_lora_first(params: &std::collections::BTreeMap<String, Value>, file: &str) -> std::collections::BTreeMap<String, Value> {
     let mut out = params.clone();
     let mut list = params.get("loras").and_then(Value::as_array).cloned().unwrap_or_default();
     let named =
-        list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == KREA2_EDIT_LORA)));
+        list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == file)));
     if !named {
-        list.insert(0, json!({"file": KREA2_EDIT_LORA, "strength": 1.0}));
+        list.insert(0, json!({"file": file, "strength": 1.0}));
     }
     out.insert("loras".into(), Value::Array(list));
     out
@@ -257,6 +272,25 @@ fn with_style_lora(params: &std::collections::BTreeMap<String, Value>) -> Result
     let mut out = params.clone();
     out.insert("loras".into(), Value::Array(list.into_iter().map(|(file, strength)| json!({"file":file,"strength":strength})).collect()));
     Ok(out)
+}
+
+/// A Krea 2 fill's `denoise` (0 < d ≤ 1, default 1) and `seam` (the band around the area the
+/// sampler may repaint, 0..256 px, default AnyPaint's 32).
+fn krea2_fill_options(params: &std::collections::BTreeMap<String, Value>) -> Result<krea2_pipeline::FillOptions, EngineError> {
+    let mut o = krea2_pipeline::FillOptions::default();
+    if let Some(v) = params.get("denoise") {
+        match v.as_f64() {
+            Some(d) if d > 0.0 && d <= 1.0 => o.denoise = d as f32,
+            _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("denoise {v} is outside 0..1"))),
+        }
+    }
+    if let Some(v) = params.get("seam") {
+        match v.as_u64() {
+            Some(px) if px <= 256 => o.seam_px = px as u32,
+            _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("seam {v} is outside 0..256 pixels"))),
+        }
+    }
+    Ok(o)
 }
 
 /// One LoRA a request asks for: `{"file": "name-or-path.safetensors", "strength": 1.0}`.
@@ -495,6 +529,7 @@ impl DiffusionEngine {
                     && (*f != Family::Edit2511
                         || edit2511_defaults(t).is_some_and(|(_, _, names)| names.iter().all(|n| self.models_root.join("loras").join(n).is_file())))
                     && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file()))
+                    && (*t != TEMPLATE_KREA2_FILL || self.lora_path(KREA2_ANYPAINT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_KREA2_STYLE
                         || (self.lora_path(KREA2_STYLE_LORA).is_ok_and(|p| p.is_file())
                             && self.krea2_source().is_some_and(|p| krea2_pipeline::is_snapshot(&p) || p.join("vae/qwen_image_vae.safetensors").is_file())))
@@ -1154,8 +1189,11 @@ impl Engine for DiffusionEngine {
             // A Krea 2 edit runs with its edit LoRA first (unless the request names it) and the
             // card's `ref_boost` unless the request gives one.
             let krea2_edit = req.model == TEMPLATE_KREA2_EDIT;
+            let krea2_fill = req.model == TEMPLATE_KREA2_FILL;
             let params = if krea2_edit {
                 with_edit_lora(&req.params)
+            } else if krea2_fill {
+                with_lora_first(&req.params, KREA2_ANYPAINT_LORA)
             } else if req.model == TEMPLATE_KREA2_STYLE {
                 with_style_lora(&req.params)?
             } else {
@@ -1181,6 +1219,7 @@ impl Engine for DiffusionEngine {
                 loras,
                 ref_boost,
             };
+            let fill_opts = if krea2_fill { Some(krea2_fill_options(&req.params)?) } else { None };
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             let stop = || cancel.load(Ordering::SeqCst);
             let err = |e: anyhow::Error| EngineError::new(kind_of(&e), e.to_string());
@@ -1196,6 +1235,10 @@ impl Engine for DiffusionEngine {
                     p.generate_batch_previewed(&asks, &mut report, shown, &stop).map_err(err)
                 }
                 (Resident::Qwen(p), None) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Krea2(p), _) if fill_opts.is_some() => {
+                    let opts = fill_opts.clone().unwrap_or_default();
+                    p.fill_previewed(&ask, &opts, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                }
                 (Resident::Krea2(p), _) if req.model == TEMPLATE_KREA2_STYLE => {
                     p.generate_style_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
@@ -1459,6 +1502,21 @@ mod tests {
         assert_eq!(with_edit_lora(&p)["loras"].as_array().map(Vec::len), Some(1), "named already: kept at its own strength");
         assert_eq!(task_of(TEMPLATE_KREA2_EDIT), Some("edit"));
         assert_eq!(family_of(TEMPLATE_KREA2_EDIT), Some(Family::Krea2));
+    }
+
+    #[test]
+    fn a_krea2_fill_runs_anypaint_and_reads_denoise_and_seam() {
+        let mut p = BTreeMap::new();
+        assert_eq!(with_lora_first(&p, KREA2_ANYPAINT_LORA)["loras"][0]["file"].as_str(), Some(KREA2_ANYPAINT_LORA));
+        assert_eq!((task_of(TEMPLATE_KREA2_FILL), family_of(TEMPLATE_KREA2_FILL)), (Some("fill"), Some(Family::Krea2)));
+        let o = krea2_fill_options(&p).unwrap();
+        assert_eq!((o.denoise, o.seam_px), (1.0, 32));
+        p.insert("denoise".into(), json!(0.7));
+        p.insert("seam".into(), json!(24));
+        let o = krea2_fill_options(&p).unwrap();
+        assert_eq!((o.denoise, o.seam_px), (0.7, 24));
+        p.insert("denoise".into(), json!(0.0));
+        assert!(krea2_fill_options(&p).is_err());
     }
 
     /// A refused card (no driver, too old for the kernels): no templates, the sentence in the

@@ -269,7 +269,11 @@ impl Krea2Pipeline {
     /// aspect, then resampled; the comfyui-krea2edit `fit` path at a matched aspect) and
     /// through the VAE's encoder, in the sampler's space `(1, 16, th/8, tw/8)`.
     fn picture_latent(&self, p: &RefImage, tw: usize, th: usize) -> Result<Tensor> {
-        anyhow::ensure!(self.vae.can_encode(), "this VAE file has no encoder; an edit needs it");
+        self.picture_latent_with(&self.vae, p, tw, th)
+    }
+
+    fn picture_latent_with(&self, vae: &WanVae, p: &RefImage, tw: usize, th: usize) -> Result<Tensor> {
+        anyhow::ensure!(vae.can_encode(), "this VAE file has no encoder; an edit needs it");
         let img = rgb_image(p)?;
         let (iw, ih) = (img.width() as f64, img.height() as f64);
         let s = (th as f64 / ih).max(tw as f64 / iw);
@@ -283,7 +287,17 @@ impl Krea2Pipeline {
         };
         let x =
             Tensor::from_vec(fitted.into_raw(), (th, tw, 3), &self.dev)?.permute((2, 0, 1))?.unsqueeze(0)?.to_dtype(DType::F32)?.affine(2.0 / 255.0, -1.0)?;
-        self.vae.encode(&x)
+        vae.encode(&x)
+    }
+
+    /// A fill's VAE: the Qwen-Image VAE beside the weights when it is there (the AnyPaint
+    /// workflows' `qwen_image_vae`, Wan 2.1's encoder with a sharper decoder), else the model's.
+    fn with_fill_vae<T>(&self, run: impl FnOnce(&WanVae) -> Result<T>) -> Result<T> {
+        if self.style_vae_file.as_ref().is_some_and(|p| p.is_file()) {
+            self.with_style_vae(run)
+        } else {
+            run(&self.vae)
+        }
     }
 
     fn with_style_vae<T>(&self, run: impl FnOnce(&WanVae) -> Result<T>) -> Result<T> {
@@ -466,6 +480,152 @@ impl Krea2Pipeline {
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
+
+    /// Inpaint with the AnyPaint LoRA (yijunwang2/krea2-anypaint; the recipe of its
+    /// `anypaint.py` and of AusBoss's "Krea 2 Inpaint Masked" workflow): `req.references` is
+    /// the picture (the crop around the area) and its mask (white = paint). The model is shown
+    /// the picture with the area flattened to the median colour of the rest, as a registered
+    /// reference over the whole canvas ([`Krea2Dit::registered_kv`]) and, beside the prompt, to
+    /// the encoder ("Picture 1: …"); sampling starts from the picture's own latent under a
+    /// noise mask (the area widened by `opts.seam_px`), so the known pixels stay where they are.
+    /// The result is the picture's size floored to 16 pixels; the caller composites it back.
+    pub fn fill_previewed(
+        &self,
+        req: &Request,
+        opts: &FillOptions,
+        progress: &mut dyn FnMut(f32, &str),
+        mut preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
+        crate::device::bind_thread(&self.dev);
+        anyhow::ensure!(req.steps > 0, "at least one step");
+        anyhow::ensure!(req.references.len() == 2, "a Krea 2 fill takes the picture and its mask ({} given)", req.references.len());
+        anyhow::ensure!(opts.denoise > 0.0 && opts.denoise <= 1.0, "denoise {} is outside 0..1", opts.denoise);
+        let check = |cancel: &dyn Fn() -> bool| -> Result<()> {
+            if cancel() {
+                Err(Cancelled.into())
+            } else {
+                Ok(())
+            }
+        };
+        let (src, mask_src) = (&req.references[0], &req.references[1]);
+        let (w, h) = (src.width / 16 * 16, src.height / 16 * 16);
+        anyhow::ensure!(w >= 16 && h >= 16, "the picture is too small to fill ({}x{})", src.width, src.height);
+        let unmatched = self.dit.set_loras(&req.loras)?;
+        if !unmatched.is_empty() {
+            tracing::warn!(modules = unmatched.len(), first = unmatched[0], "LoRA modules this model does not have (a file for another model?)");
+        }
+        let mut timings = Timings::default();
+        check(cancel)?;
+        progress(0.02, "Encoding the prompt");
+        let t0 = Instant::now();
+        let fill = prepare_fill(src, mask_src, w, h, opts)?;
+        let picture = RefImage { width: w, height: h, rgba: rgba_of(&fill.picture), offset: None };
+        let feats = self.vision_view(&fill.filled, opts.vision_px)?;
+        let ids: Vec<u32> = self
+            .tok
+            .encode(krea2::template(&format!("Picture 1: <|vision_start|><|image_pad|><|vision_end|>{}", req.prompt)), false)
+            .map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?
+            .get_ids()
+            .to_vec();
+        let cond = {
+            let mut slot = self.te.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                *slot = Some(load_text_encoder(&self.text, &self.dev, self.dtype)?);
+            }
+            let te = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no text encoder"))?;
+            let cond = krea2::condition_with_images(te, &ids, &[&feats])?.unsqueeze(0)?;
+            if self.evict_te {
+                *slot = None;
+                let _ = self.dev.synchronize();
+            }
+            cond
+        };
+        let (rw, rh) = reference_size(w, h, opts.reference_edge);
+        let small = image::imageops::resize(&fill.filled, rw as u32, rh as u32, image::imageops::FilterType::Triangle);
+        let small = RefImage { width: rw, height: rh, rgba: rgba_of(&small), offset: None };
+        let (reference, target) =
+            self.with_fill_vae(|vae| Ok((self.picture_latent_with(vae, &small, rw, rh)?, self.picture_latent_with(vae, &picture, w, h)?)))?;
+        let (reference, target) = (reference.to_dtype(self.dtype)?, target.to_dtype(DType::F32)?);
+        let (lh, lw) = (h / wan_vae::SCALE, w / wan_vae::SCALE);
+        let registered = self.dit.registered_kv(&reference, (lh, lw))?;
+        let mask = Tensor::from_vec(latent_mask(&fill.noise_mask, lw, lh), (1, 1, lh, lw), &self.dev)?;
+        self.dev.synchronize()?;
+        timings.encode_s = t0.elapsed().as_secs_f32();
+
+        // ComfyUI's KSampler at `denoise` < 1: the schedule of steps/denoise steps, its tail.
+        let full = ((req.steps as f32 / opts.denoise) as usize).max(req.steps);
+        let sched = crate::comfy::FlowSchedule::simple(full, crate::comfy::FlowSchedule::KREA2).map_err(anyhow::Error::msg)?;
+        let sigmas = sched.sigmas[sched.sigmas.len() - req.steps - 1..].to_vec();
+        let noise = crate::comfy::torch_randn(req.seed, wan_vae::LATENT_CHANNELS * lh * lw).map_err(anyhow::Error::msg)?;
+        let noise = Tensor::from_vec(noise, (1, wan_vae::LATENT_CHANNELS, lh, lw), &self.dev)?;
+        let keep = (1.0 - &mask)?;
+        let noised = |sigma: f32| -> Result<Tensor> { Ok(((&noise * f64::from(sigma))? + (&target * f64::from(1.0 - sigma))?)?) };
+        let mut x = noised(sigmas[0])?;
+        let t0 = Instant::now();
+        for i in 0..req.steps {
+            check(cancel)?;
+            let sigma = sigmas[i];
+            let input = (x.broadcast_mul(&mask)? + noised(sigma)?.broadcast_mul(&keep)?)?;
+            let v = self.dit.forward_registered(&input.to_dtype(self.dtype)?, sigma, &cond, &registered)?.to_dtype(DType::F32)?;
+            let denoised = (&input - (&v * f64::from(sigma))?)?;
+            let denoised = (denoised.broadcast_mul(&mask)? + target.broadcast_mul(&keep)?)?;
+            if let Some(p) = preview.as_deref_mut() {
+                if p.wants(i + 1, req.steps) {
+                    p.show(i + 1, req.steps, &denoised);
+                }
+            }
+            let d = ((&x - &denoised)? / f64::from(sigma))?;
+            x = (&x + (d * f64::from(sigmas[i + 1] - sigma))?)?;
+            progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
+        }
+        let x = (x.broadcast_mul(&mask)? + target.broadcast_mul(&keep)?)?;
+        self.dev.synchronize()?;
+        timings.denoise_s = t0.elapsed().as_secs_f32();
+        check(cancel)?;
+        progress(0.92, "Decoding");
+        let t0 = Instant::now();
+        let img = self.with_fill_vae(|vae| vae.decode(&vae.denormalize(&x)?))?;
+        self.dev.synchronize()?;
+        timings.decode_s = t0.elapsed().as_secs_f32();
+        let (pw, ph, rgba) = wan_vae::to_rgba_u8(&img)?;
+        tracing::info!(
+            encode_s = timings.encode_s,
+            denoise_s = timings.denoise_s,
+            decode_s = timings.decode_s,
+            width = pw,
+            height = ph,
+            steps = req.steps,
+            denoise = opts.denoise,
+            "anypaint fill"
+        );
+        progress(1.0, "Done");
+        Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
+    }
+
+    /// The picture as the encoder sees it beside a fill's prompt: ComfyUI's Qwen-VL processing
+    /// (the tower's grid, 3136 to 12.8 M pixels), the longest side first brought to `cap` when
+    /// one is given.
+    fn vision_view(&self, img: &image::RgbImage, cap: Option<u32>) -> Result<vision::VisionFeatures> {
+        let (w, h) = img.dimensions();
+        let img = match cap {
+            Some(cap) if w.max(h) > cap => {
+                let s = f64::from(cap) / f64::from(w.max(h));
+                image::imageops::resize(
+                    img,
+                    ((f64::from(w) * s).round() as u32).max(1),
+                    ((f64::from(h) * s).round() as u32).max(1),
+                    image::imageops::FilterType::Triangle,
+                )
+            }
+            _ => img.clone(),
+        };
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let rgb = Tensor::from_vec(img.into_raw(), (h, w, 3), &self.dev)?.permute((2, 0, 1))?.to_dtype(DType::F32)?.affine(1.0 / 255.0, 0.0)?;
+        let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
+        let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
+        self.vision_features(&rgb, false)
+    }
 }
 
 /// EditPlus's two area resizes, followed by Qwen3-VL's 32-pixel tower grid.
@@ -530,4 +690,206 @@ fn load_text_encoder(files: &[PathBuf], dev: &Device, dtype: DType) -> Result<Qw
     // The language model faulted in on every core first ([`crate::mapped`]), not the vision tower.
     let vb = crate::mapped::var_builder(files, dtype, dev, |n| n.starts_with("model.") && !n.starts_with("model.visual."))?;
     QwenTextEncoder::load_at(&TextConfig::qwen3vl_4b(), false, vb.pp("model")).context("the Qwen3-VL-4B encoder")
+}
+
+/// How a Krea 2 AnyPaint fill runs ([`Krea2Pipeline::fill_previewed`]).
+#[derive(Clone, Debug)]
+pub struct FillOptions {
+    /// How much of the area is redrawn: 1 replaces it, about 0.7 keeps the old shape.
+    pub denoise: f32,
+    /// The band around the area the sampler may also repaint (pixels at the picture's size);
+    /// AnyPaint's `SEAM_PX`.
+    pub seam_px: u32,
+    /// The registered reference's longest side (AnyPaint's `REFERENCE_MAX_EDGE`).
+    pub reference_edge: u32,
+    /// The encoder's view of the picture, its longest side at most this (none: the picture).
+    pub vision_px: Option<u32>,
+}
+
+impl Default for FillOptions {
+    fn default() -> Self {
+        Self { denoise: 1.0, seam_px: ANYPAINT_SEAM_PX, reference_edge: ANYPAINT_REFERENCE_EDGE, vision_px: None }
+    }
+}
+
+/// AnyPaint's boundary band (`anypaint.py` `SEAM_PX`).
+pub const ANYPAINT_SEAM_PX: u32 = 32;
+/// AnyPaint's reference size (`anypaint.py` `REFERENCE_MAX_EDGE`).
+pub const ANYPAINT_REFERENCE_EDGE: u32 = 384;
+
+/// A fill's pictures at the working size.
+pub struct PreparedFill {
+    /// The picture as given.
+    pub picture: image::RgbImage,
+    /// The picture with the area flattened to the median colour of the rest.
+    pub filled: image::RgbImage,
+    /// The sampler's mask, 0..1 per pixel: the area widened by the seam band.
+    pub noise_mask: Vec<f32>,
+}
+
+/// The picture and mask at `w × h`, the area (mask over half) flattened to the median colour of
+/// what is outside it (mid-grey when nothing is), and the noise mask: the area dilated by
+/// `opts.seam_px` (a square window, as AnyPaint's `_dilate` does).
+pub fn prepare_fill(src: &RefImage, mask: &RefImage, w: usize, h: usize, opts: &FillOptions) -> Result<PreparedFill> {
+    let picture = rgb_image(src)?;
+    let picture = if (picture.width() as usize, picture.height() as usize) == (w, h) {
+        picture
+    } else {
+        image::imageops::resize(&picture, w as u32, h as u32, image::imageops::FilterType::CatmullRom)
+    };
+    let m = rgb_image(mask)?;
+    let m = if (m.width() as usize, m.height() as usize) == (w, h) {
+        m
+    } else {
+        image::imageops::resize(&m, w as u32, h as u32, image::imageops::FilterType::Triangle)
+    };
+    let hole: Vec<bool> = m.pixels().map(|p| p.0[0] > 127).collect();
+    anyhow::ensure!(hole.iter().any(|&b| b), "the mask marks nothing to fill");
+    let mut channels: [Vec<u8>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for (p, &inside) in picture.pixels().zip(&hole) {
+        if !inside {
+            for c in 0..3 {
+                channels[c].push(p.0[c]);
+            }
+        }
+    }
+    let median = |v: &mut Vec<u8>| -> u8 {
+        if v.is_empty() {
+            return 127;
+        }
+        let mid = (v.len() - 1) / 2;
+        *v.select_nth_unstable(mid).1
+    };
+    let colour = [median(&mut channels[0]), median(&mut channels[1]), median(&mut channels[2])];
+    let mut filled = picture.clone();
+    for (p, &inside) in filled.pixels_mut().zip(&hole) {
+        if inside {
+            p.0 = colour;
+        }
+    }
+    let noise_mask = dilate(&hole, w, h, opts.seam_px as usize).into_iter().map(|b| if b { 1.0 } else { 0.0 }).collect();
+    Ok(PreparedFill { picture, filled, noise_mask })
+}
+
+/// `mask` (`w × h`) dilated by `r` pixels with a square window, in two separable passes.
+fn dilate(mask: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
+    if r == 0 {
+        return mask.to_vec();
+    }
+    let pass = |src: &[bool], along_x: bool| -> Vec<bool> {
+        let mut out = vec![false; w * h];
+        let (outer, inner) = if along_x { (h, w) } else { (w, h) };
+        for o in 0..outer {
+            let at = |i: usize| if along_x { o * w + i } else { i * w + o };
+            // The distance to the last set pixel seen, forward then backward.
+            let mut last: Option<usize> = None;
+            for i in 0..inner {
+                if src[at(i)] {
+                    last = Some(i);
+                }
+                if last.is_some_and(|l| i - l <= r) {
+                    out[at(i)] = true;
+                }
+            }
+            last = None;
+            for i in (0..inner).rev() {
+                if src[at(i)] {
+                    last = Some(i);
+                }
+                if last.is_some_and(|l| l - i <= r) {
+                    out[at(i)] = true;
+                }
+            }
+        }
+        out
+    };
+    pass(&pass(mask, true), false)
+}
+
+/// A pixel mask (`w × h` = `8·lw × 8·lh`) at the latent's size: the mean of each 8×8 cell.
+fn latent_mask(mask: &[f32], lw: usize, lh: usize) -> Vec<f32> {
+    let (w, s) = (lw * wan_vae::SCALE, wan_vae::SCALE);
+    let mut out = vec![0f32; lw * lh];
+    for y in 0..lh {
+        for x in 0..lw {
+            let mut sum = 0.0;
+            for dy in 0..s {
+                for dx in 0..s {
+                    sum += mask[(y * s + dy) * w + x * s + dx];
+                }
+            }
+            out[y * lw + x] = sum / (s * s) as f32;
+        }
+    }
+    out
+}
+
+/// AnyPaint's reference size: the longest side brought to `max_edge`, each side the nearest
+/// multiple of 16 (at least 16).
+pub fn reference_size(w: usize, h: usize, max_edge: u32) -> (usize, usize) {
+    let snap = |v: f64| ((v / 16.0).round() as usize * 16).max(16);
+    let longest = w.max(h) as f64;
+    let s = if max_edge > 0 && longest > f64::from(max_edge) { f64::from(max_edge) / longest } else { 1.0 };
+    (snap(w as f64 * s), snap(h as f64 * s))
+}
+
+fn rgba_of(img: &image::RgbImage) -> Vec<u8> {
+    img.pixels().flat_map(|p| [p.0[0], p.0[1], p.0[2], 255]).collect()
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+
+    fn picture(w: usize, h: usize, f: impl Fn(usize, usize) -> [u8; 4]) -> RefImage {
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                rgba.extend_from_slice(&f(x, y));
+            }
+        }
+        RefImage { width: w, height: h, rgba, offset: None }
+    }
+
+    #[test]
+    fn the_area_takes_the_median_colour_and_the_noise_mask_widens_it() -> Result<()> {
+        let src = picture(64, 32, |x, _| if x < 32 { [200, 10, 10, 255] } else { [10, 10, 200, 255] });
+        // The area: x in 40..48, every row.
+        let mask = picture(64, 32, |x, _| if (40..48).contains(&x) { [255, 255, 255, 255] } else { [0, 0, 0, 255] });
+        let opts = FillOptions { seam_px: 4, ..FillOptions::default() };
+        let f = prepare_fill(&src, &mask, 64, 32, &opts)?;
+        // 32 red columns, 24 blue outside the area: the median is red's... per channel.
+        let inside = f.filled.get_pixel(44, 5).0;
+        assert_eq!(inside, [200, 10, 10], "median of 32 red and 24 blue columns per channel");
+        assert_eq!(f.filled.get_pixel(10, 5).0, [200, 10, 10]);
+        assert_eq!(f.filled.get_pixel(60, 5).0, [10, 10, 200], "outside the area untouched");
+        let row: Vec<f32> = (0..64).map(|x| f.noise_mask[5 * 64 + x]).collect();
+        assert!(row[36..52].iter().all(|&v| v == 1.0) && row[35] == 0.0 && row[52] == 0.0, "{row:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_mask_is_refused() {
+        let src = picture(32, 32, |_, _| [1, 2, 3, 255]);
+        let mask = picture(32, 32, |_, _| [0, 0, 0, 255]);
+        assert!(prepare_fill(&src, &mask, 32, 32, &FillOptions::default()).is_err());
+    }
+
+    #[test]
+    fn the_reference_is_384_on_its_longest_side_in_sixteens() {
+        assert_eq!(reference_size(1280, 960, 384), (384, 288));
+        assert_eq!(reference_size(1000, 333, 384), (384, 128));
+        assert_eq!(reference_size(200, 100, 384), (208, 96));
+    }
+
+    #[test]
+    fn the_latent_mask_averages_cells() {
+        let mut m = vec![0f32; 16 * 8];
+        for y in 0..8 {
+            for x in 0..4 {
+                m[y * 16 + x] = 1.0;
+            }
+        }
+        assert_eq!(latent_mask(&m, 2, 1), vec![0.5, 0.0]);
+    }
 }
