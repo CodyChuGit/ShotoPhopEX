@@ -620,6 +620,50 @@ impl Attention {
     }
 }
 
+impl Attention {
+    /// [`Self::forward`] for a registered reference (the AnyPaint LoRA's contract): the keys
+    /// and values after norm and RoPE, `(B, kvH, S, D)`, are pushed to `capture` when given, and
+    /// `extra` keys and values (a reference's, cached once per run) are appended to this
+    /// sequence's before attending, so the queries see the reference without it being part
+    /// of the sequence. Exact attention only (the flash kernel when built, else the plain path).
+    fn forward_kv(&self, x: &Tensor, rope: &(Tensor, Tensor), capture: Option<&mut Vec<(Tensor, Tensor)>>, extra: Option<&(Tensor, Tensor)>) -> Result<Tensor> {
+        let (b, s, _) = x.dims3()?;
+        let (h, kvh, d) = (self.heads, self.kv_heads, self.head_dim);
+        let qb = self.qnorm.forward(&with_lora(&self.lq, self.wq.forward(x)?, x)?.reshape((b, s, h, d))?)?;
+        let kb = self.knorm.forward(&with_lora(&self.lk, self.wk.forward(x)?, x)?.reshape((b, s, kvh, d))?)?;
+        let vb = with_lora(&self.lv, self.wv.forward(x)?, x)?.reshape((b, s, kvh, d))?;
+        let q = qb.transpose(1, 2)?.contiguous()?;
+        let k = kb.transpose(1, 2)?.contiguous()?;
+        let v = vb.transpose(1, 2)?.contiguous()?;
+        let (cos, sin) = rope;
+        let dt = q.dtype();
+        let q = candle_nn::rotary_emb::rope_i(&q.to_dtype(DType::F32)?, cos, sin)?.to_dtype(dt)?;
+        let k = candle_nn::rotary_emb::rope_i(&k.to_dtype(DType::F32)?, cos, sin)?.to_dtype(dt)?;
+        if let Some(c) = capture {
+            c.push((k.clone(), v.clone()));
+        }
+        let (k, v) = match extra {
+            Some((ek, ev)) => (Tensor::cat(&[&k, &ek.to_dtype(dt)?], 2)?.contiguous()?, Tensor::cat(&[&v, &ev.to_dtype(dt)?], 2)?.contiguous()?),
+            None => (k, v),
+        };
+        #[cfg(feature = "flash")]
+        if d == crate::flash::HEAD_DIM && q.dtype() == DType::BF16 && q.device().is_cuda() {
+            let out = crate::flash::attention_biased(&q, &k, &v, 1.0 / (d as f32).sqrt(), None)?; // (B,S,H,D)
+            return self.gated(out.reshape((b, s, h * d))?, x);
+        }
+        let skv = k.dim(2)?;
+        let groups = h / kvh;
+        let (k, v) = if groups > 1 {
+            let rep = |t: &Tensor| -> Result<Tensor> { Ok(t.unsqueeze(2)?.broadcast_as((b, kvh, groups, skv, d))?.reshape((b, h, skv, d))?.contiguous()?) };
+            (rep(&k)?, rep(&v)?)
+        } else {
+            (k, v)
+        };
+        let out = attend(&q, &k, &v, 1.0 / (d as f64).sqrt(), None)?; // (B,H,S,D)
+        self.gated(out.transpose(1, 2)?.reshape((b, s, h * d))?, x)
+    }
+}
+
 /// Krea 2's attention kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Attn {
@@ -736,6 +780,22 @@ impl Block {
         gate_add(&x, &self.mlp.forward(&h)?, &mods, 5)
     }
 
+    /// [`Self::forward`] through [`Attention::forward_kv`] (a registered reference).
+    fn forward_kv(
+        &self,
+        x: &Tensor,
+        tvec: &Tensor,
+        rope: &(Tensor, Tensor),
+        capture: Option<&mut Vec<(Tensor, Tensor)>>,
+        extra: Option<&(Tensor, Tensor)>,
+    ) -> Result<Tensor> {
+        let mods = tvec.broadcast_add(&self.lin)?;
+        let h = self.prenorm.modulated(x, &mods, 0, 1)?;
+        let x = gate_add(x, &self.attn.forward_kv(&h, rope, capture, extra)?, &mods, 2)?;
+        let h = self.postnorm.modulated(&x, &mods, 3, 4)?;
+        gate_add(&x, &self.mlp.forward(&h)?, &mods, 5)
+    }
+
     /// Split modulation at the reference boundary while retaining joint attention.
     fn forward_zero(&self, x: &Tensor, tvec: &Tensor, zero: &Tensor, split: usize, rope: &(Tensor, Tensor)) -> Result<Tensor> {
         let mods = tvec.broadcast_add(&self.lin)?;
@@ -767,6 +827,15 @@ impl Block {
 pub struct EditRef {
     pub latent: Tensor,
     pub boost: f32,
+}
+
+/// A registered reference's keys and values, one `(k, v)` per block, each `(B, kvH, R, D)`
+/// after norm and RoPE ([`Krea2Dit::registered_kv`]): computed once per run and appended to
+/// every step's keys ([`Krea2Dit::forward_registered`]).
+pub struct RegisteredRef {
+    layers: Vec<(Tensor, Tensor)>,
+    /// The target latent grid it was registered on (patches).
+    grid: (usize, usize),
 }
 
 /// The whole model.
@@ -1009,6 +1078,79 @@ impl Krea2Dit {
             for block in &self.blocks {
                 xs = block.forward_zero(&xs, &tvec, &zero, split, &rope)?;
             }
+        }
+        let xs = xs.narrow(1, seq, h * w)?;
+        let lm = self.last_mod.to_dtype(dt)?;
+        let scale = temb.broadcast_add(&lm.i(0)?)?;
+        let shift = temb.broadcast_add(&lm.i(1)?)?;
+        let out = self.last_norm.forward(&xs)?.broadcast_mul(&(scale + 1.0)?)?.broadcast_add(&shift)?;
+        self.unpatchify(&self.last_lin.forward(&out)?, h, w)
+    }
+
+    /// A reference registered over the whole target canvas, as the AnyPaint LoRA
+    /// (yijunwang2/krea2-anypaint, its `krea2_registered_core.py`; AusBoss's Krea 2 Outpaint
+    /// Model Patch on `whole canvas`) was trained: the clean reference latent `(B, 16, rh, rw)`
+    /// on RoPE frame 1, its grid spread over the target's `(lh, lw)` latent grid at
+    /// cell centres, run through the blocks alone with the timestep-zero modulation, so its
+    /// tokens attend only to each other; each block's keys and values are kept.
+    pub fn registered_kv(&self, reference: &Tensor, latent_hw: (usize, usize)) -> Result<RegisteredRef> {
+        let dt = reference.dtype();
+        let p = self.cfg.patch;
+        let mut reference = reference.clone();
+        for axis in [2, 3] {
+            let len = reference.dim(axis)?;
+            let pad = (p - len % p) % p;
+            if pad > 0 {
+                reference = Tensor::cat(&[&reference, &reference.narrow(axis, 0, pad)?], axis)?;
+            }
+        }
+        let (tokens, rh, rw) = self.patchify(&reference)?;
+        let (th, tw) = (latent_hw.0.div_ceil(p), latent_hw.1.div_ceil(p));
+        let mut ids = Vec::with_capacity(rh * rw);
+        for r in 0..rh {
+            let y = (r as f32 + 0.5) * (th as f32 / rh as f32) - 0.5;
+            for c in 0..rw {
+                let x = (c as f32 + 0.5) * (tw as f32 / rw as f32) - 0.5;
+                ids.push([1.0, y, x]);
+            }
+        }
+        let rope = self.rope_tables(&ids)?;
+        let temb = self.tmlp.1.forward(&gelu_tanh(&self.tmlp.0.forward(&self.timestep_embedding(0.0)?.to_dtype(dt)?)?)?)?;
+        let tvec = self.tproj.forward(&gelu_tanh(&temb)?)?;
+        let mut h = self.first.forward(&tokens)?;
+        let mut layers = Vec::with_capacity(self.blocks.len());
+        for blk in &self.blocks {
+            let mut cap = Vec::with_capacity(1);
+            h = blk.forward_kv(&h, &tvec, &rope, Some(&mut cap), None)?;
+            layers.extend(cap);
+        }
+        Ok(RegisteredRef { layers, grid: (th, tw) })
+    }
+
+    /// [`Self::forward`] with a [`RegisteredRef`]: the sequence is `[text | target]` as in a
+    /// plain generation, and every block's attention also reads the reference's cached keys
+    /// and values.
+    pub fn forward_registered(&self, x: &Tensor, t: f32, ctx: &Tensor, reference: &RegisteredRef) -> Result<Tensor> {
+        let dt = x.dtype();
+        let (img, h, w) = self.patchify(x)?;
+        anyhow::ensure!((h, w) == reference.grid, "the reference was registered on a {:?} grid, not {:?}", reference.grid, (h, w));
+        anyhow::ensure!(reference.layers.len() == self.blocks.len(), "the reference has {} layers for {} blocks", reference.layers.len(), self.blocks.len());
+        let img = self.first.forward(&img)?;
+        let temb = self.tmlp.1.forward(&gelu_tanh(&self.tmlp.0.forward(&self.timestep_embedding(t)?.to_dtype(dt)?)?)?)?;
+        let tvec = self.tproj.forward(&gelu_tanh(&temb)?)?;
+        let context = self.txtfusion.forward(&ctx.to_dtype(dt)?)?;
+        let context = self.txtmlp.2.forward(&gelu_tanh(&self.txtmlp.1.forward(&self.txtmlp.0.forward(&context)?)?)?)?;
+        let seq = context.dim(1)?;
+        let mut ids: Vec<[f32; 3]> = vec![[0.0; 3]; seq];
+        for r in 0..h {
+            for c in 0..w {
+                ids.push([0.0, r as f32, c as f32]);
+            }
+        }
+        let rope = self.rope_tables(&ids)?;
+        let mut xs = Tensor::cat(&[&context, &img], 1)?;
+        for (blk, kv) in self.blocks.iter().zip(&reference.layers) {
+            xs = blk.forward_kv(&xs, &tvec, &rope, None, Some(kv))?;
         }
         let xs = xs.narrow(1, seq, h * w)?;
         let lm = self.last_mod.to_dtype(dt)?;
