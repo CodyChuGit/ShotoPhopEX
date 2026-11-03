@@ -312,14 +312,14 @@ impl ConditioningKey {
 }
 
 /// The text encoder's last two pieces, which conditioning never uses and a chat does.
-struct ChatHead {
-    norm: candle_nn::RmsNorm,
-    head: candle_core::quantized::QMatMul,
+pub(crate) struct ChatHead {
+    pub(crate) norm: candle_nn::RmsNorm,
+    pub(crate) head: candle_core::quantized::QMatMul,
 }
 
 /// `<|im_end|>` and `<|endoftext|>`: a reply ends at either.
-const IM_END: u32 = 151_645;
-const END_OF_TEXT: u32 = 151_643;
+pub(crate) const IM_END: u32 = 151_645;
+pub(crate) const END_OF_TEXT: u32 = 151_643;
 
 /// How [`Pipeline::chat`] samples (the app's enhance templates: temperature 0.3, top-k 40,
 /// top-p 0.9, at most 120 tokens).
@@ -340,10 +340,10 @@ impl Default for ChatOptions {
 }
 
 /// A small seeded generator for the sampling (xorshift64*).
-struct ChatRng(u64);
+pub(crate) struct ChatRng(u64);
 
 impl ChatRng {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self(seed ^ 0x9E37_79B9_7F4A_7C15 | 1)
     }
 
@@ -358,7 +358,7 @@ impl ChatRng {
 
 /// The next token from `logits`: the argmax at temperature 0, else top-k then top-p over the
 /// tempered softmax, drawn with `rng`.
-fn sample(logits: &[f32], opts: &ChatOptions, rng: &mut ChatRng) -> u32 {
+pub(crate) fn sample(logits: &[f32], opts: &ChatOptions, rng: &mut ChatRng) -> u32 {
     let argmax = || logits.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |b, (i, v)| if *v > b.1 { (i, *v) } else { b }).0 as u32;
     if opts.temperature <= 0.0 || logits.is_empty() {
         return argmax();
