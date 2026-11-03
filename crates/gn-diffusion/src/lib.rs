@@ -80,6 +80,9 @@ pub const KREA2_EDIT_LORA: &str = "krea2_general_edit_v2.safetensors";
 pub const TEMPLATE_KREA2_FILL: &str = "krea2-turbo/fill";
 /// The LoRA [`TEMPLATE_KREA2_FILL`] runs with (added to a request's own LoRAs).
 pub const KREA2_ANYPAINT_LORA: &str = "krea2_anypaint_rank32.safetensors";
+/// A chat's `params.encoder` that answers on Krea 2's Qwen3-VL-4B (the enhance templates): what
+/// AusBoss's Krea 2 inpaint workflow writes its prompt with.
+pub const CHAT_ON_KREA2: &str = "krea2";
 /// Its card's `ref_boost` for edits at 8 steps and CFG 1; a request's `ref_boost` overrides it.
 pub const KREA2_REF_BOOST: f32 = 4.0;
 /// The app's prompt rewriter and judge with the picture in view, and without: answered by the
@@ -274,6 +277,16 @@ fn with_style_lora(params: &std::collections::BTreeMap<String, Value>) -> Result
     Ok(out)
 }
 
+/// Whether a chat's `encoder` param asks for Krea 2's encoder ([`CHAT_ON_KREA2`]); absent or
+/// null is the default (Qwen-Image-2.1's 8B), anything else an error.
+fn chat_on_krea2(params: &std::collections::BTreeMap<String, Value>) -> Result<bool, EngineError> {
+    match params.get("encoder") {
+        None | Some(Value::Null) => Ok(false),
+        Some(v) if v.as_str() == Some(CHAT_ON_KREA2) => Ok(true),
+        Some(v) => Err(EngineError::new(ErrorKind::BadRequest, format!("encoder {v}: a chat answers on the default encoder or \"{CHAT_ON_KREA2}\""))),
+    }
+}
+
 /// A Krea 2 fill's `denoise` (0 < d ≤ 1, default 1) and `seam` (the band around the area the
 /// sampler may repaint, 0..256 px, default AnyPaint's 32).
 fn krea2_fill_options(params: &std::collections::BTreeMap<String, Value>) -> Result<krea2_pipeline::FillOptions, EngineError> {
@@ -371,6 +384,8 @@ impl DiffusionEngine {
     /// A text answer (the app's `enhance/*` templates): the 2.1 pipeline's encoder as Qwen3-VL,
     /// the system turn from `params.system`, the picture (if any) in view, sampled as the app's
     /// ComfyUI templates ask (temperature 0.3, top-k 40, top-p 0.9, at most 120 tokens).
+    /// `params.encoder: "krea2"` answers with Krea 2's own Qwen3-VL-4B instead
+    /// ([`CHAT_ON_KREA2`]): a Krea 2 fill's rewriter then needs no swap of the resident family.
     fn chat(
         &mut self,
         req: &RunRequest,
@@ -384,12 +399,16 @@ impl DiffusionEngine {
             None => None,
         };
         let system = req.params.get("system").and_then(Value::as_str).unwrap_or_default().to_string();
-        self.ensure_loaded(Family::QwenImage21, progress)?;
-        let Resident::Qwen(p) = &self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no pipeline")) };
+        let on_krea2 = chat_on_krea2(&req.params)?;
+        self.ensure_loaded(if on_krea2 { Family::Krea2 } else { Family::QwenImage21 }, progress)?;
         progress(0.5, "Thinking");
         let opts = ChatOptions { seed: req.seed, ..ChatOptions::default() };
         let stop = || cancel.load(Ordering::SeqCst);
-        let reply = p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop);
+        let reply = match &self.resident {
+            Resident::Qwen(p) if !on_krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
+            Resident::Krea2(p) if on_krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
+            _ => return Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
+        };
         self.give_back();
         let reply = reply.map_err(|e| {
             exit_if_poisoned(&e.to_string());
@@ -1502,6 +1521,20 @@ mod tests {
         assert_eq!(with_edit_lora(&p)["loras"].as_array().map(Vec::len), Some(1), "named already: kept at its own strength");
         assert_eq!(task_of(TEMPLATE_KREA2_EDIT), Some("edit"));
         assert_eq!(family_of(TEMPLATE_KREA2_EDIT), Some(Family::Krea2));
+    }
+
+    #[test]
+    fn a_chat_names_krea2s_encoder_or_none() {
+        let mut p = BTreeMap::new();
+        assert!(!chat_on_krea2(&p).unwrap());
+        p.insert("encoder".into(), json!(CHAT_ON_KREA2));
+        assert!(chat_on_krea2(&p).unwrap());
+        p.insert("encoder".into(), Value::Null);
+        assert!(!chat_on_krea2(&p).unwrap());
+        for bad in [json!("qwen"), json!(3), json!(["krea2"])] {
+            p.insert("encoder".into(), bad);
+            assert!(chat_on_krea2(&p).is_err());
+        }
     }
 
     #[test]
