@@ -207,6 +207,21 @@ impl FlowSchedule {
         Ok(Self { sigmas })
     }
 
+    /// Viggle's 6-step Qwen-Image-2.1 Turbo LoRA (v0.3, `Viggle/Qwen-Image-2.1-viggle-turbo`,
+    /// its ComfyUI `viggle_turbo.py` sigmas node): the fixed nodes
+    /// [`Self::VIGGLE_TURBO_NODES`] through the exponential shift at `mu` interpolated from
+    /// 0.5 at 256 latent tokens to 0.9 at 8192 (diffusers' `calculate_shift`, no terminal
+    /// shift), then 0.
+    pub fn viggle_turbo(tokens: usize) -> Self {
+        let mu = 0.5 + (0.9 - 0.5) * (tokens as f32 - 256.0) / (8192.0 - 256.0);
+        let mut sigmas: Vec<f32> = Self::VIGGLE_TURBO_NODES.iter().map(|t| flux_time_shift(mu, *t)).collect();
+        sigmas.push(0.0);
+        Self { sigmas }
+    }
+
+    /// The Viggle Turbo LoRA's sigma nodes before the shift, the same at every size.
+    pub const VIGGLE_TURBO_NODES: [f32; 6] = [1.0, 0.9375, 0.875, 0.75, 0.5, 0.25];
+
     pub fn steps(&self) -> usize {
         self.sigmas.len() - 1
     }
@@ -359,6 +374,19 @@ mod tests {
         assert_eq!(t.len(), 10_000);
         close(&t[..3], &[0.00019935173622798175, 0.00039866389124654233, 0.0005979364505037665]);
         close(&t[9997..], &[0.999899685382843, 0.9999498128890991, 1.0]);
+    }
+
+    #[test]
+    fn viggle_turbo_sigmas_follow_its_card() {
+        // At 1024² (64×64 = 4096 tokens) mu = 0.6935, e^mu = 2.0008: the nodes 1, .9375, .875,
+        // .75, .5, .25 shift to e^mu / (e^mu + 1/t − 1), then 0.
+        let s = FlowSchedule::viggle_turbo(4096);
+        assert_eq!(s.steps(), 6);
+        let want = [1.0, 0.96775, 0.93336, 0.85719, 0.66675, 0.40009, 0.0];
+        assert!(s.sigmas.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-4), "{:?}", s.sigmas);
+        // Fewer tokens shift less: mu 0.5 at 256.
+        let small = FlowSchedule::viggle_turbo(256);
+        assert!(small.sigmas[4] < s.sigmas[4]);
     }
 
     #[test]
