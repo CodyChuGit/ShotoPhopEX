@@ -21,11 +21,13 @@ pub struct Options {
     pub refine_iterations: usize,
     /// Soft text-mask edges: `sigmoid(logit / soft)`; 0 cuts at logit 0 (ComfyUI).
     pub soft: f32,
+    /// A single click's other meanings (`gn_segment::sam::Options::candidate`).
+    pub candidate: Option<usize>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2, soft: 0.0 }
+        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2, soft: 0.0, candidate: None }
     }
 }
 
