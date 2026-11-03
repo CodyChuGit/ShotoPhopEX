@@ -41,7 +41,7 @@ pub fn dir(models_root: &Path) -> PathBuf {
     }
 }
 
-fn stamp(path: &Path) -> Result<String> {
+pub(crate) fn stamp(path: &Path) -> Result<String> {
     let md = std::fs::metadata(path)?;
     let mtime = md.modified()?.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     Ok(format!("{}|{}|{mtime}", path.display(), md.len()))
