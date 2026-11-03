@@ -396,6 +396,10 @@ pub(crate) fn sample(logits: &[f32], opts: &ChatOptions, rng: &mut ChatRng) -> u
     top[keep - 1].0 as u32
 }
 
+/// Driver-free memory a picture's encode (the vision tower's activations and the text
+/// encoder's over about 1,500 picture tokens) is given before it starts ([`Pipeline::room_for_references`]).
+const ENCODE_ROOM: usize = 6 << 30;
+
 impl Pipeline {
     /// Load everything from `model` (a snapshot directory, or a ComfyUI `models` folder with
     /// ComfyUI's 2.1 files) onto the best device. `progress` hears each phase.
@@ -521,8 +525,16 @@ impl Pipeline {
 
     /// The prompt is encoded; make room for the sampling if the device cannot hold the
     /// prefix cache of `prefix_len` rows (plus the step's working set) beside everything
-    /// resident: drop the vision tower first (0.7 s to load again), then, if that is not
-    /// enough, the text encoder (5 s), which the next prompt loads again.
+    /// resident: drop the vision tower first (0.4 s to load again), then the chat head (0.25 s,
+    /// and only a chat needs it), then, if that is not enough, the text encoder (2.7 s), which
+    /// the next prompt loads again.
+    ///
+    /// The pool's freed-but-retained memory counts as room only after it is handed back to the
+    /// driver: counted as it lay, a warm Expand on a new picture (a caption chat, then a
+    /// reference encode beside the resident DiT) kept the text encoder with 4.3 GB "usable"
+    /// against 6.8 GB needed by the driver's count after the run, and the prefix pass, the
+    /// steps and the decode all paged: 15 to 40 s encodes against 3 to 5 s (benchmark,
+    /// 2026-11-03).
     fn make_room(&self, prefix_len: usize, target_len: usize) {
         if !self.opts.evict_text_encoder || !self.text_encoder_resident() {
             return;
@@ -531,12 +543,18 @@ impl Pipeline {
         // The step's working set: the joint keys and values the target attends to (two
         // copies in flight), the prefix pass's f32 score chunks, and 512 MiB headroom.
         let working = 4 * (prefix_len + target_len) * dit::INNER * 2 + 3 * dit::HEADS * 1024 * prefix_len * 4 + (512 << 20);
-        // The sampling draws on the pool's slack first, then the driver's free memory, which must
-        // keep its paging headroom.
+        // The sampling draws on the driver's free memory, which must keep its paging headroom.
         let need = cache + working + crate::device::PAGING_HEADROOM;
-        // The pool's retained memory is this process's to reuse (the driver counts it as used).
-        let Some((free, total)) = crate::device::usable_vram(&self.dev) else { return };
+        let Some((free, total)) = crate::device::free_vram(&self.dev) else { return };
         if free >= need {
+            return;
+        }
+        // Short by the driver's count: the pool's slack goes back to it first, so what is left
+        // is measured as it is.
+        crate::device::trim_pool(&self.dev);
+        let room = || crate::device::free_vram(&self.dev).map_or(0, |(free, _)| free);
+        if room() >= need {
+            tracing::info!(free_gb = free as f32 / 1e9, need_gb = need as f32 / 1e9, "trimmed the pool for the sampling");
             return;
         }
         // The f32 vision tower is ~2.4 GB and only the next picture needs it: on a 32 GB card
@@ -545,15 +563,42 @@ impl Pipeline {
         let dropped = self.vision.lock().unwrap_or_else(|e| e.into_inner()).take().is_some();
         if dropped {
             self.vision_transient.store(true, std::sync::atomic::Ordering::Relaxed);
-            let _ = self.dev.synchronize();
-            if crate::device::usable_vram(&self.dev).is_some_and(|(free, _)| free >= need) {
+            crate::device::trim_pool(&self.dev);
+            if room() >= need {
                 tracing::info!(free_gb = free as f32 / 1e9, need_gb = need as f32 / 1e9, "dropped the vision tower for the sampling");
                 return;
             }
         }
-        tracing::info!(free_gb = free as f32 / 1e9, need_gb = need as f32 / 1e9, total_gb = total as f32 / 1e9, "evicting the text encoder for the sampling");
+        // The chat head (0.65 GB) a caption or a Remove's naming left.
+        let dropped_head = self.head.lock().unwrap_or_else(|e| e.into_inner()).take().is_some();
+        if dropped_head {
+            crate::device::trim_pool(&self.dev);
+            if room() >= need {
+                tracing::info!(free_gb = free as f32 / 1e9, need_gb = need as f32 / 1e9, "dropped the chat head for the sampling");
+                return;
+            }
+        }
+        tracing::info!(free_gb = room() as f32 / 1e9, need_gb = need as f32 / 1e9, total_gb = total as f32 / 1e9, "evicting the text encoder for the sampling");
         *self.te.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let _ = self.dev.synchronize();
+        crate::device::trim_pool(&self.dev);
+    }
+
+    /// A picture is about to be encoded beside the resident DiT: the chat head a caption left
+    /// goes (only a chat needs it, 0.25 s to load again), and the pool's slack goes back to the
+    /// driver when the driver's own count is short of [`ENCODE_ROOM`], so the vision tower and
+    /// the text encoder's working set are mapped in real free memory rather than paged.
+    fn room_for_references(&self) {
+        if !matches!(self.dev, Device::Cuda(_)) {
+            return;
+        }
+        let Some((free, _)) = crate::device::free_vram(&self.dev) else { return };
+        if free >= ENCODE_ROOM {
+            return;
+        }
+        let dropped_head = self.head.lock().unwrap_or_else(|e| e.into_inner()).take().is_some();
+        crate::device::trim_pool(&self.dev);
+        let after = crate::device::free_vram(&self.dev).map_or(0, |(f, _)| f);
+        tracing::info!(free_gb = free as f32 / 1e9, after_gb = after as f32 / 1e9, dropped_head, "made room for the references");
     }
 
     /// The dtype the DiT runs in (what a LoRA's tensors are put in).
@@ -633,6 +678,9 @@ impl Pipeline {
         }
         // Release the old entry before computing another picture's working set.
         *slot = None;
+        if !req.references.is_empty() {
+            self.room_for_references();
+        }
         let (latents, feats) = if req.references.is_empty() {
             (Vec::new(), Vec::new())
         } else {
