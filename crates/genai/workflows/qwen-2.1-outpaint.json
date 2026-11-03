@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "id": "qwen-2.1/outpaint",
+    "name": "Generative Expand (Qwen-Image-2.1 + Outpaint LoRA)",
+    "family": "qwen-image-2.1",
+    "task": "expand",
+    "license": "research",
+    "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. AusBoss's Outpaint LoRA follows the base model's licence. Bring your own files: qwen-image-2.1-outpaint-v2.safetensors goes in the models folder's loras.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
+    },
+    "expandMargin": 1.0,
+    "greyCanvas": true,
+    "promptFormat": "Outpaint the image: replace the solid gray areas with a seamless continuation of the scene, keeping the existing picture unchanged. Scene: {prompt}",
+    "promptFormatImperative": "Outpaint the image: replace the solid gray areas with a seamless continuation of the scene, keeping the existing picture unchanged. Scene: {prompt}",
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_bf16.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_bf16.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
+    ],
+    "notes": "AusBoss's Qwen Image 2.1 Outpaint LoRA (Civitai 2967375, v2 qwen-image-2.1-outpaint-v2.safetensors, SHA-256 3611a5cc…eca28; rank 32, trained on Comfy-Org's INT8 convrot base with ai-toolkit). Its recipe: the whole grown canvas with the new area flat #808080 and the picture where it stays (greyCanvas: no edge-replicating prefill) goes to TextEncodeQwenImage21 as image_1 at resolution 0, so the target is the canvas's size; no Set Latent Noise Mask (on 2.1 it draws a rectangle at the seam, the card says; the LoRA keeps the picture in place by itself); euler/simple 25 steps CFG 1, LoRA 1. The trigger sentence goes first word for word, then 'Scene:' and a description (75 % of its training captions had one, from Qwen3-VL-8B). Its card: plain 2.1 moved or rescaled the picture in 13 of 16 renders, with the LoRA in place in 32 of 32; kept-area PSNR 16.4 to 34.6 dB; grey left unfilled 9.1 % to 0.9 %. Trained at 1–2 MP with sides on 32 px; the kept picture under about 15 % of the canvas varies by seed (extend in two passes). A flat backdrop can get a soft vertical smudge on the new side. The native worker serves it as qwen-2.1/outpaint when the LoRA is in loras/ and adds the LoRA itself.",
+    "creator": "Alibaba Qwen, AusBoss",
+    "description": "Qwen-Image-2.1 with the Outpaint LoRA: the picture stays where it is",
+    "badges": [
+      "LoRA"
+    ],
+    "estimatedSeconds": {
+      "base": 8,
+      "perMegapixel": 22
+    },
+    "pages": [
+      "expand"
+    ],
+    "parameters": []
+  }
+}

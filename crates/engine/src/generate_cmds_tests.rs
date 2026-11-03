@@ -628,6 +628,68 @@ fn expand_takes_a_target_size_with_an_anchor_and_validates() {
     assert!(matches!(empty.execute(EXPAND, json!({"right": 8})), Err(EngineError::Disabled(..))));
 }
 
+/// The Outpaint LoRA's template gets the whole grown canvas, the new area flat `#808080` and
+/// the picture where it stays, with no mask, its sides on 32 px, and the trigger sentence
+/// first in the prompt (AusBoss's recipe).
+#[test]
+fn an_outpaint_expand_sends_a_grey_canvas_without_a_mask() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| p.integrations.allow_research_models = true);
+    s.execute("select.deselect", json!({})).unwrap();
+    let r = s.execute(EXPAND, json!({"right": 32, "prompt": "more sea", "seed": 4, "template": OUTPAINT_TEMPLATE})).unwrap();
+    assert_eq!(r["template"], OUTPAINT_TEMPLATE, "{r}");
+    assert_eq!(r["canvas"], json!([96, 48]));
+    let st = fake.state();
+    assert_eq!(st.runs.len(), 1, "a prompt was given: nothing is described first");
+    let g = &st.runs[0].request;
+    let prompt = g["prompt"].as_str().unwrap_or_default().to_string();
+    assert!(prompt.starts_with("Outpaint the image: replace the solid gray areas") && prompt.ends_with("Scene: more sea"), "{prompt}");
+    assert_eq!(st.pictures.len(), 1, "the canvas alone, no mask: {}", st.pictures.len());
+    let sent = st.pictures[0].clone();
+    assert_eq!((sent.width % 32, sent.height % 32), (0, 0), "{}×{}", sent.width, sent.height);
+    // The whole 96×48 canvas went out: the picture on the left two thirds, grey on the right.
+    let y = sent.height / 2;
+    assert_eq!(sent.get(sent.width - 2, y).unwrap(), [128, 128, 128, 255], "the new area is flat grey");
+    assert_ne!(sent.get(sent.width / 4, y).unwrap(), [128, 128, 128, 255], "the picture is itself");
+}
+
+#[test]
+fn grey_outside_paints_only_around_the_picture() {
+    let mut img = Rgba8::new(4, 3, vec![10; 4 * 3 * 4]).unwrap();
+    grey_outside(&mut img, Rect::new(1, 0, 3, 2));
+    assert_eq!(img.get(1, 0).unwrap(), [10, 10, 10, 10], "inside is kept");
+    assert_eq!(img.get(2, 1).unwrap(), [10, 10, 10, 10]);
+    assert_eq!(img.get(0, 0).unwrap(), PREFILL);
+    assert_eq!(img.get(3, 1).unwrap(), PREFILL);
+    assert_eq!(img.get(2, 2).unwrap(), PREFILL);
+    // A picture past the image or empty: everything outside it is grey, nothing panics.
+    let mut img = Rgba8::new(2, 2, vec![10; 16]).unwrap();
+    grey_outside(&mut img, Rect::new(5, 5, 9, 9));
+    assert!(img.data.as_chunks::<4>().0.iter().all(|p| *p == PREFILL));
+}
+
+/// `auto` expands with the Outpaint LoRA when its file is in the models folder's `loras` (and
+/// research models are allowed), else on 2511's tiers.
+#[test]
+fn auto_expands_with_the_outpaint_lora_only_when_it_is_installed() {
+    let dir = std::env::temp_dir().join(format!("pex-outpaint-auto-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("loras")).unwrap();
+    let mut s = Session::new();
+    s.edit_prefs(|p| {
+        p.integrations.models_path = dir.to_string_lossy().into_owned();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = true;
+    });
+    assert_eq!(native21_auto(&s, EXPAND, false), None, "no LoRA: 2511");
+    std::fs::write(dir.join("loras").join(OUTPAINT_LORA), b"x").unwrap();
+    assert_eq!(native21_auto(&s, EXPAND, false), Some(OUTPAINT_TEMPLATE));
+    s.edit_prefs(|p| p.integrations.allow_research_models = false);
+    assert_eq!(native21_auto(&s, EXPAND, false), None, "research models off");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn purge_generative_models_asks_the_server_to_free() {
     let fake = FakeNative::start().unwrap();

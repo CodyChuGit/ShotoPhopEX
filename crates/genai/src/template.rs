@@ -134,6 +134,11 @@ pub struct Meta {
     /// of it, they paint a second subject into the new area. Absent: the engine's 0.25.
     #[serde(default)]
     pub expand_margin: Option<f32>,
+    /// Expand templates trained on a grey canvas (AusBoss's Outpaint LoRA): the new area goes
+    /// out flat `#808080` with the picture in place, and the whole request is the model's
+    /// image 1, instead of the edge-replicating prefill other expand templates get.
+    #[serde(default)]
+    pub grey_canvas: bool,
     /// Fill templates: the selection is flattened to mid-grey in the request image before it
     /// is sent, so the model sees a hole to paint rather than the old object to copy (a swap
     /// from a reference image wants this; a fill that continues what is there does not). The
@@ -208,6 +213,7 @@ const BUILTIN: &[&str] = &[
     include_str!("../workflows/qwen-edit-2511-edit.json"),
     include_str!("../workflows/qwen-2.1-fill.json"),
     include_str!("../workflows/qwen-2.1-expand.json"),
+    include_str!("../workflows/qwen-2.1-outpaint.json"),
     include_str!("../workflows/krea2-turbo-image.json"),
     include_str!("../workflows/qwen-2.1-image.json"),
     include_str!("../workflows/qwen-2.1-matte.json"),

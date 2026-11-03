@@ -4,6 +4,31 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-03: Generative Expand on Qwen-Image-2.1 with AusBoss's Outpaint LoRA
+
+The owner asked to learn from AusBoss's Krea 2 Inpaint (click to mask) v1.3 workflow and his
+Qwen-Image-2.1 Outpaint LoRA; the study note is
+`docs/comfy/research/notes/ausboss-inpaint-and-outpaint-2026-11.md`. The inpaint engine half
+is the coordinator session's genai-native `krea2-anypaint-fill`; this entry is the expand half.
+
+- New template `qwen-2.1/outpaint` (genai-native `qwen21-outpaint-lora`, 47d643d): the grown
+  canvas with the new area flat `#808080` is image 1, the target its size, no noise mask, the
+  v2 LoRA added first; listed only when `loras/qwen-image-2.1-outpaint-v2.safetensors` exists.
+- App: `Meta::grey_canvas` (flat grey prefill instead of edge replication, sides on 32, result
+  realigned); the template wraps the prompt as the LoRA's trigger + `Scene: …`; `auto` expands
+  with it when research models are allowed, the worker runs and the LoRA is installed, else
+  stays on 2511 (the plain 2.1 expand drew the subject again, earlier today).
+- Tests: the grey canvas and no mask through the fake worker, `grey_outside`, the `auto` gate;
+  gn-diffusion: the LoRA goes first once.
+
+**Still open**
+
+- Not run on the GPU yet (no build, no GPU job in this step): bump the genai-native pin, build
+  with `native-diffusion`, then measure in the app on the owner's portrait (one side, four
+  sides, the two-stage blank expand) against 2511.
+- The inpaint side's app wiring (scaled crop context, a separate 24 px noise mask, the auto
+  prompt on the grey copy, 0.5 colour match) once `krea2-turbo/fill` lands.
+
 ## 2026-11-03: upstream PhotoCraft 0.20 (v0.20.1) merged
 
 Upstream tagged 0.20 as `v0.20.1` (no `v0.20.0` tag); merged it into `photoshopex` (267 commits

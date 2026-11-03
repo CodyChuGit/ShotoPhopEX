@@ -614,19 +614,33 @@ pub fn angle_instruction(rotation: u32, tilt: i32, zoom: u32) -> Option<String> 
 /// worker runs the family: the owner's choice of 2026-10-27, on the removal numbers of
 /// `benchmarks.md` (2.1 as an edit 15 of 20 hard strokes clean at 6–28 s, 2511 16 at 33–58 s
 /// through ComfyUI). A removal is an edit by instruction on the crop, as measured; a prompted
-/// fill is the 2.1 fill (the mask in view); an expand the in-context 2.1 expand. Without the
-/// opt-in or the worker, the 2511 orders stand (the permissive default).
+/// fill is the 2.1 fill (the mask in view); an expand is 2.1 with AusBoss's Outpaint LoRA when
+/// that file is in the models folder's `loras` ([`OUTPAINT_TEMPLATE`]). Without the opt-in or
+/// the worker, the 2511 orders stand (the permissive default).
 pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
     let t = match command {
         FILL if removal => "qwen-2.1/edit",
         FILL => "qwen-2.1/fill",
-        // Expand stays on 2511's own tiers: its sampler keeps the picture's latent outside the
-        // mask, while 2.1 samples the whole canvas from noise and drew the subject again over
-        // the picture even with a backdrop-only prompt on four sides (2026-11-03).
+        // Plain 2.1 samples the whole canvas from noise and drew the subject again over the
+        // picture even with a backdrop-only prompt on four sides (2026-11-03), so without the
+        // LoRA an expand stays on 2511's own tiers, whose sampler keeps the picture's latent.
+        EXPAND if outpaint_lora_installed(s) => OUTPAINT_TEMPLATE,
         EDIT => "qwen-2.1/edit",
         _ => return None,
     };
     (s.prefs().integrations.allow_research_models && loras::runs_native(s, t)).then_some(t)
+}
+
+/// Generative Expand on Qwen-Image-2.1 with AusBoss's Outpaint LoRA (the grown canvas grey
+/// around the picture, no noise mask; the worker adds the LoRA).
+pub(crate) const OUTPAINT_TEMPLATE: &str = "qwen-2.1/outpaint";
+/// The file [`OUTPAINT_TEMPLATE`] needs under the models folder's `loras`.
+pub(crate) const OUTPAINT_LORA: &str = "qwen-image-2.1-outpaint-v2.safetensors";
+
+/// Is [`OUTPAINT_LORA`] in the models folder's `loras`?
+fn outpaint_lora_installed(s: &Session) -> bool {
+    let root = s.prefs().integrations.models_root();
+    !root.trim().is_empty() && std::path::Path::new(&root).join("loras").join(OUTPAINT_LORA).is_file()
 }
 
 /// The crop a removal on Qwen-Image-2.1 goes out at when `maxPixels` is left at the default:
@@ -2695,8 +2709,10 @@ fn tone_match_removal(out: Rgba8, picture: &Rgba8, mask: &Gray8, adapter: bool, 
     (matched, mismatch)
 }
 
-/// The composite under `rect` that a fill sends, an expand's new area prefilled.
-fn source_picture(doc: &Document, ctx: &JobCtx, rect: Rect, outpaint: Option<&Outpaint>) -> Result<Rgba8> {
+/// The composite under `rect` that a fill sends, an expand's new area prefilled: flat
+/// `#808080` when `grey` (a template trained on a grey canvas, `Meta::grey_canvas`), else
+/// continuing the picture's edges ([`prefill_outside`]).
+fn source_picture(doc: &Document, ctx: &JobCtx, rect: Rect, outpaint: Option<&Outpaint>, grey: bool) -> Result<Rgba8> {
     ctx.progress(0.0, "Rendering");
     // The pictures of the run land on the area sent (an expand names its own place: the document
     // on screen has not grown yet).
@@ -2707,9 +2723,47 @@ fn source_picture(doc: &Document, ctx: &JobCtx, rect: Rect, outpaint: Option<&Ou
     let mut image = Rgba8::new(composite.width, composite.height, composite.pixels).map_err(gen_err)?;
     if let Some(o) = outpaint {
         let p = o.picture;
-        prefill_outside(&mut image, Rect::new(p.x0 - rect.x0, p.y0 - rect.y0, p.x1 - rect.x0, p.y1 - rect.y0));
+        let inner = Rect::new(p.x0 - rect.x0, p.y0 - rect.y0, p.x1 - rect.x0, p.y1 - rect.y0);
+        if grey {
+            grey_outside(&mut image, inner);
+        } else {
+            prefill_outside(&mut image, inner);
+        }
     }
     Ok(image)
+}
+
+/// The grid a grey-canvas request's sides go on: the Outpaint LoRA was trained on sides on 32 px.
+const GREY_CANVAS_STEP: u32 = 32;
+
+/// A request size `(w, h)` for a grey-canvas template (`grey`): rounded down to multiples of
+/// [`GREY_CANVAS_STEP`], at least [`MIN_SIDE`]; unchanged for any other.
+fn grey_canvas_size((w, h): (u32, u32), grey: bool) -> (u32, u32) {
+    if !grey {
+        return (w, h);
+    }
+    let s = GREY_CANVAS_STEP;
+    ((w / s * s).max(MIN_SIDE), (h / s * s).max(MIN_SIDE))
+}
+
+/// Paint the pixels outside `inner` (in image coordinates) flat [`PREFILL`] grey, opaque: the
+/// canvas AusBoss's Outpaint LoRA was trained on (no feather: a picture faded into the grey
+/// came back as a dark band, its card says).
+fn grey_outside(img: &mut Rgba8, inner: Rect) {
+    let (w, h) = (img.width as i32, img.height as i32);
+    let inner = inner.intersect(&Rect::new(0, 0, w, h));
+    let stride = img.width as usize * 4;
+    for y in 0..h {
+        for x in 0..w {
+            if x >= inner.x0 && x < inner.x1 && y >= inner.y0 && y < inner.y1 {
+                continue;
+            }
+            let dst = y as usize * stride + x as usize * 4;
+            if let Some(d) = img.data.get_mut(dst..dst + 4) {
+                d.copy_from_slice(&PREFILL);
+            }
+        }
+    }
 }
 
 fn fill_region(
@@ -2721,7 +2775,10 @@ fn fill_region(
     coverage: Vec<f32>,
     outpaint: Option<Outpaint>,
 ) -> Result<Filled> {
-    let mut image = source_picture(doc, ctx, rect, outpaint.as_ref())?;
+    // A grey-canvas template (the Outpaint LoRA) is always named, by the caller or by
+    // [`native21_auto`], never picked by `auto`'s server order.
+    let grey = outpaint.is_some() && template::find(&job.template_id).is_ok_and(|t| t.meta.grey_canvas);
+    let mut image = source_picture(doc, ctx, rect, outpaint.as_ref(), grey)?;
     let (w, h) = (rect.width(), rect.height());
     let FillJob {
         backend,
@@ -2781,7 +2838,7 @@ fn fill_region(
     ctx.check()?;
     // Large areas go out at the models' working size and come back resampled; the layer mask
     // below keeps the selection's full-resolution edge either way.
-    let (rw, rh) = request_size_within(w, h, tuning.max_pixels);
+    let (rw, rh) = grey_canvas_size(request_size_within(w, h, tuning.max_pixels), grey);
     let (image, mask) = if (rw, rh) == (w, h) { (image, mask) } else { (resize_rgba8(&image, rw, rh)?, resize_gray8(&mask, rw, rh)?) };
     let template_id = if auto { resolve_auto(backend.as_ref(), auto_order, &template_id) } else { template_id };
     // A removal's adapter variant: a template whose meta names a `highlight` (an adapter
@@ -2803,7 +2860,8 @@ fn fill_region(
     // template, whose "fill" is an edit with the mask in view) hands it back a few pixels off:
     // the result is realigned to the picture outside the mask (`generate_realign`).
     let qwen21 = template::find(&template_id).is_ok_and(|t| t.meta.family == "qwen-image-2.1");
-    let realign = outpaint.is_none() && (command == EDIT || qwen21);
+    // A grey-canvas expand regenerates the whole canvas, its picture included.
+    let realign = (outpaint.is_none() && (command == EDIT || qwen21)) || grey;
     // The smoothed hole helps 2511 (it copies what its reference shows, so a smooth
     // continuation gives it nothing to keep); Qwen-Image-2.1 hands the smoothing back as the
     // blur it is, and removes from the real picture as well as 2511 does from the smoothed one
