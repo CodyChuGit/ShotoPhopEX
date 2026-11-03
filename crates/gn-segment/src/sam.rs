@@ -65,12 +65,21 @@ pub struct Options {
     pub max_detections: usize,
     /// Tracker refinement passes (ComfyUI: 2; 0 keeps the detector's masks).
     pub refine_iterations: usize,
+    /// 0 (ComfyUI): text masks are cut at logit 0. Above 0: they are `sigmoid(logit / soft)`,
+    /// a soft edge where the model is unsure (hair), the refined crop and the coarse mask
+    /// combined by maximum instead of OR.
+    pub soft: f32,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2 }
+        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2, soft: 0.0 }
     }
+}
+
+/// `sigmoid(logits / t)` on the device.
+fn soft_tensor(logits: &Tensor, t: f32) -> Result<Tensor> {
+    Ok(((logits / f64::from(t))?.neg()?.exp()? + 1.0)?.recip()?)
 }
 
 /// Timings of one request.
@@ -336,7 +345,7 @@ impl Sam31 {
             let b = boxes.get(i * 4..i * 4 + 4).unwrap_or(&[0.0; 4]);
             let bbox = [b[0] * w as f32, b[1] * h as f32, b[2] * w as f32, b[3] * h as f32];
             if self.device.is_cuda() {
-                let mask = self.refine_device(emb, &mask_tensor.narrow(1, i, 1)?, bbox, opts.refine_iterations, &mut timing)?;
+                let mask = self.refine_device(emb, &mask_tensor.narrow(1, i, 1)?, bbox, opts.refine_iterations, opts.soft, &mut timing)?;
                 out.push(Instance::from_mask(mask, w, h, score, bbox));
                 continue;
             }
@@ -348,20 +357,22 @@ impl Sam31 {
             let b = boxes.get(i * 4..i * 4 + 4).unwrap_or(&[0.0; 4]);
             let bbox = [b[0] * w as f32, b[1] * h as f32, b[2] * w as f32, b[3] * h as f32];
             timing.post_ms += t.elapsed().as_millis() as u64;
-            let mask = self.refine(emb, &coarse, bbox, opts.refine_iterations, &mut timing)?;
+            let mask = self.refine(emb, &coarse, bbox, opts.refine_iterations, opts.soft, &mut timing)?;
             out.push(Instance::from_mask(mask, w, h, score, bbox));
         }
         Ok((out, timing))
     }
 
     /// Keep detector logits, crop feedback and the final union on CUDA; download one mask.
-    fn refine_device(&self, emb: &Frame, low: &Tensor, bbox: [f32; 4], iterations: usize, timing: &mut Timing) -> Result<Vec<f32>> {
+    fn refine_device(&self, emb: &Frame, low: &Tensor, bbox: [f32; 4], iterations: usize, soft: f32, timing: &mut Timing) -> Result<Vec<f32>> {
         let (w, h) = (emb.width, emb.height);
         let coarse =
             crate::profile::measure(&self.device, "mask post-processing", || Ok(low.to_dtype(candle_core::DType::F32)?.upsample_bilinear2d(h, w, false)?))?;
-        let binary = coarse.gt(0.0)?;
+        let binary = if soft > 0.0 { soft_tensor(&coarse, soft)? } else { coarse.gt(0.0)? };
         let finish = |mask: &Tensor| -> Result<Vec<f32>> {
-            crate::profile::measure(&self.device, "host transfers", || Ok(mask.flatten_all()?.to_vec1::<u8>()?.into_iter().map(f32::from).collect()))
+            crate::profile::measure(&self.device, "host transfers", || {
+                Ok(if soft > 0.0 { mask.flatten_all()?.to_vec1::<f32>()? } else { mask.flatten_all()?.to_vec1::<u8>()?.into_iter().map(f32::from).collect() })
+            })
         };
         if iterations == 0 {
             return finish(&binary);
@@ -397,17 +408,21 @@ impl Sam31 {
         }
         timing.heads_ms += t.elapsed().as_millis() as u64;
         let full = crate::profile::measure(&self.device, "mask post-processing", || {
-            let refined =
-                feedback.upsample_bilinear2d(cy2 - cy1, cx2 - cx1, false)?.gt(0.0)?.pad_with_zeros(2, cy1, h - cy2)?.pad_with_zeros(3, cx1, w - cx2)?;
+            let up = feedback.upsample_bilinear2d(cy2 - cy1, cx2 - cx1, false)?;
+            if soft > 0.0 {
+                let refined = soft_tensor(&up, soft)?.pad_with_zeros(2, cy1, h - cy2)?.pad_with_zeros(3, cx1, w - cx2)?;
+                return Ok(binary.maximum(&refined)?);
+            }
+            let refined = up.gt(0.0)?.pad_with_zeros(2, cy1, h - cy2)?.pad_with_zeros(3, cx1, w - cx2)?;
             Ok(binary.broadcast_add(&refined)?.gt(0.0)?)
         })?;
         finish(&full)
     }
     /// `_refine_mask`: refine a coarse detector mask through the tracker heads on a crop around
     /// its box, then OR it with the coarse mask.
-    fn refine(&self, emb: &Frame, coarse: &[f32], bbox: [f32; 4], iterations: usize, timing: &mut Timing) -> Result<Vec<f32>> {
+    fn refine(&self, emb: &Frame, coarse: &[f32], bbox: [f32; 4], iterations: usize, soft: f32, timing: &mut Timing) -> Result<Vec<f32>> {
         let (w, h) = (emb.width, emb.height);
-        let coarse_bin = threshold(coarse);
+        let coarse_bin = if soft > 0.0 { coarse.iter().map(|v| sigmoid(v / soft)).collect() } else { threshold(coarse) };
         if iterations == 0 {
             return Ok(coarse_bin);
         }
@@ -454,8 +469,12 @@ impl Sam31 {
         let mut full = coarse_bin;
         for y in 0..crop_h {
             for x in 0..crop_w {
-                if refined[y * crop_w + x] > 0.0 {
-                    full[(cy1 + y) * w + cx1 + x] = 1.0;
+                let v = refined[y * crop_w + x];
+                let cell = &mut full[(cy1 + y) * w + cx1 + x];
+                if soft > 0.0 {
+                    *cell = cell.max(sigmoid(v / soft));
+                } else if v > 0.0 {
+                    *cell = 1.0;
                 }
             }
         }
