@@ -217,7 +217,7 @@ fn candle_error(e: anyhow::Error) -> EngineError {
 
 #[cfg(feature = "candle")]
 fn candle_opts(o: Options) -> gn_segment::sam::Options {
-    gn_segment::sam::Options { threshold: o.threshold, max_detections: o.max_detections, refine_iterations: o.refine_iterations, soft: o.soft }
+    gn_segment::sam::Options { threshold: o.threshold, max_detections: o.max_detections, refine_iterations: o.refine_iterations, soft: o.soft, candidate: o.candidate }
 }
 
 #[cfg(feature = "candle")]
@@ -385,6 +385,7 @@ impl Engine for PerceptionEngine {
             max_detections: num(&req.params, "maxDetections").map_or(1, |m| m.max(1.0) as usize),
             refine_iterations: num(&req.params, "refineIterations").map_or(2, |r| r.max(0.0) as usize),
             soft: num(&req.params, "softEdge").map_or(0.0, |t| t.clamp(0.0, 64.0)),
+            candidate: num(&req.params, "candidate").filter(|c| *c >= 0.0).map(|c| c as usize),
         };
         let positives = points_param(req.params.get("points"));
         let negatives = points_param(req.params.get("negatives"));

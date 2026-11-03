@@ -69,11 +69,16 @@ pub struct Options {
     /// a soft edge where the model is unsure (hair), the refined crop and the coarse mask
     /// combined by maximum instead of OR.
     pub soft: f32,
+    /// A single click's other meanings: SAM's three multimask heads ranked with the one of best
+    /// predicted IoU first (`None` and `Some(0)`: that one, ComfyUI's choice), then the other two
+    /// largest first ([`ranked_head`]); taken modulo three. "Next match" on a click that picked
+    /// a whole person when the shirt was meant.
+    pub candidate: Option<usize>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2, soft: 0.0 }
+        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2, soft: 0.0, candidate: None }
     }
 }
 
@@ -205,17 +210,46 @@ impl Sam31 {
     /// `SAM3Model.forward_segment`: one pass of the tracker heads on a frame, with points, a box
     /// or a mask, answering 1008×1008 logits.
     fn forward_segment(&self, trk: &[Tensor; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&[f32]>) -> Result<Vec<f32>> {
+        self.forward_segment_pick(trk, points, bbox, mask, None)
+    }
+
+    fn forward_segment_pick(&self, trk: &[Tensor; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&[f32]>, pick: Option<usize>) -> Result<Vec<f32>> {
         let (coords, labels) = crate::prompt::pack_prompts(points, bbox);
         let multimask = points.len() == 1;
         let out = self.run_heads(trk, &coords, &labels, mask)?;
+        if let (true, Some(c)) = (multimask, pick) {
+            let area = |t: usize| out.masks[t * LOW * LOW..(t + 1) * LOW * LOW].iter().filter(|v| **v > 0.0).count() as f32;
+            let token = ranked_head(&out.iou, &[area(1), area(2), area(3)], c);
+            let low = &out.masks[token * LOW * LOW..(token + 1) * LOW * LOW];
+            return Ok(if out.object_score > 0.0 { bilinear(low, LOW, LOW, INPUT, INPUT) } else { vec![NO_OBJ_SCORE; INPUT * INPUT] });
+        }
         Ok(select_head(out, multimask))
     }
 
     /// Keep selected logits and iterative feedback on CUDA until the final binary mask.
     fn forward_segment_device(&self, trk: &[Tensor; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&Tensor>) -> Result<Tensor> {
+        self.forward_segment_device_pick(trk, points, bbox, mask, None)
+    }
+
+    fn forward_segment_device_pick(&self, trk: &[Tensor; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&Tensor>, pick: Option<usize>) -> Result<Tensor> {
         let (coords, labels) = crate::prompt::pack_prompts(points, bbox);
         let out = crate::profile::measure(&self.device, "heads", || self.heads.forward([&trk[0], &trk[1], &trk[2]], &coords, &labels, mask))?;
+        if let (true, Some(c)) = (points.len() == 1, pick) {
+            return self.pick_head_device(&out, c);
+        }
         self.choose_head_device(&out, points.len() == 1)
+    }
+
+    /// [`Self::choose_head_device`] with a single click's `c`-th meaning ([`ranked_head`]).
+    fn pick_head_device(&self, out: &crate::mask_decoder::InteractiveOutput, c: usize) -> Result<Tensor> {
+        let iou: [f32; 4] = out.iou.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?.try_into().map_err(|_| anyhow::anyhow!("expected four IoUs"))?;
+        let heads = out.masks.narrow(1, 1, 3)?;
+        let areas: [f32; 3] =
+            heads.gt(0.0)?.to_dtype(candle_core::DType::F32)?.flatten(2, 3)?.sum(2)?.flatten_all()?.to_vec1::<f32>()?.try_into().map_err(|_| anyhow::anyhow!("expected three heads"))?;
+        let token = ranked_head(&iou, &areas, c);
+        let logits = out.masks.narrow(1, token, 1)?.to_dtype(candle_core::DType::F32)?.upsample_bilinear2d(INPUT, INPUT, false)?;
+        let valid = out.object_score.gt(0.0)?.reshape((1, 1, 1, 1))?.broadcast_as(logits.shape())?;
+        Ok(valid.where_cond(&logits, &Tensor::full(NO_OBJ_SCORE, logits.shape(), &self.device)?)?)
     }
     fn choose_head_device(&self, out: &crate::mask_decoder::InteractiveOutput, multimask: bool) -> Result<Tensor> {
         crate::profile::measure(&self.device, "mask post-processing", || {
@@ -243,7 +277,7 @@ impl Sam31 {
         pts.extend(negatives.iter().map(|p| (scale(p), 0)));
         let t = Instant::now();
         if self.device.is_cuda() {
-            let mut logits = self.forward_segment_device(&emb.vision.interactive_fpn, &pts, None, None)?;
+            let mut logits = self.forward_segment_device_pick(&emb.vision.interactive_fpn, &pts, None, None, opts.candidate)?;
             for _ in 1..opts.refine_iterations.max(1) {
                 logits = self.forward_segment_device(&emb.vision.interactive_fpn, &[], None, Some(&logits))?;
             }
@@ -253,7 +287,7 @@ impl Sam31 {
             timing.post_ms = t.elapsed().as_millis() as u64;
             return Ok((Instance::from_mask(mask, emb.width, emb.height, 1.0, [0.0; 4]), timing));
         }
-        let mut logit = self.forward_segment(&emb.vision.interactive_fpn, &pts, None, None)?;
+        let mut logit = self.forward_segment_pick(&emb.vision.interactive_fpn, &pts, None, None, opts.candidate)?;
         for _ in 1..opts.refine_iterations.max(1) {
             logit = self.forward_segment(&emb.vision.interactive_fpn, &[], None, Some(&logit))?;
         }
@@ -530,6 +564,21 @@ fn threshold(logits: &[f32]) -> Vec<f32> {
     logits.iter().map(|v| if *v > 0.0 { 1.0 } else { 0.0 }).collect()
 }
 
+/// The multimask token (1..=3) of a single click's `c`-th meaning: the head of best predicted
+/// IoU first (what [`select_head`] takes), then the other two by mask area, largest first; `c`
+/// modulo three.
+fn ranked_head(iou: &[f32; 4], areas: &[f32; 3], c: usize) -> usize {
+    let mut best = 1;
+    for t in 2..4 {
+        if iou[t] > iou[best] {
+            best = t;
+        }
+    }
+    let mut rest: Vec<usize> = (1..4).filter(|t| *t != best).collect();
+    rest.sort_by(|a, b| areas[b - 1].total_cmp(&areas[a - 1]));
+    [best, rest[0], rest[1]][c % 3]
+}
+
 fn select_head(out: HeadsOut, multimask: bool) -> Vec<f32> {
     let token = if multimask {
         // The best of the three multimask heads by predicted IoU.
@@ -561,6 +610,13 @@ fn image_input(rgba: &Tensor) -> Result<Tensor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clicks_meanings_start_at_the_best_head_then_go_largest_first() {
+        let iou = [0.0, 0.7, 0.9, 0.8];
+        let areas = [100.0, 5000.0, 900.0];
+        assert_eq!((0..4).map(|c| ranked_head(&iou, &areas, c)).collect::<Vec<_>>(), vec![2, 3, 1, 2]);
+    }
 
     #[test]
     fn mask_choice_ties_and_no_object_match_worker() {
