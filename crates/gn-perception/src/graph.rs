@@ -19,11 +19,13 @@ pub struct Options {
     pub max_detections: usize,
     /// Tracker refinement passes (ComfyUI: 2; 0 keeps the detector's masks).
     pub refine_iterations: usize,
+    /// Soft text-mask edges: `sigmoid(logit / soft)`; 0 cuts at logit 0 (ComfyUI).
+    pub soft: f32,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2 }
+        Options { threshold: 0.5, max_detections: 1, refine_iterations: 2, soft: 0.0 }
     }
 }
 

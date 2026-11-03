@@ -26,6 +26,11 @@ use crate::graph::{Device, Instance, Options};
 
 /// The template ids this engine answers, as PhotoshopEX names them.
 pub const TEMPLATES: [&str; 3] = ["sam3.1/segment", "sam3.1/segment-point", "sam3.1/segment-box"];
+/// ViTMatte's template: a picture and a trimap (the mask blob: 0 background, 128 unknown,
+/// 255 foreground) to an RGBA image whose alpha is the matte.
+pub const MATTE_TEMPLATE: &str = "vitmatte/refine";
+/// The model root's subdirectory for ViTMatte (transformers' `model.safetensors` + `config.json`).
+pub const VITMATTE_DIR: &str = "vitmatte";
 /// The model root's subdirectory for SAM 3.1.
 pub const SAM31_DIR: &str = "sam3.1";
 /// SAM 3.1's checkpoint as ComfyUI names it.
@@ -85,6 +90,8 @@ pub struct PerceptionEngine {
     /// The last picture embedded: a content hash and its embedding.
     cache: Option<(u64, Emb)>,
     last_error: Option<String>,
+    #[cfg(feature = "candle")]
+    vitmatte: Option<gn_segment::vitmatte::VitMatte>,
 }
 
 impl PerceptionEngine {
@@ -100,7 +107,64 @@ impl PerceptionEngine {
             checkpoint: None,
             cache: None,
             last_error: None,
+            #[cfg(feature = "candle")]
+            vitmatte: None,
         }
+    }
+
+    /// Is ViTMatte on disk for a build that can run it?
+    fn has_matte(&self) -> bool {
+        cfg!(feature = "candle") && self.models_root.join(VITMATTE_DIR).join("model.safetensors").is_file()
+    }
+
+    /// `vitmatte/refine`: the alpha for the picture inside the trimap's unknown band.
+    #[cfg_attr(not(feature = "candle"), allow(unused_variables))]
+    #[allow(clippy::needless_return)] // one return per build: the candle one, else the error
+    fn run_matte(&mut self, req: &RunRequest, blobs: &[Vec<u8>], progress: &mut dyn FnMut(f32, &str)) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        let started = Instant::now();
+        let (Some(image), Some(mask)) = (req.image.as_ref(), req.mask.as_ref()) else {
+            return Err(EngineError::new(ErrorKind::BadRequest, "a matte needs a picture and a trimap"));
+        };
+        if image.channels != 4 || mask.channels != 1 || (image.width, image.height) != (mask.width, mask.height) {
+            return Err(EngineError::new(ErrorKind::BadRequest, "the picture must be RGBA and the trimap one channel of the same size"));
+        }
+        let (Some(rgba), Some(tri)) = (blobs.get(image.index as usize), blobs.get(mask.index as usize)) else {
+            return Err(EngineError::new(ErrorKind::BadRequest, "the picture's or trimap's blob is missing"));
+        };
+        let (w, h) = (image.width as usize, image.height as usize);
+        #[cfg(feature = "candle")]
+        {
+            if self.vitmatte.is_none() {
+                progress(0.0, "Loading ViTMatte");
+                let device = match self.device {
+                    Device::Cuda { ordinal } => candle_core::Device::new_cuda(ordinal as usize).map_err(|e| candle_error(e.into()))?,
+                    Device::Cpu => candle_core::Device::Cpu,
+                };
+                self.vitmatte = Some(
+                    gn_segment::vitmatte::VitMatte::load(self.models_root.join(VITMATTE_DIR), &device)
+                        .map_err(|e| EngineError::new(ErrorKind::ModelMissing, format!("{e:#}")))?,
+                );
+            }
+            let Some(m) = self.vitmatte.as_ref() else { return Err(EngineError::new(ErrorKind::Internal, "no model")) };
+            progress(0.3, "Matting");
+            let alpha = m.matte(rgba, tri, w, h).map_err(candle_error)?;
+            let mut out = rgba.clone();
+            for (px, a) in out.as_chunks_mut::<4>().0.iter_mut().zip(&alpha) {
+                px[3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            progress(1.0, "Done");
+            return Ok((
+                DoneInfo {
+                    images: vec![Blob { width: image.width, height: image.height, channels: 4, index: 0 }],
+                    texts: Vec::new(),
+                    seed: req.seed,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                },
+                vec![out],
+            ));
+        }
+        #[cfg(not(feature = "candle"))]
+        Err(EngineError::new(ErrorKind::ModelMissing, "this build has no ViTMatte backend (built without `candle`)"))
     }
 
     /// SAM 3.1's compute precision on CUDA: f16 when `half`, else f32 (the CPU is always f32).
@@ -153,7 +217,7 @@ fn candle_error(e: anyhow::Error) -> EngineError {
 
 #[cfg(feature = "candle")]
 fn candle_opts(o: Options) -> gn_segment::sam::Options {
-    gn_segment::sam::Options { threshold: o.threshold, max_detections: o.max_detections, refine_iterations: o.refine_iterations }
+    gn_segment::sam::Options { threshold: o.threshold, max_detections: o.max_detections, refine_iterations: o.refine_iterations, soft: o.soft }
 }
 
 #[cfg(feature = "candle")]
@@ -256,7 +320,8 @@ fn route_of(model: &str) -> Option<Route> {
 }
 
 fn coverage_blob(inst: &Instance, w: u32, h: u32, index: u32) -> (Blob, Vec<u8>) {
-    let bytes: Vec<u8> = inst.mask.iter().map(|v| if *v > 0.5 { 255 } else { 0 }).collect();
+    // Binary masks come out 0 or 255 as before; soft ones keep their coverage.
+    let bytes: Vec<u8> = inst.mask.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).collect();
     (Blob { width: w, height: h, channels: 1, index }, bytes)
 }
 
@@ -292,6 +357,12 @@ impl Engine for PerceptionEngine {
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
     ) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        if req.model == MATTE_TEMPLATE {
+            if !self.has_matte() {
+                return Err(EngineError::new(ErrorKind::ModelMissing, format!("no ViTMatte in {}", self.models_root.join(VITMATTE_DIR).display())));
+            }
+            return self.run_matte(req, blobs, progress);
+        }
         let started = Instant::now();
         if req.task != "segment" {
             return Err(EngineError::new(ErrorKind::Unsupported, format!("this engine serves segmentation only, not `{}`", req.task)));
@@ -313,6 +384,7 @@ impl Engine for PerceptionEngine {
             threshold: num(&req.params, "threshold").unwrap_or(0.5),
             max_detections: num(&req.params, "maxDetections").map_or(1, |m| m.max(1.0) as usize),
             refine_iterations: num(&req.params, "refineIterations").map_or(2, |r| r.max(0.0) as usize),
+            soft: num(&req.params, "softEdge").map_or(0.0, |t| t.clamp(0.0, 64.0)),
         };
         let positives = points_param(req.params.get("points"));
         let negatives = points_param(req.params.get("negatives"));
@@ -388,6 +460,10 @@ impl Engine for PerceptionEngine {
     fn free(&mut self) {
         self.cache = None;
         self.sam = None;
+        #[cfg(feature = "candle")]
+        {
+            self.vitmatte = None;
+        }
     }
 
     /// SAM 3.1 loads again in seconds; the diffusion engine beside it in the
@@ -397,7 +473,10 @@ impl Engine for PerceptionEngine {
     }
 
     fn index(&mut self, dir: &str) -> Value {
-        let installed: Vec<&str> = if self.has_model() { TEMPLATES.to_vec() } else { Vec::new() };
+        let mut installed: Vec<&str> = if self.has_model() { TEMPLATES.to_vec() } else { Vec::new() };
+        if self.has_matte() {
+            installed.push(MATTE_TEMPLATE);
+        }
         json!({
             "dir": dir,
             "installed": installed,
