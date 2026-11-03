@@ -294,9 +294,9 @@ impl Krea2Pipeline {
         let vb = crate::mapped::var_builder(&self.text, self.dtype, &self.dev, |n| n == "model.norm.weight")?;
         let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model").pp("norm"))?;
         let head = if matches!(self.dev, Device::Cuda(_)) {
-            let host = crate::mapped::var_builder(&self.text, self.dtype, &Device::Cpu, |n| n == "model.embed_tokens.weight")?;
-            let w = host.get((cfg.vocab_size, cfg.hidden_size), "model.embed_tokens.weight").context("the Qwen3-VL-4B token embedding")?;
-            candle_core::quantized::QMatMul::from_qtensor(crate::q8::quantize_q8_0(&w, &self.dev)?)?
+            let q = crate::q8::cached_q8_0(&self.text, "model.embed_tokens.weight", (cfg.vocab_size, cfg.hidden_size), self.dtype, &self.dev)
+                .context("the Qwen3-VL-4B token embedding")?;
+            candle_core::quantized::QMatMul::from_qtensor(q)?
         } else {
             let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&self.text, self.dtype, &self.dev)? };
             candle_core::quantized::QMatMul::Tensor(vb.get((cfg.vocab_size, cfg.hidden_size), "model.embed_tokens.weight").context("the Qwen3-VL-4B token embedding")?)
