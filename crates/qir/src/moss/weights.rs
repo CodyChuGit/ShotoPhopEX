@@ -6,9 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use anyhow::Context;
 use candle_core::{DType, Device, Tensor};
@@ -19,14 +18,14 @@ use crate::comfy_int8::{self, Prequantized};
 use crate::model::rotation::{regular_hadamard_256, rotate, GROUP};
 use crate::Result;
 
-/// The INT8 ConvRot modules of a ComfyUI file, read one at a time. Unlike
+/// The INT8 ConvRot modules of a ComfyUI file, read one at a time from a mapping of it. Unlike
 /// [`crate::comfy_int8::Int8File`] it indexes a file whose other parts use rotation groups qir
 /// has no kernel for (Qwen3.5's vision tower: 64 and 16): those modules are listed but refuse
 /// to load, and nothing here reads them.
 struct Int8Index {
-    file: File,
+    map: memmap2::Mmap,
     metadata: Metadata,
-    data_start: u64,
+    data_start: usize,
     /// Module → `[out, in]`, for the 256-group modules.
     modules: BTreeMap<String, (usize, usize)>,
     /// Module → its rotation group, for the rest.
@@ -53,12 +52,15 @@ impl Int8Index {
         let mut header = vec![0; usize::try_from(len)?];
         file.read_exact(&mut header)?;
         let metadata: Metadata = serde_json::from_slice(&header).context("invalid safetensors header")?;
-        let mut this = Self { file, metadata, data_start: 8 + len, modules: BTreeMap::new(), other: BTreeMap::new() };
+        // SAFETY: an installed checkpoint stays unchanged while it is loaded (as for candle's
+        // mapped VarBuilder of the same file); every read is bounds-checked against the map.
+        let map = unsafe { memmap2::Mmap::map(&file)? };
+        let mut this = Self { map, metadata, data_start: usize::try_from(8 + len)?, modules: BTreeMap::new(), other: BTreeMap::new() };
         let names: Vec<String> = this.metadata.tensors().keys().filter_map(|n| n.strip_suffix(".comfy_quant").map(str::to_owned)).collect();
         for name in names {
             let raw = this.read(&format!("{name}.comfy_quant"))?;
             anyhow::ensure!(raw.len() <= 4096, "{name}: comfy_quant descriptor too long");
-            let d: Descriptor = serde_json::from_slice(&raw).with_context(|| format!("{name}: comfy_quant descriptor"))?;
+            let d: Descriptor = serde_json::from_slice(raw).with_context(|| format!("{name}: comfy_quant descriptor"))?;
             anyhow::ensure!(d.format == "int8_tensorwise" && d.convrot, "{name}: {} (only int8_tensorwise ConvRot is read)", d.format);
             if d.convrot_groupsize != GROUP {
                 this.other.insert(name, d.convrot_groupsize);
@@ -71,24 +73,22 @@ impl Int8Index {
         Ok(this)
     }
 
-    fn read(&mut self, name: &str) -> Result<Vec<u8>> {
+    fn read(&self, name: &str) -> Result<&[u8]> {
         let (start, end) = self.metadata.info(name).with_context(|| format!("missing tensor {name}"))?.data_offsets;
-        self.file.seek(SeekFrom::Start(self.data_start + start as u64))?;
-        let mut bytes = vec![0; end - start];
-        self.file.read_exact(&mut bytes).with_context(|| format!("read {name}"))?;
-        Ok(bytes)
+        let range = self.data_start.checked_add(start).zip(self.data_start.checked_add(end)).with_context(|| format!("{name}: offsets overflow"))?;
+        self.map.get(range.0..range.1).with_context(|| format!("{name}: payload outside the file"))
     }
 
-    fn load(&mut self, module: &str) -> Result<Prequantized> {
+    /// `module` with its output rows in `rows`' order ([`comfy_int8::convert_rows`]).
+    fn load(&self, module: &str, rows: Option<&[usize]>) -> Result<Prequantized> {
         if let Some(g) = self.other.get(module) {
             anyhow::bail!("{module}: ConvRot group {g} (qir's kernels take {GROUP})");
         }
         let &(n, k) = self.modules.get(module).with_context(|| format!("{module}: not an INT8 module"))?;
         let descriptor = self.read(&format!("{module}.comfy_quant"))?;
         let weight = self.read(&format!("{module}.weight"))?;
-        let scale = self.read(&format!("{module}.weight_scale"))?;
-        let scale = scale.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
-        comfy_int8::convert(&descriptor, &[n, k], weight, &[n, 1], scale).with_context(|| format!("{module}: INT8 ConvRot"))
+        let scale: Vec<f32> = self.read(&format!("{module}.weight_scale"))?.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+        comfy_int8::convert_rows(descriptor, &[n, k], weight, &[n, 1], &scale, rows).with_context(|| format!("{module}: INT8 ConvRot"))
     }
 
     fn contains(&self, module: &str) -> bool {
@@ -99,7 +99,7 @@ impl Int8Index {
 /// One safetensors file of the model, plain and quantized tensors alike.
 pub struct Weights {
     vb: VarBuilder<'static>,
-    int8: Option<Mutex<Int8Index>>,
+    int8: Option<Int8Index>,
     /// qir's ConvRot rotation, on the device (f32).
     #[cfg_attr(not(feature = "convrot"), allow(dead_code))]
     rot: Tensor,
@@ -117,7 +117,7 @@ impl Weights {
         // The plain tensors are read through the map; the I8 ones never through it.
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
         let int8 = Int8Index::open(path).with_context(|| format!("{}: its INT8 ConvRot layers", path.display()))?;
-        let int8 = if int8.modules.is_empty() && int8.other.is_empty() { None } else { Some(Mutex::new(int8)) };
+        let int8 = if int8.modules.is_empty() && int8.other.is_empty() { None } else { Some(int8) };
         let convrot = convrot && cfg!(feature = "convrot") && dev.is_cuda() && dtype == DType::BF16;
         Ok(Self { vb, int8, rot: regular_hadamard_256(dev)?, dev: dev.clone(), dtype, convrot })
     }
@@ -136,7 +136,7 @@ impl Weights {
 
     /// Whether `module` (a name without `.weight`) is an INT8 ConvRot triple.
     pub fn is_quantized(&self, module: &str) -> bool {
-        self.int8.as_ref().is_some_and(|f| f.lock().is_ok_and(|f| f.contains(module)))
+        self.int8.as_ref().is_some_and(|f| f.contains(module))
     }
 
     /// A plain tensor in the run dtype.
@@ -151,9 +151,12 @@ impl Weights {
 
     /// An INT8 module as the file has it (its groups already in qir's rotation basis).
     pub fn prequantized(&self, module: &str) -> Result<Prequantized> {
-        let file = self.int8.as_ref().with_context(|| format!("{module}: the file has no INT8 layers"))?;
-        let mut file = file.lock().map_err(|_| anyhow::anyhow!("INT8 file lock poisoned"))?;
-        file.load(module)
+        self.prequantized_rows(module, None)
+    }
+
+    /// [`Self::prequantized`] with its output rows in `rows`' order.
+    fn prequantized_rows(&self, module: &str, rows: Option<&[usize]>) -> Result<Prequantized> {
+        self.int8.as_ref().with_context(|| format!("{module}: the file has no INT8 layers"))?.load(module, rows)
     }
 
     /// The linear `module` (`.weight`, optional `.bias`): ConvRot INT8 or dense.
@@ -173,13 +176,7 @@ impl Weights {
             bias = Some(b.index_select(ix, 0)?);
         }
         if self.is_quantized(module) {
-            let mut p = self.prequantized(module)?;
-            if let Some(r) = rows {
-                anyhow::ensure!(r.len() == p.out_features && r.iter().all(|&i| i < p.out_features), "{module}: a row order of {} for {} rows", r.len(), p.out_features);
-                let k = p.in_features;
-                p.weight_i8 = r.iter().flat_map(|&i| p.weight_i8[i * k..(i + 1) * k].iter().copied()).collect();
-                p.col_scale = r.iter().map(|&i| p.col_scale[i]).collect();
-            }
+            let p = self.prequantized_rows(module, rows)?;
             #[cfg(feature = "convrot")]
             if self.convrot {
                 let (q, s) = p.tensors(&self.dev)?;

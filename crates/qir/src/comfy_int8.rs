@@ -68,6 +68,49 @@ pub fn convert(descriptor: &[u8], weight_shape: &[usize], mut weight: Vec<u8>, s
     Ok(Prequantized { weight_i8: weight, col_scale: scale, out_features: n, in_features: k })
 }
 
+/// [`convert`] of `weight` read in place (a file mapping), its output rows optionally reordered
+/// (row `i` is the file's row `rows[i]`), copied and permuted on every core in one pass. The
+/// bytes are [`convert`]'s, then the reorder (a row is whole groups). MOSS-Image's 14 GB of INT8
+/// linears took 5.4 s a load read, reordered and permuted on one thread.
+pub fn convert_rows(
+    descriptor: &[u8],
+    weight_shape: &[usize],
+    weight: &[u8],
+    scale_shape: &[usize],
+    scale: &[f32],
+    rows: Option<&[usize]>,
+) -> Result<Prequantized> {
+    Descriptor::decode(descriptor)?;
+    let (n, k) = shape(weight_shape, scale_shape)?;
+    ensure!(n.checked_mul(k) == Some(weight.len()), "INT8 weight byte count does not match {weight_shape:?}");
+    ensure!(scale.len() == n, "weight_scale value count does not match {scale_shape:?}");
+    ensure!(scale.iter().all(|s| s.is_finite() && *s > 0.0), "weight_scale values must be finite and positive");
+    let order: Vec<usize> = match rows {
+        Some(r) => {
+            ensure!(r.len() == n && r.iter().all(|&i| i < n), "a row order of {} for {n} rows", r.len());
+            r.to_vec()
+        }
+        None => (0..n).collect(),
+    };
+    let col_scale = order.iter().map(|&i| scale[i]).collect();
+    let mut out = vec![0u8; n * k];
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).clamp(1, 16);
+    let rows_per = n.div_ceil(threads).max(1);
+    std::thread::scope(|s| {
+        for (dst, idx) in out.chunks_mut(rows_per * k).zip(order.chunks(rows_per)) {
+            s.spawn(move || {
+                for (row, &i) in dst.chunks_exact_mut(k).zip(idx) {
+                    row.copy_from_slice(&weight[i * k..(i + 1) * k]);
+                    for group in row.as_chunks_mut::<GROUP>().0 {
+                        group.reverse();
+                    }
+                }
+            });
+        }
+    });
+    Ok(Prequantized { weight_i8: out, col_scale, out_features: n, in_features: k })
+}
+
 impl Prequantized {
     /// Create U8/F32 tensors for `ConvRotLinear::from_prequantized`, without another rotation.
     pub fn tensors(&self, device: &Device) -> Result<(Tensor, Tensor)> {
@@ -226,6 +269,27 @@ mod tests {
                 assert_eq!(dot, if i + j == GROUP - 1 { 1. } else { 0. });
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rows_in_place_are_the_converted_bytes_reordered() -> Result<()> {
+        // More rows than threads, rows of two groups, every byte value.
+        let (n, k) = (37, 512);
+        let bytes: Vec<u8> = (0..n * k).map(|i| (i * 7 + i / k) as u8).collect();
+        let scale: Vec<f32> = (0..n).map(|i| 0.5 + i as f32).collect();
+        let whole = convert(DESCRIPTOR, &[n, k], bytes.clone(), &[n, 1], scale.clone())?;
+        let same = convert_rows(DESCRIPTOR, &[n, k], &bytes, &[n, 1], &scale, None)?;
+        assert_eq!((same.weight_i8, same.col_scale), (whole.weight_i8.clone(), whole.col_scale.clone()));
+        let order: Vec<usize> = (0..n).map(|i| (i * 11 + 5) % n).collect();
+        let moved = convert_rows(DESCRIPTOR, &[n, k], &bytes, &[n, 1], &scale, Some(&order))?;
+        let want: Vec<u8> = order.iter().flat_map(|&i| whole.weight_i8[i * k..(i + 1) * k].iter().copied()).collect();
+        assert_eq!(moved.weight_i8, want);
+        assert_eq!(moved.col_scale, order.iter().map(|&i| whole.col_scale[i]).collect::<Vec<_>>());
+        // A bad order or a short buffer is an error, never a panic.
+        assert!(convert_rows(DESCRIPTOR, &[n, k], &bytes, &[n, 1], &scale, Some(&order[1..])).is_err());
+        assert!(convert_rows(DESCRIPTOR, &[n, k], &bytes, &[n, 1], &scale, Some(&vec![n; n])).is_err());
+        assert!(convert_rows(DESCRIPTOR, &[n, k], &bytes[1..], &[n, 1], &scale, None).is_err());
         Ok(())
     }
 
