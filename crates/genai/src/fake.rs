@@ -26,6 +26,11 @@ pub struct Options {
     pub no_batch: bool,
     /// The index lists the templates served and no per-folder files, as gn-diffusion's does.
     pub templates_only: bool,
+    /// `segments` are whole (amodal) rectangles, the nearest first: the detector returns each
+    /// one that is still there minus the nearer ones still there (what is visible), and a fill
+    /// whose mask covers half of a rectangle's visible part takes it out of the picture. Split
+    /// into Layers' peeling against a scene where things hide one another.
+    pub occlusion: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -43,6 +48,7 @@ impl Default for Options {
             vram_free: None,
             no_batch: false,
             templates_only: false,
+            occlusion: false,
         }
     }
 }
@@ -72,6 +78,9 @@ pub struct State {
     /// A fill or edit ran since the last detector run: the fake's fills remove what they
     /// cover (unless `echo` hands the picture back), so the next detector run finds nothing.
     pub removed: bool,
+    /// With `Options::occlusion`: the rectangles (of `segments` or `segments_for`) a fill has
+    /// taken out of the picture.
+    pub gone: Vec<[f32; 4]>,
 }
 static BACKENDS: OnceLock<Mutex<BTreeMap<String, Weak<NativeBackend>>>> = OnceLock::new();
 pub(crate) fn backend(key: &str) -> Option<Arc<NativeBackend>> {
@@ -103,6 +112,13 @@ impl FakeNative {
         BACKENDS.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner).insert(url.clone(), Arc::downgrade(&worker));
         Ok(Self { url, state, worker })
     }
+    /// Put every rectangle back in the picture (`Options::occlusion`), as after an undo.
+    pub fn restore_scene(&self) {
+        let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        st.gone.clear();
+        st.removed = false;
+    }
+
     pub fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -188,7 +204,14 @@ impl Engine for FakeEngine {
                 }
             }
             if req.task == "fill" || req.task == "edit" {
-                state.removed = !self.options.echo;
+                if self.options.occlusion {
+                    if !self.options.echo {
+                        let gone = self.taken_out(req, blobs, &state.gone);
+                        state.gone = gone;
+                    }
+                } else {
+                    state.removed = !self.options.echo;
+                }
             }
             state.runs.push(RecordedRun {
                 run: req.clone(),
@@ -255,7 +278,7 @@ impl Engine for FakeEngine {
             }
             return Ok((DoneInfo { images: descriptors, texts: Vec::new(), seed: req.seed, elapsed_ms: 0 }, pictures));
         }
-        if req.task == "segment" && std::mem::take(&mut self.state.lock().unwrap_or_else(PoisonError::into_inner).removed) {
+        if req.task == "segment" && !self.options.occlusion && std::mem::take(&mut self.state.lock().unwrap_or_else(PoisonError::into_inner).removed) {
             return Ok((DoneInfo { images: Vec::new(), texts: Vec::new(), seed: req.seed, elapsed_ms: 0 }, Vec::new()));
         }
         let (descriptors, pictures) = self.draw(req, blobs)?;
@@ -263,6 +286,45 @@ impl Engine for FakeEngine {
     }
 }
 impl FakeEngine {
+    /// With `Options::occlusion`, after a fill: which rectangles are gone, the ones already gone
+    /// plus those whose visible part the request's mask (at least half of it, at 128 and over)
+    /// covers.
+    fn taken_out(&self, req: &RunRequest, blobs: &[Vec<u8>], gone: &[[f32; 4]]) -> Vec<[f32; 4]> {
+        let mut out: Vec<[f32; 4]> = gone.to_vec();
+        let Some(m) = req.mask.as_ref() else { return out };
+        let Some(mask) = blobs.get(m.index as usize) else { return out };
+        let (w, h) = (m.width as usize, m.height as usize);
+        if mask.len() < w * h || w == 0 || h == 0 {
+            return out;
+        }
+        // Every list of rectangles, each ordered nearest first.
+        let lists = std::iter::once(&self.options.segments).chain(self.options.segments_for.iter().map(|(_, r)| r));
+        for rects in lists {
+            let here: Vec<&[f32; 4]> = rects.iter().filter(|r| !gone.contains(r)).collect();
+            for (i, r) in here.iter().enumerate() {
+                let (mut visible, mut covered) = (0u64, 0u64);
+                for y in 0..h {
+                    for x in 0..w {
+                        let inside = |r: &[f32; 4]| -> bool {
+                            x as f32 >= r[0] * w as f32 && (x as f32) < r[2] * w as f32 && y as f32 >= r[1] * h as f32 && (y as f32) < r[3] * h as f32
+                        };
+                        if !inside(r) || here[..i].iter().any(|n| inside(n)) {
+                            continue;
+                        }
+                        visible += 1;
+                        if mask[y * w + x] >= 128 {
+                            covered += 1;
+                        }
+                    }
+                }
+                if visible > 0 && covered * 2 >= visible && !out.contains(r) {
+                    out.push(**r);
+                }
+            }
+        }
+        out
+    }
+
     /// The pictures a run returns: one per segment or layer, else one.
     fn draw(&self, req: &RunRequest, blobs: &[Vec<u8>]) -> Result<(Vec<Blob>, Vec<Vec<u8>>), EngineError> {
         let (w, h) = req.image.as_ref().map(|b| (b.width, b.height)).unwrap_or((req.width.max(1), req.height.max(1)));
@@ -271,8 +333,12 @@ impl FakeEngine {
             .filter(|n| *n <= 16 * 1024 * 1024)
             .ok_or_else(|| EngineError::new(ErrorKind::Internal, "fake picture too large"))?;
         let rects = self.options.segments_for.iter().find(|(s, _)| s == &req.prompt).map(|(_, r)| r).unwrap_or(&self.options.segments);
+        // With `occlusion`: the rectangles still in the picture, each minus the nearer ones
+        // still there.
+        let gone = self.state.lock().unwrap_or_else(PoisonError::into_inner).gone.clone();
+        let here: Vec<usize> = (0..rects.len()).filter(|k| !self.options.occlusion || !gone.contains(&rects[*k])).collect();
         let count = if req.task == "segment" {
-            rects.len()
+            here.len()
         } else if req.task == "layers" {
             req.params.get("layers").and_then(Value::as_u64).unwrap_or(3).clamp(1, 8) as usize
         } else {
@@ -290,7 +356,9 @@ impl FakeEngine {
                         x as f32 >= r[0] * w as f32 && (x as f32) < r[2] * w as f32 && y as f32 >= r[1] * h as f32 && (y as f32) < r[3] * h as f32
                     };
                     if req.task == "segment" {
-                        data.push(if rects.get(layer).is_some_and(inside) { 255 } else { 0 });
+                        let k = here.get(layer).copied().unwrap_or(usize::MAX);
+                        let hidden = self.options.occlusion && here.iter().take_while(|j| **j != k).any(|j| rects.get(*j).is_some_and(inside));
+                        data.push(if rects.get(k).is_some_and(inside) && !hidden { 255 } else { 0 });
                         continue;
                     }
                     let mut c = self.options.color;

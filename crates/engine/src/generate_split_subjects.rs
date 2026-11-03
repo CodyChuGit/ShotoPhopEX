@@ -1,38 +1,51 @@
-//! Split into Layers (since 2026-11-02): SAM 3.1 finds what the
-//! picture is of, each instance becomes its own layer with the picture's pixels and the
-//! detector's (edge-refined) coverage as alpha, and the background under them is repainted by
-//! the generative removal, so every layer is whole. On the owner's portrait this split 5 of 5
-//! fill seeds cleanly in about 4.6 s on the RTX 5090, where Qwen-Image-Layered, which this
-//! replaced, separated 5 of 10 seeds at about 12 s (the rest left the picture whole, often as
-//! an opaque copy on top) and none of its authors' sampler settings did better (measured
-//! 2026-11-02; the owner chose SAM alone).
+//! Split into Layers (since 2026-11-02; peeling since 2026-11-03): SAM 3.1 finds what the
+//! picture is of, term by term (the people, the animals, the things the vision-language model
+//! names, or the caller's list), each instance becomes its own layer with the picture's pixels
+//! and the detector's (edge-refined) coverage as alpha, and the layers stack in depth order,
+//! read from who hides whom ([`crate::generate_split_order`]). With `complete` the subjects
+//! are peeled off nearest first: each one's hole is repainted by the generative removal before
+//! the next is cut, so the fill paints what each subject hid (the lap behind a table, the
+//! shoulder behind a nearer person), every layer is whole, and what is left at the end is the
+//! background with nobody in it. Without it one fill repaints every subject at once and each
+//! layer holds its visible part. On the owner's portrait the one-fill split did 5 of 5 seeds
+//! cleanly in about 4.6 s on the RTX 5090, where Qwen-Image-Layered, which this replaced,
+//! separated 5 of 10 seeds at about 12 s (measured 2026-11-02; the owner chose SAM alone).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use photocraft_doc::{Document, LayerId};
 use photocraft_genai::GenerativeBackend;
 use photocraft_geom::Rect;
 
-use crate::EngineError;
+use crate::generate_split_order::{self as order, Shape};
+use crate::jobs::JobCtx;
+use crate::select_ml_cmds::{Instance, SubjectFinder};
+use crate::{EngineError, Result};
 
 use super::{
-    Common, DEFAULT_MATTE_TEMPLATE, GenerativeInfo, Gray8, JobCtx, JobProgress, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, REMOVE_BG, REMOVE_MIN_REQUEST, Request,
-    Result, Rgba8, SPLIT, Session, Task, Tuning, Value, at_least, background_job, box_blur, dilate, embed_coverage, fill_rect, fill_region, gen_err, json,
-    matte_request_size, name_selected, plan_common, removal_job, removal_prompt, remove_grow, resize_gray8, resize_rgba8, resolve_auto, set_generative_info,
-    write_rgba8,
+    BACKGROUND_PROMPT, Common, DEFAULT_MATTE_TEMPLATE, FillJob, GenerativeInfo, Gray8, JobProgress, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, PEEL_PROMPT,
+    REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, Task, Tuning, Value, at_least, background_job, box_blur, dilate, embed_coverage, fill_rect,
+    fill_region, gen_err, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt, remove_grow, request_size,
+    resize_gray8, resize_rgba8, resolve_auto, set_generative_info, write_rgba8,
 };
 
-/// The most subjects one split gives their own layer (the largest kept).
-pub(super) const MAX_SUBJECTS: usize = 7;
+/// The most subjects one split gives their own layer (`layers` - 1 at most).
+pub(super) const MAX_SUBJECTS: usize = 11;
 
 pub(super) struct SubjectsPlan {
-    /// What to cut out (`prompt`; none: Select Subject's prompts in turn).
+    /// What to cut out (`prompt`, a list of terms); none: the people, the animals, the things
+    /// the vision-language model names, then Select Subject's prompts in turn.
     pub prompt: Option<String>,
     /// At most this many subject layers (`layers` - 1, the background being one).
     pub subjects: usize,
     pub seed: Option<u64>,
     pub name: Option<String>,
     pub edges: Edges,
+    /// Peel the subjects off nearest first and fill behind each (`complete`).
+    pub complete: bool,
+    pub order: Order,
+    pub group: Group,
 }
 
 /// Where the subjects' soft edges (hair) come from (`edges`).
@@ -74,16 +87,141 @@ impl Edges {
     }
 }
 
+/// How the layers stack (`order`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Order {
+    /// `auto`: who hides whom, read from the masks; then the lower bottom edge; then size.
+    Auto,
+    /// `size`: the largest lowest (the rule until 2026-11-03).
+    Size,
+    /// `found`: as the detector found them, the first lowest.
+    Found,
+}
+
+impl Order {
+    pub(super) fn parse(v: Option<&str>) -> std::result::Result<Order, String> {
+        Ok(match v.map(str::trim).unwrap_or("auto") {
+            "" | "auto" => Order::Auto,
+            "size" => Order::Size,
+            "found" => Order::Found,
+            other => return Err(format!("`order` must be auto, size or found (got `{other}`)")),
+        })
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Order::Auto => "auto",
+            Order::Size => "size",
+            Order::Found => "found",
+        }
+    }
+}
+
+/// Which instances share a layer (`group`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Group {
+    /// `auto`: two instances whose masks overlap by half of the smaller.
+    Auto,
+    /// `touching`: any two whose masks touch.
+    Touching,
+    /// `none`: each its own layer.
+    None,
+}
+
+impl Group {
+    pub(super) fn parse(v: Option<&str>) -> std::result::Result<Group, String> {
+        Ok(match v.map(str::trim).unwrap_or("auto") {
+            "" | "auto" => Group::Auto,
+            "touching" => Group::Touching,
+            "none" => Group::None,
+            other => return Err(format!("`group` must be auto, touching or none (got `{other}`)")),
+        })
+    }
+}
+
+/// One term of the prompt: what to ask the detector for, and at most how many of it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Term {
+    pub name: String,
+    pub max: Option<usize>,
+}
+
+/// The prompt as a list of terms: split on commas, semicolons and " and "; `cup:3` asks for at
+/// most three; duplicates (with or without "the") and empties go. The words stay as typed for
+/// the detector ("the lighthouse"); the layer and the removal drop the article.
+pub(super) fn parse_terms(prompt: &str) -> Vec<Term> {
+    let mut out: Vec<Term> = Vec::new();
+    for raw in prompt.split([',', ';', '\n']).flat_map(|p| p.split(" and ")) {
+        let raw = raw.trim();
+        let (name, max) = match raw.rsplit_once(':') {
+            Some((n, c)) if c.trim().parse::<usize>().is_ok() => (n.trim(), c.trim().parse::<usize>().ok().filter(|n| *n > 0)),
+            _ => (raw, None),
+        };
+        let name = name.trim().trim_matches(|c: char| c == '.' || c == '"');
+        if name.is_empty() || out.iter().any(|t| bare(&t.name).eq_ignore_ascii_case(bare(name))) {
+            continue;
+        }
+        out.push(Term { name: name.to_string(), max });
+    }
+    out
+}
+
+/// `term` without a leading article.
+fn bare(term: &str) -> &str {
+    let t = term.trim();
+    for a in ["the ", "The ", "a ", "A ", "an ", "An "] {
+        if let Some(rest) = t.strip_prefix(a) {
+            return rest.trim();
+        }
+    }
+    t
+}
+
+/// A subject on its way to a layer.
+struct Subject {
+    /// The detector's coverage (hard), grown by what the fills completed.
+    cov: Vec<f32>,
+    bounds: Rect,
+    pixels: u64,
+    /// What it was found as ("person", "cup", "the main subject").
+    term: String,
+    /// The caller named the term.
+    asked: bool,
+    /// Its soft alpha (hair), from `edges`.
+    alpha: Vec<f32>,
+    /// The fill completed what nearer subjects hid (or nothing hid it).
+    completed: bool,
+    /// Its mask grew since its alpha was matted.
+    grown: bool,
+}
+
+impl Subject {
+    fn shape(&self) -> Shape<'_> {
+        Shape { cov: &self.cov, bounds: self.bounds, pixels: self.pixels }
+    }
+
+    /// The detector's word for the check: a kind of thing, never a generic prompt.
+    fn check_term(&self) -> &str {
+        check_prompt(&self.term)
+    }
+
+    /// What the removal names ("Remove the person"): the term, or "person" for a generic one.
+    fn removal_name(&self) -> String {
+        bare(self.check_term()).to_string()
+    }
+}
+
 pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
-    let SubjectsPlan { prompt, subjects, seed, name, edges } = plan;
+    let SubjectsPlan { prompt, subjects, seed, name, edges, complete, order: ordering, group } = plan;
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
-    let finder = finder.at_most(subjects.max(1));
-    let asked = prompt.clone();
-    let job =
-        removal_job(s, "Split into Layers", 0, false, false, 2, seed, true, Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() })?;
-    // The background fill tried when the removal paints a large subject back.
-    let backdrop = background_job(s, "Split into Layers", seed, Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() }).ok();
-    let base = name.unwrap_or_else(|| "Split Layer".to_string());
+    let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
+    let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
+    // The removal (the quick, clean route on most pictures), then the grey-box fills: behind a
+    // subject with others still behind it, the scene continued; behind the last, the backdrop.
+    let job = removal_job(s, "Split into Layers", 0, false, false, if complete { PEEL_VARIATIONS } else { FLAT_VARIATIONS }, seed, true, tuning.clone())?;
+    let peel_box = background_job(s, "Split into Layers", seed, tuning.clone(), PEEL_PROMPT).ok();
+    let last_box = background_job(s, "Split into Layers", seed, tuning, BACKGROUND_PROMPT).ok();
+    let base = name;
     // The matte request (Remove Background's model), planned now; used when the server has it.
     let matte = plan_common(
         s,
@@ -94,186 +232,238 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
         "",
     )
     .ok();
+    let budget = subjects.clamp(1, MAX_SUBJECTS);
     crate::jobs::edit_job(
         s,
         "Split into Layers",
         move |doc, active, ctx| {
             let started = std::time::Instant::now();
-            ctx.progress(0.0, "Finding subjects");
             let area = doc.bounds();
             let (w, h) = (area.width(), area.height());
-            let (mut instances, found_by) = finder.instances(doc, *active, true, ctx)?;
-            instances.truncate(subjects.max(1));
-            ctx.check()?;
-            // The picture as it is, for the subjects' pixels.
+            let (wu, hu) = (w as usize, h as usize);
+            // The picture as it is, for the subjects' pixels and the detector.
             let picture = photocraft_compose::render(doc, area).to_rgba8().pixels;
-            // The hole: every subject, all or nothing, as the Remove tool's.
-            let mut hole = vec![0.0f32; w as usize * h as usize];
-            for (cov, _, _) in &instances {
-                for (d, c) in hole.iter_mut().zip(cov) {
-                    // Soft masks fade out: their faint fringe is still the subject's.
-                    if *c > HOLE_MIN {
-                        *d = 1.0;
-                    }
-                }
-            }
-            let (hole_rect, _) = crate::select_ml_cmds::coverage_bounds(&hole, area);
-            let mut job = job;
-            // The removal names what it removes ("Remove the woman…"): the 2.1 route is an
-            // edit model with no noise mask, and told only "the object" it changed nothing (the
-            // woman stayed in the background, measured in the app 2026-11-02). The prompt
-            // names it when given, else the vision-language model does from the hole's views,
-            // else the detector's prompt.
-            // A person is named "person": the vision-language model named one by their clothes
-            // ("the blue tank top") and the edit model, told to remove the top, kept the person
-            // and repainted their body on every seed (measured in the app 2026-11-03).
-            let name = match asked.as_deref() {
-                Some(p) => Some(p.to_string()),
-                None if subject_left_in(&finder.only(PERSON), doc, *active, &hole, ctx)? => Some(PERSON.to_string()),
-                None => name_selected(doc, &job, area, &hole, ctx)?,
-            };
-            let name = name.unwrap_or_else(|| found_by.clone());
-            let name = name.trim().strip_prefix("the ").unwrap_or(name.trim()).to_string();
+            ctx.progress(0.0, "Finding subjects");
+            let (mut found, found_by) = find_subjects(&finder, job.thinker.as_ref(), &picture, area, terms.as_deref(), budget, job.seed, ctx)?;
             ctx.check()?;
-            job.rewritten = Some(removal_prompt(&name));
-            job.object = Some(name.clone());
-            job.grow = remove_grow(hole_rect);
-            let rect = fill_rect(hole_rect.inflate(job.grow.min(MAX_GROW) as i32).intersect(&area), job.tuning.remove_margin, area)?;
-            let rect = at_least(rect, REMOVE_MIN_REQUEST, area);
+            clean(&mut found, wu, hu, group);
+            found.truncate(budget);
+            if found.is_empty() {
+                return Err(EngineError::Other(format!("nothing matching \"{found_by}\" was found")));
+            }
             // Each subject's alpha: ViTMatte inside a band around the detector's mask (hair,
             // strand by strand), else the matte model's soft alpha around it, else the mask with
             // the edge refined from the pixels, as Select Subject does (or as `edges` asks).
             let backend = Arc::clone(&job.backend);
-            let mut used = edges;
-            let mut alphas = None;
-            if matches!(edges, Edges::Auto | Edges::Vitmatte) {
-                ctx.progress(0.05, "Matting hair");
-                alphas = crate::select_ml_cmds::vitmatte_alphas(backend.as_ref(), &picture, area, &instances, ctx)?;
-                used = Edges::Vitmatte;
-            }
+            let used = matte_all(backend.as_ref(), matte.as_ref(), doc, *active, &picture, area, &mut found, edges, ctx)?;
             ctx.check()?;
-            if alphas.is_none()
-                && matches!(edges, Edges::Auto | Edges::Vitmatte | Edges::Matte)
-                && let Some(m) = &matte
-            {
-                ctx.progress(0.05, "Matting edges");
-                alphas = matte_alphas(backend.as_ref(), m, &picture, (w, h), &instances, &name, ctx)?;
-                used = Edges::Matte;
-            }
-            ctx.check()?;
-            let alphas: Vec<Vec<f32>> = match alphas {
-                Some(a) => a,
-                None if used != Edges::Hard => {
-                    used = Edges::Refine;
-                    ctx.progress(0.3, "Refining edges");
-                    instances.iter().map(|(cov, _, _)| crate::select_ml_cmds::refine_coverage(doc, *active, true, cov.clone(), area)).collect()
+            // Front to back.
+            ctx.progress(0.2, "Ordering by depth");
+            let front_first: Vec<usize> = match ordering {
+                Order::Auto => order::front_to_back(&found.iter().map(Subject::shape).collect::<Vec<_>>(), wu, hu),
+                Order::Size => {
+                    let mut ix: Vec<usize> = (0..found.len()).collect();
+                    ix.sort_by_key(|i| found[*i].pixels);
+                    ix
                 }
-                None => instances.iter().map(|(cov, _, _)| cov.clone()).collect(),
+                Order::Found => (0..found.len()).rev().collect(),
             };
+            let mut subjects: Vec<Subject> = Vec::with_capacity(found.len());
+            let mut taken: Vec<Option<Subject>> = found.into_iter().map(Some).collect();
+            for i in front_first {
+                if let Some(sub) = taken.get_mut(i).and_then(Option::take) {
+                    subjects.push(sub);
+                }
+            }
             let template_id = job.template_id.clone();
             let below = *active;
-            // The background: the hole filled, then checked with the detector. A fill that paints
-            // the subject back (on a 12-megapixel portrait the edit model kept the head and
-            // repainted the body, every seed tried, measured in the app 2026-11-03) is thrown
-            // away and tried on the next seed; none clean, and the split fails with nothing
-            // changed rather than hand back a repainted person.
-            let mut ms = 0u64;
-            let mut fill = None;
-            // The box the background fill repaints (the hole's bounds widened by the removal's
-            // grow) and how its result is laid over the picture: only over the subjects, widened
-            // and feathered, so the background outside them keeps the picture's own pixels.
-            let grow = job.grow.min(MAX_GROW) as i32;
-            let (wu, hu) = (w as usize, h as usize);
-            let boxed = hole_rect.inflate(grow).intersect(&area);
-            let box_hole: Vec<f32> = (0..wu * hu)
-                .map(|k| {
-                    let (x, y) = (area.x0 + (k % wu) as i32, area.y0 + (k / wu) as i32);
-                    if x >= boxed.x0 && x < boxed.x1 && y >= boxed.y0 && y < boxed.y1 { 1.0 } else { 0.0 }
-                })
-                .collect();
-            let feather = (grow as usize / 2).max(1);
-            let over = dilate(&hole, wu, hu, grow.max(1) as usize);
-            let over = box_blur(&box_blur(&over, wu, hu, feather, true), wu, hu, feather, false);
-            for attempt in 0..FILL_TRIES {
-                ctx.progress(0.35 + 0.5 * attempt as f32 / FILL_TRIES as f32, "Filling the background");
-                // The removal first (quick, and clean on most pictures); after it paints a
-                // subject back, the backdrop fill of a grey box.
-                let try_box = attempt > 0 && backdrop.is_some();
-                let mut try_job = if try_box { backdrop.clone().unwrap_or_else(|| job.clone()) } else { job.clone() };
-                try_job.seed = try_job.seed.wrapping_add(u64::from(attempt) * 1000);
-                let coverage = embed_coverage(area, if try_box { &box_hole } else { &hole }, rect);
-                let (made, ..) = fill_region(doc, active, ctx, try_job, rect, coverage, None)?;
-                ctx.check()?;
-                ms += made.iter().map(|m| m.3).sum::<u64>();
-                // The background whole: the picture with the fill over the hole, one layer.
-                let filled = photocraft_compose::render(doc, area).to_rgba8().pixels;
-                let fill_seed = made.first().map_or(0, |m| m.1);
-                for (id, ..) in &made {
-                    doc.remove(*id);
+            let mut fill_ms = 0u64;
+            let mut fill_seed = 0u64;
+            // The subjects (front-to-back indices) the fill could not clear: left in the background.
+            let mut left_in: Vec<usize> = Vec::new();
+            // Each subject's layer pixels, front to back, and the background.
+            let mut cut: Vec<Vec<u8>> = Vec::with_capacity(subjects.len());
+            let background: Vec<u8> = if complete {
+                // The picture as it stands: each peel takes one subject out of it.
+                let mut p = picture.clone();
+                let n = subjects.len();
+                for i in 0..n {
+                    let (lo, hi) = (0.22 + 0.72 * i as f32 / n as f32, 0.22 + 0.72 * (i + 1) as f32 / n as f32);
+                    let label = layer_label(&subjects, i);
+                    ctx.progress(lo, &format!("Filling behind {label} ({} of {n})", i + 1));
+                    // Its layer: the picture now (nearer subjects gone) under its alpha.
+                    cut.push(under_alpha(&p, &subjects[i].alpha));
+                    let hole = hole_of(&subjects[i]);
+                    let (rest, this) = subjects.split_at_mut(i);
+                    let _ = rest;
+                    let (this, behind) = this.split_at_mut(1);
+                    let this = &this[0];
+                    let last = behind.is_empty();
+                    let mut removal = job.clone();
+                    removal.rewritten = Some(removal_prompt(&this.removal_name()));
+                    removal.object = Some(this.removal_name());
+                    let box_job = if last { last_box.as_ref() } else { peel_box.as_ref() };
+                    let (hole_rect, _) = crate::select_ml_cmds::coverage_bounds(&hole, area);
+                    let grow = remove_grow(hole_rect).min(MAX_GROW) as usize;
+                    let grown_hole = dilate(&hole, wu, hu, grow);
+                    // What the check asks the detector for: this subject's kind (painted back?)
+                    // and the kinds still behind it (their completed parts).
+                    let mut asks: Vec<(String, usize)> = vec![(this.check_term().to_string(), 1)];
+                    for b in behind.iter() {
+                        match asks.iter_mut().find(|(t, _)| t == b.check_term()) {
+                            Some((_, n)) => *n += 1,
+                            None => asks.push((b.check_term().to_string(), 2)),
+                        }
+                    }
+                    let behind_shapes: Vec<(String, Vec<f32>, u64)> = behind.iter().map(|b| (b.check_term().to_string(), b.cov.clone(), b.pixels)).collect();
+                    let finder_ref = &finder;
+                    let hole_ref = &hole;
+                    let mut check = |filled: &[u8]| -> Result<Option<Vec<(String, Instance)>>> {
+                        let mut seen: Vec<(String, Instance)> = Vec::new();
+                        for (term, at_most) in &asks {
+                            for inst in finder_ref.find_in(filled, area, term, *at_most, ctx)? {
+                                seen.push((term.clone(), inst));
+                            }
+                        }
+                        let painted_back = seen.iter().any(|(term, (cov, _, _))| {
+                            mostly_in_hole(cov, hole_ref) && !behind_shapes.iter().any(|(t, bc, bn)| t == term && continues(cov, bc, *bn))
+                        });
+                        Ok(if painted_back { None } else { Some(seen) })
+                    };
+                    let outcome = fill_hole(doc, active, below, ctx, area, &p, &hole, &removal, box_job, (lo, hi), &mut check)?;
+                    *active = below;
+                    let Some((filled, seed_used, ms, seen)) = outcome else {
+                        left_in.push(i);
+                        continue;
+                    };
+                    fill_ms += ms;
+                    fill_seed = seed_used;
+                    // The subjects behind, completed where the fill showed more of them.
+                    let mut any_grew = false;
+                    for b in behind.iter_mut() {
+                        let best = seen
+                            .iter()
+                            .filter(|(t, (cov, _, _))| t == b.check_term() && continues(cov, &b.cov, b.pixels))
+                            .max_by_key(|(_, (cov, _, _))| overlap(cov, &b.cov));
+                        if let Some((_, (cov, _, _))) = best {
+                            let mut grew = 0u64;
+                            for ((d, c), g) in b.cov.iter_mut().zip(cov).zip(&grown_hole) {
+                                if *c >= 0.5 && *g >= 0.5 && *d < 0.5 {
+                                    *d = 1.0;
+                                    grew += 1;
+                                }
+                            }
+                            if grew * 50 >= b.pixels {
+                                let (bounds, pixels) = crate::select_ml_cmds::coverage_bounds(&b.cov, area);
+                                b.bounds = bounds;
+                                b.pixels = pixels;
+                                b.grown = true;
+                                b.completed = true;
+                                any_grew = true;
+                            }
+                        }
+                    }
+                    p = filled;
+                    if any_grew {
+                        let (_, rest) = subjects.split_at_mut(i + 1);
+                        matte_all(backend.as_ref(), matte.as_ref(), doc, *active, &p, area, rest, edges, ctx)?;
+                        for b in rest.iter_mut() {
+                            b.grown = false;
+                        }
+                    }
+                    ctx.check()?;
                 }
-                *active = below;
-                let background: Vec<u8> = if try_box {
-                    // The fill's tone matched to the picture where both show the backdrop (in the
-                    // box, outside the subjects): a fill a few levels darker left the person's
-                    // outline as a shadow on the curtain (measured in the app 2026-11-03).
-                    let tone = ToneGrid::new(&picture, &filled, |k| box_hole[k] >= 0.5 && over[k] < 0.02, wu, hu);
-                    picture
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .zip(filled.as_chunks::<4>().0)
-                        .zip(&over)
-                        .enumerate()
-                        .flat_map(|(k, ((p, f), a))| {
-                            let a = a.clamp(0.0, 1.0);
-                            let t = if a > 0.0 { tone.at(k % wu, k / wu) } else { [0.0; 3] };
-                            std::array::from_fn::<u8, 4, _>(|c| {
-                                let f = if c < 3 { (f32::from(f[c]) + t[c]).clamp(0.0, 255.0) } else { f32::from(f[c]) };
-                                (f32::from(p[c]) * (1.0 - a) + f * a).round() as u8
-                            })
-                        })
-                        .collect()
-                } else {
-                    filled
+                if left_in.len() == subjects.len() {
+                    return Err(EngineError::Other(format!(
+                        "Split into Layers could not clear the {} out of the background: the fill painted it back on {FILL_TRIES} tries, so nothing was changed",
+                        subjects[0].removal_name()
+                    )));
+                }
+                // A subject is whole unless a nearer one that touches it could not be cleared.
+                let shapes: Vec<Shape<'_>> = subjects.iter().map(Subject::shape).collect();
+                let whole: Vec<bool> =
+                    (0..subjects.len()).map(|j| !left_in.iter().any(|&i| i < j && order::touching(&shapes[i], &shapes[j], wu, hu))).collect();
+                for (sub, w) in subjects.iter_mut().zip(whole) {
+                    sub.completed = w;
+                }
+                p
+            } else {
+                // One hole, one fill: every subject at once, as the Remove tool would.
+                for sub in &subjects {
+                    cut.push(under_alpha(&picture, &sub.alpha));
+                }
+                let mut hole = vec![0.0f32; wu * hu];
+                for sub in &subjects {
+                    for (d, c) in hole.iter_mut().zip(hole_of(sub)) {
+                        *d = d.max(c);
+                    }
+                }
+                // The removal names what it removes ("Remove the woman…"): the 2.1 route is an
+                // edit model with no noise mask, and told only "the object" it changed nothing (the
+                // woman stayed in the background, measured in the app 2026-11-02). A person is
+                // named "person": the vision-language model named one by their clothes ("the blue
+                // tank top") and the edit model, told to remove the top, kept the person and
+                // repainted their body on every seed (measured in the app 2026-11-03).
+                let name = match subjects.iter().find(|s| s.check_term() == PERSON) {
+                    Some(_) => PERSON.to_string(),
+                    None if subjects.iter().any(|s| s.asked) => {
+                        let mut names: Vec<String> = Vec::new();
+                        for s in &subjects {
+                            if !names.contains(&s.term) {
+                                names.push(s.term.clone());
+                            }
+                        }
+                        names.join(" and ")
+                    }
+                    None => name_selected(doc, &job, area, &hole, ctx)?.unwrap_or_else(|| subjects[0].removal_name()),
                 };
-                ctx.progress(0.35 + 0.5 * (attempt as f32 + 0.9) / FILL_TRIES as f32, "Checking the background");
-                // Checked as it will be kept: on a layer of its own over the picture.
-                let mut probe = Layer::raster("Split check".to_string(), doc.pixel_format());
-                write_rgba8(&mut probe, &Rgba8::new(w, h, background.clone()).map_err(gen_err)?, area)?;
-                let probe = doc.insert_above(below, probe);
-                let left = subject_left_in(&finder.only(check_prompt(&found_by)), doc, Some(probe), &hole, ctx);
-                doc.remove(probe);
-                *active = below;
-                if !left? {
-                    fill = Some((background, fill_seed));
-                    break;
+                let name = name.trim().strip_prefix("the ").unwrap_or(name.trim()).to_string();
+                ctx.check()?;
+                let mut removal = job.clone();
+                removal.rewritten = Some(removal_prompt(&name));
+                removal.object = Some(name.clone());
+                let mut asks: Vec<(String, usize)> = Vec::new();
+                for sub in &subjects {
+                    match asks.iter_mut().find(|(t, _)| t == sub.check_term()) {
+                        Some((_, n)) => *n += 1,
+                        None => asks.push((sub.check_term().to_string(), 1)),
+                    }
                 }
-            }
-            let Some((background, fill_seed)) = fill else {
-                return Err(EngineError::Other(format!(
-                    "Split into Layers could not clear the {} out of the background: the fill painted it back on {FILL_TRIES} tries, so nothing was changed",
-                    check_prompt(&found_by).trim_start_matches("the ")
-                )));
+                let finder_ref = &finder;
+                let hole_ref = &hole;
+                let mut check = |filled: &[u8]| -> Result<Option<()>> {
+                    for (term, at_most) in &asks {
+                        for (cov, _, _) in finder_ref.find_in(filled, area, term, *at_most, ctx)? {
+                            if mostly_in_hole(&cov, hole_ref) {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                    Ok(Some(()))
+                };
+                let outcome = fill_hole(doc, active, below, ctx, area, &picture, &hole, &removal, last_box.as_ref(), (0.3, 0.9), &mut check)?;
+                *active = below;
+                let Some((filled, seed_used, ms, ())) = outcome else {
+                    return Err(EngineError::Other(format!(
+                        "Split into Layers could not clear the {name} out of the background: the fill painted it back on {FILL_TRIES} tries, so nothing was changed"
+                    )));
+                };
+                fill_ms += ms;
+                fill_seed = seed_used;
+                for sub in subjects.iter_mut() {
+                    sub.completed = false;
+                }
+                filled
             };
             ctx.progress(0.95, "Placing");
-            let count = 1 + instances.len();
-            let mut layers: Vec<(Rgba8, String)> = Vec::with_capacity(count);
-            layers.push((Rgba8::new(w, h, background).map_err(gen_err)?, format!("{base} 1/{count}")));
-            // The largest subject lowest: the furthest back, as a rule.
-            for (i, alpha) in alphas.iter().enumerate() {
-                let px: Vec<u8> = picture
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .zip(alpha)
-                    .flat_map(|(p, a)| [p[0], p[1], p[2], (f32::from(p[3]) * a.clamp(0.0, 1.0)).round() as u8])
-                    .collect();
-                layers.push((Rgba8::new(w, h, px).map_err(gen_err)?, format!("{base} {}/{count}", i + 2)));
-            }
-            let mut ids = Vec::with_capacity(count);
-            for (pixels, layer_name) in layers {
+            // The background lowest, then the subjects back to front: the nearest on top.
+            let count = 1 + subjects.len();
+            let labels = subjects_labels(&subjects);
+            let mut ids: Vec<LayerId> = Vec::with_capacity(count);
+            let mut placed: Vec<Value> = Vec::with_capacity(subjects.len());
+            let place = |doc: &mut Document, active: &mut Option<LayerId>, pixels: Vec<u8>, layer_name: String| -> Result<LayerId> {
                 let mut layer = Layer::raster(layer_name.clone(), doc.pixel_format());
-                write_rgba8(&mut layer, &pixels, area)?;
+                write_rgba8(&mut layer, &Rgba8::new(w, h, pixels).map_err(gen_err)?, area)?;
                 set_generative_info(
                     &mut layer,
                     &GenerativeInfo {
@@ -288,19 +478,477 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                 );
                 let nid = doc.insert_above(*active, layer);
                 *active = Some(nid);
-                ids.push(nid);
+                Ok(nid)
+            };
+            let bg_name = match &base {
+                Some(b) => format!("{b} 1/{count}"),
+                None => "Background".to_string(),
+            };
+            ids.push(place(doc, active, background, bg_name)?);
+            for (k, i) in (0..subjects.len()).rev().enumerate() {
+                let sub = &subjects[i];
+                let layer_name = match &base {
+                    Some(b) => format!("{b} {}/{count}", k + 2),
+                    None => labels[i].clone(),
+                };
+                let pixels = std::mem::take(&mut cut[i]);
+                let id = place(doc, active, pixels, layer_name.clone())?;
+                ids.push(id);
+                placed.push(json!({
+                    "layer": id.0, "name": layer_name, "term": sub.term, "pixels": sub.pixels, "completed": sub.completed,
+                    "bounds": [sub.bounds.x0, sub.bounds.y0, sub.bounds.width(), sub.bounds.height()],
+                }));
             }
-            Ok((ids, found_by, template_id, fill_seed, ms, started.elapsed().as_millis() as u64, (w, h), used.name()))
+            let incomplete: Vec<String> = left_in
+                .iter()
+                .map(|&i| match &base {
+                    Some(b) => format!("{b} {}/{count}", subjects.len() - i + 1),
+                    None => labels[i].clone(),
+                })
+                .collect();
+            Ok((ids, placed, incomplete, found_by, template_id, fill_seed, fill_ms, started.elapsed().as_millis() as u64, (w, h), used.name(), ordering.name()))
         },
-        move |(ids, found_by, template_id, seed, fill_ms, total_ms, (w, h), matted)| {
+        move |(ids, placed, incomplete, found_by, template_id, seed, fill_ms, total_ms, (w, h), matted, ordered)| {
             json!({
                 "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>(), "count": ids.len(),
-                "subjects": ids.len().saturating_sub(1), "foundBy": found_by, "template": template_id, "seed": seed,
+                "subjects": placed, "incomplete": incomplete, "order": ordered,
+                "foundBy": found_by, "template": template_id, "seed": seed,
                 "width": w, "height": h, "fillMs": fill_ms, "ms": total_ms, "edges": matted,
             })
         },
     )
 }
+
+/// The subjects' layer names in their (front to back) order: "{Term} {k}", numbered back to
+/// front within a term, the number dropped when the term has one.
+fn subjects_labels(subjects: &[Subject]) -> Vec<String> {
+    let n = subjects.len();
+    let mut labels = vec![String::new(); n];
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for s in subjects {
+        *counts.entry(s.term.clone()).or_default() += 1;
+    }
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    for i in (0..n).rev() {
+        let s = &subjects[i];
+        let k = seen.entry(s.term.clone()).or_default();
+        *k += 1;
+        let term = title_case(&s.term);
+        labels[i] = if counts.get(&s.term).copied().unwrap_or(1) > 1 { format!("{term} {k}") } else { term };
+    }
+    labels
+}
+
+fn layer_label(subjects: &[Subject], i: usize) -> String {
+    subjects_labels(subjects).swap_remove(i)
+}
+
+/// "the main subject" → "Main subject", "cup" → "Cup".
+fn title_case(term: &str) -> String {
+    let t = bare(term);
+    let mut c = t.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// `picture` under `alpha`: the pixels, their alpha scaled.
+fn under_alpha(picture: &[u8], alpha: &[f32]) -> Vec<u8> {
+    picture.as_chunks::<4>().0.iter().zip(alpha).flat_map(|(p, a)| [p[0], p[1], p[2], (f32::from(p[3]) * a.clamp(0.0, 1.0)).round() as u8]).collect()
+}
+
+/// A subject's hole: wherever its mask or its alpha shows it (the soft fringe is still the
+/// subject's), all or nothing, as the Remove tool's.
+fn hole_of(sub: &Subject) -> Vec<f32> {
+    sub.cov.iter().zip(&sub.alpha).map(|(c, a)| if c.max(*a) > HOLE_MIN { 1.0 } else { 0.0 }).collect()
+}
+
+/// Whether a detection sits mostly in the hole and covers enough of it: a detection mostly
+/// inside the hole and at least [`LEFT_MIN_SHARE`] of it (a person beside the hole overlaps it
+/// little; a speck is nothing). A detection over nearly the whole frame is the detector's
+/// quirk, not a subject (it flagged one clean backdrop fill whole, 2026-11-03).
+fn mostly_in_hole(cov: &[f32], hole: &[f32]) -> bool {
+    let holed = hole.iter().filter(|v| **v >= 0.5).count();
+    if holed == 0 {
+        return false;
+    }
+    let (mut on, mut inside) = (0usize, 0usize);
+    for (c, h) in cov.iter().zip(hole) {
+        if *c >= 0.5 {
+            on += 1;
+            if *h >= 0.5 {
+                inside += 1;
+            }
+        }
+    }
+    if on as f32 > WHOLE_FRAME * cov.len() as f32 {
+        return false;
+    }
+    on > 0 && inside as f32 >= LEFT_IN_HOLE * on as f32 && inside as f32 >= LEFT_MIN_SHARE * holed as f32
+}
+
+/// How many pixels two masks share.
+fn overlap(a: &[f32], b: &[f32]) -> u64 {
+    a.iter().zip(b).filter(|(x, y)| **x >= 0.5 && **y >= 0.5).count() as u64
+}
+
+/// Whether a detection is a subject seen again (its completed part included): it holds most of
+/// the subject's mask.
+fn continues(detection: &[f32], subject: &[f32], subject_pixels: u64) -> bool {
+    subject_pixels > 0 && overlap(detection, subject) as f32 >= CONTINUES * subject_pixels as f32
+}
+
+/// What a fill left: the picture with the hole filled, the fill's seed and time, and what the
+/// check saw in it.
+type Filled<T> = (Vec<u8>, u64, u64, T);
+
+/// Fill `hole` (one value per canvas pixel) in `picture`, the document's composite standing in
+/// for it through a work layer: the removal first (quick, and clean on most pictures), then,
+/// after it paints a subject back, the grey-box fill of the hole's bounds laid only over the
+/// hole (widened and feathered) and tone matched. `check` judges each result (the detector
+/// looking for the subject painted back) and keeps what it saw; the first it accepts comes back
+/// with its seed and the fill time. `None` after [`FILL_TRIES`] rejected tries.
+#[allow(clippy::too_many_arguments)]
+fn fill_hole<T>(
+    doc: &mut Document,
+    active: &mut Option<LayerId>,
+    below: Option<LayerId>,
+    ctx: &JobCtx,
+    area: Rect,
+    picture: &[u8],
+    hole: &[f32],
+    removal: &FillJob,
+    box_job: Option<&FillJob>,
+    (lo, hi): (f32, f32),
+    check: &mut dyn FnMut(&[u8]) -> Result<Option<T>>,
+) -> Result<Option<Filled<T>>> {
+    let (w, h) = (area.width(), area.height());
+    let (wu, hu) = (w as usize, h as usize);
+    let (hole_rect, holed) = crate::select_ml_cmds::coverage_bounds(hole, area);
+    if holed == 0 {
+        return Ok(None);
+    }
+    let grow = remove_grow(hole_rect).min(MAX_GROW);
+    let rect = fill_rect(hole_rect.inflate(grow as i32).intersect(&area), removal.tuning.remove_margin, area)?;
+    let rect = at_least(rect, REMOVE_MIN_REQUEST, area);
+    // The box the background fill repaints (the hole's bounds widened by the removal's grow)
+    // and how its result is laid over the picture: only over the hole, widened and feathered,
+    // so the picture outside keeps its own pixels.
+    let boxed = hole_rect.inflate(grow as i32).intersect(&area);
+    let box_hole: Vec<f32> = (0..wu * hu)
+        .map(|k| {
+            let (x, y) = (area.x0 + (k % wu) as i32, area.y0 + (k / wu) as i32);
+            if x >= boxed.x0 && x < boxed.x1 && y >= boxed.y0 && y < boxed.y1 { 1.0 } else { 0.0 }
+        })
+        .collect();
+    let feather = (grow as usize / 2).max(1);
+    let over = dilate(hole, wu, hu, (grow as usize).max(1));
+    let over = box_blur(&box_blur(&over, wu, hu, feather, true), wu, hu, feather, false);
+    // The picture as it stands, as a layer the fill sees as the composite.
+    let mut work = Layer::raster("Split work".to_string(), doc.pixel_format());
+    write_rgba8(&mut work, &Rgba8::new(w, h, picture.to_vec()).map_err(gen_err)?, area)?;
+    let work = doc.insert_above(below, work);
+    let mut ms = 0u64;
+    let mut outcome = None;
+    for attempt in 0..FILL_TRIES {
+        let span = hi - lo;
+        ctx.progress(lo + span * 0.8 * attempt as f32 / FILL_TRIES as f32, "");
+        let try_box = attempt > 0 && box_job.is_some();
+        let mut try_job = if try_box { box_job.cloned().unwrap_or_else(|| removal.clone()) } else { removal.clone() };
+        try_job.seed = try_job.seed.wrapping_add(u64::from(attempt) * 1000);
+        if !try_box {
+            try_job.grow = grow;
+        }
+        let coverage = embed_coverage(area, if try_box { &box_hole } else { hole }, rect);
+        *active = Some(work);
+        let result = fill_region(doc, active, ctx, try_job, rect, coverage, None);
+        let (made, ..) = match result {
+            Ok(r) => r,
+            Err(e) => {
+                doc.remove(work);
+                *active = below;
+                return Err(e);
+            }
+        };
+        ctx.check().inspect_err(|_| {
+            for (id, ..) in &made {
+                doc.remove(*id);
+            }
+            doc.remove(work);
+            *active = below;
+        })?;
+        ms += made.iter().map(|m| m.3).sum::<u64>();
+        // The picture with the fill over the hole, whole.
+        let filled = photocraft_compose::render(doc, area).to_rgba8().pixels;
+        let fill_seed = made.first().map_or(0, |m| m.1);
+        for (id, ..) in &made {
+            doc.remove(*id);
+        }
+        let background: Vec<u8> = if try_box {
+            // The fill's tone matched to the picture where both show the same thing (in the box,
+            // outside the hole): a fill a few levels darker left the person's outline as a shadow
+            // on the curtain (measured in the app 2026-11-03).
+            let tone = ToneGrid::new(picture, &filled, |k| box_hole[k] >= 0.5 && over[k] < 0.02, wu, hu);
+            picture
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(filled.as_chunks::<4>().0)
+                .zip(&over)
+                .enumerate()
+                .flat_map(|(k, ((p, f), a))| {
+                    let a = a.clamp(0.0, 1.0);
+                    let t = if a > 0.0 { tone.at(k % wu, k / wu) } else { [0.0; 3] };
+                    std::array::from_fn::<u8, 4, _>(|c| {
+                        let f = if c < 3 { (f32::from(f[c]) + t[c]).clamp(0.0, 255.0) } else { f32::from(f[c]) };
+                        (f32::from(p[c]) * (1.0 - a) + f * a).round() as u8
+                    })
+                })
+                .collect()
+        } else {
+            filled
+        };
+        ctx.progress(lo + span * 0.8 * (attempt as f32 + 0.9) / FILL_TRIES as f32, "Checking the fill");
+        match check(&background) {
+            Ok(Some(seen)) => {
+                outcome = Some((background, fill_seed, ms, seen));
+                break;
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                doc.remove(work);
+                *active = below;
+                return Err(e);
+            }
+        }
+    }
+    doc.remove(work);
+    *active = below;
+    Ok(outcome)
+}
+
+/// The subjects of the picture, found term by term, and what found them (the terms joined).
+/// With `terms`: each in turn. Without: the people, then the animals, then the foreground
+/// things the vision-language model names, then Select Subject's prompts in turn until one
+/// finds anything. Each term gets what is left of the budget.
+#[allow(clippy::too_many_arguments)]
+fn find_subjects(
+    finder: &SubjectFinder,
+    thinker: &dyn GenerativeBackend,
+    picture: &[u8],
+    area: Rect,
+    terms: Option<&[Term]>,
+    budget: usize,
+    seed: u64,
+    ctx: &JobCtx,
+) -> Result<(Vec<Subject>, String)> {
+    let mut out: Vec<Subject> = Vec::new();
+    let mut by: Vec<String> = Vec::new();
+    let take = |term: &str, asked: bool, at_most: usize, out: &mut Vec<Subject>, by: &mut Vec<String>, ctx: &JobCtx| -> Result<()> {
+        if at_most == 0 {
+            return Ok(());
+        }
+        let found = finder.find_in(picture, area, term, at_most, ctx)?;
+        if !found.is_empty() && !by.iter().any(|b| b == term) {
+            by.push(term.to_string());
+        }
+        for (cov, bounds, pixels) in found {
+            out.push(Subject { cov, bounds, pixels, term: term.to_string(), asked, alpha: Vec::new(), completed: false, grown: false });
+        }
+        Ok(())
+    };
+    match terms {
+        Some(terms) => {
+            for t in terms {
+                ctx.check()?;
+                let left = budget.saturating_sub(out.len());
+                take(&t.name, true, t.max.map_or(left, |m| m.min(left)), &mut out, &mut by, ctx)?;
+            }
+            if out.is_empty() {
+                let shown = terms.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ");
+                return Err(EngineError::Other(format!("nothing matching \"{shown}\" was found")));
+            }
+        }
+        None => {
+            take(PERSON, false, budget, &mut out, &mut by, ctx)?;
+            ctx.check()?;
+            let left = budget.saturating_sub(out.len());
+            take(ANIMAL, false, left, &mut out, &mut by, ctx)?;
+            ctx.check()?;
+            let left = budget.saturating_sub(out.len());
+            if left > 0 {
+                ctx.progress(0.04, "Naming the things in front");
+                let (w, h) = (area.width(), area.height());
+                let (rw, rh) = request_size(w, h);
+                let seen = Rgba8::new(w, h, picture.to_vec()).map_err(gen_err)?;
+                let seen = if (rw, rh) == (w, h) { seen } else { resize_rgba8(&seen, rw, rh)? };
+                let things = list_things(thinker, &seen, left.min(MAX_THINGS), seed, &JobProgress::span(ctx, 0.04, 0.06));
+                for thing in things {
+                    ctx.check()?;
+                    let left = budget.saturating_sub(out.len());
+                    if left == 0 {
+                        break;
+                    }
+                    take(&thing, false, left.min(THINGS_EACH), &mut out, &mut by, ctx)?;
+                }
+            }
+            if out.is_empty() {
+                for p in crate::select_ml_cmds::SUBJECT_FALLBACKS {
+                    ctx.check()?;
+                    take(p, false, budget, &mut out, &mut by, ctx)?;
+                    if !out.is_empty() {
+                        break;
+                    }
+                }
+            }
+            if out.is_empty() {
+                return Err(EngineError::Other("nothing matching \"the main subject\" was found".into()));
+            }
+        }
+    }
+    Ok((out, by.join(", ")))
+}
+
+/// Drop what is not a subject of its own: specks, whole-frame detections, near-duplicates,
+/// parts inside wholes (unless the caller asked for the part by name, when it is cut out of the
+/// whole); then, by `group`, join instances that overlap into one.
+fn clean(found: &mut Vec<Subject>, w: usize, h: usize, group: Group) {
+    let frame = (w * h) as u64;
+    let largest = found.iter().map(|s| s.pixels).max().unwrap_or(0);
+    found.retain(|s| s.pixels * 50 >= largest && s.pixels * 2000 >= frame && (s.pixels as f32) < WHOLE_FRAME * frame as f32);
+    // Pairs, earlier against later: the earlier (people before things, larger first) wins.
+    let mut i = 0;
+    while i < found.len() {
+        let mut j = i + 1;
+        while j < found.len() {
+            let both = overlap(&found[i].cov, &found[j].cov);
+            let (small, large) = if found[i].pixels <= found[j].pixels { (j, i) } else { (i, j) };
+            let (sp, lp) = (found[small].pixels.max(1), found[large].pixels.max(1));
+            let iou = both as f64 / (sp + lp - both) as f64;
+            let inside = both as f64 / sp as f64;
+            let same_term = found[i].term.eq_ignore_ascii_case(&found[j].term);
+            if iou >= DUPLICATE_IOU {
+                found.remove(j);
+                continue;
+            }
+            if inside >= PART_INSIDE {
+                if found[small].asked && !same_term {
+                    // The hat on the man: both stay, the hat cut out of the man.
+                    let (sc, lc) = (found[small].cov.clone(), &mut found[large].cov);
+                    for (l, s) in lc.iter_mut().zip(&sc) {
+                        if *s >= 0.5 {
+                            *l = 0.0;
+                        }
+                    }
+                    let area = Rect::new(0, 0, w as i32, h as i32);
+                    let (b, n) = crate::select_ml_cmds::coverage_bounds(&found[large].cov, area);
+                    found[large].bounds = b;
+                    found[large].pixels = n;
+                } else {
+                    found.remove(small);
+                    if small == i {
+                        j = i + 1;
+                        continue;
+                    }
+                    continue;
+                }
+            }
+            let joined = match group {
+                Group::None => false,
+                Group::Auto => inside >= GROUP_OVERLAP,
+                Group::Touching => both > 0 || order::touching(&found[i].shape(), &found[j].shape(), w, h),
+            };
+            if joined {
+                let (jc, jt) = (found[j].cov.clone(), found[j].term.clone());
+                let keep = &mut found[i];
+                for (d, c) in keep.cov.iter_mut().zip(&jc) {
+                    *d = d.max(*c);
+                }
+                if !keep.term.eq_ignore_ascii_case(&jt) && !keep.term.contains(&jt) {
+                    keep.term = format!("{} and {}", keep.term, jt);
+                }
+                let area = Rect::new(0, 0, w as i32, h as i32);
+                let (b, n) = crate::select_ml_cmds::coverage_bounds(&keep.cov, area);
+                keep.bounds = b;
+                keep.pixels = n;
+                found.remove(j);
+                continue;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+}
+
+/// Every subject's alpha from `edges`, in place; which source served.
+#[allow(clippy::too_many_arguments)]
+fn matte_all(
+    backend: &dyn GenerativeBackend,
+    matte: Option<&Common>,
+    doc: &Document,
+    active: Option<LayerId>,
+    picture: &[u8],
+    area: Rect,
+    subjects: &mut [Subject],
+    edges: Edges,
+    ctx: &JobCtx,
+) -> Result<Edges> {
+    let (w, h) = (area.width(), area.height());
+    let instances: Vec<Instance> = subjects.iter().map(|s| (s.cov.clone(), s.bounds, s.pixels)).collect();
+    let mut used = edges;
+    let mut alphas = None;
+    if matches!(edges, Edges::Auto | Edges::Vitmatte) {
+        ctx.progress(0.08, "Matting hair");
+        alphas = crate::select_ml_cmds::vitmatte_alphas(backend, picture, area, &instances, ctx)?;
+        used = Edges::Vitmatte;
+    }
+    ctx.check()?;
+    if alphas.is_none()
+        && matches!(edges, Edges::Auto | Edges::Vitmatte | Edges::Matte)
+        && let Some(m) = matte
+    {
+        ctx.progress(0.08, "Matting edges");
+        let name = subjects.first().map_or(PERSON, |s| s.check_term()).to_string();
+        alphas = matte_alphas(backend, m, picture, (w, h), &instances, &name, ctx)?;
+        used = Edges::Matte;
+    }
+    ctx.check()?;
+    let alphas: Vec<Vec<f32>> = match alphas {
+        Some(a) => a,
+        None if used != Edges::Hard => {
+            used = Edges::Refine;
+            ctx.progress(0.15, "Refining edges");
+            instances.iter().map(|(cov, _, _)| crate::select_ml_cmds::refine_coverage(doc, active, true, cov.clone(), area)).collect()
+        }
+        None => instances.iter().map(|(cov, _, _)| cov.clone()).collect(),
+    };
+    for (s, a) in subjects.iter_mut().zip(alphas) {
+        s.alpha = a;
+    }
+    Ok(used)
+}
+
+/// The removal runs this many variations a try when peeling (the detector's check and the
+/// seeds that follow stand in for the judge)...
+const PEEL_VARIATIONS: u32 = 1;
+/// ...and this many on the one-fill split (the judge picks the more natural).
+const FLAT_VARIATIONS: u32 = 2;
+/// The most things the vision-language model is asked to name...
+const MAX_THINGS: usize = 6;
+/// ...and the most instances of each it is asked for.
+const THINGS_EACH: usize = 2;
+/// The detector's word for an animal.
+const ANIMAL: &str = "animal";
+/// Two instances with a mask IoU at or above this are one.
+const DUPLICATE_IOU: f64 = 0.7;
+/// A smaller instance with this share of its mask inside a larger one is a part of it.
+const PART_INSIDE: f64 = 0.85;
+/// `group: auto` joins two instances when the smaller overlaps the larger by this share.
+const GROUP_OVERLAP: f64 = 0.5;
+/// A detection after a fill that holds this share of a subject's mask is the subject seen
+/// again (with what the fill completed).
+const CONTINUES: f32 = 0.6;
 
 /// What the detector is asked for on the filled background: the prompt that found the
 /// subjects when it names a kind of thing ("person", the caller's prompt), else "person". The
@@ -416,44 +1064,6 @@ const LEFT_IN_HOLE: f32 = 0.3;
 /// person in the hole's corner through (about 18 % of it, on all three seeds of the
 /// 12-megapixel portrait, measured in the app 2026-11-03); a few percent still ignores specks.
 const LEFT_MIN_SHARE: f32 = 0.03;
-
-/// Whether the detector (asked for what found the subjects) still finds a subject in the hole
-/// of the picture as it is now (the fill over it): a detection mostly inside the hole and at
-/// least [`LEFT_MIN_SHARE`] of the hole. Nothing found is a clean fill.
-fn subject_left_in(
-    finder: &crate::select_ml_cmds::SubjectFinder,
-    doc: &photocraft_doc::Document,
-    active: Option<photocraft_doc::LayerId>,
-    hole: &[f32],
-    ctx: &JobCtx,
-) -> Result<bool> {
-    let holed = hole.iter().filter(|v| **v >= 0.5).count();
-    if holed == 0 {
-        return Ok(false);
-    }
-    let found = match finder.instances(doc, active, true, ctx) {
-        Ok((found, _)) => found,
-        Err(EngineError::Other(e)) if e.starts_with("nothing") => return Ok(false),
-        Err(e) => return Err(e),
-    };
-    Ok(found.iter().any(|(cov, _, _)| {
-        // A detection over nearly the whole frame is the detector's quirk, not a subject (it
-        // flagged one clean backdrop fill whole, 2026-11-03).
-        if cov.iter().filter(|c| **c >= 0.5).count() as f32 > WHOLE_FRAME * cov.len() as f32 {
-            return false;
-        }
-        let (mut on, mut inside) = (0usize, 0usize);
-        for (c, h) in cov.iter().zip(hole) {
-            if *c >= 0.5 {
-                on += 1;
-                if *h >= 0.5 {
-                    inside += 1;
-                }
-            }
-        }
-        on > 0 && inside as f32 >= LEFT_IN_HOLE * on as f32 && inside as f32 >= LEFT_MIN_SHARE * holed as f32
-    }))
-}
 
 /// The subjects' alphas from the matte model (Remove Background's), or `None` when the server
 /// lacks it or its matte disagrees with the detector (kept little of the subjects, or much of

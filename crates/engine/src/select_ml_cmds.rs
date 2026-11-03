@@ -861,54 +861,51 @@ pub(crate) struct SubjectFinder {
     backend: Arc<dyn photocraft_genai::GenerativeBackend>,
     server: String,
     prompting: Prompting,
-    prompts: Vec<String>,
 }
 
-/// A [`SubjectFinder`] asking for `prompt` (none: Select Subject's [`SUBJECT_FALLBACKS`]).
+/// A [`SubjectFinder`] on the text template (`prompt`, when given, only plans the request; each
+/// [`SubjectFinder::find_in`] names its own).
 pub(crate) fn subject_finder(s: &Session, prompt: Option<&str>) -> Result<SubjectFinder> {
-    let prompts: Vec<String> = match prompt.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(p) => vec![p.to_string()],
-        None => SUBJECT_FALLBACKS.iter().map(|p| (*p).to_string()).collect(),
-    };
-    let (backend, server, prompting) = prompting_for(s, BY_TEXT, DEFAULT_SEGMENT_TEMPLATE, &prompts[0])
+    let first = prompt.map(str::trim).filter(|p| !p.is_empty()).unwrap_or(SUBJECT_FALLBACKS[0]);
+    let (backend, server, prompting) = prompting_for(s, BY_TEXT, DEFAULT_SEGMENT_TEMPLATE, first)
         .ok_or_else(|| EngineError::Other("no segmentation model (SAM 3.1) is set up; see Preferences > Generative".into()))?;
-    Ok(SubjectFinder { backend, server, prompting, prompts })
+    Ok(SubjectFinder { backend, server, prompting })
 }
 
 impl SubjectFinder {
-    /// The same finder asking only for `prompt` (one detector run: the prompt that found the
-    /// subjects, when checking that a fill removed them).
-    pub(crate) fn only(&self, prompt: &str) -> Self {
-        SubjectFinder { backend: Arc::clone(&self.backend), server: self.server.clone(), prompting: self.prompting.clone(), prompts: vec![prompt.to_string()] }
-    }
-
-    /// Let the detector return up to `n` instances (its default is one).
-    pub(crate) fn at_most(mut self, n: usize) -> Self {
-        self.prompting.max_detections = Some(n.max(1));
-        self
-    }
-
-    /// The instances found in the picture (`all_layers`: the composite, else the active layer)
-    /// and the prompt that found them.
-    pub(crate) fn instances(&self, doc: &Document, active: Option<LayerId>, all_layers: bool, ctx: &JobCtx) -> Result<(Vec<Instance>, String)> {
-        let area = doc.bounds();
-        let (image, _) = detector_image(doc, active, all_layers, MAX_SEGMENT_REQUEST_PIXELS)?;
-        let (masks, _, prompt) = detect_any(self.backend.as_ref(), &self.server, &image, area, &self.prompting, &self.prompts, ctx)?;
-        let (w, h) = (area.width() as usize, area.height() as usize);
+    /// The instances of `prompt` in `picture` (canvas-sized RGBA8 over `area`), at most
+    /// `at_most` of them, largest first, specks dropped and enclosed gaps filled; none when
+    /// nothing matched (not an error). Split into Layers asks this for each term, and again on
+    /// the picture as it stands after each fill.
+    pub(crate) fn find_in(&self, picture: &[u8], area: Rect, prompt: &str, at_most: usize, ctx: &JobCtx) -> Result<Vec<Instance>> {
+        let (w, h) = (area.width(), area.height());
+        let image = Rgba8::new(w, h, picture.to_vec()).map_err(gen_err)?;
+        let (rw, rh) = fit_pixels(w, h, MAX_SEGMENT_REQUEST_PIXELS);
+        let image = if (rw, rh) == (w, h) { image } else { resize_rgba8(&image, rw, rh)? };
+        let mut pr = self.prompting.clone();
+        pr.prompt = prompt.to_string();
+        pr.max_detections = Some(at_most.max(1));
+        let masks = match detect(self.backend.as_ref(), &self.server, image, area, &pr, ctx) {
+            Ok((masks, _)) => masks,
+            Err(e) if found_nothing(&e.to_string()) || e.to_string().starts_with("nothing") => {
+                ctx.check()?;
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e),
+        };
+        let (wu, hu) = (w as usize, h as usize);
         let mut instances: Vec<Instance> = without_specks(instances_of(&masks, area)?)
             .into_iter()
             .map(|(cov, _, _)| {
-                let cov = fill_enclosed(&cov, w, h);
+                let cov = fill_enclosed(&cov, wu, hu);
                 let (b, n) = coverage_bounds(&cov, area);
                 (cov, b, n)
             })
             .filter(|(_, _, n)| *n > 0)
             .collect();
         instances.sort_by_key(|i| std::cmp::Reverse(i.2));
-        if instances.is_empty() {
-            return Err(EngineError::Other(format!("nothing matching \"{prompt}\" was found")));
-        }
-        Ok((instances, prompt))
+        instances.truncate(at_most.max(1));
+        Ok(instances)
     }
 }
 
