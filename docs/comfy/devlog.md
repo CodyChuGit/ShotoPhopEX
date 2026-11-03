@@ -25,8 +25,23 @@ nothing changes. The fake worker has an occlusion model (`Options::occlusion`, a
 rectangle is gone and the ones behind show whole) so the tests cover completion. The dialog
 offers 2, 3, 4, 6, 8 and 12 layers and a "Complete hidden parts" switch. The master spec and
 one-shot prompt are `docs/comfy/goals/split-into-layers.md`.
-Open: the in-app run on the café photo (numbers are added to this entry after it); a depth
-model as the primary order cue; the README's Split row once #51 lands.
+In the app (Cody's RTX 5090, 43b52aaef, one run at a time, warm after the first): the café
+photo at 12 layers gave 9 layers (Background, Person 1–6, Cup, Person 7) in 98.6 s cold, then
+88.8 and 86.7 s, 10–11 fills at 49–53 s of it; every person out of the background, nothing
+invented, `incomplete` empty. But three people came out as flat grey silhouettes and the left
+half of the background was a smear: a nearer subject's fill repaints a band of up to 96 px
+around its hole, and the neighbours standing in that band were cut from the repainted picture
+when their turn came. The cards and two of the three cups were dropped as specks (under 2% of
+the largest instance, a person), and one layer carried a detached block of a fill the detector
+had taken for the woman. images.jpg (one woman) 4/4 clean at 3.0–3.5 s (was 4.2 s), 4.3 s
+with `complete=false`; the 12 MP portrait 3/3 clean by the detector, 35–53 s. Fixed the same
+day: a fill is laid back only in a 2 px band where another subject stands (`protect` in
+`fill_hole`), a subject grows only into the part of a detection joined to it (`joined_to`),
+specks are judged per term (1% of the term's largest, 0.05% of the frame), `foundBy` lists only
+terms that kept an instance, and the split's background is "Split background" when the
+document has a "Background" of its own. The re-run's numbers follow in the next entry.
+Open: a depth model as the primary order cue (the man in the fedora was stacked under the
+striped man he overlaps); the table and hats as layers; the README's Split row once #51 lands.
 
 ## 2026-11-03: genai-native pinned at 780b73e (MOSS loads on every core, the chat head cached)
 

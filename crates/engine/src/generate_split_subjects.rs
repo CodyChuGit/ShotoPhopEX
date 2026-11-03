@@ -11,7 +11,7 @@
 //! cleanly in about 4.6 s on the RTX 5090, where Qwen-Image-Layered, which this replaced,
 //! separated 5 of 10 seeds at about 12 s (measured 2026-11-02; the owner chose SAM alone).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use photocraft_doc::{Document, LayerId};
@@ -251,6 +251,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
             if found.is_empty() {
                 return Err(EngineError::Other(format!("nothing matching \"{found_by}\" was found")));
             }
+            let found_by = kept_terms(&found_by, &found);
             // Each subject's alpha: ViTMatte inside a band around the detector's mask (hair,
             // strand by strand), else the matte model's soft alpha around it, else the mask with
             // the edge refined from the pixels, as Select Subject does (or as `edges` asks).
@@ -259,22 +260,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
             ctx.check()?;
             // Front to back.
             ctx.progress(0.2, "Ordering by depth");
-            let front_first: Vec<usize> = match ordering {
-                Order::Auto => order::front_to_back(&found.iter().map(Subject::shape).collect::<Vec<_>>(), wu, hu),
-                Order::Size => {
-                    let mut ix: Vec<usize> = (0..found.len()).collect();
-                    ix.sort_by_key(|i| found[*i].pixels);
-                    ix
-                }
-                Order::Found => (0..found.len()).rev().collect(),
-            };
-            let mut subjects: Vec<Subject> = Vec::with_capacity(found.len());
-            let mut taken: Vec<Option<Subject>> = found.into_iter().map(Some).collect();
-            for i in front_first {
-                if let Some(sub) = taken.get_mut(i).and_then(Option::take) {
-                    subjects.push(sub);
-                }
-            }
+            let mut subjects: Vec<Subject> = in_depth_order(found, ordering, wu, hu);
             let template_id = job.template_id.clone();
             let below = *active;
             let mut fill_ms = 0u64;
@@ -330,7 +316,9 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                         });
                         Ok(if painted_back { None } else { Some(seen) })
                     };
-                    let outcome = fill_hole(doc, active, below, ctx, area, &p, &hole, &removal, box_job, (lo, hi), &mut check)?;
+                    // The subjects still behind keep their own pixels through this fill.
+                    let protect = protect_mask(behind, wu * hu);
+                    let outcome = fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), &removal, box_job, (lo, hi), &mut check)?;
                     *active = below;
                     let Some((filled, seed_used, ms, seen)) = outcome else {
                         left_in.push(i);
@@ -339,30 +327,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     fill_ms += ms;
                     fill_seed = seed_used;
                     // The subjects behind, completed where the fill showed more of them.
-                    let mut any_grew = false;
-                    for b in behind.iter_mut() {
-                        let best = seen
-                            .iter()
-                            .filter(|(t, (cov, _, _))| t == b.check_term() && continues(cov, &b.cov, b.pixels))
-                            .max_by_key(|(_, (cov, _, _))| overlap(cov, &b.cov));
-                        if let Some((_, (cov, _, _))) = best {
-                            let mut grew = 0u64;
-                            for ((d, c), g) in b.cov.iter_mut().zip(cov).zip(&grown_hole) {
-                                if *c >= 0.5 && *g >= 0.5 && *d < 0.5 {
-                                    *d = 1.0;
-                                    grew += 1;
-                                }
-                            }
-                            if grew * 50 >= b.pixels {
-                                let (bounds, pixels) = crate::select_ml_cmds::coverage_bounds(&b.cov, area);
-                                b.bounds = bounds;
-                                b.pixels = pixels;
-                                b.grown = true;
-                                b.completed = true;
-                                any_grew = true;
-                            }
-                        }
-                    }
+                    let any_grew = grow_behind(behind, &seen, &grown_hole, area);
                     p = filled;
                     if any_grew {
                         let (_, rest) = subjects.split_at_mut(i + 1);
@@ -441,7 +406,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     }
                     Ok(Some(()))
                 };
-                let outcome = fill_hole(doc, active, below, ctx, area, &picture, &hole, &removal, last_box.as_ref(), (0.3, 0.9), &mut check)?;
+                let outcome = fill_hole(doc, active, below, ctx, area, &picture, &hole, None, &removal, last_box.as_ref(), (0.3, 0.9), &mut check)?;
                 *active = below;
                 let Some((filled, seed_used, ms, ())) = outcome else {
                     return Err(EngineError::Other(format!(
@@ -482,6 +447,8 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
             };
             let bg_name = match &base {
                 Some(b) => format!("{b} 1/{count}"),
+                // Not a second "Background" beside the document's own.
+                None if doc.layers.iter().any(|l| l.name == "Background") => "Split background".to_string(),
                 None => "Background".to_string(),
             };
             ids.push(place(doc, active, background, bg_name)?);
@@ -517,6 +484,79 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
             })
         },
     )
+}
+
+/// The terms of `found_by` that kept an instance through the cleaning (a term whose every
+/// instance was a speck is not in the result); all of them when none did.
+fn kept_terms(found_by: &str, found: &[Subject]) -> String {
+    let kept: Vec<&str> = found_by.split(", ").filter(|t| found.iter().any(|s| s.term.split(" and ").any(|x| x.eq_ignore_ascii_case(t)))).collect();
+    if kept.is_empty() { found_by.to_string() } else { kept.join(", ") }
+}
+
+/// The subjects front to back by `ordering`: who hides whom from the masks, the smallest
+/// first (`size`: the largest ends lowest), or the detector's order reversed (`found`).
+fn in_depth_order(found: Vec<Subject>, ordering: Order, w: usize, h: usize) -> Vec<Subject> {
+    let front_first: Vec<usize> = match ordering {
+        Order::Auto => order::front_to_back(&found.iter().map(Subject::shape).collect::<Vec<_>>(), w, h),
+        Order::Size => {
+            let mut ix: Vec<usize> = (0..found.len()).collect();
+            ix.sort_by_key(|i| found[*i].pixels);
+            ix
+        }
+        Order::Found => (0..found.len()).rev().collect(),
+    };
+    let mut subjects: Vec<Subject> = Vec::with_capacity(found.len());
+    let mut taken: Vec<Option<Subject>> = found.into_iter().map(Some).collect();
+    for i in front_first {
+        if let Some(sub) = taken.get_mut(i).and_then(Option::take) {
+            subjects.push(sub);
+        }
+    }
+    subjects
+}
+
+/// Where the subjects still `behind` stand (their holes), one value per pixel: what a nearer
+/// subject's fill must leave alone.
+fn protect_mask(behind: &[Subject], n: usize) -> Vec<f32> {
+    let mut protect = vec![0.0f32; n];
+    for b in behind {
+        for (d, c) in protect.iter_mut().zip(hole_of(b)) {
+            *d = d.max(c);
+        }
+    }
+    protect
+}
+
+/// The subjects `behind` grown into `grown_hole` where a detection of their kind that continues
+/// them (`seen`) shows more of them; whether any grew enough to count as completed. Only what a
+/// detection adds next to the subject counts; a patch of the fill the detector took for it
+/// stays out (a detached dark block under the woman's layer, measured in the app 2026-11-03).
+fn grow_behind(behind: &mut [Subject], seen: &[(String, Instance)], grown_hole: &[f32], area: Rect) -> bool {
+    let (w, h) = (area.width() as usize, area.height() as usize);
+    let mut any_grew = false;
+    for b in behind.iter_mut() {
+        let best =
+            seen.iter().filter(|(t, (cov, _, _))| t == b.check_term() && continues(cov, &b.cov, b.pixels)).max_by_key(|(_, (cov, _, _))| overlap(cov, &b.cov));
+        let Some((_, (cov, _, _))) = best else { continue };
+        let wanted: Vec<bool> = b.cov.iter().zip(cov).zip(grown_hole).map(|((d, c), g)| *c >= 0.5 && *g >= 0.5 && *d < 0.5).collect();
+        let added = joined_to(&wanted, &b.cov, w, h);
+        let mut grew = 0u64;
+        for (d, a) in b.cov.iter_mut().zip(&added) {
+            if *a {
+                *d = 1.0;
+                grew += 1;
+            }
+        }
+        if grew * 50 >= b.pixels {
+            let (bounds, pixels) = crate::select_ml_cmds::coverage_bounds(&b.cov, area);
+            b.bounds = bounds;
+            b.pixels = pixels;
+            b.grown = true;
+            b.completed = true;
+            any_grew = true;
+        }
+    }
+    any_grew
 }
 
 /// The subjects' layer names in their (front to back) order: "{Term} {k}", numbered back to
@@ -599,6 +639,51 @@ fn continues(detection: &[f32], subject: &[f32], subject_pixels: u64) -> bool {
     subject_pixels > 0 && overlap(detection, subject) as f32 >= CONTINUES * subject_pixels as f32
 }
 
+/// The pixels of `wanted` joined (4-neighbours) to a pixel within [`JOIN_REACH`] of `seed` (at
+/// 0.5 and over): the part of a detection that continues the subject, not a patch of its own.
+pub(super) fn joined_to(wanted: &[bool], seed: &[f32], w: usize, h: usize) -> Vec<bool> {
+    let mut out = vec![false; wanted.len()];
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    for (k, want) in wanted.iter().enumerate() {
+        if !want {
+            continue;
+        }
+        let (x, y) = ((k % w) as i64, (k / w) as i64);
+        let near = (-JOIN_REACH..=JOIN_REACH).any(|dy| {
+            (-JOIN_REACH..=JOIN_REACH).any(|dx| {
+                let (nx, ny) = (x + dx, y + dy);
+                nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h && seed[ny as usize * w + nx as usize] >= 0.5
+            })
+        });
+        if near {
+            out[k] = true;
+            queue.push_back(k);
+        }
+    }
+    while let Some(k) = queue.pop_front() {
+        let (x, y) = (k % w, k / w);
+        let mut step = |n: usize| {
+            if wanted[n] && !out[n] {
+                out[n] = true;
+                queue.push_back(n);
+            }
+        };
+        if x > 0 {
+            step(k - 1);
+        }
+        if x + 1 < w {
+            step(k + 1);
+        }
+        if y > 0 {
+            step(k - w);
+        }
+        if y + 1 < h {
+            step(k + w);
+        }
+    }
+    out
+}
+
 /// What a fill left: the picture with the hole filled, the fill's seed and time, and what the
 /// check saw in it.
 type Filled<T> = (Vec<u8>, u64, u64, T);
@@ -618,6 +703,7 @@ fn fill_hole<T>(
     area: Rect,
     picture: &[u8],
     hole: &[f32],
+    protect: Option<&[f32]>,
     removal: &FillJob,
     box_job: Option<&FillJob>,
     (lo, hi): (f32, f32),
@@ -642,9 +728,23 @@ fn fill_hole<T>(
             if x >= boxed.x0 && x < boxed.x1 && y >= boxed.y0 && y < boxed.y1 { 1.0 } else { 0.0 }
         })
         .collect();
+    // How a result is laid back into the picture: over the hole widened by the removal's grow
+    // and feathered, so the subject's halo and shadow go with it; but only a tight band where
+    // another subject still stands (`protect`), so its pixels are its own when its turn comes
+    // (a nearer subject's fill repainted its neighbours into grey silhouettes, measured in the
+    // app 2026-11-03).
     let feather = (grow as usize / 2).max(1);
-    let over = dilate(hole, wu, hu, (grow as usize).max(1));
-    let over = box_blur(&box_blur(&over, wu, hu, feather, true), wu, hu, feather, false);
+    let wide = dilate(hole, wu, hu, (grow as usize).max(1));
+    let wide = box_blur(&box_blur(&wide, wu, hu, feather, true), wu, hu, feather, false);
+    let over: Vec<f32> = match protect {
+        Some(keep) => {
+            let tight = dilate(hole, wu, hu, TIGHT_BAND);
+            let tight = box_blur(&box_blur(&tight, wu, hu, 1, true), wu, hu, 1, false);
+            let keep = dilate(keep, wu, hu, PROTECT_GROW);
+            wide.iter().zip(&tight).zip(&keep).zip(hole).map(|(((wd, t), k), hl)| if *k >= 0.5 { t.max(*hl) } else { *wd }).collect()
+        }
+        None => wide,
+    };
     // The picture as it stands, as a layer the fill sees as the composite.
     let mut work = Layer::raster("Split work".to_string(), doc.pixel_format());
     write_rgba8(&mut work, &Rgba8::new(w, h, picture.to_vec()).map_err(gen_err)?, area)?;
@@ -685,30 +785,30 @@ fn fill_hole<T>(
         for (id, ..) in &made {
             doc.remove(*id);
         }
-        let background: Vec<u8> = if try_box {
-            // The fill's tone matched to the picture where both show the same thing (in the box,
-            // outside the hole): a fill a few levels darker left the person's outline as a shadow
-            // on the curtain (measured in the app 2026-11-03).
-            let tone = ToneGrid::new(picture, &filled, |k| box_hole[k] >= 0.5 && over[k] < 0.02, wu, hu);
-            picture
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .zip(filled.as_chunks::<4>().0)
-                .zip(&over)
-                .enumerate()
-                .flat_map(|(k, ((p, f), a))| {
-                    let a = a.clamp(0.0, 1.0);
-                    let t = if a > 0.0 { tone.at(k % wu, k / wu) } else { [0.0; 3] };
-                    std::array::from_fn::<u8, 4, _>(|c| {
-                        let f = if c < 3 { (f32::from(f[c]) + t[c]).clamp(0.0, 255.0) } else { f32::from(f[c]) };
-                        (f32::from(p[c]) * (1.0 - a) + f * a).round() as u8
-                    })
+        // The result over the picture along `over`. A box fill's tone is matched to the picture
+        // where both show the same thing (in the box, outside the hole): a fill a few levels
+        // darker left the person's outline as a shadow on the curtain (measured in the app
+        // 2026-11-03). The removal's result is tone matched by its own route.
+        let tone = try_box.then(|| ToneGrid::new(picture, &filled, |k| box_hole[k] >= 0.5 && over[k] < 0.02, wu, hu));
+        let background: Vec<u8> = picture
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(filled.as_chunks::<4>().0)
+            .zip(&over)
+            .enumerate()
+            .flat_map(|(k, ((p, f), a))| {
+                let a = a.clamp(0.0, 1.0);
+                let t = match &tone {
+                    Some(tone) if a > 0.0 => tone.at(k % wu, k / wu),
+                    _ => [0.0; 3],
+                };
+                std::array::from_fn::<u8, 4, _>(|c| {
+                    let f = if c < 3 { (f32::from(f[c]) + t[c]).clamp(0.0, 255.0) } else { f32::from(f[c]) };
+                    (f32::from(p[c]) * (1.0 - a) + f * a).round() as u8
                 })
-                .collect()
-        } else {
-            filled
-        };
+            })
+            .collect();
         ctx.progress(lo + span * 0.8 * (attempt as f32 + 0.9) / FILL_TRIES as f32, "Checking the fill");
         match check(&background) {
             Ok(Some(seen)) => {
@@ -815,8 +915,20 @@ fn find_subjects(
 /// whole); then, by `group`, join instances that overlap into one.
 fn clean(found: &mut Vec<Subject>, w: usize, h: usize, group: Group) {
     let frame = (w * h) as u64;
-    let largest = found.iter().map(|s| s.pixels).max().unwrap_or(0);
-    found.retain(|s| s.pixels * 50 >= largest && s.pixels * 2000 >= frame && (s.pixels as f32) < WHOLE_FRAME * frame as f32);
+    // Specks: under [`SPECK_SHARE`] of the largest instance of the same term (a cup is far
+    // smaller than a person and still a layer; judged against the largest of all, the cards and
+    // two cups of the café photo went, measured in the app 2026-11-03), or under
+    // [`FRAME_SHARE`] of the frame; and whole-frame detections.
+    let largest_of = |term: &str, found: &[Subject]| found.iter().filter(|s| s.term.eq_ignore_ascii_case(term)).map(|s| s.pixels).max().unwrap_or(0);
+    let keep: Vec<bool> = found
+        .iter()
+        .map(|s| s.pixels * SPECK_SHARE >= largest_of(&s.term, found) && s.pixels * FRAME_SHARE >= frame && (s.pixels as f32) < WHOLE_FRAME * frame as f32)
+        .collect();
+    let mut k = 0;
+    found.retain(|_| {
+        k += 1;
+        keep[k - 1]
+    });
     // Pairs, earlier against later: the earlier (people before things, larger first) wins.
     let mut i = 0;
     while i < found.len() {
@@ -949,6 +1061,16 @@ const GROUP_OVERLAP: f64 = 0.5;
 /// A detection after a fill that holds this share of a subject's mask is the subject seen
 /// again (with what the fill completed).
 const CONTINUES: f32 = 0.6;
+/// A speck: under this share (1/n) of the largest instance of its term.
+const SPECK_SHARE: u64 = 100;
+/// A speck: under this share (1/n) of the frame.
+const FRAME_SHARE: u64 = 2000;
+/// The band around a subject's hole its fill may repaint where another subject stands.
+const TIGHT_BAND: usize = 2;
+/// How far around another subject's mask its pixels are kept through a fill.
+const PROTECT_GROW: usize = 2;
+/// How close to a subject's mask a detection's pixel must be to join it.
+const JOIN_REACH: i64 = 2;
 
 /// What the detector is asked for on the filled background: the prompt that found the
 /// subjects when it names a kind of thing ("person", the caller's prompt), else "person". The

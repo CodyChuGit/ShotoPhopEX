@@ -69,8 +69,9 @@ fn split_by_subjects_cuts_each_instance_out_over_a_repainted_background() {
     let d = s.active().unwrap();
     assert_eq!(d.doc.layers.len(), before + 3, "the fill's own layers are folded into the background");
     assert_eq!(d.history.past_len(), steps + 1, "one undo step");
-    // Named by what they are, the nearer (its bottom edge lower) on top.
-    assert_eq!(layer_name(&s, ids[0]), "Background");
+    // Named by what they are, the nearer (its bottom edge lower) on top; the document has a
+    // "Background" of its own, so the split's is told apart.
+    assert_eq!(layer_name(&s, ids[0]), "Split background");
     assert_eq!(layer_name(&s, ids[1]), "Person 1");
     assert_eq!(layer_name(&s, ids[2]), "Person 2");
     assert_eq!(r["subjects"][0]["term"], "person", "{r}");
@@ -120,6 +121,11 @@ fn split_completes_what_a_nearer_subject_hid() {
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    // A blue strip on the back one's visible part, inside the band the front one's removal
+    // repaints (x 82..102): the back one's own pixels, which its layer must keep.
+    s.execute("select.rect", json!({"x": 82, "y": 19, "width": 20, "height": 77})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
     let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -135,6 +141,10 @@ fn split_completes_what_a_nearer_subject_hid() {
     let back_px = pixel_at(&s, ids[1], x, y);
     assert!(back_px[3] > 0.5, "the back subject is completed where the front one hid it: {back_px:?}");
     assert_eq!(alpha_at(&s, ids[1], 240, 180), 0.0, "and nothing more");
+    // Where it was visible beside the front one, the back one keeps the picture's own pixels
+    // (the blue strip), not what the front one's fill painted over its band.
+    let kept = pixel_at(&s, ids[1], 90, 50);
+    assert!(kept[3] > 0.5 && kept[2] > 0.7 && kept[0] < 0.3, "the back subject's visible pixels are its own: {kept:?}");
     assert_eq!(r["subjects"][0]["completed"], true, "{r}");
     assert_eq!(r["subjects"][1]["completed"], true, "{r}");
     assert_eq!(r["subjects"][0]["bounds"][0], 13, "the back one's bounds take in the completed part: {r}");
@@ -180,7 +190,8 @@ fn split_finds_the_things_the_vision_model_names_and_takes_a_list_of_terms() {
         segments: Vec::new(),
         segments_for: vec![
             ("person".into(), vec![[0.0, 0.0, 0.5, 0.5]]),
-            ("cup".into(), vec![[0.6, 0.6, 0.9, 0.9]]),
+            // 9 pixels to the person's 768: a speck against the person, a layer of its own term.
+            ("cup".into(), vec![[0.6, 0.6, 0.65, 0.65]]),
             ("the lighthouse".into(), vec![[0.5, 0.0, 1.0, 0.5]]),
         ],
         enhanced_text: Some("a cup, the wooden table".into()),
@@ -196,7 +207,7 @@ fn split_finds_the_things_the_vision_model_names_and_takes_a_list_of_terms() {
     assert_eq!(r["foundBy"], "person, cup", "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
     let names: Vec<String> = ids.iter().map(|id| layer_name(&s, *id)).collect();
-    assert_eq!(names, ["Background", "Person", "Cup"], "the cup (its bottom edge lower) on top");
+    assert_eq!(names, ["Split background", "Person", "Cup"], "the cup (its bottom edge lower) on top");
     let st = fake.state();
     let asked: Vec<String> =
         st.runs.iter().filter(|r| r.request["task"] == "segment").map(|r| r.request["prompt"].as_str().unwrap_or("").to_string()).collect();
@@ -211,7 +222,7 @@ fn split_finds_the_things_the_vision_model_names_and_takes_a_list_of_terms() {
     assert_eq!(r["foundBy"], "the lighthouse, cup", "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
     let names: Vec<String> = ids.iter().map(|id| layer_name(&s, *id)).collect();
-    assert_eq!(names, ["Background", "Lighthouse", "Cup"]);
+    assert_eq!(names, ["Split background", "Lighthouse", "Cup"]);
     let st = fake.state();
     let runs = &st.runs[so_far..];
     assert!(runs.iter().any(|r| r.request["task"] == "segment" && r.request["prompt"] == "the lighthouse"));
@@ -317,4 +328,27 @@ fn the_prompt_is_a_list_of_terms() {
     assert_eq!(parse_terms("the dog"), vec![t("the dog", None)]);
     assert_eq!(parse_terms("person, cup:2; table and the chair"), vec![t("person", None), t("cup", Some(2)), t("table", None), t("the chair", None)]);
     assert_eq!(parse_terms("Person, the person, , cup:0"), vec![t("Person", None), t("cup", None)], "duplicates and empties go");
+}
+
+#[test]
+fn a_detection_grows_a_subject_only_where_it_joins_it() {
+    use super::split_subjects::joined_to;
+    // An 8×2 grid: the subject is the first pixel of row 0; the detection adds row 0 up to x 3
+    // and a patch of its own at x 6..7.
+    let seed: Vec<f32> = (0..16).map(|k| if k == 0 { 1.0 } else { 0.0 }).collect();
+    let wanted: Vec<bool> = (0..16).map(|k| k < 8 && ((1..=3).contains(&k) || k >= 6)).collect();
+    let joined = joined_to(&wanted, &seed, 8, 2);
+    let got: Vec<usize> = joined.iter().enumerate().filter(|(_, j)| **j).map(|(k, _)| k).collect();
+    assert_eq!(got, vec![1, 2, 3], "the run next to the subject joins; the patch does not");
+}
+
+#[test]
+fn the_split_background_takes_the_plain_name_when_the_document_has_no_background_layer() {
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![[0.0, 0.0, 0.5, 0.5]], occlusion: true, ..Default::default() }).unwrap();
+    let mut s = session(&fake.url);
+    let base = s.active().unwrap().doc.layers.iter().find(|l| l.name == "Background").map(|l| l.id).expect("the document's own Background");
+    s.execute("layer.renameLayer", json!({"layer": base.0, "name": "Photo"})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"layers": 2, "seed": 1})).unwrap();
+    assert_eq!(layer_name(&s, LayerId(r["layers"][0].as_u64().unwrap())), "Background");
 }
