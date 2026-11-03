@@ -115,6 +115,9 @@ pub struct Krea2Pipeline {
     /// Drop the encoder after each prompt (the bf16 DiT leaves no room for it; it loads again
     /// in two seconds for the next prompt).
     evict_te: bool,
+    /// The encoder's final norm and language-model head (Qwen3-VL-4B ties it to the token
+    /// embedding), loaded on the first [`Self::chat`].
+    head: std::sync::Mutex<Option<crate::pipeline::ChatHead>>,
 }
 
 impl Krea2Pipeline {
@@ -183,6 +186,7 @@ impl Krea2Pipeline {
             style_vae_file: if is_snapshot(model) { None } else { Some(model.join("vae/qwen_image_vae.safetensors")) },
             style_vae: std::sync::Mutex::new(None),
             evict_te,
+            head: std::sync::Mutex::new(None),
         })
     }
 
@@ -223,6 +227,82 @@ impl Krea2Pipeline {
             let _ = self.dev.synchronize();
         }
         Ok(cond)
+    }
+
+    /// Answer as the vision-language model Krea 2's encoder is (Qwen3-VL-4B Instruct, its head
+    /// tied to the token embedding): [`crate::pipeline::Pipeline::chat`] on the 4B, `image` in
+    /// view as ComfyUI's Qwen-VL processing sizes it. AusBoss's Krea 2 inpaint workflow writes
+    /// its prompt with this same file through ComfyUI's `TextGenerate`; answering here keeps
+    /// Krea 2 resident instead of swapping in Qwen-Image-2.1's 8B encoder for the rewriter.
+    pub fn chat(&self, system: &str, user: &str, image: Option<&RefImage>, opts: &crate::pipeline::ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
+        use crate::pipeline::{sample, ChatRng, END_OF_TEXT, IM_END};
+        crate::device::bind_thread(&self.dev);
+        let t0 = Instant::now();
+        let feats = match image {
+            Some(p) => vec![self.vision_view(&rgb_image(p)?, None)?],
+            None => Vec::new(),
+        };
+        let vision_block = if feats.is_empty() { "" } else { crate::model::text_encoder::prompt::VISION_BLOCK };
+        let text = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{vision_block}{user}<|im_end|>\n<|im_start|>assistant\n");
+        let mut ids: Vec<u32> = self.tok.encode(text, false).map_err(|e| anyhow::anyhow!("encode the chat: {e}"))?.get_ids().to_vec();
+        let prompt_len = ids.len();
+        let refs: Vec<&vision::VisionFeatures> = feats.iter().collect();
+        let mut rng = ChatRng::new(opts.seed);
+        let mut head = self.head.lock().unwrap_or_else(|e| e.into_inner());
+        if head.is_none() {
+            *head = Some(self.load_head()?);
+        }
+        let h = head.as_ref().ok_or_else(|| anyhow::anyhow!("no language-model head"))?;
+        let mut slot = self.te.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(load_text_encoder(&self.text, &self.dev, self.dtype)?);
+        }
+        let te = slot.as_ref().ok_or_else(|| anyhow::anyhow!("no text encoder"))?;
+        let tp = Instant::now();
+        let answered: Result<()> = (|| {
+            let (mut last, mut cache) = te.prefill(&ids, &refs)?;
+            for _ in 0..opts.max_new {
+                if cancel() {
+                    return Err(Cancelled.into());
+                }
+                let logits = candle_core::Module::forward(&h.head, &last.apply(&h.norm)?)?;
+                let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+                let next = sample(&logits, opts, &mut rng);
+                if next == IM_END || next == END_OF_TEXT {
+                    break;
+                }
+                ids.push(next);
+                last = te.step(next, &mut cache)?;
+            }
+            Ok(())
+        })();
+        if self.evict_te {
+            *slot = None;
+            let _ = self.dev.synchronize();
+        }
+        answered?;
+        let reply = self.tok.decode(&ids[prompt_len..], true).map_err(|e| anyhow::anyhow!("decode the reply: {e}"))?;
+        tracing::info!(tokens = ids.len() - prompt_len, prompt_tokens = prompt_len, decode_s = tp.elapsed().as_secs_f32(), chat_s = t0.elapsed().as_secs_f32(), "krea2 chat");
+        Ok(reply.trim().to_string())
+    }
+
+    /// The 4B's final norm and its head, the token embedding (tied), as Q8_0 on the GPU
+    /// (0.4 GB; quantized on every core from a CPU copy, as the 2.1 head is).
+    fn load_head(&self) -> Result<crate::pipeline::ChatHead> {
+        let t0 = Instant::now();
+        let cfg = TextConfig::qwen3vl_4b();
+        let vb = crate::mapped::var_builder(&self.text, self.dtype, &self.dev, |n| n == "model.norm.weight")?;
+        let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model").pp("norm"))?;
+        let head = if matches!(self.dev, Device::Cuda(_)) {
+            let host = crate::mapped::var_builder(&self.text, self.dtype, &Device::Cpu, |n| n == "model.embed_tokens.weight")?;
+            let w = host.get((cfg.vocab_size, cfg.hidden_size), "model.embed_tokens.weight").context("the Qwen3-VL-4B token embedding")?;
+            candle_core::quantized::QMatMul::from_qtensor(crate::q8::quantize_q8_0(&w, &self.dev)?)?
+        } else {
+            let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&self.text, self.dtype, &self.dev)? };
+            candle_core::quantized::QMatMul::Tensor(vb.get((cfg.vocab_size, cfg.hidden_size), "model.embed_tokens.weight").context("the Qwen3-VL-4B token embedding")?)
+        };
+        tracing::info!(load_s = t0.elapsed().as_secs_f32(), "krea2 language-model head loaded");
+        Ok(crate::pipeline::ChatHead { norm, head })
     }
 
     /// The picture as the encoder sees it: its longest side brought to [`GROUNDING_PX`] at
