@@ -97,6 +97,9 @@ pub enum Schedule {
     Comfy,
     /// diffusers': candle's device RNG, the resolution-shifted `FlowMatchEulerDiscreteScheduler`.
     Diffusers,
+    /// ComfyUI's noise and timesteps on the Viggle Turbo LoRA's six sigmas
+    /// ([`crate::comfy::FlowSchedule::viggle_turbo`]); `steps` is ignored.
+    ViggleTurbo,
 }
 
 /// One text-to-image generation.
@@ -896,10 +899,16 @@ impl Pipeline {
                 let t: Vec<f32> = s.timesteps().iter().map(|t| (*t / 1000.0) as f32).collect();
                 (t.clone(), (0..req.steps).map(|i| s.dt(i) as f32).collect(), t)
             }
+            Schedule::ViggleTurbo => {
+                use crate::comfy::{comfy_timestep, FlowSchedule};
+                let s = FlowSchedule::viggle_turbo(img_seq);
+                let n = s.steps();
+                ((0..n).map(|i| comfy_timestep(s.sigma(i))).collect(), (0..n).map(|i| s.dt(i)).collect(), (0..n).map(|i| s.sigma(i)).collect())
+            }
         };
         let t0 = Instant::now();
         let mut latents = match req.schedule {
-            Schedule::Comfy => {
+            Schedule::Comfy | Schedule::ViggleTurbo => {
                 let noise = crate::comfy::noise_packed(req.seed, lh, lw).map_err(anyhow::Error::msg)?;
                 Tensor::from_vec(noise, (1, img_seq, 64), &self.dev)?
             }
@@ -909,6 +918,7 @@ impl Pipeline {
             }
         }
         .to_dtype(DType::F32)?;
+        let n_steps = tsteps.len();
         for (i, (t, dt)) in tsteps.iter().zip(&dts).enumerate() {
             check(cancel)?;
             let tt = Tensor::from_vec(vec![*t], (1,), &self.dev)?;
@@ -927,10 +937,10 @@ impl Pipeline {
                 })
             })?;
             if let Some(p) = preview.as_deref_mut() {
-                if p.wants(i + 1, req.steps) {
+                if p.wants(i + 1, n_steps) {
                     let sigma = f64::from(sigmas.get(i).copied().unwrap_or(0.0));
                     match (&v * sigma).and_then(|sv| &latents - sv).map_err(anyhow::Error::from).and_then(|x0| vae::unpack_latents_hw(&x0, lh, lw)) {
-                        Ok(x0) => p.show(i + 1, req.steps, &x0),
+                        Ok(x0) => p.show(i + 1, n_steps, &x0),
                         Err(e) => tracing::warn!(error = %e, "preview skipped"),
                     }
                 }
@@ -940,7 +950,7 @@ impl Pipeline {
                 // The step's working set is allocated by now.
                 crate::device::warn_if_paging(&self.dev, "2.1 sampling");
             }
-            progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
+            progress(0.05 + 0.85 * (i + 1) as f32 / n_steps as f32, "Sampling");
         }
         self.dev.synchronize()?;
         timings.denoise_s = t0.elapsed().as_secs_f32();
