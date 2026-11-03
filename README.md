@@ -120,17 +120,17 @@ with Qwen-Image-2.1, so no stock image is involved.
 | **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s |
 | **Remove** | One stroke over an object: it is found, named, removed with its shadow, and the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** |
 | **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 | **5.1 s** |
-| **Generative Expand** | Grow the canvas and continue the scene | Qwen-Image-2.1 | 10.0 s |
-| **Remove Background** | A soft alpha matte from the model's own RGBA output, as a layer mask | Qwen-Image-2.1 | **5.1 s** |
+| **Generative Expand** | Grow the canvas and continue the scene, people included | Qwen-Image-Edit-2511 + Outpaint LoRA | 3.0 s on a picture it has seen, about 21 s on a new one |
+| **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | 0.45 s |
 | **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-2.1 edit | 10.1 s |
 | **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying on the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
-| **Split into Layers** | Decompose a flat picture into separate RGBA layers | Qwen-Image-Layered | **92.6 s** (3 layers) |
+| **Split into Layers** | Each subject on its own layer, with matted hair edges, over a repainted background | SAM 3.1 + ViTMatte + Qwen-Image-2.1 fill | 4.2 s (1 MP); 35–42 s on a 12 MP photo |
 | **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", or a click | SAM 3.1 | **0.3 s** |
 | **MOSS-Image** | Permissive (Apache-2.0) text to image with strong text rendering | MOSS-Image SFT, 5B | 11.0 s (1024², 50 steps) |
 | **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
 Times are warm, through the app, at 864×1152 (about 1 MP). Bold rows are faster than ComfyUI on
-the same GPU. Every feature also takes **LoRAs** from your models folder, and Qwen-Image-Edit-2511
+the same GPU. Expand, Remove Background and Split were measured in the app on 2026-11-03 at about 1 MP; they now use different models from the ComfyUI comparison, so they are not bolded. Every feature also takes **LoRAs** from your models folder, and Qwen-Image-Edit-2511
 is selectable for Fill, Edit, Remove, Expand and Angles at 4.4–7.3 s with its Lightning LoRAs. With warm-up on (the default), the
 first image right after launch takes 3.6 s (Krea 2) or 3.7 s (2.1) instead of 12.6–15.3 s.
 
@@ -171,13 +171,12 @@ repeated request would hit ComfyUI's cache). ComfyUI ran with `--fast fp8_matrix
 | Text to image (Krea 2 Turbo, 8 steps) | **3.8 s** | 4.0 s | 1.05× | pending |
 | Text to image (Qwen-Image-2.1, 25 steps) | **3.9 s** | 4.2 s | 1.08× | pending |
 | Generative Edit (2.1) | **5.1 s** | 5.6 s | 1.10× | pending |
-| Remove Background (2.1 matte) | **5.1 s** | 5.5 s | 1.08× | pending |
+| Remove Background (2.1 matte; now SAM 3.1 + ViTMatte, 0.45 s) | **5.1 s** | 5.5 s | 1.08× | pending |
 | Image from a reference (2.1) | **5.2 s** | 5.6 s | 1.08× | pending |
 | 2511 Angles (4 steps) | **4.4 s** | 4.5 s | 1.02× | pending |
 | 2511 edit (Lightning, 8 steps) | **7.25 s** | 8.4 s | 1.16× | pending |
 | 2511 full-quality edit (40 steps, CFG 4) | 86.8 s | 81.9 s | 0.94× | pending |
 | Generative Upscale 2× | **24.2 s** | 44.1 s | 1.82× | pending |
-| Split into Layers (3 layers, Qwen-Image-Layered) | **92.6 s** | 124.8 s | 1.35× | pending |
 | MOSS-Image (1024², 50 steps) | 11.0 s | 10.8 s | 0.98× | pending |
 
 **RTX 5090:** 32 GB, Windows 11, measured 2026-10-28 and 2026-10-29. Upscale was measured
@@ -190,7 +189,7 @@ What made it fast: Qwen-Image-2.1 runs as an int8 ConvRot DiT built once from th
 and cached, through our own kernels and a flash-attention path. The text encoder stays resident
 between requests, the conditioning is cached when only the seed changes, LoRAs are merged into
 the resident int8 weights once instead of costing a side path every step, and the 20 GB 2511 DiT
-stays resident between requests. Qwen-Image-Layered and 2511 run SageAttention2 (INT8
+stays resident between requests. 2511 runs SageAttention2 (INT8
 attention) on every block where it holds the picture, and Upscale works on fewer, larger tiles. Outputs were checked against the ComfyUI route at every step
 (within 0.06/255, or byte-identical).
 
