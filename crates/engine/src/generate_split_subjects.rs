@@ -30,6 +30,10 @@ use super::{
     remove_grow, request_size, resize_gray8, resize_rgba8, resolve_auto, set_generative_info, write_rgba8,
 };
 
+/// The simple split: progressive subject removal, nearest first, until the detector finds nothing.
+#[path = "generate_split_simple.rs"]
+pub(super) mod simple;
+
 /// The most subjects one split gives their own layer (`layers` - 1 at most): eleven filled up
 /// on the café photo (seven people, three cups and the cards) before its table was searched
 /// (measured in the app 2026-11-04).
