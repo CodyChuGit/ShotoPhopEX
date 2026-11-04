@@ -1660,13 +1660,15 @@ fn a_generative_dialog_never_turns_an_optional_range_into_its_minimum() {
         }
     }
     // Split into Layers (SAM 3.1 + Fill since 2026-11-02; peeled nearest first since
-    // 2026-11-03): Layers is a slider from the background and one subject up to twelve layers,
-    // `complete` is a switch on by default, and nothing of the layered model is left in the
-    // dialog.
+    // 2026-11-03): Layers is a slider from the background and one subject up to twenty layers
+    // (a café table of seven people with its cups, cards and table is twelve subjects,
+    // 2026-11-04), `complete` is a switch on by default, `sweep` (found again after each
+    // removal) one off by default, and nothing of the layered model is left in the dialog.
     let split = parse_spec(photocraft_engine::commands::find("generate.splitLayers").map(|c| c.params).unwrap_or_default());
     let layers = split.iter().find(|p| p.key == "layers").map(|p| p.kind.clone());
-    assert!(matches!(layers, Some(Kind::Range { min, max, default }) if min == 2.0 && max == 12.0 && default == 3.0), "{layers:?}");
+    assert!(matches!(layers, Some(Kind::Range { min, max, default }) if min == 2.0 && max == 20.0 && default == 3.0), "{layers:?}");
     assert!(matches!(split.iter().find(|p| p.key == "complete").map(|p| p.kind.clone()), Some(Kind::Bool(true))));
+    assert!(matches!(split.iter().find(|p| p.key == "sweep").map(|p| p.kind.clone()), Some(Kind::Bool(false))));
     assert!(split.iter().all(|p| !["tries", "maxPixels", "steps", "guidance", "template", "model"].contains(&p.key.as_str())));
 }
 

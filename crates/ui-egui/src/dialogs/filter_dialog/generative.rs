@@ -43,6 +43,7 @@ const PLACED: &[&str] = &[
     "edge",
     "layers",
     "complete",
+    "sweep",
     "tries",
     "grow",
     "asSelection",
@@ -427,9 +428,12 @@ fn settings(ui: &mut egui::Ui, t: &Tokens, f: &mut Map<String, Value>, cmd: &str
         });
         let (lo, hi) = range.unwrap_or((2, 6));
         let cur = int(f, "layers").clamp(lo, hi);
-        // Up to seven stops: every count on a short range; on a long one (Split's 2..12) the
+        // Up to eight stops: every count on a short range; on a long one (Split's 2..20) the
         // small counts, then wider steps, and the count set now if it is none of those.
         let mut stops: Vec<i64> = if hi - lo <= 6 { (lo..=hi).collect() } else { vec![lo, lo + 1, lo + 2, lo + 4, lo + 6, hi] };
+        if hi - lo > 12 {
+            stops.insert(5, lo + 10);
+        }
         if !stops.contains(&cur) {
             stops.push(cur);
             stops.sort_unstable();
@@ -501,12 +505,19 @@ fn settings(ui: &mut egui::Ui, t: &Tokens, f: &mut Map<String, Value>, cmd: &str
         });
     }
     // Switches, each with a line on what it does.
-    let switches: [(&str, &str, &str); 6] = [
+    let switches: [(&str, &str, &str); 7] = [
         ("transparent", tl!("Transparent background"), tl!("The subject alone, where the model can make one")),
         (
             "complete",
             tl!("Complete hidden parts"),
             tl!("Paint what a nearer subject hid behind each one, so every layer is whole. Off: one fill, each layer keeps only what shows"),
+        ),
+        (
+            "sweep",
+            tl!("Look again after each removal"),
+            tl!(
+                "Select the nearest subject, remove it, then find the rest again on the filled picture, until nothing is left. Off: find every subject first, then peel"
+            ),
         ),
         ("wholePicture", tl!("Ignore the selection"), tl!("The edit shows over the whole picture")),
         ("fillAsEdit", tl!("Fill by instruction"), tl!("Qwen-Image 2.1: the selection is replaced by name, e.g. replace the cup with a vase")),

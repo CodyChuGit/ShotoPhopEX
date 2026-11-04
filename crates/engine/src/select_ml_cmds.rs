@@ -981,11 +981,14 @@ pub(crate) const VITMATTE_TEMPLATE: &str = "vitmatte/refine";
 /// cropped with a margin and sent with a trimap made from its detector mask: solid a little
 /// inside the edge, unknown in a band around it reaching out to where stray hair goes (a
 /// fraction of the subject's size), background beyond. Another subject's body stays out of it.
+/// With `only`, that one subject alone is matted (the others keep their masks as alpha, and
+/// still keep its band off their bodies): a sweep mattes each subject at its turn.
 pub(crate) fn vitmatte_alphas(
     backend: &dyn photocraft_genai::GenerativeBackend,
     picture: &[u8],
     area: Rect,
     instances: &[Instance],
+    only: Option<usize>,
     ctx: &JobCtx,
 ) -> Result<Option<Vec<Vec<f32>>>> {
     if instances.is_empty() || generate_cmds::resolve_auto(backend, &[VITMATTE_TEMPLATE], "") != VITMATTE_TEMPLATE {
@@ -995,6 +998,10 @@ pub(crate) fn vitmatte_alphas(
     let mut alphas = Vec::with_capacity(instances.len());
     for (i, (cov, bounds, _)) in instances.iter().enumerate() {
         ctx.check()?;
+        if only.is_some_and(|o| o != i) {
+            alphas.push(cov.clone());
+            continue;
+        }
         let side = bounds.width().max(bounds.height()) as f32;
         let (out_band, in_band) = ((side * BAND_OUT).max(MIN_BAND_OUT), (side * BAND_IN).max(MIN_BAND_IN));
         let crop = bounds.inflate(out_band.ceil() as i32 + 8).intersect(&area);
@@ -1133,7 +1140,7 @@ pub(crate) fn matte_or_refine(
     if n > 0 {
         let picture = picture_rgba(doc, active, all_layers);
         let one = [(cov, bounds, n)];
-        if let Some(mut a) = vitmatte_alphas(backend, &picture, area, &one, ctx)? {
+        if let Some(mut a) = vitmatte_alphas(backend, &picture, area, &one, None, ctx)? {
             return Ok((a.swap_remove(0), true));
         }
         let [(cov, _, _)] = one;

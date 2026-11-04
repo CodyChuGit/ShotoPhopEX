@@ -567,8 +567,9 @@ pub(crate) fn enhance_prompt(
 }
 
 pub(crate) const SPLIT: &str = "generate.splitLayers";
-/// Split into Layers asks for at most this many layers (the background and the subjects).
-const MAX_SPLIT_LAYERS: u32 = 12;
+/// Split into Layers asks for at most this many layers (the background and the subjects): a
+/// café table of seven people, three cups, the cards and the table is twelve subjects already.
+const MAX_SPLIT_LAYERS: u32 = 20;
 
 /// The PSD additional-layer-info key a generative layer keeps its [`GenerativeInfo`] under
 /// (JSON). An unmodelled block, so it survives PSD round trips and `Layer::duplicate`.
@@ -1600,6 +1601,7 @@ fn removal_job(
         erase,
         rewritten: None,
         removal: true,
+        tone_most: 1.0,
         prefill,
         tuning,
         object: None,
@@ -1651,6 +1653,7 @@ fn background_job(s: &Session, label: &str, seed: Option<u64>, tuning: Tuning, p
         erase: true,
         rewritten: None,
         removal: false,
+        tone_most: 1.0,
         prefill: false,
         tuning,
         object: None,
@@ -2634,6 +2637,11 @@ struct FillJob {
     /// ([`edge_mismatch`]; wood over a wrist, a wall over eyes, blue on a grey sky all lose
     /// to a seed that continued the edge). Measured 2026-10-21.
     removal: bool,
+    /// The most that tone match may move a channel, 0..1: the Remove tools match all the way
+    /// (1.0; a removal wants its hole to look like its edge); a split's fills move at most
+    /// [`TONE_MATCH_MAX`] levels, so its checks judge what the fill painted (the real fills
+    /// come back a few levels off, well inside it).
+    tone_most: f32,
     /// Smooth the hole over in the picture the model sees ([`smooth_covered`]: a membrane
     /// from its edge, no structure), so an edit model that copies what it sees has nothing to
     /// copy; `prefill` on the removal commands, on by default: on the stock photographs it
@@ -2868,14 +2876,14 @@ fn realigned(out: Rgba8, picture: &Rgba8, mask: &Gray8) -> Rgba8 {
 /// A removal's result tone-matched to the picture at the hole's edge, and its edge mismatch for
 /// the judge (its crop pushed to `judged`); as it came, mismatch 0, when it is not the
 /// picture's size.
-fn tone_match_removal(out: Rgba8, picture: &Rgba8, mask: &Gray8, adapter: bool, judged: &mut Vec<Rgba8>) -> (Rgba8, f64) {
+fn tone_match_removal(out: Rgba8, picture: &Rgba8, mask: &Gray8, adapter: bool, most: f32, judged: &mut Vec<Rgba8>) -> (Rgba8, f64) {
     if (out.width, out.height) != (picture.width, picture.height) {
         return (out, 0.0);
     }
     // The adapter leaving its red in the hole is a loss before any judging: the judge
     // once chose a red-tinted glass as the natural one (measured 2026-10-22).
     let painted = adapter && paint_left(&out, mask);
-    let matched = tone_matched(&out, picture, mask);
+    let matched = tone_matched(&out, picture, mask, most);
     judged.push(crop_rgba8(&matched, judged_rect(mask, TONE_MATCH_INSIDE)));
     let mismatch = if painted { f64::INFINITY } else { edge_mismatch(&out, picture, mask) };
     (matched, mismatch)
@@ -2932,6 +2940,7 @@ fn fill_region(
         erase,
         rewritten,
         removal,
+        tone_most,
         prefill,
         tuning,
         object,
@@ -3077,7 +3086,8 @@ fn fill_region(
             if take_band { change_band_coverage(&out, &image_plain, run_mask, &layer_coverage, removal, (w, h))? } else { (None, None) };
         let run_mask = widened.as_ref().unwrap_or(run_mask);
         // A removal's result is tone-matched to the picture at the hole's edge and judged.
-        let (out, mismatch) = if removal { tone_match_removal(out, &image_plain, run_mask, this_adapter.is_some(), &mut judged) } else { (out, 0.0) };
+        let (out, mismatch) =
+            if removal { tone_match_removal(out, &image_plain, run_mask, this_adapter.is_some(), tone_most, &mut judged) } else { (out, 0.0) };
         mismatches.push(mismatch);
         let out = if (out.width, out.height) == (w, h) { out } else { resize_rgba8(&out, w, h)? };
         // The result becomes a layer in the document's own format, masked to the coverage.
@@ -3269,8 +3279,9 @@ pub(crate) fn dilate(coverage: &[f32], w: usize, h: usize, r: usize) -> Vec<f32>
 /// and the difference between the two pictures there is its tone shift, which a membrane
 /// carries smoothly across the hole and takes out (Pérez's seamless cloning with the result
 /// as the source). Outside the hole the original comes back (the layer mask fades there
-/// anyway). Both pictures the same size; otherwise `result` as it was.
-fn tone_matched(result: &Rgba8, original: &Rgba8, mask: &Gray8) -> Rgba8 {
+/// anyway). The correction moves a channel at most `most` (0..1; 1.0 is all the way). Both
+/// pictures the same size; otherwise `result` as it was.
+fn tone_matched(result: &Rgba8, original: &Rgba8, mask: &Gray8, most: f32) -> Rgba8 {
     let (w, h) = (result.width as usize, result.height as usize);
     if (original.width, original.height) != (result.width, result.height) || (mask.width, mask.height) != (result.width, result.height) || w < 3 || h < 3 {
         return result.clone();
@@ -3287,7 +3298,11 @@ fn tone_matched(result: &Rgba8, original: &Rgba8, mask: &Gray8) -> Rgba8 {
     let matched = photocraft_algo::poisson::seamless_clone(w, h, 3, &rgb(result), &rgb(original), &hole);
     let mut data = Vec::with_capacity(w * h * 4);
     for (px, src) in result.data.as_chunks::<4>().0.iter().zip(matched.as_chunks::<3>().0) {
-        data.extend(src.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8));
+        // The membrane's correction, at most `most` a channel.
+        data.extend(src.iter().zip(px).map(|(v, r)| {
+            let r = f32::from(*r) / 255.0;
+            ((r + (v - r).clamp(-most, most)).clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+        }));
         data.push(px[3]);
     }
     Rgba8::new(result.width, result.height, data).unwrap_or_else(|_| result.clone())
@@ -3296,6 +3311,13 @@ fn tone_matched(result: &Rgba8, original: &Rgba8, mask: &Gray8) -> Rgba8 {
 /// Mask values from here up count as the hole for [`tone_matched`] (the request's mask is
 /// 255 inside the selection and feathered outward).
 const TONE_MATCH_INSIDE: u8 = 200;
+
+/// The most a split's tone matches (its removal's membrane, its grey-box fill's grid) may
+/// move a channel, in levels of 255: a fill a few levels off is matched; one that came back
+/// in other colours altogether is left showing it to the checks that judge it (and the fake
+/// worker's flat colour stays its colour under a test, instead of becoming the picture's).
+/// The Remove tools match all the way ([`FillJob::tone_most`]).
+pub(crate) const TONE_MATCH_MAX: f32 = 40.0;
 
 /// [`change_band`]: a pixel changed when the two pictures, each box-blurred twice at this
 /// radius (texture the model redraws averages out, a shadow does not), differ by more than
@@ -3715,6 +3737,7 @@ fn run_fill(s: &mut Session, p: &Value) -> Result<Value> {
         erase,
         rewritten: None,
         removal: false,
+        tone_most: 1.0,
         prefill: false,
         tuning,
         object: None,
@@ -4143,6 +4166,7 @@ fn run_expand(s: &mut Session, p: &Value) -> Result<Value> {
         erase,
         rewritten: None,
         removal: false,
+        tone_most: 1.0,
         prefill: false,
         tuning: tuning.clone(),
         object: None,
@@ -4460,6 +4484,7 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
         erase,
         rewritten: None,
         removal: false,
+        tone_most: 1.0,
         prefill: false,
         tuning,
         object: None,
@@ -4728,7 +4753,7 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 let (bounds, found) = crate::select_ml_cmds::coverage_bounds(&cov, area);
                 if found > 0 {
                     let picture = crate::select_ml_cmds::picture_rgba(doc, Some(id), all_layers);
-                    if let Some(mut a) = crate::select_ml_cmds::vitmatte_alphas(backend.as_ref(), &picture, area, &[(cov.clone(), bounds, found)], ctx)? {
+                    if let Some(mut a) = crate::select_ml_cmds::vitmatte_alphas(backend.as_ref(), &picture, area, &[(cov.clone(), bounds, found)], None, ctx)? {
                         cov = a.swap_remove(0);
                         matted = true;
                     }
@@ -4811,11 +4836,12 @@ fn run_split(s: &mut Session, p: &Value) -> Result<Value> {
     let name = opt_str(SPLIT, p, "name", 200)?.map(str::to_string);
     let edges = split_subjects::Edges::parse(opt_str(SPLIT, p, "edges", 40)?).map_err(|e| bad(SPLIT, e))?;
     let complete = opt_bool(SPLIT, p, "complete", true)?;
+    let sweep = opt_bool(SPLIT, p, "sweep", false)?;
     let order = split_subjects::Order::parse(opt_str(SPLIT, p, "order", 40)?).map_err(|e| bad(SPLIT, e))?;
     let group = split_subjects::Group::parse(opt_str(SPLIT, p, "group", 40)?).map_err(|e| bad(SPLIT, e))?;
     split_subjects::run(
         s,
-        split_subjects::SubjectsPlan { prompt, subjects: (layers - 1).min(split_subjects::MAX_SUBJECTS), seed, name, edges, complete, order, group },
+        split_subjects::SubjectsPlan { prompt, subjects: (layers - 1).min(split_subjects::MAX_SUBJECTS), seed, name, edges, complete, sweep, order, group },
     )
 }
 
@@ -5073,6 +5099,7 @@ fn run_similar(s: &mut Session, p: &Value) -> Result<Value> {
         erase: info.erase,
         rewritten: None,
         removal: false,
+        tone_most: 1.0,
         prefill: false,
         tuning: Tuning::default(),
         object: None,
@@ -5257,7 +5284,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"layers":2..12=3,"prompt":text,"complete":bool=true,"seed":{u64?=random},"name":{str?},"edges":{str?=auto},"order":{str?=auto},"group":{str?=auto}} → {"layers":[id],"count","subjects":[{"layer","name","term","bounds":[x,y,w,h],"pixels","completed"}],"incomplete":[name],"order","foundBy","template","seed","width","height","fillMs","ms","edges"} (SAM 3.1 finds what the picture is of (prompt = what to cut out, a list such as "person, cup, table" or "the dog"; a term "cup:2" asks for at most two; empty = the people, then animals, then the foreground things the vision-language model names) and each instance, up to layers - 1 of them, becomes its own layer ("Person 1" furthest back, "Cup"; "{name} k/n" with name) with the picture's pixels and an edge-refined alpha, above one background layer ("Background", or "Split background" when the document has a Background of its own); with complete (the default) the subjects are peeled off nearest first and the fill paints what each one hid, so every layer is whole and the background has nobody left in it; without it one fill repaints all the subjects at once and each layer holds its visible part; the layers stack in depth order (order: auto = who hides whom from the masks, then the lower bottom edge; size = largest lowest; found = as found); group: auto = instances that overlap by half become one layer, touching = any that touch, none; a subject whose hole the fill could not clear keeps the picture's own pixels and is listed in incomplete; when none could be cleared nothing is changed; new layers above the active one, one undo step; a background job; needs the native worker with SAM 3.1 and a fill model)"#,
+            params: r#"{"layers":2..20=3,"prompt":text,"complete":bool=true,"sweep":bool=false,"seed":{u64?=random},"name":{str?},"edges":{str?=auto},"order":{str?=auto},"group":{str?=auto}} → {"layers":[id],"count","subjects":[{"layer","name","term","bounds":[x,y,w,h],"pixels","completed"}],"incomplete":[name],"fills","tries":[{"behind","fill","verdict"}],"order","foundBy","template","seed","width","height","fillMs","ms","edges"} (SAM 3.1 finds what the picture is of (prompt = what to cut out, a list such as "person, cup, table" or "the dog"; a term "cup:2" asks for at most two; empty = the people, then animals, then the foreground things the vision-language model names) and each instance, up to layers - 1 of them, becomes its own layer ("Person 1" furthest back, "Cup"; "{name} k/n" with name) with the picture's pixels and an edge-refined alpha, above one background layer ("Background", or "Split background" when the document has a Background of its own); with complete (the default) the subjects are peeled off nearest first and the fill paints what each one hid, so every layer is whole and the background has nobody left in it; without it one fill repaints all the subjects at once and each layer holds its visible part; sweep = select the nearest subject and remove it, then find the rest again on the filled picture, until nothing is left (whoever stands behind is found whole where the fill completed them), instead of finding every subject first and peeling them in that order; the layers stack in depth order (order: auto = who hides whom from the masks, then the lower bottom edge; size = largest lowest; found = as found); group: auto = instances that overlap by half become one layer, touching = any that touch, none; a subject whose hole the fill could not clear keeps the picture's own pixels and is listed in incomplete; when none could be cleared nothing is changed; tries = every fill tried, in order (behind = the subject's layer name, or all without complete; fill = removal or fill, the grey-box one; verdict = accepted, or why it was rejected: the subject kept or painted back, or someone new), fills = their count; new layers above the active one, one undo step; a background job; needs the native worker with SAM 3.1 and a fill model)"#,
             enabled: split_enabled,
             run: run_split,
             journal: true,
