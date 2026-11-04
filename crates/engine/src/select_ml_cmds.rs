@@ -453,7 +453,7 @@ fn detect_any(
 
 /// Drop specks: instances under 2 % of the largest (a stray 80-pixel "person" beside the real
 /// one), unless the caller asked for one by number.
-fn without_specks(mut instances: Vec<(Vec<f32>, Rect, u64)>) -> Vec<(Vec<f32>, Rect, u64)> {
+fn without_specks(mut instances: Vec<Instance>) -> Vec<Instance> {
     let largest = instances.iter().map(|(_, _, n)| *n).max().unwrap_or(0);
     instances.retain(|(_, _, n)| *n * 50 >= largest);
     instances
@@ -878,6 +878,24 @@ impl SubjectFinder {
     /// nothing matched (not an error). Split into Layers asks this for each term, and again on
     /// the picture as it stands after each fill.
     pub(crate) fn find_in(&self, picture: &[u8], area: Rect, prompt: &str, at_most: usize, ctx: &JobCtx) -> Result<Vec<Instance>> {
+        let mut instances = without_specks(self.instances(picture, area, prompt, at_most, ctx)?);
+        instances.truncate(at_most.max(1));
+        Ok(instances)
+    }
+
+    /// Every instance of `prompt` down to `floor` pixels, at most `at_most`, largest first: no
+    /// speck rule against the largest, so a small figure among big ones is seen. The check for
+    /// anyone a fill painted: six invented diners and office people of 2000 to 12 000 px, ranked
+    /// below the café's seven people, were never seen (measured in the app 2026-11-04).
+    pub(crate) fn find_all_in(&self, picture: &[u8], area: Rect, prompt: &str, at_most: usize, floor: u64, ctx: &JobCtx) -> Result<Vec<Instance>> {
+        let mut instances = self.instances(picture, area, prompt, at_most, ctx)?;
+        instances.retain(|(_, _, n)| *n >= floor);
+        instances.truncate(at_most.max(1));
+        Ok(instances)
+    }
+
+    /// The detector's instances of `prompt`, enclosed gaps filled, largest first.
+    fn instances(&self, picture: &[u8], area: Rect, prompt: &str, at_most: usize, ctx: &JobCtx) -> Result<Vec<Instance>> {
         let (w, h) = (area.width(), area.height());
         let image = Rgba8::new(w, h, picture.to_vec()).map_err(gen_err)?;
         let (rw, rh) = fit_pixels(w, h, MAX_SEGMENT_REQUEST_PIXELS);
@@ -894,7 +912,7 @@ impl SubjectFinder {
             Err(e) => return Err(e),
         };
         let (wu, hu) = (w as usize, h as usize);
-        let mut instances: Vec<Instance> = without_specks(instances_of(&masks, area)?)
+        let mut instances: Vec<Instance> = instances_of(&masks, area)?
             .into_iter()
             .map(|(cov, _, _)| {
                 let cov = fill_enclosed(&cov, wu, hu);
@@ -904,7 +922,6 @@ impl SubjectFinder {
             .filter(|(_, _, n)| *n > 0)
             .collect();
         instances.sort_by_key(|i| std::cmp::Reverse(i.2));
-        instances.truncate(at_most.max(1));
         Ok(instances)
     }
 }
