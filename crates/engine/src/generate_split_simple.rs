@@ -4,10 +4,10 @@
 //! detector looks again at what is left; nearest first, until it finds nothing more or the layer
 //! budget is spent. What remains is the background.
 //!
-//! Each subject: the removal, then (while the detector still finds the subject in its hole) the
-//! grey-box fill of the hole's bounds with the next seed, [`TRIES`] tries at most; a subject no
-//! try clears stays in the background and is named in `incomplete`. No strips, no patch, no
-//! rules about who a fill may paint: whatever the detector still finds is simply the next
+//! Each subject: the removal, then (while the detector still finds the subject in its hole, or
+//! the fill left the hole blank or smeared) the grey-box fill of the hole's bounds with the next
+//! seed, in strips for a big hole, [`TRIES`] tries at most; a subject no try clears stays in the
+//! background and is named in `incomplete`. No patch, no rules about who a fill may paint: whatever the detector still finds is simply the next
 //! subject. Once the layers left would not take every person the detector sees, the people go
 //! first. The rule-heavy peel
 //! (`method: "classic"`) went eleven rounds on the café photo without the backgrounds getting
@@ -19,11 +19,11 @@ use photocraft_doc::{Document, LayerId};
 use photocraft_geom::Rect;
 
 use super::{
-    DEFAULT_MATTE_TEMPLATE, FillJob, Group, JobCtx, LEFT_IN_HOLE, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order, PEEL_PROMPT,
-    PEEL_VARIATIONS, PERSON, REMOVE_BG, REMOVE_MIN_REQUEST, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, ToneGrid, Tuning, Value,
-    at_least, background_job, bare, box_blur, clean, could_not_clear, creature, dilate, embed_coverage, fill_rect, find_subjects, gen_err, hole_of,
-    in_depth_order, json, kept_terms, matte_all, mostly_in_hole, one_fill, overlap, parse_terms, place_all, plan_common, removal_job, removal_prompt,
-    remove_grow, subjects_labels, title_case, under_alpha, write_rgba8,
+    BIG_HOLE_SIDE, DEFAULT_MATTE_TEMPLATE, FillJob, Group, JobCtx, LEFT_IN_HOLE, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order,
+    PEEL_PROMPT, PEEL_VARIATIONS, PERSON, REMOVE_BG, REMOVE_MIN_REQUEST, RING_WIDTH, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term,
+    ToneGrid, Tuning, Value, at_least, background_job, bare, blank_or_ghost, box_blur, clean, could_not_clear, creature, dilate, embed_coverage,
+    fill_in_strips, fill_rect, find_subjects, gen_err, hole_of, in_depth_order, json, kept_terms, matte_all, mostly_in_hole, one_fill, overlap, parse_terms,
+    place_all, plan_common, removal_job, removal_prompt, remove_grow, subjects_labels, title_case, under_alpha, write_rgba8,
 };
 
 /// How many times the removal is asked to take one subject out before it is left in.
@@ -296,20 +296,35 @@ fn remove_one(
             if x >= boxed.x0 && x < boxed.x1 && y >= boxed.y0 && y < boxed.y1 { 1.0 } else { 0.0 }
         })
         .collect();
+    // A big hole's box is filled in strips: asked for all at once, the fill handed the grey box
+    // back over the café photo's people (measured in the app 2026-11-04, both methods).
+    let big = hole_rect.width().max(hole_rect.height()) > BIG_HOLE_SIDE;
+    // The ring just outside the hole: what a fill is held against for blanks and smears.
+    let ring: Vec<f32> = dilate(hole, wu, hu, RING_WIDTH).iter().zip(hole).map(|(d, h)| if *d >= 0.5 && *h < 0.5 { 1.0 } else { 0.0 }).collect();
     let tried = (|| -> Result<()> {
         for attempt in 0..TRIES {
             ctx.progress(lo + (hi - lo) * attempt as f32 / TRIES as f32, "");
-            // The removal first; then the grey-box fill (the removal again without one).
+            // The removal first; then the grey-box fill, in strips for a big hole (the removal
+            // again without one).
             let boxed_try = attempt > 0 && box_job.is_some();
             let mut try_job = match box_job {
                 Some(b) if boxed_try => b.clone(),
                 _ => removal.clone(),
             };
             try_job.seed = job.seed.wrapping_add(nth as u64 * 101).wrapping_add(u64::from(attempt) * 1000);
-            let kind = if boxed_try { "fill" } else { "removal" };
-            *active = Some(work);
-            let coverage = embed_coverage(area, if boxed_try { &box_hole } else { hole }, rect);
-            let (filled, seed, ms, made) = one_fill(doc, active, ctx, area, try_job, rect, coverage)?;
+            let kind = match (boxed_try, big) {
+                (false, _) => "removal",
+                (true, false) => "fill",
+                (true, true) => "strips",
+            };
+            let span = (lo + (hi - lo) * attempt as f32 / TRIES as f32, lo + (hi - lo) * (attempt as f32 + 0.8) / TRIES as f32);
+            let (filled, seed, ms, made) = if boxed_try && big {
+                fill_in_strips(doc, active, work, ctx, area, picture, &box_hole, boxed, grow, &try_job, span)?
+            } else {
+                *active = Some(work);
+                let coverage = embed_coverage(area, if boxed_try { &box_hole } else { hole }, rect);
+                one_fill(doc, active, ctx, area, try_job, rect, coverage)?
+            };
             out.ms += ms;
             out.generations += made;
             // A box fill's tone is matched to the picture where both show the same thing (in the
@@ -334,7 +349,14 @@ fn remove_one(
                     })
                 })
                 .collect();
-            ctx.progress(lo + (hi - lo) * (attempt as f32 + 0.8) / TRIES as f32, "Checking the removal");
+            ctx.progress(span.1, "Checking the removal");
+            // A fill that left the hole blank (the grey box handed back) or a smear where the
+            // subject stood is no removal, whoever the detector finds in it.
+            if let Some(why) = blank_or_ghost(picture, &laid, hole, &ring, wu, hu) {
+                out.tries.push(json!({"fill": kind, "generations": made, "verdict": why}));
+                ctx.check()?;
+                continue;
+            }
             let still = finder.find_in(&laid, area, &term, NEW_AT_MOST, ctx)?.into_iter().find(|(cov, ..)| still_there(cov, hole, &grown));
             match still {
                 None => {
