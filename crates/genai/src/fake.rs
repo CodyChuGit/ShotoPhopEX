@@ -34,6 +34,12 @@ pub struct Options {
     /// Rectangles the detector returns (whole, in front of everything) once any fill or edit has
     /// run: what a fill painted into the picture that was never there.
     pub appears: Vec<[f32; 4]>,
+    /// Like `appears`, for one prompt only: a thing a fill painted in (a "table").
+    pub appears_for: Vec<(String, Vec<[f32; 4]>)>,
+    /// Like `appears`, but only when the request is smaller than the largest the detector has
+    /// been sent (a part of the picture, shown at the detector's size): a figure too small to
+    /// find in the whole frame.
+    pub appears_in_crops: Vec<[f32; 4]>,
     /// With `occlusion` and `echo`: the detector still loses what a fill covered, though the
     /// fill handed the picture back. A subject the fill left in place that the detector misses.
     pub overlooked: bool,
@@ -56,6 +62,8 @@ impl Default for Options {
             templates_only: false,
             occlusion: false,
             appears: Vec::new(),
+            appears_for: Vec::new(),
+            appears_in_crops: Vec::new(),
             overlooked: false,
         }
     }
@@ -89,6 +97,9 @@ pub struct State {
     /// With `Options::occlusion`: the rectangles (of `segments` or `segments_for`) a fill has
     /// taken out of the picture.
     pub gone: Vec<[f32; 4]>,
+    /// The largest picture (in pixels) a segment request has brought: a smaller one is a part of
+    /// the picture (`Options::appears_in_crops`).
+    pub largest_segment: u64,
 }
 static BACKENDS: OnceLock<Mutex<BTreeMap<String, Weak<NativeBackend>>>> = OnceLock::new();
 pub(crate) fn backend(key: &str) -> Option<Arc<NativeBackend>> {
@@ -343,11 +354,23 @@ impl FakeEngine {
         let rects = self.options.segments_for.iter().find(|(s, _)| s == &req.prompt).map(|(_, r)| r).unwrap_or(&self.options.segments);
         // With `occlusion`: the rectangles still in the picture, each minus the nearer ones
         // still there. With `appears`: what a fill painted in, once one has run, nearest of all.
-        let (gone, fills_ran) = {
-            let st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            (st.gone.clone(), st.runs.iter().any(|r| r.run.task == "fill" || r.run.task == "edit"))
+        let (gone, fills_ran, crop) = {
+            let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let pixels = u64::from(w) * u64::from(h);
+            let crop = req.task == "segment" && pixels < st.largest_segment;
+            if req.task == "segment" {
+                st.largest_segment = st.largest_segment.max(pixels);
+            }
+            (st.gone.clone(), st.runs.iter().any(|r| r.run.task == "fill" || r.run.task == "edit"), crop)
         };
-        let appeared: Vec<[f32; 4]> = if fills_ran && req.task == "segment" { self.options.appears.clone() } else { Vec::new() };
+        let mut appeared: Vec<[f32; 4]> = Vec::new();
+        if fills_ran && req.task == "segment" {
+            appeared.extend(&self.options.appears);
+            appeared.extend(self.options.appears_for.iter().filter(|(p, _)| *p == req.prompt).flat_map(|(_, r)| r.iter().copied()));
+            if crop {
+                appeared.extend(&self.options.appears_in_crops);
+            }
+        }
         let rects: Vec<[f32; 4]> = appeared.iter().chain(rects.iter()).copied().collect();
         let rects = &rects;
         let here: Vec<usize> = (0..rects.len()).filter(|k| !self.options.occlusion || !gone.contains(&rects[*k])).collect();
