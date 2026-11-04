@@ -1657,6 +1657,47 @@ fn background_job(s: &Session, label: &str, seed: Option<u64>, tuning: Tuning, p
     })
 }
 
+/// Split's first try at each hole when the native worker runs the 2.1 family: Krea 2 with the
+/// AnyPaint LoRA when the worker serves it, else the 2.1 fill ([`NATIVE_FILL_ORDER`]), on the
+/// hole itself flattened to grey (`erase`) with `prompt`, its tone matched at the hole's edge as
+/// a removal's is. AnyPaint samples the hole from the picture's own latent and keeps every pixel
+/// outside its mask, so a subject's neighbours in a crowd stay their own, and it ran in 1–3 s
+/// warm where a 2.1 fill took 10–13 s (measured in the app 2026-11-03). `None` without the
+/// native worker or the research opt-in: the removal and the grey-box fills then stand alone.
+fn anypaint_job(s: &Session, label: &str, seed: Option<u64>, tuning: Tuning, prompt: &str) -> Option<FillJob> {
+    let base = native21_auto(s, FILL, false)?;
+    let default_model = s.prefs().integrations.default_edit_model.clone();
+    let Common { template, prompt, negative, seed, steps, guidance, models, .. } =
+        plan_common(s, FILL, &json!({"prompt": prompt, "seed": seed}), base, Task::Fill, &default_model).ok()?;
+    let backend = backend(s).ok()?;
+    Some(FillJob {
+        thinker: Arc::clone(&backend),
+        backend,
+        command: FILL,
+        template_id: template.meta.id.clone(),
+        auto: true,
+        auto_order: NATIVE_FILL_ORDER,
+        prompt,
+        negative,
+        seed,
+        steps,
+        guidance,
+        name: label.to_string(),
+        models,
+        variations: 1,
+        edge: Edge::Soft,
+        enhance: false,
+        refs: Default::default(),
+        grow: 0,
+        erase: true,
+        rewritten: None,
+        removal: true,
+        prefill: false,
+        tuning,
+        object: None,
+    })
+}
+
 /// Remove what `coverage` marks (one value per pixel of `bounds`) with the fill model, as
 /// Generative Fill does with [`REMOVE_PROMPT`]: the hole widened by `grow` (or, when `grow`
 /// is 0, by [`remove_grow`]), its pixels kept in the request (or flattened to grey when

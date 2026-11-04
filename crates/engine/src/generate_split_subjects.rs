@@ -25,9 +25,9 @@ use crate::{EngineError, Result};
 
 use super::{
     BACKGROUND_PROMPT, Common, DEFAULT_MATTE_TEMPLATE, FillJob, GenerativeInfo, Gray8, JobProgress, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, PEEL_PROMPT,
-    REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, Task, Tuning, Value, at_least, background_job, box_blur, dilate, embed_coverage, fill_rect,
-    fill_region, gen_err, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt, remove_grow, request_size,
-    resize_gray8, resize_rgba8, resolve_auto, set_generative_info, write_rgba8,
+    REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, Task, Tuning, Value, anypaint_job, at_least, background_job, box_blur, dilate,
+    embed_coverage, fill_rect, fill_region, gen_err, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt,
+    remove_grow, request_size, resize_gray8, resize_rgba8, resolve_auto, set_generative_info, write_rgba8,
 };
 
 /// The most subjects one split gives their own layer (`layers` - 1 at most).
@@ -216,9 +216,12 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
-    // The removal (the quick, clean route on most pictures), then the grey-box fills: behind a
+    // Each hole's tries: Krea 2 AnyPaint on the hole itself (quick, and every pixel around the
+    // hole stays), the removal (clean on most pictures), then the grey-box fills. Behind a
     // subject with others still behind it, the scene continued; behind the last, the backdrop.
     let job = removal_job(s, "Split into Layers", 0, false, false, if complete { PEEL_VARIATIONS } else { FLAT_VARIATIONS }, seed, true, tuning.clone())?;
+    let peel_first = anypaint_job(s, "Split into Layers", seed, tuning.clone(), PEEL_PROMPT);
+    let last_first = anypaint_job(s, "Split into Layers", seed, tuning.clone(), BACKGROUND_PROMPT);
     let peel_box = background_job(s, "Split into Layers", seed, tuning.clone(), PEEL_PROMPT).ok();
     let last_box = background_job(s, "Split into Layers", seed, tuning, BACKGROUND_PROMPT).ok();
     let base = name;
@@ -244,9 +247,8 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
             // The picture as it is, for the subjects' pixels and the detector.
             let picture = photocraft_compose::render(doc, area).to_rgba8().pixels;
             ctx.progress(0.0, "Finding subjects");
-            let (mut found, found_by) = find_subjects(&finder, job.thinker.as_ref(), &picture, area, terms.as_deref(), budget, job.seed, ctx)?;
+            let (mut found, found_by) = find_subjects(&finder, job.thinker.as_ref(), &picture, area, terms.as_deref(), budget, job.seed, group, ctx)?;
             ctx.check()?;
-            clean(&mut found, wu, hu, group);
             found.truncate(budget);
             if found.is_empty() {
                 return Err(EngineError::Other(format!("nothing matching \"{found_by}\" was found")));
@@ -288,7 +290,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     let mut removal = job.clone();
                     removal.rewritten = Some(removal_prompt(&this.removal_name()));
                     removal.object = Some(this.removal_name());
-                    let box_job = if last { last_box.as_ref() } else { peel_box.as_ref() };
+                    let (first, box_job) = if last { (last_first.as_ref(), last_box.as_ref()) } else { (peel_first.as_ref(), peel_box.as_ref()) };
                     let (hole_rect, _) = crate::select_ml_cmds::coverage_bounds(&hole, area);
                     let grow = remove_grow(hole_rect).min(MAX_GROW) as usize;
                     let grown_hole = dilate(&hole, wu, hu, grow);
@@ -318,7 +320,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     };
                     // The subjects still behind keep their own pixels through this fill.
                     let protect = protect_mask(behind, wu * hu);
-                    let outcome = fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), &removal, box_job, (lo, hi), &mut check)?;
+                    let outcome = fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), first, &removal, box_job, (lo, hi), &mut check)?;
                     *active = below;
                     let Some((filled, seed_used, ms, seen)) = outcome else {
                         left_in.push(i);
@@ -406,7 +408,8 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     }
                     Ok(Some(()))
                 };
-                let outcome = fill_hole(doc, active, below, ctx, area, &picture, &hole, None, &removal, last_box.as_ref(), (0.3, 0.9), &mut check)?;
+                let outcome =
+                    fill_hole(doc, active, below, ctx, area, &picture, &hole, None, last_first.as_ref(), &removal, last_box.as_ref(), (0.3, 0.9), &mut check)?;
                 *active = below;
                 let Some((filled, seed_used, ms, ())) = outcome else {
                     return Err(EngineError::Other(format!(
@@ -689,11 +692,13 @@ pub(super) fn joined_to(wanted: &[bool], seed: &[f32], w: usize, h: usize) -> Ve
 type Filled<T> = (Vec<u8>, u64, u64, T);
 
 /// Fill `hole` (one value per canvas pixel) in `picture`, the document's composite standing in
-/// for it through a work layer: the removal first (quick, and clean on most pictures), then,
-/// after it paints a subject back, the grey-box fill of the hole's bounds laid only over the
-/// hole (widened and feathered) and tone matched. `check` judges each result (the detector
-/// looking for the subject painted back) and keeps what it saw; the first it accepts comes back
-/// with its seed and the fill time. `None` after [`FILL_TRIES`] rejected tries.
+/// for it through a work layer: `first` (Krea 2 AnyPaint on the hole, when the native worker
+/// runs it: quick, and it keeps every pixel around the hole), then the removal (clean on most
+/// pictures), then, after those paint a subject back, the grey-box fill of the hole's bounds
+/// laid only over the hole (widened and feathered) and tone matched. `check` judges each result
+/// (the detector looking for the subject painted back) and keeps what it saw; the first it
+/// accepts comes back with its seed and the fill time. `None` after [`FILL_TRIES`] rejected
+/// tries.
 #[allow(clippy::too_many_arguments)]
 fn fill_hole<T>(
     doc: &mut Document,
@@ -704,6 +709,7 @@ fn fill_hole<T>(
     picture: &[u8],
     hole: &[f32],
     protect: Option<&[f32]>,
+    first: Option<&FillJob>,
     removal: &FillJob,
     box_job: Option<&FillJob>,
     (lo, hi): (f32, f32),
@@ -754,8 +760,14 @@ fn fill_hole<T>(
     for attempt in 0..FILL_TRIES {
         let span = hi - lo;
         ctx.progress(lo + span * 0.8 * attempt as f32 / FILL_TRIES as f32, "");
-        let try_box = attempt > 0 && box_job.is_some();
-        let mut try_job = if try_box { box_job.cloned().unwrap_or_else(|| removal.clone()) } else { removal.clone() };
+        // The hole's own shape for `first` and the removal, the box after them.
+        let on_hole = attempt < if first.is_some() { 2 } else { 1 };
+        let try_box = !on_hole && box_job.is_some();
+        let mut try_job = match (attempt, first, box_job) {
+            (0, Some(f), _) => f.clone(),
+            (_, _, Some(b)) if try_box => b.clone(),
+            _ => removal.clone(),
+        };
         try_job.seed = try_job.seed.wrapping_add(u64::from(attempt) * 1000);
         if !try_box {
             try_job.grow = grow;
@@ -831,7 +843,9 @@ fn fill_hole<T>(
 /// The subjects of the picture, found term by term, and what found them (the terms joined).
 /// With `terms`: each in turn. Without: the people, then the animals, then the foreground
 /// things the vision-language model names, then Select Subject's prompts in turn until one
-/// finds anything. Each term gets what is left of the budget.
+/// finds anything. Each term gets what is left of the budget once the finds so far are cleaned
+/// ([`clean`]): the budget counts layers, not detections (seven people came back as eleven, and
+/// the table behind them was never asked for; measured in the app 2026-11-03).
 #[allow(clippy::too_many_arguments)]
 fn find_subjects(
     finder: &SubjectFinder,
@@ -841,8 +855,10 @@ fn find_subjects(
     terms: Option<&[Term]>,
     budget: usize,
     seed: u64,
+    group: Group,
     ctx: &JobCtx,
 ) -> Result<(Vec<Subject>, String)> {
+    let (wu, hu) = (area.width() as usize, area.height() as usize);
     let mut out: Vec<Subject> = Vec::new();
     let mut by: Vec<String> = Vec::new();
     let take = |term: &str, asked: bool, at_most: usize, out: &mut Vec<Subject>, by: &mut Vec<String>, ctx: &JobCtx| -> Result<()> {
@@ -856,6 +872,7 @@ fn find_subjects(
         for (cov, bounds, pixels) in found {
             out.push(Subject { cov, bounds, pixels, term: term.to_string(), asked, alpha: Vec::new(), completed: false, grown: false });
         }
+        clean(out, wu, hu, group);
         Ok(())
     };
     match terms {
@@ -1048,8 +1065,9 @@ const PEEL_VARIATIONS: u32 = 1;
 const FLAT_VARIATIONS: u32 = 2;
 /// The most things the vision-language model is asked to name...
 const MAX_THINGS: usize = 6;
-/// ...and the most instances of each it is asked for.
-const THINGS_EACH: usize = 2;
+/// ...and the most instances of each it is asked for (three: the café photo's third cup was lost
+/// at two, measured in the app 2026-11-03).
+const THINGS_EACH: usize = 3;
 /// The detector's word for an animal.
 const ANIMAL: &str = "animal";
 /// Two instances with a mask IoU at or above this are one.

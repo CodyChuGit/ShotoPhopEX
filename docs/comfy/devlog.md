@@ -4,6 +4,32 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-04: Split's peel fills start on Krea 2 AnyPaint; the layer budget counts layers
+
+Round 2 of the café photo in the app (ba6cfa12a, 12 layers, seeds 1–3, Cody's RTX 5090): the
+cut-outs are fixed. Eleven layers every seed (Split background, Person 1–4, Cards, Person 5,
+Cup 1, Person 6, Cup 2, Person 7), every one a real cut-out with its own pixels, no grey ghosts,
+`incomplete` empty, nothing invented; images.jpg 3.4–3.8 s with one fill, the 12 MP portrait
+53–110 s with 2 layers and a background clean by the detector. But slower: 113 and 160 s warm
+(12 and 15 fills; 284 s cold, 150 s of it between the vision-language call and the first fill),
+against 87–99 s in round 1. And the left half of the background is a blurred smear in every
+seed where the front-left man and the woman stood: the removal paints a large subject back, and
+the grey-box 2.1 fills that follow blur what they cannot see. The woman's layer still carries a
+detached dark block (her legs under the table, which had no layer: seven people came back as
+eleven detections, the budget counted them raw, and "table" was never asked for), the cup by
+the fedora man's arm was lost to the two-instance cap on listed things, and the fedora man is
+stacked under the striped man (an order cue, for the depth model).
+Changed: each hole's first try is Krea 2 AnyPaint on the hole itself (`anypaint_job`:
+`krea2-turbo/fill` when the worker serves it, the 2.1 fill otherwise; the hole flattened to
+grey, widened by the removal's grow, the peel or backdrop prompt, tone matched at the hole's
+edge as a removal is). It samples the hole from the picture's own latent and keeps every pixel
+outside its mask, so neighbours in a crowd stay their own, and it ran in 1–3 s warm where a 2.1
+fill took 10–13 s. The removal and the grey-box fills follow when it paints the subject back
+(five tries in all). `find_subjects` cleans after each term so the budget counts layers, not
+detections, and a listed thing gets three instances. Tests: AnyPaint runs first and alone when
+the fake lists it; a duplicate term no longer takes a later term's place. Round 3's numbers
+follow in the next entry.
+
 ## 2026-11-03: Split into Layers peels the scene nearest first, every subject completed
 
 Split into Layers now takes a crowd (the café photo in the thread: seven people, a table, cups,
