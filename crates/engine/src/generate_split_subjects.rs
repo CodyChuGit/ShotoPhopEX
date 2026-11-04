@@ -25,7 +25,7 @@ use crate::{EngineError, Result};
 
 use super::{
     BACKGROUND_PROMPT, Common, DEFAULT_MATTE_TEMPLATE, FillJob, GenerativeInfo, Gray8, JobProgress, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, PEEL_PROMPT,
-    REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, TONE_MATCH_MAX, Task, Tuning, Value, at_least, background_job, box_blur, dilate,
+    PREFILL, REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, TONE_MATCH_MAX, Task, Tuning, Value, at_least, background_job, box_blur, dilate,
     embed_coverage, fill_rect, fill_region, gen_err, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt,
     remove_grow, request_size, resize_gray8, resize_rgba8, resolve_auto, set_generative_info, write_rgba8,
 };
@@ -183,21 +183,21 @@ fn bare(term: &str) -> &str {
 }
 
 /// A subject on its way to a layer.
-struct Subject {
+pub(super) struct Subject {
     /// The detector's coverage (hard), grown by what the fills completed.
-    cov: Vec<f32>,
-    bounds: Rect,
-    pixels: u64,
+    pub(super) cov: Vec<f32>,
+    pub(super) bounds: Rect,
+    pub(super) pixels: u64,
     /// What it was found as ("person", "cup", "the main subject").
-    term: String,
+    pub(super) term: String,
     /// The caller named the term.
-    asked: bool,
+    pub(super) asked: bool,
     /// Its soft alpha (hair), from `edges`.
-    alpha: Vec<f32>,
+    pub(super) alpha: Vec<f32>,
     /// The fill completed what nearer subjects hid (or nothing hid it).
-    completed: bool,
+    pub(super) completed: bool,
     /// Its mask grew since its alpha was matted.
-    grown: bool,
+    pub(super) grown: bool,
 }
 
 impl Subject {
@@ -573,10 +573,17 @@ fn sweep_subjects(
         Some(t) => t.to_vec(),
         None => found_by.split(", ").map(|t| Term { name: t.to_string(), max: None }).collect(),
     };
+    // The first pass's depth order, front to back, by mask: a subject found again on a later
+    // pass keeps its place in it (the pass order alone stacked the striped man over the fedora
+    // man he stands behind, in every seed; measured in the app 2026-11-04).
+    let first_order: Vec<(Vec<f32>, u64)> = front_first(&first, ordering, wu, hu).into_iter().map(|i| (first[i].cov.clone(), first[i].pixels)).collect();
     let mut done: Vec<Subject> = Vec::new();
     let mut cut: Vec<Vec<u8>> = Vec::new();
     let mut left_in: Vec<usize> = Vec::new();
     let mut given_up: Vec<Vec<f32>> = Vec::new();
+    // Where the fills have painted so far: a find mostly inside it is the fill's own work (a
+    // grey blob, a sliver of trousers), not a subject.
+    let mut painted = vec![0.0f32; wu * hu];
     let mut tries: Vec<Value> = Vec::new();
     let mut used = edges;
     let (mut fill_ms, mut fill_seed) = (0u64, 0u64);
@@ -591,8 +598,9 @@ fn sweep_subjects(
             for t in &again {
                 ctx.check()?;
                 let left = budget - done.len();
+                // A kind's cap counts every pass: three cups in all, not three more each time.
                 let have = done.iter().filter(|s| s.term.eq_ignore_ascii_case(&t.name)).count();
-                let cap = t.max.map_or(if creature(&t.name) { left } else { THINGS_EACH }, |m| m.saturating_sub(have));
+                let cap = t.max.map_or(if creature(&t.name) { left } else { THINGS_EACH.saturating_sub(have) }, |m| m.saturating_sub(have));
                 let at_most = cap.min(left);
                 if at_most == 0 {
                     continue;
@@ -612,13 +620,20 @@ fn sweep_subjects(
                 clean(&mut found, wu, hu, group);
             }
         }
-        // Not what was given up on: it stays in the background.
+        // Not what was given up on: it stays in the background. Not the fills' own work either.
         found.retain(|s| !given_up.iter().any(|g| overlap(&s.cov, g) * 2 >= s.pixels));
+        if pass > 1 {
+            found.retain(|s| (overlap(&s.cov, &painted) as f32) < DEBRIS_IN_PAINTED * s.pixels as f32);
+        }
         found.truncate(budget - done.len());
         if found.is_empty() {
             break;
         }
-        let mut subjects = in_depth_order(std::mem::take(&mut found), ordering, wu, hu);
+        let mut subjects = if pass == 1 {
+            in_depth_order(std::mem::take(&mut found), ordering, wu, hu)
+        } else {
+            in_first_order(std::mem::take(&mut found), &first_order, ordering, wu, hu)
+        };
         let k = done.len();
         let (lo, hi) = (0.1 + 0.85 * k as f32 / budget as f32, 0.1 + 0.85 * (k + 1) as f32 / budget as f32);
         ctx.progress(lo, &format!("Cutting out the {} ({} of up to {budget})", bare(subjects[0].check_term()), k + 1));
@@ -677,6 +692,9 @@ fn sweep_subjects(
                 p = filled;
                 fill_ms += ms;
                 fill_seed = seed_used;
+                for (d, g) in painted.iter_mut().zip(&grown_hole) {
+                    *d = d.max(*g);
+                }
             }
             None => {
                 left_in.push(k);
@@ -793,15 +811,7 @@ fn kept_terms(found_by: &str, found: &[Subject]) -> String {
 /// The subjects front to back by `ordering`: who hides whom from the masks, the smallest
 /// first (`size`: the largest ends lowest), or the detector's order reversed (`found`).
 fn in_depth_order(found: Vec<Subject>, ordering: Order, w: usize, h: usize) -> Vec<Subject> {
-    let front_first: Vec<usize> = match ordering {
-        Order::Auto => order::front_to_back(&found.iter().map(Subject::shape).collect::<Vec<_>>(), w, h),
-        Order::Size => {
-            let mut ix: Vec<usize> = (0..found.len()).collect();
-            ix.sort_by_key(|i| found[*i].pixels);
-            ix
-        }
-        Order::Found => (0..found.len()).rev().collect(),
-    };
+    let front_first = front_first(&found, ordering, w, h);
     let mut subjects: Vec<Subject> = Vec::with_capacity(found.len());
     let mut taken: Vec<Option<Subject>> = found.into_iter().map(Some).collect();
     for i in front_first {
@@ -810,6 +820,38 @@ fn in_depth_order(found: Vec<Subject>, ordering: Order, w: usize, h: usize) -> V
         }
     }
     subjects
+}
+
+/// The indices of `found` front to back by `ordering` (see [`in_depth_order`]).
+fn front_first(found: &[Subject], ordering: Order, w: usize, h: usize) -> Vec<usize> {
+    match ordering {
+        Order::Auto => order::front_to_back(&found.iter().map(Subject::shape).collect::<Vec<_>>(), w, h),
+        Order::Size => {
+            let mut ix: Vec<usize> = (0..found.len()).collect();
+            ix.sort_by_key(|i| found[*i].pixels);
+            ix
+        }
+        Order::Found => (0..found.len()).rev().collect(),
+    }
+}
+
+/// The subjects in the order of `first` (masks front to back) where they continue one of them
+/// (they hold half of its pixels), the rest after, in depth order among themselves: a sweep's
+/// later pass keeps the first pass's depth order for whoever it finds again.
+pub(super) fn in_first_order(found: Vec<Subject>, first: &[(Vec<f32>, u64)], ordering: Order, w: usize, h: usize) -> Vec<Subject> {
+    let rank = |s: &Subject| first.iter().position(|(cov, pixels)| *pixels > 0 && overlap(&s.cov, cov) * 2 >= *pixels);
+    let mut known: Vec<(usize, Subject)> = Vec::new();
+    let mut rest: Vec<Subject> = Vec::new();
+    for s in found {
+        match rank(&s) {
+            Some(r) => known.push((r, s)),
+            None => rest.push(s),
+        }
+    }
+    known.sort_by_key(|(r, _)| *r);
+    let mut out: Vec<Subject> = known.into_iter().map(|(_, s)| s).collect();
+    out.extend(in_depth_order(rest, ordering, w, h));
+    out
 }
 
 /// Where the subjects still `behind` stand (their holes), one value per pixel: what a nearer
@@ -966,7 +1008,13 @@ pub(super) fn fills_own_work(
     let continued = behind.iter().filter(|(t, bc, bn)| t == term && continues(cov, bc, *bn)).collect::<Vec<_>>();
     if continued.iter().any(|(_, bc, bn)| added_in(cov, region, bc) <= *bn * COMPLETION_MAX) {
         let kept = looks(cov);
-        return (kept >= KEPT_LOOKS).then(|| format!("the {term} painted back over the one behind ({:.0} % of it as it was)", kept * 100.0));
+        return (kept >= KEPT_LOOKS).then(|| {
+            if term == cut_term {
+                format!("the {term} painted back over the one behind ({:.0} % of it as it was)", kept * 100.0)
+            } else {
+                format!("the {cut_term} painted back under the {term} behind ({:.0} % of it as it was)", kept * 100.0)
+            }
+        });
     }
     Some(if term == cut_term && overlap(cov, cut_cov) * 2 >= cut_pixels {
         format!("the {term} painted back")
@@ -1115,6 +1163,12 @@ fn fill_hole<T>(
         return Ok((None, Vec::new()));
     }
     let grow = remove_grow(hole_rect).min(MAX_GROW);
+    // A big hole (over [`BIG_HOLE_SIDE`] a side) gets the grey box in strips: one fill over a
+    // third of the frame came back as the grey box it was given, on 6 of 8 café backgrounds
+    // (measured in the app 2026-11-04).
+    let big = hole_rect.width().max(hole_rect.height()) > BIG_HOLE_SIDE;
+    // The ring just outside the hole: what a fill is compared with for texture and brightness.
+    let ring: Vec<f32> = dilate(hole, wu, hu, RING_WIDTH).iter().zip(hole).map(|(d, h)| if *d >= 0.5 && *h < 0.5 { 1.0 } else { 0.0 }).collect();
     let rect = fill_rect(hole_rect.inflate(grow as i32).intersect(&area), removal.tuning.remove_margin, area)?;
     let rect = at_least(rect, REMOVE_MIN_REQUEST, area);
     // The box the background fill repaints (the hole's bounds widened by the removal's grow)
@@ -1150,47 +1204,53 @@ fn fill_hole<T>(
     let work = doc.insert_above(below, work);
     let mut ms = 0u64;
     let mut outcome = None;
-    let mut tries: Vec<Value> = Vec::with_capacity(FILL_TRIES as usize);
-    for attempt in 0..FILL_TRIES {
+    let mut tries: Vec<Value> = Vec::with_capacity(FILL_TRIES as usize + 1);
+    // Every try, then the classical patch fill as the last: a step, its result (the picture
+    // with the fill laid in), the seed it ran and its time.
+    for attempt in 0..=FILL_TRIES {
         let span = hi - lo;
-        ctx.progress(lo + span * 0.8 * attempt as f32 / FILL_TRIES as f32, "");
-        let try_box = attempt > 0 && box_job.is_some();
-        let kind = if try_box { "fill" } else { "removal" };
-        let mut try_job = if try_box { box_job.cloned().unwrap_or_else(|| removal.clone()) } else { removal.clone() };
-        try_job.seed = try_job.seed.wrapping_add(u64::from(attempt) * 1000);
-        if !try_box {
-            try_job.grow = grow;
-        }
-        let coverage = embed_coverage(area, if try_box { &box_hole } else { hole }, rect);
-        *active = Some(work);
-        let result = fill_region(doc, active, ctx, try_job, rect, coverage, None);
-        let (made, ..) = match result {
-            Ok(r) => r,
+        ctx.progress(lo + span * 0.8 * attempt as f32 / (FILL_TRIES + 1) as f32, "");
+        let step = if attempt == FILL_TRIES { Step::Patch } else { step_of(attempt, big, watch.is_some(), box_job.is_some()) };
+        let kind = step.name();
+        let progress = (lo + span * 0.8 * attempt as f32 / (FILL_TRIES + 1) as f32, lo + span * 0.8 * (attempt as f32 + 0.9) / (FILL_TRIES + 1) as f32);
+        let result = match step {
+            Step::Patch => Ok(patch_fill(picture, hole, protect, wu, hu, removal.seed).map(|f| (f, removal.seed, 0u64))),
+            Step::Strips => {
+                let mut try_job = box_job.cloned().unwrap_or_else(|| removal.clone());
+                try_job.seed = try_job.seed.wrapping_add(u64::from(attempt) * 1000);
+                fill_in_strips(doc, active, work, ctx, area, picture, &box_hole, boxed, grow, &try_job, progress).map(Some)
+            }
+            Step::Removal | Step::Box => {
+                let try_box = step == Step::Box;
+                let mut try_job = if try_box { box_job.cloned().unwrap_or_else(|| removal.clone()) } else { removal.clone() };
+                try_job.seed = try_job.seed.wrapping_add(u64::from(attempt) * 1000);
+                if !try_box {
+                    try_job.grow = grow;
+                }
+                let coverage = embed_coverage(area, if try_box { &box_hole } else { hole }, rect);
+                *active = Some(work);
+                one_fill(doc, active, ctx, area, try_job, rect, coverage).map(Some)
+            }
+        };
+        let (filled, fill_seed, took) = match result {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                tries.push(json!({"fill": kind, "verdict": "nothing to fill from"}));
+                continue;
+            }
             Err(e) => {
                 doc.remove(work);
                 *active = below;
                 return Err(e);
             }
         };
-        ctx.check().inspect_err(|_| {
-            for (id, ..) in &made {
-                doc.remove(*id);
-            }
-            doc.remove(work);
-            *active = below;
-        })?;
-        ms += made.iter().map(|m| m.3).sum::<u64>();
-        // The picture with the fill over the hole, whole.
-        let filled = photocraft_compose::render(doc, area).to_rgba8().pixels;
-        let fill_seed = made.first().map_or(0, |m| m.1);
-        for (id, ..) in &made {
-            doc.remove(*id);
-        }
+        ms += took;
         // The result over the picture along `over`. A box fill's tone is matched to the picture
         // where both show the same thing (in the box, outside the hole): a fill a few levels
         // darker left the person's outline as a shadow on the curtain (measured in the app
-        // 2026-11-03). The removal's result is tone matched by its own route.
-        let tone = try_box.then(|| ToneGrid::new(picture, &filled, |k| box_hole[k] >= 0.5 && over[k] < 0.02, wu, hu));
+        // 2026-11-03). The removal's result is tone matched by its own route; the patch fill
+        // copies the picture's own pixels.
+        let tone = matches!(step, Step::Box | Step::Strips).then(|| ToneGrid::new(picture, &filled, |k| box_hole[k] >= 0.5 && over[k] < 0.02, wu, hu));
         let background: Vec<u8> = picture
             .as_chunks::<4>()
             .0
@@ -1210,13 +1270,19 @@ fn fill_hole<T>(
                 })
             })
             .collect();
-        ctx.progress(lo + span * 0.8 * (attempt as f32 + 0.9) / FILL_TRIES as f32, "Checking the fill");
+        ctx.progress(progress.1, "Checking the fill");
         if let Some(silhouette) = watch {
             let kept = kept_share(picture, &background, silhouette, wu, hu);
             if kept >= KEPT_WHOLE {
                 tries.push(json!({"fill": kind, "verdict": format!("kept what stood there ({:.0} % of it as it was)", kept * 100.0)}));
                 continue;
             }
+        }
+        // A blank fill (the grey box as it was) or a smear where the subject stood passes a
+        // detector and the pixels alike: judged against the picture around the hole.
+        if let Some(why) = blank_or_ghost(picture, &background, hole, &ring, wu, hu) {
+            tries.push(json!({"fill": kind, "verdict": why}));
+            continue;
         }
         match check(&background) {
             Ok(Ok(seen)) => {
@@ -1238,6 +1304,272 @@ fn fill_hole<T>(
     doc.remove(work);
     *active = below;
     Ok((outcome, tries))
+}
+
+/// One try of a hole's fill.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// The named removal on the hole's own shape.
+    Removal,
+    /// The grey-box fill of the hole's bounds.
+    Box,
+    /// The grey box in strips along its longer side ([`fill_in_strips`]).
+    Strips,
+    /// The classical content-aware fill from the hole's surroundings ([`patch_fill`]).
+    Patch,
+}
+
+impl Step {
+    fn name(self) -> &'static str {
+        match self {
+            Step::Removal => "removal",
+            Step::Box => "fill",
+            Step::Strips => "strips",
+            Step::Patch => "patch",
+        }
+    }
+}
+
+/// Which fill try `attempt` of a hole is. A small hole: the removal, then the grey-box fills. A
+/// big one (`big`): the box in strips three times, then the box whole; a big person's removal
+/// is skipped (it painted every big person of the café photo back, eight of eight, measured in
+/// the app 2026-11-04), a big thing's (a table) comes first, as it often clears. Without a box
+/// fill to call on, the removal every time.
+fn step_of(attempt: u32, big: bool, creature: bool, boxed: bool) -> Step {
+    if !boxed {
+        return Step::Removal;
+    }
+    if !big {
+        return if attempt == 0 { Step::Removal } else { Step::Box };
+    }
+    match (creature, attempt) {
+        (true, 0..=2) | (false, 1..=3) => Step::Strips,
+        (false, 0) => Step::Removal,
+        _ => Step::Box,
+    }
+}
+
+/// One fill of `job` over `coverage` in `rect`, run above the active layer: the composite with
+/// its result, the seed it ran and its time. Its layers are taken out again.
+fn one_fill(
+    doc: &mut Document,
+    active: &mut Option<LayerId>,
+    ctx: &JobCtx,
+    area: Rect,
+    job: FillJob,
+    rect: Rect,
+    coverage: Vec<f32>,
+) -> Result<(Vec<u8>, u64, u64)> {
+    let (made, ..) = fill_region(doc, active, ctx, job, rect, coverage, None)?;
+    let checked = ctx.check();
+    let filled = photocraft_compose::render(doc, area).to_rgba8().pixels;
+    let seed = made.first().map_or(0, |m| m.1);
+    let ms = made.iter().map(|m| m.3).sum::<u64>();
+    for (id, ..) in &made {
+        doc.remove(*id);
+    }
+    checked?;
+    Ok((filled, seed, ms))
+}
+
+/// The grey box (`box_hole`, bounds `boxed`) filled in strips along its longer side, each
+/// strip seeing the picture with the box grey and the strips before it filled (and overlapping
+/// the last by [`STRIP_OVERLAP`] px): a fill asked for a third of the frame at once handed the
+/// grey box back, where the cups and cards came out right (measured in the app 2026-11-04).
+/// `work` is the layer the fills see as the picture; it holds `picture` again at the end. The
+/// picture with the box filled, the last strip's seed and the fills' time.
+#[allow(clippy::too_many_arguments)]
+fn fill_in_strips(
+    doc: &mut Document,
+    active: &mut Option<LayerId>,
+    work: LayerId,
+    ctx: &JobCtx,
+    area: Rect,
+    picture: &[u8],
+    box_hole: &[f32],
+    boxed: Rect,
+    grow: u32,
+    job: &FillJob,
+    (lo, hi): (f32, f32),
+) -> Result<(Vec<u8>, u64, u64)> {
+    let (w, h) = (area.width(), area.height());
+    let wu = w as usize;
+    let tall = boxed.height() >= boxed.width();
+    let long = if tall { boxed.height() } else { boxed.width() } as usize;
+    let n = long.div_ceil(STRIP_LEN).clamp(2, MAX_STRIPS);
+    let step = long.div_ceil(n);
+    let mut wp = picture.to_vec();
+    for (k, c) in box_hole.iter().enumerate() {
+        if *c >= 0.5 {
+            wp[k * 4..k * 4 + 3].copy_from_slice(&PREFILL[..3]);
+        }
+    }
+    let show = |doc: &mut Document, px: &[u8]| -> Result<()> {
+        let layer = doc.layer_mut(work).ok_or(EngineError::NoLayer(work))?;
+        write_rgba8(layer, &Rgba8::new(w, h, px.to_vec()).map_err(gen_err)?, area)
+    };
+    let (mut seed, mut ms) = (0u64, 0u64);
+    for i in 0..n {
+        ctx.check().inspect_err(|_| {
+            let _ = show(doc, picture);
+        })?;
+        ctx.progress(lo + (hi - lo) * i as f32 / n as f32, &format!("Filling strip {} of {n}", i + 1));
+        let a = (i * step).saturating_sub(if i > 0 { STRIP_OVERLAP } else { 0 });
+        let b = ((i + 1) * step).min(long);
+        let strip = if tall {
+            Rect::new(boxed.x0, boxed.y0 + a as i32, boxed.x1, boxed.y0 + b as i32)
+        } else {
+            Rect::new(boxed.x0 + a as i32, boxed.y0, boxed.x0 + b as i32, boxed.y1)
+        };
+        let mask: Vec<f32> = box_hole
+            .iter()
+            .enumerate()
+            .map(|(k, c)| {
+                let (x, y) = (area.x0 + (k % wu) as i32, area.y0 + (k / wu) as i32);
+                if *c >= 0.5 && x >= strip.x0 && x < strip.x1 && y >= strip.y0 && y < strip.y1 { 1.0 } else { 0.0 }
+            })
+            .collect();
+        let rect = fill_rect(strip.inflate(grow as i32).intersect(&area), job.tuning.remove_margin, area)?;
+        let rect = at_least(rect, REMOVE_MIN_REQUEST, area);
+        let coverage = embed_coverage(area, &mask, rect);
+        show(doc, &wp)?;
+        *active = Some(work);
+        let mut j = job.clone();
+        j.seed = j.seed.wrapping_add(i as u64 * 7);
+        let (filled, s, t) = match one_fill(doc, active, ctx, area, j, rect, coverage) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = show(doc, picture);
+                return Err(e);
+            }
+        };
+        seed = s;
+        ms += t;
+        for (k, m) in mask.iter().enumerate() {
+            if *m >= 0.5 {
+                wp[k * 4..k * 4 + 4].copy_from_slice(&filled[k * 4..k * 4 + 4]);
+            }
+        }
+    }
+    show(doc, picture)?;
+    Ok((wp, seed, ms))
+}
+
+/// The hole filled from its surroundings by the classical content-aware fill (patches copied
+/// from around it, never from the hole or from where another subject stands, `protect`), at a
+/// scale that keeps the work under [`PATCH_PIXELS`]: the last try when every fill was refused,
+/// so a subject whose hole no model would paint is still out of the background. `None` when
+/// nothing around the hole can serve as a source.
+fn patch_fill(picture: &[u8], hole: &[f32], protect: Option<&[f32]>, w: usize, h: usize, seed: u64) -> Option<Vec<u8>> {
+    use photocraft_algo::content_aware::{FillOptions, fill};
+    let area = Rect::new(0, 0, w as i32, h as i32);
+    let (bounds, holed) = crate::select_ml_cmds::coverage_bounds(hole, area);
+    if holed == 0 {
+        return None;
+    }
+    let margin = (bounds.width().max(bounds.height()) / 2).max(64);
+    let crop = bounds.inflate(margin as i32).intersect(&area);
+    let (cw, ch) = (crop.width() as usize, crop.height() as usize);
+    if cw == 0 || ch == 0 {
+        return None;
+    }
+    let k = (((cw * ch) as f64 / PATCH_PIXELS as f64).sqrt().ceil() as usize).max(1);
+    let (sw, sh) = (cw.div_ceil(k), ch.div_ceil(k));
+    let mut img = vec![0.0f32; sw * sh * 3];
+    let mut count = vec![0u32; sw * sh];
+    let mut in_hole = vec![false; sw * sh];
+    let mut kept_out = vec![false; sw * sh];
+    for y in 0..ch {
+        for x in 0..cw {
+            let px = (crop.y0 as usize + y) * w + crop.x0 as usize + x;
+            let i = (y / k) * sw + x / k;
+            for c in 0..3 {
+                img[i * 3 + c] += f32::from(picture[px * 4 + c]) / 255.0;
+            }
+            count[i] += 1;
+            in_hole[i] |= hole[px] >= 0.5;
+            kept_out[i] |= protect.is_some_and(|p| p[px] >= 0.5);
+        }
+    }
+    for i in 0..sw * sh {
+        let n = count[i].max(1) as f32;
+        for c in 0..3 {
+            img[i * 3 + c] /= n;
+        }
+    }
+    let source: Vec<bool> = (0..sw * sh).map(|i| !in_hole[i] && !kept_out[i] && count[i] > 0).collect();
+    if !source.iter().any(|s| *s) {
+        return None;
+    }
+    let filled = fill(sw, sh, 3, &img, &in_hole, &source, &FillOptions { seed, ..FillOptions::default() });
+    let mut out = picture.to_vec();
+    for y in 0..ch {
+        for x in 0..cw {
+            let px = (crop.y0 as usize + y) * w + crop.x0 as usize + x;
+            if hole[px] < 0.5 {
+                continue;
+            }
+            let fx = ((x as f32 + 0.5) / k as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+            let fy = ((y as f32 + 0.5) / k as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+            let (x0, y0) = (fx as usize, fy as usize);
+            let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
+            let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+            for c in 0..3 {
+                let at = |xx: usize, yy: usize| filled[(yy * sw + xx) * 3 + c];
+                let top = at(x0, y0) * (1.0 - tx) + at(x1, y0) * tx;
+                let bottom = at(x0, y1) * (1.0 - tx) + at(x1, y1) * tx;
+                out[px * 4 + c] = ((top * (1.0 - ty) + bottom * ty).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Why a fill is no fill, judged against the picture in the `ring` around the hole: it left the
+/// hole blank where the picture has texture (the grey box handed back nearly as it was, which a
+/// detector and the pixel check both pass; 6 of 8 café backgrounds, measured in the app
+/// 2026-11-04), or painted a dark or light shape over it (a silhouette-shaped smear where
+/// someone stood). `None` on a plain backdrop, whose fill is rightly plain, and when the fill
+/// has texture and brightness like its surroundings.
+pub(super) fn blank_or_ghost(before: &[u8], after: &[u8], hole: &[f32], ring: &[f32], w: usize, h: usize) -> Option<String> {
+    let (ring_tex, ring_luma) = texture_and_luma(before, ring, w, h)?;
+    if ring_tex < BLANK_BAND_TEXTURE {
+        return None;
+    }
+    let (hole_tex, hole_luma) = texture_and_luma(after, hole, w, h)?;
+    if hole_tex < BLANK_SHARE * ring_tex {
+        return Some(format!("left the hole blank (texture {hole_tex:.3} against {ring_tex:.3} around it)"));
+    }
+    let d = hole_luma - ring_luma;
+    if d.abs() >= GHOST_LUMA {
+        return Some(format!("painted a {} shape over the hole ({:+.0} % in brightness)", if d < 0.0 { "dark" } else { "light" }, d * 100.0));
+    }
+    None
+}
+
+/// The mean luminance step between neighbouring pixels of `region` (its texture) and its mean
+/// luminance, 0..1; `None` for a region too small to judge.
+fn texture_and_luma(img: &[u8], region: &[f32], w: usize, h: usize) -> Option<(f32, f32)> {
+    let luma = |k: usize| (0.299 * f32::from(img[k * 4]) + 0.587 * f32::from(img[k * 4 + 1]) + 0.114 * f32::from(img[k * 4 + 2])) / 255.0;
+    let (mut tex, mut tn, mut lum, mut ln) = (0.0f32, 0u32, 0.0f32, 0u32);
+    for k in 0..w * h {
+        if region[k] < 0.5 {
+            continue;
+        }
+        let l = luma(k);
+        lum += l;
+        ln += 1;
+        let (x, y) = (k % w, k / w);
+        if x + 1 < w && region[k + 1] >= 0.5 {
+            tex += (l - luma(k + 1)).abs();
+            tn += 1;
+        }
+        if y + 1 < h && region[k + w] >= 0.5 {
+            tex += (l - luma(k + w)).abs();
+            tn += 1;
+        }
+    }
+    (ln >= JUDGE_MIN_PIXELS && tn >= JUDGE_MIN_PIXELS).then(|| (tex / tn as f32, lum / ln as f32))
 }
 
 /// The subjects of the picture, found term by term, and what found them (the terms joined).
@@ -1443,6 +1775,13 @@ fn matte_all(
     if matches!(edges, Edges::Auto | Edges::Vitmatte) {
         ctx.progress(0.08, "Matting hair");
         alphas = crate::select_ml_cmds::vitmatte_alphas(backend, picture, area, &instances, only, ctx)?;
+        if alphas.is_none() {
+            // Once more: the first split of a session got nothing back from ViTMatte and fell
+            // back to the whole-frame matte and then the refined mask (measured in the app
+            // 2026-11-04, cold runs only).
+            ctx.check()?;
+            alphas = crate::select_ml_cmds::vitmatte_alphas(backend, picture, area, &instances, only, ctx)?;
+        }
         used = Edges::Vitmatte;
     }
     ctx.check()?;
@@ -1512,6 +1851,32 @@ const KEPT_LOOKS: f32 = 0.4;
 /// Of a thing's detection, the share inside the thing's own hole (not its grow) at which it is
 /// the thing painted back: a saucer or glass beside a cup overlaps its grow, not its spot.
 const THING_IN_HOLE: f32 = 0.5;
+/// A hole with a side over this many pixels is big: its grey box is filled in strips.
+const BIG_HOLE_SIDE: u32 = 400;
+/// A strip of the grey box is at most this long along the box's longer side...
+const STRIP_LEN: usize = 400;
+/// ...and there are at most this many of them...
+const MAX_STRIPS: usize = 5;
+/// ...each overlapping the one before it by this many pixels, so the seam is repainted.
+const STRIP_OVERLAP: usize = 24;
+/// The most pixels the classical patch fill works on (the crop around the hole scaled down).
+const PATCH_PIXELS: usize = 400_000;
+/// The ring around a hole a fill is judged against, in pixels.
+const RING_WIDTH: usize = 12;
+/// The ring's texture (mean luminance step between neighbours, 0..1) from which a fill is
+/// judged for blankness and brightness at all: below it the backdrop is plain, and so is its
+/// fill, rightly.
+const BLANK_BAND_TEXTURE: f32 = 0.012;
+/// A fill whose texture is under this share of the ring's left the hole blank.
+const BLANK_SHARE: f32 = 0.15;
+/// A fill whose mean brightness is this far (0..1) from the ring's painted a shape over the hole.
+const GHOST_LUMA: f32 = 0.3;
+/// The pixels a region needs to be judged for texture and brightness.
+const JUDGE_MIN_PIXELS: u32 = 64;
+/// A sweep's later find with this share of its pixels inside what the fills painted is the
+/// fills' own work (a blob, a sliver), not a subject: a completion adds at most
+/// [`COMPLETION_MAX`] times what showed, two thirds.
+const DEBRIS_IN_PAINTED: f32 = 0.7;
 /// A speck: under this share (1/n) of the largest instance of its term.
 const SPECK_SHARE: u64 = 100;
 /// A speck: under this share (1/n) of the frame.

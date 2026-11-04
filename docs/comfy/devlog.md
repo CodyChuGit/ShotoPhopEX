@@ -4,6 +4,45 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-04: Split round 5: the pixel check holds, the big holes come back blank; strips, a patch fill, the sweep's order
+
+Round 5 of the café photo in the app (9022989b8, 16 runs, Cody's RTX 5090): the peel and the
+sweep side by side at 12 layers, seeds 1–3, both at 16 layers (seed 1), images.jpg and the
+portrait. The pixel check works: the front-left man's removal was refused (99 % kept) and two
+grey-box fills after it (100 %, 93 %), the fourth accepted, and he is gone in all eight café
+runs; `tries` in result.json matches the engine log try for try; images.jpg stays clean in
+4.1–4.7 s and the portrait on every seed (27–58 s). But the fills now accepted for the big
+holes are flat, near-white grey (the grey box handed back nearly as it was; the tone cap shows
+it where round 4's full match blurred it into the room), over a third to a half of the frame
+in 6 of 8 café backgrounds, and two ghosts got through (a dark head-and-shoulders smear, a
+white silhouette where the glasses man stood): neither the detector nor the pixel check stops a
+blank fill. The sweep: 13–27 % slower (147–196 s warm against the peel's 126–150), the best
+room continuation of any round on seed 1's right two thirds, the woman re-found without her
+detached block (seeds 1 and 3); but it counted fill debris as people (a sliver of trousers, a
+grey blob, the man in the framed photograph), stacked the striped man over the fedora man in
+every seed (the peel has that pair right since round 5), and found five cups at 16 layers (its
+per-kind cap reset every pass). The near table got a layer at 16 (refused: "the person painted
+back", said of a table). The cold run's 1248×832 edit was ViTMatte returning nothing on the
+first split of the session, the matte falling back to the whole-frame model and then to the
+refined mask. So now: (1) every fill is judged against the ring around its hole
+(`blank_or_ghost`): where the picture has texture, a fill with under 15 % of it left the hole
+blank, and one 30 % brighter or darker painted a shape over it; a plain backdrop is exempt (its
+fill is rightly plain). (2) A big hole (a side over 400 px) gets its grey box filled in strips
+along the longer side (`fill_in_strips`, at most five of 400 px, overlapping 24 px, each seeing
+the box grey and the strips before it filled): one fill asked for a third of the frame handed
+the box back, where the cups and cards came out right; a big person skips the removal (it
+painted all eight big people back), a big thing's removal comes first. (3) When every fill is
+refused, the classical content-aware fill from the hole's surroundings is the last try
+(`patch_fill`, under 0.4 MP, other subjects' pixels never a source; `fill: "patch"` in `tries`),
+checked like the rest, so a subject no model would paint behind is still out of the background.
+(4) The sweep keeps the first pass's depth order for whoever it finds again (`in_first_order`),
+counts a kind's cap over all passes, and drops a later find mostly (70 %) inside what the fills
+painted (debris). (5) A thing's verdict names the thing ("the table painted back under the
+person behind"). (6) ViTMatte is asked once more when it returns nothing. 35 Split tests.
+Open: the sweep's debris outside the holes (the trousers below the man's mask), the man in the
+framed photograph, the woman's body below the table edge, the glasses man as a fragment,
+speed (126–196 s warm against the 90 s target), the depth model.
+
 ## 2026-11-04: Split round 4: a man painted back passed the detector; the pixels judge too; a sweep
 
 Round 4 of the café photo in the app (9d30c9ba2, 12 layers, seeds 1–3, Cody's RTX 5090), the

@@ -466,13 +466,17 @@ fn split_rejects_a_fill_that_paints_someone_new_into_the_hole() {
         .map(|r| format!("{}:{}", r.request["task"], r.request["model"]))
         .collect();
     assert_eq!(fills.len(), 6, "five rejected tries behind the right one, one fill behind the left: {fills:?} {:?}", r["tries"]);
-    // The record of every try: the removal, then the grey-box fills, each with its verdict.
+    // The record of every try: the removal, then the grey-box fills, each with its verdict,
+    // then the classical patch fill (which copies the canvas around the hole, the very colour
+    // the fake's "person" is, so the pixels refuse it as kept).
     let tries = r["tries"].as_array().unwrap();
-    assert_eq!((tries.len(), r["fills"].as_u64()), (6, Some(6)), "{tries:?}");
+    assert_eq!((tries.len(), r["fills"].as_u64()), (7, Some(7)), "{tries:?}");
     assert!(tries.iter().take(5).all(|t| t["behind"] == "Person 2" && t["verdict"].as_str().unwrap_or("").contains("was not there")), "{tries:?}");
     assert_eq!((tries[0]["fill"].as_str(), tries[1]["fill"].as_str()), (Some("removal"), Some("fill")), "{tries:?}");
+    assert_eq!(tries[5]["fill"], "patch", "{tries:?}");
+    assert!(tries[5]["verdict"].as_str().unwrap_or("").starts_with("kept what stood there"), "{tries:?}");
     assert_eq!(
-        (tries[5]["behind"].as_str(), tries[5]["fill"].as_str(), tries[5]["verdict"].as_str()),
+        (tries[6]["behind"].as_str(), tries[6]["fill"].as_str(), tries[6]["verdict"].as_str()),
         (Some("Person 1"), Some("removal"), Some("accepted")),
         "{tries:?}"
     );
@@ -582,4 +586,130 @@ fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
     assert_eq!(own("cup", &det(12, 14), 0.0), None, "a cup beside the hole");
     assert_eq!(own("cup", &det(0, 6), 0.0), None, "a cup mostly beside the hole");
     assert!(own("person", &det(12, 14), 0.0).is_some(), "a person in the widened band");
+}
+
+#[test]
+fn a_blank_fill_and_a_smear_are_no_fill() {
+    use super::split_subjects::blank_or_ghost;
+    // A 64×64 picture of 4-px stripes (texture); the hole is the middle 24×24, the ring the
+    // 12 px around it.
+    let (w, h) = (64usize, 64usize);
+    let stripes = |k: usize| -> [u8; 4] { if (k / w / 4).is_multiple_of(2) { [60u8, 60, 60, 255] } else { [180, 180, 180, 255] } };
+    let before: Vec<u8> = (0..w * h).flat_map(stripes).collect();
+    let in_hole = |k: usize| (20..44).contains(&(k % w)) && (20..44).contains(&(k / w));
+    let in_ring = |k: usize| !in_hole(k) && (8..56).contains(&(k % w)) && (8..56).contains(&(k / w));
+    let hole: Vec<f32> = (0..w * h).map(|k| if in_hole(k) { 1.0 } else { 0.0 }).collect();
+    let ring: Vec<f32> = (0..w * h).map(|k| if in_ring(k) { 1.0 } else { 0.0 }).collect();
+    let with = |paint: &dyn Fn(usize) -> [u8; 4]| -> Vec<u8> { (0..w * h).flat_map(|k| if in_hole(k) { paint(k) } else { stripes(k) }).collect() };
+    let blank = with(&|_| [128u8, 128, 128, 255]);
+    assert!(
+        blank_or_ghost(&before, &blank, &hole, &ring, w, h).is_some_and(|v| v.starts_with("left the hole blank")),
+        "a flat grey where the picture has stripes"
+    );
+    let continued = with(&stripes);
+    assert_eq!(blank_or_ghost(&before, &continued, &hole, &ring, w, h), None, "the stripes continued: a fill");
+    let dark = with(&|k| if (k / w).is_multiple_of(2) { [10u8, 10, 10, 255] } else { [40, 40, 40, 255] });
+    assert!(
+        blank_or_ghost(&before, &dark, &hole, &ring, w, h).is_some_and(|v| v.starts_with("painted a dark shape")),
+        "a dark smear: textured, but not the picture's brightness"
+    );
+    // A plain backdrop: its fill is rightly plain, and no brightness is judged.
+    let plain: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 120, 120, 255]).collect();
+    assert_eq!(blank_or_ghost(&plain, &blank, &hole, &ring, w, h), None, "plain around the hole: a flat fill is right");
+}
+
+#[test]
+fn a_big_hole_is_filled_in_strips_and_a_big_person_skips_the_removal() {
+    // One person over 540 px tall on a 900×600 canvas: the grey box is filled in two strips,
+    // top then bottom, and no removal is tried first (it painted every big person back).
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.3, 0.04, 0.7, 0.96]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 900, 600);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    s.execute("select.rect", json!({"x": 270, "y": 24, "width": 360, "height": 552})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 2})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
+    let tries = r["tries"].as_array().unwrap();
+    assert_eq!(tries.len(), 1, "{tries:?}");
+    assert_eq!((tries[0]["fill"].as_str(), tries[0]["verdict"].as_str()), (Some("strips"), Some("accepted")), "{tries:?}");
+    let st = fake.state();
+    let tasks: Vec<&str> = st.runs.iter().map(|r| r.request["task"].as_str().unwrap_or("")).filter(|t| *t == "fill" || *t == "edit").collect();
+    assert_eq!(tasks, vec!["fill", "fill"], "two strips of the grey-box fill, no removal: {tasks:?}");
+    // Each strip's request showed the model the box grey, the picture around it as it is.
+    let first = st.pictures.iter().find(|p| p.width >= 256).expect("a fill's picture");
+    let _ = first;
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    let bg = pixel_at(&s, ids[0], 450, 300);
+    assert!(bg[1] > 0.6 && bg[0] < 0.3, "the background is the fill where the person stood: {bg:?}");
+    let bg_low = pixel_at(&s, ids[0], 450, 540);
+    assert!(bg_low[1] > 0.6 && bg_low[0] < 0.3, "down to the bottom strip: {bg_low:?}");
+    assert!(alpha_at(&s, ids[1], 450, 300) > 0.5 && pixel_at(&s, ids[1], 450, 300)[2] > 0.7, "the person's layer holds their own pixels");
+}
+
+#[test]
+fn the_classical_patch_fill_is_the_last_try_when_every_fill_leaves_the_hole_blank() {
+    // The backdrop is striped; the fake's fills paint a flat colour over the hole, which is no
+    // fill where the picture has texture: five refused, then the patch fill continues the
+    // stripes from around the hole and the detector finds nobody.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options { color: [10, 200, 10, 255], occlusion: true, ..Default::default() }).unwrap();
+    let mut s = session(&fake.url);
+    for row in 0..12u32 {
+        let color = if row.is_multiple_of(2) { "#404040" } else { "#b4b4b4" };
+        s.execute("select.rect", json!({"x": 0, "y": row * 4, "width": 64, "height": 4})).unwrap();
+        s.execute("edit.fill", json!({"contents": "color", "color": color})).unwrap();
+    }
+    // The person: a blue block where the fake's detector finds them (16, 12)–(48, 36).
+    s.execute("select.rect", json!({"x": 16, "y": 12, "width": 32, "height": 24})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 2, "layers": 2})).unwrap();
+    assert_eq!(r["incomplete"], json!([]), "{r}");
+    let tries = r["tries"].as_array().unwrap();
+    assert_eq!(tries.len(), 6, "five fills and the patch: {tries:?}");
+    assert!(tries[..5].iter().all(|t| t["verdict"].as_str().unwrap_or("").starts_with("left the hole blank")), "{tries:?}");
+    assert_eq!((tries[5]["fill"].as_str(), tries[5]["verdict"].as_str()), (Some("patch"), Some("accepted")), "{tries:?}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    let bg = pixel_at(&s, ids[0], 32, 24);
+    assert!(bg[2] < 0.6 && (bg[1] - bg[0]).abs() < 0.1, "the background in the hole is neither the blue nor the fake's green: {bg:?}");
+    assert_eq!(fake.state().runs.iter().filter(|r| r.request["task"] == "fill" || r.request["task"] == "edit").count(), 5, "the patch fill asks no model");
+}
+
+#[test]
+fn a_sweeps_later_find_keeps_the_first_passs_depth_order() {
+    use super::split_subjects::{Order, Subject, in_first_order};
+    let (w, h) = (16usize, 16usize);
+    let rect = |x0: usize, y0: usize, x1: usize, y1: usize| -> Vec<f32> {
+        (0..w * h).map(|k| if (x0..x1).contains(&(k % w)) && (y0..y1).contains(&(k / w)) { 1.0 } else { 0.0 }).collect()
+    };
+    let subject = |cov: Vec<f32>, term: &str| {
+        let pixels = cov.iter().filter(|c| **c >= 0.5).count() as u64;
+        Subject {
+            cov,
+            bounds: Rect::new(0, 0, w as i32, h as i32),
+            pixels,
+            term: term.to_string(),
+            asked: false,
+            alpha: Vec::new(),
+            completed: false,
+            grown: false,
+        }
+    };
+    // The first pass ordered A (front) before B.
+    let first = vec![(rect(0, 0, 8, 8), 64u64), (rect(8, 8, 16, 16), 64u64)];
+    // Found again, B grown and first, then A, then someone new (C).
+    let found = vec![subject(rect(6, 6, 16, 16), "person"), subject(rect(0, 0, 8, 8), "person"), subject(rect(0, 12, 4, 16), "cup")];
+    let ordered = in_first_order(found, &first, Order::Auto, w, h);
+    assert_eq!(ordered.iter().map(|s| s.bounds.x0).collect::<Vec<_>>(), vec![0, 0, 0]);
+    assert_eq!(
+        ordered.iter().map(|s| (s.pixels, s.term.as_str())).collect::<Vec<_>>(),
+        vec![(64, "person"), (100, "person"), (16, "cup")],
+        "A, then B, then the new one"
+    );
 }

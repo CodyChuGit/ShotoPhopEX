@@ -246,11 +246,14 @@ Report warm times (second run) and the first run separately.
    {name} gone"), one model family for the whole split, and the checks now in
    (`fills_own_work`, `kept_share`).
 4. The faint outline on the grey-box backdrop fill (2 of 3 seeds on the 12 MP portrait).
-5. The blur of the grey-box 2.1 fills over large holes (the left half of the café background,
-   every round): a final whole-background removal over all the holes once every subject is
-   out, kept only if it passes the checks; or a fill model that keeps texture.
-6. A classical fill (no model) as the last try for a small thing: a cup refused five times
-   stays in the background; a patch fill never paints a cup back.
+5. The grey-box 2.1 fills over large holes (the left half of the café background, every
+   round: a blur under the full tone match, the grey box itself under the capped one). Round 6
+   fills a big hole in strips and falls back to the classical patch fill; still to try: a final
+   whole-background removal over all the holes once every subject is out, kept only if it
+   passes the checks; or a fill model that keeps texture.
+6. The classical patch fill is now the last try of every hole (round 6); a cup refused five
+   times no longer stays in the background. Still to decide: whether a big person's hole should
+   take the patch fill at all, or stay in the background with `incomplete` saying so.
 7. Speed: of a 131–163 s café run only 55–85 s is filling; the rest is detection, matting and
    a SAM check after every fill. Cache the detector per picture and check only the kinds that
    stand near the hole. The acceptance is under 90 s warm.
@@ -258,6 +261,13 @@ Report warm times (second run) and the first run separately.
    once the table is a subject, a part of a detection the table separates from the body goes.
 9. Keep the rejected fills on request (a `keepTries` option), so a refusal can be seen and not
    only read in `tries`.
+10. The sweep's debris outside the painted holes (a sliver of the fedora man's trousers below
+    his mask, found as a person on the next pass) and a person inside a framed photograph: a
+    later find much smaller than the first pass's of its kind, or inside a thing found earlier,
+    is not a subject.
+11. ViTMatte on the first split of a session: it returned nothing cold (round 5) and the split
+    fell back to the whole-frame matte; asked once more now, but the worker should load it at
+    launch with the rest of the warm-up.
 
 ## 3. Status
 
@@ -269,12 +279,12 @@ Landed 2026-11-03 (the thread's PR; devlog entry of the same day):
 | 2 Cleaning (specks, whole frame, IoU duplicates, parts, touching groups) | done (`clean`) |
 | 3 Mattes per subject, re-matted after completion | done (`matte_all`); a sweep mattes each subject at its turn, the others' bodies kept out of its band (ViTMatte's `only`) |
 | 4 Order (contact bend, bottom edge, size, nested boxes; topological sort) | done (`generate_split_order.rs`); no depth model yet |
-| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`); a fill that paints anyone new is rejected (`fills_own_work`), a person's silhouette the fill kept is refused by its pixels too (`kept_share`: round 4's front-left man came back almost pixel for pixel and the detector check passed him), a thing is judged on its own spot, and every try's verdict comes back in `tries` (2026-11-04) |
+| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`); a fill that paints anyone new is rejected (`fills_own_work`), a person's silhouette the fill kept is refused by its pixels too (`kept_share`: round 4's front-left man came back almost pixel for pixel and the detector check passed him), a thing is judged on its own spot, and every try's verdict comes back in `tries` (2026-11-04); a fill is also judged against the ring around its hole (`blank_or_ghost`: blank where the picture has texture, or a dark or light shape over the hole), a big hole's grey box is filled in strips (`fill_in_strips`) and the classical patch fill is the last try when every fill is refused (`patch_fill`; round 5's big holes came back as the grey box, 2026-11-04) |
 | 6 Placing and naming ("Background", "Person 1" back to front, "Cup") | done |
 | 7 Parameters (`complete`, `sweep`, `order`, `group`, `layers` to 20) and the dialog | done (`layers` raised from 12 on 2026-11-04: the café's seven people, three cups, cards and table are twelve subjects) |
 | 8 Smoke and haze as a translucent layer | not started (phase 3) |
-| 9 Tests against the fake worker's occlusion model | done (31 Split tests + 4 order tests; the fake can paint someone in, `appears`, and overlook a subject a fill left in place, `overlooked`) |
-| 10 In-app protocol on the café photo | rounds 1–4 in the devlog (2026-11-03/04); round 5 (the pixel check, the sweep) pending |
-| 11 Sweep (`sweep`: find the subjects, cut the nearest, fill, look again until nothing is left; the owner's framing, 2026-11-04) | done (`sweep_subjects`); not yet measured in the app |
+| 9 Tests against the fake worker's occlusion model | done (35 Split tests + 4 order tests; the fake can paint someone in, `appears`, and overlook a subject a fill left in place, `overlooked`) |
+| 10 In-app protocol on the café photo | rounds 1–5 in the devlog (2026-11-03/04); round 6 (blank and ghost checks, strips, the patch fill, the sweep's order) pending |
+| 11 Sweep (`sweep`: find the subjects, cut the nearest, fill, look again until nothing is left; the owner's framing, 2026-11-04) | done (`sweep_subjects`); round 5: 13–27 % slower than the peel, the best room continuation of any round on one seed, but fill debris counted as people and the first pass's depth order lost on later passes, both fixed (`in_first_order`, a kind's cap over all passes, debris mostly inside the painted holes dropped) |
 
 Follow-ups stand as listed above; the depth model first.
