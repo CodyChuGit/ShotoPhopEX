@@ -59,7 +59,7 @@ fn split_by_subjects_cuts_each_instance_out_over_a_repainted_background() {
         let d = s.active().unwrap();
         (d.doc.layers.len(), d.history.past_len())
     };
-    let r = s.execute(SPLIT, json!({"seed": 3})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 3})).unwrap();
     assert_eq!(r["count"], 3, "the background and the two subjects: {r}");
     // ViTMatte (the fake's answer is opaque): each subject is its mask grown by the band.
     assert_eq!(r["edges"], "vitmatte", "{r}");
@@ -101,7 +101,7 @@ fn split_by_subjects_cuts_each_instance_out_over_a_repainted_background() {
     assert_eq!(s.active().unwrap().doc.layers.len(), before);
     fake.restore_scene();
     // `layers` caps the subjects: the largest kept.
-    let r = s.execute(SPLIT, json!({"layers": 2})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 2})).unwrap();
     assert_eq!(r["count"], 2, "{r}");
     assert_eq!(layer_name(&s, LayerId(r["layers"][1].as_u64().unwrap())), "Person", "one of a kind takes no number");
 }
@@ -126,7 +126,7 @@ fn split_completes_what_a_nearer_subject_hid() {
     s.execute("select.rect", json!({"x": 82, "y": 19, "width": 20, "height": 77})).unwrap();
     s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
     s.execute("select.deselect", json!({})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
     // The front subject (bottom edge lower) is the top layer.
@@ -179,7 +179,7 @@ fn split_sweeps_nearest_first_and_finds_the_rest_again_after_each_removal() {
     s.execute("select.rect", json!({"x": 82, "y": 19, "width": 20, "height": 77})).unwrap();
     s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
     s.execute("select.deselect", json!({})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "sweep": true, "layers": 6})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "sweep": true, "layers": 6})).unwrap();
     assert_eq!(r["count"], 3, "two people, then nobody: {r}");
     assert_eq!(r["incomplete"], json!([]), "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -215,7 +215,7 @@ fn split_without_complete_runs_one_fill_and_keeps_the_visible_parts() {
     .unwrap();
     let mut s = session(&fake.url);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "complete": false, "order": "size"})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "complete": false, "order": "size"})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
     assert_eq!(r["order"], "size", "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -248,7 +248,7 @@ fn split_finds_the_things_the_vision_model_names_and_takes_a_list_of_terms() {
     .unwrap();
     let mut s = session(&fake.url);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"layers": 4, "seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 4, "seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "the person and the cup; no table was found: {r}");
     assert_eq!(r["foundBy"], "person, cup", "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -264,7 +264,7 @@ fn split_finds_the_things_the_vision_model_names_and_takes_a_list_of_terms() {
     assert!(s.undo());
     fake.restore_scene();
     // A list of terms, each asked for by name, in the caller's words.
-    let r = s.execute(SPLIT, json!({"layers": 4, "prompt": "the lighthouse, cup:1", "seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 4, "prompt": "the lighthouse, cup:1", "seed": 1})).unwrap();
     assert_eq!(r["foundBy"], "the lighthouse, cup", "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
     let names: Vec<String> = ids.iter().map(|id| layer_name(&s, *id)).collect();
@@ -285,7 +285,7 @@ fn split_validates_its_parameters_and_has_no_similar() {
     for p in [json!({"layers": 1}), json!({"layers": 21}), json!({"layers": 2.5}), json!({"seed": "x"}), json!({"order": "depth"}), json!({"group": "all"})] {
         assert!(matches!(s.execute(SPLIT, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
-    let r = s.execute(SPLIT, json!({"layers": 2, "prompt": "the lighthouse", "name": "Scene"})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 2, "prompt": "the lighthouse", "name": "Scene"})).unwrap();
     assert_eq!(r["foundBy"], "the lighthouse", "the prompt is what to cut out: {r}");
     let id = LayerId(r["layers"][0].as_u64().unwrap());
     assert_eq!(s.active().unwrap().doc.layer(id).unwrap().name, "Scene 1/2");
@@ -322,7 +322,7 @@ fn split_takes_hair_from_the_matte_around_each_subject() {
     .unwrap();
     let mut s = session(&fake.url);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"layers": 2, "seed": 1, "edges": "matte"})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 2, "seed": 1, "edges": "matte"})).unwrap();
     assert_eq!(r["edges"], "matte", "{r}");
     let subject = LayerId(r["layers"][1].as_u64().unwrap());
     assert_eq!(alpha_at(&s, subject, 5, 5), 1.0, "inside the mask");
@@ -334,10 +334,10 @@ fn split_takes_hair_from_the_matte_around_each_subject() {
     // The other edge sources, by name, each from the plain picture again (a split over the last
     // one's layers has their seams in the ring, and a flat fill is then no fill).
     assert!(s.undo());
-    let r = s.execute(SPLIT, json!({"layers": 2, "edges": "refine"})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 2, "edges": "refine"})).unwrap();
     assert_eq!(r["edges"], "refine", "{r}");
     assert!(s.undo());
-    let r = s.execute(SPLIT, json!({"layers": 2, "edges": "vitmatte"})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 2, "edges": "vitmatte"})).unwrap();
     assert_eq!(r["edges"], "vitmatte", "{r}");
     let subject = LayerId(r["layers"][1].as_u64().unwrap());
     assert_eq!(alpha_at(&s, subject, 5, 5), 1.0, "solid inside the mask");
@@ -347,7 +347,7 @@ fn split_takes_hair_from_the_matte_around_each_subject() {
     assert!(run.request["mask"].is_object(), "with a trimap: {}", run.request);
     drop(st);
     for bad in ["soft", "hair", "bogus"] {
-        assert!(matches!(s.execute(SPLIT, json!({"edges": bad})), Err(EngineError::BadParams { .. })), "{bad}");
+        assert!(matches!(s.execute(SPLIT, json!({"method": "classic", "edges": bad})), Err(EngineError::BadParams { .. })), "{bad}");
     }
 }
 
@@ -362,7 +362,7 @@ fn split_fails_with_nothing_changed_when_every_fill_paints_the_subject_back() {
         let d = s.active().unwrap();
         (d.doc.layers.len(), d.history.past_len())
     };
-    let e = s.execute(SPLIT, json!({"seed": 3})).unwrap_err().to_string();
+    let e = s.execute(SPLIT, json!({"method": "classic", "seed": 3})).unwrap_err().to_string();
     assert!(e.contains("could not clear"), "{e}");
     let d = s.active().unwrap();
     assert_eq!((d.doc.layers.len(), d.history.past_len()), (before, steps), "nothing changed");
@@ -410,7 +410,7 @@ fn the_split_background_takes_the_plain_name_when_the_document_has_no_background
     let base = s.active().unwrap().doc.layers.iter().find(|l| l.name == "Background").map(|l| l.id).expect("the document's own Background");
     s.execute("layer.renameLayer", json!({"layer": base.0, "name": "Photo"})).unwrap();
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"layers": 2, "seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 2, "seed": 1})).unwrap();
     assert_eq!(layer_name(&s, LayerId(r["layers"][0].as_u64().unwrap())), "Background");
 }
 
@@ -433,7 +433,7 @@ fn the_layer_budget_counts_the_subjects_kept_not_the_detections() {
     .unwrap();
     let mut s = session(&fake.url);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"layers": 3, "prompt": "person, man, cup", "seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 3, "prompt": "person, man, cup", "seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "the person once, and the cup: {r}");
     assert_eq!(r["foundBy"], "person, cup", "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -461,7 +461,7 @@ fn split_rejects_a_fill_that_paints_someone_new_into_the_hole() {
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
     assert_eq!(r["incomplete"], json!(["Person 2"]), "the right one could not be cleared: {r}");
     assert_eq!(r["refusedLayers"], json!([]), "no refused fill is kept unless asked for: {r}");
@@ -508,7 +508,7 @@ fn split_refuses_a_fill_that_leaves_the_subject_in_place_though_the_detector_mis
     let fake = FakeNative::start_with(photocraft_genai::fake::Options { echo: true, occlusion: true, overlooked: true, ..Default::default() }).unwrap();
     let mut s = session(&fake.url);
     s.execute("edit.fill", json!({"contents": "color", "color": "#1e5aa0"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 3})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 3})).unwrap();
     let tries = r["tries"].as_array().unwrap();
     assert_eq!(tries.len(), 3, "{tries:?}");
     for t in &tries[..2] {
@@ -565,7 +565,7 @@ fn one_of_each_listed_thing_comes_before_a_second_of_any() {
     .unwrap();
     let mut s = session_of(&fake.url, 128, 96);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"layers": 4, "seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 4, "seed": 1})).unwrap();
     assert_eq!(r["count"], 4, "{r}");
     assert_eq!(r["foundBy"], "cup, wooden table", "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -707,7 +707,7 @@ fn a_big_hole_gets_the_removal_then_strips_then_the_box_and_the_patch() {
     s.execute("select.rect", json!({"x": 270, "y": 24, "width": 360, "height": 552})).unwrap();
     s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
     s.execute("select.deselect", json!({})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 2})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "layers": 2})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
     let tries = r["tries"].as_array().unwrap();
     assert_eq!(tries.iter().map(|t| t["fill"].as_str().unwrap_or("")).collect::<Vec<_>>(), ["removal", "strips", "strips", "fill", "patch"], "{tries:?}");
@@ -741,7 +741,7 @@ fn a_small_person_a_fill_paints_in_is_refused_however_small() {
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!(r["incomplete"], json!(["Person 2"]), "the right one could not be cleared: {r}");
     let tries = r["tries"].as_array().unwrap();
     assert!(
@@ -776,7 +776,7 @@ fn the_classical_patch_fill_is_the_last_try_when_every_fill_leaves_the_hole_blan
     s.execute("select.rect", json!({"x": 16, "y": 12, "width": 32, "height": 24})).unwrap();
     s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
     s.execute("select.deselect", json!({})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 2, "layers": 2})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 2, "layers": 2})).unwrap();
     assert_eq!(r["incomplete"], json!([]), "{r}");
     let tries = r["tries"].as_array().unwrap();
     assert_eq!(tries.len(), 6, "five fills and the patch: {tries:?}");
@@ -812,7 +812,7 @@ fn a_sweep_cuts_everyone_the_first_pass_saw_even_when_the_detector_loses_them() 
     s.execute("select.rect", json!({"x": 154, "y": 58, "width": 15, "height": 96})).unwrap();
     s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
     s.execute("select.deselect", json!({})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "sweep": true, "layers": 6})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "sweep": true, "layers": 6})).unwrap();
     assert_eq!(r["count"], 3, "both people: {r}");
     assert_eq!(r["incomplete"], json!([]), "{r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -933,7 +933,7 @@ fn a_mask_over_the_whole_tile_is_no_figure() {
     .unwrap();
     let mut s = session_of(&fake.url, 900, 600);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 2})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "layers": 2})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
     assert!(r["tries"].as_array().unwrap().iter().all(|t| t["verdict"] == "accepted"), "{r}");
     // On a plain backdrop the look before any fill and the one at the finished background are
@@ -961,7 +961,7 @@ fn a_figure_the_detector_sees_only_in_a_tile_of_the_picture_refuses_the_fill() {
     .unwrap();
     let mut s = session_of(&fake.url, 900, 600);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let err = s.execute(SPLIT, json!({"seed": 1, "layers": 2})).unwrap_err().to_string();
+    let err = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "layers": 2})).unwrap_err().to_string();
     assert!(err.contains("a person painted into the hole (32×42 px)") && err.contains("nothing was changed"), "{err}");
     // Every model fill; the classical patch copies the canvas around the hole, the colour the
     // fake's person is, and is refused as kept before the detector is asked.
@@ -992,7 +992,7 @@ fn someone_in_the_picture_before_the_fill_is_neither_the_fills_work_nor_left_beh
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
     assert_eq!(r["leftBehind"], json!([]), "{r}");
     assert_eq!(r["already"].as_array().map(Vec::len), Some(1), "the figure, found before any fill: {r}");
@@ -1018,7 +1018,7 @@ fn an_invented_thing_is_taken_as_the_last_resort_when_every_try_is_refused() {
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "prompt": "person, table"})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "prompt": "person, table"})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
     let tries = r["tries"].as_array().unwrap();
     assert_eq!(
@@ -1079,7 +1079,7 @@ fn refused_fills_are_kept_as_hidden_layers_on_request() {
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "keepTries": true})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "keepTries": true})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(1)), "{r}");
     let refused: Vec<LayerId> = r["refusedLayers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
     assert_eq!(refused.len(), 6, "{r}");
@@ -1173,7 +1173,7 @@ fn someone_in_a_framed_picture_is_a_picture_of_a_person() {
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
     assert_eq!(r["leftBehind"], json!([]), "{r}");
     let tries = r["tries"].as_array().unwrap();
@@ -1213,7 +1213,7 @@ fn a_sweep_takes_a_subjects_part_apart_from_their_mask_for_theirs() {
     s.execute("select.rect", json!({"x": 71, "y": 71, "width": 63, "height": 12})).unwrap();
     s.execute("edit.fill", json!({"contents": "color", "color": "#0ac80a"})).unwrap();
     s.execute("select.deselect", json!({})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "sweep": true, "layers": 6})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "sweep": true, "layers": 6})).unwrap();
     assert_eq!(r["count"], 3, "two people and the background, no layer for the part: {r}");
     assert_eq!(r["incomplete"], json!([]), "{r}");
     assert_eq!(r["leftBehind"], json!([]), "{r}");
@@ -1244,4 +1244,85 @@ fn a_sweep_takes_a_subjects_part_apart_from_their_mask_for_theirs() {
     assert!(!part_below(&subject(60, 110, 120, 140), &of), "out of their width");
     assert!(!part_below(&subject(100, 110, 240, 220), &of), "larger than them");
     assert!(part_below(&subject(80, 90, 220, 120), &of), "a little wider, starting above their bottom");
+}
+
+#[test]
+fn simple_split_removes_the_nearest_until_the_detector_finds_nothing() {
+    // The default method: two people, the front one over the back one's middle (as in
+    // `split_completes_what_a_nearer_subject_hid`). The detector sees both; the front one is cut
+    // and removed; the detector looks again and sees the back one, now whole; it is cut and
+    // removed; the detector sees nobody and the split ends.
+    let front = [0.4, 0.2, 0.6, 0.9];
+    let back = [0.05, 0.1, 0.95, 0.5];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![front, back],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let steps = s.active().unwrap().history.past_len();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
+    assert_eq!(r["method"], "simple", "{r}");
+    assert_eq!(r["count"], 3, "two people, then nobody: {r}");
+    assert_eq!((r["incomplete"].clone(), r["leftBehind"].clone()), (json!([]), json!([])), "{r}");
+    assert_eq!(r["passes"], 2, "{r}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(layer_name(&s, ids[0]), "Split background");
+    assert_eq!((layer_name(&s, ids[1]).as_str(), layer_name(&s, ids[2]).as_str()), ("Person 1", "Person 2"), "the front one on top");
+    assert!(alpha_at(&s, ids[2], 128, 160) > 0.5, "the front one holds its lower body");
+    let back_px = pixel_at(&s, ids[1], 128, 64);
+    // (The removal's result is tone matched to the picture at the hole's edge all the way, as
+    // the Remove tool's, so the fake's green comes back as the picture's red.)
+    assert!(back_px[3] > 0.5, "the back one is whole where the front one stood: {back_px:?}");
+    assert_eq!(alpha_at(&s, ids[1], 240, 180), 0.0, "and nothing more");
+    assert_eq!(alpha_at(&s, ids[0], 128, 64), 1.0, "the background is whole");
+    let tries = r["tries"].as_array().unwrap();
+    assert_eq!(tries.len(), 2, "{tries:?}");
+    assert!(tries.iter().all(|t| t["verdict"] == "accepted" && t["fill"] == "removal"), "{tries:?}");
+    assert_eq!((tries[0]["behind"].as_str(), tries[1]["behind"].as_str()), (Some("Person 2"), Some("Person 1")), "{tries:?}");
+    assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "one undo step");
+    let st = fake.state();
+    let fills = st.runs.iter().filter(|r| r.request["task"] == "fill" || r.request["task"] == "edit").count();
+    assert_eq!(fills, 2, "one removal each, no strips, no box, no patch");
+    // Found (people, animals), then after each removal checked and looked at again; each one
+    // counted in the result.
+    let segments = st.runs.iter().filter(|r| r.request["task"] == "segment").count() as u64;
+    assert!(segments <= 8, "{segments}");
+    assert_eq!(r["detector"]["requests"].as_u64(), Some(segments), "{r}");
+}
+
+#[test]
+fn simple_split_fails_cleanly_when_no_removal_clears_anyone() {
+    // `echo`: every fill hands the picture back, so the detector still finds both people in
+    // their holes after every try. Nobody can be cleared: an error naming the tries, and the
+    // document as it was.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.4, 0.2, 0.6, 0.9], [0.05, 0.1, 0.95, 0.5]],
+        occlusion: true,
+        echo: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let (before, steps) = {
+        let d = s.active().unwrap();
+        (d.doc.layers.len(), d.history.past_len())
+    };
+    let e = s.execute(SPLIT, json!({"seed": 1, "layers": 4})).unwrap_err().to_string();
+    assert!(e.contains("could not clear") && e.contains("still there"), "{e}");
+    let d = s.active().unwrap();
+    assert_eq!((d.doc.layers.len(), d.history.past_len()), (before, steps), "nothing changed");
+}
+
+#[test]
+fn split_method_is_simple_or_classic() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    for p in [json!({"method": "fancy"}), json!({"method": 3})] {
+        assert!(matches!(s.execute(SPLIT, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
+    }
 }
