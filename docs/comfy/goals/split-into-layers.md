@@ -243,8 +243,21 @@ Report warm times (second run) and the first run separately.
    withdrawn the same day. It invented people (a copy of the woman beside her, 3 of 3 café
    seeds) and rooms (2 of 3 on images.jpg), and every switch between Krea 2 and the 2.1 family
    reloaded the other model, about 60 s a split. A retry needs its prompt writer ("with the
-   {name} gone"), one model family for the whole split, and the `invented` check (now in).
+   {name} gone"), one model family for the whole split, and the checks now in
+   (`fills_own_work`, `kept_share`).
 4. The faint outline on the grey-box backdrop fill (2 of 3 seeds on the 12 MP portrait).
+5. The blur of the grey-box 2.1 fills over large holes (the left half of the café background,
+   every round): a final whole-background removal over all the holes once every subject is
+   out, kept only if it passes the checks; or a fill model that keeps texture.
+6. A classical fill (no model) as the last try for a small thing: a cup refused five times
+   stays in the background; a patch fill never paints a cup back.
+7. Speed: of a 131–163 s café run only 55–85 s is filling; the rest is detection, matting and
+   a SAM check after every fill. Cache the detector per picture and check only the kinds that
+   stand near the hole. The acceptance is under 90 s warm.
+8. The woman's detached dark block below the table edge (her legs under the table, round 2–4):
+   once the table is a subject, a part of a detection the table separates from the body goes.
+9. Keep the rejected fills on request (a `keepTries` option), so a refusal can be seen and not
+   only read in `tries`.
 
 ## 3. Status
 
@@ -252,15 +265,16 @@ Landed 2026-11-03 (the thread's PR; devlog entry of the same day):
 
 | Item of §2 | State |
 |---|---|
-| 1 Subjects per term (list prompt, `cup:3`, people → animals → things Qwen3-VL lists → fallbacks) | done (`find_subjects`, `list_things`); the budget counts the subjects kept, not the detections (2026-11-04) |
+| 1 Subjects per term (list prompt, `cup:3`, people → animals → things Qwen3-VL lists → fallbacks) | done (`find_subjects`, `list_things`); the budget counts the subjects kept, not the detections; the things one of each first, then up to three of each, so the table comes before a third cup (2026-11-04) |
 | 2 Cleaning (specks, whole frame, IoU duplicates, parts, touching groups) | done (`clean`) |
-| 3 Mattes per subject, re-matted after completion | done (`matte_all`) |
+| 3 Mattes per subject, re-matted after completion | done (`matte_all`); a sweep mattes each subject at its turn, the others' bodies kept out of its band (ViTMatte's `only`) |
 | 4 Order (contact bend, bottom edge, size, nested boxes; topological sort) | done (`generate_split_order.rs`); no depth model yet |
-| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`); a fill that paints anyone new is rejected (`invented`, 2026-11-04) |
+| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`); a fill that paints anyone new is rejected (`fills_own_work`), a person's silhouette the fill kept is refused by its pixels too (`kept_share`: round 4's front-left man came back almost pixel for pixel and the detector check passed him), a thing is judged on its own spot, and every try's verdict comes back in `tries` (2026-11-04) |
 | 6 Placing and naming ("Background", "Person 1" back to front, "Cup") | done |
-| 7 Parameters (`complete`, `order`, `group`, `layers` to 12) and the dialog | done |
+| 7 Parameters (`complete`, `sweep`, `order`, `group`, `layers` to 20) and the dialog | done (`layers` raised from 12 on 2026-11-04: the café's seven people, three cups, cards and table are twelve subjects) |
 | 8 Smoke and haze as a translucent layer | not started (phase 3) |
-| 9 Tests against the fake worker's occlusion model | done (13 Split tests + 4 order tests; the fake can paint someone in, `appears`) |
-| 10 In-app protocol on the café photo | see the devlog entry for the numbers |
+| 9 Tests against the fake worker's occlusion model | done (31 Split tests + 4 order tests; the fake can paint someone in, `appears`, and overlook a subject a fill left in place, `overlooked`) |
+| 10 In-app protocol on the café photo | rounds 1–4 in the devlog (2026-11-03/04); round 5 (the pixel check, the sweep) pending |
+| 11 Sweep (`sweep`: find the subjects, cut the nearest, fill, look again until nothing is left; the owner's framing, 2026-11-04) | done (`sweep_subjects`); not yet measured in the app |
 
 Follow-ups stand as listed above; the depth model first.

@@ -34,6 +34,9 @@ pub struct Options {
     /// Rectangles the detector returns (whole, in front of everything) once any fill or edit has
     /// run: what a fill painted into the picture that was never there.
     pub appears: Vec<[f32; 4]>,
+    /// With `occlusion` and `echo`: the detector still loses what a fill covered, though the
+    /// fill handed the picture back. A subject the fill left in place that the detector misses.
+    pub overlooked: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -53,6 +56,7 @@ impl Default for Options {
             templates_only: false,
             occlusion: false,
             appears: Vec::new(),
+            overlooked: false,
         }
     }
 }
@@ -209,7 +213,7 @@ impl Engine for FakeEngine {
             }
             if req.task == "fill" || req.task == "edit" {
                 if self.options.occlusion {
-                    if !self.options.echo {
+                    if !self.options.echo || self.options.overlooked {
                         let gone = self.taken_out(req, blobs, &state.gone);
                         state.gone = gone;
                     }

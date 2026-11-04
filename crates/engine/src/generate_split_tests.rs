@@ -157,6 +157,48 @@ fn split_completes_what_a_nearer_subject_hid() {
 }
 
 #[test]
+fn split_sweeps_nearest_first_and_finds_the_rest_again_after_each_removal() {
+    // The same two people as above, as a sweep: the front one is found, cut and removed; the
+    // back one is found again on the filled picture, whole (the fake returns each rectangle
+    // minus the nearer ones still there); a third look finds nobody.
+    let front = [0.4, 0.2, 0.6, 0.9];
+    let back = [0.05, 0.1, 0.95, 0.5];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![front, back],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    s.execute("select.rect", json!({"x": 82, "y": 19, "width": 20, "height": 77})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "sweep": true, "layers": 6})).unwrap();
+    assert_eq!(r["count"], 3, "two people, then nobody: {r}");
+    assert_eq!(r["incomplete"], json!([]), "{r}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!((layer_name(&s, ids[1]).as_str(), layer_name(&s, ids[2]).as_str()), ("Person 1", "Person 2"), "the front one on top");
+    assert!(alpha_at(&s, ids[2], 128, 160) > 0.5, "the front one holds its lower body");
+    let back_px = pixel_at(&s, ids[1], 128, 64);
+    assert!(back_px[3] > 0.5 && back_px[1] > 0.6, "the back one is whole where the front one stood, from the fill: {back_px:?}");
+    let kept = pixel_at(&s, ids[1], 90, 50);
+    assert!(kept[3] > 0.5 && kept[2] > 0.7 && kept[0] < 0.3, "its visible pixels are its own through the first removal: {kept:?}");
+    assert_eq!(alpha_at(&s, ids[1], 240, 180), 0.0, "and nothing more");
+    assert_eq!(r["subjects"][0]["bounds"][0], 13, "found again whole: {r}");
+    let bg = pixel_at(&s, ids[0], 128, 64);
+    assert!(bg[1] > 0.5 && bg[0] < 0.3, "the background is the fill: {bg:?}");
+    let tries = r["tries"].as_array().unwrap();
+    assert_eq!(tries.len(), 2, "{tries:?}");
+    assert_eq!((tries[0]["behind"].as_str(), tries[1]["behind"].as_str()), (Some("Person 2"), Some("Person 1")), "{tries:?}");
+    let st = fake.state();
+    let segments: Vec<&str> = st.runs.iter().filter(|r| r.request["task"] == "segment").map(|r| r.request["prompt"].as_str().unwrap_or("")).collect();
+    assert!(segments.len() >= 5, "found, checked, found again, checked, found nobody: {segments:?}");
+    assert_eq!(st.runs.iter().filter(|r| r.request["model"] == "vitmatte/refine").count(), 2, "each subject matted once, at its turn");
+}
+
+#[test]
 fn split_without_complete_runs_one_fill_and_keeps_the_visible_parts() {
     let front = [0.3, 0.2, 0.7, 0.9];
     let back = [0.1, 0.1, 0.9, 0.5];
@@ -233,7 +275,7 @@ fn split_finds_the_things_the_vision_model_names_and_takes_a_list_of_terms() {
 fn split_validates_its_parameters_and_has_no_similar() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
-    for p in [json!({"layers": 1}), json!({"layers": 13}), json!({"layers": 2.5}), json!({"seed": "x"}), json!({"order": "depth"}), json!({"group": "all"})] {
+    for p in [json!({"layers": 1}), json!({"layers": 21}), json!({"layers": 2.5}), json!({"seed": "x"}), json!({"order": "depth"}), json!({"group": "all"})] {
         assert!(matches!(s.execute(SPLIT, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
     let r = s.execute(SPLIT, json!({"layers": 2, "prompt": "the lighthouse", "name": "Scene"})).unwrap();
@@ -266,6 +308,8 @@ fn split_takes_hair_from_the_matte_around_each_subject() {
     let fake = FakeNative::start_with(photocraft_genai::fake::Options {
         segments: vec![[0.0, 0.0, 0.5, 0.5]],
         matte: Some([0.0, 0.0, 0.6, 0.6]),
+        // Not the picture's own red: a fill in the subject's colours is the subject kept.
+        color: [10, 200, 10, 255],
         ..Default::default()
     })
     .unwrap();
@@ -344,7 +388,13 @@ fn a_detection_grows_a_subject_only_where_it_joins_it() {
 
 #[test]
 fn the_split_background_takes_the_plain_name_when_the_document_has_no_background_layer() {
-    let fake = FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![[0.0, 0.0, 0.5, 0.5]], occlusion: true, ..Default::default() }).unwrap();
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.0, 0.0, 0.5, 0.5]],
+        occlusion: true,
+        color: [10, 200, 10, 255],
+        ..Default::default()
+    })
+    .unwrap();
     let mut s = session(&fake.url);
     let base = s.active().unwrap().doc.layers.iter().find(|l| l.name == "Background").map(|l| l.id).expect("the document's own Background");
     s.execute("layer.renameLayer", json!({"layer": base.0, "name": "Photo"})).unwrap();
@@ -409,21 +459,127 @@ fn split_rejects_a_fill_that_paints_someone_new_into_the_hole() {
     assert!(kept[0] > 0.7 && kept[1] < 0.3, "the right one stays in the background, untouched: {kept:?}");
     assert!(alpha_at(&s, ids[2], 192, 96) > 0.5, "and still gets its layer");
     let st = fake.state();
-    let fills = st.runs.iter().filter(|r| r.request["task"] != "segment" && r.request["task"] != "text" && r.request["model"] != "vitmatte/refine").count();
-    assert_eq!(fills, 6, "five rejected tries behind the right one, one fill behind the left: {fills}");
+    let fills: Vec<String> = st
+        .runs
+        .iter()
+        .filter(|r| r.request["task"] != "segment" && r.request["task"] != "text" && r.request["model"] != "vitmatte/refine")
+        .map(|r| format!("{}:{}", r.request["task"], r.request["model"]))
+        .collect();
+    assert_eq!(fills.len(), 6, "five rejected tries behind the right one, one fill behind the left: {fills:?} {:?}", r["tries"]);
+    // The record of every try: the removal, then the grey-box fills, each with its verdict.
+    let tries = r["tries"].as_array().unwrap();
+    assert_eq!((tries.len(), r["fills"].as_u64()), (6, Some(6)), "{tries:?}");
+    assert!(tries.iter().take(5).all(|t| t["behind"] == "Person 2" && t["verdict"].as_str().unwrap_or("").contains("was not there")), "{tries:?}");
+    assert_eq!((tries[0]["fill"].as_str(), tries[1]["fill"].as_str()), (Some("removal"), Some("fill")), "{tries:?}");
+    assert_eq!(
+        (tries[5]["behind"].as_str(), tries[5]["fill"].as_str(), tries[5]["verdict"].as_str()),
+        (Some("Person 1"), Some("removal"), Some("accepted")),
+        "{tries:?}"
+    );
+}
+
+#[test]
+fn split_refuses_a_fill_that_leaves_the_subject_in_place_though_the_detector_misses_it() {
+    // The fake's fill hands the picture back (echo) and its detector forgets the subject all
+    // the same (overlooked): the removal's try is refused by the pixels, the subject's
+    // silhouette as it was. The grey-box try after it gets the hole flattened to grey in its
+    // request and hands that back, which is not the subject, so it passes.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options { echo: true, occlusion: true, overlooked: true, ..Default::default() }).unwrap();
+    let mut s = session(&fake.url);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#1e5aa0"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 3})).unwrap();
+    let tries = r["tries"].as_array().unwrap();
+    assert_eq!(tries.len(), 2, "{tries:?}");
+    assert_eq!(tries[0]["fill"], "removal", "{tries:?}");
+    assert!(tries[0]["verdict"].as_str().unwrap_or("").starts_with("kept what stood there (100 %"), "{tries:?}");
+    assert_eq!((tries[1]["fill"].as_str(), tries[1]["verdict"].as_str()), (Some("fill"), Some("accepted")), "{tries:?}");
+    // The detector was asked after the first try and saw nothing: the pixels refused it.
+    let st = fake.state();
+    let after_first: Vec<&str> = st
+        .runs
+        .iter()
+        .skip_while(|r| r.request["task"] != "fill" && r.request["task"] != "edit")
+        .skip(1)
+        .map(|r| r.request["task"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(after_first.first().copied(), Some("fill"), "no detector call between the refused try and the next: {after_first:?}");
+}
+
+#[test]
+fn a_fill_kept_what_it_left_the_colour_it_was() {
+    use super::split_subjects::kept_share;
+    // A 16×16 picture, red; the region is its left half (two 8-px blocks).
+    let (w, h) = (16usize, 16usize);
+    let before: Vec<u8> = (0..w * h).flat_map(|_| [200u8, 40, 40, 255]).collect();
+    let region: Vec<f32> = (0..w * h).map(|k| if k % w < 8 { 1.0 } else { 0.0 }).collect();
+    assert_eq!(kept_share(&before, &before, &region, w, h), 1.0, "unchanged: all kept");
+    let shifted: Vec<u8> = (0..w * h).flat_map(|_| [190u8, 50, 30, 255]).collect();
+    assert_eq!(kept_share(&before, &shifted, &region, w, h), 1.0, "a few levels off (re-encoded): kept");
+    let blue: Vec<u8> = (0..w * h).flat_map(|_| [30u8, 60, 200, 255]).collect();
+    assert_eq!(kept_share(&before, &blue, &region, w, h), 0.0, "repainted: nothing kept");
+    let half: Vec<u8> = (0..w * h).flat_map(|k| if k / w < 8 { [200u8, 40, 40, 255] } else { [30, 60, 200, 255] }).collect();
+    assert_eq!(kept_share(&before, &half, &region, w, h), 0.5, "the top block kept, the bottom repainted");
+    let nowhere = vec![0.0f32; w * h];
+    assert_eq!(kept_share(&before, &before, &nowhere, w, h), 0.0, "no region: nothing to keep");
+}
+
+#[test]
+fn one_of_each_listed_thing_comes_before_a_second_of_any() {
+    // No people or animals; the model lists two things; three cups and one table are there. The
+    // budget of three subjects takes a cup and the table before the second cup.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: Vec::new(),
+        segments_for: vec![
+            ("cup".into(), vec![[0.05, 0.7, 0.15, 0.85], [0.25, 0.7, 0.35, 0.85], [0.45, 0.7, 0.55, 0.85]]),
+            ("wooden table".into(), vec![[0.0, 0.4, 1.0, 0.6]]),
+        ],
+        enhanced_text: Some("a cup, the wooden table".into()),
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 128, 96);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"layers": 4, "seed": 1})).unwrap();
+    assert_eq!(r["count"], 4, "{r}");
+    assert_eq!(r["foundBy"], "cup, wooden table", "{r}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    let mut names: Vec<String> = ids.iter().skip(1).map(|id| layer_name(&s, *id)).collect();
+    names.sort();
+    assert_eq!(names, ["Cup 1", "Cup 2", "Wooden table"], "two cups and the table, not three cups");
+    let st = fake.state();
+    let asked: Vec<usize> = st
+        .runs
+        .iter()
+        .filter(|r| r.request["task"] == "segment" && r.request["prompt"] == "cup")
+        .map(|r| r.request["params"]["maxDetections"].as_u64().unwrap_or(0) as usize)
+        .collect();
+    assert!(asked.len() >= 2 && asked[0] == 1, "one cup first, then more: {asked:?}");
 }
 
 #[test]
 fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
-    use super::split_subjects::invented;
-    // An 8×2 grid: the fill repainted the left 12 pixels; the subject behind holds pixels 0–1.
-    let region: Vec<f32> = (0..16).map(|k| if k < 12 { 1.0 } else { 0.0 }).collect();
+    use super::split_subjects::fills_own_work;
+    // A row of 16 pixels: the cut subject held pixels 4–11 (the hole), the fill repainted
+    // 0–13 (the hole widened); the subject behind holds pixels 0–1.
+    let hole: Vec<f32> = (0..16).map(|k| if (4..12).contains(&k) { 1.0 } else { 0.0 }).collect();
+    let grown: Vec<f32> = (0..16).map(|k| if k < 14 { 1.0 } else { 0.0 }).collect();
     let subject: Vec<f32> = (0..16).map(|k| if k < 2 { 1.0 } else { 0.0 }).collect();
     let behind = vec![("person".to_string(), subject, 2u64)];
     let det = |from: usize, to: usize| -> Vec<f32> { (0..16).map(|k| if k >= from && k < to { 1.0 } else { 0.0 }).collect() };
-    assert!(!invented("person", &det(0, 6), &region, &behind), "the subject with twice its pixels added: completed");
-    assert!(invented("person", &det(0, 7), &region, &behind), "more than twice: someone new standing over it");
-    assert!(invented("person", &det(8, 12), &region, &behind), "inside the repainted area, continuing nobody: painted in");
-    assert!(invented("cup", &det(0, 6), &region, &behind), "another kind over the subject: painted in");
-    assert!(!invented("person", &det(12, 16), &region, &behind), "outside the repainted area: was there before");
+    let cut = ("person", &hole[..], 8u64);
+    let own = |term: &str, d: &[f32], kept: f32| fills_own_work(term, d, &hole, &grown, cut, &behind, &|_| kept);
+    assert_eq!(own("person", &det(0, 6), 0.0), None, "the subject with twice its pixels added: completed");
+    assert!(own("person", &det(0, 6), 0.5).unwrap().contains("painted back over"), "but looking as the cut one did: painted back");
+    assert!(own("person", &det(0, 7), 0.0).unwrap().contains("more than a completion"), "more than twice: someone new standing over it");
+    assert!(own("person", &det(12, 14), 0.0).unwrap().contains("was not there"), "in the repainted band, continuing nobody: painted in");
+    assert!(own("person", &det(4, 12), 0.0).unwrap().contains("the person painted back"), "the cut one's own shape");
+    assert!(own("cup", &det(4, 10), 0.0).unwrap().contains("a cup in the hole"), "another kind on the spot: painted in");
+    assert_eq!(own("person", &det(14, 16), 0.0), None, "outside the repainted area: was there before");
+    // A thing is judged on its own spot: a cup in the widened band only was there before (a
+    // saucer beside the cup); a person there is painted in.
+    assert_eq!(own("cup", &det(12, 14), 0.0), None, "a cup beside the hole");
+    assert_eq!(own("cup", &det(0, 6), 0.0), None, "a cup mostly beside the hole");
+    assert!(own("person", &det(12, 14), 0.0).is_some(), "a person in the widened band");
 }

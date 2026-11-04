@@ -4,6 +4,53 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-04: Split round 4: a man painted back passed the detector; the pixels judge too; a sweep
+
+Round 4 of the café photo in the app (9d30c9ba2, 12 layers, seeds 1–3, Cody's RTX 5090), the
+2.1 fills alone with the anyone-new check: round 3's invented people are gone (no copy of the
+woman, no man in a suit, no changed room; images.jpg's backdrop plain again, 4.5–4.9 s), one
+model family per split confirmed (no model load after the warm-up; café 151 s cold, 131 and
+163 s warm, against round 3's 222–251), the portrait clean on three seeds (66, 38, 38 s), and
+the subject layers as in round 3 (Cup 1–3, the held card, seven people; 6 good / 5 usable in
+seed 1, 5 / 6 in the others). But seed 1's background has the front-left man painted back almost
+as he was, accepted on the third try (a grey-box fill), with `incomplete` empty: the app's own
+detector finds him there (642×1137 px at his place). The exception for a completion let him
+through: a detection in the hole that continues a subject behind by at most twice its visible
+pixels passes, and the man's neighbour is large. Cup 2 was refused in two seeds (five tries
+each; round 2 and seed 1 took it on the first), and whether rightly could not be told, the log
+naming no hole and no verdict. So now: (1) a person's silhouette is compared block by block
+with what stood there (`kept_share`, 8-px blocks, 24 levels): a fill that kept three quarters
+of it is refused by the pixels, whatever the detector saw, and a detection that continues
+someone behind but still looks 40 % like the cut subject is the subject painted back
+(`fills_own_work`, `KEPT_WHOLE`, `KEPT_LOOKS`); a thing (a cup) is judged on its own spot, not
+the widened hole, a saucer beside it overlapping the grow and not the cup. (2) Every fill tried
+comes back in the result (`tries`: the subject, removal or grey-box fill, accepted or why not;
+`fills` the count), so a refusal can be audited from result.json. (3) A split's tone matches
+(its removal's membrane, its grey-box fill's grid) move a channel at most 40 levels
+(`TONE_MATCH_MAX`, `FillJob::tone_most`), so the checks judge what the fill painted and a fill
+in other colours altogether keeps them (the fake worker's flat colour stays its colour under
+test instead of becoming the picture's); the Remove tools match all the way, as before (two of
+their tests said so when the cap first reached them). (4) Things are searched
+one of each first, then up to three of each, so the table is asked for before a third cup; and
+`layers` goes to 20 (the café's seven people, three cups, cards and table are twelve subjects).
+(5) Cody's framing, "a batch Select Subject and Remove, front to back, until nothing is left",
+is a `sweep` option: the subjects are found on the picture as it stands, the nearest is cut and
+its hole filled with the same checks, and the picture is searched again until nothing is found
+or the budget is spent; whoever stands behind is found anew on the filled picture, whole where
+the fill completed them, and matted at their turn (ViTMatte's `only`, the others' bodies kept
+out of the band). Tried first with the app's existing commands on the café: the bare loop
+(Select Subject, Remove, repeat) picks the fedora man, the plain Remove paints him back a little
+more orange each pass, and sixteen steps separate nothing; with a painted-back check and one
+retry, all three cups and the cards on the table come out on the first try (about 3 s each, the
+table repainted clean under them, better than the peel's one held card), while the fedora man,
+the woman in blue and the table stay stuck. The sweep in Split has the grey-box fallbacks and
+the pixel check the loop lacked. The fake worker can overlook a subject the fill left in place
+(`Options::overlooked`), so a test covers the pixel check; 31 Split tests. Open: the depth
+order (the fedora man under the striped man and the woman, every round), the blur of the
+grey-box fills over large holes, the woman's detached block below the table edge, a 1248×832
+edit in seed 1's cold run right after the vision-language call with no check after it
+(the warm-up's, probably; not seen warm), and a classical fill as a last try for small things.
+
 ## 2026-11-04: Split round 3: AnyPaint invents people, so the 2.1 fills stay; a check for anyone new
 
 Round 2 of the café photo in the app (ba6cfa12a, 12 layers, seeds 1–3, Cody's RTX 5090): the
