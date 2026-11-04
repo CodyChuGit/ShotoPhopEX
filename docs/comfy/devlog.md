@@ -4,6 +4,59 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-04: Split round 6: the strips invent people and fog the room, the sweep loses subjects; the detector over every touched pixel, the first pass's list, the removal first
+
+Round 6 of the café photo in the app (671c6ca03, 16 runs, round 5's protocol, Cody's RTX
+5090). Won: round 5's near-white boxes are gone from six of eight café backgrounds, the fedora
+man stands above the striped man in every peel run, the sweep has no debris layers and keeps
+its cup cap (one cup at 12 layers, two at 16), the cold run's edges are ViTMatte's, and the
+peel's cuts are round 5's (7 good / 4 usable at 12 layers). Lost: the strips invent people and
+rooms (small diners, an office, a back room, a man at a counter, at the left edge or top right
+of every peel café background and two sweep ones, 30×71 to 131×336 px by the app's own
+detector, every try accepted), two blanks still passed (peel seed 2: a pale box with the fedora
+man's silhouette over the right third of its hole; sweep seed 1: a flat white right quarter),
+the strips' seams show as steps and hard rectangles and the room is fogged, not continued;
+images.jpg's plain terracotta became two strips, grey over white, with a hard seam (seed 3 an
+invented white room; the sweep cut a 39-px sliver as a second person), and the portrait's
+seed-3 peel background has a person by the detector (466×783 px; deleted unopened). The sweep
+lost subjects: at 12 layers it stopped at seven (the striped man, the waiter and the edge
+person never layers, left in the background as they were, three seeds of three), at 16 at
+nine, the striped man refused six times (patch included) and above the fedora man again. The
+patch ran three times (the near table twice, the striped man once) and was refused each time.
+Slower everywhere: café peel 194–291 s warm (round 5: 126–150), the sweep 190–274 (147–196),
+301 and 333 s at 16 layers, images.jpg 6.0–6.3 s (4.1–4.7), the portrait 56 s; a strip
+generation takes 5.8–7.9 s against 1.1–1.6 for a 512² removal, `fills` counted tries, not
+generations (15 tries, 29 generations in one run), and `fillMs` left out the holes that ended
+refused. So now: (1) after every fill the detector is asked for people, and for the kinds cut
+and behind, over the whole picture with no speck rule and up to 16 instances (`find_all_in`),
+and anyone at least 60 % inside the pixels the fill touched, down to 0.05 % of the frame, is
+"a person painted into the hole (w×h px)" (`someone_new`) unless it is the subject painted
+back or a part of a listed subject behind; a thing's fragment next to the same thing behind
+passes (the strips' "a table in the hole" refusals beside the near table), and a thing's patch,
+which copies the surroundings and so shows the detector the thing again, is judged by the
+pixels and for people only. (2) The removal is the first try of every hole again (quick, and
+the fill that works on a plain backdrop; a big person skipping it lost images.jpg's backdrop),
+a plain ring (texture under 0.004, sampled at a step that grows with the picture) gets a second
+removal seed and never strips, a big textured hole gets the removal, two strips, the box and a
+third strip, the patch last. (3) The blank and ghost checks run per 32-px cell against the ring
+around that cell, and a fill that left a quarter of the hole's cells blank or shaded is refused
+("left 33 % of the hole blank"), where the whole-hole average passed the pale box and the white
+quarter. (4) The strips overlap 48 px and blend across the overlap. (5) The sweep's first pass
+is authoritative: every subject it found stays pending until it is cut, each pass re-finds on
+the filled picture and matches the finds to the pending subjects (half of the smaller in
+common, `same_subject`), a subject the detector lost is cut by its first mask, every pending
+subject is protected from the fills, only new finds face the debris rule (against the holes as
+painted, not as grown), and the order is the first pass's (`in_first_order` is gone). (6) Every
+try's `generations` and the run's total come back, `fillMs` counts the refused holes too, and
+`leftBehind` lists the people the detector still finds on the final background apart from
+`incomplete`, so a background is judged from result.json alone. (7) A kept subject reads "the
+person still there under the table behind (42 % of it as it was)"; a refused split names every
+try and verdict in its error. 38 Split tests. Open: the strips fog the room instead of
+continuing it (a fill model that keeps texture, or one whole-background pass over all the holes
+at the end), their seams, the near table the peel paints over, the woman's block, the glasses
+man as a fragment, speed (194–333 s against the 90 s target, the strips 110–180 s of a café
+run), the depth model.
+
 ## 2026-11-04: Split round 5: the pixel check holds, the big holes come back blank; strips, a patch fill, the sweep's order
 
 Round 5 of the café photo in the app (9022989b8, 16 runs, Cody's RTX 5090): the peel and the

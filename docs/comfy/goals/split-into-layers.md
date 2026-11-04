@@ -250,24 +250,41 @@ Report warm times (second run) and the first run separately.
    round: a blur under the full tone match, the grey box itself under the capped one). Round 6
    fills a big hole in strips and falls back to the classical patch fill; still to try: a final
    whole-background removal over all the holes once every subject is out, kept only if it
-   passes the checks; or a fill model that keeps texture.
+   passes the checks; or a fill model that keeps texture. Round 6 measured the strips: the
+   boxes gone from six of eight backgrounds, but the room fogged rather than continued, seams
+   between the strips, an invented near table, small invented people and rooms (caught since
+   round 7 by the detector over every pixel the fill touched), and 5.8–7.9 s a strip
+   generation.
 6. The classical patch fill is now the last try of every hole (round 6); a cup refused five
    times no longer stays in the background. Still to decide: whether a big person's hole should
-   take the patch fill at all, or stay in the background with `incomplete` saying so.
+   take the patch fill at all, or stay in the background with `incomplete` saying so. Round 6:
+   the patch ran three times (the near table twice, the striped man once) and was refused each
+   time; since round 7 a thing's patch is judged by the pixels and for people only, the
+   detector seeing the thing again in the copied surroundings by construction.
 7. Speed: of a 131–163 s café run only 55–85 s is filling; the rest is detection, matting and
    a SAM check after every fill. Cache the detector per picture and check only the kinds that
-   stand near the hole. The acceptance is under 90 s warm.
+   stand near the hole. The acceptance is under 90 s warm. Round 6 with the strips: 194–333 s,
+   the strips 110–180 s of a café run.
 8. The woman's detached dark block below the table edge (her legs under the table, round 2–4):
    once the table is a subject, a part of a detection the table separates from the body goes.
 9. Keep the rejected fills on request (a `keepTries` option), so a refusal can be seen and not
    only read in `tries`.
-10. The sweep's debris outside the painted holes (a sliver of the fedora man's trousers below
-    his mask, found as a person on the next pass) and a person inside a framed photograph: a
-    later find much smaller than the first pass's of its kind, or inside a thing found earlier,
-    is not a subject.
+10. The sweep's debris and lost subjects: round 5 counted a sliver of the fedora man's
+    trousers below his mask and a person inside a framed photograph as subjects; round 6's
+    debris rule (a find mostly inside what the fills painted) then dropped real subjects whose
+    holes had grown, and the sweep stopped at seven of eleven. Since round 7 the first pass's
+    list is authoritative (a subject stays pending until it is cut, re-found by overlap or cut
+    by its first mask) and only new finds face the debris rule. Still to do: a later find much
+    smaller than the first pass's of its kind, or inside a thing found earlier, is not a
+    subject.
 11. ViTMatte on the first split of a session: it returned nothing cold (round 5) and the split
-    fell back to the whole-frame matte; asked once more now, but the worker should load it at
-    launch with the rest of the warm-up.
+    fell back to the whole-frame matte; asked once more now (round 6's cold edges are
+    ViTMatte's), but the worker should load it at launch with the rest of the warm-up.
+12. The strips' seams and the near table: in every round-6 peel run the strips of the front
+    people's holes painted over the near table with an invented one, and the seams between
+    strips show as steps and hard rectangles (blended over 48 px since round 7). A strip plan
+    that follows the hole's shape and keeps what stands beside it, or the whole-background
+    pass of (5).
 
 ## 3. Status
 
@@ -279,12 +296,12 @@ Landed 2026-11-03 (the thread's PR; devlog entry of the same day):
 | 2 Cleaning (specks, whole frame, IoU duplicates, parts, touching groups) | done (`clean`) |
 | 3 Mattes per subject, re-matted after completion | done (`matte_all`); a sweep mattes each subject at its turn, the others' bodies kept out of its band (ViTMatte's `only`) |
 | 4 Order (contact bend, bottom edge, size, nested boxes; topological sort) | done (`generate_split_order.rs`); no depth model yet |
-| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`); a fill that paints anyone new is rejected (`fills_own_work`), a person's silhouette the fill kept is refused by its pixels too (`kept_share`: round 4's front-left man came back almost pixel for pixel and the detector check passed him), a thing is judged on its own spot, and every try's verdict comes back in `tries` (2026-11-04); a fill is also judged against the ring around its hole (`blank_or_ghost`: blank where the picture has texture, or a dark or light shape over the hole), a big hole's grey box is filled in strips (`fill_in_strips`) and the classical patch fill is the last try when every fill is refused (`patch_fill`; round 5's big holes came back as the grey box, 2026-11-04) |
+| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`); a fill that paints anyone new is rejected (`fills_own_work`), a person's silhouette the fill kept is refused by its pixels too (`kept_share`: round 4's front-left man came back almost pixel for pixel and the detector check passed him), a thing is judged on its own spot, and every try's verdict comes back in `tries` (2026-11-04); a fill is also judged against the ring around its hole (`blank_or_ghost`: blank where the picture has texture, or a dark or light shape over the hole), a big hole's grey box is filled in strips (`fill_in_strips`) and the classical patch fill is the last try when every fill is refused (`patch_fill`; round 5's big holes came back as the grey box, 2026-11-04); since round 7 the detector is asked after every fill for anyone painted into the pixels the fill touched (`someone_new`, no speck rule, down to 0.05 % of the frame: round 6's strips invented small people and rooms with every try accepted), the blank and ghost checks run per 32-px cell, the removal is the first try of every hole and a plain ring never gets strips (images.jpg's backdrop went to strips in round 6), and `leftBehind` lists the people still on the final background (2026-11-04) |
 | 6 Placing and naming ("Background", "Person 1" back to front, "Cup") | done |
 | 7 Parameters (`complete`, `sweep`, `order`, `group`, `layers` to 20) and the dialog | done (`layers` raised from 12 on 2026-11-04: the café's seven people, three cups, cards and table are twelve subjects) |
 | 8 Smoke and haze as a translucent layer | not started (phase 3) |
-| 9 Tests against the fake worker's occlusion model | done (35 Split tests + 4 order tests; the fake can paint someone in, `appears`, and overlook a subject a fill left in place, `overlooked`) |
-| 10 In-app protocol on the café photo | rounds 1–5 in the devlog (2026-11-03/04); round 6 (blank and ghost checks, strips, the patch fill, the sweep's order) pending |
-| 11 Sweep (`sweep`: find the subjects, cut the nearest, fill, look again until nothing is left; the owner's framing, 2026-11-04) | done (`sweep_subjects`); round 5: 13–27 % slower than the peel, the best room continuation of any round on one seed, but fill debris counted as people and the first pass's depth order lost on later passes, both fixed (`in_first_order`, a kind's cap over all passes, debris mostly inside the painted holes dropped) |
+| 9 Tests against the fake worker's occlusion model | done (38 Split tests + 4 order tests; the fake can paint someone in, `appears`, and overlook a subject a fill left in place, `overlooked`) |
+| 10 In-app protocol on the café photo | rounds 1–6 in the devlog (2026-11-03/04); round 7 (the detector over every touched pixel, the sweep's first-pass list, the removal first, the per-cell blank check, blended strips) pending |
+| 11 Sweep (`sweep`: find the subjects, cut the nearest, fill, look again until nothing is left; the owner's framing, 2026-11-04) | done (`sweep_subjects`); round 5: 13–27 % slower than the peel, the best room continuation of any round on one seed, but fill debris counted as people and the first pass's depth order lost on later passes; round 6's fix (the first pass's order for whoever is found again, a kind's cap over all passes, debris dropped) lost real subjects instead (seven of eleven cut, the striped man above the fedora man again); since round 7 the first pass's list is authoritative: a subject stays pending until it is cut, each pass re-finds it on the filled picture (`same_subject`) or cuts it by its first mask, every pending subject is protected from the fills, and only new finds face the debris rule |
 
 Follow-ups stand as listed above; the depth model first.
