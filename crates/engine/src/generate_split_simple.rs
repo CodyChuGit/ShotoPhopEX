@@ -4,10 +4,12 @@
 //! detector looks again at what is left; nearest first, until it finds nothing more or the layer
 //! budget is spent. What remains is the background.
 //!
-//! One removal per subject, tried again with the next seed while the detector still finds the
-//! subject in its hole ([`TRIES`] at most); a subject no try clears stays in the background and is
-//! named in `incomplete`. No strips, no grey box, no patch, no rules about who a fill may paint:
-//! whatever the detector still finds is simply the next subject. The rule-heavy peel
+//! Each subject: the removal, then (while the detector still finds the subject in its hole) the
+//! grey-box fill of the hole's bounds with the next seed, [`TRIES`] tries at most; a subject no
+//! try clears stays in the background and is named in `incomplete`. No strips, no patch, no
+//! rules about who a fill may paint: whatever the detector still finds is simply the next
+//! subject. Once the layers left would not take every person the detector sees, the people go
+//! first. The rule-heavy peel
 //! (`method: "classic"`) went eleven rounds on the café photo without the backgrounds getting
 //! better (the owner's call, 2026-11-04).
 
@@ -17,10 +19,11 @@ use photocraft_doc::{Document, LayerId};
 use photocraft_geom::Rect;
 
 use super::{
-    DEFAULT_MATTE_TEMPLATE, FillJob, Group, JobCtx, LEFT_IN_HOLE, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order, PEEL_VARIATIONS,
-    PERSON, REMOVE_BG, REMOVE_MIN_REQUEST, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, Tuning, Value, at_least, bare, box_blur,
-    clean, could_not_clear, dilate, embed_coverage, fill_rect, find_subjects, gen_err, hole_of, in_depth_order, json, kept_terms, matte_all, mostly_in_hole,
-    one_fill, overlap, parse_terms, place_all, plan_common, removal_job, removal_prompt, remove_grow, subjects_labels, title_case, under_alpha, write_rgba8,
+    DEFAULT_MATTE_TEMPLATE, FillJob, Group, JobCtx, LEFT_IN_HOLE, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order, PEEL_PROMPT,
+    PEEL_VARIATIONS, PERSON, REMOVE_BG, REMOVE_MIN_REQUEST, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, ToneGrid, Tuning, Value,
+    at_least, background_job, bare, box_blur, clean, could_not_clear, creature, dilate, embed_coverage, fill_rect, find_subjects, gen_err, hole_of,
+    in_depth_order, json, kept_terms, matte_all, mostly_in_hole, one_fill, overlap, parse_terms, place_all, plan_common, removal_job, removal_prompt,
+    remove_grow, subjects_labels, title_case, under_alpha, write_rgba8,
 };
 
 /// How many times the removal is asked to take one subject out before it is left in.
@@ -45,7 +48,9 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
-    let job = removal_job(s, "Split into Layers", 0, false, false, PEEL_VARIATIONS, seed, true, tuning)?;
+    let job = removal_job(s, "Split into Layers", 0, false, false, PEEL_VARIATIONS, seed, true, tuning.clone())?;
+    // The grey-box fill, the second and third try of a subject the removal kept.
+    let box_job = background_job(s, "Split into Layers", seed, tuning, PEEL_PROMPT).ok();
     let matte = plan_common(
         s,
         REMOVE_BG,
@@ -98,7 +103,14 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                     break;
                 }
                 passes += 1;
-                // The nearest of what the detector sees now.
+                // The nearest of what the detector sees now; the people (and animals) first once
+                // the layers left would not take them all (the café photo's cups and cards, nearer
+                // than the people behind the table, took the budget before the people, measured
+                // in the app 2026-11-04).
+                let creatures = found.iter().filter(|f| creature(f.check_term())).count();
+                if creatures > 0 && budget.saturating_sub(taken.len()) <= creatures {
+                    found.retain(|f| creature(f.check_term()));
+                }
                 let Some(mut front) = in_depth_order(found, Order::Auto, wu, hu).into_iter().next() else {
                     found = Vec::new();
                     break;
@@ -111,7 +123,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 let hole = hole_of(&front);
                 // Its layer: the picture now (every nearer subject gone) under its alpha.
                 cut.push(under_alpha(&p, &front.alpha));
-                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, done, (lo, hi))?;
+                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, box_job.as_ref(), done, (lo, hi))?;
                 fill_ms += removed.ms;
                 generations += removed.generations;
                 tries.extend(removed.tries.into_iter().map(|mut t| {
@@ -245,6 +257,7 @@ fn remove_one(
     sub: &Subject,
     finder: &SubjectFinder,
     job: &FillJob,
+    box_job: Option<&FillJob>,
     nth: usize,
     (lo, hi): (f32, f32),
 ) -> Result<Removed> {
@@ -273,37 +286,65 @@ fn remove_one(
     let mut work = Layer::raster("Split work".to_string(), doc.pixel_format());
     write_rgba8(&mut work, &Rgba8::new(w, h, picture.to_vec()).map_err(gen_err)?, area)?;
     let work = doc.insert_above(below, work);
+    // The grey-box fill's box: the hole's bounds widened by the grow. The model sees a grey box
+    // there, not the subject; the edit removal, seeing a big subject, keeps it (both people of
+    // the café photo stayed after three removals, measured in the app 2026-11-04).
+    let boxed = hole_rect.inflate(grow as i32).intersect(&area);
+    let box_hole: Vec<f32> = (0..wu * hu)
+        .map(|k| {
+            let (x, y) = (area.x0 + (k % wu) as i32, area.y0 + (k / wu) as i32);
+            if x >= boxed.x0 && x < boxed.x1 && y >= boxed.y0 && y < boxed.y1 { 1.0 } else { 0.0 }
+        })
+        .collect();
     let tried = (|| -> Result<()> {
         for attempt in 0..TRIES {
             ctx.progress(lo + (hi - lo) * attempt as f32 / TRIES as f32, "");
-            let mut try_job = removal.clone();
+            // The removal first; then the grey-box fill (the removal again without one).
+            let boxed_try = attempt > 0 && box_job.is_some();
+            let mut try_job = match box_job {
+                Some(b) if boxed_try => b.clone(),
+                _ => removal.clone(),
+            };
             try_job.seed = job.seed.wrapping_add(nth as u64 * 101).wrapping_add(u64::from(attempt) * 1000);
+            let kind = if boxed_try { "fill" } else { "removal" };
             *active = Some(work);
-            let (filled, seed, ms, made) = one_fill(doc, active, ctx, area, try_job, rect, embed_coverage(area, hole, rect))?;
+            let coverage = embed_coverage(area, if boxed_try { &box_hole } else { hole }, rect);
+            let (filled, seed, ms, made) = one_fill(doc, active, ctx, area, try_job, rect, coverage)?;
             out.ms += ms;
             out.generations += made;
+            // A box fill's tone is matched to the picture where both show the same thing (in the
+            // box, outside the hole); the removal's is matched by its own route.
+            let tone = boxed_try.then(|| ToneGrid::new(picture, &filled, |k| box_hole[k] >= 0.5 && over[k] < 0.02, wu, hu));
             let laid: Vec<u8> = picture
                 .as_chunks::<4>()
                 .0
                 .iter()
                 .zip(filled.as_chunks::<4>().0)
                 .zip(&over)
-                .flat_map(|((p, f), a)| {
+                .enumerate()
+                .flat_map(|(k, ((p, f), a))| {
                     let a = a.clamp(0.0, 1.0);
-                    std::array::from_fn::<u8, 4, _>(|c| (f32::from(p[c]) * (1.0 - a) + f32::from(f[c]) * a).round() as u8)
+                    let t = match &tone {
+                        Some(tone) if a > 0.0 => tone.at(k % wu, k / wu),
+                        _ => [0.0; 3],
+                    };
+                    std::array::from_fn::<u8, 4, _>(|c| {
+                        let f = if c < 3 { (f32::from(f[c]) + t[c]).clamp(0.0, 255.0) } else { f32::from(f[c]) };
+                        (f32::from(p[c]) * (1.0 - a) + f * a).round() as u8
+                    })
                 })
                 .collect();
             ctx.progress(lo + (hi - lo) * (attempt as f32 + 0.8) / TRIES as f32, "Checking the removal");
             let still = finder.find_in(&laid, area, &term, NEW_AT_MOST, ctx)?.into_iter().find(|(cov, ..)| still_there(cov, hole, &grown));
             match still {
                 None => {
-                    out.tries.push(json!({"fill": "removal", "generations": made, "verdict": "accepted"}));
+                    out.tries.push(json!({"fill": kind, "generations": made, "verdict": "accepted"}));
                     out.picture = Some(laid);
                     out.seed = seed;
                     return Ok(());
                 }
                 Some((_, b, _)) => {
-                    out.tries.push(json!({"fill": "removal", "generations": made, "verdict": format!("the {} still there", bare(&term)), "at": [b.x0, b.y0, b.width(), b.height()]}));
+                    out.tries.push(json!({"fill": kind, "generations": made, "verdict": format!("the {} still there", bare(&term)), "at": [b.x0, b.y0, b.width(), b.height()]}));
                 }
             }
             ctx.check()?;
