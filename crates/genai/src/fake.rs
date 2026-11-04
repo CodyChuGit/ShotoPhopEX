@@ -40,6 +40,10 @@ pub struct Options {
     /// been sent (a part of the picture, shown at the detector's size): a figure too small to
     /// find in the whole frame.
     pub appears_in_crops: Vec<[f32; 4]>,
+    /// Like `appears`, for what the first fill uncovers: a part of a subject the removal before
+    /// them showed, which the detector returns from then on and which, with `occlusion`, a later
+    /// fill whose mask covers half of it takes out of the picture, as a `segments` rectangle.
+    pub uncovered: Vec<[f32; 4]>,
     /// With `occlusion` and `echo`: the detector still loses what a fill covered, though the
     /// fill handed the picture back. A subject the fill left in place that the detector misses.
     pub overlooked: bool,
@@ -64,6 +68,7 @@ impl Default for Options {
             appears: Vec::new(),
             appears_for: Vec::new(),
             appears_in_crops: Vec::new(),
+            uncovered: Vec::new(),
             overlooked: false,
         }
     }
@@ -225,7 +230,8 @@ impl Engine for FakeEngine {
             if req.task == "fill" || req.task == "edit" {
                 if self.options.occlusion {
                     if !self.options.echo || self.options.overlooked {
-                        let gone = self.taken_out(req, blobs, &state.gone);
+                        let later = state.runs.iter().any(|r| r.run.task == "fill" || r.run.task == "edit");
+                        let gone = self.taken_out(req, blobs, &state.gone, later);
                         state.gone = gone;
                     }
                 } else {
@@ -307,8 +313,8 @@ impl Engine for FakeEngine {
 impl FakeEngine {
     /// With `Options::occlusion`, after a fill: which rectangles are gone, the ones already gone
     /// plus those whose visible part the request's mask (at least half of it, at 128 and over)
-    /// covers.
-    fn taken_out(&self, req: &RunRequest, blobs: &[Vec<u8>], gone: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    /// covers; the `uncovered` ones only from the second fill on (`later`).
+    fn taken_out(&self, req: &RunRequest, blobs: &[Vec<u8>], gone: &[[f32; 4]], later: bool) -> Vec<[f32; 4]> {
         let mut out: Vec<[f32; 4]> = gone.to_vec();
         let Some(m) = req.mask.as_ref() else { return out };
         let Some(mask) = blobs.get(m.index as usize) else { return out };
@@ -317,7 +323,9 @@ impl FakeEngine {
             return out;
         }
         // Every list of rectangles, each ordered nearest first.
-        let lists = std::iter::once(&self.options.segments).chain(self.options.segments_for.iter().map(|(_, r)| r));
+        let lists = std::iter::once(&self.options.segments)
+            .chain(self.options.segments_for.iter().map(|(_, r)| r))
+            .chain(std::iter::once(&self.options.uncovered).filter(|_| later));
         for rects in lists {
             let here: Vec<&[f32; 4]> = rects.iter().filter(|r| !gone.contains(r)).collect();
             for (i, r) in here.iter().enumerate() {
@@ -366,6 +374,7 @@ impl FakeEngine {
         let mut appeared: Vec<[f32; 4]> = Vec::new();
         if fills_ran && req.task == "segment" {
             appeared.extend(&self.options.appears);
+            appeared.extend(&self.options.uncovered);
             appeared.extend(self.options.appears_for.iter().filter(|(p, _)| *p == req.prompt).flat_map(|(_, r)| r.iter().copied()));
             if crop {
                 appeared.extend(&self.options.appears_in_crops);
