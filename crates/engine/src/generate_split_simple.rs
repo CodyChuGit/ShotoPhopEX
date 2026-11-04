@@ -1,15 +1,17 @@
 //! Split into Layers, the simple way (`method: "simple"`, the default since 2026-11-04):
-//! progressive subject removal. The detector looks at the picture, the nearest subject it finds
-//! is cut onto its own layer and taken out by the generative removal (as Remove would), and the
-//! detector looks again at what is left; nearest first, until it finds nothing more or the layer
-//! budget is spent. What remains is the background.
+//! progressive subject removal. The detector finds the subjects on the original photo (a mask
+//! reaching across the whole frame is the background, not a subject); the nearest is cut onto
+//! its own layer and taken out by the generative removal (as Remove would); the detector finds
+//! the subjects still to come again on what is left (their masks now, or that they are gone),
+//! never adding new ones; nearest first, until none is left or the layer budget is spent. What
+//! remains is the background.
 //!
 //! Each subject: the removal, then (while the detector still finds the subject in its hole, or
 //! the fill left the hole blank or smeared) the grey-box fill of the hole's bounds with the next
 //! seed, in strips for a big hole, [`TRIES`] tries at most; a subject no try clears stays in the
-//! background and is named in `incomplete`. No patch, no rules about who a fill may paint: whatever the detector still finds is simply the next
-//! subject. Once the layers left would not take every person the detector sees, the people go
-//! first. The rule-heavy peel
+//! background and is named in `incomplete`. No patch, no rules about who a fill may paint. Once
+//! the layers left would not take every person still to come, the people go first. The
+//! rule-heavy peel
 //! (`method: "classic"`) went eleven rounds on the café photo without the backgrounds getting
 //! better (the owner's call, 2026-11-04).
 
@@ -19,11 +21,11 @@ use photocraft_doc::{Document, LayerId};
 use photocraft_geom::Rect;
 
 use super::{
-    BIG_HOLE_SIDE, DEFAULT_MATTE_TEMPLATE, FillJob, Group, JobCtx, LEFT_IN_HOLE, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order,
-    PEEL_PROMPT, PEEL_VARIATIONS, PERSON, REMOVE_BG, REMOVE_MIN_REQUEST, RING_WIDTH, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term,
-    ToneGrid, Tuning, Value, at_least, background_job, bare, blank_or_ghost, box_blur, clean, could_not_clear, creature, dilate, embed_coverage,
-    fill_in_strips, fill_rect, find_subjects, gen_err, hole_of, in_depth_order, json, kept_terms, matte_all, mostly_in_hole, one_fill, overlap, parse_terms,
-    place_all, plan_common, removal_job, removal_prompt, remove_grow, subjects_labels, title_case, under_alpha, write_rgba8,
+    BIG_HOLE_SIDE, DEFAULT_MATTE_TEMPLATE, FillJob, JobCtx, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order, PEEL_PROMPT,
+    PEEL_VARIATIONS, PERSON, REMOVE_BG, REMOVE_MIN_REQUEST, RING_WIDTH, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, ToneGrid,
+    Tuning, Value, at_least, background_job, bare, blank_or_ghost, box_blur, could_not_clear, creature, dilate, embed_coverage, fill_in_strips, fill_rect,
+    find_subjects, front_first, gen_err, hole_of, json, kept_terms, matte_all, one_fill, overlap, parse_terms, place_all, plan_common, removal_job,
+    removal_prompt, remove_grow, same_subject, subjects_labels, title_case, under_alpha, write_rgba8,
 };
 
 /// How many times the removal is asked to take one subject out before it is left in.
@@ -78,43 +80,49 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             let (first, found_by) = find_subjects(&finder, job.thinker.as_ref(), &picture, area, terms.as_deref(), budget, job.seed, group, ctx)?;
             ctx.check()?;
             let found_by = kept_terms(&found_by, &first);
-            // What each later look asks the detector for: the terms that found the subjects the
-            // first time (the vision-language model names the things once).
-            let looks: Vec<(String, usize)> = match terms.as_deref() {
-                Some(t) => t.iter().map(|t| (t.name.clone(), t.max.unwrap_or(budget))).collect(),
-                None => found_by.split(", ").filter(|t| !t.is_empty()).map(|t| (t.to_string(), budget)).collect(),
-            };
             let asked = terms.is_some();
+            // The subjects: what the detector found on the ORIGINAL photo, less any mask that is
+            // the background (its bounds reach across nearly the whole frame both ways). Later
+            // looks only find these again; they never add a subject from the painted picture (a
+            // mask over nearly all of the woman photo, found once she was gone, was removed as a
+            // subject and the truck and road became an invented white room, measured in the app
+            // 2026-11-04).
+            let (mut pending, background_like): (Vec<Subject>, Vec<Subject>) = first.into_iter().partition(|f| !is_background(f, wu, hu));
+            let dropped: Vec<Value> = background_like
+                .iter()
+                .map(|f| json!({"term": f.term, "bounds": [f.bounds.x0, f.bounds.y0, f.bounds.width(), f.bounds.height()], "pixels": f.pixels}))
+                .collect();
+            // Subjects the detector no longer found before their turn (painted over by a nearer
+            // subject's removal): no layer of their own.
+            let mut lost: Vec<Value> = Vec::new();
             // The picture as it stands: each removal takes the nearest subject out of it.
             let mut p = picture;
             let mut taken: Vec<Subject> = Vec::new();
             let mut cut: Vec<Vec<u8>> = Vec::new();
             let mut left_in: Vec<usize> = Vec::new();
-            // The holes no try could clear: what the detector finds there again is not looked at.
-            let mut stuck: Vec<Vec<f32>> = Vec::new();
             let mut tries: Vec<Value> = Vec::new();
             let (mut fill_ms, mut generations, mut fill_seed) = (0u64, 0u32, 0u64);
             let mut used = edges;
-            let mut found = first;
             let mut passes = 0usize;
             loop {
-                found.retain(|f| !stuck.iter().any(|hole| mostly_in_hole(&f.cov, hole, LEFT_IN_HOLE)));
-                if found.is_empty() || taken.len() >= budget || passes >= budget + EXTRA_PASSES {
+                if pending.is_empty() || taken.len() >= budget || passes >= budget + EXTRA_PASSES {
                     break;
                 }
                 passes += 1;
-                // The nearest of what the detector sees now; the people (and animals) first once
+                // The nearest of the subjects still to come; the people (and animals) first once
                 // the layers left would not take them all (the café photo's cups and cards, nearer
                 // than the people behind the table, took the budget before the people, measured
                 // in the app 2026-11-04).
-                let creatures = found.iter().filter(|f| creature(f.check_term())).count();
-                if creatures > 0 && budget.saturating_sub(taken.len()) <= creatures {
-                    found.retain(|f| creature(f.check_term()));
-                }
-                let Some(mut front) = in_depth_order(found, Order::Auto, wu, hu).into_iter().next() else {
-                    found = Vec::new();
+                let order = front_first(&pending, Order::Auto, wu, hu);
+                let creatures = pending.iter().filter(|f| creature(f.check_term())).count();
+                let people_first = creatures > 0 && budget.saturating_sub(taken.len()) <= creatures;
+                let Some(next) = order.iter().copied().find(|i| !people_first || pending.get(*i).is_some_and(|f| creature(f.check_term()))) else {
                     break;
                 };
+                if next >= pending.len() {
+                    break;
+                }
+                let mut front = pending.remove(next);
                 let done = taken.len();
                 let (lo, hi) = (0.1 + 0.85 * done as f32 / budget as f32, 0.1 + 0.85 * (done + 1) as f32 / budget as f32);
                 ctx.progress(lo, &format!("Removing {} ({} of at most {budget})", title_case(&front.term), done + 1));
@@ -136,25 +144,22 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                         fill_seed = removed.seed;
                         front.completed = true;
                     }
-                    None => {
-                        left_in.push(done);
-                        stuck.push(dilate(&hole, wu, hu, 2));
-                    }
+                    None => left_in.push(done),
                 }
                 taken.push(front);
                 ctx.check()?;
-                // Look again at what is left.
-                let left = budget.saturating_sub(taken.len());
-                found = if left == 0 { look(&finder, &p, area, &looks, 1, group, ctx)? } else { look(&finder, &p, area, &looks, left, group, ctx)? };
+                // Look again, for the listed subjects still to come only: is each still there, and
+                // what is its mask now (a removal may show more of someone it hid).
+                if !pending.is_empty() && taken.len() < budget {
+                    refind(&finder, &p, area, &mut pending, &mut lost, ctx)?;
+                }
             }
             if left_in.len() == taken.len() {
                 let name = taken.first().map_or_else(|| PERSON.to_string(), Subject::removal_name);
                 return Err(could_not_clear(&name, &tries));
             }
-            // Whoever the detector still finds once the budget is spent (or a run of failures
-            // ended the loop), apart from the subjects left in.
-            found.retain(|f| !stuck.iter().any(|hole| mostly_in_hole(&f.cov, hole, LEFT_IN_HOLE)));
-            let left_behind: Vec<Value> = found.iter().map(|f| json!([f.bounds.x0, f.bounds.y0, f.bounds.width(), f.bounds.height()])).collect();
+            // The listed subjects the budget did not reach, still in the background.
+            let left_behind: Vec<Value> = pending.iter().map(|f| json!([f.bounds.x0, f.bounds.y0, f.bounds.width(), f.bounds.height()])).collect();
             // Each try names its subject by its layer's name.
             let labels = subjects_labels(&taken);
             for t in &mut tries {
@@ -182,7 +187,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 used.name(),
                 left_behind,
                 detector,
-                passes,
+                (passes, dropped, lost),
             ))
         },
         move |(
@@ -199,10 +204,10 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             matted,
             left_behind,
             detector,
-            passes,
+            (passes, dropped, lost),
         )| {
             json!({
-                "method": "simple", "passes": passes,
+                "method": "simple", "passes": passes, "droppedAsBackground": dropped, "lost": lost,
                 "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>(), "count": ids.len(),
                 "subjects": placed, "incomplete": incomplete, "fills": tries.len(), "generations": generations, "tries": tries, "order": "auto",
                 "foundBy": found_by, "template": template_id, "seed": seed, "leftBehind": left_behind, "refusedLayers": [],
@@ -227,20 +232,77 @@ const STILL_INSIDE: f32 = 0.6;
 /// ...and over this much of the hole is the subject still there.
 const STILL_COVERS: f32 = 0.5;
 
-/// The subjects the detector finds in `picture` for `looks` (each term at most its count and
-/// `left` in all), cleaned as the first look's are.
-fn look(finder: &SubjectFinder, picture: &[u8], area: Rect, looks: &[(String, usize)], left: usize, group: Group, ctx: &JobCtx) -> Result<Vec<Subject>> {
-    let (wu, hu) = (area.width() as usize, area.height() as usize);
-    let mut out: Vec<Subject> = Vec::new();
-    for (term, most) in looks {
-        ctx.check()?;
-        for (cov, bounds, pixels) in finder.find_in(picture, area, term, left.min(*most).max(1), ctx)? {
-            out.push(Subject { cov, bounds, pixels, term: term.clone(), asked: false, alpha: Vec::new(), completed: false, grown: false });
+/// A mask whose bounds reach across at least this share of the frame's width AND of its height
+/// is the background, not a subject: the woman photo's "animal" found once she was gone spanned
+/// 832×1248 of 832×1248; the subjects that must stay span at most 100 % × 94.5 % (images.jpg's
+/// woman), 93 % × 79 % (the woman at the truck) and 77 % × 87 % (the cat astronaut).
+const BACKGROUND_SPAN: f32 = 0.98;
+
+/// Whether a found mask is the background ([`BACKGROUND_SPAN`] both ways).
+fn is_background(s: &Subject, w: usize, h: usize) -> bool {
+    w > 0 && h > 0 && s.bounds.width() as f32 >= BACKGROUND_SPAN * w as f32 && s.bounds.height() as f32 >= BACKGROUND_SPAN * h as f32
+}
+
+/// Each subject still to come (`pending`), found again in `picture` as it stands: the detector is
+/// asked for its kind, and the find that is the same subject ([`same_subject`]: either holds half
+/// of the other; the best overlap first, each find matched once) becomes its mask now. A subject
+/// with no such find is gone from the picture (a nearer one's removal painted over it): it leaves
+/// the list, named in `lost`. Nothing the detector finds is ever added.
+fn refind(finder: &SubjectFinder, picture: &[u8], area: Rect, pending: &mut Vec<Subject>, lost: &mut Vec<Value>, ctx: &JobCtx) -> Result<()> {
+    let mut kinds: Vec<String> = Vec::new();
+    for s in pending.iter() {
+        let k = s.check_term().to_string();
+        if !kinds.contains(&k) {
+            kinds.push(k);
         }
     }
-    clean(&mut out, wu, hu, group);
-    Ok(out)
+    let mut keep = vec![true; pending.len()];
+    for kind in kinds {
+        ctx.check()?;
+        let mine: Vec<usize> = (0..pending.len()).filter(|i| pending[*i].check_term() == kind).collect();
+        let finds = finder.find_in(picture, area, &kind, (mine.len() + REFIND_SPARE).min(NEW_AT_MOST.max(mine.len())), ctx)?;
+        let mut pairs: Vec<(u64, usize, usize)> = Vec::new();
+        for &i in &mine {
+            for (d, (cov, _, pixels)) in finds.iter().enumerate() {
+                if same_subject(&pending[i].cov, pending[i].pixels, cov, *pixels) {
+                    pairs.push((overlap(&pending[i].cov, cov), i, d));
+                }
+            }
+        }
+        pairs.sort_by_key(|p| std::cmp::Reverse(p.0));
+        let (mut got, mut used) = (Vec::new(), Vec::new());
+        for (_, i, d) in pairs {
+            if got.contains(&i) || used.contains(&d) {
+                continue;
+            }
+            if let (Some(s), Some((cov, bounds, pixels))) = (pending.get_mut(i), finds.get(d)) {
+                s.cov = cov.clone();
+                s.bounds = *bounds;
+                s.pixels = *pixels;
+                s.alpha = Vec::new();
+            }
+            got.push(i);
+            used.push(d);
+        }
+        for i in mine {
+            if !got.contains(&i)
+                && let (Some(k), Some(s)) = (keep.get_mut(i), pending.get(i))
+            {
+                *k = false;
+                lost.push(json!({"term": s.term, "bounds": [s.bounds.x0, s.bounds.y0, s.bounds.width(), s.bounds.height()]}));
+            }
+        }
+    }
+    let mut k = 0;
+    pending.retain(|_| {
+        k += 1;
+        keep.get(k - 1).copied().unwrap_or(false)
+    });
+    Ok(())
 }
+
+/// Finds asked for beyond the subjects of a kind still to come, so each can be matched.
+const REFIND_SPARE: usize = 3;
 
 /// Take `sub` (its `hole`) out of `picture` with the named removal, the result laid back over the
 /// hole widened by the removal's grow and feathered; tried again with the next seed while the
@@ -377,4 +439,36 @@ fn remove_one(
     *active = below;
     tried?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn subject(x: i32, y: i32, w: i32, h: i32) -> Subject {
+        Subject {
+            cov: Vec::new(),
+            bounds: Rect::new(x, y, x + w, y + h),
+            pixels: (w * h) as u64,
+            term: "person".into(),
+            asked: false,
+            alpha: Vec::new(),
+            completed: false,
+            grown: false,
+        }
+    }
+
+    #[test]
+    fn a_mask_across_the_whole_frame_is_the_background() {
+        // The woman photo's "animal" after she was gone: the whole 832×1248 frame.
+        assert!(is_background(&subject(0, 0, 832, 1248), 832, 1248));
+        // The subjects that must stay: images.jpg's woman (452×641 of 452×678), the woman at the
+        // truck (773×988 of 832×1248), the cat astronaut (646×1081 of 832×1248).
+        assert!(!is_background(&subject(0, 37, 452, 641), 452, 678));
+        assert!(!is_background(&subject(59, 203, 773, 988), 832, 1248));
+        assert!(!is_background(&subject(101, 107, 646, 1081), 832, 1248));
+        // Across the whole width but not the height (a road, a table edge): a subject.
+        assert!(!is_background(&subject(0, 600, 832, 400), 832, 1248));
+        assert!(!is_background(&subject(0, 0, 0, 0), 0, 0), "no frame, no background");
+    }
 }
