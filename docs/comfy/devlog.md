@@ -4,6 +4,65 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-04: Split round 9: fog is no figure and the portrait splits again, but two rules did not take; a person's completed part joined to them is theirs, what the cut subject hid of someone there before is any size, each refusal's detection in the result, no tiles on a plain backdrop
+
+Round 9 of the café photo in the app (6ae23ddc8, 18 runs, round 8's protocol, Cody's RTX
+5090). Won: the fog rule and the tile-size rule did what they were for. The striped man is
+cleared in both runs round 8 left him in (peel seed 1: his strips accepted over plain fog;
+sweep seed 2: his removal accepted), the 12 MP portrait splits again in four runs of four
+(`incomplete` and `leftBehind` empty, the detector finds nobody; 35–117 s), and the edge
+smears are no longer listed in `leftBehind`. The tiny invented rooms and people are still gone
+from every run (left-edge close-ups at 2×), the woman's-head blob from the peel's three seeds
+and the sweep's seed 3, the fedora man leaves every background (the last resort six times, as
+in round 8), the sweep cuts all eleven at 12 layers in every seed with the fedora man above the
+striped man in all ten café runs, images.jpg's backdrop is plain terracotta (the removal at the
+first try), and the generations and `fillMs` match the engine log in every run. Lost: (1) the
+edge person stays in the background at 12 layers in peel seed 1 and sweep seed 1 (`incomplete`
+= [Person 5]): every fill of his hole at the frame's edge paints an invented room with people,
+and those refusals are right (checked in the kept fills); the removal and the patch keep him;
+seeds 2 and 3 clear him in both modes. (2) Round 9's "a part of a listed person behind" rule
+did not take: the first strips behind the rightmost man are still refused in peel seed 1 ("a
+person painted into the hole", 140×314 px) and sweep seed 1 ("a person in the hole that was
+not there"), and the kept fills are clean wall with only the woman in blue and the edge person
+in them, who have not been cut yet. The detector returns what the fill completed of them as a
+figure of its own, holding none of their mask, so neither "mostly on them" nor "continues
+them" fits. (3) Round 9's "completed by at most twice their pixels" rule did not take either:
+the man in the framed photograph still refuses the waiter's removal in four runs (27–30×86–87
+px) and is listed in `leftBehind` in three backgrounds (two boxes in peel seed 1, [1137, 114,
+28, 55] and [1160, 99, 19, 123]; one each in peel seed 2 and sweep seed 2), all on the framed
+photographs: he was mostly behind the waiter, so his completion is more than twice his visible
+sliver, and the finished-background look asked only for half of him. (4) The 16-layer runs are
+round 8's (the peel leaves the woman and the edge person, the sweep the front-left man, the
+woman and the near table, with a late near-table chunk "Table 1" stacked below everyone). (5)
+Soft smudges remain at the table in sweep seeds 1 and 2 (where the striped man and the glasses
+man were), under the ghost rule's 30 %; "painted a dark shape" refused four tries, all at 16
+layers, unverified. (6) Over the eight café runs: 23 "a person painted into the hole" refusals,
+16 "a person in the hole", 6 last resorts; the patch ran 15 times, accepted 0. (7) Time: café
+peel 346 s cold (round 8: 313), 240 / 222 s warm (241 / 223), the sweep 238 / 268 / 195 (238 /
+294 / 196), 393 / 496 s at 16 layers (394 / 496), images.jpg 6.0–6.6 s (the same), the portrait
+35–117 s (failed in round 8). The detector takes 36–56 s of a warm café split (89–119 requests,
+30–38 of them tiles; 16–35 % of `ms`), 77 and 97 s at 16 layers, 112 s cold; of images.jpg's 6 s
+it takes 3.1 (11–12 requests, 6 of them tiles: the scan before any fill and the finished-
+background look, on a plain backdrop). SAM reloaded 11–27 times a run as before; the cold run's
+first generation came 74 s after the vision-language call (round 8: 20 s). The masks are round
+6's still (the woman's block, the glasses man's fragment, the edge sliver). So now: (1) a
+person's or animal's completed part seen on its own, joined (within 2 px) to a subject behind
+of its kind inside the hole widened, their own pixels and that part making 90 % of the
+detection and the part at most twice their visible pixels, is that subject's (`fragment_of`, in
+`fills_own_work` and `someone_new`; refused still when it looks like what was cut), and the
+subject grows into it as into a continuation (`grow_behind`), so it leaves with their layer.
+(2) Someone there before any fill who stood against the cut subject (within 2 px) is completed
+by any amount its removal shows (`was_there`, asked first in `judge` and in `someone_new`), and
+the finished-background look exempts whoever continues such a figure, not only who overlaps
+them by half. (3) Every refusal the detector made records the detection's bounds (`at` in the
+try) and the result lists the figures found before any fill (`already`), so a refusal can be
+placed on the sheet from result.json. (4) On a plain backdrop (texture outside the subjects
+under the plain threshold) the scan before any fill and the finished-background look are not
+tiled. 45 Split tests. Open: the edge person's hole (the fill invents a room at the frame's
+edge; a reflected pad or more removal seeds for an edge hole), the room fogged rather than
+continued, the near table, the woman's block, the glasses man, SAM swapped out for every fill,
+speed (195–496 s against the 90 s target), the depth model.
+
 ## 2026-11-04: Split round 8: the tiny invented figures are gone, but the zoomed-in detector calls fog a person; fog is no figure, a part of a subject behind is that subject, whole-tile masks dropped, the detector's cost in the result
 
 Round 8 of the café photo in the app (5da595aa6, 18 runs, round 7's protocol plus `keepTries`
