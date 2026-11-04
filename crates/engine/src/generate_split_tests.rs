@@ -354,38 +354,6 @@ fn the_split_background_takes_the_plain_name_when_the_document_has_no_background
 }
 
 #[test]
-fn split_tries_anypaint_on_the_hole_before_the_removal_when_the_worker_serves_it() {
-    // Research models allowed: the native 2.1 family runs, and Krea 2 AnyPaint (which the fake
-    // lists) takes the first try at each hole on the hole's own shape; it clears both, so no
-    // removal or grey-box fill runs.
-    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
-        segments: vec![[0.0, 0.0, 0.5, 0.5], [0.5, 0.5, 1.0, 1.0]],
-        color: [10, 200, 10, 255],
-        occlusion: true,
-        ..Default::default()
-    })
-    .unwrap();
-    let mut s = session(&fake.url);
-    s.edit_prefs(|p| p.integrations.allow_research_models = true);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 3})).unwrap();
-    assert_eq!(r["count"], 3, "{r}");
-    assert_eq!(r["incomplete"], json!([]), "{r}");
-    let st = fake.state();
-    let fills: Vec<&Value> = st
-        .runs
-        .iter()
-        .filter(|r| r.request["task"] != "segment" && r.request["task"] != "text" && r.request["model"] != "vitmatte/refine")
-        .map(|r| &r.request)
-        .collect();
-    assert_eq!(fills.len(), 2, "one AnyPaint fill behind each subject: {fills:?}");
-    assert!(fills.iter().all(|r| r["model"] == "krea2-turbo/fill"), "{fills:?}");
-    let prompts: Vec<&str> = fills.iter().map(|r| r["prompt"].as_str().unwrap_or("")).collect();
-    assert!(prompts[0].contains("the picture continued behind"), "the peel continues the scene: {prompts:?}");
-    assert!(prompts[1].contains("with nobody there"), "the last hole takes the backdrop: {prompts:?}");
-}
-
-#[test]
 fn the_layer_budget_counts_the_subjects_kept_not_the_detections() {
     // "man" finds the person again: a duplicate, cleaned as the terms are searched. Counted raw
     // it would have taken the cup's place among two subjects (the café photo's seven people came
@@ -412,4 +380,50 @@ fn the_layer_budget_counts_the_subjects_kept_not_the_detections() {
     assert_eq!(names, ["Split background", "Person", "Cup"]);
     let st = fake.state();
     assert!(st.runs.iter().any(|r| r.request["task"] == "segment" && r.request["prompt"] == "cup"), "the cup was asked for");
+}
+
+#[test]
+fn split_rejects_a_fill_that_paints_someone_new_into_the_hole() {
+    // Two people apart on a 256×192 canvas, the right one nearer (its bottom edge lower). Every
+    // fill paints a new person into the picture (`appears`), inside the right one's hole: it
+    // continues nobody, so all five tries behind the right one are rejected and it stays in the
+    // background; the left one's hole is clear of it and is filled at the first try.
+    let front = [0.55, 0.1, 0.95, 0.95];
+    let back = [0.05, 0.1, 0.45, 0.85];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![front, back],
+        appears: vec![[0.65, 0.3, 0.85, 0.7]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
+    assert_eq!(r["count"], 3, "{r}");
+    assert_eq!(r["incomplete"], json!(["Person 2"]), "the right one could not be cleared: {r}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(layer_name(&s, ids[2]), "Person 2");
+    let kept = pixel_at(&s, ids[0], 192, 96);
+    assert!(kept[0] > 0.7 && kept[1] < 0.3, "the right one stays in the background, untouched: {kept:?}");
+    assert!(alpha_at(&s, ids[2], 192, 96) > 0.5, "and still gets its layer");
+    let st = fake.state();
+    let fills = st.runs.iter().filter(|r| r.request["task"] != "segment" && r.request["task"] != "text" && r.request["model"] != "vitmatte/refine").count();
+    assert_eq!(fills, 6, "five rejected tries behind the right one, one fill behind the left: {fills}");
+}
+
+#[test]
+fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
+    use super::split_subjects::invented;
+    // An 8×2 grid: the fill repainted the left 12 pixels; the subject behind holds pixels 0–1.
+    let region: Vec<f32> = (0..16).map(|k| if k < 12 { 1.0 } else { 0.0 }).collect();
+    let subject: Vec<f32> = (0..16).map(|k| if k < 2 { 1.0 } else { 0.0 }).collect();
+    let behind = vec![("person".to_string(), subject, 2u64)];
+    let det = |from: usize, to: usize| -> Vec<f32> { (0..16).map(|k| if k >= from && k < to { 1.0 } else { 0.0 }).collect() };
+    assert!(!invented("person", &det(0, 6), &region, &behind), "the subject with twice its pixels added: completed");
+    assert!(invented("person", &det(0, 7), &region, &behind), "more than twice: someone new standing over it");
+    assert!(invented("person", &det(8, 12), &region, &behind), "inside the repainted area, continuing nobody: painted in");
+    assert!(invented("cup", &det(0, 6), &region, &behind), "another kind over the subject: painted in");
+    assert!(!invented("person", &det(12, 16), &region, &behind), "outside the repainted area: was there before");
 }
