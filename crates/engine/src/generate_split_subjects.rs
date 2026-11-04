@@ -49,6 +49,8 @@ pub(super) struct SubjectsPlan {
     /// Find the subjects again on the filled picture after each removal (`sweep`), instead of
     /// finding them all first.
     pub sweep: bool,
+    /// Keep every refused fill as a hidden layer under the background (`keepTries`).
+    pub keep_tries: bool,
     pub order: Order,
     pub group: Group,
 }
@@ -217,7 +219,7 @@ impl Subject {
 }
 
 pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
-    let SubjectsPlan { prompt, subjects, seed, name, edges, complete, sweep, order: ordering, group } = plan;
+    let SubjectsPlan { prompt, subjects, seed, name, edges, complete, sweep, keep_tries, order: ordering, group } = plan;
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
@@ -270,15 +272,16 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     &picture,
                     terms.as_deref(),
                     budget,
+                    keep_tries,
                     (group, ordering, edges),
                     (peel_box.as_ref(), last_box.as_ref()),
                 )?;
-                let Swept { subjects, cut, background, left_in, tries, found_by, used, fill_ms, fill_seed, generations } = swept;
+                let Swept { subjects, cut, background, left_in, tries, found_by, used, fill_ms, fill_seed, generations, already, refused } = swept;
                 ctx.progress(0.95, "Placing");
                 let left: Vec<Vec<f32>> = left_in.iter().map(|&i| hole_of(&subjects[i])).collect();
-                let behind_left = left_behind(&finder, &background, area, &left, ctx)?;
-                let (ids, placed, incomplete) =
-                    place_all(doc, active, area, base.as_deref(), &found_by, &template_id, fill_seed, &subjects, cut, background, &left_in)?;
+                let behind_left = left_behind(&finder, &background, area, &left, &already, ctx)?;
+                let (ids, placed, incomplete, refused_ids) =
+                    place_all(doc, active, area, base.as_deref(), &found_by, &template_id, fill_seed, &subjects, cut, background, &left_in, refused)?;
                 return Ok((
                     ids,
                     placed,
@@ -293,6 +296,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     used.name(),
                     ordering.name(),
                     behind_left,
+                    refused_ids,
                 ));
             }
             ctx.progress(0.0, "Finding subjects");
@@ -312,6 +316,10 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
             // Front to back.
             ctx.progress(0.2, "Ordering by depth");
             let mut subjects: Vec<Subject> = in_depth_order(found, ordering, wu, hu);
+            // Who was in the picture before any fill, apart from the subjects: no fill's work.
+            let already = already_there(&finder, &picture, area, &creature_terms(&subjects), &subjects, ctx)?;
+            // The refused fills, kept on request (`keepTries`), named for their subject and try.
+            let mut refused: Vec<(String, Vec<u8>)> = Vec::new();
             let below = *active;
             let mut fill_ms = 0u64;
             let mut fill_seed = 0u64;
@@ -352,6 +360,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     let grown_ref = &grown_hole;
                     let hole_ref = &hole;
                     let before = &p;
+                    let already_ref = &already;
                     let cut = (this.check_term(), this.cov.as_slice(), this.pixels);
                     let mut check = |filled: &[u8], touched: &[f32], patched: bool| -> Result<Verdict<Vec<(String, Instance)>>> {
                         let mut seen: Vec<(String, Instance)> = Vec::new();
@@ -362,9 +371,15 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                         }
                         // How much of a detection's part of the hole still shows what was cut.
                         let looks = |cov: &[f32]| kept_share(before, filled, &both(cov, hole_ref), wu, hu);
-                        let own = seen
-                            .iter()
-                            .find_map(|(term, (cov, b, _))| judge(term, cov, *b, hole_ref, grown_ref, touched, cut, &behind_shapes, &looks, wu, patched));
+                        let own = seen.iter().find_map(|(term, (cov, b, _))| {
+                            judge(term, cov, *b, hole_ref, grown_ref, touched, cut, &behind_shapes, already_ref, &looks, wu, patched)
+                        });
+                        // Then, tile by tile over what the fill touched, anyone too small to find
+                        // in the whole frame.
+                        let own = match own {
+                            Some(why) => Some(why),
+                            None => anyone_small(finder_ref, filled, area, touched, &asks, cut, &behind_shapes, already_ref, ctx)?,
+                        };
                         Ok((seen, own))
                     };
                     // The subjects still behind keep their own pixels through this fill.
@@ -373,12 +388,14 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     // a table of its own colour looks kept whatever the fill did).
                     let watch = creature(this.check_term()).then_some(hole.as_slice());
                     let thing = !creature(this.check_term());
-                    let HoleFill { outcome, tries: hole_tries, ms, generations: made } =
-                        fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), watch, thing, &removal, box_job, (lo, hi), &mut check)?;
+                    let keep = keep_tries;
+                    let HoleFill { outcome, tries: hole_tries, ms, generations: made, refused: hole_refused } =
+                        fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), watch, thing, keep, &removal, box_job, (lo, hi), &mut check)?;
                     tries.extend(hole_tries.into_iter().map(|mut t| {
                         t["behind"] = json!(label.as_str());
                         t
                     }));
+                    refused.extend(hole_refused.into_iter().map(|(why, pixels)| (format!("{label}: {why}"), pixels)));
                     *active = below;
                     fill_ms += ms;
                     generations += made;
@@ -465,20 +482,36 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                                 return Ok(((), Some(format!("the {term} still in the hole"))));
                             }
                             if creature(term)
-                                && let Some(why) = someone_new(term, &cov, b, touched, (term, &hole, holed), &[])
+                                && let Some(why) = someone_new(term, &cov, b, touched, (term, &hole, holed), &[], &already)
                             {
                                 return Ok(((), Some(why)));
                             }
                         }
                     }
-                    Ok(((), None))
+                    Ok(((), anyone_small(finder_ref, filled, area, touched, &asks, (PERSON, &hole, holed), &[], &already, ctx)?))
                 };
-                let HoleFill { outcome, tries: hole_tries, ms, generations: made } =
-                    fill_hole(doc, active, below, ctx, area, &picture, &hole, None, None, false, &removal, last_box.as_ref(), (0.3, 0.9), &mut check)?;
+                let HoleFill { outcome, tries: hole_tries, ms, generations: made, refused: hole_refused } = fill_hole(
+                    doc,
+                    active,
+                    below,
+                    ctx,
+                    area,
+                    &picture,
+                    &hole,
+                    None,
+                    None,
+                    false,
+                    keep_tries,
+                    &removal,
+                    last_box.as_ref(),
+                    (0.3, 0.9),
+                    &mut check,
+                )?;
                 tries.extend(hole_tries.into_iter().map(|mut t| {
                     t["behind"] = json!("all");
                     t
                 }));
+                refused.extend(hole_refused.into_iter().map(|(why, pixels)| (format!("all: {why}"), pixels)));
                 *active = below;
                 fill_ms += ms;
                 generations += made;
@@ -493,9 +526,9 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
             };
             ctx.progress(0.95, "Placing");
             let left: Vec<Vec<f32>> = left_in.iter().map(|&i| hole_of(&subjects[i])).collect();
-            let behind_left = left_behind(&finder, &background, area, &left, ctx)?;
-            let (ids, placed, incomplete) =
-                place_all(doc, active, area, base.as_deref(), &found_by, &template_id, fill_seed, &subjects, cut, background, &left_in)?;
+            let behind_left = left_behind(&finder, &background, area, &left, &already, ctx)?;
+            let (ids, placed, incomplete, refused_ids) =
+                place_all(doc, active, area, base.as_deref(), &found_by, &template_id, fill_seed, &subjects, cut, background, &left_in, refused)?;
             Ok((
                 ids,
                 placed,
@@ -510,13 +543,30 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                 used.name(),
                 ordering.name(),
                 behind_left,
+                refused_ids,
             ))
         },
-        move |(ids, placed, incomplete, tries, found_by, template_id, seed, (fill_ms, generations), total_ms, (w, h), matted, ordered, left_behind)| {
+        move |(
+            ids,
+            placed,
+            incomplete,
+            tries,
+            found_by,
+            template_id,
+            seed,
+            (fill_ms, generations),
+            total_ms,
+            (w, h),
+            matted,
+            ordered,
+            left_behind,
+            refused_ids,
+        )| {
             json!({
                 "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>(), "count": ids.len(),
                 "subjects": placed, "incomplete": incomplete, "fills": tries.len(), "generations": generations, "tries": tries, "order": ordered,
                 "foundBy": found_by, "template": template_id, "seed": seed, "leftBehind": left_behind,
+                "refusedLayers": refused_ids.iter().map(|l| l.0).collect::<Vec<_>>(),
                 "width": w, "height": h, "fillMs": fill_ms, "ms": total_ms, "edges": matted,
             })
         },
@@ -537,6 +587,10 @@ struct Swept {
     fill_ms: u64,
     fill_seed: u64,
     generations: u32,
+    /// Who was in the picture before any fill, apart from the subjects ([`already_there`]).
+    already: Vec<Vec<f32>>,
+    /// The refused fills kept on request, named for their subject and try.
+    refused: Vec<(String, Vec<u8>)>,
 }
 
 /// The split as a sweep (`sweep`): the subjects are found on the picture as it stands, the
@@ -572,6 +626,7 @@ fn sweep_subjects(
     picture: &[u8],
     terms: Option<&[Term]>,
     budget: usize,
+    keep: bool,
     (group, ordering, edges): (Group, Order, Edges),
     (peel_box, last_box): (Option<&FillJob>, Option<&FillJob>),
 ) -> Result<Swept> {
@@ -591,6 +646,9 @@ fn sweep_subjects(
     };
     let mut pending: Vec<Subject> = in_depth_order(first, ordering, wu, hu);
     pending.truncate(budget);
+    // Who was in the picture before any fill, apart from the subjects: no fill's work.
+    let already = already_there(finder, picture, area, &creature_terms(&pending), &pending, ctx)?;
+    let mut refused: Vec<(usize, String, Vec<u8>)> = Vec::new();
     let mut done: Vec<Subject> = Vec::new();
     let mut cut: Vec<Vec<u8>> = Vec::new();
     let mut left_in: Vec<usize> = Vec::new();
@@ -709,21 +767,27 @@ fn sweep_subjects(
                 }
             }
             let looks = |cov: &[f32]| kept_share(before, filled, &both(cov, &hole), wu, hu);
-            let own =
-                seen.iter().find_map(|(term, (cov, b, _))| judge(term, cov, *b, &hole, &grown_hole, touched, cut_shape, &behind_shapes, &looks, wu, patched));
+            let own = seen
+                .iter()
+                .find_map(|(term, (cov, b, _))| judge(term, cov, *b, &hole, &grown_hole, touched, cut_shape, &behind_shapes, &already, &looks, wu, patched));
+            let own = match own {
+                Some(why) => Some(why),
+                None => anyone_small(finder, filled, area, touched, &asks, cut_shape, &behind_shapes, &already, ctx)?,
+            };
             Ok((seen, own))
         };
         // Everyone still on the list keeps their own pixels through this fill.
         let protect = protect_mask(&pending, wu * hu);
         let watch = creature(this.check_term()).then_some(hole.as_slice());
         let thing = !creature(this.check_term());
-        let HoleFill { outcome, tries: hole_tries, ms, generations: made } =
-            fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), watch, thing, &removal, box_job, (lo, hi), &mut check)?;
+        let HoleFill { outcome, tries: hole_tries, ms, generations: made, refused: hole_refused } =
+            fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), watch, thing, keep, &removal, box_job, (lo, hi), &mut check)?;
         // Named by its layer once every subject is known.
         tries.extend(hole_tries.into_iter().map(|mut t| {
             t["behind"] = json!(k);
             t
         }));
+        refused.extend(hole_refused.into_iter().map(|(why, pixels)| (k, why, pixels)));
         *active = below;
         fill_ms += ms;
         generations += made;
@@ -767,12 +831,19 @@ fn sweep_subjects(
             t["behind"] = json!(labels[k as usize]);
         }
     }
-    Ok(Swept { subjects: done, cut, background: p, left_in, tries, found_by, used, fill_ms, fill_seed, generations })
+    let refused: Vec<(String, Vec<u8>)> = refused.into_iter().map(|(k, why, pixels)| (format!("{}: {why}", labels[k]), pixels)).collect();
+    Ok(Swept { subjects: done, cut, background: p, left_in, tries, found_by, used, fill_ms, fill_seed, generations, already, refused })
 }
+
+/// What [`place_all`] made: the layers' ids (the background first, then the subjects back to
+/// front), the `subjects` of the result, the names of the subjects left in the background
+/// (`incomplete`) and the ids of the refused fills kept as layers (`refusedLayers`).
+type Placed = (Vec<LayerId>, Vec<Value>, Vec<String>, Vec<LayerId>);
 
 /// The layers: the background lowest, then the subjects back to front (the nearest on top),
 /// named "{base} k/n" or by their terms; the ids, each subject's record and the names of those
-/// left in the background.
+/// left in the background. The `refused` fills (`keepTries`), named, go under the background,
+/// hidden; their ids come last.
 #[allow(clippy::too_many_arguments)]
 fn place_all(
     doc: &mut Document,
@@ -786,7 +857,8 @@ fn place_all(
     mut cut: Vec<Vec<u8>>,
     background: Vec<u8>,
     left_in: &[usize],
-) -> Result<(Vec<LayerId>, Vec<Value>, Vec<String>)> {
+    refused: Vec<(String, Vec<u8>)>,
+) -> Result<Placed> {
     let (w, h) = (area.width(), area.height());
     // The background lowest, then the subjects back to front: the nearest on top.
     let count = 1 + subjects.len();
@@ -818,6 +890,14 @@ fn place_all(
         None if doc.layers.iter().any(|l| l.name == "Background") => "Split background".to_string(),
         None => "Background".to_string(),
     };
+    let mut refused_ids: Vec<LayerId> = Vec::with_capacity(refused.len());
+    for (why, pixels) in refused {
+        let id = place(doc, active, pixels, why)?;
+        if let Some(layer) = doc.layer_mut(id) {
+            layer.visible = false;
+        }
+        refused_ids.push(id);
+    }
     ids.push(place(doc, active, background, bg_name)?);
     for (k, i) in (0..subjects.len()).rev().enumerate() {
         let sub = &subjects[i];
@@ -840,7 +920,7 @@ fn place_all(
             None => labels[i].clone(),
         })
         .collect();
-    Ok((ids, placed, incomplete))
+    Ok((ids, placed, incomplete, refused_ids))
 }
 
 /// The terms of `found_by` that kept an instance through the cleaning (a term whose every
@@ -1073,6 +1153,9 @@ pub(super) fn fills_own_work(
 /// when it was there before. Small figures the frame-wide check never saw (ranked below the
 /// people still there, or under its share of the hole): six invented diners and office people
 /// on the café backgrounds, and one on the portrait's (measured in the app 2026-11-04).
+/// Whoever was in the picture before any fill (`already`, the people apart from the subjects: a
+/// man in a framed photograph beside the hole refused the waiter's removal four times, round 7)
+/// is nobody's work.
 pub(super) fn someone_new(
     term: &str,
     cov: &[f32],
@@ -1080,6 +1163,7 @@ pub(super) fn someone_new(
     touched: &[f32],
     cut: (&str, &[f32], u64),
     behind: &[(String, Vec<f32>, u64)],
+    already: &[Vec<f32>],
 ) -> Option<String> {
     let on = cov.iter().filter(|c| **c >= 0.5).count() as u64;
     let inside = overlap(cov, touched);
@@ -1089,6 +1173,9 @@ pub(super) fn someone_new(
     let (cut_term, cut_cov, cut_pixels) = cut;
     if term == cut_term && overlap(cov, cut_cov) * 2 >= cut_pixels {
         return Some(format!("the {term} painted back"));
+    }
+    if already.iter().any(|a| overlap(cov, a) * 2 >= on) {
+        return None;
     }
     if behind
         .iter()
@@ -1114,6 +1201,7 @@ fn judge(
     touched: &[f32],
     cut: (&str, &[f32], u64),
     behind: &[(String, Vec<f32>, u64)],
+    already: &[Vec<f32>],
     looks: &dyn Fn(&[f32]) -> f32,
     w: usize,
     patched: bool,
@@ -1124,7 +1212,7 @@ fn judge(
         return Some(why);
     }
     if creature(term) {
-        return someone_new(term, cov, bounds, touched, cut, behind);
+        return someone_new(term, cov, bounds, touched, cut, behind, already);
     }
     None
 }
@@ -1197,16 +1285,176 @@ fn near(a: &[f32], b: &[f32], w: usize, reach: usize) -> bool {
 /// it (`left`, their holes): their bounds, `leftBehind` in the result, so a sheet says at once
 /// whether anyone was invented or missed (the app's own detector found one on every round-6
 /// café background the per-fill checks had passed; measured 2026-11-04).
-fn left_behind(finder: &SubjectFinder, background: &[u8], area: Rect, left: &[Vec<f32>], ctx: &JobCtx) -> Result<Vec<Value>> {
+/// Looked for in the whole frame and tile by tile ([`found_by_tiles`]); whoever was in the
+/// picture before any fill (`already`) is not listed.
+fn left_behind(finder: &SubjectFinder, background: &[u8], area: Rect, left: &[Vec<f32>], already: &[Vec<f32>], ctx: &JobCtx) -> Result<Vec<Value>> {
     let (wu, hu) = (area.width() as usize, area.height() as usize);
+    let mut found = finder.find_all_in(background, area, PERSON, NEW_AT_MOST, new_floor(wu, hu), ctx)?;
+    found.extend(found_by_tiles(finder, background, area, area, PERSON, ctx)?);
     let mut out = Vec::new();
-    for (cov, b, n) in finder.find_all_in(background, area, PERSON, NEW_AT_MOST, new_floor(wu, hu), ctx)? {
-        if left.iter().any(|hole| overlap(&cov, hole) * 2 >= n) {
+    let mut listed: Vec<Vec<f32>> = Vec::new();
+    for (cov, b, n) in found {
+        if left.iter().chain(already).chain(&listed).any(|other| overlap(&cov, other) * 2 >= n) {
             continue;
         }
         out.push(json!([b.x0, b.y0, b.width(), b.height()]));
+        listed.push(cov);
     }
     Ok(out)
+}
+
+/// The tiles over `bounds` within `area`, each a part of the picture the detector is shown on
+/// its own: the bounds ([`ZOOM_MARGIN`] around them for context) in pieces no longer than
+/// [`zoom_tile`] a side, each piece widened to that side, centred and slid to stay within the
+/// picture; none for empty bounds, and none that is the whole picture (the detector saw that
+/// already, and a picture no larger than a tile has nothing to zoom into).
+fn tiles_over(bounds: Rect, area: Rect) -> Vec<Rect> {
+    let bounds = bounds.inflate(ZOOM_MARGIN as i32).intersect(&area);
+    if bounds.is_empty() {
+        return Vec::new();
+    }
+    let side = zoom_tile(area) as u32;
+    let (bw, bh) = (bounds.width(), bounds.height());
+    let (nx, ny) = (bw.div_ceil(side).max(1), bh.div_ceil(side).max(1));
+    let (pw, ph) = (bw.div_ceil(nx) as i32, bh.div_ceil(ny) as i32);
+    let side = side as i32;
+    let span = |p0: i32, p1: i32, a0: i32, a1: i32| -> (i32, i32) {
+        let len = (p1 - p0).max(side).min(a1 - a0);
+        let s0 = ((p0 + p1 - len) / 2).clamp(a0, a1 - len);
+        (s0, s0 + len)
+    };
+    let mut tiles: Vec<Rect> = Vec::with_capacity((nx * ny) as usize);
+    for j in 0..ny as i32 {
+        for i in 0..nx as i32 {
+            let (px0, py0) = (bounds.x0 + i * pw, bounds.y0 + j * ph);
+            let (x0, x1) = span(px0, (px0 + pw).min(bounds.x1), area.x0, area.x1);
+            let (y0, y1) = span(py0, (py0 + ph).min(bounds.y1), area.y0, area.y1);
+            let tile = Rect::new(x0, y0, x1, y1);
+            if !tile.is_empty() && tile != area && !tiles.contains(&tile) {
+                tiles.push(tile);
+            }
+        }
+    }
+    tiles
+}
+
+/// How long a tile's side is at most: a third of the picture's longer side, so the detector sees
+/// a tile three times the size it sees the frame at, and [`ZOOM_TILE`] at least.
+fn zoom_tile(area: Rect) -> usize {
+    (area.width().max(area.height()) as usize / ZOOM_ACROSS).max(ZOOM_TILE)
+}
+
+/// `tile` of `picture` (RGBA over `area`) as a picture of its own.
+fn crop_rgba(picture: &[u8], area: Rect, tile: Rect) -> Vec<u8> {
+    let aw = area.width() as usize;
+    let (tw, th) = (tile.width() as usize, tile.height() as usize);
+    let mut out = Vec::with_capacity(tw * th * 4);
+    for y in 0..th {
+        let row = (tile.y0 - area.y0) as usize + y;
+        let start = (row * aw + (tile.x0 - area.x0) as usize) * 4;
+        out.extend_from_slice(&picture[start..start + tw * 4]);
+    }
+    out
+}
+
+/// A mask over `tile` laid into one over `area` (off elsewhere).
+fn paste_mask(cov: &[f32], tile: Rect, area: Rect) -> Vec<f32> {
+    let aw = area.width() as usize;
+    let (tw, th) = (tile.width() as usize, tile.height() as usize);
+    let mut out = vec![0.0f32; aw * area.height() as usize];
+    for y in 0..th {
+        let row = (tile.y0 - area.y0) as usize + y;
+        let start = row * aw + (tile.x0 - area.x0) as usize;
+        out[start..start + tw].copy_from_slice(&cov[y * tw..(y + 1) * tw]);
+    }
+    out
+}
+
+/// The instances of `term` the detector finds in `picture` shown tile by tile over `bounds`
+/// ([`tiles_over`]), down to [`ZOOM_MIN_PIXELS`] and [`ZOOM_MIN_SIDE`], as masks over `area`.
+/// A figure 20 px tall is a third of that in the whole frame sent at the detector's size, and
+/// was missed or fell under the floor (round 7's invented diners, 15–40 px tall, in five of
+/// eight café backgrounds; measured in the app 2026-11-04).
+fn found_by_tiles(finder: &SubjectFinder, picture: &[u8], area: Rect, bounds: Rect, term: &str, ctx: &JobCtx) -> Result<Vec<Instance>> {
+    let mut out = Vec::new();
+    for tile in tiles_over(bounds, area) {
+        ctx.check()?;
+        let crop = crop_rgba(picture, area, tile);
+        for (cov, b, n) in finder.find_all_in(&crop, tile, term, NEW_AT_MOST, ZOOM_MIN_PIXELS, ctx)? {
+            if b.width() >= ZOOM_MIN_SIDE && b.height() >= ZOOM_MIN_SIDE {
+                out.push((paste_mask(&cov, tile, area), b, n));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Who was in the picture before any fill, apart from the subjects: every instance of each of
+/// the creature `terms`, in the whole frame and by tiles ([`found_by_tiles`]), that is not mostly
+/// on a subject (those the fills take out). A fill is not blamed for them (the man in a framed
+/// photograph beside the waiter's hole refused four removals, round 7; measured in the app
+/// 2026-11-04), nor are they listed in `leftBehind`.
+fn already_there(finder: &SubjectFinder, picture: &[u8], area: Rect, terms: &[String], subjects: &[Subject], ctx: &JobCtx) -> Result<Vec<Vec<f32>>> {
+    let (wu, hu) = (area.width() as usize, area.height() as usize);
+    let mut on_subjects = vec![0.0f32; wu * hu];
+    for s in subjects {
+        for (d, c) in on_subjects.iter_mut().zip(&s.cov) {
+            *d = d.max(*c);
+        }
+    }
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    for term in terms {
+        let mut found = finder.find_all_in(picture, area, term, NEW_AT_MOST, new_floor(wu, hu), ctx)?;
+        found.extend(found_by_tiles(finder, picture, area, area, term, ctx)?);
+        for (cov, _, n) in found {
+            if overlap(&cov, &on_subjects) * 2 < n && !out.iter().any(|o| overlap(&cov, o) * 2 >= n) {
+                out.push(cov);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The creature terms among the subjects' (people, animals), and "person" always: whom a fill
+/// is checked for.
+fn creature_terms(subjects: &[Subject]) -> Vec<String> {
+    let mut terms: Vec<String> = subjects.iter().map(|s| s.check_term().to_string()).filter(|t| creature(t)).collect();
+    terms.push(PERSON.to_string());
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+/// Anyone small a fill painted: each creature term of `asks`, looked for tile by tile over the
+/// pixels the fill touched ([`found_by_tiles`]), every find judged as [`someone_new`].
+#[allow(clippy::too_many_arguments)]
+fn anyone_small(
+    finder: &SubjectFinder,
+    filled: &[u8],
+    area: Rect,
+    touched: &[f32],
+    asks: &[(String, usize)],
+    cut: (&str, &[f32], u64),
+    behind: &[(String, Vec<f32>, u64)],
+    already: &[Vec<f32>],
+    ctx: &JobCtx,
+) -> Result<Option<String>> {
+    let (bounds, _) = crate::select_ml_cmds::coverage_bounds(touched, area);
+    for (term, _) in asks.iter().filter(|(t, _)| creature(t)) {
+        for (cov, b, _) in found_by_tiles(finder, filled, area, bounds, term, ctx)? {
+            if let Some(why) = someone_new(term, &cov, b, touched, cut, behind, already) {
+                return Ok(Some(why));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a refusal is the one a hole may fall back on when every try is refused: a thing
+/// painted where none was ("a table in the hole that was not there"). Never a person or an
+/// animal, a blank or a shape over the hole.
+fn tolerable(why: &str) -> bool {
+    why.strip_prefix("a ").and_then(|r| r.strip_suffix(" in the hole that was not there")).is_some_and(|term| !creature(term))
 }
 
 /// Whether a term names a person or an animal (judged over the widened hole and by their
@@ -1320,12 +1568,14 @@ type Verdict<T> = (T, Option<String>);
 type Check<'a, T> = dyn FnMut(&[u8], &[f32], bool) -> Result<Verdict<T>> + 'a;
 
 /// What a hole's tries came to: the fill accepted (`None` when every try was refused), every
-/// try's record, the time all the tries took and the model generations they asked for.
+/// try's record, the time all the tries took, the model generations they asked for, and the
+/// refused fills themselves when asked to keep them (each named for its try and verdict).
 struct HoleFill<T> {
     outcome: Option<Filled<T>>,
     tries: Vec<Value>,
     ms: u64,
     generations: u32,
+    refused: Vec<(String, Vec<u8>)>,
 }
 
 /// Fill `hole` (one value per canvas pixel) in `picture`, the document's composite standing in
@@ -1341,7 +1591,10 @@ struct HoleFill<T> {
 /// construction, is judged by the pixels and for people only. The first accepted comes back with
 /// its seed, `None` after [`FILL_TRIES`] rejected tries and the patch; with it every try's record
 /// (`fill`: removal, fill, strips or patch; `generations`: the model fills it asked for;
-/// `verdict`: accepted, or why not), the time and the generations of them all.
+/// `verdict`: accepted, or why not), the time and the generations of them all. When every try
+/// is refused and one of them only for a thing painted where none was ([`tolerable`]), that one
+/// is taken after all, "accepted as the last resort". With `keep`, the refused fills come back
+/// too.
 #[allow(clippy::too_many_arguments)]
 fn fill_hole<T>(
     doc: &mut Document,
@@ -1354,6 +1607,7 @@ fn fill_hole<T>(
     protect: Option<&[f32]>,
     watch: Option<&[f32]>,
     thing: bool,
+    keep: bool,
     removal: &FillJob,
     box_job: Option<&FillJob>,
     (lo, hi): (f32, f32),
@@ -1362,7 +1616,7 @@ fn fill_hole<T>(
     let (w, h) = (area.width(), area.height());
     let (wu, hu) = (w as usize, h as usize);
     let (hole_rect, holed) = crate::select_ml_cmds::coverage_bounds(hole, area);
-    let mut done = HoleFill { outcome: None, tries: Vec::with_capacity(FILL_TRIES as usize + 1), ms: 0, generations: 0 };
+    let mut done = HoleFill { outcome: None, tries: Vec::with_capacity(FILL_TRIES as usize + 1), ms: 0, generations: 0, refused: Vec::new() };
     if holed == 0 {
         return Ok(done);
     }
@@ -1415,12 +1669,18 @@ fn fill_hole<T>(
     let work = doc.insert_above(below, work);
     // Every try, then the classical patch fill as the last: a step, its result (the picture
     // with the fill laid in), the seed it ran, its time and its generations.
-    for attempt in 0..=FILL_TRIES {
+    // A big hole with texture around it gets fewer tries before the patch: a strips try is four
+    // generations, and a refused big hole cost its whole ladder, 17 generations, in round 7.
+    let tries = if big && !plain { BIG_TRIES } else { FILL_TRIES };
+    // The first refusal the hole may fall back on ([`tolerable`]): its record's index, its
+    // verdict and its result.
+    let mut fallback: Option<(usize, String, Filled<T>)> = None;
+    for attempt in 0..=tries {
         let span = hi - lo;
-        ctx.progress(lo + span * 0.8 * attempt as f32 / (FILL_TRIES + 1) as f32, "");
-        let step = if attempt == FILL_TRIES { Step::Patch } else { step_of(attempt, big, plain, box_job.is_some()) };
+        ctx.progress(lo + span * 0.8 * attempt as f32 / (tries + 1) as f32, "");
+        let step = if attempt == tries { Step::Patch } else { step_of(attempt, big, plain, box_job.is_some()) };
         let kind = step.name();
-        let progress = (lo + span * 0.8 * attempt as f32 / (FILL_TRIES + 1) as f32, lo + span * 0.8 * (attempt as f32 + 0.9) / (FILL_TRIES + 1) as f32);
+        let progress = (lo + span * 0.8 * attempt as f32 / (tries + 1) as f32, lo + span * 0.8 * (attempt as f32 + 0.9) / (tries + 1) as f32);
         let result = match step {
             Step::Patch => Ok(patch_fill(picture, hole, protect, wu, hu, removal.seed).map(|f| (f, removal.seed, 0u64, 0u32))),
             Step::Strips => {
@@ -1481,17 +1741,19 @@ fn fill_hole<T>(
             })
             .collect();
         ctx.progress(progress.1, "Checking the fill");
-        if let Some(silhouette) = watch {
-            let kept = kept_share(picture, &background, silhouette, wu, hu);
-            if kept >= KEPT_WHOLE {
-                done.tries.push(record(&format!("kept what stood there ({:.0} % of it as it was)", kept * 100.0)));
-                continue;
-            }
-        }
-        // A blank fill (the grey box as it was) or a smear where the subject stood passes a
-        // detector and the pixels alike: judged against the picture around the hole.
-        if let Some(why) = blank_or_ghost(picture, &background, hole, &ring, wu, hu) {
+        // By the pixels first: the silhouette kept, then a blank fill (the grey box as it was)
+        // or a smear where the subject stood, which pass a detector and the pixels alike and
+        // are judged against the picture around the hole.
+        let by_pixels = watch
+            .map(|silhouette| kept_share(picture, &background, silhouette, wu, hu))
+            .filter(|kept| *kept >= KEPT_WHOLE)
+            .map(|kept| format!("kept what stood there ({:.0} % of it as it was)", kept * 100.0))
+            .or_else(|| blank_or_ghost(picture, &background, hole, &ring, wu, hu));
+        if let Some(why) = by_pixels {
             done.tries.push(record(&why));
+            if keep {
+                done.refused.push((format!("{kind} refused ({why})"), background));
+            }
             continue;
         }
         match check(&background, &touched, step == Step::Patch && thing) {
@@ -1500,8 +1762,13 @@ fn fill_hole<T>(
                 done.outcome = Some((background, fill_seed, seen));
                 break;
             }
-            Ok((_, Some(why))) => {
+            Ok((seen, Some(why))) => {
                 done.tries.push(record(&why));
+                if fallback.is_none() && tolerable(&why) {
+                    fallback = Some((done.tries.len() - 1, why, (background, fill_seed, seen)));
+                } else if keep {
+                    done.refused.push((format!("{kind} refused ({why})"), background));
+                }
                 continue;
             }
             Err(e) => {
@@ -1513,6 +1780,21 @@ fn fill_hole<T>(
     }
     doc.remove(work);
     *active = below;
+    // The one refusal a hole falls back on when every try is refused: a thing painted where none
+    // was (a table behind the fedora man, round 7: six refusals, and he stayed in the background
+    // in two seeds of three). The room gains a table, but the subject leaves the background. A
+    // person painted back or in, a shape over the hole or a blank never.
+    match fallback {
+        Some((at, why, filled)) if done.outcome.is_none() => {
+            done.tries[at]["verdict"] = json!(format!("accepted as the last resort ({why})"));
+            done.outcome = Some(filled);
+        }
+        Some((at, why, (background, _, _))) if keep => {
+            let kind = done.tries[at]["fill"].as_str().unwrap_or("").to_string();
+            done.refused.push((format!("{kind} refused ({why})"), background));
+        }
+        _ => {}
+    }
     Ok(done)
 }
 
@@ -1540,10 +1822,9 @@ impl Step {
     }
 }
 
-/// Which fill try `attempt` of a hole is. A small hole: the removal, then the grey-box fills. A
-/// big one (`big`): the box in strips three times, then the box whole; a big person's removal
-/// is skipped (it painted every big person of the café photo back, eight of eight, measured in
-/// the app 2026-11-04), a big thing's (a table) comes first, as it often clears. Without a box
+/// Which fill try `attempt` of a hole is. The removal first, every time; then, for a small hole
+/// or a plain ring, the grey-box fills; for a big hole with texture around it (`big`), the box
+/// in strips twice and then whole ([`BIG_TRIES`] tries in all before the patch). Without a box
 /// fill to call on, the removal every time.
 fn step_of(attempt: u32, big: bool, plain: bool, boxed: bool) -> Step {
     if !boxed {
@@ -1561,7 +1842,7 @@ fn step_of(attempt: u32, big: bool, plain: bool, boxed: bool) -> Step {
     }
     match attempt {
         0 => Step::Removal,
-        1 | 2 | 4 => Step::Strips,
+        1 | 2 => Step::Strips,
         _ => Step::Box,
     }
 }
@@ -1787,6 +2068,8 @@ pub(super) fn blank_or_ghost(before: &[u8], after: &[u8], hole: &[f32], ring: &[
     let hole_cells = cell_stats(after, hole, w, h, grid, (gw, gh), step);
     let ring_cells = cell_stats(before, ring, w, h, grid, (gw, gh), step);
     let (mut blank, mut ghost, mut shade) = (0u64, 0u64, 0.0f32);
+    // Each ghost cell's brightness difference and pixels, for the clusters below.
+    let mut ghost_cells: Vec<Option<(f32, u32)>> = vec![None; gw * gh];
     for cy in 0..gh {
         for cx in 0..gw {
             let cell = &hole_cells[cy * gw + cx];
@@ -1803,6 +2086,7 @@ pub(super) fn blank_or_ghost(before: &[u8], after: &[u8], hole: &[f32], ring: &[
             } else if (luma - r_luma).abs() >= GHOST_LUMA {
                 ghost += u64::from(cell.ln);
                 shade += (luma - r_luma) * cell.ln as f32;
+                ghost_cells[cy * gw + cx] = Some((luma - r_luma, cell.ln));
             }
         }
     }
@@ -1812,7 +2096,68 @@ pub(super) fn blank_or_ghost(before: &[u8], after: &[u8], hole: &[f32], ring: &[
     if ghost > 0 && ghost as f32 >= BLANK_CELLS * holed as f32 {
         return Some(ghost_words(shade / ghost as f32, ghost as f32 / holed as f32));
     }
+    // A shape over part of the hole: ghost cells joined, [`GHOST_CLUSTER_CELLS`] or more of them
+    // and [`GHOST_CLUSTER_SHARE`] of the hole (a soft dark blob where the woman's head had been
+    // passed the share above in four café backgrounds; measured in the app 2026-11-04).
+    if let Some((cells, pixels, d, (cw, ch))) = ghost_cluster(&ghost_cells, gw, gh)
+        && cells >= GHOST_CLUSTER_CELLS
+        && pixels as f32 >= GHOST_CLUSTER_SHARE * holed as f32
+    {
+        let shape = if d < 0.0 { "dark" } else { "light" };
+        return Some(format!(
+            "painted a {shape} shape over part of the hole (about {}×{} px, {:+.0} % in brightness)",
+            cw * BLANK_CELL,
+            ch * BLANK_CELL,
+            d * 100.0
+        ));
+    }
     None
+}
+
+/// The largest cluster of ghost cells (joined side to side), by its pixels: its cells, its
+/// pixels, its mean brightness difference and its bounds in cells.
+fn ghost_cluster(cells: &[Option<(f32, u32)>], gw: usize, gh: usize) -> Option<(usize, u64, f32, (usize, usize))> {
+    let mut seen = vec![false; cells.len()];
+    let mut best: Option<(usize, u64, f32, (usize, usize))> = None;
+    for start in 0..cells.len() {
+        if seen[start] || cells[start].is_none() {
+            continue;
+        }
+        let (mut count, mut pixels, mut shade) = (0usize, 0u64, 0.0f32);
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+        let mut stack = vec![start];
+        seen[start] = true;
+        while let Some(k) = stack.pop() {
+            let Some((d, n)) = cells[k] else { continue };
+            count += 1;
+            pixels += u64::from(n);
+            shade += d * n as f32;
+            let (x, y) = (k % gw, k / gw);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+            let mut visit = |j: usize| {
+                if !seen[j] && cells[j].is_some() {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            };
+            if x > 0 {
+                visit(k - 1);
+            }
+            if x + 1 < gw {
+                visit(k + 1);
+            }
+            if y > 0 {
+                visit(k - gw);
+            }
+            if y + 1 < gh {
+                visit(k + gw);
+            }
+        }
+        if best.as_ref().is_none_or(|b| pixels > b.1) {
+            best = Some((count, pixels, shade / pixels.max(1) as f32, (x1 - x0, y1 - y0)));
+        }
+    }
+    best
 }
 
 /// "painted a dark shape over the hole (-40 % in brightness)", or over `share` of it.
@@ -2221,6 +2566,22 @@ const NEW_MIN_PIXELS: u64 = 16;
 /// How many instances of a person's or animal's kind the check asks for after a fill: enough
 /// for everyone still in the picture and the small figures a fill may paint beside them.
 const NEW_AT_MOST: usize = 16;
+/// A tile of the picture the detector is shown on its own ([`found_by_tiles`]): at least this
+/// long a side, else a third of the picture's longer side ([`ZOOM_ACROSS`]), widened by
+/// [`ZOOM_MARGIN`] for its context.
+const ZOOM_TILE: usize = 640;
+const ZOOM_ACROSS: usize = 3;
+const ZOOM_MARGIN: usize = 32;
+/// The smallest find a tile's look holds against a fill: its mask's pixels and its bounds' sides.
+const ZOOM_MIN_PIXELS: u64 = 100;
+const ZOOM_MIN_SIDE: u32 = 8;
+/// A shape painted over part of the hole ([`ghost_cluster`]): this many ghost cells joined, at
+/// least, and this share of the hole's pixels.
+const GHOST_CLUSTER_CELLS: usize = 6;
+const GHOST_CLUSTER_SHARE: f32 = 0.02;
+/// The tries before the patch for a big hole with texture around it: the removal, the box in
+/// strips twice, the box whole.
+const BIG_TRIES: u32 = 4;
 /// A fill whose texture is under this share of the ring's left the hole blank.
 const BLANK_SHARE: f32 = 0.15;
 /// A fill whose mean brightness is this far (0..1) from the ring's painted a shape over the hole.

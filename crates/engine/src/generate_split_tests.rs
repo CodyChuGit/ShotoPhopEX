@@ -148,13 +148,14 @@ fn split_completes_what_a_nearer_subject_hid() {
     assert_eq!(r["subjects"][0]["completed"], true, "{r}");
     assert_eq!(r["subjects"][1]["completed"], true, "{r}");
     assert_eq!(r["subjects"][0]["bounds"][0], 13, "the back one's bounds take in the completed part: {r}");
-    // The detector was asked once to find the people (the two filled the layer budget), then
-    // again after each fill, for the subject painted back and the people still behind, and
-    // once more on the finished background (nobody left on it).
+    // The detector was asked once to find the people (the two filled the layer budget), once
+    // for anyone else in the picture before any fill, then again after each fill, for the
+    // subject painted back and the people still behind, and once more on the finished
+    // background (nobody left on it). A picture this small is not looked at tile by tile.
     assert_eq!(r["leftBehind"], json!([]), "{r}");
     let st = fake.state();
     let segments = st.runs.iter().filter(|r| r.request["task"] == "segment").count();
-    assert_eq!(segments, 4, "found, checked after each fill, the background looked over: {segments}");
+    assert_eq!(segments, 5, "found, who was there, checked after each fill, the background looked over: {segments}");
     assert!(st.runs.iter().filter(|r| r.request["model"] == "vitmatte/refine").count() >= 3, "the completed subject was matted again");
 }
 
@@ -462,6 +463,7 @@ fn split_rejects_a_fill_that_paints_someone_new_into_the_hole() {
     let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
     assert_eq!(r["incomplete"], json!(["Person 2"]), "the right one could not be cleared: {r}");
+    assert_eq!(r["refusedLayers"], json!([]), "no refused fill is kept unless asked for: {r}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
     assert_eq!(layer_name(&s, ids[2]), "Person 2");
     let kept = pixel_at(&s, ids[0], 192, 96);
@@ -670,8 +672,8 @@ fn a_blank_fill_and_a_smear_are_no_fill() {
 fn a_big_hole_gets_the_removal_then_strips_then_the_box_and_the_patch() {
     // One person over 540 px tall on a 900×600 canvas of 24-px stripes (texture): the fake's
     // fills paint a flat colour, which is no fill here, so every try is refused and shows the
-    // plan: the removal first, the grey box in two strips twice, the box whole, strips once
-    // more, then the classical patch fill, which continues the stripes and is accepted.
+    // plan: the removal first, the grey box in two strips twice, the box whole, then the
+    // classical patch fill, which continues the stripes and is accepted.
     let fake = FakeNative::start_with(photocraft_genai::fake::Options {
         segments: vec![[0.3, 0.04, 0.7, 0.96]],
         color: [10, 200, 10, 255],
@@ -691,18 +693,14 @@ fn a_big_hole_gets_the_removal_then_strips_then_the_box_and_the_patch() {
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 2})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
     let tries = r["tries"].as_array().unwrap();
-    assert_eq!(
-        tries.iter().map(|t| t["fill"].as_str().unwrap_or("")).collect::<Vec<_>>(),
-        ["removal", "strips", "strips", "fill", "strips", "patch"],
-        "{tries:?}"
-    );
-    assert_eq!(tries.iter().map(|t| t["generations"].as_u64().unwrap_or(99)).collect::<Vec<_>>(), [1, 2, 2, 1, 2, 0], "two strips a try: {tries:?}");
-    assert!(tries[..5].iter().all(|t| t["verdict"].as_str().unwrap_or("").starts_with("left the hole blank")), "{tries:?}");
-    assert_eq!(tries[5]["verdict"], "accepted", "{tries:?}");
-    assert_eq!((r["fills"].as_u64(), r["generations"].as_u64()), (Some(6), Some(8)), "{r}");
+    assert_eq!(tries.iter().map(|t| t["fill"].as_str().unwrap_or("")).collect::<Vec<_>>(), ["removal", "strips", "strips", "fill", "patch"], "{tries:?}");
+    assert_eq!(tries.iter().map(|t| t["generations"].as_u64().unwrap_or(99)).collect::<Vec<_>>(), [1, 2, 2, 1, 0], "two strips a try: {tries:?}");
+    assert!(tries[..4].iter().all(|t| t["verdict"].as_str().unwrap_or("").starts_with("left the hole blank")), "{tries:?}");
+    assert_eq!(tries[4]["verdict"], "accepted", "{tries:?}");
+    assert_eq!((r["fills"].as_u64(), r["generations"].as_u64()), (Some(5), Some(6)), "{r}");
     let st = fake.state();
     let tasks: Vec<&str> = st.runs.iter().map(|r| r.request["task"].as_str().unwrap_or("")).filter(|t| *t == "fill" || *t == "edit").collect();
-    assert_eq!(tasks.len(), 8, "the removal, three strip pairs and the box: {tasks:?}");
+    assert_eq!(tasks.len(), 6, "the removal, two strip pairs and the box: {tasks:?}");
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
     let bg = pixel_at(&s, ids[0], 450, 300);
     assert!(bg[2] < 0.6 && (bg[1] - bg[0]).abs() < 0.1, "the background in the hole is the patch, neither the blue nor the fake's green: {bg:?}");
@@ -841,11 +839,174 @@ fn someone_a_fill_painted_stands_mostly_where_it_painted() {
     let behind = vec![("person".to_string(), det(0, 2), 2u64)];
     let cut = ("person", &hole[..], 8u64);
     let bounds = |from: i32, to: i32| Rect::new(from, 0, to, 1);
-    let new = |d: &[f32], b: Rect| someone_new("person", d, b, &touched, cut, &behind);
+    let new = |d: &[f32], b: Rect| someone_new("person", d, b, &touched, cut, &behind, &[]);
     assert_eq!(new(&det(5, 8), bounds(5, 8)), Some("a person painted into the hole (3×1 px)".to_string()), "a small figure in the hole");
     assert_eq!(new(&det(4, 12), bounds(4, 12)), Some("the person painted back".to_string()), "the cut one's own shape");
     assert_eq!(new(&det(0, 6), bounds(0, 6)), None, "the one behind completed by twice their pixels");
     assert!(new(&det(0, 7), bounds(0, 7)).is_some(), "more than that: someone painted over them");
     assert_eq!(new(&det(12, 16), bounds(12, 16)), None, "half in the feathered edge: there before");
     assert_eq!(new(&det(14, 16), bounds(14, 16)), None, "outside: there before");
+    // Someone the picture had before any fill (apart from the subjects) is nobody's work.
+    let already = vec![det(5, 8)];
+    assert_eq!(someone_new("person", &det(5, 8), bounds(5, 8), &touched, cut, &behind, &already), None, "there before the fill");
+    assert_eq!(
+        someone_new("person", &det(7, 10), bounds(7, 10), &touched, cut, &behind, &already).as_deref(),
+        Some("a person painted into the hole (3×1 px)"),
+        "mostly not"
+    );
+}
+
+#[test]
+fn a_figure_the_detector_sees_only_in_a_tile_of_the_picture_refuses_the_fill() {
+    // One person 360×552 px on a plain 900×600 canvas. Every fill paints a small figure into the
+    // hole that the detector finds only when shown the part of the picture it is in
+    // (`appears_in_crops`: at the detector's size, a figure a few pixels tall in the whole frame
+    // is a third of that), so every try is refused and the split fails with the verdicts.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.3, 0.04, 0.7, 0.96]],
+        appears_in_crops: vec![[0.4, 0.4, 0.45, 0.47]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 900, 600);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let err = s.execute(SPLIT, json!({"seed": 1, "layers": 2})).unwrap_err().to_string();
+    assert!(err.contains("a person painted into the hole (32×42 px)") && err.contains("nothing was changed"), "{err}");
+    // Every model fill; the classical patch copies the canvas around the hole, the colour the
+    // fake's person is, and is refused as kept before the detector is asked.
+    assert_eq!(err.matches("painted into the hole").count(), 5, "{err}");
+    assert!(err.contains("patch kept what stood there"), "{err}");
+    // The whole frame never showed the figure: the detector was shown a part of the picture.
+    let st = fake.state();
+    let sizes: Vec<(u32, u32)> =
+        st.runs.iter().filter(|r| r.request["task"] == "segment").filter_map(|r| r.run.image.as_ref().map(|b| (b.width, b.height))).collect();
+    assert!(sizes.contains(&(900, 600)) && sizes.contains(&(640, 600)), "the whole frame and a tile: {sizes:?}");
+}
+
+#[test]
+fn someone_in_the_picture_before_the_fill_is_neither_the_fills_work_nor_left_behind() {
+    // Two people apart on a 256×192 canvas and, beside the right one, a figure 8×14 px: a speck,
+    // so no layer of its own, but a person the detector finds within the fill's feathered edge
+    // after the right one is taken out. It was there before any fill: the fill is accepted, and
+    // the finished background is not said to have anyone left on it.
+    let front = [0.55, 0.1, 0.95, 0.95];
+    let back = [0.05, 0.1, 0.45, 0.85];
+    let speck = [0.5, 0.45, 0.53, 0.52];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![front, back, speck],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
+    assert_eq!(r["leftBehind"], json!([]), "{r}");
+    let tries = r["tries"].as_array().unwrap();
+    assert!(tries.iter().all(|t| t["verdict"] == "accepted"), "{tries:?}");
+}
+
+#[test]
+fn an_invented_thing_is_taken_as_the_last_resort_when_every_try_is_refused() {
+    // A person and a table apart on a plain 256×192 canvas. Every fill behind the person paints
+    // a second table into the hole, away from the real one (`appears_for`): refused every time,
+    // but a table is the one invention a hole may fall back on, so the first try is taken after
+    // all and the person leaves the background; the table's own hole is clear.
+    let person = [0.55, 0.1, 0.95, 0.95];
+    let table = [0.05, 0.6, 0.4, 0.9];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments_for: vec![("person".to_string(), vec![person]), ("table".to_string(), vec![table])],
+        appears_for: vec![("table".to_string(), vec![[0.62, 0.3, 0.8, 0.5]])],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "prompt": "person, table"})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
+    let tries = r["tries"].as_array().unwrap();
+    assert_eq!(
+        (tries[0]["behind"].as_str(), tries[0]["fill"].as_str(), tries[0]["verdict"].as_str()),
+        (Some("Person"), Some("removal"), Some("accepted as the last resort (a table in the hole that was not there)")),
+        "{tries:?}"
+    );
+    assert!(tries[1..5].iter().all(|t| t["behind"] == "Person" && t["verdict"] == "a table in the hole that was not there"), "{tries:?}");
+    // The classical patch copies the canvas around the hole, the colour the fake's person is:
+    // refused as kept, before the detector is asked.
+    assert!(tries[5]["fill"] == "patch" && tries[5]["verdict"].as_str().unwrap_or("").starts_with("kept what stood there"), "{tries:?}");
+    assert_eq!((tries.len(), tries[6]["behind"].as_str(), tries[6]["verdict"].as_str()), (7, Some("Table"), Some("accepted")), "{tries:?}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    let bg = pixel_at(&s, ids[0], 192, 96);
+    assert!(bg[1] > 0.6 && bg[0] < 0.2, "the first try's fill stands in the background where the person was: {bg:?}");
+}
+
+#[test]
+fn a_shape_over_part_of_the_hole_is_a_ghost() {
+    use super::split_subjects::blank_or_ghost;
+    // A 256×256 picture of 4-px stripes; the hole is the middle 192×192, the ring 12 px around
+    // it. The fill continues the stripes, but for a dark textured blob 100×68 px in the hole: a
+    // sixth of the hole, too little for the share rule, but a cluster of six cells all the same
+    // (the cells are 32 px, laid from 12 px outside the hole).
+    let (w, h) = (256usize, 256usize);
+    let stripes = |k: usize| -> [u8; 4] { if (k / w / 4).is_multiple_of(2) { [60u8, 60, 60, 255] } else { [180, 180, 180, 255] } };
+    let before: Vec<u8> = (0..w * h).flat_map(stripes).collect();
+    let in_hole = |k: usize| (32..224).contains(&(k % w)) && (32..224).contains(&(k / w));
+    let in_ring = |k: usize| !in_hole(k) && (20..236).contains(&(k % w)) && (20..236).contains(&(k / w));
+    let hole: Vec<f32> = (0..w * h).map(|k| if in_hole(k) { 1.0 } else { 0.0 }).collect();
+    let ring: Vec<f32> = (0..w * h).map(|k| if in_ring(k) { 1.0 } else { 0.0 }).collect();
+    let dark = |k: usize| -> [u8; 4] { if (k / w).is_multiple_of(2) { [10u8, 10, 10, 255] } else { [40, 40, 40, 255] } };
+    let blob = |k: usize, (x0, y0): (usize, usize), (bw, bh): (usize, usize)| (x0..x0 + bw).contains(&(k % w)) && (y0..y0 + bh).contains(&(k / w));
+    let with_blob: Vec<u8> = (0..w * h).flat_map(|k| if blob(k, (50, 50), (100, 68)) { dark(k) } else { stripes(k) }).collect();
+    let why = blank_or_ghost(&before, &with_blob, &hole, &ring, w, h).expect("a dark shape over part of the hole");
+    assert!(why.starts_with("painted a dark shape over part of the hole (about 96×64 px, -") && why.ends_with("% in brightness)"), "{why}");
+    // Two small blobs apart (a cell or two each) are no cluster, nor is one on its own.
+    let two: Vec<u8> = (0..w * h).flat_map(|k| if blob(k, (60, 60), (40, 40)) || blob(k, (150, 150), (40, 40)) { dark(k) } else { stripes(k) }).collect();
+    assert_eq!(blank_or_ghost(&before, &two, &hole, &ring, w, h), None);
+    let one: Vec<u8> = (0..w * h).flat_map(|k| if blob(k, (100, 100), (40, 40)) { dark(k) } else { stripes(k) }).collect();
+    assert_eq!(blank_or_ghost(&before, &one, &hole, &ring, w, h), None);
+}
+
+#[test]
+fn refused_fills_are_kept_as_hidden_layers_on_request() {
+    // The scene of `split_rejects_a_fill_that_paints_someone_new_into_the_hole`, with
+    // `keepTries`: the six refused fills behind the right one come back as hidden layers under
+    // the background, each named for its subject, try and verdict; the layer count is unchanged.
+    let front = [0.55, 0.1, 0.95, 0.95];
+    let back = [0.05, 0.1, 0.45, 0.85];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![front, back],
+        appears: vec![[0.65, 0.3, 0.85, 0.7]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "keepTries": true})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(1)), "{r}");
+    let refused: Vec<LayerId> = r["refusedLayers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(refused.len(), 6, "{r}");
+    let d = s.active().unwrap();
+    for (n, id) in refused.iter().enumerate() {
+        let layer = d.doc.layer(*id).unwrap();
+        assert!(!layer.visible, "{}", layer.name);
+        assert!(layer.name.starts_with("Person 2: ") && layer.name.contains(" refused ("), "{}", layer.name);
+        if n < 5 {
+            assert!(layer.name.ends_with("(a person in the hole that was not there)"), "{}", layer.name);
+        }
+    }
+    // Under the background: the first layer the split made is a refused fill, the background above them.
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    let order: Vec<LayerId> = d.doc.layers.iter().map(|l| l.id).collect();
+    let at = |id: LayerId| order.iter().position(|o| *o == id).unwrap();
+    assert!(refused.iter().all(|r| at(*r) < at(ids[0])), "refused fills below the background: {order:?}");
+    let green = pixel_at(&s, refused[0], 192, 96);
+    assert!(green[1] > 0.6 && green[0] < 0.2, "the refused fill's pixels: {green:?}");
 }

@@ -4,6 +4,64 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-04: Split round 7: the invented people shrink under the detector's floor, the sweep cuts everyone; the detector tile by tile, who was there before, a shape over part of the hole, the last resort, keepTries
+
+Round 7 of the café photo in the app (fe846799d, 16 runs, round 5's protocol, Cody's RTX
+5090). Won: the blanks are gone (no white or grey box in any background; the per-cell rule
+refused four tries, "left 63 / 38 / 39 / 37 % of the hole blank", the whole-hole rule seven),
+the strips' seams are clearly softer, the sweep cuts all eleven subjects of its first pass at
+12 layers in every seed, with the peel's layers, order and masks and no debris, the fedora man
+stands above the striped man in all eight café runs of both modes, at 16 layers the sweep cuts
+fifteen (a second table refused) and finds the cards later, images.jpg's backdrop is plain
+terracotta again (the removal accepted at the first try, 3.9–4.5 s warm, no strips, no
+sliver), the portrait's detector finds nobody in four runs of four, `fillMs` matches the log
+(223.6 and 227.6 s), every try's `generations` matches, the edges are ViTMatte's cold and
+warm, no model reloads. Lost: (1) the front-left man's strips still paint small back rooms
+with people into the left edge (15–40 px tall; the app's detector boxes them at 22×28, 14×54
+and 15×34 px, under the 0.05 % floor of 1080 px², or misses them) in peel seeds 1 and 2, the
+sweep's seed 1 and both 16-layer runs (the sweep's with a library doorway and a seated figure);
+`leftBehind` named only one of them (peel seed 2, [0, 230, 39, 71]); the new check refused
+eight tries as "a person painted into the hole" (140×314 px on the first strips behind the
+rightmost man, 38×57, 65×117, and 28×86 px four times on the waiter's removals: the man in the
+framed photograph on the wall, there before any fill); peel seed 3 and the sweep's seeds 2 and
+3 are clean. (2) A soft dark blob where the woman's head was, in peel seeds 1 and 2, the peel
+at 16 layers and the sweep's seed 2 (with a grey head-and-shoulders silhouette), every one
+accepted: under a quarter of the hole's cells. (3) New: the fedora man refused six times in
+peel seeds 1 and 3 (two strips "a table in the hole that was not there", a box and a strip
+blank, the patch blank) and left in the background (`incomplete`), his near table kept; the
+second table at 16 layers refused six times (still there 69–87 %). The patch was accepted once
+(a sliver on a plain wall) and refused four times as blank. (4) The second cup's removal "left
+38 % of the hole blank" on a plain table top, which no one can judge. (5) Slower again: café
+peel 173–327 s (round 6: 194–291, round 5: 126–150), the sweep 198–229 (190–274, 147–196), 367
+and 374 s at 16 layers (301/333), images.jpg 3.9–4.5 s (6.0–6.3), the portrait 26–108 s (56);
+48 / 26 / 40 generations a peel seed and 32 / 33 / 30 a sweep seed (round 6: 29 / 24 / 35 and
+28 / 18 / 28), 52 and 51 at 16 layers, about 4.5–5 s each; a hole that ends refused costs its
+whole ladder (the fedora man 17 generations, the near table 13). Layers: 6 good / 4 usable / 1
+bad at 12 (the glasses man a fragment, the woman's block below the table edge, the cards a grey
+blob at 16); the near table stands as it was where the fedora man stayed and is an invented
+one with stools elsewhere. So now: (1) after every fill the frame-wide check passes, the
+detector is shown the pixels the fill touched tile by tile (`anyone_small`, `found_by_tiles`:
+tiles 640 px a side at least, a third of the longer side on bigger pictures, 32 px around the
+touched bounds, slid to stay within the frame, none on a picture no larger than a tile), down
+to 100 px and 8 px a side, and a find at least 60 % inside the touched pixels is "a person
+painted into the hole (32×42 px)". (2) Before any fill the people (and the subjects' kinds of
+creature) apart from the subjects are found once, frame and tiles (`already_there`): a
+detection mostly on one of them is nobody's work and not in `leftBehind` (the man in the
+photograph refused four removals). (3) A cluster of six or more joined 32-px cells ±0.3 in
+brightness against the ring about them, two per cent of the hole at least, is "painted a dark
+shape over part of the hole (about 96×64 px, −35 % in brightness)" (`ghost_cluster`). (4) When
+every try of a hole is refused and one of them only for a thing painted where none was ("a
+table in the hole that was not there"), that try is taken "as the last resort (…)" (never a
+person, an animal, a blank or a shape), so the fedora man leaves the background. (5) A big
+textured hole gets the removal, two strips, the box and the patch (one strip pass fewer). (6)
+`keepTries` keeps every refused fill as a hidden layer under the background, "Person 2: strips
+refused (a person painted into the hole (32×42 px))", their ids in `refusedLayers`, so a
+refusal can be seen and not only read. `leftBehind` looks tile by tile too. The fake worker
+paints a thing in for one term (`appears_for`) and a figure the detector sees only in a part
+of the picture (`appears_in_crops`). 43 Split tests. Open: the room fogged rather than
+continued, the near table, the woman's block, the glasses man, speed (173–374 s against the 90 s
+target; the tiles add detector calls to every accepted fill), the depth model.
+
 ## 2026-11-04: Split round 6: the strips invent people and fog the room, the sweep loses subjects; the detector over every touched pixel, the first pass's list, the removal first
 
 Round 6 of the café photo in the app (671c6ca03, 16 runs, round 5's protocol, Cody's RTX
