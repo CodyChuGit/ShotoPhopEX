@@ -1277,6 +1277,10 @@ fn simple_split_removes_the_nearest_until_the_detector_finds_nothing() {
     // (The removal's result is tone matched to the picture at the hole's edge all the way, as
     // the Remove tool's, so the fake's green comes back as the picture's red.)
     assert!(back_px[3] > 0.5, "the back one is whole where the front one stood: {back_px:?}");
+    // Found again after the front one's removal: its mask now is the whole rectangle
+    // (231×76 at (13, 20), 17,556 px), not the visible part it was first found as.
+    assert_eq!((r["subjects"][0]["bounds"].clone(), r["subjects"][0]["pixels"].clone()), (json!([13, 20, 231, 76]), json!(17556)), "{r}");
+    assert_eq!(r["lost"], json!([]), "{r}");
     assert_eq!(alpha_at(&s, ids[1], 240, 180), 0.0, "and nothing more");
     assert_eq!(alpha_at(&s, ids[0], 128, 64), 1.0, "the background is whole");
     let tries = r["tries"].as_array().unwrap();
@@ -1292,6 +1296,50 @@ fn simple_split_removes_the_nearest_until_the_detector_finds_nothing() {
     let segments = st.runs.iter().filter(|r| r.request["task"] == "segment").count() as u64;
     assert!(segments <= 8, "{segments}");
     assert_eq!(r["detector"]["requests"].as_u64(), Some(segments), "{r}");
+}
+
+#[test]
+fn simple_split_takes_its_subjects_from_the_original_photo_only() {
+    // Rule: what the detector finds after a removal is never a new subject. The fake detector
+    // returns a person in front of everything once any fill has run (`appears`): something a
+    // removal painted in. It must not become a layer nor be removed.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.3, 0.2, 0.6, 0.9]],
+        appears: vec![[0.05, 0.05, 0.2, 0.4]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
+    assert_eq!(r["count"], 2, "the background and the one person of the original photo: {r}");
+    assert_eq!(r["passes"], 1, "{r}");
+    assert_eq!(r["subjects"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["subjects"][0]["bounds"][0], 77, "the original person, not the painted one: {r}");
+    let fills = fake.state().runs.iter().filter(|x| x.request["task"] == "fill" || x.request["task"] == "edit").count();
+    assert_eq!(fills, 1, "one removal: the painted-in figure is not removed");
+}
+
+#[test]
+fn simple_split_drops_a_subject_a_nearer_removal_painted_over() {
+    // Rule: a later look only finds the listed subjects again. The back one shows only as a strip
+    // above the front one's head, inside the front one's widened hole: the front one's removal
+    // paints over it, the detector no longer finds it, and it is named in `lost`, not cut.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.3, 0.2, 0.7, 0.9], [0.35, 0.15, 0.65, 0.3]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
+    assert_eq!(r["count"], 2, "{r}");
+    assert_eq!(r["lost"].as_array().map(Vec::len), Some(1), "{r}");
+    assert_eq!(r["leftBehind"], json!([]), "{r}");
 }
 
 #[test]
