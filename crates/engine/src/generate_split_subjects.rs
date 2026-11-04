@@ -25,9 +25,9 @@ use crate::{EngineError, Result};
 
 use super::{
     BACKGROUND_PROMPT, Common, DEFAULT_MATTE_TEMPLATE, FillJob, GenerativeInfo, Gray8, JobProgress, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, PEEL_PROMPT,
-    REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, Task, Tuning, Value, anypaint_job, at_least, background_job, box_blur, dilate,
-    embed_coverage, fill_rect, fill_region, gen_err, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt,
-    remove_grow, request_size, resize_gray8, resize_rgba8, resolve_auto, set_generative_info, write_rgba8,
+    REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, Task, Tuning, Value, at_least, background_job, box_blur, dilate, embed_coverage, fill_rect,
+    fill_region, gen_err, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt, remove_grow, request_size,
+    resize_gray8, resize_rgba8, resolve_auto, set_generative_info, write_rgba8,
 };
 
 /// The most subjects one split gives their own layer (`layers` - 1 at most).
@@ -216,12 +216,15 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
-    // Each hole's tries: Krea 2 AnyPaint on the hole itself (quick, and every pixel around the
-    // hole stays), the removal (clean on most pictures), then the grey-box fills. Behind a
+    // Each hole's tries: the removal (clean on most pictures), then the grey-box fills. Behind a
     // subject with others still behind it, the scene continued; behind the last, the backdrop.
+    // Not Krea 2 AnyPaint, though it is quick and keeps every pixel around the hole: as the
+    // first try on the café photo it painted a second copy of the woman beside her and a man
+    // who was never there, swapped one seed's room, and turned a plain studio backdrop into an
+    // invented room; and every switch between it and the 2.1 family reloaded the other model,
+    // about 60 s a split. One model family serves the whole split (measured in the app
+    // 2026-11-04).
     let job = removal_job(s, "Split into Layers", 0, false, false, if complete { PEEL_VARIATIONS } else { FLAT_VARIATIONS }, seed, true, tuning.clone())?;
-    let peel_first = anypaint_job(s, "Split into Layers", seed, tuning.clone(), PEEL_PROMPT);
-    let last_first = anypaint_job(s, "Split into Layers", seed, tuning.clone(), BACKGROUND_PROMPT);
     let peel_box = background_job(s, "Split into Layers", seed, tuning.clone(), PEEL_PROMPT).ok();
     let last_box = background_job(s, "Split into Layers", seed, tuning, BACKGROUND_PROMPT).ok();
     let base = name;
@@ -290,7 +293,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     let mut removal = job.clone();
                     removal.rewritten = Some(removal_prompt(&this.removal_name()));
                     removal.object = Some(this.removal_name());
-                    let (first, box_job) = if last { (last_first.as_ref(), last_box.as_ref()) } else { (peel_first.as_ref(), peel_box.as_ref()) };
+                    let box_job = if last { last_box.as_ref() } else { peel_box.as_ref() };
                     let (hole_rect, _) = crate::select_ml_cmds::coverage_bounds(&hole, area);
                     let grow = remove_grow(hole_rect).min(MAX_GROW) as usize;
                     let grown_hole = dilate(&hole, wu, hu, grow);
@@ -305,7 +308,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     }
                     let behind_shapes: Vec<(String, Vec<f32>, u64)> = behind.iter().map(|b| (b.check_term().to_string(), b.cov.clone(), b.pixels)).collect();
                     let finder_ref = &finder;
-                    let hole_ref = &hole;
+                    let grown_ref = &grown_hole;
                     let mut check = |filled: &[u8]| -> Result<Option<Vec<(String, Instance)>>> {
                         let mut seen: Vec<(String, Instance)> = Vec::new();
                         for (term, at_most) in &asks {
@@ -313,14 +316,12 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                                 seen.push((term.clone(), inst));
                             }
                         }
-                        let painted_back = seen.iter().any(|(term, (cov, _, _))| {
-                            mostly_in_hole(cov, hole_ref) && !behind_shapes.iter().any(|(t, bc, bn)| t == term && continues(cov, bc, *bn))
-                        });
-                        Ok(if painted_back { None } else { Some(seen) })
+                        let painted = seen.iter().any(|(term, (cov, _, _))| invented(term, cov, grown_ref, &behind_shapes));
+                        Ok(if painted { None } else { Some(seen) })
                     };
                     // The subjects still behind keep their own pixels through this fill.
                     let protect = protect_mask(behind, wu * hu);
-                    let outcome = fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), first, &removal, box_job, (lo, hi), &mut check)?;
+                    let outcome = fill_hole(doc, active, below, ctx, area, &p, &hole, Some(&protect), &removal, box_job, (lo, hi), &mut check)?;
                     *active = below;
                     let Some((filled, seed_used, ms, seen)) = outcome else {
                         left_in.push(i);
@@ -397,19 +398,19 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     }
                 }
                 let finder_ref = &finder;
-                let hole_ref = &hole;
+                let (hole_rect, _) = crate::select_ml_cmds::coverage_bounds(&hole, area);
+                let grown_hole = dilate(&hole, wu, hu, remove_grow(hole_rect).min(MAX_GROW) as usize);
                 let mut check = |filled: &[u8]| -> Result<Option<()>> {
                     for (term, at_most) in &asks {
                         for (cov, _, _) in finder_ref.find_in(filled, area, term, *at_most, ctx)? {
-                            if mostly_in_hole(&cov, hole_ref) {
+                            if mostly_in_hole(&cov, &grown_hole) {
                                 return Ok(None);
                             }
                         }
                     }
                     Ok(Some(()))
                 };
-                let outcome =
-                    fill_hole(doc, active, below, ctx, area, &picture, &hole, None, last_first.as_ref(), &removal, last_box.as_ref(), (0.3, 0.9), &mut check)?;
+                let outcome = fill_hole(doc, active, below, ctx, area, &picture, &hole, None, &removal, last_box.as_ref(), (0.3, 0.9), &mut check)?;
                 *active = below;
                 let Some((filled, seed_used, ms, ())) = outcome else {
                     return Err(EngineError::Other(format!(
@@ -642,6 +643,21 @@ fn continues(detection: &[f32], subject: &[f32], subject_pixels: u64) -> bool {
     subject_pixels > 0 && overlap(detection, subject) as f32 >= CONTINUES * subject_pixels as f32
 }
 
+/// Whether a detection on a fill's result is the fill's own work: the subject painted back, or
+/// someone new. It sits mostly in what the fill repainted (`region`, the hole widened by the
+/// grow), and continues no subject behind by at most [`COMPLETION_MAX`] times that subject's
+/// visible pixels (its hidden part completed). A second copy of the woman in blue, painted
+/// beside her, covered the sliver of the man at the frame's edge and passed as his completion
+/// (measured in the app 2026-11-04).
+pub(super) fn invented(term: &str, cov: &[f32], region: &[f32], behind: &[(String, Vec<f32>, u64)]) -> bool {
+    mostly_in_hole(cov, region) && !behind.iter().any(|(t, bc, bn)| t == term && continues(cov, bc, *bn) && added_in(cov, region, bc) <= *bn * COMPLETION_MAX)
+}
+
+/// The pixels of `detection` inside `region` that `subject` did not hold: what a fill added.
+fn added_in(detection: &[f32], region: &[f32], subject: &[f32]) -> u64 {
+    detection.iter().zip(region).zip(subject).filter(|((d, r), s)| **d >= 0.5 && **r >= 0.5 && **s < 0.5).count() as u64
+}
+
 /// The pixels of `wanted` joined (4-neighbours) to a pixel within [`JOIN_REACH`] of `seed` (at
 /// 0.5 and over): the part of a detection that continues the subject, not a patch of its own.
 pub(super) fn joined_to(wanted: &[bool], seed: &[f32], w: usize, h: usize) -> Vec<bool> {
@@ -692,11 +708,10 @@ pub(super) fn joined_to(wanted: &[bool], seed: &[f32], w: usize, h: usize) -> Ve
 type Filled<T> = (Vec<u8>, u64, u64, T);
 
 /// Fill `hole` (one value per canvas pixel) in `picture`, the document's composite standing in
-/// for it through a work layer: `first` (Krea 2 AnyPaint on the hole, when the native worker
-/// runs it: quick, and it keeps every pixel around the hole), then the removal (clean on most
-/// pictures), then, after those paint a subject back, the grey-box fill of the hole's bounds
-/// laid only over the hole (widened and feathered) and tone matched. `check` judges each result
-/// (the detector looking for the subject painted back) and keeps what it saw; the first it
+/// for it through a work layer: the removal first (quick, and clean on most pictures), then,
+/// after it paints a subject back, the grey-box fill of the hole's bounds laid only over the
+/// hole (widened and feathered) and tone matched. `check` judges each result (the detector
+/// looking for the subject painted back or someone new) and keeps what it saw; the first it
 /// accepts comes back with its seed and the fill time. `None` after [`FILL_TRIES`] rejected
 /// tries.
 #[allow(clippy::too_many_arguments)]
@@ -709,7 +724,6 @@ fn fill_hole<T>(
     picture: &[u8],
     hole: &[f32],
     protect: Option<&[f32]>,
-    first: Option<&FillJob>,
     removal: &FillJob,
     box_job: Option<&FillJob>,
     (lo, hi): (f32, f32),
@@ -760,14 +774,8 @@ fn fill_hole<T>(
     for attempt in 0..FILL_TRIES {
         let span = hi - lo;
         ctx.progress(lo + span * 0.8 * attempt as f32 / FILL_TRIES as f32, "");
-        // The hole's own shape for `first` and the removal, the box after them.
-        let on_hole = attempt < if first.is_some() { 2 } else { 1 };
-        let try_box = !on_hole && box_job.is_some();
-        let mut try_job = match (attempt, first, box_job) {
-            (0, Some(f), _) => f.clone(),
-            (_, _, Some(b)) if try_box => b.clone(),
-            _ => removal.clone(),
-        };
+        let try_box = attempt > 0 && box_job.is_some();
+        let mut try_job = if try_box { box_job.cloned().unwrap_or_else(|| removal.clone()) } else { removal.clone() };
         try_job.seed = try_job.seed.wrapping_add(u64::from(attempt) * 1000);
         if !try_box {
             try_job.grow = grow;
@@ -1077,8 +1085,11 @@ const PART_INSIDE: f64 = 0.85;
 /// `group: auto` joins two instances when the smaller overlaps the larger by this share.
 const GROUP_OVERLAP: f64 = 0.5;
 /// A detection after a fill that holds this share of a subject's mask is the subject seen
-/// again (with what the fill completed).
+/// again (with what the fill completed)...
 const CONTINUES: f32 = 0.6;
+/// ...as long as what the fill added to it is at most this many times its visible pixels; more
+/// is someone new standing over it.
+const COMPLETION_MAX: u64 = 2;
 /// A speck: under this share (1/n) of the largest instance of its term.
 const SPECK_SHARE: u64 = 100;
 /// A speck: under this share (1/n) of the frame.

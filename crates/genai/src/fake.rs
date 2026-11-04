@@ -31,6 +31,9 @@ pub struct Options {
     /// whose mask covers half of a rectangle's visible part takes it out of the picture. Split
     /// into Layers' peeling against a scene where things hide one another.
     pub occlusion: bool,
+    /// Rectangles the detector returns (whole, in front of everything) once any fill or edit has
+    /// run: what a fill painted into the picture that was never there.
+    pub appears: Vec<[f32; 4]>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -49,6 +52,7 @@ impl Default for Options {
             no_batch: false,
             templates_only: false,
             occlusion: false,
+            appears: Vec::new(),
         }
     }
 }
@@ -334,8 +338,14 @@ impl FakeEngine {
             .ok_or_else(|| EngineError::new(ErrorKind::Internal, "fake picture too large"))?;
         let rects = self.options.segments_for.iter().find(|(s, _)| s == &req.prompt).map(|(_, r)| r).unwrap_or(&self.options.segments);
         // With `occlusion`: the rectangles still in the picture, each minus the nearer ones
-        // still there.
-        let gone = self.state.lock().unwrap_or_else(PoisonError::into_inner).gone.clone();
+        // still there. With `appears`: what a fill painted in, once one has run, nearest of all.
+        let (gone, fills_ran) = {
+            let st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            (st.gone.clone(), st.runs.iter().any(|r| r.run.task == "fill" || r.run.task == "edit"))
+        };
+        let appeared: Vec<[f32; 4]> = if fills_ran && req.task == "segment" { self.options.appears.clone() } else { Vec::new() };
+        let rects: Vec<[f32; 4]> = appeared.iter().chain(rects.iter()).copied().collect();
+        let rects = &rects;
         let here: Vec<usize> = (0..rects.len()).filter(|k| !self.options.occlusion || !gone.contains(&rects[*k])).collect();
         let count = if req.task == "segment" {
             here.len()
