@@ -1343,6 +1343,31 @@ fn simple_split_drops_a_subject_a_nearer_removal_painted_over() {
 }
 
 #[test]
+fn simple_split_never_runs_a_grey_box_or_strips_fill() {
+    // A big subject (over 400 px a side, where the old tries went to strips) the removal never
+    // clears (`echo`): three tries, every one the plain removal with its own seed and the
+    // removal's prompt, none with the hole flattened to grey; then it fails cleanly.
+    let fake =
+        FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![[0.1, 0.1, 0.9, 0.95]], occlusion: true, echo: true, ..Default::default() })
+            .unwrap();
+    let mut s = session_of(&fake.url, 640, 520);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let e = s.execute(SPLIT, json!({"seed": 1, "layers": 4})).unwrap_err().to_string();
+    assert!(e.contains("could not clear"), "{e}");
+    assert!(!e.contains("strips") && !e.contains("fill "), "only removals: {e}");
+    let st = fake.state();
+    let fills: Vec<&serde_json::Value> = st.runs.iter().filter(|r| r.request["task"] == "fill" || r.request["task"] == "edit").map(|r| &r.request).collect();
+    assert_eq!(fills.len(), 3, "three tries, one request each (no strips): {fills:?}");
+    let seeds: std::collections::BTreeSet<u64> = fills.iter().filter_map(|r| r["seed"].as_u64()).collect();
+    assert_eq!(seeds.len(), 3, "a new seed each try: {seeds:?}");
+    for r in &fills {
+        let prompt = r["prompt"].as_str().unwrap_or("");
+        assert!(prompt.contains("Remove the person"), "the removal's prompt, not the grey box's: {prompt}");
+        assert!(!prompt.contains("grey area"), "{prompt}");
+    }
+}
+
+#[test]
 fn simple_split_fails_cleanly_when_no_removal_clears_anyone() {
     // `echo`: every fill hands the picture back, so the detector still finds both people in
     // their holes after every try. Nobody can be cleared: an error naming the tries, and the

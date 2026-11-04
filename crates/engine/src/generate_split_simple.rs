@@ -6,9 +6,9 @@
 //! never adding new ones; nearest first, until none is left or the layer budget is spent. What
 //! remains is the background.
 //!
-//! Each subject: the removal, then (while the detector still finds the subject in its hole, or
-//! the fill left the hole blank or smeared) the grey-box fill of the hole's bounds with the next
-//! seed, in strips for a big hole, [`TRIES`] tries at most; a subject no try clears stays in the
+//! Each subject: the plain removal, tried again with the next seed while the detector still
+//! finds the subject in its hole or the fill left the hole blank or smeared, [`TRIES`] tries at
+//! most; no grey-box fill, no strips. A subject no try clears stays in the
 //! background and is named in `incomplete`. No patch, no rules about who a fill may paint. Once
 //! the layers left would not take every person still to come, the people go first. The
 //! rule-heavy peel
@@ -21,11 +21,11 @@ use photocraft_doc::{Document, LayerId};
 use photocraft_geom::Rect;
 
 use super::{
-    BIG_HOLE_SIDE, DEFAULT_MATTE_TEMPLATE, FillJob, JobCtx, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order, PEEL_PROMPT,
-    PEEL_VARIATIONS, PERSON, REMOVE_BG, REMOVE_MIN_REQUEST, RING_WIDTH, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, ToneGrid,
-    Tuning, Value, at_least, background_job, bare, blank_or_ghost, box_blur, could_not_clear, creature, dilate, embed_coverage, fill_in_strips, fill_rect,
-    find_subjects, front_first, gen_err, hole_of, json, kept_terms, matte_all, one_fill, overlap, parse_terms, place_all, plan_common, removal_job,
-    removal_prompt, remove_grow, same_subject, subjects_labels, title_case, under_alpha, write_rgba8,
+    DEFAULT_MATTE_TEMPLATE, FillJob, JobCtx, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order, PEEL_VARIATIONS, PERSON, REMOVE_BG,
+    REMOVE_MIN_REQUEST, RING_WIDTH, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, Tuning, Value, at_least, bare, blank_or_ghost,
+    box_blur, could_not_clear, creature, dilate, embed_coverage, fill_rect, find_subjects, front_first, gen_err, hole_of, json, kept_terms, matte_all,
+    one_fill, overlap, parse_terms, place_all, plan_common, removal_job, removal_prompt, remove_grow, same_subject, subjects_labels, title_case, under_alpha,
+    write_rgba8,
 };
 
 /// How many times the removal is asked to take one subject out before it is left in.
@@ -50,9 +50,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
-    let job = removal_job(s, "Split into Layers", 0, false, false, PEEL_VARIATIONS, seed, true, tuning.clone())?;
-    // The grey-box fill, the second and third try of a subject the removal kept.
-    let box_job = background_job(s, "Split into Layers", seed, tuning, PEEL_PROMPT).ok();
+    let job = removal_job(s, "Split into Layers", 0, false, false, PEEL_VARIATIONS, seed, true, tuning)?;
     let matte = plan_common(
         s,
         REMOVE_BG,
@@ -131,7 +129,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 let hole = hole_of(&front);
                 // Its layer: the picture now (every nearer subject gone) under its alpha.
                 cut.push(under_alpha(&p, &front.alpha));
-                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, box_job.as_ref(), done, (lo, hi))?;
+                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, done, (lo, hi))?;
                 fill_ms += removed.ms;
                 generations += removed.generations;
                 tries.extend(removed.tries.into_iter().map(|mut t| {
@@ -319,7 +317,6 @@ fn remove_one(
     sub: &Subject,
     finder: &SubjectFinder,
     job: &FillJob,
-    box_job: Option<&FillJob>,
     nth: usize,
     (lo, hi): (f32, f32),
 ) -> Result<Removed> {
@@ -348,67 +345,31 @@ fn remove_one(
     let mut work = Layer::raster("Split work".to_string(), doc.pixel_format());
     write_rgba8(&mut work, &Rgba8::new(w, h, picture.to_vec()).map_err(gen_err)?, area)?;
     let work = doc.insert_above(below, work);
-    // The grey-box fill's box: the hole's bounds widened by the grow. The model sees a grey box
-    // there, not the subject; the edit removal, seeing a big subject, keeps it (both people of
-    // the café photo stayed after three removals, measured in the app 2026-11-04).
-    let boxed = hole_rect.inflate(grow as i32).intersect(&area);
-    let box_hole: Vec<f32> = (0..wu * hu)
-        .map(|k| {
-            let (x, y) = (area.x0 + (k % wu) as i32, area.y0 + (k / wu) as i32);
-            if x >= boxed.x0 && x < boxed.x1 && y >= boxed.y0 && y < boxed.y1 { 1.0 } else { 0.0 }
-        })
-        .collect();
-    // A big hole's box is filled in strips: asked for all at once, the fill handed the grey box
-    // back over the café photo's people (measured in the app 2026-11-04, both methods).
-    let big = hole_rect.width().max(hole_rect.height()) > BIG_HOLE_SIDE;
     // The ring just outside the hole: what a fill is held against for blanks and smears.
     let ring: Vec<f32> = dilate(hole, wu, hu, RING_WIDTH).iter().zip(hole).map(|(d, h)| if *d >= 0.5 && *h < 0.5 { 1.0 } else { 0.0 }).collect();
     let tried = (|| -> Result<()> {
         for attempt in 0..TRIES {
             ctx.progress(lo + (hi - lo) * attempt as f32 / TRIES as f32, "");
-            // The removal first; then the grey-box fill, in strips for a big hole (the removal
-            // again without one).
-            let boxed_try = attempt > 0 && box_job.is_some();
-            let mut try_job = match box_job {
-                Some(b) if boxed_try => b.clone(),
-                _ => removal.clone(),
-            };
+            // The plain removal every try, with the next seed: no grey box, no strips (the grey-box
+            // fills painted the white walls and the invented rooms and people, measured in the
+            // app 2026-11-04; the owner's call).
+            let mut try_job = removal.clone();
             try_job.seed = job.seed.wrapping_add(nth as u64 * 101).wrapping_add(u64::from(attempt) * 1000);
-            let kind = match (boxed_try, big) {
-                (false, _) => "removal",
-                (true, false) => "fill",
-                (true, true) => "strips",
-            };
+            let kind = "removal";
             let span = (lo + (hi - lo) * attempt as f32 / TRIES as f32, lo + (hi - lo) * (attempt as f32 + 0.8) / TRIES as f32);
-            let (filled, seed, ms, made) = if boxed_try && big {
-                fill_in_strips(doc, active, work, ctx, area, picture, &box_hole, boxed, grow, &try_job, span)?
-            } else {
-                *active = Some(work);
-                let coverage = embed_coverage(area, if boxed_try { &box_hole } else { hole }, rect);
-                one_fill(doc, active, ctx, area, try_job, rect, coverage)?
-            };
+            *active = Some(work);
+            let (filled, seed, ms, made) = one_fill(doc, active, ctx, area, try_job, rect, embed_coverage(area, hole, rect))?;
             out.ms += ms;
             out.generations += made;
-            // A box fill's tone is matched to the picture where both show the same thing (in the
-            // box, outside the hole); the removal's is matched by its own route.
-            let tone = boxed_try.then(|| ToneGrid::new(picture, &filled, |k| box_hole[k] >= 0.5 && over[k] < 0.02, wu, hu));
             let laid: Vec<u8> = picture
                 .as_chunks::<4>()
                 .0
                 .iter()
                 .zip(filled.as_chunks::<4>().0)
                 .zip(&over)
-                .enumerate()
-                .flat_map(|(k, ((p, f), a))| {
+                .flat_map(|((p, f), a)| {
                     let a = a.clamp(0.0, 1.0);
-                    let t = match &tone {
-                        Some(tone) if a > 0.0 => tone.at(k % wu, k / wu),
-                        _ => [0.0; 3],
-                    };
-                    std::array::from_fn::<u8, 4, _>(|c| {
-                        let f = if c < 3 { (f32::from(f[c]) + t[c]).clamp(0.0, 255.0) } else { f32::from(f[c]) };
-                        (f32::from(p[c]) * (1.0 - a) + f * a).round() as u8
-                    })
+                    std::array::from_fn::<u8, 4, _>(|c| (f32::from(p[c]) * (1.0 - a) + f32::from(f[c]) * a).round() as u8)
                 })
                 .collect();
             ctx.progress(span.1, "Checking the removal");
