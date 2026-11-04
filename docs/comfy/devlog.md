@@ -4,6 +4,53 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-04: Split round 8: the tiny invented figures are gone, but the zoomed-in detector calls fog a person; fog is no figure, a part of a subject behind is that subject, whole-tile masks dropped, the detector's cost in the result
+
+Round 8 of the café photo in the app (5da595aa6, 18 runs, round 7's protocol plus `keepTries`
+on the café's seed 1 in both modes, Cody's RTX 5090). Won: the tiny invented rooms and people
+are gone from all ten café backgrounds (checked at 2× on left-edge close-ups; the tile check
+refused them, "a person painted into the hole (16×51 / 21×42 px)", and the kept refused fills
+show them), the dark blob where the woman's head was is gone from four backgrounds, no blank
+boxes, soft seams, the fedora man leaves the background in every run ("accepted as the last
+resort" six times, five his and one the striped man's at 16 layers; his near table continues
+with stools in one seed, an invented table edge in fog in two), the sweep cuts all eleven
+subjects at 12 layers in every seed with the peel's layers and the fedora man above the
+striped man in all ten café runs, images.jpg's backdrop is plain terracotta (the removal
+accepted at the first try), and `fillMs` and every try's generations match the log. Lost: (1)
+the detector shown a tile calls fog a person: the striped man's two strips and box were
+refused as "a person painted into the hole" (81×318, 47×112 and 37×86 px) and the kept fills
+are plain fog; he stayed in the background in two runs, the edge person in three, the woman in
+blue in both 16-layer runs, the front-left man and the near table in the sweep at 16 layers,
+each listed in `incomplete` and given its layer too; 28 "painted into the hole" refusals over
+the eight café runs; the patch ran 17 times and was never accepted. (2) The man in the framed
+photograph refused the waiter's removal in four runs (27–30×86–87 px) though found before any
+fill: half behind the waiter until his removal, so his completion was not his. (3) The first
+strips behind the rightmost man were refused "a person in the hole" for the two people still
+waiting their turn, whose parts the detector returned on their own. (4) `leftBehind` named
+smears, not people (a dark streak where the edge person stood, a blob, a wall stain, a stool),
+in three backgrounds, and was empty where `incomplete` was empty only in the sweep's seed 3.
+(5) "painted a dark shape over part of the hole" refused four tries, all at 16 layers (the
+near table's removals, 256×96 and 224×96 px, and the woman's strips, 128×160 and 128×128),
+unverified. (6) The portrait failed all four splits in about 125 s: the tiles of the 12 MP
+frame came back as "people" of 1325–1344 px, a tile's whole side, on every try (one of
+546×770). (7) The sweep at 16 layers added a near-table chunk found on a later pass, stacked
+below everyone. (8) Slower where fog refused: café peel 222–313 s warm (round 7: 173–327), the
+sweep 196–294 (198–229), 394 and 496 s at 16 layers (367 / 374), images.jpg 6.0–6.6 s
+(3.9–4.5), the scan before any fill 3–6 s more a café split; SAM was reloaded 11–27 times a
+run (the worker swaps it out for the fill model: a genai-native speed item), and the engine log
+has no line per detector request, so the tiles' cost could not be counted. So now: (1) a
+detection with texture under 40 % of the picture's is fog, not a figure (`no_more_than_fog`;
+never on a plain picture): it refuses nothing as someone new and is not listed in
+`leftBehind`; the subject painted back is judged as before. (2) A part of a listed person
+behind, mostly on them, is that person (`fills_own_work`, as `someone_new` had it). (3)
+Someone found before any fill and completed by at most twice their visible pixels is nobody's
+work. (4) A tile's detection counts only under half the tile's side either way: the frame-wide
+look judged anything larger, and a mask over the tile is no figure. (5) The result's `detector`
+counts the requests, the tiles among them, their time and the detections dismissed as fog. 45
+Split tests. Open: the room fogged rather than continued, the near table, the woman's block,
+the glasses man, SAM swapped out for every fill, speed (196–496 s against the 90 s target),
+the depth model.
+
 ## 2026-11-04: Split round 7: the invented people shrink under the detector's floor, the sweep cuts everyone; the detector tile by tile, who was there before, a shape over part of the hole, the last resort, keepTries
 
 Round 7 of the café photo in the app (fe846799d, 16 runs, round 5's protocol, Cody's RTX

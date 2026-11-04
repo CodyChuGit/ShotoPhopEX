@@ -861,6 +861,19 @@ pub(crate) struct SubjectFinder {
     backend: Arc<dyn photocraft_genai::GenerativeBackend>,
     server: String,
     prompting: Prompting,
+    stats: DetectorStats,
+}
+
+/// What a [`SubjectFinder`] has been asked over one command: the requests, how many of them
+/// showed it a part of the picture (tiles), the time they took, and the detections dismissed
+/// as fog (a figure with no more detail than the fog around it). Split into Layers reports
+/// them, so a run's detector cost can be read from its result.
+#[derive(Default)]
+pub(crate) struct DetectorStats {
+    requests: std::cell::Cell<u32>,
+    tiles: std::cell::Cell<u32>,
+    ms: std::cell::Cell<u64>,
+    fog: std::cell::Cell<u32>,
 }
 
 /// A [`SubjectFinder`] on the text template (`prompt`, when given, only plans the request; each
@@ -869,7 +882,7 @@ pub(crate) fn subject_finder(s: &Session, prompt: Option<&str>) -> Result<Subjec
     let first = prompt.map(str::trim).filter(|p| !p.is_empty()).unwrap_or(SUBJECT_FALLBACKS[0]);
     let (backend, server, prompting) = prompting_for(s, BY_TEXT, DEFAULT_SEGMENT_TEMPLATE, first)
         .ok_or_else(|| EngineError::Other("no segmentation model (SAM 3.1) is set up; see Preferences > Generative".into()))?;
-    Ok(SubjectFinder { backend, server, prompting })
+    Ok(SubjectFinder { backend, server, prompting, stats: DetectorStats::default() })
 }
 
 impl SubjectFinder {
@@ -894,6 +907,22 @@ impl SubjectFinder {
         Ok(instances)
     }
 
+    /// Count `n` requests made over parts of the picture (tiles) among the requests.
+    pub(crate) fn note_tiles(&self, n: u32) {
+        self.stats.tiles.set(self.stats.tiles.get() + n);
+    }
+
+    /// Count a detection dismissed as fog.
+    pub(crate) fn note_fog(&self) {
+        self.stats.fog.set(self.stats.fog.get() + 1);
+    }
+
+    /// The requests made so far, how many of them were tiles, their time in ms, and the
+    /// detections dismissed as fog.
+    pub(crate) fn detector_stats(&self) -> (u32, u32, u64, u32) {
+        (self.stats.requests.get(), self.stats.tiles.get(), self.stats.ms.get(), self.stats.fog.get())
+    }
+
     /// The detector's instances of `prompt`, enclosed gaps filled, largest first.
     fn instances(&self, picture: &[u8], area: Rect, prompt: &str, at_most: usize, ctx: &JobCtx) -> Result<Vec<Instance>> {
         let (w, h) = (area.width(), area.height());
@@ -903,7 +932,11 @@ impl SubjectFinder {
         let mut pr = self.prompting.clone();
         pr.prompt = prompt.to_string();
         pr.max_detections = Some(at_most.max(1));
-        let masks = match detect(self.backend.as_ref(), &self.server, image, area, &pr, ctx) {
+        let started = std::time::Instant::now();
+        let detected = detect(self.backend.as_ref(), &self.server, image, area, &pr, ctx);
+        self.stats.requests.set(self.stats.requests.get() + 1);
+        self.stats.ms.set(self.stats.ms.get() + started.elapsed().as_millis() as u64);
+        let masks = match detected {
             Ok((masks, _)) => masks,
             Err(e) if found_nothing(&e.to_string()) || e.to_string().starts_with("nothing") => {
                 ctx.check()?;

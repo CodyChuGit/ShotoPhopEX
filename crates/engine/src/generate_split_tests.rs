@@ -156,6 +156,7 @@ fn split_completes_what_a_nearer_subject_hid() {
     let st = fake.state();
     let segments = st.runs.iter().filter(|r| r.request["task"] == "segment").count();
     assert_eq!(segments, 5, "found, who was there, checked after each fill, the background looked over: {segments}");
+    assert_eq!((r["detector"]["requests"].as_u64(), r["detector"]["tiles"].as_u64(), r["detector"]["fog"].as_u64()), (Some(5), Some(0), Some(0)), "{r}");
     assert!(st.runs.iter().filter(|r| r.request["model"] == "vitmatte/refine").count() >= 3, "the completed subject was matted again");
 }
 
@@ -592,11 +593,11 @@ fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
     let behind = vec![("person".to_string(), subject, 2u64)];
     let det = |from: usize, to: usize| -> Vec<f32> { (0..16).map(|k| if k >= from && k < to { 1.0 } else { 0.0 }).collect() };
     let cut = ("person", &hole[..], 8u64);
-    let own = |term: &str, d: &[f32], kept: f32| fills_own_work(term, d, &hole, &grown, cut, &behind, &|_| kept, 16);
+    let own = |term: &str, d: &[f32], kept: f32| fills_own_work(term, d, &hole, &grown, cut, &behind, &|_| kept, 16, &|_| false);
     assert_eq!(own("person", &det(0, 6), 0.0), None, "the subject with twice its pixels added: completed");
     assert!(own("person", &det(0, 6), 0.5).unwrap().contains("painted back over"), "but looking as the cut one did: painted back");
     let table = vec![("table".to_string(), det(0, 2), 2u64)];
-    let under = fills_own_work("table", &det(0, 8), &hole, &grown, cut, &table, &|_| 0.5, 16).unwrap();
+    let under = fills_own_work("table", &det(0, 8), &hole, &grown, cut, &table, &|_| 0.5, 16, &|_| false).unwrap();
     assert!(
         under.starts_with("the person still there under the table behind"),
         "the cut one's pixels under a thing's completion, named for what each is: {under}"
@@ -608,7 +609,7 @@ fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
     // A thing seen apart from the one behind it that it joins (within two pixels) is that
     // thing's completion; two pixels further it is a new one.
     let cups = vec![("cup".to_string(), det(13, 16), 3u64)];
-    let cup = |d: &[f32]| fills_own_work("cup", d, &hole, &grown, cut, &cups, &|_| 0.0, 16);
+    let cup = |d: &[f32]| fills_own_work("cup", d, &hole, &grown, cut, &cups, &|_| 0.0, 16, &|_| false);
     assert_eq!(cup(&det(4, 12)), None, "the table's stretch across the hole, found on its own");
     assert!(cup(&det(4, 9)).unwrap().contains("a cup in the hole"), "apart from it: painted in");
     assert_eq!(own("person", &det(14, 16), 0.0), None, "outside the repainted area: was there before");
@@ -617,6 +618,16 @@ fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
     assert_eq!(own("cup", &det(12, 14), 0.0), None, "a cup beside the hole");
     assert_eq!(own("cup", &det(0, 6), 0.0), None, "a cup mostly beside the hole");
     assert!(own("person", &det(12, 14), 0.0).is_some(), "a person in the widened band");
+    // A part of the one behind, seen on its own (less than the 60 % that continues them), is
+    // that person; someone mostly off them is not.
+    assert_eq!(own("person", &det(0, 1), 0.0), None, "a part of the one behind");
+    assert_eq!(own("person", &det(1, 3), 0.0), None, "half on the one behind");
+    assert!(own("person", &det(1, 4), 0.0).unwrap().contains("was not there"), "mostly beside them: painted in");
+    // A figure with no more detail than fog is no figure; a thing is judged as before.
+    let foggy = |term: &str, d: &[f32]| fills_own_work(term, d, &hole, &grown, cut, &behind, &|_| 0.0, 16, &|_| true);
+    assert_eq!(foggy("person", &det(12, 14)), None, "fog where someone new would be");
+    assert!(foggy("person", &det(4, 12)).unwrap().contains("the person painted back"), "the cut one's own shape, foggy or not");
+    assert!(foggy("cup", &det(4, 10)).unwrap().contains("a cup in the hole"), "a thing is not fog");
 }
 
 #[test]
@@ -847,13 +858,68 @@ fn someone_a_fill_painted_stands_mostly_where_it_painted() {
     assert_eq!(new(&det(12, 16), bounds(12, 16)), None, "half in the feathered edge: there before");
     assert_eq!(new(&det(14, 16), bounds(14, 16)), None, "outside: there before");
     // Someone the picture had before any fill (apart from the subjects) is nobody's work.
-    let already = vec![det(5, 8)];
+    let already = vec![(det(5, 8), 3u64)];
     assert_eq!(someone_new("person", &det(5, 8), bounds(5, 8), &touched, cut, &behind, &already), None, "there before the fill");
     assert_eq!(
         someone_new("person", &det(7, 10), bounds(7, 10), &touched, cut, &behind, &already).as_deref(),
         Some("a person painted into the hole (3×1 px)"),
         "mostly not"
     );
+    // Someone partly there before (one pixel of them in the feathered edge) and completed by at
+    // most twice that is nobody's work either; more than that is someone painted over them.
+    let partly = vec![(det(13, 14), 1u64)];
+    assert_eq!(someone_new("person", &det(11, 14), bounds(11, 14), &touched, cut, &behind, &partly), None, "completed by twice their pixels");
+    assert_eq!(
+        someone_new("person", &det(10, 14), bounds(10, 14), &touched, cut, &behind, &partly).as_deref(),
+        Some("a person painted into the hole (4×1 px)"),
+        "more than that"
+    );
+}
+
+#[test]
+fn a_figure_with_no_more_detail_than_fog_is_no_figure() {
+    use super::split_subjects::{no_more_than_fog, picture_texture};
+    // A 256×256 picture of 4-px stripes; a fill left a flat 64×64 patch at (96, 96).
+    let (w, h) = (256usize, 256usize);
+    let stripes = |k: usize| -> [u8; 4] { if (k / w / 4).is_multiple_of(2) { [60u8, 60, 60, 255] } else { [180, 180, 180, 255] } };
+    let picture: Vec<u8> = (0..w * h).flat_map(stripes).collect();
+    let flat = |k: usize| (96..160).contains(&(k % w)) && (96..160).contains(&(k / w));
+    let filled: Vec<u8> = (0..w * h).flat_map(|k| if flat(k) { [120u8, 120, 120, 255] } else { stripes(k) }).collect();
+    let tex = picture_texture(&picture, w, h);
+    assert!(tex > 0.01, "stripes have texture: {tex}");
+    let region = |from: usize, to: usize| -> Vec<f32> {
+        (0..w * h).map(|k| if (from..to).contains(&(k % w)) && (from..to).contains(&(k / w)) { 1.0 } else { 0.0 }).collect()
+    };
+    assert!(no_more_than_fog(&filled, &region(100, 156), w, h, tex), "a detection on the flat patch is fog");
+    assert!(!no_more_than_fog(&filled, &region(16, 80), w, h, tex), "one on the stripes has the picture's detail");
+    assert!(!no_more_than_fog(&filled, &region(100, 156), w, h, 0.0), "a plain picture says nothing");
+    // A plain picture's texture is under the plain threshold, so nothing on it is fog.
+    let plain: Vec<u8> = vec![200u8; w * h * 4];
+    assert!(!no_more_than_fog(&plain, &region(100, 156), w, h, picture_texture(&plain, w, h)));
+}
+
+#[test]
+fn a_mask_over_the_whole_tile_is_no_figure() {
+    // The scene of the tile test, but the detector shown a tile hands back a mask over the whole
+    // tile (`appears_in_crops` over all of it): no figure, the fill is accepted, and the result
+    // counts the detector's requests and tiles.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.3, 0.04, 0.7, 0.96]],
+        appears_in_crops: vec![[0.0, 0.0, 1.0, 1.0]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 900, 600);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 2})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
+    assert!(r["tries"].as_array().unwrap().iter().all(|t| t["verdict"] == "accepted"), "{r}");
+    let d = &r["detector"];
+    assert!(d["requests"].as_u64().unwrap() > d["tiles"].as_u64().unwrap() && d["tiles"].as_u64().unwrap() >= 3, "whole-frame and tile requests: {d}");
+    assert_eq!(d["fog"], 0, "a plain picture has no fog: {d}");
+    assert!(d["ms"].is_u64(), "{d}");
 }
 
 #[test]
