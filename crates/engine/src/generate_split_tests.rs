@@ -593,11 +593,11 @@ fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
     let behind = vec![("person".to_string(), subject, 2u64)];
     let det = |from: usize, to: usize| -> Vec<f32> { (0..16).map(|k| if k >= from && k < to { 1.0 } else { 0.0 }).collect() };
     let cut = ("person", &hole[..], 8u64);
-    let own = |term: &str, d: &[f32], kept: f32| fills_own_work(term, d, &hole, &grown, cut, &behind, &|_| kept, 16, &|_| false);
+    let own = |term: &str, d: &[f32], kept: f32| fills_own_work(term, d, &hole, &grown, cut, &behind, &|_| kept, &|_| false, 16, &|_| false);
     assert_eq!(own("person", &det(0, 6), 0.0), None, "the subject with twice its pixels added: completed");
     assert!(own("person", &det(0, 6), 0.5).unwrap().contains("painted back over"), "but looking as the cut one did: painted back");
     let table = vec![("table".to_string(), det(0, 2), 2u64)];
-    let under = fills_own_work("table", &det(0, 8), &hole, &grown, cut, &table, &|_| 0.5, 16, &|_| false).unwrap();
+    let under = fills_own_work("table", &det(0, 8), &hole, &grown, cut, &table, &|_| 0.5, &|_| false, 16, &|_| false).unwrap();
     assert!(
         under.starts_with("the person still there under the table behind"),
         "the cut one's pixels under a thing's completion, named for what each is: {under}"
@@ -609,7 +609,7 @@ fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
     // A thing seen apart from the one behind it that it joins (within two pixels) is that
     // thing's completion; two pixels further it is a new one.
     let cups = vec![("cup".to_string(), det(13, 16), 3u64)];
-    let cup = |d: &[f32]| fills_own_work("cup", d, &hole, &grown, cut, &cups, &|_| 0.0, 16, &|_| false);
+    let cup = |d: &[f32]| fills_own_work("cup", d, &hole, &grown, cut, &cups, &|_| 0.0, &|_| false, 16, &|_| false);
     assert_eq!(cup(&det(4, 12)), None, "the table's stretch across the hole, found on its own");
     assert!(cup(&det(4, 9)).unwrap().contains("a cup in the hole"), "apart from it: painted in");
     assert_eq!(own("person", &det(14, 16), 0.0), None, "outside the repainted area: was there before");
@@ -630,7 +630,7 @@ fn a_detection_is_the_fills_own_work_when_it_adds_more_than_a_completion() {
     assert!(own("person", &det(2, 7), 0.0).unwrap().contains("was not there"), "more than twice their pixels: painted in");
     assert!(own("person", &det(5, 8), 0.0).unwrap().contains("was not there"), "apart from them: painted in");
     // A figure with no more detail than fog is no figure; a thing is judged as before.
-    let foggy = |term: &str, d: &[f32]| fills_own_work(term, d, &hole, &grown, cut, &behind, &|_| 0.0, 16, &|_| true);
+    let foggy = |term: &str, d: &[f32]| fills_own_work(term, d, &hole, &grown, cut, &behind, &|_| 0.0, &|_| false, 16, &|_| true);
     assert_eq!(foggy("person", &det(12, 14)), None, "fog where someone new would be");
     assert!(foggy("person", &det(4, 12)).unwrap().contains("the person painted back"), "the cut one's own shape, foggy or not");
     assert!(foggy("cup", &det(4, 10)).unwrap().contains("a cup in the hole"), "a thing is not fog");
@@ -856,7 +856,7 @@ fn someone_a_fill_painted_stands_mostly_where_it_painted() {
     let behind = vec![("person".to_string(), det(0, 2), 2u64)];
     let cut = ("person", &hole[..], 8u64);
     let bounds = |from: i32, to: i32| Rect::new(from, 0, to, 1);
-    let new = |d: &[f32], b: Rect| someone_new("person", d, b, &touched, cut, &behind, &[], 16);
+    let new = |d: &[f32], b: Rect| someone_new("person", d, b, &touched, cut, &behind, &[], &|_| false, 16);
     assert_eq!(new(&det(5, 8), bounds(5, 8)), Some("a person painted into the hole (3×1 px)".to_string()), "a small figure in the hole");
     assert_eq!(new(&det(4, 12), bounds(4, 12)), Some("the person painted back".to_string()), "the cut one's own shape");
     assert_eq!(new(&det(0, 6), bounds(0, 6)), None, "the one behind completed by twice their pixels");
@@ -870,9 +870,9 @@ fn someone_a_fill_painted_stands_mostly_where_it_painted() {
     assert_eq!(new(&det(4, 7), bounds(4, 7)).as_deref(), Some("a person painted into the hole (3×1 px)"), "apart from them");
     // Someone the picture had before any fill (apart from the subjects) is nobody's work.
     let already = vec![(det(5, 8), 3u64)];
-    assert_eq!(someone_new("person", &det(5, 8), bounds(5, 8), &touched, cut, &behind, &already, 16), None, "there before the fill");
+    assert_eq!(someone_new("person", &det(5, 8), bounds(5, 8), &touched, cut, &behind, &already, &|_| false, 16), None, "there before the fill");
     assert_eq!(
-        someone_new("person", &det(7, 10), bounds(7, 10), &touched, cut, &behind, &already, 16).as_deref(),
+        someone_new("person", &det(7, 10), bounds(7, 10), &touched, cut, &behind, &already, &|_| false, 16).as_deref(),
         Some("a person painted into the hole (3×1 px)"),
         "mostly not"
     );
@@ -881,16 +881,16 @@ fn someone_a_fill_painted_stands_mostly_where_it_painted() {
     // unless they stood against the cut subject (within two pixels), whose removal shows the
     // rest of them, however much.
     let partly = vec![(det(13, 14), 1u64)];
-    assert_eq!(someone_new("person", &det(11, 14), bounds(11, 14), &touched, cut, &behind, &partly, 16), None, "completed by twice their pixels");
+    assert_eq!(someone_new("person", &det(11, 14), bounds(11, 14), &touched, cut, &behind, &partly, &|_| false, 16), None, "completed by twice their pixels");
     assert_eq!(
-        someone_new("person", &det(10, 14), bounds(10, 14), &touched, cut, &behind, &partly, 16),
+        someone_new("person", &det(10, 14), bounds(10, 14), &touched, cut, &behind, &partly, &|_| false, 16),
         None,
         "more than that, against the cut one: what it hid of them"
     );
     let apart = ("person", &det(4, 10)[..], 6u64);
-    assert_eq!(someone_new("person", &det(11, 14), bounds(11, 14), &touched, apart, &behind, &partly, 16), None, "completed by twice their pixels");
+    assert_eq!(someone_new("person", &det(11, 14), bounds(11, 14), &touched, apart, &behind, &partly, &|_| false, 16), None, "completed by twice their pixels");
     assert_eq!(
-        someone_new("person", &det(10, 14), bounds(10, 14), &touched, apart, &behind, &partly, 16).as_deref(),
+        someone_new("person", &det(10, 14), bounds(10, 14), &touched, apart, &behind, &partly, &|_| false, 16).as_deref(),
         Some("a person painted into the hole (4×1 px)"),
         "more than that, apart from the cut one"
     );
@@ -1099,4 +1099,149 @@ fn refused_fills_are_kept_as_hidden_layers_on_request() {
     assert!(refused.iter().all(|r| at(*r) < at(ids[0])), "refused fills below the background: {order:?}");
     let green = pixel_at(&s, refused[0], 192, 96);
     assert!(green[1] > 0.6 && green[0] < 0.2, "the refused fill's pixels: {green:?}");
+}
+
+#[test]
+fn what_a_fill_left_as_it_was_is_nobodys_work() {
+    use super::split_subjects::{fills_own_work, says_someone_new, someone_new};
+    // The row of the two tests above: the hole 4–11, the fill laid over 2–13, the hole widened to
+    // 0–13, the subject behind at 0–1. A figure the fill left as it was (`as_was`) was there
+    // before, unless it lies mostly where the cut subject stood: that is the cut subject painted
+    // back as it was.
+    let det = |from: usize, to: usize| -> Vec<f32> { (0..16).map(|k| if k >= from && k < to { 1.0 } else { 0.0 }).collect() };
+    let touched = det(2, 14);
+    let hole = det(4, 12);
+    let grown = det(0, 14);
+    let behind = vec![("person".to_string(), det(0, 2), 2u64)];
+    let cut = ("person", &hole[..], 8u64);
+    let bounds = |from: i32, to: i32| Rect::new(from, 0, to, 1);
+    let kept = |d: &[f32], b: Rect| someone_new("person", d, b, &touched, cut, &behind, &[], &|_| true, 16);
+    assert_eq!(kept(&det(11, 14), bounds(11, 14)), None, "mostly beside the cut one, left as it was: there before");
+    assert_eq!(kept(&det(5, 8), bounds(5, 8)).as_deref(), Some("a person painted into the hole (3×1 px)"), "where the cut one stood: painted back as it was");
+    let own = |d: &[f32], as_was: bool| fills_own_work("person", d, &hole, &grown, cut, &behind, &|_| 0.0, &|_| as_was, 16, &|_| false);
+    assert_eq!(own(&det(11, 14), true), None, "mostly beside the cut one, left as it was");
+    assert!(own(&det(11, 14), false).unwrap().contains("was not there"), "changed: painted in");
+    assert!(own(&det(5, 8), true).unwrap().contains("was not there"), "where the cut one stood, as it was: painted back");
+    // A thing is judged on its own spot, kept or not.
+    let cup = fills_own_work("cup", &det(4, 10), &hole, &grown, cut, &behind, &|_| 0.0, &|_| true, 16, &|_| false);
+    assert!(cup.unwrap().contains("a cup in the hole"));
+    // The verdicts a picture of a person lifts.
+    assert!(says_someone_new("a person painted into the hole (3×1 px)"));
+    assert!(says_someone_new("a dog in the hole that was not there"));
+    assert!(!says_someone_new("a table in the hole that was not there"), "a thing is no picture of a person");
+    assert!(!says_someone_new("the person painted back"));
+    assert!(!says_someone_new("a person over the one behind, more than a completion"));
+}
+
+#[test]
+fn a_figure_in_a_picture_is_in_the_picture() {
+    use super::split_subjects::in_a_picture;
+    // A 16×16 area: a figure 2×4 px at (6, 4) inside a framed picture 6×8 px at (4, 2), one
+    // half out of it, and the picture handed back as the figure.
+    let area = Rect::new(0, 0, 16, 16);
+    let figure = |x0: i32, y0: i32, x1: i32, y1: i32| -> Vec<f32> {
+        (0..256)
+            .map(|k| {
+                let (x, y) = (k % 16, k / 16);
+                if x >= x0 && x < x1 && y >= y0 && y < y1 { 1.0 } else { 0.0 }
+            })
+            .collect()
+    };
+    let frame = Rect::new(4, 2, 10, 10);
+    assert!(in_a_picture(&figure(6, 4, 8, 8), Rect::new(6, 4, 8, 8), &[frame], area));
+    assert!(!in_a_picture(&figure(8, 4, 12, 8), Rect::new(8, 4, 12, 8), &[frame], area), "half out of it");
+    assert!(!in_a_picture(&figure(4, 2, 10, 10), Rect::new(4, 2, 10, 10), &[frame], area), "the figure handed back as the picture");
+    assert!(!in_a_picture(&figure(6, 4, 8, 8), Rect::new(6, 4, 8, 8), &[], area), "no picture");
+}
+
+#[test]
+fn someone_in_a_framed_picture_is_a_picture_of_a_person() {
+    // The scene of `split_rejects_a_fill_that_paints_someone_new_into_the_hole`, but what every
+    // fill paints into the right one's hole is a framed picture with a person in it
+    // (`appears_for`: the person for "person", the frame for "framed picture"). A picture of a
+    // person is nobody's work: the fill is accepted at the first try, and the finished background
+    // is not said to have anyone left on it.
+    let front = [0.55, 0.1, 0.95, 0.95];
+    let back = [0.05, 0.1, 0.45, 0.85];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![front, back],
+        appears_for: vec![("person".to_string(), vec![[0.65, 0.30, 0.72, 0.42]]), ("framed picture".to_string(), vec![[0.63, 0.28, 0.74, 0.44]])],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
+    assert_eq!(r["leftBehind"], json!([]), "{r}");
+    let tries = r["tries"].as_array().unwrap();
+    assert!(tries.len() == 2 && tries.iter().all(|t| t["verdict"] == "accepted"), "{tries:?}");
+    let d = &r["detector"];
+    assert!(d["pictures"].as_u64().unwrap() >= 2, "the figure taken for a picture at the fill's check and at the finished background: {d}");
+    assert_eq!(d["kept"], 0, "{d}");
+    let st = fake.state();
+    let frames = st.runs.iter().filter(|r| r.request["task"] == "segment" && r.request["prompt"] == "framed picture").count();
+    assert!(frames >= 2, "the detector was asked for the framed pictures: {frames}");
+}
+
+#[test]
+fn a_sweep_takes_a_subjects_part_apart_from_their_mask_for_theirs() {
+    use super::split_subjects::{Subject, part_below};
+    // A wide person across the lower half of a 256×192 canvas and one above them, apart. Once
+    // the front one's fill has run, the detector also returns a small person just below the
+    // back one, within their width (`uncovered`): their lower body, apart from their mask (a
+    // table edge cut it off), in the feathered edge of that fill, which leaves it the colour it
+    // was (green, the fake fill's colour). The fill behind the front one is accepted (what it
+    // left as it was is nobody's work); the sweep's second pass takes the part for the back
+    // one's: it goes into their mask and their layer, no layer of its own is cut, and the fill
+    // behind them takes it out with them.
+    let front = [0.05, 0.62, 0.95, 0.95];
+    let back = [0.20, 0.05, 0.60, 0.32];
+    let part = [0.28, 0.37, 0.52, 0.43];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![front, back],
+        uncovered: vec![part],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    s.execute("select.rect", json!({"x": 71, "y": 71, "width": 63, "height": 12})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#0ac80a"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "sweep": true, "layers": 6})).unwrap();
+    assert_eq!(r["count"], 3, "two people and the background, no layer for the part: {r}");
+    assert_eq!(r["incomplete"], json!([]), "{r}");
+    assert_eq!(r["leftBehind"], json!([]), "{r}");
+    let tries = r["tries"].as_array().unwrap();
+    assert!(tries.len() == 2 && tries.iter().all(|t| t["verdict"] == "accepted"), "{tries:?}");
+    assert!(r["detector"]["kept"].as_u64().unwrap() >= 1, "the part, left as it was by the front one's fill: {}", r["detector"]);
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(layer_name(&s, ids[1]), "Person 1", "the back one");
+    assert!(alpha_at(&s, ids[1], 102, 40) > 0.5, "holds their body");
+    assert!(alpha_at(&s, ids[1], 102, 77) > 0.5, "and the part below their mask");
+    assert_eq!(alpha_at(&s, ids[2], 102, 77), 0.0, "which the front one's layer does not");
+    // The rule itself: smaller, its top below their middle, at most a quarter of their height
+    // under their bottom, within their width widened by a quarter each side.
+    let subject = |x0: i32, y0: i32, x1: i32, y1: i32| Subject {
+        cov: Vec::new(),
+        bounds: Rect::new(x0, y0, x1, y1),
+        pixels: ((x1 - x0) * (y1 - y0)) as u64,
+        term: "person".to_string(),
+        asked: false,
+        alpha: Vec::new(),
+        completed: false,
+        grown: false,
+    };
+    let of = subject(100, 0, 200, 100);
+    assert!(part_below(&subject(120, 110, 180, 140), &of));
+    assert!(!part_below(&subject(120, 130, 180, 160), &of), "too far under them");
+    assert!(!part_below(&subject(120, 40, 180, 70), &of), "over their middle: their own body, matched as such");
+    assert!(!part_below(&subject(60, 110, 120, 140), &of), "out of their width");
+    assert!(!part_below(&subject(100, 110, 240, 220), &of), "larger than them");
+    assert!(part_below(&subject(80, 90, 220, 120), &of), "a little wider, starting above their bottom");
 }

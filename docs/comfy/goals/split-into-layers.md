@@ -280,7 +280,10 @@ Report warm times (second run) and the first run separately.
    and their time: round 9 measured 36–56 s of a warm café split (89–119 requests, 30–38
    tiles), 77 and 97 s at 16 layers, 112 s cold, and 3.1 s of images.jpg's 6 (its six tiles
    were the scan before any fill and the finished-background look); since round 10 a plain
-   backdrop is not scanned tile by tile there.
+   backdrop is not scanned tile by tile there (round 10: images.jpg's tiles 6 → 2, its detector
+   3.1 → 2.4–2.5 s; the café's detector 41–81 s a split, 80 and 85 s at 16 layers). Since round
+   11 a person about to be refused as painted in costs one or two requests more (the framed
+   pictures in the result).
 8. The woman's detached dark block below the table edge (her legs under the table, round 2–4):
    once the table is a subject, a part of a detection the table separates from the body goes.
 9. Keep the rejected fills on request (a `keepTries` option), so a refusal can be seen and not
@@ -294,8 +297,13 @@ Report warm times (second run) and the first run separately.
     by its first mask) and only new finds face the debris rule. Round 7: all eleven cut at 12
     layers in every seed, with the peel's layers, order and masks and no debris; fifteen of
     sixteen at 16 layers (round 8 the same, and at 16 layers a near-table chunk found on a
-    later pass, stacked below everyone). Still to do: a later find much smaller than the first
-    pass's of its kind, or inside a thing found earlier, is not a subject.
+    later pass, stacked below everyone; round 10 the same, the chunk gone and the woman's lower
+    blouse, apart from her mask below the table edge, cut as a layer of its own with five
+    refusals). Since round 11 a later find of a person's or animal's kind just below a listed
+    subject of its kind (its top below their middle, at most a quarter of their height under
+    their bottom, within their width widened by a quarter each side, smaller than them) is their
+    part: into their mask while they wait, no subject of its own once they are gone
+    (`part_below`). Still to do: a later find inside a thing found earlier is not a subject.
 11. ViTMatte on the first split of a session: it returned nothing cold (round 5) and the split
     fell back to the whole-frame matte; asked once more now (round 6's cold edges are
     ViTMatte's), but the worker should load it at launch with the rest of the warm-up.
@@ -330,10 +338,32 @@ Report warm times (second run) and the first run separately.
     completed part joined to a subject behind is theirs (`fragment_of`, grown into as well), what
     the cut subject hid of someone there before is any size (`was_there`), and each refusal
     records its detection's bounds (`at`) beside the figures found before any fill (`already`).
+    Round 10: neither fired. The part refused was the woman's lower blouse, apart from her mask
+    (the table edge cuts it off, so not joined to her), and the photograph man stands mostly
+    behind the waiter, so the scan before any fill never finds him (`already` holds only the
+    right-hand photograph's figure). Ten of round 10's 37 refusals were false alarms (the framed
+    photographs six times, a white cup shard three, the blouse once) and they left the striped
+    man in the background in one run. Since round 11 what the fill left as it was, apart from
+    the cut subject (half of the detection's 8-px blocks where the fill was laid in keep their
+    colour), is nobody's work (`left_as_was`), and whoever is 80 % inside a framed picture the
+    detector finds in the result ("framed picture", "picture frame", at most 2 % of the frame) is
+    a picture of a person (`Pictures`, in every check and the finished-background look); the
+    result's `detector` counts `pictures` and `kept`. To measure: do the two fire (the counts),
+    does any invented person pass as kept or as a picture (the kept fills and the backgrounds).
 15. The edge person (round 9, seed 1 in both modes): every fill of his hole at the frame's edge
     paints an invented room with people (refused rightly, by the kept fills), the removal and
-    the patch keep him; seeds 2 and 3 clear him. To try: the hole's crop padded by reflection
-    so the fill sees context on every side, or more removal seeds for a hole at the edge.
+    the patch keep him; seeds 2 and 3 clear him. Round 10 the same. To try: the hole's crop
+    padded by reflection so the fill sees context on every side, or more removal seeds for a
+    hole at the edge.
+16. The fedora man in peel seed 1 (round 10): his strips invent a bright room with a standing
+    man (refused rightly), the box and the patch come back blank, and no try was refused only
+    for a thing, so there is no last resort and he stays in the background. To try: a second
+    removal seed before the strips for a big hole; a blank patch over a person left in place.
+17. A vision-language arbiter ("a person in the room, a picture of one, or neither?" on a crop
+    of each detection about to be refused) would settle the false alarms by itself, and was set
+    aside for round 11: each answer needs the 8B chat model beside the 20 GB fill model, which
+    is what reset the GPU driver in the Remove command's presence check (`PRESENCE_CHECK`,
+    2026-10-23). Worth a measured try once the worker keeps SAM resident (7).
 
 ## 3. Status
 
@@ -345,12 +375,12 @@ Landed 2026-11-03 (the thread's PR; devlog entry of the same day):
 | 2 Cleaning (specks, whole frame, IoU duplicates, parts, touching groups) | done (`clean`) |
 | 3 Mattes per subject, re-matted after completion | done (`matte_all`); a sweep mattes each subject at its turn, the others' bodies kept out of its band (ViTMatte's `only`) |
 | 4 Order (contact bend, bottom edge, size, nested boxes; topological sort) | done (`generate_split_order.rs`); no depth model yet |
-| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`); a fill that paints anyone new is rejected (`fills_own_work`), a person's silhouette the fill kept is refused by its pixels too (`kept_share`: round 4's front-left man came back almost pixel for pixel and the detector check passed him), a thing is judged on its own spot, and every try's verdict comes back in `tries` (2026-11-04); a fill is also judged against the ring around its hole (`blank_or_ghost`: blank where the picture has texture, or a dark or light shape over the hole), a big hole's grey box is filled in strips (`fill_in_strips`) and the classical patch fill is the last try when every fill is refused (`patch_fill`; round 5's big holes came back as the grey box, 2026-11-04); since round 7 the detector is asked after every fill for anyone painted into the pixels the fill touched (`someone_new`, no speck rule, down to 0.05 % of the frame: round 6's strips invented small people and rooms with every try accepted), the blank and ghost checks run per 32-px cell, the removal is the first try of every hole and a plain ring never gets strips (images.jpg's backdrop went to strips in round 6), and `leftBehind` lists the people still on the final background (2026-11-04); since round 8 the detector is shown the touched pixels tile by tile after every fill the frame-wide check passes (`anyone_small`: round 7's invented figures were 15–40 px tall), whoever was in the picture before any fill is nobody's work (`already_there`), a cluster of shaded cells is a shape over part of the hole (`ghost_cluster`), a thing painted where none was is taken as the last resort when every try is refused, and `keepTries` keeps the refused fills as hidden layers (`refusedLayers`) (2026-11-04); since round 9 a detection with no more detail than fog is no figure (`no_more_than_fog`), a tile's detection counts only under half its side, a figure there before and completed by at most twice its pixels is exempt, a part of a person behind is that person, and the result's `detector` counts the requests, tiles and time (2026-11-04); since round 10 a person's completed part seen on its own and joined to a subject behind is that subject's, in the check and in the growth (`fragment_of`), someone there before who stood against the cut subject is completed by any amount (`was_there`), each refusal records its detection's bounds (`at`), the result lists who was there before any fill (`already`), and a plain backdrop is not scanned tile by tile (2026-11-04) |
+| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`); a fill that paints anyone new is rejected (`fills_own_work`), a person's silhouette the fill kept is refused by its pixels too (`kept_share`: round 4's front-left man came back almost pixel for pixel and the detector check passed him), a thing is judged on its own spot, and every try's verdict comes back in `tries` (2026-11-04); a fill is also judged against the ring around its hole (`blank_or_ghost`: blank where the picture has texture, or a dark or light shape over the hole), a big hole's grey box is filled in strips (`fill_in_strips`) and the classical patch fill is the last try when every fill is refused (`patch_fill`; round 5's big holes came back as the grey box, 2026-11-04); since round 7 the detector is asked after every fill for anyone painted into the pixels the fill touched (`someone_new`, no speck rule, down to 0.05 % of the frame: round 6's strips invented small people and rooms with every try accepted), the blank and ghost checks run per 32-px cell, the removal is the first try of every hole and a plain ring never gets strips (images.jpg's backdrop went to strips in round 6), and `leftBehind` lists the people still on the final background (2026-11-04); since round 8 the detector is shown the touched pixels tile by tile after every fill the frame-wide check passes (`anyone_small`: round 7's invented figures were 15–40 px tall), whoever was in the picture before any fill is nobody's work (`already_there`), a cluster of shaded cells is a shape over part of the hole (`ghost_cluster`), a thing painted where none was is taken as the last resort when every try is refused, and `keepTries` keeps the refused fills as hidden layers (`refusedLayers`) (2026-11-04); since round 9 a detection with no more detail than fog is no figure (`no_more_than_fog`), a tile's detection counts only under half its side, a figure there before and completed by at most twice its pixels is exempt, a part of a person behind is that person, and the result's `detector` counts the requests, tiles and time (2026-11-04); since round 10 a person's completed part seen on its own and joined to a subject behind is that subject's, in the check and in the growth (`fragment_of`), someone there before who stood against the cut subject is completed by any amount (`was_there`), each refusal records its detection's bounds (`at`), the result lists who was there before any fill (`already`), and a plain backdrop is not scanned tile by tile (2026-11-04); since round 11 what the fill left as it was, apart from the cut subject, is nobody's work (`left_as_was`), whoever is in a framed picture the detector finds in the result is a picture of a person (`Pictures`, in the checks and the finished-background look), and `detector` counts both (`pictures`, `kept`) (2026-11-04) |
 | 6 Placing and naming ("Background", "Person 1" back to front, "Cup") | done |
 | 7 Parameters (`complete`, `sweep`, `order`, `group`, `layers` to 20) and the dialog | done (`layers` raised from 12 on 2026-11-04: the café's seven people, three cups, cards and table are twelve subjects) |
 | 8 Smoke and haze as a translucent layer | not started (phase 3) |
 | 9 Tests against the fake worker's occlusion model | done (45 Split tests + 4 order tests; the fake can paint someone in, `appears`, a thing for one term, `appears_for`, a figure seen only in a part of the picture, `appears_in_crops`, and overlook a subject a fill left in place, `overlooked`) |
-| 10 In-app protocol on the café photo | rounds 1–9 in the devlog (2026-11-03/04); round 10 (a person's completed part joined to them, what the cut subject hid of someone there before, `at` and `already` in the result, no tiles on a plain backdrop) pending |
-| 11 Sweep (`sweep`: find the subjects, cut the nearest, fill, look again until nothing is left; the owner's framing, 2026-11-04) | done (`sweep_subjects`); round 5: 13–27 % slower than the peel, the best room continuation of any round on one seed, but fill debris counted as people and the first pass's depth order lost on later passes; round 6's fix (the first pass's order for whoever is found again, a kind's cap over all passes, debris dropped) lost real subjects instead (seven of eleven cut, the striped man above the fedora man again); since round 7 the first pass's list is authoritative: a subject stays pending until it is cut, each pass re-finds it on the filled picture (`same_subject`) or cuts it by its first mask, every pending subject is protected from the fills, and only new finds face the debris rule; rounds 7 to 9: all eleven cut at 12 layers in every seed, the peel's layers and order, no debris (a near-table chunk found late at 16 layers in rounds 8 and 9) |
+| 10 In-app protocol on the café photo | rounds 1–10 in the devlog (2026-11-03/04); round 11 (what the fill left as it was, whoever is in a framed picture, the sweep's parts) pending |
+| 11 Sweep (`sweep`: find the subjects, cut the nearest, fill, look again until nothing is left; the owner's framing, 2026-11-04) | done (`sweep_subjects`); round 5: 13–27 % slower than the peel, the best room continuation of any round on one seed, but fill debris counted as people and the first pass's depth order lost on later passes; round 6's fix (the first pass's order for whoever is found again, a kind's cap over all passes, debris dropped) lost real subjects instead (seven of eleven cut, the striped man above the fedora man again); since round 7 the first pass's list is authoritative: a subject stays pending until it is cut, each pass re-finds it on the filled picture (`same_subject`) or cuts it by its first mask, every pending subject is protected from the fills, and only new finds face the debris rule; rounds 7 to 10: all eleven cut at 12 layers in every seed, the peel's layers and order, no debris (a near-table chunk found late at 16 layers in rounds 8 and 9, the woman's blouse slice in round 10); since round 11 a later find just below a listed subject of its kind, within their width, is their part (`part_below`) |
 
 Follow-ups stand as listed above; the depth model first.

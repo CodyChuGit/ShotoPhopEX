@@ -874,6 +874,10 @@ pub(crate) struct DetectorStats {
     tiles: std::cell::Cell<u32>,
     ms: std::cell::Cell<u64>,
     fog: std::cell::Cell<u32>,
+    /// Detections taken for pictures of people (in a framed picture).
+    pictures: std::cell::Cell<u32>,
+    /// Detections taken for what a fill left as it was.
+    kept: std::cell::Cell<u32>,
 }
 
 /// A [`SubjectFinder`] on the text template (`prompt`, when given, only plans the request; each
@@ -917,10 +921,22 @@ impl SubjectFinder {
         self.stats.fog.set(self.stats.fog.get() + 1);
     }
 
-    /// The requests made so far, how many of them were tiles, their time in ms, and the
-    /// detections dismissed as fog.
-    pub(crate) fn detector_stats(&self) -> (u32, u32, u64, u32) {
-        (self.stats.requests.get(), self.stats.tiles.get(), self.stats.ms.get(), self.stats.fog.get())
+    /// Count a detection taken for a picture of a person (in a framed picture).
+    pub(crate) fn note_picture(&self) {
+        self.stats.pictures.set(self.stats.pictures.get() + 1);
+    }
+
+    /// Count a detection taken for what a fill left as it was.
+    pub(crate) fn note_kept(&self) {
+        self.stats.kept.set(self.stats.kept.get() + 1);
+    }
+
+    /// The detector's record for a result: the requests made so far, how many of them were
+    /// tiles, their time in ms, the detections dismissed as fog, those taken for pictures of
+    /// people and those taken for what a fill left as it was.
+    pub(crate) fn detector_stats(&self) -> Value {
+        let s = &self.stats;
+        json!({"requests": s.requests.get(), "tiles": s.tiles.get(), "ms": s.ms.get(), "fog": s.fog.get(), "pictures": s.pictures.get(), "kept": s.kept.get()})
     }
 
     /// The detector's instances of `prompt`, enclosed gaps filled, largest first.
