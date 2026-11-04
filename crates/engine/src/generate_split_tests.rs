@@ -352,3 +352,64 @@ fn the_split_background_takes_the_plain_name_when_the_document_has_no_background
     let r = s.execute(SPLIT, json!({"layers": 2, "seed": 1})).unwrap();
     assert_eq!(layer_name(&s, LayerId(r["layers"][0].as_u64().unwrap())), "Background");
 }
+
+#[test]
+fn split_tries_anypaint_on_the_hole_before_the_removal_when_the_worker_serves_it() {
+    // Research models allowed: the native 2.1 family runs, and Krea 2 AnyPaint (which the fake
+    // lists) takes the first try at each hole on the hole's own shape; it clears both, so no
+    // removal or grey-box fill runs.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.0, 0.0, 0.5, 0.5], [0.5, 0.5, 1.0, 1.0]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| p.integrations.allow_research_models = true);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 3})).unwrap();
+    assert_eq!(r["count"], 3, "{r}");
+    assert_eq!(r["incomplete"], json!([]), "{r}");
+    let st = fake.state();
+    let fills: Vec<&Value> = st
+        .runs
+        .iter()
+        .filter(|r| r.request["task"] != "segment" && r.request["task"] != "text" && r.request["model"] != "vitmatte/refine")
+        .map(|r| &r.request)
+        .collect();
+    assert_eq!(fills.len(), 2, "one AnyPaint fill behind each subject: {fills:?}");
+    assert!(fills.iter().all(|r| r["model"] == "krea2-turbo/fill"), "{fills:?}");
+    let prompts: Vec<&str> = fills.iter().map(|r| r["prompt"].as_str().unwrap_or("")).collect();
+    assert!(prompts[0].contains("the picture continued behind"), "the peel continues the scene: {prompts:?}");
+    assert!(prompts[1].contains("with nobody there"), "the last hole takes the backdrop: {prompts:?}");
+}
+
+#[test]
+fn the_layer_budget_counts_the_subjects_kept_not_the_detections() {
+    // "man" finds the person again: a duplicate, cleaned as the terms are searched. Counted raw
+    // it would have taken the cup's place among two subjects (the café photo's seven people came
+    // back as eleven detections and its table was never asked for; in the app 2026-11-03).
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: Vec::new(),
+        segments_for: vec![
+            ("person".into(), vec![[0.0, 0.0, 0.5, 0.5]]),
+            ("man".into(), vec![[0.0, 0.0, 0.5, 0.5]]),
+            ("cup".into(), vec![[0.6, 0.6, 0.8, 0.8]]),
+        ],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session(&fake.url);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"layers": 3, "prompt": "person, man, cup", "seed": 1})).unwrap();
+    assert_eq!(r["count"], 3, "the person once, and the cup: {r}");
+    assert_eq!(r["foundBy"], "person, cup", "{r}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    let names: Vec<String> = ids.iter().map(|id| layer_name(&s, *id)).collect();
+    assert_eq!(names, ["Split background", "Person", "Cup"]);
+    let st = fake.state();
+    assert!(st.runs.iter().any(|r| r.request["task"] == "segment" && r.request["prompt"] == "cup"), "the cup was asked for");
+}

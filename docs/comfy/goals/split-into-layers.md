@@ -239,8 +239,9 @@ Report warm times (second run) and the first run separately.
    port it to candle as ViTMatte was) as the primary order cue and a `depth` result per layer.
 2. The vision-language model as a tie-break for touching pairs the contact cue cannot decide
    ("which is nearer the camera, the one marked 1 or 2?").
-3. Krea 2 AnyPaint as a peel fill (it reads the whole scene; 1–3 s a fill) once its prompt
-   writer can say "with the {name} gone".
+3. Krea 2 AnyPaint as a peel fill: landed 2026-11-04 as the first try of every hole
+   (`anypaint_job`, the plain peel prompt); its prompt writer ("with the {name} gone") is a
+   later refinement.
 4. The faint outline on the grey-box backdrop fill (2 of 3 seeds on the 12 MP portrait).
 
 ## 3. Status
@@ -249,15 +250,15 @@ Landed 2026-11-03 (the thread's PR; devlog entry of the same day):
 
 | Item of §2 | State |
 |---|---|
-| 1 Subjects per term (list prompt, `cup:3`, people → animals → things Qwen3-VL lists → fallbacks) | done (`find_subjects`, `list_things`) |
+| 1 Subjects per term (list prompt, `cup:3`, people → animals → things Qwen3-VL lists → fallbacks) | done (`find_subjects`, `list_things`); the budget counts the subjects kept, not the detections (2026-11-04) |
 | 2 Cleaning (specks, whole frame, IoU duplicates, parts, touching groups) | done (`clean`) |
 | 3 Mattes per subject, re-matted after completion | done (`matte_all`) |
 | 4 Order (contact bend, bottom edge, size, nested boxes; topological sort) | done (`generate_split_order.rs`); no depth model yet |
-| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`, the peel loop in `run`) |
+| 5 Peeling nearest first with a fill, a re-detection check and growth into the hole | done (`fill_hole`: AnyPaint on the hole, the removal, then the grey-box fills; the peel loop in `run`) |
 | 6 Placing and naming ("Background", "Person 1" back to front, "Cup") | done |
 | 7 Parameters (`complete`, `order`, `group`, `layers` to 12) and the dialog | done |
 | 8 Smoke and haze as a translucent layer | not started (phase 3) |
-| 9 Tests against the fake worker's occlusion model | done (8 Split tests + 4 order tests) |
+| 9 Tests against the fake worker's occlusion model | done (12 Split tests + 4 order tests) |
 | 10 In-app protocol on the café photo | see the devlog entry for the numbers |
 
 Follow-ups stand as listed above; the depth model first.
