@@ -50,6 +50,23 @@ pub(super) fn delete_and_fill(s: &mut Session, _: &Value) -> Result<Value> {
     content_aware_fill_as(s, &json!({"sampling": "rectangular"}), "edit.deleteAndFillSelection", "Delete and Fill Selection")
 }
 
+/// Generative Remove (ShotoPhopEX): the selection-tool context menu's one-click removal through
+/// the fill model, as the Remove tool does it generatively: what is selected is named by the
+/// vision-language model and repainted away, the result a masked layer above the active one, one
+/// undo step. Sampled from what the picture shows (all layers), as the Remove tool's default.
+pub(super) fn generative_remove(s: &mut Session, _: &Value) -> Result<Value> {
+    content_aware_fill_as(s, &json!({"generative": true, "sampleAllLayers": true}), "edit.generativeRemove", "Generative Remove")
+}
+
+/// Generative Remove needs a selection on a pixel layer and the native worker set up.
+pub(super) fn can_generative_remove(s: &Session) -> std::result::Result<(), String> {
+    can_caf(s)?;
+    if !crate::generate_cmds::generative_configured(s) {
+        return Err("set up the generative models first (Preferences > AI Integrations)".into());
+    }
+    Ok(())
+}
+
 /// Everything one Content-Aware Fill needs, worked out from the document and the command's
 /// params. The Content-Aware Fill workspace runs exactly this for its preview, so what it shows
 /// is what OK and Apply write.

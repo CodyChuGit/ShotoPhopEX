@@ -2,7 +2,7 @@
 //! screen under the recent files and in Help › Generative Features…. **Create** makes a picture
 //! from nothing (the Generate panel in Image mode, a new document as the result); **Edit** works
 //! on an open picture: the panel in Fill, Edit or Expand mode, or the command's dialog (Remove
-//! Background, Split into Layers, Select by Text). With no document open an Edit card asks for a
+//! Background, Split into Layers, Clown Pass, Select by Text). With no document open an Edit card asks for a
 //! file first and carries on once it is open. Every card ends in the panel or a menu command, so
 //! nothing here does work of its own.
 
@@ -39,7 +39,7 @@ pub struct Card {
 }
 
 /// The cards, Create first.
-pub const CARDS: [Card; 8] = [
+pub const CARDS: [Card; 9] = [
     Card {
         id: "image",
         icon: "image",
@@ -92,6 +92,15 @@ pub const CARDS: [Card; 8] = [
         sentence: "Separate the picture into editable layers",
         create: false,
         target: Target::Command("generate.splitLayers"),
+        badge: Some("NEW"),
+    },
+    Card {
+        id: "clownPass",
+        icon: "palette",
+        label: "Clown Pass",
+        sentence: "Every object found on its own layer, nothing repainted",
+        create: false,
+        target: Target::Command("generate.clownPass"),
         badge: Some("NEW"),
     },
     Card {

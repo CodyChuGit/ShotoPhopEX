@@ -30,14 +30,32 @@ use crate::canvas::ViewXform;
 use crate::retouch_ui::{server_configured, server_online};
 use crate::state::Tool;
 
-/// Seconds the pointer rests before the finder asks.
-pub const PROBE_DELAY: f64 = 0.25;
+/// Seconds the pointer rests before the finder asks. A quarter of a second (and 80 ms on the
+/// native engine) tinted whatever the pointer crossed; the owner wanted to rest on a spot a
+/// little before anything is picked (2026-11-05).
+pub const PROBE_DELAY: f64 = 0.45;
 /// Pointer positions this close (document pixels) count as the same spot.
 const CELL: f64 = 6.0;
 /// How often an answering server is re-checked (seconds).
 const ONLINE_RECHECK: f64 = 10.0;
 /// How strongly the finder tints the object.
 const TINT_ALPHA: f32 = 0.45;
+/// The finder's tints, one per object (a clown pass): different objects in turn get different
+/// colours, and the same object found again keeps its own.
+pub const OBJECT_COLORS: [Color32; 8] = [
+    Color32::from_rgb(0x3d, 0x8b, 0xff),
+    Color32::from_rgb(0xff, 0x5a, 0x5f),
+    Color32::from_rgb(0x2e, 0xc4, 0x7a),
+    Color32::from_rgb(0xff, 0xb0, 0x20),
+    Color32::from_rgb(0xb0, 0x6c, 0xff),
+    Color32::from_rgb(0x1f, 0xc8, 0xd8),
+    Color32::from_rgb(0xff, 0x6f, 0xc8),
+    Color32::from_rgb(0xa8, 0xd8, 0x30),
+];
+/// Objects the finder remembers the colours of.
+const REMEMBERED_COLORS: usize = 16;
+/// Two probes whose bounds overlap this much (intersection over union) are the same object.
+const SAME_OBJECT: f64 = 0.8;
 
 /// A probe's answer, ready to draw.
 #[derive(Clone)]
@@ -48,7 +66,26 @@ pub struct Probe {
     pub doc: DocId,
     /// Canvas pixels.
     pub bounds: [i32; 4],
+    /// Index into [`OBJECT_COLORS`].
+    pub color: usize,
+    /// Asked for a part (the options bar's Parts), not the whole.
+    part: bool,
+    /// The mask over the canvas (width × height, 255 = the object), so a pointer still on the
+    /// object neither asks again nor changes what a click applies.
+    mask: std::sync::Arc<(usize, usize, Vec<u8>)>,
     tex: egui::TextureHandle,
+}
+
+impl Probe {
+    /// Whether the canvas point `p` lies on the object.
+    fn covers(&self, p: [f64; 2]) -> bool {
+        let (w, h, m) = &*self.mask;
+        if p[0] < 0.0 || p[1] < 0.0 {
+            return false;
+        }
+        let (x, y) = (p[0] as usize, p[1] as usize);
+        x < *w && y < *h && m.get(y * w + x).is_some_and(|v| *v >= 128)
+    }
 }
 
 impl PartialEq for Probe {
@@ -92,16 +129,53 @@ pub struct ObjectSelectUi {
     online: Option<(String, bool, f64)>,
     /// Probes asked this session (inspect, tests).
     pub probes_asked: u32,
+    /// The objects found lately and their colours (bounds, index into [`OBJECT_COLORS`]),
+    /// newest last.
+    colors: Vec<([i32; 4], usize)>,
+}
+
+/// Intersection over union of two `[x, y, w, h]` boxes.
+fn iou(a: [i32; 4], b: [i32; 4]) -> f64 {
+    let ix = (a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0]);
+    let iy = (a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1]);
+    if ix <= 0 || iy <= 0 {
+        return 0.0;
+    }
+    let inter = f64::from(ix) * f64::from(iy);
+    let union = f64::from(a[2]) * f64::from(a[3]) + f64::from(b[2]) * f64::from(b[3]) - inter;
+    if union > 0.0 { inter / union } else { 0.0 }
+}
+
+/// The colour for an object with `bounds`: its own when it was found lately, else the next one
+/// in turn (never the colour of the object shown before it).
+fn color_for(o: &mut ObjectSelectUi, bounds: [i32; 4]) -> usize {
+    if let Some(i) = o.colors.iter().rposition(|(b, _)| iou(*b, bounds) >= SAME_OBJECT) {
+        let (_, c) = o.colors.remove(i);
+        o.colors.push((bounds, c));
+        return c;
+    }
+    let shown = o.probe.as_ref().map(|p| p.color);
+    let last = o.colors.last().map(|(_, c)| *c);
+    let mut c = last.map_or(0, |c| (c + 1) % OBJECT_COLORS.len());
+    if Some(c) == shown {
+        c = (c + 1) % OBJECT_COLORS.len();
+    }
+    o.colors.push((bounds, c));
+    if o.colors.len() > REMEMBERED_COLORS {
+        o.colors.remove(0);
+    }
+    c
 }
 
 fn cell_of(p: [f64; 2]) -> [i64; 2] {
     [(p[0] / CELL).floor() as i64, (p[1] / CELL).floor() as i64]
 }
 
-/// Seconds the pointer rests before the finder asks: shorter with the native engine, whose
-/// worker keeps the picture's embedding and answers a probe in tens of milliseconds.
-pub fn probe_delay(app: &PhotocraftApp) -> f64 {
-    if crate::retouch_ui::native_engine(app) { 0.08 } else { PROBE_DELAY }
+/// Seconds the pointer rests before the finder asks ([`PROBE_DELAY`] on every engine: the
+/// native one answers in tens of milliseconds, but asking after 80 ms tinted everything the
+/// pointer crossed).
+pub fn probe_delay(_app: &PhotocraftApp) -> f64 {
+    PROBE_DELAY
 }
 
 /// Is the server answering? Checked at most every [`ONLINE_RECHECK`] seconds (a health request).
@@ -148,17 +222,22 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         return;
     }
-    // A probe of another document is gone with it.
-    if app.ui.object_select.probe.as_ref().is_some_and(|p| Some(p.doc) != active_doc) {
+    // A probe of another document, or asked for the whole when Parts is on (or the other way
+    // round), is gone with it.
+    let part = app.ui.tool_options.object_parts;
+    if app.ui.object_select.probe.as_ref().is_some_and(|p| Some(p.doc) != active_doc || p.part != part) {
         app.ui.object_select.probe = None;
     }
     // An answer that arrived: decode its mask into the tint texture.
     if let Some((cell, v)) = app.ui.object_select.incoming.take()
-        && let (Some(doc), Some(tex)) = (active_doc, texture_of(ctx, &v, crate::theme::Tokens::get(ctx).accent))
+        && let (Some(doc), Some(mask)) = (active_doc, mask_of(&v))
     {
         let b = v["bounds"].as_array().map(|a| a.iter().filter_map(Value::as_i64).map(|x| x as i32).collect::<Vec<_>>()).unwrap_or_default();
         let bounds = [b.first().copied().unwrap_or(0), b.get(1).copied().unwrap_or(0), b.get(2).copied().unwrap_or(0), b.get(3).copied().unwrap_or(0)];
-        app.ui.object_select.probe = Some(Probe { cell, id: v["probe"].as_u64().unwrap_or(0), doc, bounds, tex });
+        let color = color_for(&mut app.ui.object_select, bounds);
+        let tex = texture_of(ctx, &mask, OBJECT_COLORS[color]);
+        let part = app.ui.tool_options.object_parts;
+        app.ui.object_select.probe = Some(Probe { cell, id: v["probe"].as_u64().unwrap_or(0), doc, bounds, color, part, mask: std::sync::Arc::new(mask), tex });
         ctx.request_repaint();
     }
     let inside = app.hover_doc.filter(|p| {
@@ -169,6 +248,12 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
         return;
     };
     let cell = cell_of(p);
+    // Still on the object shown: nothing to ask (the tint stays put while the pointer wanders
+    // over it).
+    if app.ui.object_select.probe.as_ref().is_some_and(|pr| pr.covers(p)) {
+        app.ui.object_select.hover = Some((cell, now));
+        return;
+    }
     let delay = probe_delay(app);
     match app.ui.object_select.hover {
         Some((c, _)) if c == cell => {}
@@ -196,7 +281,11 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     let sample_all = app.ui.tool_options.sample_all.object_selection;
     app.ui.object_select.probes_asked += 1;
-    match app.run("select.probe", json!({"x": p[0].round(), "y": p[1].round(), "sampleAllLayers": sample_all})) {
+    let mut q = json!({"x": p[0].round(), "y": p[1].round(), "sampleAllLayers": sample_all});
+    if part {
+        q["detail"] = json!("part");
+    }
+    match app.run("select.probe", q) {
         Ok(v) if v.get("job").is_some() => app.ui.object_select.pending = v["job"].as_u64().map(|j| (j, cell)),
         // Inline (tests, no background jobs): the answer is here already.
         Ok(v) => app.ui.object_select.incoming = Some((cell, v)),
@@ -228,16 +317,19 @@ pub fn on_event(app: &mut PhotocraftApp, e: &JobEvent) {
     }
 }
 
-/// The probe's mask as a texture: the accent colour where the object is.
-fn texture_of(ctx: &egui::Context, v: &Value, accent: Color32) -> Option<egui::TextureHandle> {
+/// The probe's mask: width, height and one byte per pixel.
+fn mask_of(v: &Value) -> Option<(usize, usize, Vec<u8>)> {
     let (w, h) = (v["width"].as_u64()? as usize, v["height"].as_u64()? as usize);
     let data = base64::engine::general_purpose::STANDARD.decode(v["mask"].as_str()?).ok()?;
-    if w == 0 || h == 0 || data.len() != w * h {
-        return None;
-    }
-    let [r, g, b, _] = accent.to_array();
+    (w > 0 && h > 0 && data.len() == w * h).then_some((w, h, data))
+}
+
+/// The probe's mask as a texture: the object's colour where the object is.
+fn texture_of(ctx: &egui::Context, mask: &(usize, usize, Vec<u8>), color: Color32) -> egui::TextureHandle {
+    let (w, h, data) = mask;
+    let [r, g, b, _] = color.to_array();
     let px: Vec<Color32> = data.iter().map(|m| Color32::from_rgba_unmultiplied(r, g, b, (f32::from(*m) * TINT_ALPHA) as u8)).collect();
-    Some(ctx.load_texture("object-finder", egui::ColorImage::new([w, h], px), egui::TextureOptions::LINEAR))
+    ctx.load_texture("object-finder", egui::ColorImage::new([*w, *h], px), egui::TextureOptions::LINEAR)
 }
 
 /// Draw the finder's tint over the object under the pointer (the canvas, before the ants).
@@ -340,8 +432,11 @@ pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egu
     mask_stack(app, &mut q);
     let (positives, bbox) = if click {
         q["points"] = json!([point]);
-        // The finder's answer for this very spot applies at once.
-        if let Some(pr) = app.ui.object_select.probe.as_ref().filter(|pr| pr.cell == cell_of(start)) {
+        if app.ui.tool_options.object_parts {
+            q["detail"] = json!("part");
+        }
+        // The finder's answer applies at once when the click is on the object it shows.
+        if let Some(pr) = app.ui.object_select.probe.as_ref().filter(|pr| pr.cell == cell_of(start) || pr.covers(start)) {
             q["probe"] = json!(pr.id);
         }
         (vec![point], None)
@@ -441,7 +536,7 @@ pub fn next_match(app: &mut PhotocraftApp) {
 pub fn inspect(app: &PhotocraftApp) -> Value {
     let o = &app.ui.object_select;
     json!({
-        "probe": o.probe.as_ref().map(|p| json!({"id": p.id, "cell": p.cell, "bounds": p.bounds})),
+        "probe": o.probe.as_ref().map(|p| json!({"id": p.id, "cell": p.cell, "bounds": p.bounds, "color": p.color})),
         "pending": o.pending.map(|(j, c)| json!({"job": j, "cell": c})),
         "probesAsked": o.probes_asked,
         "last": o.last.as_ref().map(|l| json!({"positives": l.positives, "negatives": l.negatives, "box": l.bbox, "mode": l.mode, "candidate": l.candidate})),

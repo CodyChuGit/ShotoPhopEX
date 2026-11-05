@@ -310,7 +310,7 @@ mod purge;
 
 pub(crate) use content_aware::channel_mask;
 pub use content_aware::{CafPlan, FillEdit, MAX_CAF_EDITS, MAX_CAF_POINTS, SelOp, content_aware_plan, content_aware_plan_with};
-use content_aware::{can_caf, content_aware_fill, delete_and_fill};
+use content_aware::{can_caf, can_generative_remove, content_aware_fill, delete_and_fill, generative_remove};
 pub use content_aware_scale::ContentAwareScalePreview;
 use content_aware_scale::content_aware_scale;
 pub use fade::fade_surface;
@@ -350,6 +350,15 @@ pub fn specs() -> Vec<CommandSpec> {
             content_aware_fill
         ),
         spec!("edit.deleteAndFillSelection", "Delete and Fill Selection", [], None, "{}", can_caf, delete_and_fill),
+        spec!(
+            "edit.generativeRemove",
+            "Generative Remove",
+            [],
+            None,
+            r#"{} (ShotoPhopEX: the selection removed through the generative fill model, as edit.contentAwareFill {"generative":true,"sampleAllLayers":true}: the result is a masked layer above the active one, one undo step; a background job; the selection-tool context menu's row under Generative Fill…; needs the native worker)"#,
+            can_generative_remove,
+            generative_remove
+        ),
         spec!(
             "edit.contentAwareScale",
             "Content-Aware Scale",

@@ -818,6 +818,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                         o.object_refine = on;
                     }
                 }
+                // Parts: a click takes the shirt, not the whole person.
+                crate::widgets::checkbox(ui, &mut o.object_parts, tl!("Parts"))
+                    .on_hover_text(tl!("Select a part of what is under the pointer (a piece of clothing) instead of the whole figure"));
                 // A click can mean the whole person, the shirt or the pocket: cycle through them.
                 next_match = crate::widgets::secondary_button(ui, tl!("Next Match"), 0.0)
                     .on_hover_text(tl!("Swap the last click's object for the next thing it could mean (the whole, a part, a smaller part)"))
