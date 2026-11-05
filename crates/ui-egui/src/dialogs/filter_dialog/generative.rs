@@ -26,6 +26,10 @@ const NEGATIVE: &str = "__showNegative";
 pub const DOC_SIZE: &str = "__docSize";
 pub const SELECTION: &str = "__selection";
 
+/// Split into Layers' parameters the dialog leaves to scripts: the layer count and the classic
+/// method's switches and diagnostics (`detail` decides how finely it splits).
+const SPLIT_SCRIPT_ONLY: &[&str] = &["layers", "complete", "sweep", "keepTries", "firstPassOnly", "method", "order", "group"];
+
 /// Keys drawn in their own places (prompt, sides, settings); the rest go to Advanced.
 const PLACED: &[&str] = &[
     "prompt",
@@ -42,6 +46,7 @@ const PLACED: &[&str] = &[
     "variations",
     "edge",
     "layers",
+    "detail",
     "complete",
     "sweep",
     "tries",
@@ -129,7 +134,15 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
     let cmd = command(f).to_string();
     let Some(spec) = photocraft_engine::commands::find(&cmd) else { return };
-    let params = parse_spec(spec.params);
+    let mut params = parse_spec(spec.params);
+    if cmd == "generate.splitLayers" {
+        // Split asks only how finely to split (`detail`); the layer count and the classic
+        // method's switches stay for scripts (the owner, 2026-11-05: the count "doesn't work").
+        params.retain(|p| !SPLIT_SCRIPT_ONLY.contains(&p.key.as_str()));
+        for k in SPLIT_SCRIPT_ONLY {
+            f.remove(*k);
+        }
+    }
     let has = |k: &str| params.iter().any(|p| p.key == k);
     ui.spacing_mut().item_spacing.y = 6.0;
     // Wide enough for the prompt, the sides diagram and the segmented rows.
@@ -447,6 +460,20 @@ fn settings(ui: &mut egui::Ui, t: &Tokens, f: &mut Map<String, Value>, cmd: &str
             }
         });
         f.insert("layers".into(), json!(int(f, "layers").clamp(lo, hi)));
+    }
+    if has("detail") {
+        let cur = f.get("detail").and_then(Value::as_str).unwrap_or("medium").to_string();
+        setting_row(ui, tl!("Detail"), |ui| {
+            let options = [
+                Seg::new("rough".to_string(), tl!("Rough")).tip(tl!("The big subjects only; what lies inside one stays in its layer")),
+                Seg::new("medium".to_string(), tl!("Medium")).tip(tl!("Most subjects, each part of one (a face, a glove) on its own layer")),
+                Seg::new("fine".to_string(), tl!("Fine")).tip(tl!("Everything the detector finds, however small")),
+            ];
+            if let Some(v) = segmented(ui, &cur, &options, 0.0) {
+                f.insert("detail".into(), json!(v));
+            }
+        });
+        f.insert("detail".into(), json!(f.get("detail").and_then(Value::as_str).unwrap_or("medium")));
     }
     if has("variations") {
         count_row(ui, f, "variations", tl!("Variations"), tl!("Results with consecutive seeds, each a layer; the first is shown"));

@@ -68,7 +68,7 @@ struct Part {
 const PART_SHARE: f32 = 0.8;
 
 pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
-    let SubjectsPlan { prompt, subjects, seed, name, edges, group, keep_tries, first_pass_only, .. } = plan;
+    let SubjectsPlan { prompt, subjects, seed, name, edges, group, keep_tries, first_pass_only, detail, .. } = plan;
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
@@ -112,6 +112,14 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 .iter()
                 .map(|f| json!({"term": f.term, "bounds": [f.bounds.x0, f.bounds.y0, f.bounds.width(), f.bounds.height()], "pixels": f.pixels}))
                 .collect();
+            // Subjects under the detail's smallest share of the frame stay in the background
+            // (`detail`: rough keeps the big ones only).
+            let min_px = (detail.min_share() * (wu * hu) as f64).ceil() as u64;
+            let (pending, small): (Vec<Subject>, Vec<Subject>) = pending.into_iter().partition(|f| f.pixels >= min_px);
+            let small: Vec<Value> = small
+                .iter()
+                .map(|f| json!({"term": f.term, "bounds": [f.bounds.x0, f.bounds.y0, f.bounds.width(), f.bounds.height()], "pixels": f.pixels}))
+                .collect();
             // Diagnostic (`firstPassOnly`, off by default): the first pass's subjects as layers of
             // the picture under their hard masks, nearest on top, over the picture unchanged; no
             // matting, no removal.
@@ -137,12 +145,16 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                     "hard",
                     Vec::new(),
                     detector,
-                    (0, dropped, Vec::new(), refused_ids, Vec::new(), json!({"found": [], "layers": []})),
+                    (0, dropped, small, Vec::new(), refused_ids, Vec::new(), json!({"found": [], "layers": []})),
                 ));
             }
             // The parts (a subject mostly inside a larger one) leave the list: each is cut with its
             // whole and never removed on its own.
             let (mut pending, mut pending_parts, part_records) = split_parts(pending);
+            // Rough: a part stays in its whole's layer (and goes with it).
+            if !detail.part_layers() {
+                pending_parts.iter_mut().for_each(Vec::clear);
+            }
             // Each part's layer and its direct whole's, as indices into `taken`.
             let mut part_layers: Vec<(usize, usize)> = Vec::new();
             // Subjects the detector no longer found before their turn (painted over by a nearer
@@ -280,7 +292,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 used.name(),
                 left_behind,
                 detector,
-                (passes, dropped, lost, refused_ids, swaps, parts),
+                (passes, dropped, small, lost, refused_ids, swaps, parts),
             ))
         },
         move |(
@@ -297,10 +309,10 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             matted,
             left_behind,
             detector,
-            (passes, dropped, lost, refused_ids, swaps, parts),
+            (passes, dropped, small, lost, refused_ids, swaps, parts),
         )| {
             json!({
-                "method": "simple", "passes": passes, "droppedAsBackground": dropped, "lost": lost, "swaps": swaps, "parts": parts,
+                "method": "simple", "detail": detail.name(), "passes": passes, "droppedAsBackground": dropped, "tooSmall": small, "lost": lost, "swaps": swaps, "parts": parts,
                 "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>(), "count": ids.len(),
                 "subjects": placed, "incomplete": incomplete, "fills": tries.len(), "generations": generations, "tries": tries, "order": "auto",
                 "foundBy": found_by, "template": template_id, "seed": seed, "leftBehind": left_behind, "refusedLayers": refused_ids.iter().map(|l| l.0).collect::<Vec<_>>(),

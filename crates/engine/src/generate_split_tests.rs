@@ -1443,6 +1443,43 @@ fn simple_split_cuts_a_part_onto_its_own_layer_with_its_whole_in_one_removal() {
 }
 
 #[test]
+fn simple_split_detail_rough_keeps_parts_in_their_whole_and_skips_small_subjects() {
+    // A face inside a person, and a small person apart (0.64 % of the frame). Rough: the face
+    // stays in the person's layer and the small one in the background (under 1 %); medium and
+    // fine: each gets a layer.
+    let face = [0.45, 0.25, 0.55, 0.4];
+    let person = [0.3, 0.2, 0.7, 0.9];
+    let speck = [0.85, 0.1, 0.93, 0.18];
+    let run = |detail: &str| {
+        let fake =
+            FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![face, person, speck], color: [10, 200, 10, 255], ..Default::default() })
+                .unwrap();
+        let mut s = session_of(&fake.url, 256, 192);
+        s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+        s.execute(SPLIT, json!({"seed": 1, "edges": "hard", "detail": detail})).unwrap()
+    };
+    let rough = run("rough");
+    assert_eq!(rough["detail"], "rough", "{rough}");
+    assert_eq!(rough["count"], 2, "the background and the person, the face in their layer: {rough}");
+    assert_eq!(rough["parts"]["layers"], json!([]), "{rough}");
+    assert_eq!(rough["tooSmall"].as_array().map(Vec::len), Some(1), "the small one: {rough}");
+    for detail in ["medium", "fine"] {
+        let r = run(detail);
+        assert_eq!(r["count"], 4, "the background, the person, the face, the small one: {r}");
+        assert_eq!(r["tooSmall"], json!([]), "{r}");
+    }
+}
+
+#[test]
+fn split_detail_is_rough_medium_or_fine() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    for p in [json!({"detail": "coarse"}), json!({"detail": 2})] {
+        assert!(matches!(s.execute(SPLIT, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
+    }
+}
+
+#[test]
 fn split_method_is_simple_or_classic() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
