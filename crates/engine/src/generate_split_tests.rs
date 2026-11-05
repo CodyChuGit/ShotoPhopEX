@@ -1368,6 +1368,39 @@ fn simple_split_never_runs_a_grey_box_or_strips_fill() {
 }
 
 #[test]
+fn simple_split_keeps_refused_removals_as_hidden_layers_on_request() {
+    // Two people side by side. Once any fill has run, the fake detector finds a person on the
+    // left one's spot (`appears`): every removal of the left one is "still there" and it
+    // stays in; the right one is cleared. With `keepTries` the left one's three refused removals
+    // come back as hidden layers under the background, named for subject, try and verdict.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.6, 0.2, 0.9, 0.9], [0.05, 0.2, 0.35, 0.9]],
+        appears: vec![[0.06, 0.2, 0.35, 0.9]],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "keepTries": true})).unwrap();
+    assert_eq!(r["incomplete"].as_array().map(Vec::len), Some(1), "{r}");
+    let refused: Vec<LayerId> = r["refusedLayers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(refused.len(), 3, "{r}");
+    let d = s.active().unwrap();
+    for id in &refused {
+        let layer = d.doc.layer(*id).unwrap();
+        assert!(!layer.visible, "{}", layer.name);
+        assert!(layer.name.contains(": removal refused (the person still there)"), "{}", layer.name);
+    }
+    // Without `keepTries`, nothing is kept and the layers are the same.
+    fake.restore_scene();
+    let mut s2 = session_of(&fake.url, 256, 192);
+    s2.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r2 = s2.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
+    assert_eq!((r2["refusedLayers"].clone(), r2["count"].clone()), (json!([]), r["count"].clone()), "{r2}");
+}
+#[test]
 fn simple_split_fails_cleanly_when_no_removal_clears_anyone() {
     // `echo`: every fill hands the picture back, so the detector still finds both people in
     // their holes after every try. Nobody can be cleared: an error naming the tries, and the
