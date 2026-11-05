@@ -7,7 +7,9 @@
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{Module, VarBuilder};
-use candle_transformers::models::stable_diffusion::unet_2d_blocks::{UNetMidBlock2D, UNetMidBlock2DConfig, UpDecoderBlock2D, UpDecoderBlock2DConfig};
+use candle_transformers::models::stable_diffusion::unet_2d_blocks::{
+    DownEncoderBlock2D, DownEncoderBlock2DConfig, UNetMidBlock2D, UNetMidBlock2DConfig, UpDecoderBlock2D, UpDecoderBlock2DConfig,
+};
 
 use crate::Result;
 
@@ -92,6 +94,99 @@ impl Flux2Decoder {
         let x = candle_nn::ops::silu(&self.norm_out.forward(&x)?)?;
         Ok(self.conv_out.forward(&x)?.to_dtype(DType::F32)?.clamp(-1f32, 1f32)?)
     }
+}
+
+/// The FLUX.2 VAE's encoder (diffusers' layout: `encoder.*` and the top-level `quant_conv`, as
+/// Comfy-Org's `flux2-vae_small` has it, the widths read from the file) and the latent's packing:
+/// a picture in [-1, 1] to the posterior's mode, 2×2-packed (`c, dy, dx`) to 128 channels at 1/16
+/// and batch-normalised, the space MOSS-Image samples in (MOSS Edit's references).
+pub struct Flux2Encoder {
+    bn_std: Tensor,
+    bn_mean: Tensor,
+    conv_in: candle_nn::Conv2d,
+    down: Vec<DownEncoderBlock2D>,
+    mid: UNetMidBlock2D,
+    norm_out: candle_nn::GroupNorm,
+    conv_out: candle_nn::Conv2d,
+    quant_conv: candle_nn::Conv2d,
+    dtype: DType,
+}
+
+impl Flux2Encoder {
+    pub fn load(vb: VarBuilder) -> Result<Self> {
+        let dtype = vb.dtype();
+        let packed = 4 * LATENT_CHANNELS;
+        let var = vb.get(packed, "bn.running_var")?.to_dtype(DType::F32)?;
+        let bn_std = (var + BN_EPS)?.sqrt()?.reshape((1, packed, 1, 1))?;
+        let bn_mean = vb.get(packed, "bn.running_mean")?.to_dtype(DType::F32)?.reshape((1, packed, 1, 1))?;
+        anyhow::ensure!(vb.contains_tensor("quant_conv.weight"), "no top-level quant_conv: not diffusers' FLUX.2 VAE layout (flux2-vae_small has it)");
+        let e = vb.pp("encoder");
+        let down_vb = e.pp("down_blocks");
+        let mut widths = Vec::new();
+        for i in 0.. {
+            let b = down_vb.pp(i.to_string()).pp("resnets").pp("0");
+            if !b.contains_tensor("conv2.weight") {
+                break;
+            }
+            widths.push(b.pp("conv2").get_unchecked_dtype("weight", DType::F32)?.dim(0)?);
+        }
+        anyhow::ensure!(!widths.is_empty(), "the VAE file has no encoder (encoder.down_blocks.*)");
+        let layers = (0..).take_while(|j| down_vb.pp("0").pp("resnets").pp(j.to_string()).contains_tensor("conv1.weight")).count();
+        let pad1 = candle_nn::Conv2dConfig { padding: 1, ..Default::default() };
+        let conv_in = candle_nn::conv2d(3, widths[0], 3, pad1, e.pp("conv_in"))?;
+        let mut down = Vec::with_capacity(widths.len());
+        for (i, &out) in widths.iter().enumerate() {
+            let input = if i == 0 { widths[0] } else { widths[i - 1] };
+            let cfg = DownEncoderBlock2DConfig {
+                num_layers: layers,
+                resnet_eps: 1e-6,
+                resnet_groups: 32,
+                add_downsample: i + 1 < widths.len(),
+                downsample_padding: 0,
+                ..Default::default()
+            };
+            down.push(DownEncoderBlock2D::new(down_vb.pp(i.to_string()), input, out, cfg)?);
+        }
+        let deepest = *widths.last().unwrap_or(&widths[0]);
+        let mid_cfg =
+            UNetMidBlock2DConfig { resnet_eps: 1e-6, output_scale_factor: 1.0, attn_num_head_channels: None, resnet_groups: Some(32), ..Default::default() };
+        let mid = UNetMidBlock2D::new(e.pp("mid_block"), deepest, None, mid_cfg)?;
+        let norm_out = candle_nn::group_norm(32, deepest, 1e-6, e.pp("conv_norm_out"))?;
+        let conv_out = candle_nn::conv2d(deepest, 2 * LATENT_CHANNELS, 3, pad1, e.pp("conv_out"))?;
+        let quant_conv = candle_nn::conv2d(2 * LATENT_CHANNELS, 2 * LATENT_CHANNELS, 1, Default::default(), vb.pp("quant_conv"))?;
+        Ok(Self { bn_std, bn_mean, conv_in, down, mid, norm_out, conv_out, quant_conv, dtype })
+    }
+
+    /// RGB `(1, 3, H, W)` in [-1, 1] (sides multiples of 16) to the sampler's `(1, 128, H/16,
+    /// W/16)` f32.
+    pub fn encode(&self, img: &Tensor) -> Result<Tensor> {
+        let (_, _, h, w) = img.dims4()?;
+        anyhow::ensure!(h.is_multiple_of(SCALE) && w.is_multiple_of(SCALE), "a picture of {w}x{h}: sides must be multiples of {SCALE}");
+        let mut x = self.conv_in.forward(&img.to_dtype(self.dtype)?)?;
+        for block in &self.down {
+            x = block.forward(&x)?;
+        }
+        let x = self.mid.forward(&x, None)?;
+        let x = candle_nn::ops::silu(&self.norm_out.forward(&x)?)?;
+        let moments = self.quant_conv.forward(&self.conv_out.forward(&x)?)?;
+        // The posterior's mode: its mean, the first half of the channels.
+        let z = moments.narrow(1, 0, LATENT_CHANNELS)?.to_dtype(DType::F32)?;
+        let (b, c, zh, zw) = z.dims4()?;
+        let z = z.reshape((b, c, zh / 2, 2, zw / 2, 2))?.permute((0, 1, 3, 5, 2, 4))?.contiguous()?.reshape((b, 4 * c, zh / 2, zw / 2))?;
+        Ok(z.broadcast_sub(&self.bn_mean)?.broadcast_div(&self.bn_std)?)
+    }
+}
+
+/// Straight RGBA8 `w × h` to RGB `(1, 3, h, w)` in [-1, 1] f32 on `dev` (alpha dropped).
+pub fn from_rgba_u8(rgba: &[u8], w: usize, h: usize, dev: &Device) -> Result<Tensor> {
+    anyhow::ensure!(rgba.len() == w * h * 4, "{} bytes for a {w}x{h} RGBA picture", rgba.len());
+    let mut planes = vec![0f32; 3 * w * h];
+    for (i, px) in rgba.chunks_exact(4).enumerate() {
+        for c in 0..3 {
+            planes[c * w * h + i] = f32::from(px[c]) / 127.5 - 1.0;
+        }
+    }
+    Ok(Tensor::from_vec(planes, (1, 3, h, w), dev)?)
 }
 
 /// `(1, 3, H, W)` in [-1, 1] to straight RGBA8.
