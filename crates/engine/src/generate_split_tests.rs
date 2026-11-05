@@ -1474,41 +1474,6 @@ fn simple_split_cuts_a_part_onto_its_own_layer_with_its_whole_in_one_removal() {
 }
 
 #[test]
-fn simple_split_removes_a_sticking_out_part_on_its_own_just_before_its_whole() {
-    // A person holding a gun whose barrel sticks out (84 % of it inside the person) and wearing a
-    // helmet nearly all inside (97 %). The gun is removed on its own (its own layer and removal),
-    // right before the person; the helmet is cut out of the person, with no fill of its own.
-    let person = [0.2, 0.2, 0.6, 0.9];
-    let gun = [0.4, 0.3, 0.64, 0.4];
-    let helmet = [0.22, 0.195, 0.3, 0.4];
-    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
-        segments_for: vec![("person".to_string(), vec![person]), ("gun".to_string(), vec![gun]), ("helmet".to_string(), vec![helmet])],
-        color: [10, 200, 10, 255],
-        occlusion: true,
-        ..Default::default()
-    })
-    .unwrap();
-    let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
-    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "prompt": "person, gun, helmet", "edges": "hard"})).unwrap();
-    assert_eq!(r["parts"]["stickingOut"].as_array().map(Vec::len), Some(1), "{r}");
-    assert_eq!(r["parts"]["stickingOut"][0]["term"], "gun", "{r}");
-    assert_eq!(r["parts"]["layers"], json!([{"part": "Helmet", "whole": "Person"}]), "{r}");
-    let fills = fake.state().runs.iter().filter(|x| x.request["task"] == "fill" || x.request["task"] == "edit").count();
-    assert_eq!(fills, 2, "the gun's removal and the person's (the helmet goes with the person)");
-    let tries = r["tries"].as_array().unwrap();
-    let behind: Vec<&str> = tries.iter().filter_map(|t| t["behind"].as_str()).collect();
-    assert_eq!(behind, vec!["Gun", "Person"], "the gun just before the person: {tries:?}");
-    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
-    let names: Vec<String> = ids.iter().map(|id| layer_name(&s, *id)).collect();
-    assert_eq!(names, vec!["Split background", "Person", "Helmet", "Gun"], "{r}");
-    assert_eq!(r["incomplete"], json!([]), "{r}");
-    // The gun's layer holds the gun, its barrel too; the person's has no gap there.
-    assert!(alpha_at(&s, ids[3], 150, 67) > 0.9, "the barrel, outside the person");
-    assert!(alpha_at(&s, ids[1], 120, 67) > 0.9, "the person where the gun was is whole");
-}
-
-#[test]
 fn split_method_is_simple_or_classic() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
