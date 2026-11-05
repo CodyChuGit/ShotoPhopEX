@@ -1447,6 +1447,33 @@ fn simple_split_fails_cleanly_when_no_removal_clears_anyone() {
 }
 
 #[test]
+fn simple_split_cuts_a_part_onto_its_own_layer_with_its_whole_in_one_removal() {
+    // A face inside a person (both found as people): the face is a part of the person. One
+    // removal takes both out; the face gets its own layer directly above the person's, and the
+    // person's layer has a gap where the face is.
+    let face = [0.45, 0.25, 0.55, 0.4];
+    let person = [0.3, 0.2, 0.7, 0.9];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![face, person], color: [10, 200, 10, 255], ..Default::default() }).unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "edges": "hard"})).unwrap();
+    assert_eq!(r["count"], 3, "the background, the person, the face: {r}");
+    assert_eq!(r["passes"], 1, "{r}");
+    let fills = fake.state().runs.iter().filter(|x| x.request["task"] == "fill" || x.request["task"] == "edit").count();
+    assert_eq!(fills, 1, "one removal for the person and the face");
+    assert_eq!(r["parts"]["found"].as_array().map(Vec::len), Some(1), "{r}");
+    assert_eq!(r["parts"]["layers"], json!([{"part": "Person 2", "whole": "Person 1"}]), "{r}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!((layer_name(&s, ids[1]).as_str(), layer_name(&s, ids[2]).as_str()), ("Person 1", "Person 2"), "the face above the person");
+    let (fx, fy) = (128, 62); // the face's middle
+    assert!(alpha_at(&s, ids[2], fx, fy) > 0.9, "the face on its layer");
+    assert!(alpha_at(&s, ids[1], fx, fy) < 0.1, "a gap in the person's layer where the face is");
+    assert!(alpha_at(&s, ids[1], 100, 140) > 0.9, "the rest of the person stays");
+    assert_eq!(alpha_at(&s, ids[2], 100, 140), 0.0, "the face layer holds the face only");
+    assert_eq!(r["incomplete"], json!([]), "{r}");
+}
+
+#[test]
 fn split_method_is_simple_or_classic() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);

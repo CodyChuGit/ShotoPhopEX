@@ -4,7 +4,9 @@
 //! its own layer and taken out by the generative removal (as Remove would); the detector finds
 //! the subjects still to come again on what is left (their masks now, or that they are gone),
 //! never adding new ones; nearest first, until none is left or the layer budget is spent. What
-//! remains is the background.
+//! remains is the background. A subject mostly inside a larger one (a face in an astronaut) is
+//! a part of it: never removed on its own, it gets its own layer, above the whole's, when the
+//! whole is cut, and the whole's removal takes it too.
 //!
 //! Each subject: the plain removal, tried again with the next seed while the detector still
 //! finds the subject in its hole or the fill left the hole blank or smeared, [`TRIES`] tries at
@@ -52,6 +54,19 @@ struct Removed {
 /// The share of a pasted pixel above which it counts as repainted.
 const PASTED: f32 = 0.02;
 
+/// A subject found inside another (its whole): never removed on its own, cut onto its own layer
+/// when its whole is cut. `parent` is where its direct whole stands in the group (0: the whole
+/// the group is removed as, k: the group's k-th part).
+struct Part {
+    sub: Subject,
+    parent: usize,
+}
+
+/// A subject with at least this share of its mask inside a larger subject's mask is a part of
+/// it: the cat's face, helmet, gloves and boots lie 99–100 % inside the astronaut, the rocket in
+/// its hand 88 % (first-pass masks, measured 2026-11-05).
+const PART_SHARE: f32 = 0.8;
+
 pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
     let SubjectsPlan { prompt, subjects, seed, name, edges, group, keep_tries, first_pass_only, .. } = plan;
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
@@ -92,7 +107,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             // mask over nearly all of the woman photo, found once she was gone, was removed as a
             // subject and the truck and road became an invented white room, measured in the app
             // 2026-11-04).
-            let (mut pending, background_like): (Vec<Subject>, Vec<Subject>) = first.into_iter().partition(|f| !is_background(f, wu, hu));
+            let (pending, background_like): (Vec<Subject>, Vec<Subject>) = first.into_iter().partition(|f| !is_background(f, wu, hu));
             let dropped: Vec<Value> = background_like
                 .iter()
                 .map(|f| json!({"term": f.term, "bounds": [f.bounds.x0, f.bounds.y0, f.bounds.width(), f.bounds.height()], "pixels": f.pixels}))
@@ -122,9 +137,14 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                     "hard",
                     Vec::new(),
                     detector,
-                    (0, dropped, Vec::new(), refused_ids, Vec::new()),
+                    (0, dropped, Vec::new(), refused_ids, Vec::new(), json!({"found": [], "layers": []})),
                 ));
             }
+            // The parts (a subject mostly inside a larger one) leave the list: each is cut with its
+            // whole and never removed on its own.
+            let (mut pending, mut pending_parts, part_records) = split_parts(pending);
+            // Each part's layer and its direct whole's, as indices into `taken`.
+            let mut part_layers: Vec<(usize, usize)> = Vec::new();
             // Subjects the detector no longer found before their turn (painted over by a nearer
             // subject's removal): no layer of their own.
             let mut lost: Vec<Value> = Vec::new();
@@ -157,26 +177,51 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 let Some(next) = order.iter().copied().find(|i| !people_first || pending.get(*i).is_some_and(|f| creature(f.check_term()))) else {
                     break;
                 };
-                if next >= pending.len() {
+                if next >= pending.len() || next >= pending_parts.len() {
                     break;
                 }
-                let mut front = pending.remove(next);
+                let front = pending.remove(next);
+                let mut parts = pending_parts.remove(next);
                 let done = taken.len();
                 let (lo, hi) = (0.1 + 0.85 * done as f32 / budget as f32, 0.1 + 0.85 * (done + 1) as f32 / budget as f32);
                 ctx.progress(lo, &format!("Removing {} ({} of at most {budget})", title_case(&front.term), done + 1));
-                front.asked = asked;
-                used = matte_all(backend.as_ref(), matte.as_ref(), doc, *active, &p, area, std::slice::from_mut(&mut front), None, edges, ctx)?;
-                let hole = hole_of(&front);
-                // Its layer: the picture now (every nearer subject gone) under its alpha.
-                cut.push(under_alpha(&p, &front.alpha));
-                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, keep_tries, done, (lo, hi))?;
-                refused.extend(removed.refused.into_iter().map(|(why, px)| (done, why, px)));
+                // Its parts count toward the layers: the largest first (a part's whole before it),
+                // as many as the layers left take; the rest stay in the whole's layer.
+                let over_budget = parts.split_off(parts.len().min(budget.saturating_sub(done + 1)));
+                let parents: Vec<usize> = std::iter::once(0).chain(parts.iter().map(|q| q.parent)).collect();
+                let mut group: Vec<Subject> = std::iter::once(front).chain(parts.into_iter().map(|q| q.sub)).collect();
+                for g in &mut group {
+                    g.asked = asked;
+                }
+                used = matte_all(backend.as_ref(), matte.as_ref(), doc, *active, &p, area, &mut group, None, edges, ctx)?;
+                // The hole: the whole and every part (none pokes out and stays in the background).
+                let hole = group_hole(&group, &over_budget.iter().map(|q| &q.sub).collect::<Vec<_>>());
+                // The layers: the picture now (every nearer subject gone) under each one's alpha,
+                // less what its parts above it show; the parts on top, the smallest highest.
+                let mut cuts = cut_group(&p, &group, &parents);
+                let whole_at = done + group.len() - 1;
+                for k in (1..group.len()).rev() {
+                    part_layers.push((done + group.len() - 1 - k, done + group.len() - 1 - parents.get(k).copied().unwrap_or(0)));
+                }
+                let mut front = group.remove(0);
+                while let Some(q) = group.pop() {
+                    taken.push(q);
+                    cut.push(cuts.pop().unwrap_or_default());
+                }
+                cut.push(cuts.pop().unwrap_or_default());
+                // (`passes - 1`: the n-th removal's seeds, as before parts had layers.)
+                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, keep_tries, passes - 1, (lo, hi))?;
+                refused.extend(removed.refused.into_iter().map(|(why, px)| (whole_at, why, px)));
                 fill_ms += removed.ms;
                 generations += removed.generations;
                 tries.extend(removed.tries.into_iter().map(|mut t| {
-                    t["subject"] = json!(done);
+                    t["subject"] = json!(whole_at);
                     t
                 }));
+                let cleared = removed.picture.is_some();
+                for q in taken.iter_mut().skip(done) {
+                    q.completed = cleared;
+                }
                 match removed.picture {
                     Some(filled) => {
                         p = filled;
@@ -186,14 +231,14 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                         fill_seed = removed.seed;
                         front.completed = true;
                     }
-                    None => left_in.push(done),
+                    None => left_in.extend(done..=whole_at),
                 }
                 taken.push(front);
                 ctx.check()?;
                 // Look again, for the listed subjects still to come only: is each still there, and
                 // what is its mask now (a removal may show more of someone it hid).
                 if !pending.is_empty() && taken.len() < budget {
-                    refind(&finder, &p, area, &mut pending, &mut lost, &repainted, &mut swaps, ctx)?;
+                    refind(&finder, &p, area, (&mut pending, &mut pending_parts), &mut lost, &repainted, &mut swaps, ctx)?;
                 }
             }
             if left_in.len() == taken.len() {
@@ -215,6 +260,10 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 refused.into_iter().map(|(i, why, px)| (format!("{}: {why}", labels.get(i).cloned().unwrap_or_default()), px)).collect();
             ctx.progress(0.95, "Placing");
             let detector = finder.detector_stats();
+            let parts = json!({
+                "found": part_records,
+                "layers": part_layers.iter().map(|(q, w)| json!({"part": labels.get(*q), "whole": labels.get(*w)})).collect::<Vec<_>>(),
+            });
             let (ids, placed, incomplete, refused_ids) =
                 place_all(doc, active, area, base.as_deref(), &found_by, &template_id, fill_seed, &taken, cut, p, &left_in, refused)?;
             Ok((
@@ -231,7 +280,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 used.name(),
                 left_behind,
                 detector,
-                (passes, dropped, lost, refused_ids, swaps),
+                (passes, dropped, lost, refused_ids, swaps, parts),
             ))
         },
         move |(
@@ -248,10 +297,10 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             matted,
             left_behind,
             detector,
-            (passes, dropped, lost, refused_ids, swaps),
+            (passes, dropped, lost, refused_ids, swaps, parts),
         )| {
             json!({
-                "method": "simple", "passes": passes, "droppedAsBackground": dropped, "lost": lost, "swaps": swaps,
+                "method": "simple", "passes": passes, "droppedAsBackground": dropped, "lost": lost, "swaps": swaps, "parts": parts,
                 "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>(), "count": ids.len(),
                 "subjects": placed, "incomplete": incomplete, "fills": tries.len(), "generations": generations, "tries": tries, "order": "auto",
                 "foundBy": found_by, "template": template_id, "seed": seed, "leftBehind": left_behind, "refusedLayers": refused_ids.iter().map(|l| l.0).collect::<Vec<_>>(),
@@ -297,7 +346,7 @@ fn refind(
     finder: &SubjectFinder,
     picture: &[u8],
     area: Rect,
-    pending: &mut Vec<Subject>,
+    (pending, parts): (&mut Vec<Subject>, &mut Vec<Vec<Part>>),
     lost: &mut Vec<Value>,
     repainted: &[bool],
     swaps: &mut Vec<Value>,
@@ -358,7 +407,8 @@ fn refind(
                 && let (Some(k), Some(s)) = (keep.get_mut(i), pending.get(i))
             {
                 *k = false;
-                lost.push(json!({"term": s.term, "bounds": [s.bounds.x0, s.bounds.y0, s.bounds.width(), s.bounds.height()]}));
+                let n = parts.get(i).map_or(0, Vec::len);
+                lost.push(json!({"term": s.term, "bounds": [s.bounds.x0, s.bounds.y0, s.bounds.width(), s.bounds.height()], "parts": n}));
             }
         }
     }
@@ -367,7 +417,119 @@ fn refind(
         k += 1;
         keep.get(k - 1).copied().unwrap_or(false)
     });
+    let mut k = 0;
+    parts.retain(|_| {
+        k += 1;
+        keep.get(k - 1).copied().unwrap_or(false)
+    });
     Ok(())
+}
+
+/// The subjects split into wholes and their parts: a subject with at least [`PART_SHARE`] of its
+/// mask inside a larger one's is a part of the smallest such (its direct whole), and goes with
+/// the whole that whole is part of in turn (a face in a helmet in an astronaut goes with the
+/// astronaut). Each whole's parts, largest first (a part's direct whole before it); and a record
+/// of each part and its direct whole.
+fn split_parts(found: Vec<Subject>) -> (Vec<Subject>, Vec<Vec<Part>>, Vec<Value>) {
+    let n = found.len();
+    let on: Vec<u64> = found.iter().map(|s| s.cov.iter().filter(|v| **v >= 0.5).count() as u64).collect();
+    let whole_of: Vec<Option<usize>> = (0..n)
+        .map(|i| {
+            let mine = on.get(i).copied().unwrap_or(0);
+            if mine == 0 {
+                return None;
+            }
+            (0..n)
+                .filter(|&j| j != i && on.get(j).is_some_and(|&o| o > mine))
+                .filter(|&j| match (found.get(i), found.get(j)) {
+                    (Some(a), Some(b)) => overlap(&a.cov, &b.cov) as f32 >= PART_SHARE * mine as f32,
+                    _ => false,
+                })
+                .min_by_key(|&j| (on.get(j).copied().unwrap_or(0), j))
+        })
+        .collect();
+    // Wholes are strictly larger, so the chain ends; bounded all the same.
+    let top = |mut i: usize| -> usize {
+        for _ in 0..=n {
+            match whole_of.get(i).copied().flatten() {
+                Some(j) => i = j,
+                None => break,
+            }
+        }
+        i
+    };
+    let b = |r: Rect| json!([r.x0, r.y0, r.width(), r.height()]);
+    let records: Vec<Value> = (0..n)
+        .filter_map(|i| {
+            let (part, whole) = (found.get(i)?, found.get(whole_of.get(i).copied().flatten()?)?);
+            Some(json!({"term": part.term, "bounds": b(part.bounds), "pixels": part.pixels, "whole": {"term": whole.term, "bounds": b(whole.bounds)}}))
+        })
+        .collect();
+    let mut slots: Vec<Option<Subject>> = found.into_iter().map(Some).collect();
+    let (mut wholes, mut parts) = (Vec::new(), Vec::new());
+    for t in (0..n).filter(|i| whole_of.get(*i).copied().flatten().is_none()) {
+        let mut members: Vec<usize> = (0..n).filter(|&i| i != t && whole_of.get(i).copied().flatten().is_some() && top(i) == t).collect();
+        members.sort_by_key(|&i| (std::cmp::Reverse(on.get(i).copied().unwrap_or(0)), i));
+        let at = |i: usize| -> usize { members.iter().position(|m| *m == i).map_or(0, |p| p + 1) };
+        let group: Vec<Part> = members
+            .iter()
+            .filter_map(|&m| {
+                let parent = whole_of.get(m).copied().flatten().map_or(0, at);
+                slots.get_mut(m).and_then(Option::take).map(|sub| Part { sub, parent })
+            })
+            .collect();
+        if let Some(w) = slots.get_mut(t).and_then(Option::take) {
+            wholes.push(w);
+            parts.push(group);
+        }
+    }
+    (wholes, parts, records)
+}
+
+/// The hole of a whole and its parts: wherever any of `group` (matted) or the `unmatted` parts
+/// shows.
+fn group_hole(group: &[Subject], unmatted: &[&Subject]) -> Vec<f32> {
+    let mut hole: Vec<f32> = Vec::new();
+    for s in group.iter().chain(unmatted.iter().copied()) {
+        let h = hole_of(s);
+        if hole.is_empty() {
+            hole = h;
+        } else {
+            for (d, c) in hole.iter_mut().zip(h) {
+                *d = d.max(c);
+            }
+        }
+    }
+    hole
+}
+
+/// Each of `group` (a whole, then its parts) cut from `picture` under its alpha, less what its
+/// direct parts (`parents[k]`: the group index of part k's direct whole) show over it, so the
+/// stack composites as the whole did: a layer of alpha a under parts showing u keeps
+/// (a − u) / (1 − u).
+fn cut_group(picture: &[u8], group: &[Subject], parents: &[usize]) -> Vec<Vec<u8>> {
+    group
+        .iter()
+        .enumerate()
+        .map(|(k, s)| {
+            // What the direct parts above it leave showing, Π (1 − their alpha).
+            let mut through = vec![1.0f32; s.alpha.len()];
+            for (c, part) in group.iter().enumerate().skip(1) {
+                if c != k && parents.get(c) == Some(&k) {
+                    for (q, a) in through.iter_mut().zip(&part.alpha) {
+                        *q *= 1.0 - a.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            let alpha: Vec<f32> = s
+                .alpha
+                .iter()
+                .zip(&through)
+                .map(|(a, q)| if *q <= 1e-4 { 0.0 } else { ((a.clamp(0.0, 1.0) - (1.0 - q)) / q).clamp(0.0, 1.0) })
+                .collect();
+            under_alpha(picture, &alpha)
+        })
+        .collect()
 }
 
 /// Whether a re-found detection (`new`) may replace a pending subject's mask (`old`): the rules it
@@ -593,6 +755,74 @@ mod tests {
             alpha: Vec::new(),
             completed: false,
             grown: false,
+        }
+    }
+
+    /// A subject over x0..x1 × y0..y1 of a 200×200 frame, its alpha its hard mask.
+    fn masked(x0: usize, y0: usize, x1: usize, y1: usize) -> Subject {
+        let cov = rect_mask(x0, y0, x1, y1);
+        let mut s = subject(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32);
+        s.alpha = cov.clone();
+        s.cov = cov;
+        s
+    }
+
+    #[test]
+    fn subjects_inside_a_larger_one_are_its_parts_nested_by_their_smallest_whole() {
+        // The cat picture's shape: a face in a helmet in an astronaut, a glove 85 % inside him,
+        // and a rocket beside him (a whole of its own).
+        let astronaut = masked(20, 10, 180, 190);
+        let helmet = masked(60, 10, 140, 70);
+        let face = masked(80, 20, 120, 50);
+        let glove = masked(14, 100, 54, 140); // 34 of its 40 columns inside: 85 %
+        let rocket = masked(150, 150, 199, 199); // 30 of 49 columns, 40 of 49 rows inside: 50 %
+        let (wholes, parts, records) = split_parts(vec![face, astronaut, rocket, helmet, glove]);
+        assert_eq!(wholes.len(), 2, "the astronaut and the rocket");
+        assert_eq!((wholes[0].bounds.x0, wholes[1].bounds.x0), (20, 150));
+        let mine: Vec<(i32, usize)> = parts[0].iter().map(|p| (p.sub.bounds.x0, p.parent)).collect();
+        // Largest first: the helmet (whole: the astronaut, 0), the glove (0), the face (whole:
+        // the helmet, the group's 1st part).
+        assert_eq!(mine, vec![(60, 0), (14, 0), (80, 1)]);
+        assert!(parts[1].is_empty());
+        assert_eq!(records.len(), 3, "{records:?}");
+        assert!(records.iter().any(|r| r["bounds"][0] == 80 && r["whole"]["bounds"][0] == 60), "{records:?}");
+    }
+
+    #[test]
+    fn a_part_is_cut_out_of_its_whole_and_the_stack_composites_as_the_whole() {
+        // A whole with a soft edge band, and a part inside it with a soft edge.
+        let mut whole = masked(20, 20, 180, 180);
+        let mut part = masked(60, 60, 100, 100);
+        for (k, a) in part.alpha.iter_mut().enumerate() {
+            if (k % 200 == 60 || k % 200 == 99) && *a > 0.0 {
+                *a = 0.5;
+            }
+        }
+        whole.alpha[100 * 200 + 20] = 0.4;
+        let picture: Vec<u8> = (0..200 * 200).flat_map(|k| [(k % 251) as u8, 90, 200, 255]).collect();
+        let cuts = cut_group(&picture, &[whole, part], &[0, 0]);
+        let a = |c: &Vec<u8>, x: usize, y: usize| f32::from(c[(y * 200 + x) * 4 + 3]) / 255.0;
+        assert_eq!(a(&cuts[0], 80, 80), 0.0, "a gap in the whole where the part is");
+        assert_eq!(a(&cuts[1], 80, 80), 1.0, "the part whole on its layer");
+        assert_eq!(a(&cuts[0], 150, 150), 1.0, "the rest of the whole stays");
+        assert!((a(&cuts[0], 20, 100) - 0.4).abs() < 0.01, "the whole's own soft edge stays");
+        // Over the part's soft edge the part (0.5) over the whole (1.0 there) is opaque again:
+        // no seam.
+        let (pa, wa) = (a(&cuts[1], 60, 80), a(&cuts[0], 60, 80));
+        assert!((pa + wa * (1.0 - pa) - 1.0).abs() < 0.01, "part {pa} over whole {wa}");
+        assert_eq!(cuts[0][(80 * 200 + 150) * 4], picture[(80 * 200 + 150) * 4], "the picture's own pixels");
+    }
+
+    #[test]
+    fn a_part_that_sticks_out_of_its_whole_is_in_the_hole() {
+        // A part 85 % inside the whole, its top 15 % above it: the hole takes all of it, whether
+        // it was matted (a layer of its own) or not (no layer left for it).
+        let whole = masked(40, 60, 160, 180);
+        let part = masked(80, 40, 120, 160); // rows 40..60 of 40..160 outside: 83 % inside
+        for hole in [group_hole(&[masked(40, 60, 160, 180), part], &[]), group_hole(std::slice::from_ref(&whole), &[&masked(80, 40, 120, 160)])] {
+            assert_eq!(hole[45 * 200 + 100], 1.0, "the part's top, outside the whole");
+            assert_eq!(hole[100 * 200 + 50], 1.0, "the whole");
+            assert_eq!(hole[45 * 200 + 50], 0.0, "nothing else");
         }
     }
 
