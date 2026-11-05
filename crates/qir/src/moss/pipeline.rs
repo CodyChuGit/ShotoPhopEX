@@ -13,9 +13,9 @@ use tokenizers::Tokenizer;
 
 use super::dit::{self, MossConfig, MossDit};
 use super::text::{self, Qwen35Text, TextConfig};
-use super::vae::{self, Flux2Decoder};
+use super::vae::{self, Flux2Decoder, Flux2Encoder};
 use super::weights::Weights;
-use crate::pipeline::{Cancelled, Picture, Request, Timings};
+use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
 use crate::preview::StepPreview;
 use crate::Result;
 
@@ -25,6 +25,12 @@ pub const GUIDANCE: f32 = 3.0;
 pub const SHIFT: f64 = 5.0;
 /// The block the negative branch leaves out (zero-based).
 pub const UNCOND_SKIP: usize = 22;
+/// MOSS Edit's references: their long edge at most this (the official `infer.py`'s
+/// `max_edge`), sides rounded to 16, never enlarged.
+pub const REFERENCE_EDGE: usize = 1024;
+/// An edit's output when the request names no size: the picture's aspect at about this many
+/// pixels (1 MP, the edit workflow's), sides multiples of 16.
+pub const EDIT_PIXELS: usize = 1024 * 1024;
 
 /// Which fine-tune a template runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +39,9 @@ pub enum Variant {
     Sft,
     /// MOSS-Image-Base.
     Base,
+    /// lodestones' Kromoss (Apache-2.0), a full fine-tune of Base at 1024 px; its 8-step DMD2
+    /// LoRA makes it the turbo model.
+    Kromoss,
 }
 
 /// MOSS-Image's files in a ComfyUI-layout `models` folder (Comfy-Org/MOSS-Image's names; each
@@ -50,6 +59,7 @@ fn dit_names(v: Variant) -> [&'static str; 2] {
     match v {
         Variant::Sft => ["moss_image_sft_int8_convrot.safetensors", "moss_image_sft_bf16.safetensors"],
         Variant::Base => ["moss_image_base_int8_convrot.safetensors", "moss_image_base_bf16.safetensors"],
+        Variant::Kromoss => ["kromoss_int8_convrot.safetensors", "kromoss_bf16.safetensors"],
     }
 }
 const TEXT: &[&str] = &["qwen3.5_9b_int8_convrot.safetensors", "qwen3.5_9b_bf16.safetensors"];
@@ -90,6 +100,8 @@ pub struct MossPipeline {
     te: Qwen35Text,
     dit: MossDit,
     vae: Flux2Decoder,
+    /// MOSS Edit's reference encoder (the small VAE file holds it), when the file has one.
+    encoder: Option<Flux2Encoder>,
     positive: Mutex<Option<Cached>>,
     negative: Mutex<Option<Cached>>,
 }
@@ -113,9 +125,16 @@ impl MossPipeline {
         progress(0.9, "Loading the VAE");
         // bf16 on CUDA: 60.0 dB against ComfyUI's f32 decode (f32 60.7), faster and half the memory.
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&files.vae], dtype, &dev)? };
-        let vae = Flux2Decoder::load(vb).context("the FLUX.2 VAE")?;
+        let vae = Flux2Decoder::load(vb.clone()).context("the FLUX.2 VAE")?;
+        let encoder = match Flux2Encoder::load(vb) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::info!(error = %e, "no FLUX.2 encoder in the VAE file: MOSS Edit is off");
+                None
+            }
+        };
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, te, dit, vae, positive: Mutex::new(None), negative: Mutex::new(None) })
+        Ok(Self { dev, dtype, tok, te, dit, vae, encoder, positive: Mutex::new(None), negative: Mutex::new(None) })
     }
 
     pub fn is_cuda(&self) -> bool {
@@ -158,6 +177,21 @@ impl MossPipeline {
         &self.vae
     }
 
+    /// Whether MOSS Edit can run (the VAE file has the encoder).
+    pub fn can_edit(&self) -> bool {
+        self.encoder.is_some()
+    }
+
+    /// A reference as MOSS Edit takes it: its long edge at most `edge` (Lanczos, never enlarged,
+    /// each side rounded to 16 independently, as the official `resize_image`), encoded.
+    pub fn reference_latent(&self, r: &RefImage, edge: usize) -> Result<Tensor> {
+        let enc = self.encoder.as_ref().context("the VAE file has no FLUX.2 encoder (Comfy-Org's flux2-vae_small has one)")?;
+        let (w, h) = reference_size(r.width, r.height, edge);
+        let img = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.rgba.clone()).context("a reference's pixels do not match its size")?;
+        let img = if (w, h) == (r.width, r.height) { img } else { image::imageops::resize(&img, w as u32, h as u32, image::imageops::FilterType::Lanczos3) };
+        enc.encode(&vae::from_rgba_u8(img.as_raw(), w, h, &self.dev)?)
+    }
+
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
         self.generate_previewed(req, progress, None, cancel)
@@ -175,11 +209,15 @@ impl MossPipeline {
     ) -> Result<Picture> {
         crate::device::bind_thread(&self.dev);
         anyhow::ensure!(req.steps > 0, "at least one step");
-        let (w, h) = (req.width, req.height);
+        let (w, h) = match req.references.first() {
+            Some(p) if req.width == 0 || req.height == 0 => edit_size(p.width, p.height),
+            _ => (req.width, req.height),
+        };
         anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16), "the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
-        anyhow::ensure!(req.references.is_empty(), "MOSS-Image makes pictures from text only");
-        if !req.loras.is_empty() {
-            tracing::warn!("MOSS-Image runs without LoRAs for now; the request's adapters are ignored");
+        anyhow::ensure!(req.references.len() <= 4, "MOSS Edit takes at most 4 pictures ({} given)", req.references.len());
+        let unmatched = self.dit.set_loras(&req.loras)?;
+        if !unmatched.is_empty() {
+            tracing::warn!(modules = unmatched.len(), first = %unmatched[0], "LoRA modules MOSS-Image does not have (a file for another model?)");
         }
         let check = || -> Result<()> {
             if cancel() {
@@ -196,6 +234,22 @@ impl MossPipeline {
         let cond = self.cached(&self.positive, &req.prompt)?;
         let cfg = req.guidance != 1.0;
         let uncond = if cfg { Some(self.cached(&self.negative, &req.negative)?) } else { None };
+        // MOSS Edit: the pictures encoded and run through the blocks once.
+        let refs = if req.references.is_empty() {
+            None
+        } else {
+            progress(0.04, "Reading the picture");
+            let edge = std::env::var("QIR_MOSS_REF_EDGE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(REFERENCE_EDGE);
+            let latents = req.references.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
+            Some(self.dit.prepare_references(&latents)?)
+        };
+        // The edit's negative branch skips no block (the official edit sampler), unless
+        // `QIR_MOSS_EDIT_SKIP` names one (the author's ComfyUI workflow skips 22).
+        let skip: Vec<usize> = if refs.is_some() {
+            std::env::var("QIR_MOSS_EDIT_SKIP").ok().and_then(|v| v.trim().parse().ok()).into_iter().collect()
+        } else {
+            vec![UNCOND_SKIP]
+        };
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
 
@@ -211,11 +265,17 @@ impl MossPipeline {
             let t = sig[i] * 1000.0;
             let v = match &uncond {
                 Some(u) => {
-                    let (pos, neg) = self.dit.forward_pair(&x, t, &cond, u, &[UNCOND_SKIP])?;
+                    let (pos, neg) = self.dit.forward_pair_refs(&x, t, &cond, u, &skip, refs.as_ref())?;
                     (&neg + ((pos - &neg)? * f64::from(req.guidance))?)?
                 }
-                None => self.dit.forward(&x, t, &cond, &[])?,
+                None => self.dit.forward_refs(&x, t, &cond, &[], refs.as_ref())?,
             };
+            if i == 0 {
+                if let Ok(path) = std::env::var("QIR_MOSS_DUMP") {
+                    // A check's hook: the first step's velocity, to compare two builds or paths.
+                    v.save_safetensors("v", path.trim())?;
+                }
+            }
             if let Some(p) = preview.as_deref_mut() {
                 if p.wants(i + 1, n) {
                     match (&v * f64::from(sig[i])).and_then(|sv| &x - sv) {
@@ -249,5 +309,35 @@ impl MossPipeline {
         );
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
+    }
+}
+
+/// A reference's size for MOSS Edit: the long edge at most `edge` (rounded down to 16), each
+/// side scaled and rounded to the nearest 16 (at least 16), never enlarged.
+pub fn reference_size(w: usize, h: usize, edge: usize) -> (usize, usize) {
+    let limit = (edge / 16 * 16).max(16);
+    let scale = (limit as f64 / w.max(h).max(1) as f64).min(1.0);
+    let side = |v: usize| (((v as f64 * scale / 16.0 + 0.5).floor() as usize) * 16).clamp(16, limit);
+    (side(w), side(h))
+}
+
+/// An edit's output size when none is asked: the picture's aspect at about [`EDIT_PIXELS`],
+/// sides multiples of 16.
+pub fn edit_size(w: usize, h: usize) -> (usize, usize) {
+    let scale = (EDIT_PIXELS as f64 / (w.max(1) * h.max(1)) as f64).sqrt();
+    let side = |v: usize| (((v as f64 * scale / 16.0).round() as usize) * 16).max(16);
+    (side(w), side(h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reference_and_edit_sizes() {
+        assert_eq!(reference_size(4000, 3000, 1024), (1024, 768));
+        assert_eq!(reference_size(500, 300, 1024), (496, 304));
+        assert_eq!(edit_size(4000, 3000), (1184, 880));
+        assert_eq!(edit_size(1024, 1024), (1024, 1024));
     }
 }

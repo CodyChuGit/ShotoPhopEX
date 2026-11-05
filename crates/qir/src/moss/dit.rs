@@ -11,6 +11,7 @@
 use candle_core::{DType, Device, Tensor, D};
 
 use super::weights::{QLinear, Weights};
+use crate::lora::{LoraPair, LoraSlot, LoraStack};
 use crate::Result;
 
 /// MOSS-Image's shape (Base and SFT share it).
@@ -154,6 +155,14 @@ struct Block {
     o: QLinear,
     up_gate: QLinear,
     down: QLinear,
+    /// `qkv`'s output rows as the file's rows (`None`: the file's order), for a LoRA's `B`.
+    qkv_rows: Option<Vec<usize>>,
+    /// LoRA adapters (Kromoss' turbo, MOSS Edit), set per request: q, k and v as one adapter on
+    /// the stacked `qkv`.
+    l_qkv: LoraSlot,
+    l_o: LoraSlot,
+    l_up_gate: LoraSlot,
+    l_down: LoraSlot,
     /// The one-pass kernels' weights (CUDA bf16 with `fusednorm`): f32 norms, and q/k norms in
     /// the interleaved channel order `qkv`'s q and k rows were loaded in (see [`interleaved`]).
     #[cfg(feature = "fusednorm")]
@@ -240,9 +249,67 @@ impl Block {
             o: w.linear(&format!("{p}.proj.o"))?,
             up_gate: w.linear(&format!("{p}.proj.ffn_up_gate"))?,
             down: w.linear(&format!("{p}.proj.ffn_down"))?,
+            qkv_rows: order,
+            l_qkv: LoraSlot::default(),
+            l_o: LoraSlot::default(),
+            l_up_gate: LoraSlot::default(),
+            l_down: LoraSlot::default(),
             #[cfg(feature = "fusednorm")]
             fused,
         })
+    }
+
+    /// The stack's adapters on this block (`p`: `layers.{i}`). The official layout's separate
+    /// `proj.q`, `proj.k`, `proj.v` adapters of one file become one adapter on `qkv`: their `A`s
+    /// stacked, their `B`s block-diagonal, its rows in `qkv`'s order; an adapter trained on
+    /// ComfyUI's fused `proj.qkv` is taken as it is (rows reordered the same way).
+    fn set_loras(&self, stack: &LoraStack, p: &str, dim: usize) -> Result<()> {
+        let mut qkv = Vec::new();
+        for (file, strength) in &stack.layers {
+            if *strength == 0.0 {
+                continue;
+            }
+            let mut parts = Vec::new();
+            if let Some(e) = file.entries.get(&format!("{p}.proj.qkv")) {
+                parts.push((e, 0usize, 3 * dim));
+            }
+            for (j, n) in ["q", "k", "v"].iter().enumerate() {
+                if let Some(e) = file.entries.get(&format!("{p}.proj.{n}")) {
+                    parts.push((e, j * dim, dim));
+                }
+            }
+            if parts.is_empty() {
+                continue;
+            }
+            let dev = parts[0].0.a.device().clone();
+            let dtype = parts[0].0.a.dtype();
+            let ranks: usize = parts.iter().map(|(e, _, _)| e.rank()).sum();
+            // Each part's scale folded into its B, so one pair carries them all.
+            let mut a_rows = Vec::with_capacity(parts.len());
+            let mut b = Tensor::zeros((3 * dim, ranks), dtype, &dev)?;
+            let mut col = 0;
+            for (e, row0, rows) in parts {
+                anyhow::ensure!(e.b.dim(0)? == rows, "{p}: a LoRA with {} output rows ({rows} expected)", e.b.dim(0)?);
+                let r = e.rank();
+                let scale = f64::from(strength * e.alpha / r.max(1) as f32);
+                a_rows.push(e.a.clone());
+                let block = (e.b.to_dtype(DType::F32)? * scale)?.to_dtype(dtype)?;
+                let padded = block.pad_with_zeros(0, row0, 3 * dim - row0 - rows)?.pad_with_zeros(1, col, ranks - col - r)?;
+                b = (b + padded)?;
+                col += r;
+            }
+            let a = Tensor::cat(&a_rows, 0)?;
+            let b = match &self.qkv_rows {
+                Some(o) => b.index_select(&Tensor::from_vec(o.iter().map(|&i| i as u32).collect::<Vec<_>>(), o.len(), &dev)?, 0)?,
+                None => b,
+            };
+            qkv.push(LoraPair::new(&a, &b, 1.0)?);
+        }
+        self.l_qkv.set(qkv);
+        self.l_o.set(stack.pairs(&format!("{p}.proj.o"))?);
+        self.l_up_gate.set(stack.pairs(&format!("{p}.proj.ffn_up_gate"))?);
+        self.l_down.set(stack.pairs(&format!("{p}.proj.ffn_down"))?);
+        Ok(())
     }
 
     /// The block in one-pass kernels: `x (1, S, dim)` holding one or more sequences back to back
@@ -250,7 +317,7 @@ impl Block {
     /// work runs once over all of them, the attention per sequence), `mods (1, 1, 6·dim)`
     /// (shift, scale, gate for attention, then for the feed-forward).
     #[cfg(feature = "fusednorm")]
-    fn forward_fused(&self, f: &FusedNorms, x: &Tensor, seqs: &[(usize, usize, &Tensor)], mods: &Tensor, heads: usize) -> Result<Tensor> {
+    fn forward_fused(&self, f: &FusedNorms, x: &Tensor, seqs: &[(usize, usize, &Tensor)], mods: &Tensor, heads: usize, refs: Option<&RefLayer>) -> Result<Tensor> {
         use crate::krea2_fused::{head_rope, rms_mod};
         use crate::profile::scope;
         let (_, s, dim) = x.dims3()?;
@@ -259,11 +326,37 @@ impl Block {
         let (sf, df) = (s as f64, dim as f64);
         let ffn = self.up_gate_width();
         let y = scope("moss norm", 0.0, dev, || rms_mod(x, &f.norm1, Some((mods, 1, 0)), 1e-6))?;
-        let qkv = scope("moss qkv", 2.0 * sf * df * 3.0 * df, dev, || self.qkv.forward(&y))?; // (1, S, 3·dim)
+        let qkv = scope("moss qkv", 2.0 * sf * df * 3.0 * df, dev, || self.l_qkv.add_to(self.qkv.forward(&y)?, &y))?; // (1, S, 3·dim)
         let mut outs = Vec::with_capacity(seqs.len());
         for &(r0, n, cs) in seqs {
             let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, r0, n)?.narrow(2, i * dim, dim)?.reshape((1, n, heads, hd))?) };
             let nf = n as f64;
+            if let Some(r) = refs {
+                // MOSS Edit: the sequence's queries over its own keys and the references' (cached,
+                // already normed and rotated; the references never attend back).
+                let k = head_rope(&part(1)?, &f.k_norm, Some(cs), 1e-6)?;
+                let k = Tensor::cat(&[&k, &r.k], 1)?;
+                let v = Tensor::cat(&[&part(2)?, &r.v], 1)?;
+                let m = k.dim(1)? as f64;
+                #[cfg(feature = "sage2")]
+                if let Some(accum) = sage_attention()? {
+                    use crate::sage2::{attention as sage, quant_v, rope_quant, Role};
+                    let (cos, sin) = (cs.get(0)?.to_dtype(DType::BF16)?, cs.get(1)?.to_dtype(DType::BF16)?);
+                    outs.push(scope("moss attention", 4.0 * nf * m * df, dev, || {
+                        let q = rope_quant(&head_rope(&part(0)?, &f.q_norm, None, 1e-6)?, &cos, &sin, Role::Query)?;
+                        // K is rotated already: quantized under the identity rotation.
+                        let half = hd / 2;
+                        let (one, zero) = (Tensor::ones((k.dim(1)?, half), DType::BF16, dev)?, Tensor::zeros((k.dim(1)?, half), DType::BF16, dev)?);
+                        let k = rope_quant(&k, &one, &zero, Role::Key)?;
+                        let v = quant_v(&v.to_dtype(DType::F16)?, accum)?;
+                        Ok(sage(&q, &k, &v, 1.0 / (hd as f32).sqrt(), false)?.reshape((1, n, dim))?)
+                    })?);
+                    continue;
+                }
+                let q = scope("moss head rope", 0.0, dev, || Ok(head_rope(&part(0)?, &f.q_norm, Some(cs), 1e-6)?.squeeze(0)?))?;
+                outs.push(scope("moss attention", 4.0 * nf * m * df, dev, || Ok(attention(&q, &k.squeeze(0)?, &v.squeeze(0)?)?.unsqueeze(0)?))?);
+                continue;
+            }
             #[cfg(feature = "sage2")]
             if let Some(accum) = sage_attention()? {
                 // SageAttention2: q and k normed here, rotated and INT8-quantized in one kernel,
@@ -286,6 +379,52 @@ impl Block {
         self.finish_fused(f, x, &a, mods, dev, sf, df, ffn)
     }
 
+    /// A reference's pass through the block (MOSS Edit): `x (1, N, dim)` the references' rows,
+    /// `cs` their `(2, N, D/2)` cos/sin, `mods` the t = 0 modulation; the rows out and this
+    /// block's keys (normed, rotated) and values `(1, N, H, D)` for the target to attend to.
+    #[cfg(feature = "fusednorm")]
+    fn reference_fused(&self, f: &FusedNorms, x: &Tensor, cs: &Tensor, mods: &Tensor, heads: usize) -> Result<(Tensor, RefLayer)> {
+        use crate::krea2_fused::{head_rope, rms_mod};
+        let (_, s, dim) = x.dims3()?;
+        let hd = dim / heads;
+        let dev = x.device();
+        let y = rms_mod(x, &f.norm1, Some((mods, 1, 0)), 1e-6)?;
+        let qkv = self.l_qkv.add_to(self.qkv.forward(&y)?, &y)?;
+        let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(2, i * dim, dim)?.reshape((1, s, heads, hd))?) };
+        let q = head_rope(&part(0)?, &f.q_norm, Some(cs), 1e-6)?;
+        let k = head_rope(&part(1)?, &f.k_norm, Some(cs), 1e-6)?;
+        let v = part(2)?.contiguous()?;
+        let a = attention(&q.squeeze(0)?, &k.squeeze(0)?, &v.squeeze(0)?)?.unsqueeze(0)?;
+        let (sf, df) = (s as f64, dim as f64);
+        let x = self.finish_fused(f, x, &a, mods, dev, sf, df, self.up_gate_width())?;
+        Ok((x, RefLayer { k, v }))
+    }
+
+    /// [`Self::reference_fused`] on the candle chains: `x (N, dim)`, `rope (N, D)`; keys and
+    /// values `(N, H, D)`.
+    fn reference(&self, x: &Tensor, rope: &Tensor, m: &[Tensor; 6], heads: usize) -> Result<(Tensor, RefLayer)> {
+        let (s, dim) = x.dims2()?;
+        let hd = dim / heads;
+        let [shift_a, scale_a, gate_a, shift_f, scale_f, gate_f] = m;
+        let y = self.norm1.forward(x)?;
+        let y = (&y + y.broadcast_mul(scale_a)?)?.broadcast_add(shift_a)?;
+        let qkv = self.l_qkv.add_to(self.qkv.forward(&y)?, &y)?;
+        let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, i * dim, dim)?.reshape((s, heads, hd))?) };
+        let q = rotate(&self.q_norm.forward(&part(0)?)?, rope)?;
+        let k = rotate(&self.k_norm.forward(&part(1)?)?, rope)?;
+        let v = part(2)?.contiguous()?;
+        let att = attention(&q, &k, &v)?;
+        let a = self.l_o.add_to(self.o.forward(&att)?, &att)?;
+        let x = (x + a.broadcast_mul(gate_a)?)?;
+        let y = self.norm2.forward(&x)?;
+        let y = (&y + y.broadcast_mul(scale_f)?)?.broadcast_add(shift_f)?;
+        let hg = self.l_up_gate.add_to(self.up_gate.forward(&y)?, &y)?;
+        let f = hg.dim(1)? / 2;
+        let h = situ(&hg.narrow(1, 0, f)?, &hg.narrow(1, f, f)?)?;
+        let x = (&x + self.l_down.add_to(self.down.forward(&h)?, &h)?.broadcast_mul(gate_f)?)?;
+        Ok((x, RefLayer { k, v }))
+    }
+
     /// The fused block after attention: `a (1, S, dim)`.
     #[cfg(feature = "fusednorm")]
     #[allow(clippy::too_many_arguments)]
@@ -293,21 +432,21 @@ impl Block {
         use crate::krea2_fused::{gate_add, rms_mod};
         use crate::profile::scope;
         let s = x.dim(1)?;
-        let o = scope("moss o", 2.0 * sf * df * df, dev, || self.o.forward(a))?;
+        let o = scope("moss o", 2.0 * sf * df * df, dev, || self.l_o.add_to(self.o.forward(a)?, a))?;
         let x = scope("moss gate add", 0.0, dev, || gate_add(x, &o, mods, 2))?;
         let y = scope("moss norm", 0.0, dev, || rms_mod(&x, &f.norm2, Some((mods, 4, 3)), 1e-6))?;
-        let hg = scope("moss up_gate", 2.0 * sf * df * 2.0 * ffn, dev, || self.up_gate.forward(&y))?;
+        let hg = scope("moss up_gate", 2.0 * sf * df * 2.0 * ffn, dev, || self.l_up_gate.add_to(self.up_gate.forward(&y)?, &y))?;
         let hg = hg.reshape((s, hg.dim(2)?))?;
         // SiTU inside the down projection's activation quantize (ConvRot; 1 % faster than its
         // own pass), unless `QIR_MOSS_SITU_FUSED=0`.
         static FUSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let fuse = *FUSE.get_or_init(|| std::env::var("QIR_MOSS_SITU_FUSED").map_or(true, |v| v.trim() != "0"));
-        let fused = if fuse { scope("moss situ+down", 2.0 * sf * df * ffn, dev, || self.down.forward_situ(&hg))? } else { None };
+        let fused = if fuse && self.l_down.is_empty() { scope("moss situ+down", 2.0 * sf * df * ffn, dev, || self.down.forward_situ(&hg))? } else { None };
         let d = match fused {
             Some(d) => d.unsqueeze(0)?,
             None => {
                 let h = scope("moss situ", 0.0, dev, || super::fused::situ(&hg))?;
-                scope("moss down", 2.0 * sf * df * ffn, dev, || Ok(self.down.forward(&h)?.unsqueeze(0)?))?
+                scope("moss down", 2.0 * sf * df * ffn, dev, || Ok(self.l_down.add_to(self.down.forward(&h)?, &h)?.unsqueeze(0)?))?
             }
         };
         scope("moss gate add", 0.0, dev, || gate_add(&x, &d, mods, 5))
@@ -320,24 +459,48 @@ impl Block {
     }
 
     /// `m`: the six modulation rows `(6, dim)` in the run dtype.
-    fn forward(&self, x: &Tensor, rope: &Tensor, m: &[Tensor; 6], heads: usize) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor, rope: &Tensor, m: &[Tensor; 6], heads: usize, refs: Option<&RefLayer>) -> Result<Tensor> {
         let (s, dim) = x.dims2()?;
         let hd = dim / heads;
         let [shift_a, scale_a, gate_a, shift_f, scale_f, gate_f] = m;
         let y = self.norm1.forward(x)?;
         let y = (&y + y.broadcast_mul(scale_a)?)?.broadcast_add(shift_a)?;
-        let qkv = self.qkv.forward(&y)?;
+        let qkv = self.l_qkv.add_to(self.qkv.forward(&y)?, &y)?;
         let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, i * dim, dim)?.reshape((s, heads, hd))?) };
         let q = rotate(&self.q_norm.forward(&part(0)?)?, rope)?;
         let k = rotate(&self.k_norm.forward(&part(1)?)?, rope)?;
-        let a = self.o.forward(&attention(&q, &k, &part(2)?)?)?;
+        let att = match refs {
+            Some(r) => attention(&q, &Tensor::cat(&[&k, &r.k], 0)?, &Tensor::cat(&[&part(2)?, &r.v], 0)?)?,
+            None => attention(&q, &k, &part(2)?)?,
+        };
+        let a = self.l_o.add_to(self.o.forward(&att)?, &att)?;
         let x = (x + a.broadcast_mul(gate_a)?)?;
         let y = self.norm2.forward(&x)?;
         let y = (&y + y.broadcast_mul(scale_f)?)?.broadcast_add(shift_f)?;
-        let hg = self.up_gate.forward(&y)?;
+        let hg = self.l_up_gate.add_to(self.up_gate.forward(&y)?, &y)?;
         let f = hg.dim(1)? / 2;
         let h = situ(&hg.narrow(1, 0, f)?, &hg.narrow(1, f, f)?)?;
-        Ok((&x + self.down.forward(&h)?.broadcast_mul(gate_f)?)?)
+        Ok((&x + self.l_down.add_to(self.down.forward(&h)?, &h)?.broadcast_mul(gate_f)?)?)
+    }
+}
+
+/// One block's keys and values of MOSS Edit's references.
+#[derive(Clone)]
+struct RefLayer {
+    k: Tensor,
+    v: Tensor,
+}
+
+/// MOSS Edit's references through every block, made once per edit (the reference branch runs
+/// at t = 0 and attends only to itself, so it is the same at every step and for both prompts).
+pub struct RefCache {
+    layers: Vec<RefLayer>,
+}
+
+impl RefCache {
+    /// The tokens it holds.
+    pub fn tokens(&self) -> usize {
+        self.layers.first().and_then(|l| l.v.dims().iter().rev().nth(2).copied()).unwrap_or(0)
     }
 }
 
@@ -358,6 +521,8 @@ pub struct MossDit {
     /// The last two grids' RoPE tables (run-dtype rows, `(cos, sin)` per pair): every step of a
     /// picture asks for the same ones, for its prompt and its negative.
     tables: std::sync::Mutex<Vec<Tables>>,
+    /// The adapters on the blocks now, and the modules of theirs the blocks lack.
+    bound: std::sync::Mutex<Option<(LoraStack, Vec<String>)>>,
 }
 
 #[derive(Clone)]
@@ -387,6 +552,7 @@ impl MossDit {
             dev: w.device().clone(),
             dtype: w.dtype(),
             tables: std::sync::Mutex::new(Vec::new()),
+            bound: std::sync::Mutex::new(None),
         })
     }
 
@@ -413,6 +579,31 @@ impl MossDit {
         &self.cfg
     }
 
+    /// Put `stack`'s adapters on the blocks (an empty stack takes them off); the modules it names
+    /// that the blocks do not have come back (a file for another model).
+    pub fn set_loras(&self, stack: &LoraStack) -> Result<Vec<String>> {
+        let mut bound = self.bound.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((previous, unmatched)) = bound.as_ref() {
+            if previous.same_adapters(stack) {
+                return Ok(unmatched.clone());
+            }
+        }
+        *bound = None;
+        for (i, b) in self.layers.iter().enumerate() {
+            b.set_loras(stack, &format!("layers.{i}"), self.cfg.dim)?;
+        }
+        let n = self.layers.len();
+        let known = |m: &str| -> bool {
+            let Some(rest) = m.strip_prefix("layers.") else { return false };
+            let Some((idx, tail)) = rest.split_once('.') else { return false };
+            idx.parse::<usize>().is_ok_and(|i| i < n)
+                && matches!(tail, "proj.q" | "proj.k" | "proj.v" | "proj.qkv" | "proj.o" | "proj.ffn_up_gate" | "proj.ffn_down")
+        };
+        let unmatched: Vec<String> = stack.unmatched(&known).into_iter().map(str::to_owned).collect();
+        *bound = Some((stack.clone(), unmatched.clone()));
+        Ok(unmatched)
+    }
+
     /// The rows `[sin | cos]` `(tokens, head_dim)` f32: the image tokens (row-major, at frame 0,
     /// text index `text_len`, height and width centred on the grid) then the text tokens (at
     /// text index 0..), each of the four axes turning `head_dim/8` bands.
@@ -435,6 +626,65 @@ impl MossDit {
             push([0.0, t as f32, 0.0, 0.0]);
         }
         Ok(Tensor::from_vec(rows, (h * w + text_len, 8 * nb), &self.dev)?)
+    }
+
+    /// MOSS Edit's reference rows `[sin | cos]` `(h·w, head_dim)` f32 for reference `index`
+    /// (0-based): frame `index + 1`, text index 0, height and width centred on its own grid.
+    pub fn reference_rope(&self, h: usize, w: usize, index: usize) -> Result<Tensor> {
+        let nb = self.cfg.head_dim() / 8;
+        let bands: Vec<f32> = (0..nb).map(|i| 1.0 / self.cfg.rope_base.powf(i as f32 / nb as f32)).collect();
+        let mut rows = Vec::with_capacity(h * w * 8 * nb);
+        let (ch, cw) = ((h as f32 - 1.0) / 2.0, (w as f32 - 1.0) / 2.0);
+        for y in 0..h {
+            for x in 0..w {
+                let pos = [(index + 1) as f32, 0.0, y as f32 - ch, x as f32 - cw];
+                let phase: Vec<f32> = pos.iter().flat_map(|p| bands.iter().map(move |b| p * b)).collect();
+                rows.extend(phase.iter().map(|p| p.sin()));
+                rows.extend(phase.iter().map(|p| p.cos()));
+            }
+        }
+        Ok(Tensor::from_vec(rows, (h * w, 8 * nb), &self.dev)?)
+    }
+
+    /// Run MOSS Edit's references `(1, channels, h, w)` (the FLUX.2 encoder's latents, the
+    /// picture being edited first) through every block once, at t = 0, attending only to each
+    /// other; the blocks' keys and values for the sampling steps.
+    pub fn prepare_references(&self, refs: &[Tensor]) -> Result<RefCache> {
+        anyhow::ensure!(!refs.is_empty(), "an edit needs a reference");
+        let mut tokens = Vec::with_capacity(refs.len());
+        let mut ropes = Vec::with_capacity(refs.len());
+        for (i, r) in refs.iter().enumerate() {
+            let (_, c, h, w) = r.dims4()?;
+            anyhow::ensure!(c == self.cfg.channels, "a reference of {c} channels (the model takes {})", self.cfg.channels);
+            tokens.push(self.video_embedder.forward(&r.reshape((c, h * w))?.t()?.contiguous()?.to_dtype(self.dtype)?)?);
+            ropes.push(self.reference_rope(h, w, i)?);
+        }
+        let x = Tensor::cat(&tokens, 0)?;
+        let rope32 = Tensor::cat(&ropes, 0)?;
+        let (m, _) = self.modulation(0.0)?;
+        let mut layers = Vec::with_capacity(self.layers.len());
+        #[cfg(feature = "fusednorm")]
+        if self.layers.first().is_some_and(|b| b.fused.is_some()) {
+            let half = self.cfg.head_dim() / 2;
+            let cs = Tensor::stack(&[rope32.narrow(1, half, half)?, rope32.narrow(1, 0, half)?], 0)?.contiguous()?;
+            let mods = Tensor::cat(&m, 1)?.unsqueeze(0)?.contiguous()?;
+            let mut x = x.unsqueeze(0)?;
+            for layer in &self.layers {
+                let Some(f) = &layer.fused else { anyhow::bail!("a block without its fused weights") };
+                let (next, kv) = layer.reference_fused(f, &x, &cs, &mods, self.cfg.heads)?;
+                layers.push(kv);
+                x = next;
+            }
+            return Ok(RefCache { layers });
+        }
+        let rope = rope32.to_dtype(self.dtype)?;
+        let mut x = x;
+        for layer in &self.layers {
+            let (next, kv) = layer.reference(&x, &rope, &m, self.cfg.heads)?;
+            layers.push(kv);
+            x = next;
+        }
+        Ok(RefCache { layers })
     }
 
     /// The modulation for a timestep: the six block rows and the two head rows `(shift, scale)`.
@@ -469,6 +719,15 @@ impl MossDit {
     /// `timestep` (σ·1000) and the encoder's hidden state `ctx (L, text_dim)`; the blocks in
     /// `skip` are left out (the guidance's negative branch skips block 22).
     pub fn forward(&self, x: &Tensor, timestep: f32, ctx: &Tensor, skip: &[usize]) -> Result<Tensor> {
+        self.forward_refs(x, timestep, ctx, skip, None)
+    }
+
+    /// [`Self::forward`] attending to MOSS Edit's references too.
+    pub fn forward_refs(&self, x: &Tensor, timestep: f32, ctx: &Tensor, skip: &[usize], refs: Option<&RefCache>) -> Result<Tensor> {
+        if let Some(r) = refs {
+            anyhow::ensure!(r.layers.len() == self.layers.len(), "a reference cache of {} blocks for {}", r.layers.len(), self.layers.len());
+        }
+        let layer_refs = |i: usize| refs.map(|r| &r.layers[i]);
         let (_, c, h, w) = x.dims4()?;
         anyhow::ensure!(c == self.cfg.channels, "a latent of {c} channels (the model takes {})", self.cfg.channels);
         let n = h * w;
@@ -487,7 +746,7 @@ impl MossDit {
             let mut x = tokens.unsqueeze(0)?;
             for (i, layer) in self.layers.iter().enumerate() {
                 if let (false, Some(f)) = (skip.contains(&i), &layer.fused) {
-                    x = layer.forward_fused(f, &x, &[(0, s, &tables.cs)], &mods, self.cfg.heads)?;
+                    x = layer.forward_fused(f, &x, &[(0, s, &tables.cs)], &mods, self.cfg.heads, layer_refs(i))?;
                 }
             }
             tokens = x.squeeze(0)?;
@@ -499,7 +758,7 @@ impl MossDit {
         if unfused {
             for (i, layer) in self.layers.iter().enumerate() {
                 if !skip.contains(&i) {
-                    tokens = layer.forward(&tokens, &rope, &m, self.cfg.heads)?;
+                    tokens = layer.forward(&tokens, &rope, &m, self.cfg.heads, layer_refs(i))?;
                 }
             }
         }
@@ -519,6 +778,21 @@ impl MossDit {
     /// sequences share every row-wise pass (norms, the four GEMMs at twice the rows, SiTU, the
     /// residuals), attention stays per sequence; the image tokens' embedding is made once.
     pub fn forward_pair(&self, x: &Tensor, timestep: f32, cond: &Tensor, uncond: &Tensor, uncond_skip: &[usize]) -> Result<(Tensor, Tensor)> {
+        self.forward_pair_refs(x, timestep, cond, uncond, uncond_skip, None)
+    }
+
+    /// [`Self::forward_pair`] attending to MOSS Edit's references too (both prompts see them).
+    pub fn forward_pair_refs(
+        &self,
+        x: &Tensor,
+        timestep: f32,
+        cond: &Tensor,
+        uncond: &Tensor,
+        uncond_skip: &[usize],
+        refs: Option<&RefCache>,
+    ) -> Result<(Tensor, Tensor)> {
+        #[cfg_attr(not(feature = "fusednorm"), allow(unused_variables))]
+        let layer_refs = |i: usize| refs.map(|r| &r.layers[i]);
         #[cfg(feature = "fusednorm")]
         if self.layers.first().is_some_and(|b| b.fused.is_some()) {
             let (_, c, h, w) = x.dims4()?;
@@ -536,10 +810,10 @@ impl MossDit {
             for (i, layer) in self.layers.iter().enumerate() {
                 let Some(f) = &layer.fused else { continue };
                 xs = if uncond_skip.contains(&i) {
-                    let xc = layer.forward_fused(f, &xs.narrow(1, 0, sc)?, &[(0, sc, &tc.cs)], &mods, self.cfg.heads)?;
+                    let xc = layer.forward_fused(f, &xs.narrow(1, 0, sc)?, &[(0, sc, &tc.cs)], &mods, self.cfg.heads, layer_refs(i))?;
                     Tensor::cat(&[&xc, &xs.narrow(1, sc, su)?], 1)?
                 } else {
-                    layer.forward_fused(f, &xs, &[(0, sc, &tc.cs), (sc, su, &tu.cs)], &mods, self.cfg.heads)?
+                    layer.forward_fused(f, &xs, &[(0, sc, &tc.cs), (sc, su, &tu.cs)], &mods, self.cfg.heads, layer_refs(i))?
                 };
             }
             let xs = xs.squeeze(0)?;
@@ -550,7 +824,7 @@ impl MossDit {
             let v = |r0: usize| -> Result<Tensor> { Ok(y.narrow(0, r0, n)?.t()?.contiguous()?.reshape((1, c, h, w))?) };
             return Ok((v(0)?, v(n)?));
         }
-        Ok((self.forward(x, timestep, cond, &[])?, self.forward(x, timestep, uncond, uncond_skip)?))
+        Ok((self.forward_refs(x, timestep, cond, &[], refs)?, self.forward_refs(x, timestep, uncond, uncond_skip, refs)?))
     }
 }
 
