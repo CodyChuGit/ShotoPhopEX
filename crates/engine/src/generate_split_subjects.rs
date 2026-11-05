@@ -407,9 +407,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                         let mut pictures = Pictures::new(finder_ref, filled, area, ctx);
                         let mut own = None;
                         for (term, (cov, b, _)) in &seen {
-                            if let Some(why) =
-                                judge(term, cov, *b, hole_ref, grown_ref, touched, cut, &behind_shapes, already_ref, &looks, &fog, wu, patched)
-                            {
+                            if let Some(why) = judge(term, cov, *b, hole_ref, grown_ref, touched, cut, &behind_shapes, already_ref, &looks, &fog, wu, patched) {
                                 if says_someone_new(&why) && pictures.holds(cov, *b)? {
                                     continue;
                                 }
@@ -421,9 +419,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                         // in the whole frame.
                         let own = match own {
                             Some(why) => Some(why),
-                            None => {
-                                anyone_small(finder_ref, filled, area, touched, &asks, cut, &behind_shapes, already_ref, &fog, &mut pictures, ctx)?
-                            }
+                            None => anyone_small(finder_ref, filled, area, touched, &asks, cut, &behind_shapes, already_ref, &fog, &mut pictures, ctx)?,
                         };
                         Ok((seen, own))
                     };
