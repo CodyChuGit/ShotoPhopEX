@@ -57,6 +57,9 @@ pub(super) struct SubjectsPlan {
     pub keep_tries: bool,
     pub order: Order,
     pub group: Group,
+    /// Diagnostic, simple method only (`firstPassOnly`, off by default): place the first pass's
+    /// subjects under their masks and stop, no removal.
+    pub first_pass_only: bool,
 }
 
 /// Where the subjects' soft edges (hair) come from (`edges`).
@@ -223,7 +226,7 @@ impl Subject {
 }
 
 pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
-    let SubjectsPlan { prompt, subjects, seed, name, edges, complete, sweep, keep_tries, order: ordering, group } = plan;
+    let SubjectsPlan { prompt, subjects, seed, name, edges, complete, sweep, keep_tries, order: ordering, group, .. } = plan;
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };

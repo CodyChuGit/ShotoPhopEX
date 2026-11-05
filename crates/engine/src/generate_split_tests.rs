@@ -1401,6 +1401,28 @@ fn simple_split_keeps_refused_removals_as_hidden_layers_on_request() {
     assert_eq!((r2["refusedLayers"].clone(), r2["count"].clone()), (json!([]), r["count"].clone()), "{r2}");
 }
 #[test]
+fn simple_split_first_pass_only_places_the_masks_and_fills_nothing() {
+    // Diagnostic `firstPassOnly`: the first pass's subjects become layers, nearest on top, over the
+    // picture unchanged; no fill is asked for.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: vec![[0.4, 0.2, 0.6, 0.9], [0.05, 0.1, 0.95, 0.5]],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "firstPassOnly": true})).unwrap();
+    assert_eq!(r["count"], 3, "{r}");
+    assert_eq!((r["fills"].clone(), r["incomplete"].clone()), (json!(0), json!([])), "{r}");
+    let fills = fake.state().runs.iter().filter(|x| x.request["task"] == "fill" || x.request["task"] == "edit").count();
+    assert_eq!(fills, 0);
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(pixel_at(&s, ids[0], 128, 64)[0], pixel_at(&s, ids[0], 5, 185)[0], "the background is the picture unchanged");
+    assert!(alpha_at(&s, ids[2], 128, 160) > 0.5, "the front one on top");
+}
+
+#[test]
 fn simple_split_fails_cleanly_when_no_removal_clears_anyone() {
     // `echo`: every fill hands the picture back, so the detector still finds both people in
     // their holes after every try. Nobody can be cleared: an error naming the tries, and the

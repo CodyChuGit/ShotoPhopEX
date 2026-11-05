@@ -48,7 +48,7 @@ struct Removed {
 }
 
 pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
-    let SubjectsPlan { prompt, subjects, seed, name, edges, group, keep_tries, .. } = plan;
+    let SubjectsPlan { prompt, subjects, seed, name, edges, group, keep_tries, first_pass_only, .. } = plan;
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
@@ -92,6 +92,34 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 .iter()
                 .map(|f| json!({"term": f.term, "bounds": [f.bounds.x0, f.bounds.y0, f.bounds.width(), f.bounds.height()], "pixels": f.pixels}))
                 .collect();
+            // Diagnostic (`firstPassOnly`, off by default): the first pass's subjects as layers of
+            // the picture under their hard masks, nearest on top, over the picture unchanged; no
+            // matting, no removal.
+            if first_pass_only {
+                let order = front_first(&pending, Order::Auto, wu, hu);
+                let mut slots: Vec<Option<Subject>> = pending.into_iter().map(Some).collect();
+                let ordered: Vec<Subject> = order.into_iter().filter_map(|i| slots.get_mut(i).and_then(Option::take)).collect();
+                let cut: Vec<Vec<u8>> = ordered.iter().map(|s| under_alpha(&picture, &s.cov)).collect();
+                let (ids, placed, incomplete, refused_ids) =
+                    place_all(doc, active, area, base.as_deref(), &found_by, &template_id, 0, &ordered, cut, picture, &[], Vec::new())?;
+                let detector = finder.detector_stats();
+                return Ok((
+                    ids,
+                    placed,
+                    incomplete,
+                    Vec::new(),
+                    found_by,
+                    template_id,
+                    0,
+                    (0, 0),
+                    started.elapsed().as_millis() as u64,
+                    (w, h),
+                    "hard",
+                    Vec::new(),
+                    detector,
+                    (0, dropped, Vec::new(), refused_ids),
+                ));
+            }
             // Subjects the detector no longer found before their turn (painted over by a nearer
             // subject's removal): no layer of their own.
             let mut lost: Vec<Value> = Vec::new();
