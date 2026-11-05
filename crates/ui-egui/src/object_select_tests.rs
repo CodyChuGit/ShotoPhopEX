@@ -210,3 +210,28 @@ fn without_a_server_the_tool_is_the_classical_rectangle_and_select_subject_falls
     });
     assert!(!online(&mut a, 3.0), "and a dead one is seen as such at once, not from the cache");
 }
+
+#[test]
+fn each_object_gets_its_own_tint_and_keeps_it() {
+    let mut o = ObjectSelectUi::default();
+    let a = color_for(&mut o, [0, 0, 50, 50]);
+    let b = color_for(&mut o, [60, 0, 30, 30]);
+    let c = color_for(&mut o, [0, 60, 20, 20]);
+    assert!(a != b && b != c && a != c, "different objects, different colours: {a} {b} {c}");
+    // The first object found again (nearly the same box) keeps its colour.
+    assert_eq!(color_for(&mut o, [1, 0, 50, 49]), a);
+    assert!(iou([0, 0, 10, 10], [20, 20, 5, 5]) == 0.0 && iou([0, 0, 10, 10], [0, 0, 10, 10]) == 1.0);
+}
+
+#[test]
+fn parts_asks_the_detector_for_a_part() {
+    let fake = FakeNative::start().unwrap();
+    let mut a = app(&fake.url);
+    a.ui.tool_options.object_parts = true;
+    click(&mut a, 30.0, 20.0, egui::Modifiers::NONE);
+    let (id, p) = last_params(&a);
+    assert_eq!((id.as_str(), p["detail"].as_str()), ("select.byPoint", Some("part")));
+    a.ui.tool_options.object_parts = false;
+    click(&mut a, 30.0, 20.0, egui::Modifiers::NONE);
+    assert!(last_params(&a).1.get("detail").is_none());
+}

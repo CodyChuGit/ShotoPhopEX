@@ -5222,6 +5222,17 @@ pub fn specs() -> Vec<CommandSpec> {
             journal: true,
         },
         CommandSpec {
+            id: CLOWN_PASS,
+            label: "Clown Pass (Generative)",
+            // Placed by the menu catalogue under Edit, with the other generative items.
+            menu: &[],
+            shortcut: None,
+            params: r#"{"prompt":text?,"name":{str?="Clown Pass"}} → {"group","layers":[id],"names":[str],"count","ms"} (SAM 3.1 picks out everything it can name (prompt = the kinds of thing to look for, comma-separated; empty = person, animal, vehicle, plant, furniture, food, bag, bottle, cup, sign, object) and each thing becomes its own layer with the picture's pixels under its hard mask, the rest a Background layer, in a new group above the active layer; nothing is painted: each pixel is on exactly one layer (the smallest thing covering it), so the layers together show the picture unchanged; each layer gets its own label colour; one undo step; a background job; needs the native worker with SAM 3.1)"#,
+            enabled: clown_pass::enabled,
+            run: clown_pass::run,
+            journal: true,
+        },
+        CommandSpec {
             id: INFO,
             label: "Generative Layer Info",
             menu: &[],
@@ -5358,6 +5369,14 @@ mod edit_tests;
 #[cfg(test)]
 #[path = "generate_similar_tests.rs"]
 mod similar_tests;
+
+#[path = "generate_clown_pass.rs"]
+mod clown_pass;
+pub(crate) use clown_pass::CLOWN_PASS;
+
+#[cfg(test)]
+#[path = "generate_clown_pass_tests.rs"]
+mod clown_pass_tests;
 
 #[path = "generate_split_subjects.rs"]
 mod split_subjects;
