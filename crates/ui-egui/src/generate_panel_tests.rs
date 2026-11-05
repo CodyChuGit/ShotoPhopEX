@@ -127,7 +127,11 @@ fn the_button_shows_the_formula_estimate() {
     app.ui.generate.size = "1.5K".into();
     app.ui.generate.count = 2;
     assert_eq!(image_size(&app), (1536, 1024));
-    let want = photocraft_engine::generate_cmds::estimate_seconds("krea2-turbo/image", 1536, 1024, 2, 0).unwrap();
+    // Under Quality best (the default) Krea 2 renders at about 2 MP: the estimate counts that size.
+    let g = photocraft_engine::generate_cmds::quality(&app.session);
+    let (rw, rh) = photocraft_engine::generate_cmds::image_quality_size("krea2-turbo/image", g, 1536, 1024);
+    assert!(u64::from(rw) * u64::from(rh) > 1536 * 1024, "{rw}x{rh}");
+    let want = photocraft_engine::generate_cmds::estimate_seconds("krea2-turbo/image", rw, rh, 2, 0).unwrap();
     assert!((estimate(&app, "image").unwrap() - want).abs() < 1e-3);
     assert_eq!(eta_label(want), format!("~{:.0} s", want));
     assert_eq!(eta_label(150.0), "~3 min");

@@ -398,7 +398,11 @@ pub fn estimate(app: &PhotocraftApp, mode: &str) -> Option<f32> {
     let (w, h) = work_area(app, mode)?;
     let count = if mode == "expand" { 1 } else { u32::from(app.ui.generate.count.max(1)) };
     let refs = if matches!(mode, "image" | "edit" | "fill") { app.ui.generate.references.len() as u32 } else { 0 };
-    photocraft_engine::generate_cmds::estimate_seconds(&effective_template(app, mode), w, h, count, refs)
+    use photocraft_engine::generate_cmds as g;
+    let t = effective_template(app, mode);
+    let q = g::quality(&app.session);
+    let (cost, (w, h)) = if mode == "image" { (g::image_quality_cost(&t, q), g::image_quality_size(&t, q, w, h)) } else { (1.0, (w, h)) };
+    g::estimate_seconds(&t, w, h, count, refs).map(|s| s * cost)
 }
 
 /// "~24 s", "~2 min".
@@ -1192,8 +1196,14 @@ fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, mode: &str, 
                 }
             }
         });
-        // What it will make, on the template's grid.
+        // What it will make, on the template's grid (Quality Best renders Krea 2 at about 2 MP).
         let (w, h) = image_size(app);
+        let (w, h) = photocraft_engine::generate_cmds::image_quality_size(
+            &effective_template(app, "image"),
+            photocraft_engine::generate_cmds::quality(&app.session),
+            w,
+            h,
+        );
         setting_row(ui, "", |ui| {
             ui.label(RichText::new(format!("{w} × {h} px")).small().color(t.text_faint));
         });
