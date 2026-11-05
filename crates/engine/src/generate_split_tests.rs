@@ -1421,7 +1421,8 @@ fn simple_split_cuts_a_part_onto_its_own_layer_with_its_whole_in_one_removal() {
     // person's layer has a gap where the face is.
     let face = [0.45, 0.25, 0.55, 0.4];
     let person = [0.3, 0.2, 0.7, 0.9];
-    let fake = FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![face, person], color: [10, 200, 10, 255], ..Default::default() }).unwrap();
+    let fake =
+        FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![face, person], color: [10, 200, 10, 255], ..Default::default() }).unwrap();
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "edges": "hard"})).unwrap();
