@@ -1,0 +1,67 @@
+{
+  "meta": {
+    "id": "moss-image/turbo",
+    "name": "Generate Image (MOSS Turbo, Kromoss 8-step)",
+    "family": "moss-image",
+    "task": "image",
+    "license": "permissive",
+    "licenseNote": "Kromoss (lodestones, 2026-10) is Apache-2.0, a full fine-tune of MOSS-Image-Base; its 8-step DMD2 LoRA is Apache-2.0; the Qwen3.5-9B text encoder is Apache-2.0. The app ships no weights.",
+    "needsImage": false,
+    "needsMask": false,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "kromoss_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3.5_9b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "flux2-vae_small.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "kromoss-8-steps-dmd2-lora.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native gn-diffusion moss-image/turbo): Kromoss (lodestones/Kromoss, diffusion_models/kromoss_int8_convrot) with its 8-steps-dmd2-lora unmerged at strength 1, 8 Euler steps on MOSS's shift-5 schedule, CFG 1 (no negative pass), the FLUX.2 small decoder. The low-VRAM choice: on cards under 20 GB the text encoder and the DiT take turns on the card (about 10 GB peak). The LoRA may sit up to two folders deep in loras/ (loras/moss-image/).",
+    "creator": "lodestones · OpenMOSS",
+    "description": "Fast, low-VRAM text to image (8 steps, fits 12 GB)",
+    "badges": [
+      "fast",
+      "text"
+    ],
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 2,
+      "perMegapixel": 2
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
+  }
+}
