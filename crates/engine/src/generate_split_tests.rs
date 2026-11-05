@@ -1474,6 +1474,31 @@ fn simple_split_cuts_a_part_onto_its_own_layer_with_its_whole_in_one_removal() {
 }
 
 #[test]
+fn simple_split_fills_see_the_whole_picture() {
+    // A small subject in a corner: the removal is asked over the whole frame, not a crop
+    // around the hole; the result is still laid back over the hole and its band only.
+    // (A frame large enough that the old crop, at least 384 px a side, was a small part of it.)
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![[0.05, 0.05, 0.12, 0.15]], color: [10, 200, 10, 255], ..Default::default() }).unwrap();
+    let mut s = session_of(&fake.url, 1600, 1200);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 4})).unwrap();
+    assert_eq!(r["count"], 2, "{r}");
+    let st = fake.state();
+    let fills: Vec<&photocraft_genai::fake::RecordedRun> = st.runs.iter().filter(|x| x.request["task"] == "fill" || x.request["task"] == "edit").collect();
+    assert_eq!(fills.len(), 1);
+    let img = fills[0].image().unwrap();
+    let (iw, ih) = (img.width, img.height);
+    assert!((f64::from(iw) / f64::from(ih) - 1600.0 / 1200.0).abs() < 0.02, "the whole frame's shape: {iw}×{ih}");
+    let mask = fills[0].mask().unwrap();
+    let on = mask.data.iter().filter(|v| **v >= 128).count() as f64 / mask.data.len() as f64;
+    // The hole (7 % × 10 % of the frame, with its band) is a small share of the whole frame; of
+    // a crop around it, it was most.
+    assert!(on < 0.04, "the hole is a small part of what the fill sees: {on}");
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(pixel_at(&s, ids[0], 1200, 900)[..3], pixel_at(&s, ids[0], 1500, 100)[..3], "outside the hole the picture is untouched");
+}
+
+#[test]
 fn split_method_is_simple_or_classic() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
