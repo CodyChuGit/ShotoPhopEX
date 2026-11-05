@@ -174,14 +174,25 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 let order = front_first(&pending, Order::Auto, wu, hu);
                 let creatures = pending.iter().filter(|f| creature(f.check_term())).count();
                 let people_first = creatures > 0 && budget.saturating_sub(taken.len()) <= creatures;
-                let Some(next) = order.iter().copied().find(|i| !people_first || pending.get(*i).is_some_and(|f| creature(f.check_term()))) else {
+                // A whole whose sticking-out parts have begun to go comes next, before anyone.
+                let started = pending_parts.iter().position(|r| r.started);
+                let Some(next) = started.or_else(|| order.iter().copied().find(|i| !people_first || pending.get(*i).is_some_and(|f| creature(f.check_term())))) else {
                     break;
                 };
                 if next >= pending.len() || next >= pending_parts.len() {
                     break;
                 }
-                let front = pending.remove(next);
-                let mut parts = pending_parts.remove(next);
+                let mut rest = pending_parts.remove(next);
+                // Its sticking-out parts first, each removed on its own (with its own parts); the
+                // whole waits, with the rest, for the pass right after.
+                let (front, mut parts) = if rest.leads.is_empty() {
+                    (pending.remove(next), rest.parts)
+                } else {
+                    let (lead, lead_parts) = rest.leads.remove(0);
+                    rest.started = true;
+                    pending_parts.insert(next, rest);
+                    (lead, lead_parts)
+                };
                 let done = taken.len();
                 let (lo, hi) = (0.1 + 0.85 * done as f32 / budget as f32, 0.1 + 0.85 * (done + 1) as f32 / budget as f32);
                 ctx.progress(lo, &format!("Removing {} ({} of at most {budget})", title_case(&front.term), done + 1));
@@ -261,7 +272,8 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             ctx.progress(0.95, "Placing");
             let detector = finder.detector_stats();
             let parts = json!({
-                "found": part_records,
+                "found": part_records["found"],
+                "stickingOut": part_records["stickingOut"],
                 "layers": part_layers.iter().map(|(q, w)| json!({"part": labels.get(*q), "whole": labels.get(*w)})).collect::<Vec<_>>(),
             });
             let (ids, placed, incomplete, refused_ids) =
@@ -346,7 +358,7 @@ fn refind(
     finder: &SubjectFinder,
     picture: &[u8],
     area: Rect,
-    (pending, parts): (&mut Vec<Subject>, &mut Vec<Vec<Part>>),
+    (pending, parts): (&mut Vec<Subject>, &mut Vec<Rest>),
     lost: &mut Vec<Value>,
     repainted: &[bool],
     swaps: &mut Vec<Value>,
@@ -407,8 +419,8 @@ fn refind(
                 && let (Some(k), Some(s)) = (keep.get_mut(i), pending.get(i))
             {
                 *k = false;
-                let n = parts.get(i).map_or(0, Vec::len);
-                lost.push(json!({"term": s.term, "bounds": [s.bounds.x0, s.bounds.y0, s.bounds.width(), s.bounds.height()], "parts": n}));
+                let (n, l) = parts.get(i).map_or((0, 0), |r| (r.parts.len(), r.leads.len()));
+                lost.push(json!({"term": s.term, "bounds": [s.bounds.x0, s.bounds.y0, s.bounds.width(), s.bounds.height()], "parts": n, "stickingOut": l}));
             }
         }
     }
@@ -425,30 +437,52 @@ fn refind(
     Ok(())
 }
 
+/// What goes with a whole still to come: its parts (cut out of its layer, no fill of their own)
+/// and its sticking-out parts (`leads`, each with its own parts), removed on their own just
+/// before it, the smallest first; `started` once the first lead went (the whole comes next).
+struct Rest {
+    parts: Vec<Part>,
+    leads: Vec<(Subject, Vec<Part>)>,
+    started: bool,
+}
+
+/// A part with less than this share of its mask inside its whole sticks out of it: it is removed
+/// on its own just before the whole, not cut out of it. The cat's ray gun (88 % inside the
+/// astronaut, its barrel outside) cut out as a part was painted back by every fill of the
+/// astronaut's hole (measured in the app 2026-11-05; the owner's call).
+const STICKING_SHARE: f32 = 0.95;
+
 /// The subjects split into wholes and their parts: a subject with at least [`PART_SHARE`] of its
-/// mask inside a larger one's is a part of the smallest such (its direct whole), and goes with
-/// the whole that whole is part of in turn (a face in a helmet in an astronaut goes with the
-/// astronaut). Each whole's parts, largest first (a part's direct whole before it); and a record
-/// of each part and its direct whole.
-fn split_parts(found: Vec<Subject>) -> (Vec<Subject>, Vec<Vec<Part>>, Vec<Value>) {
+/// mask inside a larger one's has the smallest such as its direct whole. With at least
+/// [`STICKING_SHARE`] inside it is a part, and goes with the whole that whole is part of in turn
+/// (a face in a helmet in an astronaut goes with the astronaut; each whole's parts largest first,
+/// a part's direct whole before it). With less it sticks out: a subject of its own (with its own
+/// parts) removed just before the whole it is anchored to. The wholes, what goes with each, and a
+/// record of the parts (`found`) and the sticking-out parts (`stickingOut`).
+fn split_parts(found: Vec<Subject>) -> (Vec<Subject>, Vec<Rest>, Value) {
     let n = found.len();
     let on: Vec<u64> = found.iter().map(|s| s.cov.iter().filter(|v| **v >= 0.5).count() as u64).collect();
-    let whole_of: Vec<Option<usize>> = (0..n)
+    let share = |i: usize, j: usize| -> f32 {
+        match (found.get(i), found.get(j), on.get(i)) {
+            (Some(a), Some(b), Some(&o)) if o > 0 => overlap(&a.cov, &b.cov) as f32 / o as f32,
+            _ => 0.0,
+        }
+    };
+    let direct: Vec<Option<usize>> = (0..n)
         .map(|i| {
             let mine = on.get(i).copied().unwrap_or(0);
             if mine == 0 {
                 return None;
             }
             (0..n)
-                .filter(|&j| j != i && on.get(j).is_some_and(|&o| o > mine))
-                .filter(|&j| match (found.get(i), found.get(j)) {
-                    (Some(a), Some(b)) => overlap(&a.cov, &b.cov) as f32 >= PART_SHARE * mine as f32,
-                    _ => false,
-                })
+                .filter(|&j| j != i && on.get(j).is_some_and(|&o| o > mine) && share(i, j) >= PART_SHARE)
                 .min_by_key(|&j| (on.get(j).copied().unwrap_or(0), j))
         })
         .collect();
-    // Wholes are strictly larger, so the chain ends; bounded all the same.
+    let sticking: Vec<bool> = (0..n).map(|i| direct.get(i).copied().flatten().is_some_and(|j| share(i, j) < STICKING_SHARE)).collect();
+    // A part's whole; none for a whole or a sticking-out part.
+    let whole_of: Vec<Option<usize>> = (0..n).map(|i| direct.get(i).copied().flatten().filter(|_| !sticking.get(i).copied().unwrap_or(false))).collect();
+    // Wholes are strictly larger, so the chains end; bounded all the same.
     let top = |mut i: usize| -> usize {
         for _ in 0..=n {
             match whole_of.get(i).copied().flatten() {
@@ -458,34 +492,60 @@ fn split_parts(found: Vec<Subject>) -> (Vec<Subject>, Vec<Vec<Part>>, Vec<Value>
         }
         i
     };
+    // The whole a subject is removed with or before: up through parts and sticking-out parts.
+    let anchor = |mut i: usize| -> usize {
+        for _ in 0..=n {
+            i = top(i);
+            match direct.get(i).copied().flatten().filter(|_| sticking.get(i).copied().unwrap_or(false)) {
+                Some(j) => i = j,
+                None => break,
+            }
+        }
+        i
+    };
     let b = |r: Rect| json!([r.x0, r.y0, r.width(), r.height()]);
-    let records: Vec<Value> = (0..n)
-        .filter_map(|i| {
-            let (part, whole) = (found.get(i)?, found.get(whole_of.get(i).copied().flatten()?)?);
-            Some(json!({"term": part.term, "bounds": b(part.bounds), "pixels": part.pixels, "whole": {"term": whole.term, "bounds": b(whole.bounds)}}))
-        })
-        .collect();
+    let record = |i: usize, j: usize| -> Option<Value> {
+        let (part, whole) = (found.get(i)?, found.get(j)?);
+        Some(json!({"term": part.term, "bounds": b(part.bounds), "pixels": part.pixels, "inside": (f64::from(share(i, j)) * 1000.0).round() / 1000.0, "whole": {"term": whole.term, "bounds": b(whole.bounds)}}))
+    };
+    let records = json!({
+        "found": (0..n).filter_map(|i| record(i, whole_of.get(i).copied().flatten()?)).collect::<Vec<_>>(),
+        "stickingOut": (0..n).filter(|i| sticking.get(*i).copied().unwrap_or(false)).filter_map(|i| record(i, direct.get(i).copied().flatten()?)).collect::<Vec<_>>(),
+    });
     let mut slots: Vec<Option<Subject>> = found.into_iter().map(Some).collect();
-    let (mut wholes, mut parts) = (Vec::new(), Vec::new());
-    for t in (0..n).filter(|i| whole_of.get(*i).copied().flatten().is_none()) {
+    // The parts of `t`, largest first, each with its direct whole's place in the group.
+    let parts_of = |t: usize, slots: &mut Vec<Option<Subject>>| -> Vec<Part> {
         let mut members: Vec<usize> = (0..n).filter(|&i| i != t && whole_of.get(i).copied().flatten().is_some() && top(i) == t).collect();
         members.sort_by_key(|&i| (std::cmp::Reverse(on.get(i).copied().unwrap_or(0)), i));
         let at = |i: usize| -> usize { members.iter().position(|m| *m == i).map_or(0, |p| p + 1) };
-        let group: Vec<Part> = members
+        members
             .iter()
             .filter_map(|&m| {
                 let parent = whole_of.get(m).copied().flatten().map_or(0, at);
                 slots.get_mut(m).and_then(Option::take).map(|sub| Part { sub, parent })
             })
-            .collect();
+            .collect()
+    };
+    let (mut wholes, mut rests) = (Vec::new(), Vec::new());
+    let roots: Vec<usize> = (0..n).filter(|&i| whole_of.get(i).copied().flatten().is_none() && !sticking.get(i).copied().unwrap_or(false)).collect();
+    for t in roots {
+        let parts = parts_of(t, &mut slots);
+        let mut lead_ix: Vec<usize> = (0..n).filter(|&i| sticking.get(i).copied().unwrap_or(false) && anchor(i) == t).collect();
+        lead_ix.sort_by_key(|&i| (on.get(i).copied().unwrap_or(0), i));
+        let mut leads = Vec::new();
+        for l in lead_ix {
+            let lp = parts_of(l, &mut slots);
+            if let Some(s) = slots.get_mut(l).and_then(Option::take) {
+                leads.push((s, lp));
+            }
+        }
         if let Some(w) = slots.get_mut(t).and_then(Option::take) {
             wholes.push(w);
-            parts.push(group);
+            rests.push(Rest { parts, leads, started: false });
         }
     }
-    (wholes, parts, records)
+    (wholes, rests, records)
 }
-
 /// The hole of a whole and its parts: wherever any of `group` (matted) or the `unmatted` parts
 /// shows.
 fn group_hole(group: &[Subject], unmatted: &[&Subject]) -> Vec<f32> {
@@ -776,18 +836,21 @@ mod tests {
         let face = masked(80, 20, 120, 50);
         let glove = masked(14, 100, 54, 140); // 34 of its 40 columns inside: 85 %
         let rocket = masked(150, 150, 199, 199); // 30 of 49 columns, 40 of 49 rows inside: 50 %
-        let (wholes, parts, records) = split_parts(vec![face, astronaut, rocket, helmet, glove]);
+        let (wholes, rests, records) = split_parts(vec![face, astronaut, rocket, helmet, glove]);
         assert_eq!(wholes.len(), 2, "the astronaut and the rocket");
         assert_eq!((wholes[0].bounds.x0, wholes[1].bounds.x0), (20, 150));
-        let mine: Vec<(i32, usize)> = parts[0].iter().map(|p| (p.sub.bounds.x0, p.parent)).collect();
-        // Largest first: the helmet (whole: the astronaut, 0), the glove (0), the face (whole:
-        // the helmet, the group's 1st part).
-        assert_eq!(mine, vec![(60, 0), (14, 0), (80, 1)]);
-        assert!(parts[1].is_empty());
-        assert_eq!(records.len(), 3, "{records:?}");
-        assert!(records.iter().any(|r| r["bounds"][0] == 80 && r["whole"]["bounds"][0] == 60), "{records:?}");
+        let mine: Vec<(i32, usize)> = rests[0].parts.iter().map(|p| (p.sub.bounds.x0, p.parent)).collect();
+        // Largest first: the helmet (whole: the astronaut, 0), the face (whole: the helmet, the
+        // group's 1st part). The glove sticks out (85 % inside): removed on its own just before
+        // the astronaut, not cut out of him.
+        assert_eq!(mine, vec![(60, 0), (80, 1)]);
+        assert_eq!(rests[0].leads.iter().map(|(s, _)| s.bounds.x0).collect::<Vec<_>>(), vec![14]);
+        assert!(rests[1].parts.is_empty() && rests[1].leads.is_empty());
+        assert_eq!(records["found"].as_array().map(Vec::len), Some(2), "{records}");
+        assert!(records["found"].as_array().unwrap().iter().any(|r| r["bounds"][0] == 80 && r["whole"]["bounds"][0] == 60), "{records}");
+        assert_eq!(records["stickingOut"][0]["bounds"][0], 14, "{records}");
+        assert_eq!(records["stickingOut"][0]["inside"], 0.85, "{records}");
     }
-
     #[test]
     fn a_part_is_cut_out_of_its_whole_and_the_stack_composites_as_the_whole() {
         // A whole with a soft edge band, and a part inside it with a soft edge.
