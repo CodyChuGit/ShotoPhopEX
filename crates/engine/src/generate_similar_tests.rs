@@ -104,6 +104,8 @@ fn generated_images_and_expanded_areas_have_their_own_similar() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.execute("select.deselect", json!({})).unwrap();
+    // Sizes as asked (Quality best and balanced render Krea 2 larger), then back for the expand.
+    s.edit_prefs(|p| p.integrations.quality = "fast".into());
     let r = s.execute(IMAGE, json!({"prompt": "a lighthouse", "seed": 2})).unwrap();
     let id = LayerId(r["layer"].as_u64().unwrap());
     let g = s.execute(INFO, json!({})).unwrap();
@@ -120,6 +122,7 @@ fn generated_images_and_expanded_areas_have_their_own_similar() {
     assert_eq!(st.runs[1].request["prompt"], "a lighthouse");
     assert_eq!(st.runs[1].request["seed"], 3);
     drop(st);
+    s.edit_prefs(|p| p.integrations.quality = "balanced".into());
 
     // An expand: its canvas is already there, so "similar" fills the added area again with the
     // expand's prompt through a fill template (no ImageCrop, a noise mask).

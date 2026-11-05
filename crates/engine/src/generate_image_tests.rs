@@ -23,6 +23,8 @@ fn session(url: &str) -> Session {
         p.integrations.models_path = url.to_string();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
+        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        p.integrations.quality = "fast".into();
     });
     s
 }
@@ -74,6 +76,8 @@ fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
+        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        p.integrations.quality = "fast".into();
     });
     assert!(s.is_enabled(IMAGE), "no document needed");
     let r = s.execute(IMAGE, json!({"prompt": "a poster", "width": 128, "height": 96})).unwrap();
@@ -102,6 +106,8 @@ fn sizes_default_round_and_validate() {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
+        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        p.integrations.quality = "fast".into();
     });
     // 1000×700 rounds down to the 16-pixel grid.
     let r = s.execute(IMAGE, json!({"prompt": "x", "width": 1000, "height": 700})).unwrap();
@@ -127,6 +133,8 @@ fn sizes_default_round_and_validate() {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
+        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        p.integrations.quality = "fast".into();
     });
     let e = empty.execute(IMAGE, json!({"prompt": "x", "target": "layer"})).unwrap_err();
     assert!(e.to_string().contains("open or create a document"), "{e}");
@@ -158,6 +166,8 @@ fn image_runs_as_a_background_job() {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
+        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        p.integrations.quality = "fast".into();
     });
     let id = match empty.start(IMAGE, json!({"prompt": "x", "width": 64, "height": 64})).unwrap() {
         Started::Job(id) => id,
@@ -194,4 +204,55 @@ fn the_generate_model_preference_overrides_the_template() {
     let st = fake.state();
     assert_eq!(st.runs[0].request["params"]["models"]["unet"], "krea2_turbo_bf16.safetensors");
     assert_eq!(st.runs[1].request["params"]["models"]["unet"], "krea2_turbo_nvfp4.safetensors");
+}
+
+/// Quality `best` runs Qwen-Image-2.1's text to image at 40 steps with true CFG 3 and the default
+/// negative, `balanced` CFG 3 at 25 steps, `fast` the template's 25 at CFG 1; a typed negative or
+/// explicit steps win.
+#[test]
+fn best_quality_tunes_qwen21_text_to_image() {
+    assert_eq!(image_quality_tuning("qwen-2.1/image", "best"), Some((40, 3.0)));
+    assert_eq!(image_quality_tuning("qwen-2.1/image", "balanced"), Some((25, 3.0)));
+    assert_eq!(image_quality_tuning("qwen-2.1/image", "fast"), None);
+    assert_eq!(image_quality_tuning("krea2-turbo/image", "best"), None);
+    let cost = image_quality_cost("qwen-2.1/image", "best");
+    assert!((2.5..3.0).contains(&cost), "{cost}");
+    assert_eq!(image_quality_cost("krea2-turbo/image", "best"), 1.0);
+}
+
+#[test]
+fn best_quality_sends_qwen21_steps_guidance_and_negative() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "layer"})).unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!((req["steps"].as_u64(), req["guidance"].as_f64()), (Some(40), Some(3.0)), "{req}");
+    assert_eq!(req["negative"], BEST_IMAGE_NEGATIVE);
+    // A typed negative is kept; explicit steps leave the template alone.
+    s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "layer", "negative": "fog"})).unwrap();
+    assert_eq!(fake.state().runs.last().unwrap().request["negative"], "fog");
+    s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "layer", "steps": 25})).unwrap();
+    assert_eq!(fake.state().runs.last().unwrap().request["guidance"].as_f64(), Some(1.0));
+    s.edit_prefs(|p| p.integrations.quality = "fast".into());
+    s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "layer"})).unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!((req["steps"].as_u64(), req["guidance"].as_f64()), (Some(25), Some(1.0)), "{req}");
+}
+
+#[test]
+fn best_quality_renders_krea2_at_about_two_megapixels() {
+    assert_eq!(image_quality_size("krea2-turbo/image", "best", 1024, 1024), (1440, 1440));
+    assert_eq!(image_quality_size("krea2-turbo/image", "balanced", 1024, 1024), (1248, 1248));
+    assert_eq!(image_quality_size("krea2-turbo/image", "fast", 1024, 1024), (1024, 1024));
+    assert_eq!(image_quality_size("krea2-turbo/image", "best", 2048, 2048), (2048, 2048), "already larger: as asked");
+    assert_eq!(image_quality_size("qwen-2.1/image", "best", 1024, 1024), (1024, 1024));
+    let (w, h) = image_quality_size("krea2-turbo/image", "best", 1024, 576);
+    assert!(w % 16 == 0 && h % 16 == 0 && w <= 2048 && (u64::from(w) * u64::from(h)).abs_diff(BEST_KREA_PIXELS) < 120_000, "{w}x{h}");
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    s.execute(IMAGE, json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024})).unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!((req["width"].as_u64(), req["height"].as_u64()), (Some(1440), Some(1440)), "{req}");
 }
