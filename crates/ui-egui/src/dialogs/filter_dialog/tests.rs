@@ -1694,14 +1694,16 @@ fn a_generative_dialog_never_turns_an_optional_range_into_its_minimum() {
             assert!(!segment.trim_end().ends_with('?') || segment.contains('='), "{command}.{}: an optional range with no default ({segment})", p.key);
         }
     }
-    // Split into Layers (SAM 3.1 + Fill since 2026-11-02; peeled nearest first since
-    // 2026-11-03): Layers is a slider from the background and one subject up to twenty layers
-    // (a café table of seven people with its cups, cards and table is twelve subjects,
-    // 2026-11-04), `complete` is a switch on by default, `sweep` (found again after each
-    // removal) one off by default, and nothing of the layered model is left in the dialog.
+    // Split into Layers (SAM 3.1 + Fill since 2026-11-02; the simple method since 2026-11-05):
+    // the dialog asks how finely to split (`detail`: rough, medium, fine), not a layer count
+    // (the owner: the count "doesn't work"); `layers` stays for scripts, every subject by
+    // default; `complete` and `sweep` (the classic method's) stay in the spec for scripts, and
+    // nothing of the layered model is left in it.
     let split = parse_spec(photocraft_engine::commands::find("generate.splitLayers").map(|c| c.params).unwrap_or_default());
     let layers = split.iter().find(|p| p.key == "layers").map(|p| p.kind.clone());
-    assert!(matches!(layers, Some(Kind::Range { min, max, default }) if min == 2.0 && max == 20.0 && default == 3.0), "{layers:?}");
+    assert!(matches!(layers, Some(Kind::Range { min, max, default }) if min == 2.0 && max == 20.0 && default == 20.0), "{layers:?}");
+    let detail = split.iter().find(|p| p.key == "detail").map(|p| p.kind.clone());
+    assert!(matches!(&detail, Some(Kind::Choice { options, .. }) if options == &["medium", "rough", "fine"]), "{detail:?}");
     assert!(matches!(split.iter().find(|p| p.key == "complete").map(|p| p.kind.clone()), Some(Kind::Bool(true))));
     assert!(matches!(split.iter().find(|p| p.key == "sweep").map(|p| p.kind.clone()), Some(Kind::Bool(false))));
     assert!(split.iter().all(|p| !["tries", "maxPixels", "steps", "guidance", "template", "model"].contains(&p.key.as_str())));

@@ -60,6 +60,9 @@ pub(super) struct SubjectsPlan {
     /// Diagnostic, simple method only (`firstPassOnly`, off by default): place the first pass's
     /// subjects under their masks and stop, no removal.
     pub first_pass_only: bool,
+    /// How finely the simple method splits (`detail`): which subjects are big enough for a layer
+    /// of their own, and whether a subject inside another gets one.
+    pub detail: Detail,
 }
 
 /// Where the subjects' soft edges (hair) come from (`edges`).
@@ -127,6 +130,54 @@ impl Order {
             Order::Auto => "auto",
             Order::Size => "size",
             Order::Found => "found",
+        }
+    }
+}
+
+/// How finely Split into Layers (simple method) splits a picture (`detail`), the dialog's scale
+/// from rough to fine, in place of a layer count (the owner, 2026-11-05: the count "doesn't
+/// work"; the default of 3 cut two subjects and left the rest in the background).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Detail {
+    /// `rough`: the big subjects only (1 % of the frame or more); what lies inside one (a face,
+    /// a glove) stays in its layer.
+    Rough,
+    /// `medium` (the default): subjects of 0.1 % of the frame or more, each part of one on its
+    /// own layer above it.
+    Medium,
+    /// `fine`: everything the detector finds, parts included.
+    Fine,
+}
+
+impl Detail {
+    pub(super) fn parse(v: Option<&str>) -> std::result::Result<Detail, String> {
+        Ok(match v.map(str::trim).unwrap_or("medium") {
+            "" | "medium" => Detail::Medium,
+            "rough" => Detail::Rough,
+            "fine" => Detail::Fine,
+            other => return Err(format!("`detail` must be rough, medium or fine (got `{other}`)")),
+        })
+    }
+
+    /// The smallest subject given a layer, as a share of the frame's pixels.
+    pub(super) fn min_share(self) -> f64 {
+        match self {
+            Detail::Rough => 0.01,
+            Detail::Medium => 0.001,
+            Detail::Fine => 0.0,
+        }
+    }
+
+    /// Whether a subject inside another (a part) gets its own layer.
+    pub(super) fn part_layers(self) -> bool {
+        self != Detail::Rough
+    }
+
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Detail::Rough => "rough",
+            Detail::Medium => "medium",
+            Detail::Fine => "fine",
         }
     }
 }
