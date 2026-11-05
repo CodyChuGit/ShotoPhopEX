@@ -199,6 +199,9 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 // The layers: the picture now (every nearer subject gone) under each one's alpha,
                 // less what its parts above it show; the parts on top, the smallest highest.
                 let mut cuts = cut_group(&p, &group, &parents);
+                // What the removal is checked for besides the whole: each part's kind and hole.
+                let part_checks: Vec<(String, Vec<f32>)> =
+                    group.iter().skip(1).chain(over_budget.iter().map(|q| &q.sub)).map(|g| (g.check_term().to_string(), hole_of(g))).collect();
                 let whole_at = done + group.len() - 1;
                 for k in (1..group.len()).rev() {
                     part_layers.push((done + group.len() - 1 - k, done + group.len() - 1 - parents.get(k).copied().unwrap_or(0)));
@@ -210,7 +213,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 }
                 cut.push(cuts.pop().unwrap_or_default());
                 // (`passes - 1`: the n-th removal's seeds, as before parts had layers.)
-                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, keep_tries, passes - 1, (lo, hi))?;
+                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, (&front, &part_checks), &finder, &job, keep_tries, passes - 1, (lo, hi))?;
                 refused.extend(removed.refused.into_iter().map(|(why, px)| (whole_at, why, px)));
                 fill_ms += removed.ms;
                 generations += removed.generations;
@@ -567,7 +570,10 @@ const REFIND_SPARE: usize = 3;
 
 /// Take `sub` (its `hole`) out of `picture` with the named removal, the result laid back over the
 /// hole widened by the removal's grow and feathered; tried again with the next seed while the
-/// detector still finds a `sub`'s kind mostly in the hole.
+/// detector still finds `sub`'s kind mostly in the hole, or any of its `parts` (kind, own hole)
+/// mostly in the widened hole and over half of that part's own hole: the cat's ray gun, a part
+/// of the astronaut, was painted back by his removal and the check, asking for "person" only,
+/// let it through (measured in the app 2026-11-05). One detector call per distinct kind.
 #[allow(clippy::too_many_arguments)]
 fn remove_one(
     doc: &mut Document,
@@ -577,7 +583,7 @@ fn remove_one(
     area: Rect,
     picture: &[u8],
     hole: &[f32],
-    sub: &Subject,
+    (sub, parts): (&Subject, &[(String, Vec<f32>)]),
     finder: &SubjectFinder,
     job: &FillJob,
     keep: bool,
@@ -601,6 +607,13 @@ fn remove_one(
     let over = box_blur(&box_blur(&dilate(hole, wu, hu, (grow as usize).max(1)), wu, hu, feather, true), wu, hu, feather, false);
     let name = sub.removal_name();
     let term = sub.check_term().to_string();
+    // The kinds the check asks for: the subject's own, then each part's (once each).
+    let mut kinds: Vec<String> = vec![term.clone()];
+    for (k, _) in parts {
+        if !kinds.contains(k) {
+            kinds.push(k.clone());
+        }
+    }
     let mut removal = job.clone();
     removal.rewritten = Some(removal_prompt(&name));
     removal.object = Some(name);
@@ -646,7 +659,19 @@ fn remove_one(
                 ctx.check()?;
                 continue;
             }
-            let still = finder.find_in(&laid, area, &term, NEW_AT_MOST, ctx)?.into_iter().find(|(cov, ..)| still_there(cov, hole, &grown));
+            let mut still: Option<(String, Rect)> = None;
+            for kind in &kinds {
+                let finds = finder.find_in(&laid, area, kind, NEW_AT_MOST, ctx)?;
+                let whole = (kind == &term).then_some(hole).into_iter();
+                let own = parts.iter().filter(|(k, _)| k == kind).map(|(_, h)| h.as_slice());
+                still = whole
+                    .chain(own)
+                    .find_map(|h| finds.iter().find(|(cov, ..)| still_there(cov, h, &grown)))
+                    .map(|(_, b, _)| (kind.clone(), *b));
+                if still.is_some() {
+                    break;
+                }
+            }
             match still {
                 None => {
                     out.tries.push(json!({"fill": kind, "generations": made, "verdict": "accepted"}));
@@ -655,8 +680,8 @@ fn remove_one(
                     out.seed = seed;
                     return Ok(());
                 }
-                Some((_, b, _)) => {
-                    let why = format!("the {} still there", bare(&term));
+                Some((found, b)) => {
+                    let why = format!("the {} still there", bare(&found));
                     out.tries.push(json!({"fill": kind, "generations": made, "verdict": why, "at": [b.x0, b.y0, b.width(), b.height()]}));
                     if keep {
                         out.refused.push((format!("{kind} refused ({why})"), laid));
