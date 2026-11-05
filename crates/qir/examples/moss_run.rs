@@ -59,8 +59,14 @@ fn main() -> Result<()> {
     let files = find_files(&a.root, variant).context("MOSS files not found under the root")?;
     println!("files: {files:?}");
     let t0 = Instant::now();
+    let peak = |dev: &candle_core::Device, what: &str| {
+        if let Some((used, reserved)) = qwen_image_rs::device::pool_peak(dev) {
+            println!("{what}: pool peak used {} MiB, reserved {} MiB", used >> 20, reserved >> 20);
+        }
+    };
     let p = MossPipeline::load(&files, &mut |_, _| {})?;
-    println!("load {:.2} s, can_edit {}", t0.elapsed().as_secs_f64(), p.can_edit());
+    println!("load {:.2} s, can_edit {}, low_vram {}", t0.elapsed().as_secs_f64(), p.can_edit(), p.low_vram());
+    peak(p.device(), "load");
     let mut stack = LoraStack::default();
     for l in &a.lora {
         let (path, strength) = match l.rsplit_once(':').filter(|(_, s)| s.parse::<f32>().is_ok()) {
@@ -89,6 +95,7 @@ fn main() -> Result<()> {
     };
     let req = if req.references.is_empty() && req.width == 0 { Request { width: 1024, height: 1024, ..req } } else { req };
     for run in 0..a.runs {
+        qwen_image_rs::device::reset_pool_peak(p.device());
         let t = Instant::now();
         let pic = p.generate(&req, &mut |_, _| {}, &|| false)?;
         let tm = &pic.timings;
@@ -102,6 +109,7 @@ fn main() -> Result<()> {
             pic.height,
             qwen_image_rs::device::free_vram(p.device()).map(|(f, t)| (f >> 20, t >> 20))
         );
+        peak(p.device(), &format!("run {run}"));
         if run + 1 == a.runs {
             image::RgbaImage::from_raw(pic.width, pic.height, pic.rgba).context("picture")?.save(&a.out)?;
         }
