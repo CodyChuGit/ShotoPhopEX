@@ -4,6 +4,41 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-05: Split is a simple sweep of removals, front to back; the round-11 kept rule is withdrawn
+
+After eleven checker rounds plateaued, Split became progressive subject removal (the owner's
+framing), built and judged one change at a time on three plain photos (a woman at a truck door,
+an illustrated cat astronaut, kids on a street) in the app on the owner's RTX 5090.
+`method: "simple"` (generate_split_simple.rs) is the default; the checked pipeline stays as
+`method: "classic"`.
+
+- SAM's first pass on the original photo is the subject list (it is deterministic: four runs per
+  photo, one in a fresh instance, gave identical masks). A mask spanning 98 % of the frame both
+  ways is the background (`droppedAsBackground`).
+- Nearest first: each subject is cut to its layer, one plain removal takes it out (3 seeds), and
+  the picture is merged before the next. A try is refused only for a blank fill or when SAM still
+  finds the subject in its hole. No grey box, no strips, no dark-shape check (it refused a removal
+  that continued a tree trunk).
+- After each removal the subjects still to come are found again; a new mask replaces theirs only
+  if it covers 80 % of it and grows only into areas already repainted (the cat's face had taken
+  the whole astronaut's mask, and the astronaut his legs alone). Otherwise they keep their mask;
+  one no longer found is `lost`.
+- A subject 80 % inside another is a part: it gets its own layer above its whole, cut from the
+  same picture, the whole's layer gets the matching gap, and the whole's removal takes both.
+  Stacked, the layers match the original.
+- `keepTries` keeps refused fills; `firstPassOnly` (diagnostic, off) stops after the first pass.
+- Tried and withdrawn: a thin repainted band (subjects stayed in), full-frame fills (twice as
+  slow, softer, invented cars), checking every part's kind after a removal (the fill kept painting
+  the ray gun back, so the astronaut stayed), removing a part that sticks out on its own first.
+- Times: woman 46 s, cat 21 s, kids 58 s at 20 layers.
+
+Round 11's kept rule (`left_as_was`, KEPT_REAL, `detector.kept`) is removed from the classic
+method: on portrait seed 2 it let a repainted person through.
+Open: lost subjects (a handbag only partly inside the woman, a child painted over by a neighbour's
+removal), the child in pink never found, a ray gun the fill paints back, an antenna curve, the
+whole's layer with its parts cut out reads as gaps and strands, the café photo, and the first
+pass's cleanup whose inside-a-larger-one check is inverted (it only drops near-duplicates).
+
 ## 2026-11-05: upstream PhotoCraft v0.20.2 merged
 
 v0.20.2 is five release commits on v0.20.1 that carry about 460 files of upstream work (Batch
