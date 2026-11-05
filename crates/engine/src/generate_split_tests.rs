@@ -1474,6 +1474,35 @@ fn simple_split_cuts_a_part_onto_its_own_layer_with_its_whole_in_one_removal() {
 }
 
 #[test]
+fn simple_split_refuses_a_removal_that_paints_a_part_back() {
+    // A person with a helmet inside (a part), and a second person beside. Once any fill has run,
+    // the detector finds a helmet in the first one's spot again (`appears_for`): the person is
+    // gone but the fill painted the helmet back. Every try of that removal is refused as "the
+    // helmet still there"; the person and helmet stay in. The other person, without parts, is
+    // checked for "person" only and cleared.
+    let person = [0.1, 0.2, 0.45, 0.95];
+    let helmet = [0.2, 0.22, 0.35, 0.4];
+    let other = [0.6, 0.2, 0.9, 0.9];
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments_for: vec![("person".to_string(), vec![person, other]), ("helmet".to_string(), vec![helmet])],
+        appears_for: vec![("helmet".to_string(), vec![[0.21, 0.22, 0.35, 0.41]])],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session_of(&fake.url, 256, 192);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "prompt": "person, helmet"})).unwrap();
+    assert_eq!(r["parts"]["layers"].as_array().map(Vec::len), Some(1), "the helmet is a part: {r}");
+    let tries = r["tries"].as_array().unwrap();
+    let helmet_refusals = tries.iter().filter(|t| t["verdict"] == "the helmet still there").count();
+    assert_eq!(helmet_refusals, 3, "every try of the person with the helmet: {tries:?}");
+    assert_eq!(r["incomplete"].as_array().map(Vec::len), Some(2), "the person and the helmet stay in: {r}");
+    assert!(tries.iter().any(|t| t["verdict"] == "accepted"), "the other person is cleared: {tries:?}");
+}
+
+#[test]
 fn split_method_is_simple_or_classic() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
