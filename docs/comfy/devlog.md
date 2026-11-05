@@ -4,6 +4,18 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-05: Split into Layers asks Rough, Medium or Fine instead of a layer count
+
+The owner: the dialog's layer count "doesn't work" (its default of 3 cut two subjects and left the
+rest in the background); make it a scale from fine to rough. The dialog now has a Detail row
+(Rough, Medium, Fine) and no Layers row, and hides the classic method's switches (Complete hidden
+parts, Look again after each removal), which the default simple method ignores. In the simple
+method `detail` decides: rough = only subjects of 1 % of the frame or more, a part (a face, a
+glove) staying in its whole's layer; medium (the default) = 0.1 % or more, each part on its own
+layer; fine = everything found. Smaller subjects stay in the background and are listed in
+`tooSmall`. With no `layers` the simple method takes every subject (up to 19); scripts can still
+pass `layers`, and the classic method still defaults to 3.
+
 ## 2026-11-05: Split is a simple sweep of removals, front to back; the round-11 kept rule is withdrawn
 
 After eleven checker rounds plateaued, Split became progressive subject removal (the owner's
