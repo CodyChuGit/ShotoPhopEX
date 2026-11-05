@@ -381,9 +381,8 @@ fn remove_one(
                 })
                 .collect();
             ctx.progress(span.1, "Checking the removal");
-            // A fill that left the hole blank (the grey box handed back) or a smear where the
-            // subject stood is no removal, whoever the detector finds in it.
-            if let Some(why) = blank_or_ghost(picture, &laid, hole, &ring, wu, hu) {
+            // A fill that left the hole blank is no removal, whoever the detector finds in it.
+            if let Some(why) = blank_refusal(picture, &laid, hole, &ring, wu, hu) {
                 out.tries.push(json!({"fill": kind, "generations": made, "verdict": why}));
                 if keep {
                     out.refused.push((format!("{kind} refused ({why})"), laid));
@@ -417,9 +416,42 @@ fn remove_one(
     Ok(out)
 }
 
+/// Why a removal's result is refused by its pixels: only when it left the hole blank
+/// ([`blank_or_ghost`]'s "left … blank" verdicts). A dark or light shape over the hole is not
+/// refused here: the tree trunk a removal continued through the yellow boy's hole on the kids
+/// photo was refused three times as a dark shape and he stayed in the background (the owner's
+/// call, 2026-11-05). The classic method still refuses both.
+fn blank_refusal(before: &[u8], after: &[u8], hole: &[f32], ring: &[f32], w: usize, h: usize) -> Option<String> {
+    blank_or_ghost(before, after, hole, ring, w, h).filter(|why| why.starts_with("left ") && why.contains("blank"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dark_shape_in_the_hole_is_accepted_and_a_blank_fill_refused() {
+        // A 64×64 picture of 4-px stripes; the hole is the middle 24×24, the ring the 12 px
+        // around it (the scene of `a_blank_fill_and_a_smear_are_no_fill`).
+        let (w, h) = (64usize, 64usize);
+        let stripes = |k: usize| -> [u8; 4] { if (k / w / 4).is_multiple_of(2) { [60u8, 60, 60, 255] } else { [180, 180, 180, 255] } };
+        let before: Vec<u8> = (0..w * h).flat_map(stripes).collect();
+        let in_hole = |k: usize| (20..44).contains(&(k % w)) && (20..44).contains(&(k / w));
+        let in_ring = |k: usize| !in_hole(k) && (8..56).contains(&(k % w)) && (8..56).contains(&(k / w));
+        let hole: Vec<f32> = (0..w * h).map(|k| if in_hole(k) { 1.0 } else { 0.0 }).collect();
+        let ring: Vec<f32> = (0..w * h).map(|k| if in_ring(k) { 1.0 } else { 0.0 }).collect();
+        let with = |paint: &dyn Fn(usize) -> [u8; 4]| -> Vec<u8> { (0..w * h).flat_map(|k| if in_hole(k) { paint(k) } else { stripes(k) }).collect() };
+        // A dark textured shape through the hole (like the continued trunk): the classic check
+        // refuses it, the simple method accepts it.
+        let dark = with(&|k| if (k / w).is_multiple_of(2) { [10u8, 10, 10, 255] } else { [40, 40, 40, 255] });
+        assert!(blank_or_ghost(&before, &dark, &hole, &ring, w, h).is_some_and(|v| v.starts_with("painted a dark shape")));
+        assert_eq!(blank_refusal(&before, &dark, &hole, &ring, w, h), None, "a dark shape is not refused");
+        // A flat grey where the picture has stripes is still refused.
+        let blank = with(&|_| [128u8, 128, 128, 255]);
+        assert!(blank_refusal(&before, &blank, &hole, &ring, w, h).is_some_and(|v| v.starts_with("left the hole blank")));
+        // A fill that continues the stripes passes both.
+        assert_eq!(blank_refusal(&before, &with(&stripes), &hole, &ring, w, h), None);
+    }
 
     fn subject(x: i32, y: i32, w: i32, h: i32) -> Subject {
         Subject {
