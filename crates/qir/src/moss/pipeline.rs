@@ -4,7 +4,7 @@
 //! negative branch is the empty prompt with block 22 skipped).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Context;
@@ -28,6 +28,9 @@ pub const UNCOND_SKIP: usize = 22;
 /// MOSS Edit's references: their long edge at most this (the official `infer.py`'s
 /// `max_edge`), sides rounded to 16, never enlarged.
 pub const REFERENCE_EDGE: usize = 1024;
+pub const LOW_VRAM_REFERENCE_EDGE: usize = 512;
+/// Cards with less memory than this run in 12 GB mode ([`low_vram_mode`]).
+pub const LOW_VRAM_BELOW: usize = 20 << 30;
 /// An edit's output when the request names no size: the picture's aspect at about this many
 /// pixels (1 MP, the edit workflow's), sides multiples of 16.
 pub const EDIT_PIXELS: usize = 1024 * 1024;
@@ -97,8 +100,12 @@ pub struct MossPipeline {
     dev: Device,
     dtype: DType,
     tok: Tokenizer,
-    te: Qwen35Text,
-    dit: MossDit,
+    files: MossFiles,
+    /// 12 GB mode: the encoder and the DiT never on the card together (the encoder loads,
+    /// encodes and goes before the DiT comes back). Off on cards with room for both.
+    low_vram: bool,
+    te: Mutex<Option<Arc<Qwen35Text>>>,
+    dit: Mutex<Option<Arc<MossDit>>>,
     vae: Flux2Decoder,
     /// MOSS Edit's reference encoder (the small VAE file holds it), when the file has one.
     encoder: Option<Flux2Encoder>,
@@ -112,16 +119,16 @@ impl MossPipeline {
         let dtype = if dev.is_cuda() { DType::BF16 } else { DType::F32 };
         let tok = Tokenizer::from_file(&files.tokenizer).map_err(|e| anyhow::anyhow!("load {}: {e}", files.tokenizer.display()))?;
 
-        progress(0.0, "Loading the text encoder");
-        let t0 = Instant::now();
-        let te = Qwen35Text::load(&TextConfig::qwen35_9b(), &Weights::open(&files.text, &dev, dtype, true)?).context("the Qwen3.5-9B encoder")?;
-        tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS text encoder loaded");
-
+        let low_vram = low_vram_mode(&dev);
+        tracing::info!(low_vram, "MOSS memory mode");
+        let this_te = Mutex::new(None);
+        let this_dit = Mutex::new(None);
+        if !low_vram {
+            progress(0.0, "Loading the text encoder");
+            *this_te.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(load_text(files, &dev, dtype)?));
+        }
         progress(0.5, "Loading the transformer");
-        let t0 = Instant::now();
-        let dit = MossDit::load(&MossConfig::default(), &Weights::open(&files.dit, &dev, dtype, true)?).context("the MOSS-Image DiT")?;
-        tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS DiT loaded");
-
+        *this_dit.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(load_dit(files, &dev, dtype)?));
         progress(0.9, "Loading the VAE");
         // bf16 on CUDA: 60.0 dB against ComfyUI's f32 decode (f32 60.7), faster and half the memory.
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&files.vae], dtype, &dev)? };
@@ -134,7 +141,19 @@ impl MossPipeline {
             }
         };
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, te, dit, vae, encoder, positive: Mutex::new(None), negative: Mutex::new(None) })
+        Ok(Self {
+            dev,
+            dtype,
+            tok,
+            files: files.clone(),
+            low_vram,
+            te: this_te,
+            dit: this_dit,
+            vae,
+            encoder,
+            positive: Mutex::new(None),
+            negative: Mutex::new(None),
+        })
     }
 
     pub fn is_cuda(&self) -> bool {
@@ -154,9 +173,45 @@ impl MossPipeline {
         Ok(self.tok.encode(text::template(prompt), false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec())
     }
 
+    /// Whether the pipeline runs in 12 GB mode.
+    pub fn low_vram(&self) -> bool {
+        self.low_vram
+    }
+
+    /// The text encoder, loaded when it is not on the card (in 12 GB mode the DiT goes first).
+    fn text_encoder(&self) -> Result<Arc<Qwen35Text>> {
+        // Locked in one order (encoder, then DiT) everywhere.
+        let mut te = self.te.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = te.as_ref() {
+            return Ok(Arc::clone(t));
+        }
+        let mut dit = self.dit.lock().unwrap_or_else(|e| e.into_inner());
+        if self.low_vram && dit.take().is_some() {
+            crate::device::trim_pool(&self.dev);
+        }
+        let t = Arc::new(load_text(&self.files, &self.dev, self.dtype)?);
+        *te = Some(Arc::clone(&t));
+        Ok(t)
+    }
+
+    /// The DiT, loaded when it is not on the card (in 12 GB mode the encoder goes first).
+    fn transformer(&self) -> Result<Arc<MossDit>> {
+        let mut te = self.te.lock().unwrap_or_else(|e| e.into_inner());
+        let mut dit = self.dit.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(d) = dit.as_ref() {
+            return Ok(Arc::clone(d));
+        }
+        if self.low_vram && te.take().is_some() {
+            crate::device::trim_pool(&self.dev);
+        }
+        let d = Arc::new(load_dit(&self.files, &self.dev, self.dtype)?);
+        *dit = Some(Arc::clone(&d));
+        Ok(d)
+    }
+
     /// The encoder's last hidden state `(tokens, 4096)` for `prompt`.
     pub fn encode(&self, prompt: &str) -> Result<Tensor> {
-        self.te.forward(&self.tokens(prompt)?)
+        self.text_encoder()?.forward(&self.tokens(prompt)?)
     }
 
     fn cached(&self, slot: &Mutex<Option<Cached>>, prompt: &str) -> Result<Tensor> {
@@ -169,8 +224,8 @@ impl MossPipeline {
         Ok(hidden)
     }
 
-    pub fn dit(&self) -> &MossDit {
-        &self.dit
+    pub fn dit(&self) -> Result<Arc<MossDit>> {
+        self.transformer()
     }
 
     pub fn vae(&self) -> &Flux2Decoder {
@@ -215,10 +270,7 @@ impl MossPipeline {
         };
         anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16), "the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
         anyhow::ensure!(req.references.len() <= 4, "MOSS Edit takes at most 4 pictures ({} given)", req.references.len());
-        let unmatched = self.dit.set_loras(&req.loras)?;
-        if !unmatched.is_empty() {
-            tracing::warn!(modules = unmatched.len(), first = %unmatched[0], "LoRA modules MOSS-Image does not have (a file for another model?)");
-        }
+
         let check = || -> Result<()> {
             if cancel() {
                 Err(Cancelled.into())
@@ -234,14 +286,22 @@ impl MossPipeline {
         let cond = self.cached(&self.positive, &req.prompt)?;
         let cfg = req.guidance != 1.0;
         let uncond = if cfg { Some(self.cached(&self.negative, &req.negative)?) } else { None };
+        // The prompts are in hand: the DiT (back on the card in 12 GB mode) and its adapters.
+        let dit = self.transformer()?;
+        let unmatched = dit.set_loras(&req.loras)?;
+        if !unmatched.is_empty() {
+            tracing::warn!(modules = unmatched.len(), first = %unmatched[0], "LoRA modules MOSS-Image does not have (a file for another model?)");
+        }
         // MOSS Edit: the pictures encoded and run through the blocks once.
         let refs = if req.references.is_empty() {
             None
         } else {
             progress(0.04, "Reading the picture");
-            let edge = std::env::var("QIR_MOSS_REF_EDGE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(REFERENCE_EDGE);
+            // 12 GB mode: references at 512 (the edit workflow's), their cache a quarter the size.
+            let default_edge = if self.low_vram { LOW_VRAM_REFERENCE_EDGE } else { REFERENCE_EDGE };
+            let edge = std::env::var("QIR_MOSS_REF_EDGE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default_edge);
             let latents = req.references.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
-            Some(self.dit.prepare_references(&latents)?)
+            Some(dit.prepare_references(&latents)?)
         };
         // The edit's negative branch skips no block (the official edit sampler), unless
         // `QIR_MOSS_EDIT_SKIP` names one (the author's ComfyUI workflow skips 22).
@@ -254,7 +314,7 @@ impl MossPipeline {
         timings.encode_s = t0.elapsed().as_secs_f32();
 
         let (lh, lw) = (h / vae::SCALE, w / vae::SCALE);
-        let channels = self.dit.config().channels;
+        let channels = dit.config().channels;
         let noise = crate::comfy::torch_randn(req.seed, channels * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, channels, lh, lw), &self.dev)?;
         let sig = dit::sigmas(req.steps, SHIFT);
@@ -265,10 +325,10 @@ impl MossPipeline {
             let t = sig[i] * 1000.0;
             let v = match &uncond {
                 Some(u) => {
-                    let (pos, neg) = self.dit.forward_pair_refs(&x, t, &cond, u, &skip, refs.as_ref())?;
+                    let (pos, neg) = dit.forward_pair_refs(&x, t, &cond, u, &skip, refs.as_ref())?;
                     (&neg + ((pos - &neg)? * f64::from(req.guidance))?)?
                 }
-                None => self.dit.forward_refs(&x, t, &cond, &[], refs.as_ref())?,
+                None => dit.forward_refs(&x, t, &cond, &[], refs.as_ref())?,
             };
             if i == 0 {
                 if let Ok(path) = std::env::var("QIR_MOSS_DUMP") {
@@ -310,6 +370,29 @@ impl MossPipeline {
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
+}
+
+/// 12 GB mode on a card under [`LOW_VRAM_BELOW`], or as `QIR_MOSS_LOW_VRAM=1` / `0` says.
+fn low_vram_mode(dev: &Device) -> bool {
+    match std::env::var("QIR_MOSS_LOW_VRAM").ok().as_deref().map(str::trim) {
+        Some("1") => true,
+        Some("0") => false,
+        _ => crate::device::free_vram(dev).is_some_and(|(_, total)| total < LOW_VRAM_BELOW),
+    }
+}
+
+fn load_text(files: &MossFiles, dev: &Device, dtype: DType) -> Result<Qwen35Text> {
+    let t0 = Instant::now();
+    let te = Qwen35Text::load(&TextConfig::qwen35_9b(), &Weights::open(&files.text, dev, dtype, true)?).context("the Qwen3.5-9B encoder")?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS text encoder loaded");
+    Ok(te)
+}
+
+fn load_dit(files: &MossFiles, dev: &Device, dtype: DType) -> Result<MossDit> {
+    let t0 = Instant::now();
+    let dit = MossDit::load(&MossConfig::default(), &Weights::open(&files.dit, dev, dtype, true)?).context("the MOSS-Image DiT")?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS DiT loaded");
+    Ok(dit)
 }
 
 /// A reference's size for MOSS Edit: the long edge at most `edge` (rounded down to 16), each
