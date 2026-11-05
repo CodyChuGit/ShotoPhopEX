@@ -521,12 +521,8 @@ fn cut_group(picture: &[u8], group: &[Subject], parents: &[usize]) -> Vec<Vec<u8
                     }
                 }
             }
-            let alpha: Vec<f32> = s
-                .alpha
-                .iter()
-                .zip(&through)
-                .map(|(a, q)| if *q <= 1e-4 { 0.0 } else { ((a.clamp(0.0, 1.0) - (1.0 - q)) / q).clamp(0.0, 1.0) })
-                .collect();
+            let alpha: Vec<f32> =
+                s.alpha.iter().zip(&through).map(|(a, q)| if *q <= 1e-4 { 0.0 } else { ((a.clamp(0.0, 1.0) - (1.0 - q)) / q).clamp(0.0, 1.0) }).collect();
             under_alpha(picture, &alpha)
         })
         .collect()

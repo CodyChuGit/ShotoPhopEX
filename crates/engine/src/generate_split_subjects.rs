@@ -400,8 +400,6 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                         }
                         // How much of a detection's part of the hole still shows what was cut.
                         let looks = |cov: &[f32]| kept_share(before, filled, &both(cov, hole_ref), wu, hu);
-                        // Whether the fill left a detection as it was where it was laid in.
-                        let as_was = |cov: &[f32]| left_as_was(finder_ref, before, filled, cov, touched, wu, hu);
                         // Whether a detection has no more detail than fog (then it is no figure).
                         let fog = |cov: &[f32]| fog_counted(finder_ref, filled, cov, wu, hu, picture_tex);
                         // The pictures in the result, looked for once someone new is about to
@@ -410,7 +408,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                         let mut own = None;
                         for (term, (cov, b, _)) in &seen {
                             if let Some(why) =
-                                judge(term, cov, *b, hole_ref, grown_ref, touched, cut, &behind_shapes, already_ref, &looks, &as_was, &fog, wu, patched)
+                                judge(term, cov, *b, hole_ref, grown_ref, touched, cut, &behind_shapes, already_ref, &looks, &fog, wu, patched)
                             {
                                 if says_someone_new(&why) && pictures.holds(cov, *b)? {
                                     continue;
@@ -424,7 +422,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                         let own = match own {
                             Some(why) => Some(why),
                             None => {
-                                anyone_small(finder_ref, filled, area, touched, &asks, cut, &behind_shapes, already_ref, &fog, &as_was, &mut pictures, ctx)?
+                                anyone_small(finder_ref, filled, area, touched, &asks, cut, &behind_shapes, already_ref, &fog, &mut pictures, ctx)?
                             }
                         };
                         Ok((seen, own))
@@ -522,10 +520,8 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                 let finder_ref = &finder;
                 let (hole_rect, holed) = crate::select_ml_cmds::coverage_bounds(&hole, area);
                 let grown_hole = dilate(&hole, wu, hu, remove_grow(hole_rect).min(MAX_GROW) as usize);
-                let before = &picture;
                 let mut check = |filled: &[u8], touched: &[f32], _: bool| -> Result<Verdict<()>> {
                     let fog = |cov: &[f32]| fog_counted(finder_ref, filled, cov, wu, hu, picture_tex);
-                    let as_was = |cov: &[f32]| left_as_was(finder_ref, before, filled, cov, touched, wu, hu);
                     let mut pictures = Pictures::new(finder_ref, filled, area, ctx);
                     for (term, at_most) in &asks {
                         for (cov, b, _) in seen_of(finder_ref, filled, area, term, *at_most, ctx)? {
@@ -533,7 +529,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                                 return Ok(((), Some((format!("the {term} still in the hole"), b))));
                             }
                             if creature(term)
-                                && let Some(why) = someone_new(term, &cov, b, touched, (term, &hole, holed), &[], &already, &as_was, wu)
+                                && let Some(why) = someone_new(term, &cov, b, touched, (term, &hole, holed), &[], &already, wu)
                                 && !fog(&cov)
                                 && !(says_someone_new(&why) && pictures.holds(&cov, b)?)
                             {
@@ -541,7 +537,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                             }
                         }
                     }
-                    Ok(((), anyone_small(finder_ref, filled, area, touched, &asks, (PERSON, &hole, holed), &[], &already, &fog, &as_was, &mut pictures, ctx)?))
+                    Ok(((), anyone_small(finder_ref, filled, area, touched, &asks, (PERSON, &hole, holed), &[], &already, &fog, &mut pictures, ctx)?))
                 };
                 let HoleFill { outcome, tries: hole_tries, ms, generations: made, refused: hole_refused } = fill_hole(
                     doc,
@@ -845,12 +841,11 @@ fn sweep_subjects(
                 }
             }
             let looks = |cov: &[f32]| kept_share(before, filled, &both(cov, &hole), wu, hu);
-            let as_was = |cov: &[f32]| left_as_was(finder, before, filled, cov, touched, wu, hu);
             let fog = |cov: &[f32]| fog_counted(finder, filled, cov, wu, hu, picture_tex);
             let mut pictures = Pictures::new(finder, filled, area, ctx);
             let mut own = None;
             for (term, (cov, b, _)) in &seen {
-                if let Some(why) = judge(term, cov, *b, &hole, &grown_hole, touched, cut_shape, &behind_shapes, &already, &looks, &as_was, &fog, wu, patched) {
+                if let Some(why) = judge(term, cov, *b, &hole, &grown_hole, touched, cut_shape, &behind_shapes, &already, &looks, &fog, wu, patched) {
                     if says_someone_new(&why) && pictures.holds(cov, *b)? {
                         continue;
                     }
@@ -860,7 +855,7 @@ fn sweep_subjects(
             }
             let own = match own {
                 Some(why) => Some(why),
-                None => anyone_small(finder, filled, area, touched, &asks, cut_shape, &behind_shapes, &already, &fog, &as_was, &mut pictures, ctx)?,
+                None => anyone_small(finder, filled, area, touched, &asks, cut_shape, &behind_shapes, &already, &fog, &mut pictures, ctx)?,
             };
             Ok((seen, own))
         };
@@ -1238,12 +1233,8 @@ fn borrowed(behind: &[(String, Vec<f32>, u64)]) -> impl Iterator<Item = (&str, &
 /// subject painted back over whoever stands behind: the front-left man of the café photo came
 /// back almost pixel for pixel and passed (measured in the app 2026-11-04). A person's or an
 /// animal's completed part seen on its own, joined to a subject behind of its kind
-/// ([`fragment_of`]), is that subject's too, under the same look. What the fill left `as_was`
-/// where it was laid in ([`KEPT_REAL`] of its blocks), apart from the cut subject, was there
-/// before: the woman in blue's lower blouse, below the table edge and apart from her mask, which
-/// the fill behind the front-left man kept, was refused as a person painted in (sweep seed 1 of
-/// round 10; measured in the app 2026-11-04). `cut` is the subject whose hole this is (its kind,
-/// mask and pixels).
+/// ([`fragment_of`]), is that subject's too, under the same look. `cut` is the subject whose hole
+/// this is (its kind, mask and pixels).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn fills_own_work(
     term: &str,
@@ -1253,7 +1244,6 @@ pub(super) fn fills_own_work(
     cut: (&str, &[f32], u64),
     behind: &[(String, Vec<f32>, u64)],
     looks: &dyn Fn(&[f32]) -> f32,
-    as_was: &dyn Fn(&[f32]) -> bool,
     w: usize,
     fog: &dyn Fn(&[f32]) -> bool,
 ) -> Option<String> {
@@ -1295,10 +1285,6 @@ pub(super) fn fills_own_work(
             let kept = looks(cov);
             return (kept >= KEPT_LOOKS).then(|| painted_over(kept));
         }
-        // What the fill left as it was, apart from the cut subject, was there before.
-        if overlap(cov, cut_cov) * 2 < on && as_was(cov) {
-            return None;
-        }
     }
     // A thing seen apart from the one behind it that it joins (the table's stretch across the
     // hole, found as a table of its own) is that thing's completion, not a new one: "a table in
@@ -1325,10 +1311,12 @@ pub(super) fn fills_own_work(
 /// its share of the hole): six invented diners and office people on the café backgrounds, and
 /// one on the portrait's (measured in the app 2026-11-04). Whoever was in the picture before any
 /// fill (`already`, the people apart from the subjects: a man in a framed photograph beside the
-/// hole refused the waiter's removal four times, round 7) is nobody's work ([`was_there`]), and
-/// so is what the fill left `as_was` where it was laid in, apart from the cut subject
-/// ([`KEPT_REAL`]: a white shard on the near table refused three fills behind the striped man,
-/// peel seed 2 of round 10; measured in the app 2026-11-04).
+/// hole refused the waiter's removal four times, round 7) is nobody's work ([`was_there`]). A
+/// rule that also excused what the fill left as it was by its pixels (half of the detection's
+/// 8-px blocks where the fill was laid in keeping their colour) was withdrawn after round 11: the
+/// cut subject painted back in part keeps its pixels there too, and a repainted person passed on
+/// the portrait (measured in the app 2026-11-04); a white shard on the near table the detector
+/// calls a person costs its fills instead (peel seed 2 of round 10).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn someone_new(
     term: &str,
@@ -1338,7 +1326,6 @@ pub(super) fn someone_new(
     cut: (&str, &[f32], u64),
     behind: &[(String, Vec<f32>, u64)],
     already: &[Figure],
-    as_was: &dyn Fn(&[f32]) -> bool,
     w: usize,
 ) -> Option<String> {
     let on = cov.iter().filter(|c| **c >= 0.5).count() as u64;
@@ -1362,9 +1349,6 @@ pub(super) fn someone_new(
     if fragment_of(term, cov, touched, borrowed(behind), w) {
         return None;
     }
-    if overlap(cov, cut_cov) * 2 < on && as_was(cov) {
-        return None;
-    }
     Some(format!("a {term} painted into the hole ({}×{} px)", bounds.width(), bounds.height()))
 }
 
@@ -1386,7 +1370,6 @@ fn judge(
     behind: &[(String, Vec<f32>, u64)],
     already: &[Figure],
     looks: &dyn Fn(&[f32]) -> f32,
-    as_was: &dyn Fn(&[f32]) -> bool,
     fog: &dyn Fn(&[f32]) -> bool,
     w: usize,
     patched: bool,
@@ -1401,13 +1384,13 @@ fn judge(
         }
     }
     if (creature(term) || !patched)
-        && let Some(why) = fills_own_work(term, cov, hole, grown, cut, behind, looks, as_was, w, fog)
+        && let Some(why) = fills_own_work(term, cov, hole, grown, cut, behind, looks, w, fog)
     {
         return Some(why);
     }
     if creature(term) {
         // A figure with no more detail than the fog around it is no figure.
-        let new = someone_new(term, cov, bounds, touched, cut, behind, already, as_was, w);
+        let new = someone_new(term, cov, bounds, touched, cut, behind, already, w);
         return if new.is_some() && fog(cov) { None } else { new };
     }
     None
@@ -1735,14 +1718,13 @@ fn anyone_small(
     behind: &[(String, Vec<f32>, u64)],
     already: &[Figure],
     fog: &dyn Fn(&[f32]) -> bool,
-    as_was: &dyn Fn(&[f32]) -> bool,
     pictures: &mut Pictures<'_>,
     ctx: &JobCtx,
 ) -> Result<Option<(String, Rect)>> {
     let (bounds, _) = crate::select_ml_cmds::coverage_bounds(touched, area);
     for (term, _) in asks.iter().filter(|(t, _)| creature(t)) {
         for (cov, b, _) in found_by_tiles(finder, filled, area, bounds, term, ctx)? {
-            if let Some(why) = someone_new(term, &cov, b, touched, cut, behind, already, as_was, area.width() as usize)
+            if let Some(why) = someone_new(term, &cov, b, touched, cut, behind, already, area.width() as usize)
                 && !fog(&cov)
                 && !(says_someone_new(&why) && pictures.holds(&cov, b)?)
             {
@@ -1766,16 +1748,6 @@ pub(super) fn says_someone_new(why: &str) -> bool {
     why.strip_prefix("a ")
         .and_then(|r| r.split_once(" painted into the hole (").or_else(|| r.split_once(" in the hole that was not there")).map(|(t, _)| t))
         .is_some_and(creature)
-}
-
-/// Whether a fill left a detection as it was where it was laid in (`touched`): [`KEPT_REAL`] of
-/// its blocks there kept their colour ([`kept_share`]). Counted on the finder's record.
-fn left_as_was(finder: &SubjectFinder, before: &[u8], after: &[u8], cov: &[f32], touched: &[f32], w: usize, h: usize) -> bool {
-    let as_was = kept_share(before, after, &both(cov, touched), w, h) >= KEPT_REAL;
-    if as_was {
-        finder.note_kept();
-    }
-    as_was
 }
 
 /// The framed pictures in one result, looked for once, when a person or an animal is about to be
@@ -3023,12 +2995,6 @@ const TIGHT_BAND: usize = 2;
 const PROTECT_GROW: usize = 2;
 /// How close to a subject's mask a detection's pixel must be to join it.
 const JOIN_REACH: i64 = 2;
-/// A detection of a person or an animal, apart from the cut subject, whose blocks where the
-/// fill was laid in kept their colour by this share ([`kept_share`]) is what the fill left as it
-/// was: there before, nobody's work. The woman in blue's lower blouse, apart from her mask, and a
-/// white shard on the near table were refused as people painted in (round 10; measured in the
-/// app 2026-11-04).
-const KEPT_REAL: f32 = 0.5;
 /// What the detector is asked for when a person or an animal is about to be refused as someone
 /// the fill painted: the framed pictures in the result ([`Pictures`])...
 const PICTURE_TERMS: [&str; 2] = ["framed picture", "picture frame"];
