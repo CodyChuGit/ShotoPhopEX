@@ -66,8 +66,8 @@ pub use text_field::{
     text_field_with_trailing,
 };
 pub use units::{
-    FieldUnits, fmt_num, fmt_num_prec, fmt_num2, parse_num, set_field_resolution, unit_decimals, unit_of_key, value_field_extent, value_field_prec,
-    value_field_units,
+    FieldUnits, fmt_num, fmt_num_prec, fmt_num2, parse_num, set_field_resolution, unit_decimals, unit_of_key, value_field_extent, value_field_len,
+    value_field_prec, value_field_units,
 };
 
 #[cfg(test)]
