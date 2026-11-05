@@ -2253,6 +2253,64 @@ struct ImagePlan {
     loras: Vec<(String, f32)>,
 }
 
+/// The negative prompt Quality `best` gives Qwen-Image-2.1's text to image when none is typed:
+/// what its CFG pushes away from (the community realism recipes' list, trimmed).
+pub const BEST_IMAGE_NEGATIVE: &str = "blurry, low detail, deformed, oversaturated, plastic skin, watermark, text artifacts";
+
+/// Steps and guidance a text-to-image run of `template` takes under Preferences › Quality when
+/// the request leaves both at 0, or `None` for the template's own defaults. Only Qwen-Image-2.1
+/// changes: under `best` 40 steps (Qwen's own recommendation) and true CFG 3 with
+/// [`BEST_IMAGE_NEGATIVE`]. Measured in the app 2026-11-05 (seed 1234, four prompts, 1024²):
+/// natural tones instead of the HDR look, a legible shop sign, 12.8 s against 4.7 s. More steps
+/// alone (40 at CFG 1, Krea 2 at 12) looked the same as the defaults; `balanced` keeps the
+/// guidance at 25 steps (to be confirmed in the app), `fast` the template's defaults; Krea 2 Turbo ignores guidance and MOSS already runs its full setting.
+pub fn image_quality_tuning(template: &str, quality: &str) -> Option<(u32, f32)> {
+    match (template, quality) {
+        ("qwen-2.1/image", "best") => Some((40, 3.0)),
+        // The middle ground: the guidance (what made the difference) at the template's 25 steps.
+        ("qwen-2.1/image", "balanced") => Some((25, 3.0)),
+        _ => None,
+    }
+}
+
+/// Pixels Krea 2 Turbo renders at under Quality `best` (1440², about 2 MP: the model is made for
+/// 1-2 MP). Measured in the app 2026-11-05: visibly finer skin and texture at 100 % than 1024²,
+/// about 10 s warm against 3 s.
+pub const BEST_KREA_PIXELS: u64 = 1440 * 1440;
+/// The same under Quality `balanced`: 1248², about 1.5 MP (to be confirmed in the app).
+pub const BALANCED_KREA_PIXELS: u64 = 1248 * 1248;
+
+/// The size a text-to-image run of `template` renders at under `quality` for an asked
+/// `width × height`: Krea 2 Turbo under `best` (`balanced`) scales a smaller request up to
+/// [`BEST_KREA_PIXELS`] ([`BALANCED_KREA_PIXELS`]) (same aspect, on the 16-px grid, at most 2048 a side); else the asked size.
+pub fn image_quality_size(template: &str, quality: &str, width: u32, height: u32) -> (u32, u32) {
+    let target = match (template, quality) {
+        ("krea2-turbo/image", "best") => BEST_KREA_PIXELS,
+        ("krea2-turbo/image", "balanced") => BALANCED_KREA_PIXELS,
+        _ => return (width, height),
+    };
+    let area = u64::from(width) * u64::from(height);
+    if area == 0 || area >= target {
+        return (width, height);
+    }
+    let k = (target as f64 / area as f64).sqrt();
+    let fit = |v: u32| (((f64::from(v) * k) as u32) / SIZE_STEP * SIZE_STEP).clamp(MIN_SIDE, 2048);
+    (fit(width), fit(height))
+}
+
+/// How much longer a text-to-image run takes under [`image_quality_tuning`] than at the
+/// template's defaults (true CFG runs the model twice a step), for the time estimate.
+pub fn image_quality_cost(template: &str, quality: &str) -> f32 {
+    match image_quality_tuning(template, quality) {
+        Some((steps, guidance)) => {
+            let base = template::find(template).map_or(25, |t| t.meta.defaults.steps.max(1));
+            // 1.7, not 2: the fixed per-run costs (text encoder, decode) do not double; best measured 2.71x.
+            steps as f32 / base as f32 * if guidance > 1.0 { 1.7 } else { 1.0 }
+        }
+        None => 1.0,
+    }
+}
+
 /// The template `generate.image` switches to when references come with the default template,
 /// which takes none: permissive and runs on the edit model the fill already uses.
 pub const DEFAULT_IMAGE_REF_TEMPLATE: &str = "qwen-edit-2511/image-ref";
@@ -2351,7 +2409,18 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         Ok(t) if !named && !ref_specs.is_empty() && t.meta.references.max == 0 => (image_ref_template(s).to_string(), String::new()),
         _ => (default_template, default_model),
     };
-    let Common { template, prompt, negative, seed, steps, guidance, models, name } = plan_common(s, IMAGE, p, &default_template, Task::Image, &default_model)?;
+    let Common { template, prompt, mut negative, seed, mut steps, mut guidance, models, name } =
+        plan_common(s, IMAGE, p, &default_template, Task::Image, &default_model)?;
+    // Preferences › Quality, when the request leaves the steps and guidance to the template.
+    if steps == 0
+        && guidance == 0.0
+        && let Some((st, g)) = image_quality_tuning(&template.meta.id, quality(s))
+    {
+        (steps, guidance) = (st, g);
+        if g > 1.0 && negative.trim().is_empty() {
+            negative = BEST_IMAGE_NEGATIVE.to_string();
+        }
+    }
     crate::generate_refs::check_count(IMAGE, &template, ref_specs.len())?;
     let variations = parse_variations(IMAGE, p)?;
     let doc_size = s.active().map(|d| (d.doc.bounds().width(), d.doc.bounds().height()));
@@ -2367,8 +2436,9 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         Some(other) => return Err(bad(IMAGE, format!("`target` must be \"auto\", \"layer\" or \"document\" (got `{other}`)"))),
     };
     let (dw, dh) = if to_document { (1024, 1024) } else { doc_size.unwrap_or((1024, 1024)) };
-    let width = side(IMAGE, p, "width", dw)?;
-    let height = side(IMAGE, p, "height", dh)?;
+    // Quality `best` (`balanced`) renders Krea 2 at about 2 (1.5) MP: a new document keeps that size, a layer is
+    // scaled to the canvas as any result of another size is.
+    let (width, height) = image_quality_size(&template.meta.id, quality(s), side(IMAGE, p, "width", dw)?, side(IMAGE, p, "height", dh)?);
     let name = name.unwrap_or_else(|| format!("Generated: {}", short(&prompt)));
     // A transparent result: the template says how its model is asked for one (Qwen-Image-2.1
     // decodes RGBA); the layer keeps the alpha the PNG comes back with.
