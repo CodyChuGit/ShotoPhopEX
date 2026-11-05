@@ -4,6 +4,28 @@ Newest entry first. Terse: what landed, numbers, what is still open. Upstream ke
 the gitignored `log/devlog.md`; this one is tracked so the next session (any machine, any agent)
 can pick up.
 
+## 2026-11-05: upstream PhotoCraft v0.20.2 merged
+
+v0.20.2 is five release commits on v0.20.1 that carry about 460 files of upstream work (Batch
+naming, error log and Esc handshake, action recording's `Before`, CMYK fixes). 11 conflicts:
+
+- `jobs.rs`: the Generations library and live-preview fields sit beside upstream's Batch
+  interrupt fields; a job keeps both `nested` (Upscale's Image Size steps) and upstream's
+  `before`; `after_command` takes `before`; the preview clear and `generation_job_ended` moved
+  into upstream's `end_job_with_error`, so every terminal path runs them.
+- `batch.rs` (CLI): upstream's naming/validation flow, with the Generations folder set per file
+  and `open_with_approval`.
+- `jobs_ui.rs`: Batch jobs skip the progress dialog, as do the generative surfaces.
+- CMYK compositor: the fork's Fill fix (a63ce9d6a) is kept over upstream's: upstream's version
+  failed the fork's saved proptest case (a clipped adjustment, where RGB mixes Fill as coverage).
+  Upstream's new test `adjustment_layers_keep_the_special_fill_rule` is added and passes.
+- `ctrl_alt_wheel_zooms_the_canvas_like_alt_wheel` (new upstream test) turns off the fork's
+  wheel = zoom default, as the other ⌥ + wheel tests do.
+- `release.yml`: keeps the genai-native key; upstream's new `LINUX_SIGNING_KEY` is not passed,
+  since the local `release-shared.yml` copy does not declare it (add both when a release is cut).
+- `Cargo.lock` regenerated, scorecard regenerated; `docs/parity-checklist.md` is upstream's
+  (the parity example does not finish headless in the cloud).
+
 ## 2026-11-04: Split round 10: the completed-part and already-there rules did not take again (the blouse apart from her mask, the photograph man found only after the waiter), two false alarms cost the striped man; what the fill left as it was is nobody's work, whoever is in a framed picture is a picture, the sweep takes a subject's uncovered part for theirs
 
 Round 10 of the café photo in the app (f5cfa55f2, 18 runs, round 9's protocol, Cody's RTX
