@@ -88,6 +88,44 @@ fn pool_usage(
     ))
 }
 
+/// The default pool's high-water marks since the last [`reset_pool_peak`]: `(used, reserved)`
+/// bytes (`CU_MEMPOOL_ATTR_USED_MEM_HIGH`, `RESERVED_MEM_HIGH`): the most the run's own tensors
+/// held at once, what a smaller card must fit (plus the context and cuBLAS' workspace), which
+/// nvidia-smi on a WDDM card cannot show once the driver starts paging.
+pub fn pool_peak(device: &Device) -> Option<(u64, u64)> {
+    #[cfg(feature = "cuda")]
+    if let Device::Cuda(d) = device {
+        use candle_core::cuda_backend::cudarc::driver::sys;
+        use sys::CUmemPool_attribute as A;
+        let _ = device.synchronize();
+        let pool = default_pool(d)?;
+        let get = |attr| -> Option<u64> {
+            let mut v: sys::cuuint64_t = 0;
+            unsafe { sys::cuMemPoolGetAttribute(pool, attr, (&mut v as *mut u64).cast()) }.result().ok()?;
+            Some(v)
+        };
+        return Some((get(A::CU_MEMPOOL_ATTR_USED_MEM_HIGH)?, get(A::CU_MEMPOOL_ATTR_RESERVED_MEM_HIGH)?));
+    }
+    let _ = device;
+    None
+}
+
+/// Start [`pool_peak`]'s marks again from what is held now.
+pub fn reset_pool_peak(device: &Device) {
+    #[cfg(feature = "cuda")]
+    if let Device::Cuda(d) = device {
+        use candle_core::cuda_backend::cudarc::driver::sys;
+        use sys::CUmemPool_attribute as A;
+        let _ = device.synchronize();
+        let Some(pool) = default_pool(d) else { return };
+        for attr in [A::CU_MEMPOOL_ATTR_USED_MEM_HIGH, A::CU_MEMPOOL_ATTR_RESERVED_MEM_HIGH] {
+            let mut zero: sys::cuuint64_t = 0;
+            let _ = unsafe { sys::cuMemPoolSetAttribute(pool, attr, (&mut zero as *mut u64).cast()) };
+        }
+    }
+    let _ = device;
+}
+
 /// Let the default CUDA memory pool keep up to `extra` bytes of freed memory
 /// on top of what is allocated right now, across stream synchronizations
 /// (`CU_MEMPOOL_ATTR_RELEASE_THRESHOLD`, default 0; the threshold counts ALL
