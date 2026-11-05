@@ -119,6 +119,20 @@ pub const TEMPLATE_MOSS_BASE: &str = "moss-image/image-base";
 /// The official pipeline's defaults: 50 steps at CFG 3.
 pub const MOSS_STEPS: u32 = 50;
 pub const MOSS_GUIDANCE: f32 = 3.0;
+/// The low-VRAM turbo: lodestones' Kromoss (Apache-2.0, a full fine-tune of MOSS-Image-Base)
+/// with its 8-step DMD2 LoRA, at the card's 8 steps and CFG 1 (no negative pass).
+pub const TEMPLATE_MOSS_TURBO: &str = "moss-image/turbo";
+pub const MOSS_TURBO_LORA: &str = "kromoss-8-steps-dmd2-lora.safetensors";
+pub const MOSS_TURBO_STEPS: u32 = 8;
+/// MOSS Edit (chinoll/Moss-Image-Edit, a rank-64 LoRA on MOSS-Image-SFT; its code GPLv3, the
+/// weights unlicensed): the picture as reference tokens at t = 0. 30 steps at CFG 4 (its
+/// workflow's), and a turbo with Kromoss' 8-step LoRA stacked on it at CFG 1.
+pub const TEMPLATE_MOSS_EDIT: &str = "moss-image/edit";
+pub const TEMPLATE_MOSS_EDIT_TURBO: &str = "moss-image/edit-turbo";
+/// The adapter as its repo names it, in its own folder; or renamed to a file of its own.
+pub const MOSS_EDIT_LORAS: [&str; 2] = ["moss-image-edit/adapter_model.safetensors", "moss_image_edit_lora.safetensors"];
+pub const MOSS_EDIT_STEPS: u32 = 30;
+pub const MOSS_EDIT_GUIDANCE: f32 = 4.0;
 
 /// The model families served, one resident at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,7 +145,10 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 30] = [
+pub const TEMPLATES: [(&str, &str, Family); 33] = [
+    (TEMPLATE_MOSS_EDIT, "edit", Family::Moss(MossVariant::Sft)),
+    (TEMPLATE_MOSS_EDIT_TURBO, "edit", Family::Moss(MossVariant::Sft)),
+    (TEMPLATE_MOSS_TURBO, "image", Family::Moss(MossVariant::Kromoss)),
     (TEMPLATE_OUTPAINT_TURBO, "expand", Family::QwenImage21),
     (TEMPLATE_OUTPAINT, "expand", Family::QwenImage21),
     (TEMPLATE_KREA2_FILL, "fill", Family::Krea2),
@@ -387,6 +404,28 @@ impl DiffusionEngine {
     /// Where a LoRA named by a request lives: an absolute path as given, a name under the model
     /// root's `loras/`. A name must stay a plain file name (no folders) so a request cannot read
     /// outside the root.
+    /// A template's own LoRA `name` under the root's `loras/`, or up to two subfolders below it
+    /// (`loras/moss-image/…`, as a junctioned model folder puts it), first found in sorted order.
+    fn template_lora(&self, name: &str) -> Option<PathBuf> {
+        fn walk(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+            let here = dir.join(name);
+            if here.is_file() {
+                return Some(here);
+            }
+            if depth == 0 {
+                return None;
+            }
+            let mut subs: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
+            subs.sort();
+            subs.iter().find_map(|d| walk(d, name, depth - 1))
+        }
+        walk(&self.models_root.join(LORA_DIR), name, 2)
+    }
+
+    fn moss_edit_lora(&self) -> Option<PathBuf> {
+        MOSS_EDIT_LORAS.iter().find_map(|n| self.template_lora(n))
+    }
+
     fn lora_path(&self, file: &str) -> Result<PathBuf, EngineError> {
         let p = Path::new(file);
         if p.is_absolute() {
@@ -474,7 +513,7 @@ impl DiffusionEngine {
             Resident::Qwen(p) => (p.device().clone(), p.dtype()),
             Resident::Krea2(p) => (p.device().clone(), p.dtype()),
             Resident::Edit2511(_) => (qwen_image_rs::edit2511_pipeline::cpu_device(), qwen_image_rs::edit2511_pipeline::adapter_dtype()),
-            Resident::Moss(..) => return Err(EngineError::new(ErrorKind::Unsupported, "MOSS-Image runs without LoRAs for now")),
+            Resident::Moss(p, _) => (p.device().clone(), p.dtype()),
             Resident::Layered(_) | Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
         };
         let mut layers = Vec::with_capacity(asks.len());
@@ -569,6 +608,9 @@ impl DiffusionEngine {
                     && (*t != TEMPLATE_OUTPAINT_TURBO
                         || [QWEN21_OUTPAINT_LORA, QWEN21_TURBO_LORA].iter().all(|n| self.lora_path(n).is_ok_and(|p| p.is_file())))
                     && (*t != TEMPLATE_KREA2_FILL || self.lora_path(KREA2_ANYPAINT_LORA).is_ok_and(|p| p.is_file()))
+                    && (*t != TEMPLATE_MOSS_TURBO || self.template_lora(MOSS_TURBO_LORA).is_some())
+                    && (*t != TEMPLATE_MOSS_EDIT || self.moss_edit_lora().is_some())
+                    && (*t != TEMPLATE_MOSS_EDIT_TURBO || (self.moss_edit_lora().is_some() && self.template_lora(MOSS_TURBO_LORA).is_some()))
                     && (*t != TEMPLATE_KREA2_STYLE
                         || (self.lora_path(KREA2_STYLE_LORA).is_ok_and(|p| p.is_file())
                             && self.krea2_source().is_some_and(|p| krea2_pipeline::is_snapshot(&p) || p.join("vae/qwen_image_vae.safetensors").is_file())))
@@ -664,11 +706,15 @@ impl DiffusionEngine {
                     return Err(EngineError::new(
                         ErrorKind::ModelMissing,
                         format!(
-                            "no MOSS-Image in {}: Comfy-Org's diffusion_models/moss_image_{}_int8_convrot (or _bf16), \
+                            "no MOSS-Image in {}: diffusion_models/{}_int8_convrot (or _bf16), \
                              text_encoders/qwen3.5_9b_int8_convrot (or _bf16), vae/flux2-vae_small (or flux2-vae) and Qwen3.5's \
                              tokenizer.json in text_encoders/qwen35_tokenizer/",
                             self.models_root.display(),
-                            if v == MossVariant::Base { "base" } else { "sft" }
+                            match v {
+                                MossVariant::Base => "moss_image_base",
+                                MossVariant::Sft => "moss_image_sft",
+                                MossVariant::Kromoss => "kromoss",
+                            }
                         ),
                     ));
                 };
@@ -1215,9 +1261,16 @@ impl Engine for DiffusionEngine {
             Family::Krea2 => KREA2_STEPS,
             Family::Layered => LAYERS_STEPS,
             Family::Edit2511 => 40,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => MOSS_TURBO_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
             Family::Moss(_) => MOSS_STEPS,
         };
-        let default_guidance = if matches!(family, Family::Moss(_)) { MOSS_GUIDANCE } else { 1.0 };
+        let default_guidance = match family {
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => 1.0,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_GUIDANCE,
+            Family::Moss(_) => MOSS_GUIDANCE,
+            _ => 1.0,
+        };
         let result: Result<Vec<Picture>, EngineError> = (|| {
             self.ensure_loaded(family, progress)?;
             if cancel.load(Ordering::SeqCst) {
@@ -1242,6 +1295,18 @@ impl Engine for DiffusionEngine {
                 with_lora_first(&req.params, KREA2_ANYPAINT_LORA)
             } else if req.model == TEMPLATE_KREA2_STYLE {
                 with_style_lora(&req.params)?
+            } else if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT, TEMPLATE_MOSS_EDIT_TURBO].contains(&req.model.as_str()) {
+                let missing = |what: &str| EngineError::new(ErrorKind::ModelMissing, format!("{what} is not in {}", self.models_root.join(LORA_DIR).display()));
+                let mut params = req.params.clone();
+                if req.model != TEMPLATE_MOSS_EDIT {
+                    let turbo = self.template_lora(MOSS_TURBO_LORA).ok_or_else(|| missing(&format!("the MOSS turbo LoRA {MOSS_TURBO_LORA}")))?;
+                    params = with_lora_first(&params, &turbo.to_string_lossy());
+                }
+                if req.model != TEMPLATE_MOSS_TURBO {
+                    let edit = self.moss_edit_lora().ok_or_else(|| missing("the MOSS Edit LoRA (moss-image-edit/adapter_model.safetensors)"))?;
+                    params = with_lora_first(&params, &edit.to_string_lossy());
+                }
+                params
             } else {
                 req.params.clone()
             };
@@ -1369,6 +1434,7 @@ pub fn has_models(dir: &Path) -> bool {
         || qwen_image_rs::edit2511_files::Edit2511Files::resolve(dir).is_ok()
         || moss::find_files(dir, MossVariant::Sft).is_some()
         || moss::find_files(dir, MossVariant::Base).is_some()
+        || moss::find_files(dir, MossVariant::Kromoss).is_some()
 }
 
 #[cfg(test)]

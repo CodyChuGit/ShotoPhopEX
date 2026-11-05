@@ -261,8 +261,9 @@ pub struct LoraFile {
 }
 
 const PREFIXES: [&str; 3] = ["diffusion_model.", "transformer.", "lora_unet_"];
-const A_SUFFIXES: [&str; 3] = [".lora_A.weight", ".lora_down.weight", ".lora_A.default.weight"];
-const B_SUFFIXES: [&str; 3] = [".lora_B.weight", ".lora_up.weight", ".lora_B.default.weight"];
+// The bare `lora_A` / `lora_B` are MOSS Edit's (`moss-edit-lora` format, no `.weight`).
+const A_SUFFIXES: [&str; 4] = [".lora_A.weight", ".lora_down.weight", ".lora_A.default.weight", ".lora_A"];
+const B_SUFFIXES: [&str; 4] = [".lora_B.weight", ".lora_up.weight", ".lora_B.default.weight", ".lora_B"];
 
 fn strip_prefix(name: &str) -> &str {
     for p in PREFIXES {
