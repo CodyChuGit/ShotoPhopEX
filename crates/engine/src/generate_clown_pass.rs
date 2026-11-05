@@ -16,7 +16,7 @@ use photocraft_geom::Rect;
 
 use super::{GenerativeInfo, Layer, Result, Rgba8, Session, Value, bad, gen_err, json, opt_str, set_generative_info, web_unavailable, write_rgba8};
 use crate::EngineError;
-use crate::select_ml_cmds::{Instance, SubjectFinder, subject_finder};
+use crate::select_ml_cmds::subject_finder;
 
 pub(crate) const CLOWN_PASS: &str = "generate.clownPass";
 
@@ -135,9 +135,8 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CLOWN_PASS, "`prompt` takes at most 24 comma-separated kinds of thing"));
     }
     let name = opt_str(CLOWN_PASS, p, "name", 200)?.unwrap_or("Clown Pass").to_string();
-    // One finder per kind of thing, built on the session (backend and template), run in the job.
-    let finders: Vec<(String, SubjectFinder)> =
-        terms.iter().map(|t| subject_finder(s, Some(t)).map(|f| (t.clone(), f.at_most(PER_TERM)))).collect::<Result<_>>()?;
+    // The detector, built on the session (backend and template), asked for each kind in the job.
+    let finder = subject_finder(s, terms.first().map(String::as_str))?;
     crate::jobs::edit_job(
         s,
         "Clown Pass",
@@ -145,20 +144,11 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             let started = std::time::Instant::now();
             let frame = doc.bounds();
             let (w, h) = (frame.width() as usize, frame.height() as usize);
+            let picture = photocraft_compose::render(doc, frame).to_rgba8().pixels;
             let mut things: Vec<Thing> = Vec::new();
-            let mut last_err = None;
-            let mut asked = 0usize;
-            for (i, (term, finder)) in finders.iter().enumerate() {
-                ctx.progress(0.85 * i as f32 / finders.len().max(1) as f32, &format!("Finding: {term}"));
-                let found: Vec<Instance> = match finder.instances(doc, *active, true, ctx) {
-                    Ok((found, _)) => found,
-                    Err(e) => {
-                        ctx.check()?;
-                        last_err = Some(e);
-                        continue;
-                    }
-                };
-                asked += 1;
+            for (i, term) in terms.iter().enumerate() {
+                ctx.progress(0.85 * i as f32 / terms.len().max(1) as f32, &format!("Finding: {term}"));
+                let found = finder.find_in(&picture, frame, term, PER_TERM, ctx)?;
                 for (cov, bounds, pixels) in found {
                     let t = Thing::new(&cov, bounds, pixels, term, frame);
                     drop(cov);
@@ -172,10 +162,7 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             if things.is_empty() {
-                return Err(match last_err {
-                    Some(e) if asked == 0 => e,
-                    _ => EngineError::Other("Clown Pass found nothing to split out of this picture".into()),
-                });
+                return Err(EngineError::Other("Clown Pass found nothing to split out of this picture".into()));
             }
             ctx.progress(0.9, "Splitting");
             // Each pixel to the smallest thing covering it.
@@ -208,7 +195,6 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             let kept: std::collections::HashSet<usize> = keep.iter().copied().collect();
             // A thing over the layer budget goes back to the background.
             let in_background = |o: u32| o == u32::MAX || !kept.contains(&(o as usize));
-            let picture = photocraft_compose::render(doc, frame).to_rgba8().pixels;
             let cut = |pick: &dyn Fn(u32) -> bool| -> Vec<u8> {
                 picture.as_chunks::<4>().0.iter().zip(&owner).flat_map(|(px, o)| if pick(*o) { *px } else { [0, 0, 0, 0] }).collect()
             };
