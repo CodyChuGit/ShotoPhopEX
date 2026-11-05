@@ -128,7 +128,7 @@ impl MossPipeline {
             *this_te.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(load_text(files, &dev, dtype)?));
         }
         progress(0.5, "Loading the transformer");
-        *this_dit.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(load_dit(files, &dev, dtype)?));
+        *this_dit.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(load_dit(files, &dev, dit_dtype(dtype))?));
         progress(0.9, "Loading the VAE");
         // bf16 on CUDA: 60.0 dB against ComfyUI's f32 decode (f32 60.7), faster and half the memory.
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&files.vae], dtype, &dev)? };
@@ -173,6 +173,11 @@ impl MossPipeline {
         Ok(self.tok.encode(text::template(prompt), false).map_err(|e| anyhow::anyhow!("encode prompt: {e}"))?.get_ids().to_vec())
     }
 
+    /// The dtype LoRA files load in for this pipeline's DiT.
+    pub fn lora_dtype(&self) -> DType {
+        dit_dtype(self.dtype)
+    }
+
     /// Whether the pipeline runs in 12 GB mode.
     pub fn low_vram(&self) -> bool {
         self.low_vram
@@ -204,7 +209,7 @@ impl MossPipeline {
         if self.low_vram && te.take().is_some() {
             crate::device::trim_pool(&self.dev);
         }
-        let d = Arc::new(load_dit(&self.files, &self.dev, self.dtype)?);
+        let d = Arc::new(load_dit(&self.files, &self.dev, dit_dtype(self.dtype))?);
         *dit = Some(Arc::clone(&d));
         Ok(d)
     }
@@ -353,6 +358,10 @@ impl MossPipeline {
 
         check()?;
         progress(0.92, "Decoding");
+        if self.low_vram {
+            // The sampler's freed blocks back to the driver before the decoder's activations.
+            crate::device::trim_pool(&self.dev);
+        }
         let t0 = Instant::now();
         let img = self.vae.decode(&x)?;
         self.dev.synchronize()?;
@@ -386,6 +395,16 @@ fn load_text(files: &MossFiles, dev: &Device, dtype: DType) -> Result<Qwen35Text
     let te = Qwen35Text::load(&TextConfig::qwen35_9b(), &Weights::open(&files.text, dev, dtype, true)?).context("the Qwen3.5-9B encoder")?;
     tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS text encoder loaded");
     Ok(te)
+}
+
+/// The DiT's dtype: the run's, or f32 (dense, dequantized, the candle chains) under
+/// `QIR_MOSS_DIT_F32=1`: a reference for the bf16 paths, not for use.
+fn dit_dtype(run: DType) -> DType {
+    if std::env::var("QIR_MOSS_DIT_F32").is_ok_and(|v| v.trim() == "1") {
+        DType::F32
+    } else {
+        run
+    }
 }
 
 fn load_dit(files: &MossFiles, dev: &Device, dtype: DType) -> Result<MossDit> {

@@ -67,7 +67,7 @@ fn main() -> Result<()> {
             Some((path, s)) => (path.to_string(), s.parse::<f32>()?),
             None => (l.clone(), 1.0),
         };
-        let f = LoraFile::load(std::path::Path::new(&path), p.device(), p.dtype())?;
+        let f = LoraFile::load(std::path::Path::new(&path), p.device(), p.lora_dtype())?;
         println!("lora {path} @ {strength}: {} modules", f.entries.len());
         stack.layers.push((Arc::new(f), strength));
     }
