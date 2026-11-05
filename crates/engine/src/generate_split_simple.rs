@@ -45,7 +45,12 @@ struct Removed {
     generations: u32,
     /// The refused fills, kept on request (`keepTries`): each named for its try and verdict.
     refused: Vec<(String, Vec<u8>)>,
+    /// Where the result was laid into the picture (one value per pixel; empty when none was).
+    pasted: Vec<f32>,
 }
+
+/// The share of a pasted pixel above which it counts as repainted.
+const PASTED: f32 = 0.02;
 
 pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
     let SubjectsPlan { prompt, subjects, seed, name, edges, group, keep_tries, first_pass_only, .. } = plan;
@@ -117,12 +122,15 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                     "hard",
                     Vec::new(),
                     detector,
-                    (0, dropped, Vec::new(), refused_ids),
+                    (0, dropped, Vec::new(), refused_ids, Vec::new()),
                 ));
             }
             // Subjects the detector no longer found before their turn (painted over by a nearer
             // subject's removal): no layer of their own.
             let mut lost: Vec<Value> = Vec::new();
+            // Where accepted removals repainted the picture so far, and every mask swap (or refused one).
+            let mut repainted = vec![false; wu * hu];
+            let mut swaps: Vec<Value> = Vec::new();
             // The picture as it stands: each removal takes the nearest subject out of it.
             let mut p = picture;
             let mut taken: Vec<Subject> = Vec::new();
@@ -172,6 +180,9 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 match removed.picture {
                     Some(filled) => {
                         p = filled;
+                        for (r, a) in repainted.iter_mut().zip(&removed.pasted) {
+                            *r |= *a > PASTED;
+                        }
                         fill_seed = removed.seed;
                         front.completed = true;
                     }
@@ -182,7 +193,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 // Look again, for the listed subjects still to come only: is each still there, and
                 // what is its mask now (a removal may show more of someone it hid).
                 if !pending.is_empty() && taken.len() < budget {
-                    refind(&finder, &p, area, &mut pending, &mut lost, ctx)?;
+                    refind(&finder, &p, area, &mut pending, &mut lost, &repainted, &mut swaps, ctx)?;
                 }
             }
             if left_in.len() == taken.len() {
@@ -220,7 +231,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 used.name(),
                 left_behind,
                 detector,
-                (passes, dropped, lost, refused_ids),
+                (passes, dropped, lost, refused_ids, swaps),
             ))
         },
         move |(
@@ -237,10 +248,10 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             matted,
             left_behind,
             detector,
-            (passes, dropped, lost, refused_ids),
+            (passes, dropped, lost, refused_ids, swaps),
         )| {
             json!({
-                "method": "simple", "passes": passes, "droppedAsBackground": dropped, "lost": lost,
+                "method": "simple", "passes": passes, "droppedAsBackground": dropped, "lost": lost, "swaps": swaps,
                 "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>(), "count": ids.len(),
                 "subjects": placed, "incomplete": incomplete, "fills": tries.len(), "generations": generations, "tries": tries, "order": "auto",
                 "foundBy": found_by, "template": template_id, "seed": seed, "leftBehind": left_behind, "refusedLayers": refused_ids.iter().map(|l| l.0).collect::<Vec<_>>(),
@@ -281,7 +292,17 @@ fn is_background(s: &Subject, w: usize, h: usize) -> bool {
 /// of the other; the best overlap first, each find matched once) becomes its mask now. A subject
 /// with no such find is gone from the picture (a nearer one's removal painted over it): it leaves
 /// the list, named in `lost`. Nothing the detector finds is ever added.
-fn refind(finder: &SubjectFinder, picture: &[u8], area: Rect, pending: &mut Vec<Subject>, lost: &mut Vec<Value>, ctx: &JobCtx) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn refind(
+    finder: &SubjectFinder,
+    picture: &[u8],
+    area: Rect,
+    pending: &mut Vec<Subject>,
+    lost: &mut Vec<Value>,
+    repainted: &[bool],
+    swaps: &mut Vec<Value>,
+    ctx: &JobCtx,
+) -> Result<()> {
     let mut kinds: Vec<String> = Vec::new();
     for s in pending.iter() {
         let k = s.check_term().to_string();
@@ -309,10 +330,25 @@ fn refind(finder: &SubjectFinder, picture: &[u8], area: Rect, pending: &mut Vec<
                 continue;
             }
             if let (Some(s), Some((cov, bounds, pixels))) = (pending.get_mut(i), finds.get(d)) {
-                s.cov = cov.clone();
-                s.bounds = *bounds;
-                s.pixels = *pixels;
-                s.alpha = Vec::new();
+                // The subject is found; its mask is swapped for the find's only by [`may_swap`].
+                let b = |r: Rect| json!([r.x0, r.y0, r.width(), r.height()]);
+                let failed = may_swap(&s.cov, cov, repainted);
+                let mut record = json!({"term": s.term, "old": b(s.bounds), "oldPixels": s.pixels, "new": b(*bounds), "newPixels": *pixels});
+                if failed.is_empty() {
+                    let changed = s.bounds != *bounds || s.pixels != *pixels;
+                    s.cov = cov.clone();
+                    s.bounds = *bounds;
+                    s.pixels = *pixels;
+                    s.alpha = Vec::new();
+                    record["swapped"] = json!(true);
+                    if changed {
+                        swaps.push(record);
+                    }
+                } else {
+                    record["swapped"] = json!(false);
+                    record["failed"] = json!(failed);
+                    swaps.push(record);
+                }
             }
             got.push(i);
             used.push(d);
@@ -333,6 +369,36 @@ fn refind(finder: &SubjectFinder, picture: &[u8], area: Rect, pending: &mut Vec<
     });
     Ok(())
 }
+
+/// Whether a re-found detection (`new`) may replace a pending subject's mask (`old`): the rules it
+/// fails, none when it may. (a) It covers at least [`SWAP_COVERS`] of the subject's mask; (b) of
+/// its pixels outside that mask, at least [`SWAP_IN_REPAINTED`] lie where accepted removals of this
+/// split repainted (`repainted`): a subject grows only into what a nearer one's removal showed of
+/// it. On the cat picture the cat's face was swapped for a detection of the whole astronaut, and
+/// the astronaut for its legs alone, by the looser same-subject match (measured 2026-11-05).
+fn may_swap(old: &[f32], new: &[f32], repainted: &[bool]) -> Vec<&'static str> {
+    let old_px = old.iter().filter(|v| **v >= 0.5).count() as u64;
+    let mut failed = Vec::new();
+    if old_px == 0 || (overlap(old, new) as f32) < SWAP_COVERS * old_px as f32 {
+        failed.push("covers less than 80 % of the subject");
+    }
+    let (mut outside, mut in_repainted) = (0u64, 0u64);
+    for (k, (o, n)) in old.iter().zip(new).enumerate() {
+        if *n >= 0.5 && *o < 0.5 {
+            outside += 1;
+            if repainted.get(k).copied().unwrap_or(false) {
+                in_repainted += 1;
+            }
+        }
+    }
+    if outside > 0 && (in_repainted as f32) < SWAP_IN_REPAINTED * outside as f32 {
+        failed.push("grows outside the repainted areas");
+    }
+    failed
+}
+
+const SWAP_COVERS: f32 = 0.8;
+const SWAP_IN_REPAINTED: f32 = 0.9;
 
 /// Finds asked for beyond the subjects of a kind still to come, so each can be matched.
 const REFIND_SPARE: usize = 3;
@@ -358,7 +424,7 @@ fn remove_one(
 ) -> Result<Removed> {
     let (w, h) = (area.width(), area.height());
     let (wu, hu) = (w as usize, h as usize);
-    let mut out = Removed { picture: None, seed: 0, tries: Vec::new(), ms: 0, generations: 0, refused: Vec::new() };
+    let mut out = Removed { picture: None, seed: 0, tries: Vec::new(), ms: 0, generations: 0, refused: Vec::new(), pasted: Vec::new() };
     let (hole_rect, holed) = crate::select_ml_cmds::coverage_bounds(hole, area);
     if holed == 0 {
         out.picture = Some(picture.to_vec());
@@ -423,6 +489,7 @@ fn remove_one(
                 None => {
                     out.tries.push(json!({"fill": kind, "generations": made, "verdict": "accepted"}));
                     out.picture = Some(laid);
+                    out.pasted = over.clone();
                     out.seed = seed;
                     return Ok(());
                 }
@@ -456,6 +523,41 @@ fn blank_refusal(before: &[u8], after: &[u8], hole: &[f32], ring: &[f32], w: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 200×200 mask of the rectangle x0..x1 × y0..y1.
+    fn rect_mask(x0: usize, y0: usize, x1: usize, y1: usize) -> Vec<f32> {
+        (0..200 * 200).map(|k| if (x0..x1).contains(&(k % 200)) && (y0..y1).contains(&(k / 200)) { 1.0 } else { 0.0 }).collect()
+    }
+
+    #[test]
+    fn a_small_subject_keeps_its_mask_next_to_a_much_larger_detection() {
+        // The cat's face (20×20) re-found as the whole astronaut (160×180) after the rocket was
+        // removed elsewhere: the find covers the face but grows far outside what was repainted.
+        let face = rect_mask(90, 30, 110, 50);
+        let astronaut = rect_mask(20, 10, 180, 190);
+        let repainted: Vec<bool> = rect_mask(0, 0, 20, 60).iter().map(|v| *v > 0.5).collect();
+        assert_eq!(may_swap(&face, &astronaut, &repainted), vec!["grows outside the repainted areas"]);
+    }
+
+    #[test]
+    fn a_big_subject_keeps_its_full_mask_when_found_again_as_its_lower_part() {
+        // The astronaut (160×180) re-found as its legs only (160×60): covers a third of it.
+        let astronaut = rect_mask(20, 10, 180, 190);
+        let legs = rect_mask(20, 130, 180, 190);
+        assert_eq!(may_swap(&astronaut, &legs, &vec![false; 200 * 200]), vec!["covers less than 80 % of the subject"]);
+    }
+
+    #[test]
+    fn a_half_hidden_subject_grows_into_the_hole_a_removal_repainted() {
+        // Someone seen only on the left (x 40..100) behind a nearer one at x 100..160, whose
+        // removal repainted x 96..164: found again whole (x 40..160), it takes the new mask.
+        let visible = rect_mask(40, 40, 100, 160);
+        let whole = rect_mask(40, 40, 160, 160);
+        let repainted: Vec<bool> = rect_mask(96, 30, 164, 170).iter().map(|v| *v > 0.5).collect();
+        assert!(may_swap(&visible, &whole, &repainted).is_empty());
+        // The same find with nothing repainted there grows into the picture itself: refused.
+        assert_eq!(may_swap(&visible, &whole, &vec![false; 200 * 200]), vec!["grows outside the repainted areas"]);
+    }
 
     #[test]
     fn a_dark_shape_in_the_hole_is_accepted_and_a_blank_fill_refused() {
