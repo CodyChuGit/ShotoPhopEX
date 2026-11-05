@@ -340,9 +340,9 @@ fn remove_one(
     let grown = dilate(hole, wu, hu, grow as usize);
     let rect = fill_rect(hole_rect.inflate(grow as i32).intersect(&area), job.tuning.remove_margin, area)?;
     let rect = at_least(rect, REMOVE_MIN_REQUEST, area);
-    // Laid over the hole and a thin feathered edge only ([`repaint_band`]); the model still sees
-    // and fills the wider grown area, but only this much of its result is kept.
-    let over = repaint_area(hole, wu, hu, repaint_band(hole_rect));
+    // Laid over the hole widened and feathered, so the subject's halo and shadow go with it.
+    let feather = (grow as usize / 2).max(1);
+    let over = box_blur(&box_blur(&dilate(hole, wu, hu, (grow as usize).max(1)), wu, hu, feather, true), wu, hu, feather, false);
     let name = sub.removal_name();
     let term = sub.check_term().to_string();
     let mut removal = job.clone();
@@ -416,27 +416,6 @@ fn remove_one(
     Ok(out)
 }
 
-/// The edge a removal repaints around its subject's mask: [`REPAINT_SHARE`] of the hole's longer
-/// side, [`REPAINT_MIN`] to [`REPAINT_MAX`] px. The removal's own grow (15 % of the side, 16–96
-/// px) repainted a wide band of the picture around the yellow boy on the kids photo, and an
-/// invented car and a pale streak came from it (measured 2026-11-05; the owner's call).
-fn repaint_band(hole_rect: Rect) -> usize {
-    let side = f64::from(hole_rect.width().max(hole_rect.height()));
-    ((side * REPAINT_SHARE).round() as usize).clamp(REPAINT_MIN, REPAINT_MAX)
-}
-
-const REPAINT_SHARE: f64 = 0.03;
-const REPAINT_MIN: usize = 6;
-const REPAINT_MAX: usize = 16;
-
-/// Where a removal's result is laid into the picture: the hole widened by `band` px and
-/// feathered inside that width, one value per pixel.
-fn repaint_area(hole: &[f32], w: usize, h: usize, band: usize) -> Vec<f32> {
-    let feather = (band / 2).max(1);
-    let widened = dilate(hole, w, h, band.saturating_sub(feather).max(1));
-    box_blur(&box_blur(&widened, w, h, feather, true), w, h, feather, false)
-}
-
 /// Why a removal's result is refused by its pixels: only when it left the hole blank
 /// ([`blank_or_ghost`]'s "left … blank" verdicts). A dark or light shape over the hole is not
 /// refused here: the tree trunk a removal continued through the yellow boy's hole on the kids
@@ -449,33 +428,6 @@ fn blank_refusal(before: &[u8], after: &[u8], hole: &[f32], ring: &[f32], w: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_repainted_area_is_the_mask_plus_at_most_16_px() {
-        assert_eq!(repaint_band(Rect::new(0, 0, 100, 50)), 6, "3 % of 100 is 3: at least 6");
-        assert_eq!(repaint_band(Rect::new(0, 0, 400, 404)), 12, "the yellow boy's hole: 3 % of 404");
-        assert_eq!(repaint_band(Rect::new(0, 0, 1100, 400)), 16, "at most 16");
-        // A 700×60 hole in a 760×140 picture: band 16. Inside the hole everything is replaced,
-        // just outside it something is, and nothing beyond 16 px.
-        let (w, h) = (760usize, 140usize);
-        let hole: Vec<f32> = (0..w * h).map(|k| if (30..730).contains(&(k % w)) && (40..100).contains(&(k / w)) { 1.0 } else { 0.0 }).collect();
-        let band = repaint_band(Rect::new(30, 40, 730, 100));
-        assert_eq!(band, 16);
-        let over = repaint_area(&hole, w, h, band);
-        for (k, (o, hl)) in over.iter().zip(&hole).enumerate() {
-            let (x, y) = ((k % w) as i64, (k / w) as i64);
-            let dx = (30 - x).max(x - 729).max(0);
-            let dy = (40 - y).max(y - 99).max(0);
-            let dist = dx.max(dy);
-            if *hl >= 0.5 {
-                assert!(*o >= 0.999, "inside the hole at ({x},{y}): {o}");
-            } else if dist > 16 {
-                // (The box blur's running sums leave dust of about 1e-9, below a level step.)
-                assert!(*o < 1e-6, "beyond 16 px at ({x},{y}): {o}");
-            }
-        }
-        assert!(over[40 * w + 25] > 0.0, "the edge just outside the hole is repainted");
-    }
 
     #[test]
     fn a_dark_shape_in_the_hole_is_accepted_and_a_blank_fill_refused() {
