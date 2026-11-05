@@ -24,8 +24,8 @@ use photocraft_geom::Rect;
 
 use super::{
     DEFAULT_MATTE_TEMPLATE, FillJob, JobCtx, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order, PEEL_VARIATIONS, PERSON, REMOVE_BG,
-    RING_WIDTH, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, Tuning, Value, bare, blank_or_ghost,
-    box_blur, could_not_clear, creature, dilate, embed_coverage, find_subjects, front_first, gen_err, hole_of, json, kept_terms, matte_all,
+    REMOVE_MIN_REQUEST, RING_WIDTH, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, Tuning, Value, at_least, bare, blank_or_ghost,
+    box_blur, could_not_clear, creature, dilate, embed_coverage, fill_rect, find_subjects, front_first, gen_err, hole_of, json, kept_terms, matte_all,
     one_fill, overlap, parse_terms, place_all, plan_common, removal_job, removal_prompt, remove_grow, same_subject, subjects_labels, title_case, under_alpha,
     write_rgba8,
 };
@@ -594,10 +594,8 @@ fn remove_one(
     }
     let grow = remove_grow(hole_rect).min(MAX_GROW);
     let grown = dilate(hole, wu, hu, grow as usize);
-    // The fill sees the whole picture as it stands, not a crop around the hole (resized to the
-    // fill's pixel budget as any request is); its result is laid back over the hole and the
-    // grow band only (the owner's call, 2026-11-05: a crop's fill saw too little of the scene).
-    let rect = area;
+    let rect = fill_rect(hole_rect.inflate(grow as i32).intersect(&area), job.tuning.remove_margin, area)?;
+    let rect = at_least(rect, REMOVE_MIN_REQUEST, area);
     // Laid over the hole widened and feathered, so the subject's halo and shadow go with it.
     let feather = (grow as usize / 2).max(1);
     let over = box_blur(&box_blur(&dilate(hole, wu, hu, (grow as usize).max(1)), wu, hu, feather, true), wu, hu, feather, false);
