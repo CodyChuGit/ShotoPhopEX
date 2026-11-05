@@ -379,6 +379,7 @@ pub const FILL_SCREEN: &str = "view.fillScreen";
 /// and grey out exactly like their menu-bar twins.
 pub const SELECTION_MENU: &[Row] = &[
     Some(("Generative Fill…", "generate.fill")),
+    Some(("Generative Remove", "edit.generativeRemove")),
     None,
     Some(("Deselect", "select.deselect")),
     Some(("Select Inverse", "select.inverse")),

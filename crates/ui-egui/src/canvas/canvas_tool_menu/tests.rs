@@ -392,6 +392,7 @@ fn selection_menus_follow_photoshop_order() {
         labels(SELECTION_MENU),
         vec![
             Some("Generative Fill…"),
+            Some("Generative Remove"),
             None,
             Some("Deselect"),
             Some("Select Inverse"),
