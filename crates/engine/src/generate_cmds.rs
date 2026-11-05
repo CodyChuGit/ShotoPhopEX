@@ -2412,12 +2412,13 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     let Common { template, prompt, mut negative, seed, mut steps, mut guidance, models, name } =
         plan_common(s, IMAGE, p, &default_template, Task::Image, &default_model)?;
     // Preferences › Quality, when the request leaves the steps and guidance to the template.
-    if steps == 0 && guidance == 0.0 {
-        if let Some((st, g)) = image_quality_tuning(&template.meta.id, quality(s)) {
-            (steps, guidance) = (st, g);
-            if g > 1.0 && negative.trim().is_empty() {
-                negative = BEST_IMAGE_NEGATIVE.to_string();
-            }
+    if steps == 0
+        && guidance == 0.0
+        && let Some((st, g)) = image_quality_tuning(&template.meta.id, quality(s))
+    {
+        (steps, guidance) = (st, g);
+        if g > 1.0 && negative.trim().is_empty() {
+            negative = BEST_IMAGE_NEGATIVE.to_string();
         }
     }
     crate::generate_refs::check_count(IMAGE, &template, ref_specs.len())?;
