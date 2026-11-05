@@ -25,6 +25,7 @@ pub mod generate_engine_cmds;
 pub mod generate_jobs;
 mod generate_realign;
 mod generate_refs;
+mod generate_split_order;
 mod group_options;
 pub mod guide_layout;
 pub mod hidden_target;
