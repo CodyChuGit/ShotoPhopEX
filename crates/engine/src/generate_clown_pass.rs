@@ -9,14 +9,22 @@
 //! thing (the earlier, more specific kind keeps it), and one reaching across nearly the whole
 //! frame is the backdrop. Each pixel goes to the smallest thing that covers it, so a bag held in
 //! front of a person is the bag's and the person's layer has a hole there; what no thing covers
-//! is the Background layer. Hard edges: every pixel lands on exactly one layer.
+//! is the Background layer.
+//!
+//! Edges are matted the way Split into Layers mattes its subjects: ViTMatte on a trimap around
+//! each detector mask (hair strand by strand), else the mask refined from the pixels as Select
+//! Subject does. The detector's hard masks looked rough next to Split's (the owner, 2026-11-05).
+//! A smaller thing's soft alpha is taken out of the larger ones under it and the Background is
+//! what is left, so the layers still add up to the picture.
 
 use photocraft_doc::LabelColor;
 use photocraft_geom::Rect;
 
-use super::{GenerativeInfo, Layer, Result, Rgba8, Session, Value, bad, gen_err, json, opt_str, set_generative_info, web_unavailable, write_rgba8};
+use super::{
+    GenerativeInfo, Layer, Result, Rgba8, Session, Value, backend_for, bad, gen_err, json, opt_str, set_generative_info, web_unavailable, write_rgba8,
+};
 use crate::EngineError;
-use crate::select_ml_cmds::subject_finder;
+use crate::select_ml_cmds::{VITMATTE_TEMPLATE, refine_coverage, subject_finder, vitmatte_alphas};
 
 pub(crate) const CLOWN_PASS: &str = "generate.clownPass";
 
@@ -79,6 +87,28 @@ impl Thing {
         Thing { mask, bounds, pixels, term: term.to_string() }
     }
 
+    /// The mask as full-frame coverage (one thing at a time, for the matte).
+    fn coverage(&self, frame: Rect) -> Vec<f32> {
+        let w = frame.width() as usize;
+        let mut cov = vec![0.0f32; w * frame.height() as usize];
+        for y in self.bounds.y0..self.bounds.y1 {
+            let row = (y - frame.y0) as usize * w;
+            for x in self.bounds.x0..self.bounds.x1 {
+                if self.at(x, y) {
+                    cov[row + (x - frame.x0) as usize] = 1.0;
+                }
+            }
+        }
+        cov
+    }
+
+    /// Where its matted edge can reach: its bounds widened by ViTMatte's outer band (a twentieth
+    /// of its larger side, at least 10 px) and a little more.
+    fn reach(&self, frame: Rect) -> Rect {
+        let side = self.bounds.width().max(self.bounds.height()) as f32;
+        self.bounds.inflate((side * 0.05).max(10.0).ceil() as i32 + 8).intersect(&frame)
+    }
+
     /// Whether the canvas point (x, y) is on the thing.
     fn at(&self, x: i32, y: i32) -> bool {
         let b = self.bounds;
@@ -137,6 +167,8 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let name = opt_str(CLOWN_PASS, p, "name", 200)?.unwrap_or("Clown Pass").to_string();
     // The detector, built on the session (backend and template), asked for each kind in the job.
     let finder = subject_finder(s, terms.first().map(String::as_str))?;
+    // The matte model's backend (ViTMatte, when the worker has it).
+    let matte = backend_for(s, VITMATTE_TEMPLATE).ok().map(|(b, _)| b);
     crate::jobs::edit_job(
         s,
         "Clown Pass",
@@ -187,27 +219,78 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
                     None => background += 1,
                 }
             }
-            // Largest lowest, the smallest on top (the order changes nothing that shows: every
-            // pixel is on one layer).
+            // The layers: the largest lowest, the smallest on top.
             let mut keep: Vec<usize> = (0..things.len()).filter(|i| counts[*i] >= MIN_PIXELS).collect();
             keep.sort_by_key(|i| std::cmp::Reverse(counts[*i]));
             keep.truncate(MAX_LAYERS - 1);
-            let kept: std::collections::HashSet<usize> = keep.iter().copied().collect();
-            // A thing over the layer budget goes back to the background.
-            let in_background = |o: u32| o == u32::MAX || !kept.contains(&(o as usize));
-            let cut = |pick: &dyn Fn(u32) -> bool| -> Vec<u8> {
-                picture.as_chunks::<4>().0.iter().zip(&owner).flat_map(|(px, o)| if pick(*o) { *px } else { [0, 0, 0, 0] }).collect()
-            };
+            drop(owner);
+            // Each kept thing's matted alpha, the smallest first; what a smaller thing already
+            // took is taken out of the larger ones, and the Background keeps the rest.
+            let mut taken = vec![0.0f32; w * h];
+            let mut soft: std::collections::HashMap<usize, (Rect, Vec<f32>)> = std::collections::HashMap::new();
+            let mut by_size = keep.clone();
+            by_size.sort_by_key(|i| things[*i].pixels);
+            let mut matted = 0usize;
+            for (n, &i) in by_size.iter().enumerate() {
+                ctx.progress(0.88 + 0.1 * n as f32 / by_size.len().max(1) as f32, "Matting edges");
+                let t = &things[i];
+                let cov = t.coverage(frame);
+                let vit = match matte.as_ref() {
+                    Some(b) => vitmatte_alphas(b.as_ref(), &picture, frame, &[(cov.clone(), t.bounds, t.pixels)], None, ctx)?.and_then(|mut a| a.pop()),
+                    None => None,
+                };
+                matted += usize::from(vit.is_some());
+                let alpha = match vit {
+                    Some(a) => a,
+                    None => refine_coverage(doc, *active, true, cov, frame),
+                };
+                let reach = t.reach(frame);
+                let mut crop = Vec::with_capacity(reach.width() as usize * reach.height() as usize);
+                for y in reach.y0..reach.y1 {
+                    let row = (y - frame.y0) as usize * w;
+                    for x in reach.x0..reach.x1 {
+                        let k = row + (x - frame.x0) as usize;
+                        // Off its own mask, another thing's body is never its edge (as Split's
+                        // matte keeps a band off the other subjects).
+                        if !t.at(x, y) && keep.iter().any(|j| *j != i && things[*j].at(x, y)) {
+                            crop.push(0.0);
+                            continue;
+                        }
+                        let a = alpha.get(k).copied().unwrap_or(0.0).clamp(0.0, 1.0) * (1.0 - taken[k]);
+                        taken[k] = (taken[k] + a).min(1.0);
+                        crop.push(a);
+                    }
+                }
+                soft.insert(i, (reach, crop));
+            }
+            let px = picture.as_chunks::<4>().0;
             let mut numbered: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
             let mut layers: Vec<(String, Vec<u8>)> = Vec::new();
-            if background > 0 || keep.len() < things.len() {
-                layers.push(("Background".to_string(), cut(&|o| in_background(o))));
+            if background > 0 || keep.len() < things.len() || taken.iter().any(|a| *a < 0.999) {
+                let bg: Vec<u8> = px.iter().zip(&taken).flat_map(|(p, a)| [p[0], p[1], p[2], (f32::from(p[3]) * (1.0 - a)).round() as u8]).collect();
+                layers.push(("Background".to_string(), bg));
             }
+            drop(taken);
             for &i in &keep {
                 let term = title_case(&things[i].term);
                 let n = numbered.entry(term.clone()).or_insert(0);
                 *n += 1;
-                layers.push((format!("{term} {n}"), cut(&|o| o == i as u32)));
+                let mut out = vec![0u8; w * h * 4];
+                if let Some((reach, crop)) = soft.remove(&i) {
+                    let rw = reach.width() as usize;
+                    for y in reach.y0..reach.y1 {
+                        for x in reach.x0..reach.x1 {
+                            let a = crop[(y - reach.y0) as usize * rw + (x - reach.x0) as usize];
+                            if a <= 0.0 {
+                                continue;
+                            }
+                            let k = (y - frame.y0) as usize * w + (x - frame.x0) as usize;
+                            let p = px[k];
+                            out[k * 4..k * 4 + 4].copy_from_slice(&[p[0], p[1], p[2], (f32::from(p[3]) * a).round() as u8]);
+                        }
+                    }
+                }
+                layers.push((format!("{term} {n}"), out));
             }
             let mut children = Vec::with_capacity(layers.len());
             let mut names = Vec::with_capacity(layers.len());
@@ -232,8 +315,9 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             let ids: Vec<u64> = children.iter().map(|l| l.id.0).collect();
             let group = doc.insert_above(*active, Layer::group(name.clone(), children));
             *active = Some(group);
-            Ok((group, ids, names, started.elapsed().as_millis() as u64))
+            let edges = if matted > 0 { "vitmatte" } else { "refine" };
+            Ok((group, ids, names, edges, started.elapsed().as_millis() as u64))
         },
-        |(group, ids, names, ms)| json!({"group": group.0, "layers": ids, "names": names, "count": ids.len(), "ms": ms}),
+        |(group, ids, names, edges, ms)| json!({"group": group.0, "layers": ids, "names": names, "count": ids.len(), "edges": edges, "ms": ms}),
     )
 }

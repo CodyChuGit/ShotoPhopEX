@@ -48,6 +48,8 @@ fn clown_pass_puts_every_thing_on_its_own_layer_with_nothing_painted() {
     let r = s.execute(CLOWN_PASS, json!({})).unwrap();
     assert_eq!(r["count"], 4, "background, two people and the cup: {r}");
     assert_eq!(r["names"], json!(["Background", "Person 1", "Person 2", "Object 1"]), "{r}");
+    // Matted as Split mattes its subjects (the fake's ViTMatte answers opaque over its band).
+    assert_eq!(r["edges"], "vitmatte", "{r}");
     let d = s.active().unwrap();
     assert_eq!(d.doc.layers.len(), before + 1, "one group");
     assert_eq!(d.history.past_len(), steps + 1, "one undo step");
@@ -69,8 +71,12 @@ fn clown_pass_puts_every_thing_on_its_own_layer_with_nothing_painted() {
     for (i, a) in labels.iter().enumerate() {
         assert!(labels.iter().skip(i + 1).all(|b| b != a), "{labels:?}");
     }
-    // Nothing but the detector ran.
-    assert!(fake.state().runs.iter().all(|r| r.request["task"] == "segment"));
+    // Nothing but the detector and the matte ran: nothing painted.
+    assert!(
+        fake.state().runs.iter().all(|r| r.request["task"] == "segment" || r.request["model"] == "vitmatte/refine"),
+        "{:?}",
+        fake.state().runs.iter().map(|r| (r.request["task"].clone(), r.request["model"].clone())).collect::<Vec<_>>()
+    );
     assert!(s.undo());
     assert_eq!(s.active().unwrap().doc.layers.len(), before);
     // A prompt names the kinds of thing to look for.
