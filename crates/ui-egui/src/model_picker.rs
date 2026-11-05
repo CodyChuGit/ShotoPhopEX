@@ -342,7 +342,9 @@ fn row_ui(ui: &mut Ui, it: Option<&Item>, name: &str, auto: Option<&str>, checke
     }
     let tip = match it {
         Some(i) if !selectable(i) => format!("{}\n{}", i.name, tl!("Research licence: turn on Allow research-only models in Preferences › AI Integrations")),
-        Some(i) if i.may_not_fit => format!("{}\n{}", i.name, tl!("May need more graphics memory than this computer has (Preferences › AI Integrations › Memory profile)")),
+        Some(i) if i.may_not_fit => {
+            format!("{}\n{}", i.name, tl!("May need more graphics memory than this computer has (Preferences › AI Integrations › Memory profile)"))
+        }
         Some(i) => i.name.clone(),
         None => String::new(),
     };
