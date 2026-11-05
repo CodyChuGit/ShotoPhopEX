@@ -43,10 +43,12 @@ struct Removed {
     tries: Vec<Value>,
     ms: u64,
     generations: u32,
+    /// The refused fills, kept on request (`keepTries`): each named for its try and verdict.
+    refused: Vec<(String, Vec<u8>)>,
 }
 
 pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
-    let SubjectsPlan { prompt, subjects, seed, name, edges, group, .. } = plan;
+    let SubjectsPlan { prompt, subjects, seed, name, edges, group, keep_tries, .. } = plan;
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
@@ -99,6 +101,8 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             let mut cut: Vec<Vec<u8>> = Vec::new();
             let mut left_in: Vec<usize> = Vec::new();
             let mut tries: Vec<Value> = Vec::new();
+            // The refused fills, kept on request (`keepTries`): subject index, name, pixels.
+            let mut refused: Vec<(usize, String, Vec<u8>)> = Vec::new();
             let (mut fill_ms, mut generations, mut fill_seed) = (0u64, 0u32, 0u64);
             let mut used = edges;
             let mut passes = 0usize;
@@ -129,7 +133,8 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 let hole = hole_of(&front);
                 // Its layer: the picture now (every nearer subject gone) under its alpha.
                 cut.push(under_alpha(&p, &front.alpha));
-                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, done, (lo, hi))?;
+                let removed = remove_one(doc, active, below, ctx, area, &p, &hole, &front, &finder, &job, keep_tries, done, (lo, hi))?;
+                refused.extend(removed.refused.into_iter().map(|(why, px)| (done, why, px)));
                 fill_ms += removed.ms;
                 generations += removed.generations;
                 tries.extend(removed.tries.into_iter().map(|mut t| {
@@ -167,10 +172,12 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                     o.remove("subject");
                 }
             }
+            let refused: Vec<(String, Vec<u8>)> =
+                refused.into_iter().map(|(i, why, px)| (format!("{}: {why}", labels.get(i).cloned().unwrap_or_default()), px)).collect();
             ctx.progress(0.95, "Placing");
             let detector = finder.detector_stats();
-            let (ids, placed, incomplete, _) =
-                place_all(doc, active, area, base.as_deref(), &found_by, &template_id, fill_seed, &taken, cut, p, &left_in, Vec::new())?;
+            let (ids, placed, incomplete, refused_ids) =
+                place_all(doc, active, area, base.as_deref(), &found_by, &template_id, fill_seed, &taken, cut, p, &left_in, refused)?;
             Ok((
                 ids,
                 placed,
@@ -185,7 +192,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 used.name(),
                 left_behind,
                 detector,
-                (passes, dropped, lost),
+                (passes, dropped, lost, refused_ids),
             ))
         },
         move |(
@@ -202,13 +209,13 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             matted,
             left_behind,
             detector,
-            (passes, dropped, lost),
+            (passes, dropped, lost, refused_ids),
         )| {
             json!({
                 "method": "simple", "passes": passes, "droppedAsBackground": dropped, "lost": lost,
                 "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>(), "count": ids.len(),
                 "subjects": placed, "incomplete": incomplete, "fills": tries.len(), "generations": generations, "tries": tries, "order": "auto",
-                "foundBy": found_by, "template": template_id, "seed": seed, "leftBehind": left_behind, "refusedLayers": [],
+                "foundBy": found_by, "template": template_id, "seed": seed, "leftBehind": left_behind, "refusedLayers": refused_ids.iter().map(|l| l.0).collect::<Vec<_>>(),
                 "detector": detector, "already": [],
                 "width": w, "height": h, "fillMs": fill_ms, "ms": total_ms, "edges": matted,
             })
@@ -317,12 +324,13 @@ fn remove_one(
     sub: &Subject,
     finder: &SubjectFinder,
     job: &FillJob,
+    keep: bool,
     nth: usize,
     (lo, hi): (f32, f32),
 ) -> Result<Removed> {
     let (w, h) = (area.width(), area.height());
     let (wu, hu) = (w as usize, h as usize);
-    let mut out = Removed { picture: None, seed: 0, tries: Vec::new(), ms: 0, generations: 0 };
+    let mut out = Removed { picture: None, seed: 0, tries: Vec::new(), ms: 0, generations: 0, refused: Vec::new() };
     let (hole_rect, holed) = crate::select_ml_cmds::coverage_bounds(hole, area);
     if holed == 0 {
         out.picture = Some(picture.to_vec());
@@ -377,6 +385,9 @@ fn remove_one(
             // subject stood is no removal, whoever the detector finds in it.
             if let Some(why) = blank_or_ghost(picture, &laid, hole, &ring, wu, hu) {
                 out.tries.push(json!({"fill": kind, "generations": made, "verdict": why}));
+                if keep {
+                    out.refused.push((format!("{kind} refused ({why})"), laid));
+                }
                 ctx.check()?;
                 continue;
             }
@@ -389,7 +400,11 @@ fn remove_one(
                     return Ok(());
                 }
                 Some((_, b, _)) => {
-                    out.tries.push(json!({"fill": kind, "generations": made, "verdict": format!("the {} still there", bare(&term)), "at": [b.x0, b.y0, b.width(), b.height()]}));
+                    let why = format!("the {} still there", bare(&term));
+                    out.tries.push(json!({"fill": kind, "generations": made, "verdict": why, "at": [b.x0, b.y0, b.width(), b.height()]}));
+                    if keep {
+                        out.refused.push((format!("{kind} refused ({why})"), laid));
+                    }
                 }
             }
             ctx.check()?;
