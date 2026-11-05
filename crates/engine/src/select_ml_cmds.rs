@@ -514,7 +514,7 @@ fn detect_any(
 
 /// Drop specks: instances under 2 % of the largest (a stray 80-pixel "person" beside the real
 /// one), unless the caller asked for one by number.
-fn without_specks(mut instances: Vec<(Vec<f32>, Rect, u64)>) -> Vec<(Vec<f32>, Rect, u64)> {
+fn without_specks(mut instances: Vec<Instance>) -> Vec<Instance> {
     let largest = instances.iter().map(|(_, _, n)| *n).max().unwrap_or(0);
     instances.retain(|(_, _, n)| *n * 50 >= largest);
     instances
@@ -924,54 +924,110 @@ pub(crate) struct SubjectFinder {
     backend: Arc<dyn photocraft_genai::GenerativeBackend>,
     server: String,
     prompting: Prompting,
-    prompts: Vec<String>,
+    stats: DetectorStats,
 }
 
-/// A [`SubjectFinder`] asking for `prompt` (none: Select Subject's [`SUBJECT_FALLBACKS`]).
+/// What a [`SubjectFinder`] has been asked over one command: the requests, how many of them
+/// showed it a part of the picture (tiles), the time they took, and the detections dismissed
+/// as fog (a figure with no more detail than the fog around it). Split into Layers reports
+/// them, so a run's detector cost can be read from its result.
+#[derive(Default)]
+pub(crate) struct DetectorStats {
+    requests: std::cell::Cell<u32>,
+    tiles: std::cell::Cell<u32>,
+    ms: std::cell::Cell<u64>,
+    fog: std::cell::Cell<u32>,
+    /// Detections taken for pictures of people (in a framed picture).
+    pictures: std::cell::Cell<u32>,
+}
+
+/// A [`SubjectFinder`] on the text template (`prompt`, when given, only plans the request; each
+/// [`SubjectFinder::find_in`] names its own).
 pub(crate) fn subject_finder(s: &Session, prompt: Option<&str>) -> Result<SubjectFinder> {
-    let prompts: Vec<String> = match prompt.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(p) => vec![p.to_string()],
-        None => SUBJECT_FALLBACKS.iter().map(|p| (*p).to_string()).collect(),
-    };
-    let (backend, server, prompting) = prompting_for(s, BY_TEXT, DEFAULT_SEGMENT_TEMPLATE, &prompts[0])
+    let first = prompt.map(str::trim).filter(|p| !p.is_empty()).unwrap_or(SUBJECT_FALLBACKS[0]);
+    let (backend, server, prompting) = prompting_for(s, BY_TEXT, DEFAULT_SEGMENT_TEMPLATE, first)
         .ok_or_else(|| EngineError::Other("no segmentation model (SAM 3.1) is set up; see Preferences > Generative".into()))?;
-    Ok(SubjectFinder { backend, server, prompting, prompts })
+    Ok(SubjectFinder { backend, server, prompting, stats: DetectorStats::default() })
 }
 
 impl SubjectFinder {
-    /// The same finder asking only for `prompt` (one detector run: the prompt that found the
-    /// subjects, when checking that a fill removed them).
-    pub(crate) fn only(&self, prompt: &str) -> Self {
-        SubjectFinder { backend: Arc::clone(&self.backend), server: self.server.clone(), prompting: self.prompting.clone(), prompts: vec![prompt.to_string()] }
+    /// The instances of `prompt` in `picture` (canvas-sized RGBA8 over `area`), at most
+    /// `at_most` of them, largest first, specks dropped and enclosed gaps filled; none when
+    /// nothing matched (not an error). Split into Layers asks this for each term, and again on
+    /// the picture as it stands after each fill.
+    pub(crate) fn find_in(&self, picture: &[u8], area: Rect, prompt: &str, at_most: usize, ctx: &JobCtx) -> Result<Vec<Instance>> {
+        let mut instances = without_specks(self.instances(picture, area, prompt, at_most, ctx)?);
+        instances.truncate(at_most.max(1));
+        Ok(instances)
     }
 
-    /// Let the detector return up to `n` instances (its default is one).
-    pub(crate) fn at_most(mut self, n: usize) -> Self {
-        self.prompting.max_detections = Some(n.max(1));
-        self
+    /// Every instance of `prompt` down to `floor` pixels, at most `at_most`, largest first: no
+    /// speck rule against the largest, so a small figure among big ones is seen. The check for
+    /// anyone a fill painted: six invented diners and office people of 2000 to 12 000 px, ranked
+    /// below the café's seven people, were never seen (measured in the app 2026-11-04).
+    pub(crate) fn find_all_in(&self, picture: &[u8], area: Rect, prompt: &str, at_most: usize, floor: u64, ctx: &JobCtx) -> Result<Vec<Instance>> {
+        let mut instances = self.instances(picture, area, prompt, at_most, ctx)?;
+        instances.retain(|(_, _, n)| *n >= floor);
+        instances.truncate(at_most.max(1));
+        Ok(instances)
     }
 
-    /// The instances found in the picture (`all_layers`: the composite, else the active layer)
-    /// and the prompt that found them.
-    pub(crate) fn instances(&self, doc: &Document, active: Option<LayerId>, all_layers: bool, ctx: &JobCtx) -> Result<(Vec<Instance>, String)> {
-        let area = doc.bounds();
-        let (image, _) = detector_image(doc, active, all_layers, MAX_SEGMENT_REQUEST_PIXELS)?;
-        let (masks, _, prompt) = detect_any(self.backend.as_ref(), &self.server, &image, area, &self.prompting, &self.prompts, ctx)?;
-        let (w, h) = (area.width() as usize, area.height() as usize);
-        let mut instances: Vec<Instance> = without_specks(instances_of(&masks, area)?)
+    /// Count `n` requests made over parts of the picture (tiles) among the requests.
+    pub(crate) fn note_tiles(&self, n: u32) {
+        self.stats.tiles.set(self.stats.tiles.get() + n);
+    }
+
+    /// Count a detection dismissed as fog.
+    pub(crate) fn note_fog(&self) {
+        self.stats.fog.set(self.stats.fog.get() + 1);
+    }
+
+    /// Count a detection taken for a picture of a person (in a framed picture).
+    pub(crate) fn note_picture(&self) {
+        self.stats.pictures.set(self.stats.pictures.get() + 1);
+    }
+
+    /// The detector's record for a result: the requests made so far, how many of them were
+    /// tiles, their time in ms, the detections dismissed as fog and those taken for pictures of
+    /// people.
+    pub(crate) fn detector_stats(&self) -> Value {
+        let s = &self.stats;
+        json!({"requests": s.requests.get(), "tiles": s.tiles.get(), "ms": s.ms.get(), "fog": s.fog.get(), "pictures": s.pictures.get()})
+    }
+
+    /// The detector's instances of `prompt`, enclosed gaps filled, largest first.
+    fn instances(&self, picture: &[u8], area: Rect, prompt: &str, at_most: usize, ctx: &JobCtx) -> Result<Vec<Instance>> {
+        let (w, h) = (area.width(), area.height());
+        let image = Rgba8::new(w, h, picture.to_vec()).map_err(gen_err)?;
+        let (rw, rh) = fit_pixels(w, h, MAX_SEGMENT_REQUEST_PIXELS);
+        let image = if (rw, rh) == (w, h) { image } else { resize_rgba8(&image, rw, rh)? };
+        let mut pr = self.prompting.clone();
+        pr.prompt = prompt.to_string();
+        pr.max_detections = Some(at_most.max(1));
+        let started = std::time::Instant::now();
+        let detected = detect(self.backend.as_ref(), &self.server, image, area, &pr, ctx);
+        self.stats.requests.set(self.stats.requests.get() + 1);
+        self.stats.ms.set(self.stats.ms.get() + started.elapsed().as_millis() as u64);
+        let masks = match detected {
+            Ok((masks, _)) => masks,
+            Err(e) if found_nothing(&e.to_string()) || e.to_string().starts_with("nothing") => {
+                ctx.check()?;
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e),
+        };
+        let (wu, hu) = (w as usize, h as usize);
+        let mut instances: Vec<Instance> = instances_of(&masks, area)?
             .into_iter()
             .map(|(cov, _, _)| {
-                let cov = fill_enclosed(&cov, w, h);
+                let cov = fill_enclosed(&cov, wu, hu);
                 let (b, n) = coverage_bounds(&cov, area);
                 (cov, b, n)
             })
             .filter(|(_, _, n)| *n > 0)
             .collect();
         instances.sort_by_key(|i| std::cmp::Reverse(i.2));
-        if instances.is_empty() {
-            return Err(EngineError::Other(format!("nothing matching \"{prompt}\" was found")));
-        }
-        Ok((instances, prompt))
+        Ok(instances)
     }
 }
 
@@ -1047,11 +1103,14 @@ pub(crate) const VITMATTE_TEMPLATE: &str = "vitmatte/refine";
 /// cropped with a margin and sent with a trimap made from its detector mask: solid a little
 /// inside the edge, unknown in a band around it reaching out to where stray hair goes (a
 /// fraction of the subject's size), background beyond. Another subject's body stays out of it.
+/// With `only`, that one subject alone is matted (the others keep their masks as alpha, and
+/// still keep its band off their bodies): a sweep mattes each subject at its turn.
 pub(crate) fn vitmatte_alphas(
     backend: &dyn photocraft_genai::GenerativeBackend,
     picture: &[u8],
     area: Rect,
     instances: &[Instance],
+    only: Option<usize>,
     ctx: &JobCtx,
 ) -> Result<Option<Vec<Vec<f32>>>> {
     if instances.is_empty() || generate_cmds::resolve_auto(backend, &[VITMATTE_TEMPLATE], "") != VITMATTE_TEMPLATE {
@@ -1061,6 +1120,10 @@ pub(crate) fn vitmatte_alphas(
     let mut alphas = Vec::with_capacity(instances.len());
     for (i, (cov, bounds, _)) in instances.iter().enumerate() {
         ctx.check()?;
+        if only.is_some_and(|o| o != i) {
+            alphas.push(cov.clone());
+            continue;
+        }
         let side = bounds.width().max(bounds.height()) as f32;
         let (out_band, in_band) = ((side * BAND_OUT).max(MIN_BAND_OUT), (side * BAND_IN).max(MIN_BAND_IN));
         let crop = bounds.inflate(out_band.ceil() as i32 + 8).intersect(&area);
@@ -1199,7 +1262,7 @@ pub(crate) fn matte_or_refine(
     if n > 0 {
         let picture = picture_rgba(doc, active, all_layers);
         let one = [(cov, bounds, n)];
-        if let Some(mut a) = vitmatte_alphas(backend, &picture, area, &one, ctx)? {
+        if let Some(mut a) = vitmatte_alphas(backend, &picture, area, &one, None, ctx)? {
             return Ok((a.swap_remove(0), true));
         }
         let [(cov, _, _)] = one;
