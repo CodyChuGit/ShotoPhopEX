@@ -23,6 +23,7 @@ pub mod filters_ext;
 pub mod generate_cmds;
 pub mod generate_engine_cmds;
 pub mod generate_jobs;
+pub mod memory_profile;
 mod generate_realign;
 mod generate_refs;
 mod generate_split_order;

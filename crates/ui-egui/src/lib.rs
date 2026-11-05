@@ -56,6 +56,7 @@ pub mod menu_catalog;
 pub mod menus;
 pub mod model_picker;
 pub mod monitor_status;
+pub mod memory_profile_ui;
 pub mod notices;
 pub mod os_window;
 pub mod panels;

@@ -279,6 +279,7 @@ pub fn probe_once(app: &mut PhotocraftApp) {
 /// time estimate at the panel's current area and count when `eta` (the panel and the bar).
 pub fn picker_items(app: &PhotocraftApp, page: &str, eta: bool) -> Vec<crate::model_picker::Item> {
     let research_ok = app.session.prefs().integrations.allow_research_models;
+    let profile = photocraft_engine::memory_profile::active(&app.session);
     let area = if eta { work_area(app, page) } else { None };
     let count = u32::from(app.ui.generate.count.max(1));
     let refs = if matches!(page, "image" | "edit" | "fill") { app.ui.generate.references.len() as u32 } else { 0 };
@@ -296,6 +297,7 @@ pub fn picker_items(app: &PhotocraftApp, page: &str, eta: bool) -> Vec<crate::mo
             allowed: m.allowed || research_ok,
             installed: m.installed,
             eta: area.and_then(|(w, h)| photocraft_engine::generate_cmds::estimate_seconds(&m.id, w, h, count, refs)),
+            may_not_fit: photocraft_engine::memory_profile::may_not_fit(profile, &m.id),
         })
         .collect()
 }
@@ -324,11 +326,7 @@ pub fn default_template(app: &PhotocraftApp, mode: &str) -> String {
     let prefs = &app.session.prefs().integrations;
     match mode {
         "image" => {
-            let t = if prefs.default_image_template.trim().is_empty() {
-                g::DEFAULT_IMAGE_TEMPLATE.to_string()
-            } else {
-                prefs.default_image_template.trim().to_string()
-            };
+            let t = g::default_image_template(&app.session);
             let takes_refs = info(app, &t).is_some_and(|m| m.refs_max > 0);
             if !app.ui.generate.references.is_empty() && !takes_refs { g::image_ref_template(&app.session).to_string() } else { t }
         }

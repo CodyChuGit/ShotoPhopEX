@@ -107,6 +107,7 @@ pub fn choices(path: &str) -> Option<&'static [&'static str]> {
         "integrations.showGenerativeBar" => GENERATIVE_BAR_MODES,
         "integrations.variationsStrip" => VARIATIONS_STRIP_PLACES,
         "integrations.quality" => QUALITY_MODES,
+        "integrations.memoryProfile" => crate::memory_profile::PREF_NAMES,
         "integrations.alerts" => ALERT_MODES,
         "integrations.previewWhileGenerating" => photocraft_genai::PreviewMode::NAMES,
         _ => return None,
