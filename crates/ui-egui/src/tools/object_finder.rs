@@ -23,7 +23,7 @@ use crate::canvas::ViewXform;
 use crate::state::Tool;
 
 /// Seconds the pointer must rest before an object is looked up.
-pub const DEBOUNCE: f64 = 0.12;
+pub const DEBOUNCE: f64 = 0.45;
 /// Longest side of the overlay texture (the overlay is a preview, not the selection).
 const TEX_MAX: usize = 768;
 

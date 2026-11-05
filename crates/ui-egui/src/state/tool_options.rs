@@ -115,6 +115,10 @@ pub struct ToolOptions {
     pub object_fill_holes: bool,
     #[serde(default)]
     pub object_soften: f32,
+    /// Object Selection (SAM 3.1): Parts: a click (and the finder's tint) takes a part of what is
+    /// under it, such as one piece of clothing, instead of the whole figure (`detail: "part"`).
+    #[serde(default)]
+    pub object_parts: bool,
     /// Pen: "path" (work path) or "shape" (shape layer).
     pub vector_mode: String,
     /// Pen, Freeform Pen and Curvature Pen › Path Operations (#1397): how a new path combines with
@@ -465,6 +469,7 @@ impl Default for ToolOptions {
             object_widen: 0.0,
             object_fill_holes: false,
             object_soften: 0.0,
+            object_parts: false,
             vector_mode: "path".into(),
             pen_path_op: default_pen_path_op(),
             shape_fill: true,

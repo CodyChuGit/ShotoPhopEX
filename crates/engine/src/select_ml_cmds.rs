@@ -121,6 +121,9 @@ struct Plan {
     /// A single click's other meaning (`candidate`): SAM's three answers to one point, the best
     /// first (0, the default) then the other two largest first (whole person, shirt, pocket).
     candidate: Option<u32>,
+    /// `detail: "part"`: a single click selects a part of what is under it (the shirt, not the
+    /// person): see [`detect`].
+    part: bool,
 }
 
 /// Most pixels a detector mask may be widened or shrunk by.
@@ -279,7 +282,12 @@ fn plan(s: &Session, cmd: &str, p: &Value) -> Result<Plan> {
         Some(x) if x.fract() == 0.0 => Some(x as u32),
         Some(_) => return Err(bad(cmd, "`candidate` must be 0, 1 or 2")),
     };
-    Ok(Plan { common, mode, instance, threshold, all_layers, points, negatives, bbox, refine, probe, grow, fill_holes, soften, candidate })
+    let part = match p.get("detail").and_then(Value::as_str) {
+        None | Some("whole") => false,
+        Some("part") => true,
+        Some(other) => return Err(bad(cmd, format!("`detail` must be whole or part (got `{other}`)"))),
+    };
+    Ok(Plan { common, mode, instance, threshold, all_layers, points, negatives, bbox, refine, probe, grow, fill_holes, soften, candidate, part })
 }
 
 /// Bounding box of the pixels with coverage ≥ 0.5, in document coordinates, and their count.
@@ -337,10 +345,63 @@ struct Prompting {
     max_detections: Option<usize>,
     /// A single click's other meaning ([`Plan::candidate`]).
     candidate: Option<u32>,
+    /// A part of what is under a single click ([`Plan::part`]).
+    part: bool,
 }
 
-/// Ask the detector: the masks it returned, at the request size.
+/// The pixels a mask covers (value ≥ 128).
+fn mask_area(masks: &[Gray8]) -> usize {
+    masks.iter().map(|m| m.data.iter().filter(|v| **v >= 128).count()).sum()
+}
+
+/// Ask the detector: the masks it returned, at the request size. With `part` and a single
+/// click (no candidate asked for), SAM's three answers to the point are all asked for and the
+/// middle-sized one is kept: of the whole person, the shirt and the pocket, the shirt. SAM's
+/// best answer is nearly always the whole figure (the owner: "it's tuned for entire
+/// characters", 2026-11-05), and the smallest is often a fold or a button.
 fn detect(
+    backend: &dyn photocraft_genai::GenerativeBackend,
+    server: &str,
+    image: Rgba8,
+    canvas: Rect,
+    pr: &Prompting,
+    ctx: &JobCtx,
+) -> Result<(Vec<Gray8>, u64)> {
+    if !(pr.part && pr.candidate.is_none() && pr.points.len() + pr.negatives.len() == 1 && pr.bbox.is_none()) {
+        return detect_one(backend, server, image, canvas, pr, ctx);
+    }
+    let mut answers: Vec<(usize, Vec<Gray8>)> = Vec::with_capacity(3);
+    let mut ms = 0u64;
+    let mut last_err = None;
+    for c in 0..3u32 {
+        let mut one = pr.clone();
+        one.candidate = Some(c);
+        one.part = false;
+        match detect_one(backend, server, image.clone(), canvas, &one, ctx) {
+            Ok((masks, t)) => {
+                ms += t;
+                let area = mask_area(&masks);
+                if area > 0 {
+                    answers.push((area, masks));
+                }
+            }
+            Err(e) => {
+                ctx.check()?;
+                last_err = Some(e);
+            }
+        }
+    }
+    if answers.is_empty() {
+        return Err(last_err.unwrap_or_else(|| EngineError::Other("nothing under the pointer".into())));
+    }
+    answers.sort_by_key(|(a, _)| *a);
+    // The middle of three; of two, the smaller (the part, not the whole).
+    let pick = if answers.len() == 3 { 1 } else { 0 };
+    Ok((answers.swap_remove(pick).1, ms))
+}
+
+/// One request to the detector: see [`detect`].
+fn detect_one(
     backend: &dyn photocraft_genai::GenerativeBackend,
     _server: &str,
     image: Rgba8,
@@ -538,6 +599,7 @@ fn prompting(plan: &Plan) -> Prompting {
         bbox: plan.bbox,
         max_detections: None,
         candidate: plan.candidate,
+        part: plan.part,
     }
 }
 
@@ -786,6 +848,7 @@ fn prompting_for(s: &Session, cmd: &str, template: &str, prompt: &str) -> Option
         bbox: None,
         max_detections: None,
         candidate: None,
+        part: false,
     };
     Some((backend, server, prompting))
 }
@@ -1001,7 +1064,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Select by Point",
             menu: &[],
             shortcut: None,
-            params: r#"{"x":int?,"y":int?,"points":[[x,y]]?,"negativePoints":[[x,y]]?,"box":[x,y,w,h]?,"mode":"replace|add|subtract|intersect","threshold":0..1=0.5,"sampleAllLayers":bool=true,"refine":bool=false,"grow":-256..256=0,"fillHoles":bool=false,"soften":0..64=0,"candidate":{0..2?},"probe":{u64?},"template":{id?="sam3.1/segment-point", "sam3.1/segment-box" with a box},"model":{file?}} → {"selected","count","instances":[{"index","bounds":[x,y,w,h],"pixels"}],"ms","probe"?} (the object under the point(s) (x/y or points, up to 64), kept clear of negativePoints and searched for inside box, through SAM 3.1's prompts; candidate = a single click's other meanings: SAM's three answers to one point, 0 the best (the default), then the other two largest first (the whole person, the shirt, the pocket), the Object Selection tool's Next Match (Tab); probe = apply a mask select.probe kept for this document instead of asking the server (stale or unknown probes are ignored and the server asked); refine softens the hard edge; grow widens the mask by that many pixels (negative shrinks it), fillHoles fills the gaps it encloses, soften feathers its edge, in that order; a background job; needs the native worker with the SAM 3.1 checkpoint)"#,
+            params: r#"{"x":int?,"y":int?,"points":[[x,y]]?,"negativePoints":[[x,y]]?,"box":[x,y,w,h]?,"mode":"replace|add|subtract|intersect","threshold":0..1=0.5,"sampleAllLayers":bool=true,"refine":bool=false,"grow":-256..256=0,"fillHoles":bool=false,"soften":0..64=0,"candidate":{0..2?},"detail":"whole|part"=whole,"probe":{u64?},"template":{id?="sam3.1/segment-point", "sam3.1/segment-box" with a box},"model":{file?}} → {"selected","count","instances":[{"index","bounds":[x,y,w,h],"pixels"}],"ms","probe"?} (the object under the point(s) (x/y or points, up to 64), kept clear of negativePoints and searched for inside box, through SAM 3.1's prompts; candidate = a single click's other meanings: SAM's three answers to one point, 0 the best (the default), then the other two largest first (the whole person, the shirt, the pocket), the Object Selection tool's Next Match (Tab); detail part = a single click selects a part of what is under it (SAM's three answers asked, the middle-sized kept: the shirt rather than the whole person or a pocket), the Object Selection tool's Parts option; probe = apply a mask select.probe kept for this document instead of asking the server (stale or unknown probes are ignored and the server asked); refine softens the hard edge; grow widens the mask by that many pixels (negative shrinks it), fillHoles fills the gaps it encloses, soften feathers its edge, in that order; a background job; needs the native worker with the SAM 3.1 checkpoint)"#,
             enabled,
             run: run_by_point,
             journal: true,
@@ -1011,7 +1074,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Object Finder",
             menu: &[],
             shortcut: None,
-            params: r#"{"x":int?,"y":int?,"points":[[x,y]]?,"negativePoints":[[x,y]]?,"box":[x,y,w,h]?,"threshold":0..1=0.5,"sampleAllLayers":bool=true} → {"probe","width","height","bounds":[x,y,w,h],"mask":base64,"ms"} (what select.byPoint would select for these prompts, as a grayscale mask of width × height (base64, row-major, 255 = selected) over the whole canvas, kept as probe for a select.byPoint that follows on this document before its next edit; selects nothing, journals nothing, locks nothing: the Object Selection tool runs it when the pointer rests; needs the native worker with the SAM 3.1 checkpoint)"#,
+            params: r#"{"x":int?,"y":int?,"points":[[x,y]]?,"negativePoints":[[x,y]]?,"box":[x,y,w,h]?,"threshold":0..1=0.5,"sampleAllLayers":bool=true,"detail":"whole|part"=whole} → {"probe","width","height","bounds":[x,y,w,h],"mask":base64,"ms"} (what select.byPoint would select for these prompts, as a grayscale mask of width × height (base64, row-major, 255 = selected) over the whole canvas, kept as probe for a select.byPoint that follows on this document before its next edit; selects nothing, journals nothing, locks nothing: the Object Selection tool runs it when the pointer rests; needs the native worker with the SAM 3.1 checkpoint)"#,
             enabled,
             run: run_probe,
             journal: false,
