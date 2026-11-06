@@ -114,6 +114,18 @@ otherwise. The photos themselves were generated in the app, so no stock images a
       and draws a picture in 1.6 s on a 5090, lettering spelled right.
     </td>
   </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/edit-clothing.gif" alt="A clothing edit: the jacket is selected, the Generate panel in Edit mode is asked to change it, and the person now wears a new jacket while everything else stays the same" width="100%">
+      <b>Clothing edits.</b> Select the jacket, say what it should be, and only the jacket changes:
+      face, pose and background stay put.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/angles.gif" alt="Generative Angles: the same subject re-rendered from several camera directions and heights" width="100%">
+      <b>Generative Angles.</b> Orbit the camera around a subject after the fact: eight
+      directions, four heights, three distances.
+    </td>
+  </tr>
 </table>
 
 <p align="center">
