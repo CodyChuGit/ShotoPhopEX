@@ -235,3 +235,20 @@ fn parts_asks_the_detector_for_a_part() {
     click(&mut a, 30.0, 20.0, egui::Modifiers::NONE);
     assert!(last_params(&a).1.get("detail").is_none());
 }
+
+#[test]
+fn next_match_after_a_plain_click_asks_for_the_first_other_meaning() {
+    let fake = FakeNative::start_with(Options { missing_files: vec!["model.safetensors".into()], ..Options::default() }).unwrap();
+    let mut a = app(&fake.url);
+    click(&mut a, 40.0, 30.0, egui::Modifiers::NONE);
+    let (id, p) = last_params(&a);
+    assert_eq!(id, "select.byPoint");
+    assert!(p.get("candidate").is_none(), "a plain click asks for the whole object");
+    let steps = a.session.active().unwrap().history.past_len();
+    next_match(&mut a);
+    let (id, p) = last_params(&a);
+    assert_eq!((id.as_str(), p["candidate"].clone(), p["points"].clone()), ("select.byPoint", json!(0), json!([[40.0, 30.0]])));
+    assert_eq!(a.session.active().unwrap().history.past_len(), steps, "the click's result replaced, not stacked");
+    next_match(&mut a);
+    assert_eq!(last_params(&a).1["candidate"], json!(1));
+}
