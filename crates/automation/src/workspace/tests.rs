@@ -1077,3 +1077,22 @@ fn absolute_paths_are_checked_against_the_authority_s_own_root() {
     let none = AuthorizedWorkspace::default();
     assert!(none.read(&target.to_string_lossy()).is_err());
 }
+
+#[test]
+fn preferences_cannot_point_the_native_worker_at_ambient_folders() {
+    // The runtime folders go on the worker's PATH (cuBLAS and the CUDA runtime are loaded from
+    // there), so a client that could set them could make the worker load its DLLs. The model
+    // folder is read as checkpoints and LoRAs.
+    for key in ["runtimePath", "modelsPath", "saveResultsDir"] {
+        let direct = serde_json::json!({"path": format!("integrations.{key}"), "value": "C:/attacker"});
+        assert!(authorize_engine_command("prefs.set", &direct).is_err(), "{key} direct");
+        let dotted = serde_json::json!({"path": format!(".integrations..{key}"), "value": "C:/attacker"});
+        assert!(authorize_engine_command("prefs.set", &dotted).is_err(), "{key} with empty segments");
+        let section = serde_json::json!({"path": "integrations", "value": {key: "C:/attacker"}});
+        assert!(authorize_engine_command("prefs.set", &section).is_err(), "{key} in the section");
+        let batch = serde_json::json!({"values": {format!("integrations.{key}"): "C:/attacker"}});
+        assert!(authorize_engine_command("prefs.set", &batch).is_err(), "{key} in a batch");
+    }
+    let harmless = serde_json::json!({"path": "integrations.quality", "value": "best"});
+    assert!(authorize_engine_command("prefs.set", &harmless).is_ok());
+}

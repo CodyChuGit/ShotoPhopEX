@@ -128,8 +128,15 @@ impl Cursor<'_> {
         }
         Ok(String::from_utf8_lossy(self.take(n as usize)?).into_owned())
     }
-    /// A value of GGUF type `ty`; arrays are walked element by element and summarised.
+    /// A value of GGUF type `ty`; arrays are walked element by element and summarised. Arrays
+    /// nest at most [`limits::GGUF_NESTING`] deep: each level costs 12 header bytes, so without
+    /// a limit a few megabytes of `array of array of …` overflow the stack (an abort, not an
+    /// error).
     fn value(&mut self, ty: u32) -> crate::Result<Value> {
+        self.value_at(ty, 0)
+    }
+
+    fn value_at(&mut self, ty: u32, depth: usize) -> crate::Result<Value> {
         Ok(match ty {
             0 => Value::U8(self.u8()?),
             1 => Value::I8(self.u8()? as i8),
@@ -146,8 +153,11 @@ impl Cursor<'_> {
                 if n > limits::GGUF_ARRAY {
                     return Err(format!("{}: an array of {n} in the header", self.name));
                 }
+                if elem == 9 && depth >= limits::GGUF_NESTING {
+                    return Err(format!("{}: arrays nested more than {} deep in the header", self.name, limits::GGUF_NESTING));
+                }
                 for _ in 0..n {
-                    self.value(elem)?;
+                    self.value_at(elem, depth + 1)?;
                 }
                 Value::Array(type_name(elem).to_string(), n)
             }
@@ -347,6 +357,39 @@ pub fn write(path: &Path, metadata: &[(&str, Value)], tensors: &[(&str, &[u64], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deeply_nested_arrays_are_refused_not_a_stack_overflow() {
+        let mut b = b"GGUF".to_vec();
+        b.extend(3u32.to_le_bytes());
+        b.extend(0u64.to_le_bytes());
+        b.extend(1u64.to_le_bytes());
+        b.extend(1u64.to_le_bytes());
+        b.push(b'k');
+        b.extend(9u32.to_le_bytes());
+        for _ in 0..2_000_000 {
+            b.extend(9u32.to_le_bytes());
+            b.extend(1u64.to_le_bytes());
+        }
+        let e = parse_header("deep", &b).unwrap_err();
+        assert!(e.contains("nested"), "{e}");
+        // Arrays of arrays a real file might hold still read.
+        let mut ok = b"GGUF".to_vec();
+        ok.extend(3u32.to_le_bytes());
+        ok.extend(0u64.to_le_bytes());
+        ok.extend(1u64.to_le_bytes());
+        ok.extend(1u64.to_le_bytes());
+        ok.push(b'k');
+        ok.extend(9u32.to_le_bytes());
+        ok.extend(9u32.to_le_bytes());
+        ok.extend(1u64.to_le_bytes());
+        ok.extend(4u32.to_le_bytes());
+        ok.extend(2u64.to_le_bytes());
+        ok.extend(7u32.to_le_bytes());
+        ok.extend(8u32.to_le_bytes());
+        let h = parse_header("nested", &ok).unwrap();
+        assert_eq!(h.metadata.get("k"), Some(&Value::Array("array".into(), 1)));
+    }
 
     #[test]
     fn a_written_gguf_reads_back_with_its_blocks_checked() {
