@@ -43,7 +43,7 @@ pub fn layout_for(cuda: bool, dtype: DType, nhwc_available: bool) -> ActLayout {
 }
 
 /// Bound im2col scratch while preserving full-image decoder attention and receptive fields.
-fn conv_row_tiles(x: &Tensor, weight: &Tensor, padding: usize, rows: usize) -> candle_core::Result<Tensor> {
+pub(crate) fn conv_row_tiles(x: &Tensor, weight: &Tensor, padding: usize, rows: usize) -> candle_core::Result<Tensor> {
     let h = x.dim(2)?;
     let mut out = Vec::new();
     for start in (0..h).step_by(rows) {
