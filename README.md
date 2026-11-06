@@ -565,8 +565,17 @@ app never locks a model behind a licence switch; you are responsible for each mo
 <details>
 <summary><b>Is it a Photoshop replacement?</b></summary>
 
-It is an alpha. The editor underneath is a mature clean-room reimplementation with real PSD
-support, and the generative tools are in daily use, but expect rough edges and report them in
+No. ShotoPhopEX is a fork of [PhotoCraft](https://github.com/storytold/photocraft), the open-source
+clean-room editor by the [ArtCraft](https://github.com/storytold) team. The editor (layers, masks,
+PSD support, the tools and the Photoshop-style workflow) is their project, and responsibility for
+it lies with the original repository. This fork makes no claim of ownership of, or association
+with, Adobe Photoshop; the name is only used to describe the workflows it follows.
+
+The additions in this fork are purely generative AI: the native engine, the Generate panel and the
+generative tools. They are open source under the same MIT or Apache-2.0 licences, and every model
+they run keeps its own licence (see [Models](#-models)).
+
+It is an alpha, so expect rough edges and report them in
 [Issues](https://github.com/CodyChuGit/ShotoPhopEX/issues).
 
 </details>
