@@ -37,6 +37,9 @@ fn refresh(app: &mut PhotocraftApp) {
 pub fn open(app: &mut PhotocraftApp) {
     app.ui.get_models.open = true;
     app.ui.get_models.error = None;
+    if app.ui.get_models.job.is_none() {
+        app.ui.get_models.done = None;
+    }
     refresh(app);
 }
 
@@ -92,7 +95,12 @@ fn poll(app: &mut PhotocraftApp, ctx: &egui::Context) {
             app.ui.get_models.job = None;
             app.ui.get_models.token.clear();
             let n = info.result.as_ref().and_then(|r| r["downloaded"].as_array().map(Vec::len)).unwrap_or(0);
-            app.ui.get_models.done = Some(crate::i18n::fmt(tl!("Done: {n} files downloaded and checked."), &[("n", &n.to_string())]));
+            let runtime = info.result.as_ref().is_some_and(|r| r["runtimePath"].is_string());
+            app.ui.get_models.done = Some(match (n, runtime) {
+                (0, true) => tl!("Done: NVIDIA's CUDA libraries installed.").to_string(),
+                (n, true) => crate::i18n::fmt(tl!("Done: {n} files and NVIDIA's CUDA libraries downloaded and checked."), &[("n", &n.to_string())]),
+                (n, false) => crate::i18n::fmt(tl!("Done: {n} files downloaded and checked."), &[("n", &n.to_string())]),
+            });
             if let Err(e) = crate::prefs_ui::save_preferences(app) {
                 log::warn!("couldn't save the Models folder: {e}");
             }
