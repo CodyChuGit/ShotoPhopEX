@@ -8,7 +8,7 @@ use crate::{
     vision::{Vision, VisionOut},
     weights::Checkpoint,
 };
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use candle_core::{Device, Tensor};
 use std::{path::Path, time::Instant};
 pub const INPUT: usize = 1008;
@@ -626,11 +626,7 @@ fn select_head(out: HeadsOut, multimask: bool) -> Vec<f32> {
         0
     };
     let low = &out.masks[token * LOW * LOW..(token + 1) * LOW * LOW];
-    if out.object_score > 0.0 {
-        bilinear(low, LOW, LOW, INPUT, INPUT)
-    } else {
-        vec![NO_OBJ_SCORE; INPUT * INPUT]
-    }
+    if out.object_score > 0.0 { bilinear(low, LOW, LOW, INPUT, INPUT) } else { vec![NO_OBJ_SCORE; INPUT * INPUT] }
 }
 
 /// Resize RGB on the device using the worker's half-pixel bilinear convention.
