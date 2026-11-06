@@ -52,11 +52,11 @@ its own masked layer, so the original pixels never change.
 | | |
 |---|---|
 | **What you get** | Generative Fill, Edit, Remove, Expand, Angles, Upscale, Split into Layers, Clown Pass, Select by text and text to image |
-| **Where it runs** | On your own NVIDIA RTX card, from 12 GB of VRAM, on Windows 10 or 11 |
+| **Where it runs** | On your own NVIDIA RTX card, from 12 GB of VRAM, on Windows 10 or 11 and Linux |
 | **What it doesn't need** | No cloud, no account, no credits, no Python, no ComfyUI |
 | **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([benchmarks](#-benchmarks)) |
 | **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, SAM 3.1), in ComfyUI's folder layout |
-| **Status** | Alpha. Built from source today; no release yet ([install](#-install)) |
+| **Status** | Alpha. Downloads for Windows and Linux ([install](#-install)) |
 | **Licence** | MIT or Apache-2.0. Each model keeps its own licence |
 
 - 🎨 **The tools artists use.** Start from a selection and a prompt; the app picks the model.
@@ -67,16 +67,16 @@ its own masked layer, so the original pixels never change.
 ## 🚀 Install
 
 Download the newest build from the [**Releases page**](https://github.com/CodyChuGit/ShotoPhopEX/releases/latest).
-There are two Windows downloads with the same app inside; pick one. Neither includes models:
-you add those once (step 3 below).
+There are two Windows downloads with the same app inside (pick one) and a Linux `.tar.gz`. None
+of them includes models: you add those once (step 3 below).
 
 ### What you need
 
 | | |
 |---|---|
-| **GPU** | NVIDIA RTX 40 or 50 series with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
+| **GPU** | NVIDIA RTX 30, 40 or 50 series with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
 | **Driver** | NVIDIA driver 580 or newer (CUDA 13). Nothing else: the CUDA libraries the app needs ship with it. |
-| **OS** | Windows 10 or 11, x64 |
+| **OS** | Windows 10 or 11, x64, or Linux x86_64 (glibc 2.39 or newer, e.g. Ubuntu 24.04) |
 | **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
 
 ### Windows installer (`.msi`)
@@ -106,18 +106,33 @@ The zip runs in portable mode: preferences, presets and the Generations library 
 
 ### First launch (both)
 
-**3. Get the models** into one folder in ComfyUI's layout. The [model table](#-models) lists every
-file. If you already have ComfyUI, its `models` folder works as it is.
+**3. Get the models.** **Help › Get AI Models…** downloads the right pack for your card into one
+folder. Or bring your own in ComfyUI's layout: the [model table](#-models) lists every file, and
+an existing ComfyUI `models` folder works as it is.
 
 **4. Point the app at them.** Open **Edit › Preferences › AI Integrations**, set **Models
 folder**, leave **Native runtime folders** empty (the bundled `runtime` folder is used), and press
 **Generate**. A memory check on the first launch picks the right models for your card.
 
-### Linux
+### Linux (`.tar.gz`)
 
-There is no Linux download yet. The editor is cross-platform, and the native engine was first
-developed on Linux, but the full generative build has not been tested on Linux in this repository
-yet, so treat this as a preview and [report what breaks](https://github.com/CodyChuGit/ShotoPhopEX/issues).
+1. Download `photocraft-<version>-linux-x86_64.tar.gz` and extract it:
+   `tar -xzf photocraft-<version>-linux-x86_64.tar.gz`
+2. Run it from the folder with `./photocraft-<version>-linux-x86_64/bin/photocraft`, or install it
+   with its menu entry and icon:
+   ```sh
+   cd photocraft-<version>-linux-x86_64
+   ./install.sh               # for your account, into ~/.local (no root)
+   sudo ./install.sh /usr/local   # or for everyone
+   ```
+3. Start **ShotoPhopEX** from your app menu (or run `photocraft`, with `~/.local/bin` on `PATH`).
+
+The CUDA libraries ship in `bin/runtime`, so only the NVIDIA driver is needed. Remove it with
+`./install.sh --uninstall` (the same prefix you installed to); preferences stay in
+`~/.config/photocraft`. Then do steps 3 and 4 above.
+
+<details>
+<summary><b>Build from source on Linux</b></summary>
 
 You need an NVIDIA driver 580+, the CUDA Toolkit 13 (`nvcc`, with its `lib64` on the loader
 path), Git, a C++ compiler, and Rust from [rustup](https://rustup.rs). Then:
@@ -136,6 +151,9 @@ cargo build --release -p photocraft -p photocraft-cli --features native-diffusio
 
 Then set the **Models folder** as in step 4. If the engine reports missing CUDA libraries, add
 your toolkit's `lib64` folder (for example `/usr/local/cuda/lib64`) to `LD_LIBRARY_PATH`.
+`packaging/linux/package-native.sh --cuda-lib <that lib64>` makes the release `.tar.gz`.
+
+</details>
 
 <details>
 <summary><b>Build from source on Windows</b></summary>
