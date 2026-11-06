@@ -147,7 +147,7 @@ fn part_of(dest: &std::path::Path) -> std::path::PathBuf {
 
 fn path_of(root: &std::path::Path, f: &ModelFile) -> std::path::PathBuf {
     let mut p = root.to_path_buf();
-    for part in f.folder.split('/').filter(|s| !s.is_empty()) {
+    for part in f.folder.split('/').filter(|s| !s.is_empty() && *s != "." && *s != "..") {
         p.push(part);
     }
     p.join(&f.file)
@@ -522,7 +522,11 @@ mod tests {
             assert_eq!(f.sha256.len(), 64, "{} has a SHA-256", f.id);
             assert!(f.sha256.chars().all(|c| c.is_ascii_hexdigit()), "{} SHA-256 is hex", f.id);
             assert!(f.bytes > 0, "{} has a size", f.id);
-            assert!(!f.file.contains(['/', '\\']) && !f.folder.contains(['\\', '.']), "{} paths stay in the Models folder", f.id);
+            assert!(
+                !f.file.contains(['/', '\\']) && !f.folder.contains('\\') && f.folder.split('/').all(|s| !s.is_empty() && s != "." && s != ".."),
+                "{} paths stay in the Models folder",
+                f.id
+            );
             assert_eq!(m.files.iter().filter(|g| g.id == f.id).count(), 1, "{} is listed once", f.id);
         }
         for p in m.packs.iter().chain(&m.extras) {
