@@ -310,7 +310,14 @@ impl EngineClient {
                             && let Some(bytes) = blobs.get_mut(info.image.index as usize)
                         {
                             let rgba = std::mem::take(bytes);
-                            preview(Preview { step: info.step, steps: info.steps, output: info.output, width: info.image.width, height: info.image.height, rgba });
+                            preview(Preview {
+                                step: info.step,
+                                steps: info.steps,
+                                output: info.output,
+                                width: info.image.width,
+                                height: info.image.height,
+                                rgba,
+                            });
                         }
                     }
                     Reply::Done(info) => break Ok((info, f.blobs)),

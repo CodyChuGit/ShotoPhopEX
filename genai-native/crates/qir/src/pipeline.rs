@@ -724,7 +724,9 @@ impl Pipeline {
                     .context("the text encoder has no lm_head (a text-only repack?)")?;
                 candle_core::quantized::QMatMul::from_qtensor(q)?
             } else {
-                candle_core::quantized::QMatMul::Tensor(vb.get((cfg.vocab_size, cfg.hidden_size), "lm_head.weight").context("the text encoder has no lm_head (a text-only repack?)")?)
+                candle_core::quantized::QMatMul::Tensor(
+                    vb.get((cfg.vocab_size, cfg.hidden_size), "lm_head.weight").context("the text encoder has no lm_head (a text-only repack?)")?,
+                )
             };
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "language-model head loaded");
             *slot = Some(ChatHead { norm, head });

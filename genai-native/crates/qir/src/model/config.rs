@@ -87,15 +87,7 @@ pub struct VaeConfig {
 
 impl Default for VaeConfig {
     fn default() -> Self {
-        Self {
-            in_channels: 4,
-            latent_channels: 64,
-            base_dim: 96,
-            decoder_base_dim: 144,
-            dim_mult: vec![1, 2, 4, 8, 8],
-            is_residual: true,
-            scale_factor: 16,
-        }
+        Self { in_channels: 4, latent_channels: 64, base_dim: 96, decoder_base_dim: 144, dim_mult: vec![1, 2, 4, 8, 8], is_residual: true, scale_factor: 16 }
     }
 }
 
@@ -109,10 +101,7 @@ pub struct TextEncoderConfig {
 
 impl Default for TextEncoderConfig {
     fn default() -> Self {
-        Self {
-            model_type: "Qwen3VLForConditionalGeneration".into(),
-            hidden_size: 4096,
-        }
+        Self { model_type: "Qwen3VLForConditionalGeneration".into(), hidden_size: 4096 }
     }
 }
 
@@ -124,8 +113,6 @@ pub struct SamplerConfig {
 
 impl Default for SamplerConfig {
     fn default() -> Self {
-        Self {
-            num_inference_steps: 40,
-        }
+        Self { num_inference_steps: 40 }
     }
 }

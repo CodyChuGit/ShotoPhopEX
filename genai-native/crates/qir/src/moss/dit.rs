@@ -317,7 +317,15 @@ impl Block {
     /// work runs once over all of them, the attention per sequence), `mods (1, 1, 6·dim)`
     /// (shift, scale, gate for attention, then for the feed-forward).
     #[cfg(feature = "fusednorm")]
-    fn forward_fused(&self, f: &FusedNorms, x: &Tensor, seqs: &[(usize, usize, &Tensor)], mods: &Tensor, heads: usize, refs: Option<&RefLayer>) -> Result<Tensor> {
+    fn forward_fused(
+        &self,
+        f: &FusedNorms,
+        x: &Tensor,
+        seqs: &[(usize, usize, &Tensor)],
+        mods: &Tensor,
+        heads: usize,
+        refs: Option<&RefLayer>,
+    ) -> Result<Tensor> {
         use crate::krea2_fused::{head_rope, rms_mod};
         use crate::profile::scope;
         let (_, s, dim) = x.dims3()?;

@@ -76,7 +76,6 @@ pub fn write(path: &Path, weights: Vec<(String, Tensor)>) -> Result<bool> {
     Ok(true)
 }
 
-
 /// Mark an entry as just used, so eviction takes the least recently used first.
 pub fn touch(path: &Path) {
     if let Ok(f) = std::fs::File::options().write(true).open(path) {
@@ -161,13 +160,8 @@ mod tests {
     fn eviction_keeps_per_checkpoint_then_fits_the_cap_by_last_use() {
         let at = |s: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s);
         let p = |n: &str| PathBuf::from(format!("{n}.safetensors"));
-        let entries = vec![
-            (at(1), p("a-int8-1"), 19),
-            (at(5), p("a-int8-2"), 19),
-            (at(4), p("b-int8-1"), 19),
-            (at(2), p("c-int8-1"), 19),
-            (at(3), p("d-int8-1"), 19),
-        ];
+        let entries =
+            vec![(at(1), p("a-int8-1"), 19), (at(5), p("a-int8-2"), 19), (at(4), p("b-int8-1"), 19), (at(2), p("c-int8-1"), 19), (at(3), p("d-int8-1"), 19)];
         // a-int8-2 is new: the older a goes (one per checkpoint), then 60 fits a-2, b and d.
         let mut out = evictions(entries.clone(), &p("a-int8-2"), 1, 60);
         out.sort();
@@ -191,7 +185,8 @@ mod tests {
             assert_eq!(written, free >= MIN_FREE_GB << 30);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let left: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("dit-int8-")).collect();
+        let left: Vec<_> =
+            std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("dit-int8-")).collect();
         if free >= MIN_FREE_GB << 30 {
             assert_eq!(left, vec!["dit-int8-2.safetensors".to_string()]);
         }

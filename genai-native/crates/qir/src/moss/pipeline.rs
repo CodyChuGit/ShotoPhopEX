@@ -310,11 +310,8 @@ impl MossPipeline {
         };
         // The edit's negative branch skips no block (the official edit sampler), unless
         // `QIR_MOSS_EDIT_SKIP` names one (the author's ComfyUI workflow skips 22).
-        let skip: Vec<usize> = if refs.is_some() {
-            std::env::var("QIR_MOSS_EDIT_SKIP").ok().and_then(|v| v.trim().parse().ok()).into_iter().collect()
-        } else {
-            vec![UNCOND_SKIP]
-        };
+        let skip: Vec<usize> =
+            if refs.is_some() { std::env::var("QIR_MOSS_EDIT_SKIP").ok().and_then(|v| v.trim().parse().ok()).into_iter().collect() } else { vec![UNCOND_SKIP] };
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
 

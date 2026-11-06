@@ -282,7 +282,13 @@ impl Krea2Pipeline {
         }
         answered?;
         let reply = self.tok.decode(&ids[prompt_len..], true).map_err(|e| anyhow::anyhow!("decode the reply: {e}"))?;
-        tracing::info!(tokens = ids.len() - prompt_len, prompt_tokens = prompt_len, decode_s = tp.elapsed().as_secs_f32(), chat_s = t0.elapsed().as_secs_f32(), "krea2 chat");
+        tracing::info!(
+            tokens = ids.len() - prompt_len,
+            prompt_tokens = prompt_len,
+            decode_s = tp.elapsed().as_secs_f32(),
+            chat_s = t0.elapsed().as_secs_f32(),
+            "krea2 chat"
+        );
         Ok(reply.trim().to_string())
     }
 
@@ -299,7 +305,9 @@ impl Krea2Pipeline {
             candle_core::quantized::QMatMul::from_qtensor(q)?
         } else {
             let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&self.text, self.dtype, &self.dev)? };
-            candle_core::quantized::QMatMul::Tensor(vb.get((cfg.vocab_size, cfg.hidden_size), "model.embed_tokens.weight").context("the Qwen3-VL-4B token embedding")?)
+            candle_core::quantized::QMatMul::Tensor(
+                vb.get((cfg.vocab_size, cfg.hidden_size), "model.embed_tokens.weight").context("the Qwen3-VL-4B token embedding")?,
+            )
         };
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "krea2 language-model head loaded");
         Ok(crate::pipeline::ChatHead { norm, head })

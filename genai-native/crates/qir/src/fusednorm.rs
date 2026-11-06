@@ -12,26 +12,9 @@ use crate::layout::{dense_byte_offset, dense_offset, row_strided_2d};
 use crate::Result;
 
 extern "C" {
-    fn fused_norm_mod_launch(
-        out: *mut c_void,
-        x: *const c_void,
-        scale: *const c_void,
-        m: i32,
-        n: i32,
-        eps: f32,
-        stream: *mut c_void,
-    );
+    fn fused_norm_mod_launch(out: *mut c_void, x: *const c_void, scale: *const c_void, m: i32, n: i32, eps: f32, stream: *mut c_void);
     #[allow(clippy::too_many_arguments)]
-    fn fused_rmsnorm_scale_launch(
-        out: *mut c_void,
-        x: *const c_void,
-        w: *const c_void,
-        m: i32,
-        n: i32,
-        ld: std::ffi::c_long,
-        eps: f32,
-        stream: *mut c_void,
-    );
+    fn fused_rmsnorm_scale_launch(out: *mut c_void, x: *const c_void, w: *const c_void, m: i32, n: i32, ld: std::ffi::c_long, eps: f32, stream: *mut c_void);
     #[allow(clippy::too_many_arguments)]
     fn fused_rmsnorm_scale_block_launch(
         out: *mut c_void,
@@ -43,14 +26,7 @@ extern "C" {
         eps: f32,
         stream: *mut c_void,
     );
-    fn fused_gated_residual_launch(
-        out: *mut c_void,
-        h: *const c_void,
-        gate: *const c_void,
-        y: *const c_void,
-        total: usize,
-        stream: *mut c_void,
-    );
+    fn fused_gated_residual_launch(out: *mut c_void, h: *const c_void, gate: *const c_void, y: *const c_void, total: usize, stream: *mut c_void);
     #[allow(clippy::too_many_arguments)]
     fn fused_residual_norm_mod_launch(
         x_out: *mut c_void,
@@ -80,31 +56,15 @@ impl candle_core::CustomOp2 for FusedNormMod {
         "fused-norm-mod"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("fused-norm-mod is CUDA-only")
     }
 
-    fn cuda_fwd(
-        &self,
-        x: &CudaStorage,
-        x_l: &Layout,
-        scale: &CudaStorage,
-        scale_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, scale: &CudaStorage, scale_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = x.device().clone();
         let dims = x_l.shape().dims().to_vec();
         if dims != scale_l.shape().dims() {
-            candle_core::bail!(
-                "fused-norm-mod shape mismatch: {:?} vs {:?}",
-                dims,
-                scale_l.shape().dims()
-            );
+            candle_core::bail!("fused-norm-mod shape mismatch: {:?} vs {:?}", dims, scale_l.shape().dims());
         }
         let n = *dims.last().unwrap();
         let m: usize = dims[..dims.len() - 1].iter().product();
@@ -187,23 +147,11 @@ impl candle_core::CustomOp2 for FusedRmsnormScale {
         "fused-rmsnorm-scale"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("fused-rmsnorm-scale is CUDA-only")
     }
 
-    fn cuda_fwd(
-        &self,
-        x: &CudaStorage,
-        x_l: &Layout,
-        w: &CudaStorage,
-        w_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, w: &CudaStorage, w_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = x.device().clone();
         let dims = x_l.shape().dims().to_vec();
         let n = *dims.last().unwrap();
@@ -214,11 +162,7 @@ impl candle_core::CustomOp2 for FusedRmsnormScale {
         let m: usize = dims[..dims.len() - 1].iter().product();
         // 2-D x may be a row-strided view (unit inner stride, rows ld apart);
         // any other rank must be dense.
-        let (xo, ld) = if dims.len() == 2 {
-            row_strided_2d(x_l, "fused-rmsnorm-scale x")?
-        } else {
-            (dense_offset(x_l, "fused-rmsnorm-scale x")?, n)
-        };
+        let (xo, ld) = if dims.len() == 2 { row_strided_2d(x_l, "fused-rmsnorm-scale x")? } else { (dense_offset(x_l, "fused-rmsnorm-scale x")?, n) };
         let xo = (xo * std::mem::size_of::<half::bf16>()) as u64;
         let wo = dense_byte_offset::<f32>(w_l, "fused-rmsnorm-scale w")?;
         let x = x.as_cuda_slice::<half::bf16>()?;
@@ -230,11 +174,7 @@ impl candle_core::CustomOp2 for FusedRmsnormScale {
             let (wp, _b) = w.device_ptr(&stream);
             let (xp, wp) = (xp + xo, wp + wo);
             let (op, _c) = out.device_ptr(&stream);
-            let launch = if self.force_block {
-                fused_rmsnorm_scale_block_launch
-            } else {
-                fused_rmsnorm_scale_launch
-            };
+            let launch = if self.force_block { fused_rmsnorm_scale_block_launch } else { fused_rmsnorm_scale_launch };
             unsafe {
                 launch(
                     op as *mut c_void,
@@ -262,11 +202,7 @@ pub fn fused_rmsnorm_scale(x: &Tensor, w: &Tensor, eps: f32) -> Result<Tensor> {
 }
 
 fn rmsnorm_scale_impl(x: &Tensor, w: &Tensor, eps: f32, force_block: bool) -> Result<Tensor> {
-    let x = if x.rank() == 2 && row_strided_2d(x.layout(), "x").is_ok() {
-        x.clone()
-    } else {
-        x.contiguous()?
-    };
+    let x = if x.rank() == 2 && row_strided_2d(x.layout(), "x").is_ok() { x.clone() } else { x.contiguous()? };
     let w = w.contiguous()?;
     Ok(x.apply_op2(&w, FusedRmsnormScale { eps, force_block })?)
 }
@@ -281,15 +217,7 @@ impl candle_core::CustomOp3 for FusedGatedResidual {
         "fused-gated-residual"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("fused-gated-residual is CUDA-only")
     }
 
@@ -305,12 +233,7 @@ impl candle_core::CustomOp3 for FusedGatedResidual {
         let dev = h.device().clone();
         let dims = h_l.shape().dims().to_vec();
         if dims != gate_l.shape().dims() || dims != y_l.shape().dims() {
-            candle_core::bail!(
-                "fused-gated-residual shape mismatch: h {:?} gate {:?} y {:?}",
-                dims,
-                gate_l.shape().dims(),
-                y_l.shape().dims()
-            );
+            candle_core::bail!("fused-gated-residual shape mismatch: h {:?} gate {:?} y {:?}", dims, gate_l.shape().dims(), y_l.shape().dims());
         }
         let total: usize = dims.iter().product();
         let ho = dense_byte_offset::<half::bf16>(h_l, "fused-gated-residual h")?;
@@ -414,59 +337,28 @@ pub fn self_test_offset_views() -> Result<Vec<(&'static str, bool)>> {
         let t = Tensor::randn(0f32, std, (1, drop + n, inner), &dev)?.to_dtype(DType::BF16)?;
         Ok(t.narrow(1, drop, n)?)
     };
-    let bits = |t: &Tensor| -> Result<Vec<u16>> {
-        Ok(t.flatten_all()?
-            .to_vec1::<half::bf16>()?
-            .iter()
-            .map(|v| v.to_bits())
-            .collect())
-    };
+    let bits = |t: &Tensor| -> Result<Vec<u16>> { Ok(t.flatten_all()?.to_vec1::<half::bf16>()?.iter().map(|v| v.to_bits()).collect()) };
     let (x, s, g) = (view(1.0)?, view(0.5)?, view(1.5)?);
-    anyhow::ensure!(
-        x.contiguous()?.layout().start_offset() == drop * inner,
-        "test premise: the narrow must stay a zero-copy offset view"
-    );
-    let (xf, sf, gf) = (
-        x.force_contiguous()?,
-        s.force_contiguous()?,
-        g.force_contiguous()?,
-    );
+    anyhow::ensure!(x.contiguous()?.layout().start_offset() == drop * inner, "test premise: the narrow must stay a zero-copy offset view");
+    let (xf, sf, gf) = (x.force_contiguous()?, s.force_contiguous()?, g.force_contiguous()?);
     // An offset f32 weight too: (drop+N,) narrowed to N.
     let w = Tensor::randn(1f32, 0.2f32, drop + inner, &dev)?.narrow(0, drop, inner)?;
     let wf = w.force_contiguous()?;
     // Row-strided 2-D views (the merged q|k case): rows of 128 taken from a
     // (drop + R, 256) matrix, both halves, with a row offset.
-    let qk = Tensor::randn(0f32, 1f32, (drop + 3 * n, 256), &dev)?
-        .to_dtype(DType::BF16)?
-        .narrow(0, drop, 3 * n)?;
+    let qk = Tensor::randn(0f32, 1f32, (drop + 3 * n, 256), &dev)?.to_dtype(DType::BF16)?.narrow(0, drop, 3 * n)?;
     let wh = Tensor::randn(1f32, 0.2f32, 128, &dev)?;
     let mut strided_ok = true;
     for off in [0usize, 128] {
         let v = qk.narrow(1, off, 128)?;
-        strided_ok &= v.stride()[0] == 256
-            && bits(&fused_rmsnorm_scale(&v, &wh, 1e-6)?)?
-                == bits(&fused_rmsnorm_scale(&v.force_contiguous()?, &wh, 1e-6)?)?;
+        strided_ok &= v.stride()[0] == 256 && bits(&fused_rmsnorm_scale(&v, &wh, 1e-6)?)? == bits(&fused_rmsnorm_scale(&v.force_contiguous()?, &wh, 1e-6)?)?;
     }
     Ok(vec![
-        (
-            "fused_rmsnorm_scale",
-            bits(&fused_rmsnorm_scale(&x, &w, 1e-6)?)?
-                == bits(&fused_rmsnorm_scale(&xf, &wf, 1e-6)?)?,
-        ),
+        ("fused_rmsnorm_scale", bits(&fused_rmsnorm_scale(&x, &w, 1e-6)?)? == bits(&fused_rmsnorm_scale(&xf, &wf, 1e-6)?)?),
         ("fused_rmsnorm_scale (row-strided q/k halves)", strided_ok),
-        (
-            "fused_norm_mod",
-            bits(&fused_norm_mod(&x, &s, 1e-6)?)? == bits(&fused_norm_mod(&xf, &sf, 1e-6)?)?,
-        ),
-        (
-            "fused_gated_residual",
-            bits(&fused_gated_residual(&x, &g, &s)?)?
-                == bits(&fused_gated_residual(&xf, &gf, &sf)?)?,
-        ),
-        (
-            "fused_residual_norm_mod (h, y, gate/scale rows offset)",
-            residual_norm_mod_offset_ok(&x, &s, drop, &dev)?,
-        ),
+        ("fused_norm_mod", bits(&fused_norm_mod(&x, &s, 1e-6)?)? == bits(&fused_norm_mod(&xf, &sf, 1e-6)?)?),
+        ("fused_gated_residual", bits(&fused_gated_residual(&x, &g, &s)?)? == bits(&fused_gated_residual(&xf, &gf, &sf)?)?),
+        ("fused_residual_norm_mod (h, y, gate/scale rows offset)", residual_norm_mod_offset_ok(&x, &s, drop, &dev)?),
     ])
 }
 
@@ -478,44 +370,21 @@ fn mr(rows: &Tensor, txt_len: usize) -> ModRows<'_> {
 /// are S-axis offset views; the gate / scale rows are row- and column-offset
 /// views of a wider modulation matrix (row stride 3N). Both outputs, with and
 /// without a residual, must match the fresh-copy run bit for bit.
-fn residual_norm_mod_offset_ok(
-    h: &Tensor,
-    y: &Tensor,
-    drop: usize,
-    dev: &candle_core::Device,
-) -> Result<bool> {
+fn residual_norm_mod_offset_ok(h: &Tensor, y: &Tensor, drop: usize, dev: &candle_core::Device) -> Result<bool> {
     use candle_core::DType;
     let n = h.dim(2)?;
     let wide = Tensor::randn(0f32, 1f32, (drop + 2, 3 * n), dev)?.to_dtype(DType::BF16)?;
-    let (g, sc) = (
-        wide.narrow(0, drop, 2)?.narrow(1, n, n)?,
-        wide.narrow(0, drop, 2)?.narrow(1, 2 * n, n)?,
-    );
+    let (g, sc) = (wide.narrow(0, drop, 2)?.narrow(1, n, n)?, wide.narrow(0, drop, 2)?.narrow(1, 2 * n, n)?);
     let (gf, sf) = (g.force_contiguous()?, sc.force_contiguous()?);
     let txt = 5;
     let both = |o: (Tensor, Tensor)| -> Result<Vec<u16>> {
         let cat = Tensor::cat(&[o.0, o.1], 0)?;
-        Ok(cat
-            .flatten_all()?
-            .to_vec1::<half::bf16>()?
-            .iter()
-            .map(|v| v.to_bits())
-            .collect())
+        Ok(cat.flatten_all()?.to_vec1::<half::bf16>()?.iter().map(|v| v.to_bits()).collect())
     };
     let (hf, yf) = (h.force_contiguous()?, y.force_contiguous()?);
-    let res = both(fused_residual_norm_mod(
-        h,
-        Some((mr(&g, txt), y)),
-        mr(&sc, txt),
-        1e-6,
-    )?)? == both(fused_residual_norm_mod(
-        &hf,
-        Some((mr(&gf, txt), &yf)),
-        mr(&sf, txt),
-        1e-6,
-    )?)?;
-    let plain = both(fused_residual_norm_mod(h, None, mr(&sc, txt), 1e-6)?)?
-        == both(fused_residual_norm_mod(&hf, None, mr(&sf, txt), 1e-6)?)?;
+    let res = both(fused_residual_norm_mod(h, Some((mr(&g, txt), y)), mr(&sc, txt), 1e-6)?)?
+        == both(fused_residual_norm_mod(&hf, Some((mr(&gf, txt), &yf)), mr(&sf, txt), 1e-6)?)?;
+    let plain = both(fused_residual_norm_mod(h, None, mr(&sc, txt), 1e-6)?)? == both(fused_residual_norm_mod(&hf, None, mr(&sf, txt), 1e-6)?)?;
     Ok(res && plain)
 }
 
@@ -530,13 +399,7 @@ pub fn self_test_residual_norm_mod_bits() -> Result<Vec<(String, usize)>> {
     use candle_core::{DType, Device};
     let dev = Device::new_cuda(0)?;
     let eps = 1e-6f32;
-    let bits = |t: &Tensor| -> Result<Vec<u16>> {
-        Ok(t.flatten_all()?
-            .to_vec1::<half::bf16>()?
-            .iter()
-            .map(|v| v.to_bits())
-            .collect())
-    };
+    let bits = |t: &Tensor| -> Result<Vec<u16>> { Ok(t.flatten_all()?.to_vec1::<half::bf16>()?.iter().map(|v| v.to_bits()).collect()) };
     let diff = |a: &Tensor, b: &Tensor| -> Result<usize> {
         let (a, b) = (bits(a)?, bits(b)?);
         Ok(a.iter().zip(&b).filter(|(p, q)| p != q).count() + a.len().abs_diff(b.len()))
@@ -549,16 +412,9 @@ pub fn self_test_residual_norm_mod_bits() -> Result<Vec<(String, usize)>> {
             parts.push(rows.narrow(0, 1, 1)?.broadcast_as((txt, n))?.contiguous()?);
         }
         if s > txt {
-            parts.push(
-                rows.narrow(0, 0, 1)?
-                    .broadcast_as((s - txt, n))?
-                    .contiguous()?,
-            );
+            parts.push(rows.narrow(0, 0, 1)?.broadcast_as((s - txt, n))?.contiguous()?);
         }
-        Ok(Tensor::cat(&parts, 0)?
-            .unsqueeze(0)?
-            .broadcast_as((b, s, n))?
-            .contiguous()?)
+        Ok(Tensor::cat(&parts, 0)?.unsqueeze(0)?.broadcast_as((b, s, n))?.contiguous()?)
     };
     let mut out = Vec::new();
     // (B, S, txt_len, N, forced scalar)
@@ -578,15 +434,11 @@ pub fn self_test_residual_norm_mod_bits() -> Result<Vec<(String, usize)>> {
         let h = Tensor::randn(0f32, 8f32, (b, s, n), &dev)?.to_dtype(DType::BF16)?;
         let y = Tensor::randn(0f32, 2f32, (b, s, n), &dev)?.to_dtype(DType::BF16)?;
         let (gt, st) = (tokens(&g, b, s, txt)?, tokens(&sc, b, s, txt)?);
-        let tag = format!(
-            "B={b} S={s} txt={txt} N={n}{}",
-            if scalar { " scalar" } else { "" }
-        );
+        let tag = format!("B={b} S={s} txt={txt} N={n}{}", if scalar { " scalar" } else { "" });
 
         let h_ref = fused_gated_residual(&h, &gt, &y)?;
         let x_ref = fused_norm_mod(&h_ref, &st, eps)?;
-        let (h2, x2) =
-            residual_norm_mod_impl(&h, Some((mr(&g, txt), &y)), mr(&sc, txt), eps, scalar)?;
+        let (h2, x2) = residual_norm_mod_impl(&h, Some((mr(&g, txt), &y)), mr(&sc, txt), eps, scalar)?;
         out.push((format!("{tag} residual: h'"), diff(&h2, &h_ref)?));
         out.push((format!("{tag} residual: x"), diff(&x2, &x_ref)?));
 
@@ -605,13 +457,7 @@ pub fn self_test_residual_norm_mod_bits() -> Result<Vec<(String, usize)>> {
 pub fn self_test_rmsnorm128_bits() -> Result<Vec<(String, usize)>> {
     use candle_core::{DType, Device};
     let dev = Device::new_cuda(0)?;
-    let bits = |t: &Tensor| -> Result<Vec<u16>> {
-        Ok(t.flatten_all()?
-            .to_vec1::<half::bf16>()?
-            .iter()
-            .map(|v| v.to_bits())
-            .collect())
-    };
+    let bits = |t: &Tensor| -> Result<Vec<u16>> { Ok(t.flatten_all()?.to_vec1::<half::bf16>()?.iter().map(|v| v.to_bits()).collect()) };
     let cmp = |x: &Tensor, w: &Tensor| -> Result<usize> {
         let a = bits(&rmsnorm_scale_impl(x, w, 1e-6, false)?)?;
         let b = bits(&rmsnorm_scale_impl(x, w, 1e-6, true)?)?;
@@ -620,29 +466,15 @@ pub fn self_test_rmsnorm128_bits() -> Result<Vec<(String, usize)>> {
     let w = Tensor::randn(1f32, 0.2f32, 128, &dev)?;
     let rows = 4117 * 32 + 5; // a q/k call's rows + a partial last CTA
     let dense = Tensor::randn(0f32, 1f32, (rows, 128), &dev)?.to_dtype(DType::BF16)?;
-    let qk = Tensor::randn(0f32, 3f32, (7 + 4117, 256), &dev)?
-        .to_dtype(DType::BF16)?
-        .narrow(0, 7, 4117)?;
+    let qk = Tensor::randn(0f32, 3f32, (7 + 4117, 256), &dev)?.to_dtype(DType::BF16)?.narrow(0, 7, 4117)?;
     // Per-row magnitudes spanning 1e-6 .. 1e6 (rsqrt near eps, large sums), plus zero rows.
-    let mag = Tensor::arange(0u32, 777, &dev)?
-        .to_dtype(DType::F32)?
-        .affine(24.0 / 776.0, -12.0)?
-        .exp()?
-        .reshape((777, 1))?;
-    let extreme = Tensor::randn(0f32, 1f32, (777, 128), &dev)?
-        .broadcast_mul(&mag)?
-        .to_dtype(DType::BF16)?;
+    let mag = Tensor::arange(0u32, 777, &dev)?.to_dtype(DType::F32)?.affine(24.0 / 776.0, -12.0)?.exp()?.reshape((777, 1))?;
+    let extreme = Tensor::randn(0f32, 1f32, (777, 128), &dev)?.broadcast_mul(&mag)?.to_dtype(DType::BF16)?;
     let zeros = Tensor::zeros((33, 128), DType::BF16, &dev)?;
     Ok(vec![
         ("dense M=131749".into(), cmp(&dense, &w)?),
-        (
-            "row-strided q half (ld 256, row offset)".into(),
-            cmp(&qk.narrow(1, 0, 128)?, &w)?,
-        ),
-        (
-            "row-strided k half (ld 256, row offset)".into(),
-            cmp(&qk.narrow(1, 128, 128)?, &w)?,
-        ),
+        ("row-strided q half (ld 256, row offset)".into(), cmp(&qk.narrow(1, 0, 128)?, &w)?),
+        ("row-strided k half (ld 256, row offset)".into(), cmp(&qk.narrow(1, 128, 128)?, &w)?),
         ("magnitudes e^-12..e^12".into(), cmp(&extreme, &w)?),
         ("all-zero rows".into(), cmp(&zeros, &w)?),
     ])
@@ -666,22 +498,11 @@ pub struct ModRows<'a> {
 /// position. Bit-identical to [`fused_gated_residual`] then [`fused_norm_mod`]
 /// on the materialized per-token tensors. Both outputs are fresh dense tensors
 /// (`h'` is `h` itself without a residual).
-pub fn fused_residual_norm_mod(
-    h: &Tensor,
-    residual: Option<(ModRows, &Tensor)>,
-    scale: ModRows,
-    eps: f32,
-) -> Result<(Tensor, Tensor)> {
+pub fn fused_residual_norm_mod(h: &Tensor, residual: Option<(ModRows, &Tensor)>, scale: ModRows, eps: f32) -> Result<(Tensor, Tensor)> {
     residual_norm_mod_impl(h, residual, scale, eps, false)
 }
 
-fn residual_norm_mod_impl(
-    h: &Tensor,
-    residual: Option<(ModRows, &Tensor)>,
-    scale: ModRows,
-    eps: f32,
-    scalar: bool,
-) -> Result<(Tensor, Tensor)> {
+fn residual_norm_mod_impl(h: &Tensor, residual: Option<(ModRows, &Tensor)>, scale: ModRows, eps: f32, scalar: bool) -> Result<(Tensor, Tensor)> {
     use candle_core::cuda_backend::cudarc::driver::CudaSlice;
     use candle_core::op::BackpropOp;
     use candle_core::{DType, Storage};
@@ -695,49 +516,20 @@ fn residual_norm_mod_impl(
             r.rows.dtype(),
             r.rows.dims()
         );
-        anyhow::ensure!(
-            r.txt_len <= seq,
-            "{WHAT}: {what} txt_len {} > seq {seq}",
-            r.txt_len
-        );
+        anyhow::ensure!(r.txt_len <= seq, "{WHAT}: {what} txt_len {} > seq {seq}", r.txt_len);
         Ok(())
     };
-    anyhow::ensure!(
-        h.dtype() == DType::BF16,
-        "{WHAT}: h must be bf16, got {:?}",
-        h.dtype()
-    );
+    anyhow::ensure!(h.dtype() == DType::BF16, "{WHAT}: h must be bf16, got {:?}", h.dtype());
     check_rows(&scale, "scale")?;
     if let Some((g, y)) = &residual {
         check_rows(g, "gate")?;
-        anyhow::ensure!(
-            g.txt_len == scale.txt_len,
-            "{WHAT}: gate txt_len {} != scale txt_len {}",
-            g.txt_len,
-            scale.txt_len
-        );
-        anyhow::ensure!(
-            y.dtype() == DType::BF16 && y.dims() == h.dims(),
-            "{WHAT}: y must be bf16 {:?}, got {:?} {:?}",
-            h.dims(),
-            y.dtype(),
-            y.dims()
-        );
+        anyhow::ensure!(g.txt_len == scale.txt_len, "{WHAT}: gate txt_len {} != scale txt_len {}", g.txt_len, scale.txt_len);
+        anyhow::ensure!(y.dtype() == DType::BF16 && y.dims() == h.dims(), "{WHAT}: y must be bf16 {:?}, got {:?} {:?}", h.dims(), y.dtype(), y.dims());
     }
     // The row is staged in shared memory as f32 (48 KiB without an opt-in).
-    anyhow::ensure!(
-        n * 4 <= 48 * 1024,
-        "{WHAT}: row width {n} exceeds the smem stage"
-    );
-    let i32_of = |v: usize, what: &str| -> Result<i32> {
-        i32::try_from(v).map_err(|_| anyhow::anyhow!("{WHAT}: {what} {v} overflows i32"))
-    };
-    let (m32, n32, s32, t32) = (
-        i32_of(m, "rows")?,
-        i32_of(n, "width")?,
-        i32_of(seq, "seq")?,
-        i32_of(scale.txt_len, "txt_len")?,
-    );
+    anyhow::ensure!(n * 4 <= 48 * 1024, "{WHAT}: row width {n} exceeds the smem stage");
+    let i32_of = |v: usize, what: &str| -> Result<i32> { i32::try_from(v).map_err(|_| anyhow::anyhow!("{WHAT}: {what} {v} overflows i32")) };
+    let (m32, n32, s32, t32) = (i32_of(m, "rows")?, i32_of(n, "width")?, i32_of(seq, "seq")?, i32_of(scale.txt_len, "txt_len")?);
 
     let h = h.contiguous()?;
     let y = residual.map(|(_, y)| y.contiguous()).transpose()?;
@@ -783,12 +575,7 @@ fn residual_norm_mod_impl(
                 let (p_y, g_y) = yc.as_cuda_slice::<half::bf16>()?.device_ptr(&stream);
                 let (p_o, g_o) = ho_.device_ptr(&stream);
                 _guards.extend([g_g, g_y, g_o]);
-                (
-                    p_o as *mut c_void,
-                    (p_g + (go * bf) as u64) as *const c_void,
-                    gld,
-                    (p_y + yo) as *const c_void,
-                )
+                (p_o as *mut c_void, (p_g + (go * bf) as u64) as *const c_void, gld, (p_y + yo) as *const c_void)
             }
             _ => (std::ptr::null_mut(), std::ptr::null(), 0, std::ptr::null()),
         };
@@ -815,12 +602,7 @@ fn residual_norm_mod_impl(
     anyhow::ensure!(rc == 0, "{WHAT}: CUDA launch failed (cudaError {rc})");
     drop((hs, ss));
     let wrap = |o: CudaSlice<half::bf16>| -> Tensor {
-        Tensor::from_storage(
-            Storage::Cuda(CudaStorage::wrap_cuda_slice(o, dev.clone())),
-            (b, seq, n),
-            BackpropOp::none(),
-            false,
-        )
+        Tensor::from_storage(Storage::Cuda(CudaStorage::wrap_cuda_slice(o, dev.clone())), (b, seq, n), BackpropOp::none(), false)
     };
     let x = wrap(x_out);
     let h_new = match h_out {

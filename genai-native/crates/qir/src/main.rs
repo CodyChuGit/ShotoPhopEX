@@ -680,7 +680,14 @@ fn main() -> Result<()> {
         Command::ConvertFp8 { src, dst } => {
             let t0 = std::time::Instant::now();
             let r = qwen_image_rs::convert::dequantize_fp8_file(&src, &dst)?;
-            println!("wrote {} ({} dequantised, {} copied, {} dropped) in {:.1} s", dst.display(), r.dequantized, r.copied, r.dropped, t0.elapsed().as_secs_f32());
+            println!(
+                "wrote {} ({} dequantised, {} copied, {} dropped) in {:.1} s",
+                dst.display(),
+                r.dequantized,
+                r.copied,
+                r.dropped,
+                t0.elapsed().as_secs_f32()
+            );
             Ok(())
         }
         Command::Edit { model, prompt, image, width, height, steps, seed, guidance, negative, convrot, cache, no_prefix_cache, out } => edit(
@@ -1326,8 +1333,19 @@ fn edit(
         let img = image::open(path).with_context(|| format!("reading {}", path.display()))?.to_rgba8();
         references.push(RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw(), offset: None });
     }
-    let req =
-        Request { prompt: prompt.to_string(), negative: negative.to_string(), width, height, steps, seed, guidance, schedule: Schedule::Comfy, references, loras: Default::default(), ref_boost: 1.0 };
+    let req = Request {
+        prompt: prompt.to_string(),
+        negative: negative.to_string(),
+        width,
+        height,
+        steps,
+        seed,
+        guidance,
+        schedule: Schedule::Comfy,
+        references,
+        loras: Default::default(),
+        ref_boost: 1.0,
+    };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
     let pic = p.generate(&req, &mut report, &|| false)?;
     let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
@@ -1374,7 +1392,19 @@ fn generate_krea2(
         };
         stack.layers.push((std::sync::Arc::new(qwen_image_rs::lora::LoraFile::load(std::path::Path::new(path), p.device(), p.dtype())?), strength));
     }
-    let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references, loras: stack, ref_boost };
+    let req = Request {
+        prompt: prompt.to_string(),
+        negative: String::new(),
+        width,
+        height,
+        steps,
+        seed,
+        guidance: 1.0,
+        schedule: Schedule::Comfy,
+        references,
+        loras: stack,
+        ref_boost,
+    };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
     let mut pic = p.generate(&req, &mut report, &|| false)?;
     for _ in 1..repeat {
@@ -1678,7 +1708,8 @@ fn layered_gemm_bench(iters: usize, m: usize) -> Result<()> {
         let plans: Vec<GemmPlan> = (0..GEMM_CONFIGS.len() as u8).map(GemmPlan::single).collect();
         for (m, n, k, times, _) in bench_gemm_plans(&shapes, &plans, EpilogueOut::Bf16, iters)? {
             let flop = 2.0 * (m * n * k) as f64;
-            let cells: Vec<String> = times.iter().enumerate().map(|(i, t)| t.map_or(format!("{i}:n/a"), |ms| format!("{i}:{ms:.3}ms/{:.0}T", flop / ms / 1e9))).collect();
+            let cells: Vec<String> =
+                times.iter().enumerate().map(|(i, t)| t.map_or(format!("{i}:n/a"), |ms| format!("{i}:{ms:.3}ms/{:.0}T", flop / ms / 1e9))).collect();
             println!("gemm M={m} N={n} K={k} [selected {}] {}", gemm_plan(m, n, k).main, cells.join(" "));
         }
         let dev = Device::new_cuda(0)?;

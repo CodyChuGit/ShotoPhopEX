@@ -50,16 +50,12 @@ pub fn free_vram(device: &Device) -> Option<(usize, usize)> {
 /// The default CUDA memory pool of `device` (the one candle's
 /// `cuMemAllocAsync` allocations come from), bound to this thread.
 #[cfg(feature = "cuda")]
-fn default_pool(
-    d: &candle_core::CudaDevice,
-) -> Option<candle_core::cuda_backend::cudarc::driver::sys::CUmemoryPool> {
+fn default_pool(d: &candle_core::CudaDevice) -> Option<candle_core::cuda_backend::cudarc::driver::sys::CUmemoryPool> {
     use candle_core::cuda_backend::cudarc::driver::sys;
     let ctx = d.cuda_stream().context().clone();
     ctx.bind_to_thread().ok()?;
     let mut pool: sys::CUmemoryPool = std::ptr::null_mut();
-    unsafe { sys::cuDeviceGetDefaultMemPool(&mut pool, ctx.cu_device()) }
-        .result()
-        .ok()?;
+    unsafe { sys::cuDeviceGetDefaultMemPool(&mut pool, ctx.cu_device()) }.result().ok()?;
     Some(pool)
 }
 
@@ -70,22 +66,15 @@ static RETAINED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize
 
 /// `(RESERVED_MEM_CURRENT, USED_MEM_CURRENT)` of the default pool.
 #[cfg(feature = "cuda")]
-fn pool_usage(
-    pool: candle_core::cuda_backend::cudarc::driver::sys::CUmemoryPool,
-) -> Option<(u64, u64)> {
+fn pool_usage(pool: candle_core::cuda_backend::cudarc::driver::sys::CUmemoryPool) -> Option<(u64, u64)> {
     use candle_core::cuda_backend::cudarc::driver::sys;
     use sys::CUmemPool_attribute as A;
     let get = |attr| -> Option<u64> {
         let mut v: sys::cuuint64_t = 0;
-        unsafe { sys::cuMemPoolGetAttribute(pool, attr, (&mut v as *mut u64).cast()) }
-            .result()
-            .ok()?;
+        unsafe { sys::cuMemPoolGetAttribute(pool, attr, (&mut v as *mut u64).cast()) }.result().ok()?;
         Some(v)
     };
-    Some((
-        get(A::CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT)?,
-        get(A::CU_MEMPOOL_ATTR_USED_MEM_CURRENT)?,
-    ))
+    Some((get(A::CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT)?, get(A::CU_MEMPOOL_ATTR_USED_MEM_CURRENT)?))
 }
 
 /// The default pool's high-water marks since the last [`reset_pool_peak`]: `(used, reserved)`
@@ -156,16 +145,10 @@ pub fn retain_pool(device: &Device, extra: usize) {
         }
         let mut v: sys::cuuint64_t = want as u64;
         let attr = sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD;
-        let ok = unsafe { sys::cuMemPoolSetAttribute(pool, attr, (&mut v as *mut u64).cast()) }
-            .result()
-            .is_ok();
+        let ok = unsafe { sys::cuMemPoolSetAttribute(pool, attr, (&mut v as *mut u64).cast()) }.result().is_ok();
         if ok {
             RETAINED.fetch_max(want, Ordering::Relaxed);
-            tracing::debug!(
-                threshold_mib = want >> 20,
-                used_mib = used >> 20,
-                "cuda mempool release threshold"
-            );
+            tracing::debug!(threshold_mib = want >> 20, used_mib = used >> 20, "cuda mempool release threshold");
         }
     }
     let _ = (device, extra);

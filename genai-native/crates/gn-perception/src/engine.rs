@@ -217,7 +217,13 @@ fn candle_error(e: anyhow::Error) -> EngineError {
 
 #[cfg(feature = "candle")]
 fn candle_opts(o: Options) -> gn_segment::sam::Options {
-    gn_segment::sam::Options { threshold: o.threshold, max_detections: o.max_detections, refine_iterations: o.refine_iterations, soft: o.soft, candidate: o.candidate }
+    gn_segment::sam::Options {
+        threshold: o.threshold,
+        max_detections: o.max_detections,
+        refine_iterations: o.refine_iterations,
+        soft: o.soft,
+        candidate: o.candidate,
+    }
 }
 
 #[cfg(feature = "candle")]

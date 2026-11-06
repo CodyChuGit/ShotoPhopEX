@@ -213,7 +213,14 @@ impl Sam31 {
         self.forward_segment_pick(trk, points, bbox, mask, None)
     }
 
-    fn forward_segment_pick(&self, trk: &[Tensor; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&[f32]>, pick: Option<usize>) -> Result<Vec<f32>> {
+    fn forward_segment_pick(
+        &self,
+        trk: &[Tensor; 3],
+        points: &[([f32; 2], i32)],
+        bbox: Option<[f32; 4]>,
+        mask: Option<&[f32]>,
+        pick: Option<usize>,
+    ) -> Result<Vec<f32>> {
         let (coords, labels) = crate::prompt::pack_prompts(points, bbox);
         let multimask = points.len() == 1;
         let out = self.run_heads(trk, &coords, &labels, mask)?;
@@ -231,7 +238,14 @@ impl Sam31 {
         self.forward_segment_device_pick(trk, points, bbox, mask, None)
     }
 
-    fn forward_segment_device_pick(&self, trk: &[Tensor; 3], points: &[([f32; 2], i32)], bbox: Option<[f32; 4]>, mask: Option<&Tensor>, pick: Option<usize>) -> Result<Tensor> {
+    fn forward_segment_device_pick(
+        &self,
+        trk: &[Tensor; 3],
+        points: &[([f32; 2], i32)],
+        bbox: Option<[f32; 4]>,
+        mask: Option<&Tensor>,
+        pick: Option<usize>,
+    ) -> Result<Tensor> {
         let (coords, labels) = crate::prompt::pack_prompts(points, bbox);
         let out = crate::profile::measure(&self.device, "heads", || self.heads.forward([&trk[0], &trk[1], &trk[2]], &coords, &labels, mask))?;
         if let (true, Some(c)) = (points.len() == 1, pick) {
@@ -242,10 +256,18 @@ impl Sam31 {
 
     /// [`Self::choose_head_device`] with a single click's `c`-th meaning ([`ranked_head`]).
     fn pick_head_device(&self, out: &crate::mask_decoder::InteractiveOutput, c: usize) -> Result<Tensor> {
-        let iou: [f32; 4] = out.iou.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?.try_into().map_err(|_| anyhow::anyhow!("expected four IoUs"))?;
+        let iou: [f32; 4] =
+            out.iou.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?.try_into().map_err(|_| anyhow::anyhow!("expected four IoUs"))?;
         let heads = out.masks.narrow(1, 1, 3)?;
-        let areas: [f32; 3] =
-            heads.gt(0.0)?.to_dtype(candle_core::DType::F32)?.flatten(2, 3)?.sum(2)?.flatten_all()?.to_vec1::<f32>()?.try_into().map_err(|_| anyhow::anyhow!("expected three heads"))?;
+        let areas: [f32; 3] = heads
+            .gt(0.0)?
+            .to_dtype(candle_core::DType::F32)?
+            .flatten(2, 3)?
+            .sum(2)?
+            .flatten_all()?
+            .to_vec1::<f32>()?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("expected three heads"))?;
         let token = ranked_head(&iou, &areas, c);
         let logits = out.masks.narrow(1, token, 1)?.to_dtype(candle_core::DType::F32)?.upsample_bilinear2d(INPUT, INPUT, false)?;
         let valid = out.object_score.gt(0.0)?.reshape((1, 1, 1, 1))?.broadcast_as(logits.shape())?;

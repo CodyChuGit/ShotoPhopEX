@@ -11,18 +11,16 @@
 //! runs only from the second frame on. Numerics in f32 on the device (a 1024² decode is small
 //! beside the DiT); the fused bf16 path of the 2.1 VAE is for later.
 
-use candle_core::{D, DType, Device, IndexOp, Module, Tensor};
+use candle_core::{DType, Device, IndexOp, Module, Tensor, D};
 use candle_nn::{Conv2d, Conv2dConfig, VarBuilder};
 
 use crate::Result;
 
 /// ComfyUI's `latent_formats.Wan21`: the sampler works on `(z − mean) / std`, the VAE on `z`.
-pub const WAN21_MEAN: [f32; 16] = [
-    -0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508, 0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921,
-];
-pub const WAN21_STD: [f32; 16] = [
-    2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743, 3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160,
-];
+pub const WAN21_MEAN: [f32; 16] =
+    [-0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508, 0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921];
+pub const WAN21_STD: [f32; 16] =
+    [2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743, 3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160];
 pub const LATENT_CHANNELS: usize = 16;
 /// Pixels per latent cell on a side.
 pub const SCALE: usize = 8;
@@ -60,7 +58,8 @@ impl Drop for DecoderConvs {
 impl VaeConv {
     fn new(w: Tensor, b: Tensor, k: usize) -> Result<Self> {
         #[cfg(feature = "convrot")]
-        let krsc = if DECODER.with(|d| d.get()) && crate::vae_conv::enabled() && crate::vae_conv::supports(&w) { Some(crate::vae_conv::krsc(&w)?) } else { None };
+        let krsc =
+            if DECODER.with(|d| d.get()) && crate::vae_conv::enabled() && crate::vae_conv::supports(&w) { Some(crate::vae_conv::krsc(&w)?) } else { None };
         Ok(Self {
             conv: Conv2d::new(w, Some(b), Conv2dConfig { padding: k / 2, ..Default::default() }),
             #[cfg(feature = "convrot")]
@@ -343,7 +342,8 @@ impl WanVae {
         let conv2 = conv_last_tap(z, z, 1, 1, vb.pp("conv2"))?;
         let conv1 = conv_last_tap(z, dims[0], 3, 3, d.pp("conv1"))?;
         let m = d.pp("middle");
-        let middle = (ResidualBlock::load(dims[0], dims[0], m.pp("0"))?, AttentionBlock::load(dims[0], m.pp("1"))?, ResidualBlock::load(dims[0], dims[0], m.pp("2"))?);
+        let middle =
+            (ResidualBlock::load(dims[0], dims[0], m.pp("0"))?, AttentionBlock::load(dims[0], m.pp("1"))?, ResidualBlock::load(dims[0], dims[0], m.pp("2"))?);
         let u = d.pp("upsamples");
         let mut ups = Vec::new();
         let mut idx = 0usize;

@@ -13,7 +13,19 @@ use crate::Result;
 
 extern "C" {
     #[allow(clippy::too_many_arguments)]
-    fn qir_vae_conv2d_nhwc(x: *const c_void, w: *const c_void, bias: *const c_void, y: *mut c_void, n: i32, h: i32, w_: i32, c: i32, k: i32, r: i32, stream: *mut c_void) -> i32;
+    fn qir_vae_conv2d_nhwc(
+        x: *const c_void,
+        w: *const c_void,
+        bias: *const c_void,
+        y: *mut c_void,
+        n: i32,
+        h: i32,
+        w_: i32,
+        c: i32,
+        k: i32,
+        r: i32,
+        stream: *mut c_void,
+    ) -> i32;
 }
 
 /// Whether the implicit-GEMM convolutions are on (`QIR_VAE_IGEMM=0` turns them off).
@@ -25,9 +37,7 @@ pub fn enabled() -> bool {
 /// Whether a `(O, I, k, k)` weight takes this path: bf16 on CUDA, odd `k`, `O` and `I`
 /// multiples of 8.
 pub fn supports(weight: &Tensor) -> bool {
-    weight.device().is_cuda()
-        && weight.dtype() == DType::BF16
-        && weight.dims4().is_ok_and(|(o, i, kh, kw)| o % 8 == 0 && i % 8 == 0 && kh == kw && kh % 2 == 1)
+    weight.device().is_cuda() && weight.dtype() == DType::BF16 && weight.dims4().is_ok_and(|(o, i, kh, kw)| o % 8 == 0 && i % 8 == 0 && kh == kw && kh % 2 == 1)
 }
 
 /// The weight `(O, I, k, k)` in the kernel's KRSC layout `(O, k, k, I)`.
@@ -113,7 +123,8 @@ mod tests {
             let b = Tensor::randn(0f32, 0.5, k, &dev)?.to_dtype(DType::BF16)?;
             assert!(supports(&w));
             let fast = conv2d_nchw(&x, &krsc(&w)?, &b)?.to_dtype(DType::F32)?;
-            let exact = x.to_dtype(DType::F32)?.conv2d(&w.to_dtype(DType::F32)?, r / 2, 1, 1, 1)?.broadcast_add(&b.to_dtype(DType::F32)?.reshape((1, k, 1, 1))?)?;
+            let exact =
+                x.to_dtype(DType::F32)?.conv2d(&w.to_dtype(DType::F32)?, r / 2, 1, 1, 1)?.broadcast_add(&b.to_dtype(DType::F32)?.reshape((1, k, 1, 1))?)?;
             assert_eq!(fast.dims(), exact.dims());
             let err = (&fast - &exact)?.abs()?.max_all()?.to_scalar::<f32>()?;
             let scale = exact.abs()?.max_all()?.to_scalar::<f32>()?;

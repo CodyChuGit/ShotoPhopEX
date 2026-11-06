@@ -19,12 +19,7 @@ pub struct TileConfig {
 }
 
 const fn cfg(tb: (u16, u16, u16), warp: (u16, u16, u16), stages: u8, swizzle: u8) -> TileConfig {
-    TileConfig {
-        tb,
-        warp,
-        stages,
-        swizzle,
-    }
+    TileConfig { tb, warp, stages, swizzle }
 }
 
 /// The compiled configs, by index (= the `cfg` passed to the launcher).
@@ -153,10 +148,7 @@ pub fn gemm_plan_sm89(m: usize, n: usize, _k: usize) -> GemmPlan {
     } else if n >= 8192 {
         GemmPlan::single(if m >= HUGE_M { 3 } else { 1 })
     } else {
-        GemmPlan {
-            main: 3,
-            tail: Some(2),
-        }
+        GemmPlan { main: 3, tail: Some(2) }
     }
 }
 
@@ -164,10 +156,7 @@ pub fn gemm_plan_sm89(m: usize, n: usize, _k: usize) -> GemmPlan {
 mod tests {
     use super::*;
 
-    const SPLIT: GemmPlan = GemmPlan {
-        main: 3,
-        tail: Some(2),
-    };
+    const SPLIT: GemmPlan = GemmPlan { main: 3, tail: Some(2) };
 
     #[test]
     fn b1_dit_shapes() {

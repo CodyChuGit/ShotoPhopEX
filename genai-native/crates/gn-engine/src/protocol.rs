@@ -197,14 +197,23 @@ pub enum ErrorKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Reply {
-    Hello { version: u32, engine: String },
+    Hello {
+        version: u32,
+        engine: String,
+    },
     Health(Health),
-    Progress { fraction: f32, message: String },
+    Progress {
+        fraction: f32,
+        message: String,
+    },
     /// Sent only for a run that asked for previews (`RunRequest::preview`), so an editor from
     /// before them never sees one.
     Preview(PreviewInfo),
     Done(DoneInfo),
-    Error { kind: ErrorKind, message: String },
+    Error {
+        kind: ErrorKind,
+        message: String,
+    },
     Freed,
     Index(Value),
     Bye,
