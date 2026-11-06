@@ -186,7 +186,8 @@ impl NativeBackend {
             program,
             args,
             path_dirs: Vec::new(),
-            token: gn_engine::client::new_token(),
+            // Empty only when the OS random source failed; then no worker is ever started.
+            token: gn_engine::client::new_token().unwrap_or_default(),
             client: Mutex::new(None),
             attached: false,
             log: None,
@@ -327,6 +328,9 @@ impl NativeBackend {
         if guard.is_none() {
             if self.attached {
                 return Err(Error::Unavailable("the engine is gone".into()));
+            }
+            if self.token.is_empty() {
+                return Err(Error::Unavailable("no secure random source to protect the engine connection".into()));
             }
             let prev = self.busy.swap(STARTING, Ordering::SeqCst);
             let log = self.log.as_deref().and_then(|p| open_log(p, LOG_ROTATE_BYTES));
@@ -758,7 +762,7 @@ pub fn engine_main(args: &[String]) -> i32 {
 pub fn serve_fake(installed: Vec<String>, step_ms: u64) -> Result<(u16, String)> {
     let listener = gn_engine::server::bind().map_err(|e| Error::Unavailable(e.to_string()))?;
     let port = listener.local_addr().map_err(|e| Error::Unavailable(e.to_string()))?.port();
-    let token = gn_engine::client::new_token();
+    let token = gn_engine::client::new_token().ok_or_else(|| Error::Unavailable("no secure random source".into()))?;
     let t = token.clone();
     std::thread::spawn(move || {
         let mut engine = gn_engine::fake::FakeEngine { step_ms, installed, ..Default::default() };
