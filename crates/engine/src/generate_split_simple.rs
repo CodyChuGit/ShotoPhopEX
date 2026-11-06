@@ -158,7 +158,8 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
             // Each part's layer and its direct whole's, as indices into `taken`.
             let mut part_layers: Vec<(usize, usize)> = Vec::new();
             // Subjects the detector no longer found before their turn (painted over by a nearer
-            // subject's removal): no layer of their own.
+            // subject's removal): no turn of their own, a layer cut from the picture before that
+            // removal (`layered`) while the budget lasts.
             let mut lost: Vec<Value> = Vec::new();
             // Where accepted removals repainted the picture so far, and every mask swap (or refused one).
             let mut repainted = vec![false; wu * hu];
@@ -234,9 +235,11 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 for q in taken.iter_mut().skip(done) {
                     q.completed = cleared;
                 }
+                // The picture before this removal, while it is looked at again below.
+                let mut before: Option<Vec<u8>> = None;
                 match removed.picture {
                     Some(filled) => {
-                        p = filled;
+                        before = Some(std::mem::replace(&mut p, filled));
                         for (r, a) in repainted.iter_mut().zip(&removed.pasted) {
                             *r |= *a > PASTED;
                         }
@@ -250,7 +253,28 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 // Look again, for the listed subjects still to come only: is each still there, and
                 // what is its mask now (a removal may show more of someone it hid).
                 if !pending.is_empty() && taken.len() < budget {
-                    refind(&finder, &p, area, (&mut pending, &mut pending_parts), &mut lost, &repainted, &mut swaps, ctx)?;
+                    let mut gone = refind(&finder, &p, area, (&mut pending, &mut pending_parts), &mut lost, &repainted, &mut swaps, ctx)?;
+                    // A subject no longer found was painted over by this removal: it is gone from
+                    // the background, so it gets a layer of its own, cut from the picture as it
+                    // stood before that removal, behind the one removed (the café's middle man
+                    // vanished from the split altogether, no layer and not in the background,
+                    // measured in the app 2026-11-06).
+                    if !gone.is_empty() {
+                        let source = before.as_deref().unwrap_or(&p);
+                        used = matte_all(backend.as_ref(), matte.as_ref(), doc, *active, source, area, &mut gone, None, edges, ctx)?;
+                        // `refind` named them last in `lost`, in this order.
+                        let first = lost.len().saturating_sub(gone.len());
+                        for (k, g) in gone.into_iter().enumerate() {
+                            if taken.len() >= budget {
+                                break;
+                            }
+                            if let Some(record) = lost.get_mut(first + k) {
+                                record["layered"] = json!(true);
+                            }
+                            cut.push(under_alpha(source, &g.alpha));
+                            taken.push(g);
+                        }
+                    }
                 }
             }
             if left_in.len() == taken.len() {
@@ -352,7 +376,8 @@ fn is_background(s: &Subject, w: usize, h: usize) -> bool {
 /// asked for its kind, and the find that is the same subject ([`same_subject`]: either holds half
 /// of the other; the best overlap first, each find matched once) becomes its mask now. A subject
 /// with no such find is gone from the picture (a nearer one's removal painted over it): it leaves
-/// the list, named in `lost`. Nothing the detector finds is ever added.
+/// the list, named in `lost`, and is returned (in the order it was named there). Nothing the
+/// detector finds is ever added.
 #[allow(clippy::too_many_arguments)]
 fn refind(
     finder: &SubjectFinder,
@@ -363,7 +388,7 @@ fn refind(
     repainted: &[bool],
     swaps: &mut Vec<Value>,
     ctx: &JobCtx,
-) -> Result<()> {
+) -> Result<Vec<Subject>> {
     let mut kinds: Vec<String> = Vec::new();
     for s in pending.iter() {
         let k = s.check_term().to_string();
@@ -424,17 +449,27 @@ fn refind(
             }
         }
     }
-    let mut k = 0;
-    pending.retain(|_| {
-        k += 1;
-        keep.get(k - 1).copied().unwrap_or(false)
-    });
+    // The lost ones in the order `lost` names them (kind by kind), out of the list.
+    let mut order: Vec<usize> = Vec::new();
+    let mut kinds_seen: Vec<String> = Vec::new();
+    for s in pending.iter() {
+        let k = s.check_term().to_string();
+        if !kinds_seen.contains(&k) {
+            kinds_seen.push(k);
+        }
+    }
+    for kind in &kinds_seen {
+        order.extend((0..pending.len()).filter(|i| !keep.get(*i).copied().unwrap_or(true) && pending[*i].check_term() == kind));
+    }
+    let mut slots: Vec<Option<Subject>> = std::mem::take(pending).into_iter().map(Some).collect();
+    let gone: Vec<Subject> = order.iter().filter_map(|i| slots.get_mut(*i).and_then(Option::take)).collect();
+    *pending = slots.into_iter().flatten().collect();
     let mut k = 0;
     parts.retain(|_| {
         k += 1;
         keep.get(k - 1).copied().unwrap_or(false)
     });
-    Ok(())
+    Ok(gone)
 }
 
 /// The subjects split into wholes and their parts: a subject with at least [`PART_SHARE`] of its
