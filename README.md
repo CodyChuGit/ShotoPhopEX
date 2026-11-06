@@ -18,7 +18,7 @@
   <img alt="Faster than ComfyUI" src="https://img.shields.io/badge/vs%20ComfyUI-faster%20on%2011%20of%2013-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-d69e2e?style=flat-square">
-  <a href="https://github.com/CodyChuGit/comfy-photocraft/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/CodyChuGit/comfy-photocraft?style=flat-square&logo=github"></a>
+  <a href="https://github.com/CodyChuGit/ShotoPhopEX/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/CodyChuGit/ShotoPhopEX?style=flat-square&logo=github"></a>
 </p>
 
 <p align="center">
@@ -276,8 +276,8 @@ checked against the ComfyUI route at every step (within 0.06/255, or byte-identi
 
 > [!IMPORTANT]
 > **There is no one-click download yet.** No release has been published, so today the app is
-> built from source on Windows. The engine's crates live in a separate repository
-> (`CodyChuGit/genai-native`) that is private for now, so building needs access to it.
+> built from source on Windows. Everything is in this one repository: the editor, and the
+> native generative engine in [`genai-native/`](genai-native/).
 
 ### What you need
 
@@ -299,8 +299,8 @@ git clone --depth 1 https://github.com/NVIDIA/cutlass C:\src\cutlass
 **2. Build** (from an "x64 Native Tools Command Prompt for VS 2022"):
 
 ```bat
-git clone -b photoshopex https://github.com/CodyChuGit/comfy-photocraft
-cd comfy-photocraft
+git clone https://github.com/CodyChuGit/ShotoPhopEX
+cd ShotoPhopEX
 set CUDA_COMPUTE_CAP=120
 set CUTLASS_DIR=C:\src\cutlass\include
 set NVCC_APPEND_FLAGS=-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17
@@ -333,7 +333,7 @@ Open a coding agent (Claude Code, Codex, or any agent with a terminal) in an emp
 Windows PC and paste this:
 
 ```text
-Install ShotoPhopEX (https://github.com/CodyChuGit/comfy-photocraft, branch photoshopex) on this
+Install ShotoPhopEX (https://github.com/CodyChuGit/ShotoPhopEX) on this
 Windows PC and get its generative features working. Follow the README's "Quick start" and
 "Models" sections exactly. Work in this order and stop to ask me if a step fails:
 
@@ -341,7 +341,7 @@ Windows PC and get its generative features working. Follow the README's "Quick s
 2. Check for Git, rustup (MSVC toolchain), Visual Studio 2022 Build Tools with the C++ workload,
    the CUDA Toolkit 13 and the CUTLASS headers. Install whatever is missing with winget, as the
    README shows. Ask me before installing anything.
-3. Clone the repository on the photoshopex branch and build photocraft and photocraft-cli with
+3. Clone the repository and build photocraft and photocraft-cli with
    --features native-diffusion from a VS 2022 x64 developer environment, setting CUDA_COMPUTE_CAP
    for this GPU, CUTLASS_DIR and NVCC_APPEND_FLAGS as the README shows.
 4. Ask me where the models folder should go. Create the ComfyUI layout in it and download the
@@ -553,15 +553,14 @@ app never locks a model behind a licence switch; you are responsible for each mo
 
 It is an alpha. The editor underneath is a mature clean-room reimplementation with real PSD
 support, and the generative tools are in daily use, but expect rough edges and report them in
-[Issues](https://github.com/CodyChuGit/comfy-photocraft/issues).
+[Issues](https://github.com/CodyChuGit/ShotoPhopEX/issues).
 
 </details>
 
 ## 🤝 Contributing
 
 Issues and pull requests are welcome on
-[CodyChuGit/comfy-photocraft](https://github.com/CodyChuGit/comfy-photocraft) (branch
-`photoshopex`). New contributors and agents: start with [`AGENTS.md`](AGENTS.md), then
+[CodyChuGit/ShotoPhopEX](https://github.com/CodyChuGit/ShotoPhopEX). New contributors and agents: start with [`AGENTS.md`](AGENTS.md), then
 [`docs/`](docs/) and [`docs/comfy/`](docs/comfy/). If ShotoPhopEX saves you a subscription, a ⭐
 helps other people find it.
 

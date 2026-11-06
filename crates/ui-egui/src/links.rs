@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use crate::PhotocraftApp;
 
 pub const ARTCRAFT_WEBSITE: &str = "https://getartcraft.com";
-pub const GITHUB: &str = "https://github.com/CodyChuGit/comfy-photocraft";
-pub const ISSUES: &str = "https://github.com/CodyChuGit/comfy-photocraft/issues";
+pub const GITHUB: &str = "https://github.com/CodyChuGit/ShotoPhopEX";
+pub const ISSUES: &str = "https://github.com/CodyChuGit/ShotoPhopEX/issues";
 
 /// Help-menu link commands: (id, url). Labels live in `menus::UI_COMMANDS`.
 pub const COMMANDS: &[(&str, &str)] = &[("help.artcraftWebsite", ARTCRAFT_WEBSITE), ("help.github", GITHUB), ("help.reportIssue", ISSUES)];
@@ -113,8 +113,8 @@ mod tests {
         let ctx = egui::Context::default();
         for (id, url) in [
             ("help.artcraftWebsite", "https://getartcraft.com"),
-            ("help.github", "https://github.com/CodyChuGit/comfy-photocraft"),
-            ("help.reportIssue", "https://github.com/CodyChuGit/comfy-photocraft/issues"),
+            ("help.github", "https://github.com/CodyChuGit/ShotoPhopEX"),
+            ("help.reportIssue", "https://github.com/CodyChuGit/ShotoPhopEX/issues"),
         ] {
             let r = crate::menus::invoke(&mut app, &ctx, id, serde_json::json!({})).unwrap();
             assert_eq!(r["url"], url);
