@@ -1,7 +1,7 @@
 //! How long MOSS-Image's files take to reach the GPU, and that the INT8 bytes are the ones a plain
 //! read of the file gives (both ignored by default, they need the installed files):
 //! `MOSS_ROOT=<folder> cargo test -p qwen-image-rs --features cuda,convrot --test
-//! moss_load_bench -- --ignored --nocapture` (default root `D:\PhotoCraftModels\moss-image`).
+//! moss_load_bench -- --ignored --nocapture`.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use qwen_image_rs::moss::text::{Qwen35Text, TextConfig};
 use qwen_image_rs::moss::weights::Weights;
 
 fn files() -> Option<[PathBuf; 2]> {
-    let root = PathBuf::from(std::env::var("MOSS_ROOT").unwrap_or_else(|_| r"D:\PhotoCraftModels\moss-image".into()));
+    let root = PathBuf::from(std::env::var("MOSS_ROOT").unwrap_or_default());
     let files = [root.join("text_encoders/qwen3.5_9b_int8_convrot.safetensors"), root.join("diffusion_models/moss_image_sft_int8_convrot.safetensors")];
     files.iter().all(|f| f.is_file()).then_some(files)
 }

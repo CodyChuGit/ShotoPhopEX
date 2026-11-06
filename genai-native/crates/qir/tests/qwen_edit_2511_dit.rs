@@ -13,7 +13,7 @@ fn fixture(name: &str) -> anyhow::Result<HashMap<String, Tensor>> {
 
 fn checkpoint() -> PathBuf {
     std::env::var_os("QIR_EDIT2511_DIT").map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models\diffusion_models\qwen_image_edit_2511_fp8mixed.safetensors")
+        std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join("diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors")
     })
 }
 

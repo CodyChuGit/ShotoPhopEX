@@ -29,6 +29,28 @@ The CUDA build needs nvcc (CUDA 13), the CUTLASS headers and, on Windows, the MS
 the root [README](../README.md#-install) has the exact steps. Without the `cuda` features the
 crates build and test on the CPU.
 
+## Tests against real models
+
+`cargo test` runs on the small fixtures in the repository. The parity and benchmark tests that
+need real model files skip themselves (or are `#[ignore]`d) until you say where those files are:
+
+| Variable | Points at |
+|---|---|
+| `COMFY_MODELS` | A ComfyUI `models` folder (`checkpoints/`, `diffusion_models/`, `text_encoders/`, `vae/`, …) |
+| `COMFY_DIR` | The ComfyUI folder itself, for its bundled tokenizers under `comfy/` |
+| `COMFY_PYTHON` | ComfyUI's Python, for the int8 ConvRot parity test |
+| `QWEN21_SNAPSHOT` | A Hugging Face snapshot of Qwen-Image-2.1 (`vae/`, `processor/`) |
+| `NATIVE_MODELS` | A folder with `sam3.1/tokenizer.json` |
+| `MOSS_ROOT` | A folder with the MOSS-Image int8 files in the ComfyUI layout |
+| `GN_SAM31_CHECKPOINT`, `QIR_*` | Single files or inputs for one test; see the test's own doc comment |
+
+For example, on Windows:
+
+```powershell
+$env:COMFY_MODELS = "D:\ComfyUI\models"
+cargo test -p qwen-image-rs --test wan_vae -- --include-ignored --nocapture
+```
+
 ## Licence
 
 MIT OR Apache-2.0. Ported code keeps its origin in [`NOTICE`](NOTICE).

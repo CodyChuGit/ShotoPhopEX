@@ -19,7 +19,7 @@
     CUDA runtime, cuBLAS, cuBLASLt, cuRAND   NVIDIA CUDA Toolkit EULA, Attachment A (redistributable)
 
 .EXAMPLE
-  pwsh packaging/windows/runtime.ps1 -Cuda C:\Users\5090\scoop\apps\cuda\current\bin\x64
+  pwsh packaging/windows/runtime.ps1 -Cuda "$env:CUDA_PATH\bin\x64"
 #>
 param(
   [Parameter(Mandatory)] [string] $Cuda,
