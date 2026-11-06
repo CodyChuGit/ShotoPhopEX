@@ -449,21 +449,11 @@ The detailed plans: [`docs/comfy/roadmap.md`](docs/comfy/roadmap.md),
 ## 🏗️ How it works
 
 ```mermaid
-flowchart TD
-    UI["Editor UI<br/>egui · wgpu canvas"]
-    CLI["photocraft-cli · MCP"]
-    CMD["Command engine<br/>generate.* · select.by*"]
-    W["Native worker<br/>photocraft --engine"]
-    K["Rust model code<br/>Krea 2 · Qwen-Image · MOSS · SAM 3.1 · ViTMatte<br/>int8 / fp8 CUDA kernels"]
-    M[("Models folder<br/>ComfyUI layout")]
-    L["New masked layer<br/>+ Generations library"]
-
-    UI --> CMD
-    CLI --> CMD
-    CMD -- "prompt, pixels, mask" --> W
-    W --> K
-    M -. "weights" .-> K
-    K -- "RGBA result" --> L
+flowchart LR
+    A["Editor · CLI · MCP"] --> B["Commands<br/>generate.* select.*"]
+    B --> C["Native worker<br/>Rust + CUDA"]
+    D[("Models folder")] -.-> C
+    C --> E["Masked layer"]
 ```
 
 - **Everything is a command.** `generate.fill`, `generate.image`, `generate.edit`,
