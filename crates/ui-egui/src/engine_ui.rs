@@ -181,7 +181,7 @@ fn reveal(app: &mut PhotocraftApp, path: &str) {
     {
         match photocraft_engine::layer_menu_cmds::reveal_command(path) {
             Ok((program, args)) => {
-                if let Err(e) = std::process::Command::new(program).args(&args).spawn() {
+                if let Err(e) = std::process::Command::new(&program).args(&args).spawn() {
                     crate::notices::error(app, format!("{program}: {e}"));
                 }
             }

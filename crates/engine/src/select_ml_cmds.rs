@@ -524,27 +524,20 @@ fn without_specks(mut instances: Vec<Instance>) -> Vec<Instance> {
 /// little smoothing and feather, as Remove Background and Select Subject do): hair and soft
 /// edges get partial coverage from the pixels themselves.
 pub(crate) fn refine_coverage(doc: &Document, active: Option<LayerId>, all_layers: bool, cov: Vec<f32>, area: Rect) -> Vec<f32> {
-    let (content, found) = coverage_bounds(&cov, area);
+    let (_, found) = coverage_bounds(&cov, area);
     if found == 0 {
         return cov;
     }
-    let wv = area.width() as usize;
-    let reader = |r: Rect| -> Vec<f32> {
-        let mut v = Vec::with_capacity(r.width() as usize * r.height() as usize);
-        for y in r.y0..r.y1 {
-            for x in r.x0..r.x1 {
-                let inside = x >= area.x0 && x < area.x1 && y >= area.y0 && y < area.y1;
-                v.push(if inside { cov.get((y - area.y0) as usize * wv + (x - area.x0) as usize).copied().unwrap_or(0.0) } else { 0.0 });
-            }
-        }
-        v
-    };
+    // Upstream 0.21 refines sparse surfaces: the coverage goes in as an 8-bit selection surface
+    // (what a selection keeps anyway) and comes back out over `area`.
+    let mask = cov.iter().map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8).collect();
+    let surface = photocraft_algo::matting::region_surface(&photocraft_algo::selection::Region { bbox: area, mask });
     let refined = crate::smartselect_cmds::with_doc_sampler(doc, active, all_layers, |smp, d| {
-        photocraft_algo::matting::refine_mask(smp, &reader, content, d.bounds(), &crate::cutout_cmds::REFINE)
+        photocraft_algo::matting::refine_surface(smp, &surface, d.bounds(), &crate::cutout_cmds::REFINE, None)
     });
     match refined {
-        Some(reg) => photocraft_algo::matting::region_reader(&reg)(area),
-        None => cov,
+        Ok(Some(s)) => photocraft_algo::selection::mask_from_surface(Some(&s), area),
+        _ => cov,
     }
 }
 
