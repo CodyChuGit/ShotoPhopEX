@@ -313,14 +313,6 @@ One click and SAM 3.1 finds the subject. **0.6&nbsp;s** warm, 2.2 s cold.
 
 Every person and thing in the picture on its own colour-coded, edge-matted layer: the ID pass compositors know. 40 layers from a busy café in **about 10&nbsp;s.**
 
-### Image Quality
-
-<p align="center">
-  <img src="docs/images/genai/quality.jpg" alt="The same prompt and seed at Image Quality Fast, Balanced and Best, side by side, with each one's time" width="100%">
-</p>
-
-One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to Krea 2 at about 2 MP (1440²). Same prompt and seed in all three.
-
 ### Text to image with MOSS Turbo
 
 <p align="center">
@@ -328,6 +320,14 @@ One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to 
 </p>
 
 The low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card and spells its lettering right. **1.6&nbsp;s** on a 5090.
+
+### Image Quality
+
+<p align="center">
+  <img src="docs/images/genai/quality.jpg" alt="The same prompt and seed at Image Quality Fast, Balanced and Best, side by side, with each one's time" width="100%">
+</p>
+
+One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to Krea 2 at about 2 MP (1440²). Same prompt and seed in all three.
 
 ### Every feature
 
