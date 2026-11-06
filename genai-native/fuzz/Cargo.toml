@@ -1,0 +1,48 @@
+[package]
+name = "genai-native-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# Standalone: outside the genai-native workspace (cargo-fuzz builds it on nightly).
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+gn-engine = { path = "../crates/gn-engine" }
+gn-weights = { path = "../crates/gn-weights" }
+qwen-image-rs = { path = "../crates/qir" }
+serde_json = "1"
+candle-core = "0.11"
+
+[[bin]]
+name = "engine_frames"
+path = "fuzz_targets/engine_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "safetensors_header"
+path = "fuzz_targets/safetensors_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gguf_header"
+path = "fuzz_targets/gguf_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qir_tensor_files"
+path = "fuzz_targets/qir_tensor_files.rs"
+test = false
+doc = false
+bench = false

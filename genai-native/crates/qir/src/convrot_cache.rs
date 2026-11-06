@@ -177,7 +177,7 @@ pub fn read_header(path: &Path) -> Result<Header> {
         data_end = data_end.max(end);
         names.push(k.clone());
     }
-    Ok(Header { metadata, names, expected_len: 8 + n + data_end })
+    Ok(Header { metadata, names, expected_len: n.saturating_add(8).saturating_add(data_end) })
 }
 
 /// True when any file already holds a ConvRot INT8 weight (`*.weight_i8`):
@@ -420,6 +420,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn a_header_claiming_the_largest_offset_does_not_overflow() {
+        let d = tmpdir("overflow");
+        let p = d.join("big.safetensors");
+        let header = br#"{"a":{"dtype":"U8","shape":[1],"data_offsets":[0,18446744073709551615]}}"#;
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(header);
+        std::fs::write(&p, bytes).unwrap();
+        let h = read_header(&p).unwrap();
+        assert_eq!(h.expected_len, u64::MAX, "saturates instead of wrapping to a small length");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn write_st(path: &Path, names: &[&str], meta: Option<HashMap<String, String>>) {
