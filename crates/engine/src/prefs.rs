@@ -1087,8 +1087,17 @@ pub struct Integrations {
     /// (`qwen-edit-2511/fill-lightning-8` with its LoRA installed, else `qwen-edit-2511/fill`);
     /// `qwen-2.1/fill` is the research one.
     pub default_fill_template: String,
-    /// Workflow template `generate.image` uses when the call names none.
+    /// Workflow template `generate.image` uses when the call names none. `auto` = the memory
+    /// profile's ([`crate::memory_profile::image_template`]): Krea 2 on a 24 GB card or larger,
+    /// MOSS turbo on a smaller one.
     pub default_image_template: String,
+    /// The memory profile the AI defaults are matched to: `auto` (the one detected at launch,
+    /// [`Self::detected_memory_profile`]) or one of [`crate::memory_profile::PREF_NAMES`]. It
+    /// only changes what Auto picks; see [`crate::memory_profile`].
+    pub memory_profile: String,
+    /// The memory profile detected at the last launch from the graphics card (or a Mac's
+    /// unified memory); empty until the first launch that finds one.
+    pub detected_memory_profile: String,
     /// Seconds a generation may take before it is interrupted.
     pub generative_timeout_secs: u32,
     /// Let Auto pick models whose licence allows research use only (Qwen-Image-2.1's native
@@ -1162,7 +1171,9 @@ impl Default for Integrations {
             default_edit_model: String::new(),
             default_generate_model: String::new(),
             default_fill_template: "auto".into(),
-            default_image_template: "krea2-turbo/image".into(),
+            default_image_template: "auto".into(),
+            memory_profile: "auto".into(),
+            detected_memory_profile: String::new(),
             generative_timeout_secs: 600,
             allow_research_models: true,
             show_generative_bar: "auto".into(),

@@ -32,6 +32,9 @@ pub struct Item {
     pub installed: Option<bool>,
     /// Seconds for the current request, when known.
     pub eta: Option<f32>,
+    /// Needs more memory than the memory profile has (Preferences › AI Integrations › Memory
+    /// profile): still selectable, badged `may not fit`.
+    pub may_not_fit: bool,
 }
 
 /// How a family looks: its display name, glyph colour and initial.
@@ -155,7 +158,7 @@ pub fn selectable(it: &Item) -> bool {
     it.allowed
 }
 
-/// A row's badges, in order: the estimate, `research`, `not installed`.
+/// A row's badges, in order: the estimate, `research`, `not installed`, `may not fit`.
 pub fn badges(it: &Item) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(e) = it.eta.map(crate::generate_panel::eta_label).filter(|s| !s.is_empty()) {
@@ -166,6 +169,9 @@ pub fn badges(it: &Item) -> Vec<String> {
     }
     if it.installed == Some(false) {
         out.push(tl!("not installed").to_string());
+    }
+    if it.may_not_fit {
+        out.push(tl!("may not fit").to_string());
     }
     out
 }
@@ -317,7 +323,7 @@ fn row_ui(ui: &mut Ui, it: Option<&Item>, name: &str, auto: Option<&str>, checke
     let mut x = rect.right() - 6.0;
     if let Some(i) = it {
         for b in badges(i).into_iter().rev() {
-            let color = if b == tl!("research") {
+            let color = if b == tl!("research") || b == tl!("may not fit") {
                 t.warning
             } else if b == tl!("not installed") {
                 t.danger
@@ -336,6 +342,9 @@ fn row_ui(ui: &mut Ui, it: Option<&Item>, name: &str, auto: Option<&str>, checke
     }
     let tip = match it {
         Some(i) if !selectable(i) => format!("{}\n{}", i.name, tl!("Research licence: turn on Allow research-only models in Preferences › AI Integrations")),
+        Some(i) if i.may_not_fit => {
+            format!("{}\n{}", i.name, tl!("May need more graphics memory than this computer has (Preferences › AI Integrations › Memory profile)"))
+        }
         Some(i) => i.name.clone(),
         None => String::new(),
     };

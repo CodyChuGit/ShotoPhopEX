@@ -627,6 +627,9 @@ fn main() -> eframe::Result {
                 {
                     log::warn!("couldn't remember GPU backend {}: {e}", b.name());
                 }
+                // Match the AI defaults to the graphics card's memory (first launch, or a new card),
+                // before the warm-up picks the default image model.
+                photocraft_ui_egui::memory_profile_ui::check_at_launch(app);
                 // The default image model loads in the background (Preferences › AI Integrations).
                 if let Some(v) = photocraft_engine::generate_engine_cmds::warm_up_at_launch(&mut app.session) {
                     log::info!("AI models warm-up: {v}");

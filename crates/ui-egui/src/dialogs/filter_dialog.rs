@@ -582,7 +582,7 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
         let items: Vec<Value> = crate::generate_panel::picker_items(app, page, false)
             .into_iter()
             .map(|i| {
-                json!({"id": i.id, "name": i.name, "family": i.family, "description": i.description, "research": i.research, "allowed": i.allowed, "installed": i.installed})
+                json!({"id": i.id, "name": i.name, "family": i.family, "description": i.description, "research": i.research, "allowed": i.allowed, "installed": i.installed, "mayNotFit": i.may_not_fit})
             })
             .collect();
         fields.insert("__models".into(), Value::Array(items));
@@ -903,6 +903,7 @@ pub(crate) fn model_pill(ui: &mut egui::Ui, f: &mut Map<String, Value>, cmd: &st
                     allowed: v["allowed"].as_bool().unwrap_or(false),
                     installed: v["installed"].as_bool(),
                     eta: None,
+                    may_not_fit: v["mayNotFit"].as_bool().unwrap_or(false),
                 })
                 .collect()
         })

@@ -148,6 +148,42 @@ pub fn video_memory(adapter: &wgpu::AdapterInfo) -> Option<u64> {
     bytes
 }
 
+/// The memory of the largest NVIDIA card in this machine, in bytes: the card the AI models run
+/// on, which need not be the adapter the canvas drew with (a laptop's integrated GPU). DXGI on
+/// Windows, `nvidia-smi` on Linux, `None` elsewhere or with no NVIDIA card. `PHOTOCRAFT_VRAM_MB`
+/// overrides it, as for [`video_memory`] (to try a smaller card's memory profile).
+pub fn nvidia_card_memory() -> Option<u64> {
+    if let Some(mb) = std::env::var("PHOTOCRAFT_VRAM_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+        return mb.checked_mul(1 << 20).filter(|b| *b > 0);
+    }
+    detect_nvidia_card_memory().filter(|b| *b > 0)
+}
+
+#[cfg(windows)]
+fn detect_nvidia_card_memory() -> Option<u64> {
+    use winsafe::prelude::*;
+    let factory = winsafe::CreateDXGIFactory1().ok()?;
+    factory
+        .EnumAdapters1()
+        .filter_map(|a| a.ok()?.GetDesc1().ok())
+        .filter(|d| d.VendorId == 0x10de)
+        .filter_map(|d| u64::try_from(d.DedicatedVideoMemory).ok())
+        .max()
+}
+
+#[cfg(target_os = "linux")]
+fn detect_nvidia_card_memory() -> Option<u64> {
+    let mut cmd = std::process::Command::new("nvidia-smi");
+    cmd.args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"]);
+    let out = bounded_output(cmd, NVIDIA_SMI_DEADLINE)?;
+    String::from_utf8_lossy(&out).lines().filter_map(|l| l.trim().parse::<u64>().ok()?.checked_mul(1 << 20)).max()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn detect_nvidia_card_memory() -> Option<u64> {
+    None
+}
+
 #[cfg(windows)]
 pub(super) fn detect_video_memory(vendor: u32, device: u32) -> Option<u64> {
     use winsafe::prelude::*;
