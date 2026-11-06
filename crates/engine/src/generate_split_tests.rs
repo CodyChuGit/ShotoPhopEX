@@ -1291,10 +1291,12 @@ fn simple_split_takes_its_subjects_from_the_original_photo_only() {
 }
 
 #[test]
-fn simple_split_drops_a_subject_a_nearer_removal_painted_over() {
+fn simple_split_keeps_a_subject_a_nearer_removal_painted_over_on_its_own_layer() {
     // Rule: a later look only finds the listed subjects again. The back one shows only as a strip
     // above the front one's head, inside the front one's widened hole: the front one's removal
-    // paints over it, the detector no longer finds it, and it is named in `lost`, not cut.
+    // paints over it and the detector no longer finds it. It is named in `lost`, and since it is
+    // gone from the background it gets a layer cut from the picture before that removal (dropped,
+    // it vanished from the split: the café's middle man, 2026-11-06).
     let fake = FakeNative::start_with(photocraft_genai::fake::Options {
         segments: vec![[0.3, 0.2, 0.7, 0.9], [0.35, 0.15, 0.65, 0.3]],
         color: [10, 200, 10, 255],
@@ -1305,9 +1307,17 @@ fn simple_split_drops_a_subject_a_nearer_removal_painted_over() {
     let mut s = session_of(&fake.url, 256, 192);
     s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
-    assert_eq!(r["count"], 2, "{r}");
+    assert_eq!(r["count"], 3, "the background, the front one and the lost one: {r}");
     assert_eq!(r["lost"].as_array().map(Vec::len), Some(1), "{r}");
+    assert_eq!(r["lost"][0]["layered"], json!(true), "{r}");
     assert_eq!(r["leftBehind"], json!([]), "{r}");
+    assert_eq!(r["fills"], 1, "the lost one is not removed on its own: {r}");
+    // Its layer is the strip as it stood (green over the red picture), under the front one's.
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().filter_map(serde_json::Value::as_u64).map(LayerId).collect();
+    assert!(layer_name(&s, ids[1]).starts_with("Person"), "{}", layer_name(&s, ids[1]));
+    // The strip above the front one's head (x 90..166, y 29..38 of 256×192).
+    assert!(alpha_at(&s, ids[1], 128, 33) > 0.5, "the lost one's strip is on its layer");
+    assert!(alpha_at(&s, ids[1], 128, 120) < 0.5, "and nothing of the front one");
 }
 
 #[test]
@@ -1366,7 +1376,12 @@ fn simple_split_keeps_refused_removals_as_hidden_layers_on_request() {
     let mut s2 = session_of(&fake.url, 256, 192);
     s2.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
     let r2 = s2.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
-    assert_eq!((r2["refusedLayers"].clone(), r2["count"].clone()), (json!([]), r["count"].clone()), "{r2}");
+    // (The fake's second scene can also hand back a sliver of the left one that a removal then
+    // paints over: a lost subject with a layer of its own, not counted here.)
+    let kept = |r: &serde_json::Value| {
+        r["count"].as_u64().unwrap_or(0) - r["lost"].as_array().map_or(0, |l| l.iter().filter(|x| x["layered"] == json!(true)).count() as u64)
+    };
+    assert_eq!((r2["refusedLayers"].clone(), kept(&r2)), (json!([]), kept(&r)), "{r2}\n---\n{r}");
 }
 #[test]
 fn simple_split_first_pass_only_places_the_masks_and_fills_nothing() {
