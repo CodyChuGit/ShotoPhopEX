@@ -344,6 +344,22 @@ fn fetch_verified(
     Err("the download didn't match its checksum".into())
 }
 
+/// The system's `curl` or `tar` by full path on Windows (System32, where Windows 10 and later
+/// ship both), so a `curl.exe` or `tar.exe` beside the executable (a portable zip unpacked into
+/// Downloads) or in a user-writable `PATH` entry is never the one run; the plain name elsewhere.
+#[cfg(not(target_arch = "wasm32"))]
+fn system_tool(name: &str) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot").map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), std::path::PathBuf::from);
+        root.join("System32").join(format!("{name}.exe"))
+    }
+    #[cfg(not(windows))]
+    {
+        std::path::PathBuf::from(name)
+    }
+}
+
 /// Run `curl` to fetch `url` into `part` (resuming), reporting the part's size as it grows and
 /// stopping it when the job is cancelled.
 #[cfg(not(target_arch = "wasm32"))]
@@ -363,7 +379,7 @@ fn curl(
     if std::fs::metadata(part).is_ok_and(|m| m.len() == bytes) {
         return Ok(());
     }
-    let mut cmd = Command::new("curl");
+    let mut cmd = Command::new(system_tool("curl"));
     cmd.args([
         "--fail",
         "--location",
@@ -451,7 +467,7 @@ fn extract_libraries(zip: &std::path::Path, dir: &std::path::Path, libraries: &[
     let tmp = dir.join("downloads").join("unpacked");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-    let mut cmd = std::process::Command::new("tar");
+    let mut cmd = std::process::Command::new(system_tool("tar"));
     cmd.arg("-xf").arg(zip).arg("-C").arg(&tmp);
     for l in libraries {
         cmd.arg(l);
@@ -607,6 +623,18 @@ mod tests {
         let h = sha256_of(&p, &crate::jobs::JobCtx::default()).unwrap();
         assert_eq!(h, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn downloads_run_the_systems_own_curl_and_tar() {
+        for name in ["curl", "tar"] {
+            let p = system_tool(name);
+            if cfg!(windows) {
+                assert!(p.is_absolute() && p.ends_with(format!("System32/{name}.exe")), "{}", p.display());
+            } else {
+                assert_eq!(p, std::path::PathBuf::from(name));
+            }
+        }
     }
 
     #[test]
