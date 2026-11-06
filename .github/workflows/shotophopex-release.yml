@@ -81,13 +81,36 @@ jobs:
         run: |
           rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
           rustup default $env:RUST_TOOLCHAIN
-      - name: CUDA Toolkit 13.3 (compiler and the libraries the engine links)
-        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
-        with:
-          cuda: "13.3.1"
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "curand", "curand_dev", "crt", "nvvm", "cccl", "nvrtc", "nvrtc_dev"]'
-          use-github-cache: false
+      # NVIDIA's redistributable archives rather than the toolkit installer, which exits at once
+      # on the runner without saying why; each archive is checked against the manifest's SHA-256.
+      - name: CUDA 13 compiler and libraries (NVIDIA's redistributable archives)
+        shell: pwsh
+        env:
+          CUDA_REDIST: "13.3.1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $base = 'https://developer.download.nvidia.com/compute/cuda/redist'
+          $manifest = Invoke-RestMethod "$base/redistrib_$env:CUDA_REDIST.json"
+          $root = Join-Path $env:RUNNER_TEMP 'cuda'
+          $dl = Join-Path $env:RUNNER_TEMP 'cuda-dl'
+          New-Item -ItemType Directory -Force $root, $dl | Out-Null
+          foreach ($c in 'cuda_nvcc', 'cuda_crt', 'libnvvm', 'cuda_cudart', 'cuda_cccl', 'cuda_nvrtc', 'libcublas', 'libcurand') {
+            $entry = $manifest.$c.'windows-x86_64'
+            if (-not $entry) { throw "${c} has no windows-x86_64 archive in CUDA $env:CUDA_REDIST" }
+            $zip = Join-Path $dl (Split-Path $entry.relative_path -Leaf)
+            Invoke-WebRequest "$base/$($entry.relative_path)" -OutFile $zip
+            if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $entry.sha256) { throw "${c}: checksum mismatch" }
+            Expand-Archive $zip $dl -Force
+            # Each archive holds one <name>-archive folder with bin, include, lib...: merge them into one tree.
+            robocopy (Join-Path $dl ([IO.Path]::GetFileNameWithoutExtension($zip))) $root /E /NFL /NDL /NJH /NJS /NP | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw "${c}: copy failed ($LASTEXITCODE)" }
+            Write-Host "$c $($manifest.$c.version)"
+          }
+          $global:LASTEXITCODE = 0
+          "CUDA_PATH=$root", "CUDA_ROOT=$root", "CUDA_HOME=$root" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "$root\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & "$root\bin\nvcc.exe" --version
       - name: CUTLASS headers
         shell: pwsh
         run: |
