@@ -1,155 +1,229 @@
 <p align="center">
-  <img alt="ShotoPhopEX" src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png" width="112">
+  <img alt="ShotoPhopEX" src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png" width="120">
 </p>
 
 <h1 align="center">ShotoPhopEX</h1>
 
 <p align="center">
-  <b>A full image editor with a local generative AI studio built in, written in Rust and running on your own GPU.</b><br>
-  Generative Fill, Expand, Edit, Remove, text-to-image, Upscale, Split into Layers and Select by text,<br>
-  on open-weight models, in one native app. No cloud, no account, no Python, no ComfyUI.
+  <b>The layered image editor with a generative AI studio inside it.</b><br>
+  Fill, Expand, Remove, Edit, Split into Layers and text to image, on open-weight models,<br>
+  running on your own GPU. Written in Rust. No cloud, no account, no credits, no Python, no ComfyUI.
 </p>
 
 <p align="center">
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="Runs locally on NVIDIA RTX" src="https://img.shields.io/badge/runs%20on-NVIDIA%20RTX-76b900?style=flat-square&logo=nvidia&logoColor=white">
+  <img alt="12 GB cards supported with MOSS" src="https://img.shields.io/badge/from-12%20GB%20VRAM-76b900?style=flat-square&logo=nvidia&logoColor=white">
   <img alt="No Python" src="https://img.shields.io/badge/Python-none-3a3a3a?style=flat-square&logo=python&logoColor=white">
   <img alt="Faster than ComfyUI" src="https://img.shields.io/badge/vs%20ComfyUI-faster%20on%2011%20of%2013-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-d69e2e?style=flat-square">
+  <a href="https://github.com/CodyChuGit/comfy-photocraft/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/CodyChuGit/comfy-photocraft?style=flat-square&logo=github"></a>
 </p>
 
 <p align="center">
-  <a href="#-what-it-adds">What it adds</a> ·
+  <a href="#-see-it-work">Demos</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="#-runs-on-your-card">Your GPU</a> ·
   <a href="#-benchmarks">Benchmarks</a> ·
-  <a href="#-install">Install</a> ·
-  <a href="#-agentic-install">Agentic install</a> ·
+  <a href="#-quick-start">Quick start</a> ·
   <a href="#-models">Models</a> ·
   <a href="#-roadmap">Roadmap</a> ·
-  <a href="#-the-editor-underneath">The editor</a>
+  <a href="#-faq">FAQ</a>
 </p>
 
 <br>
 
 <p align="center">
-  <img src="docs/images/photocraft-demo.jpg" alt="ShotoPhopEX editing Hokusai's The Great Wave: type layers, a drop shadow, Vibrance and Curves adjustment layers, and the Curves editor over the histogram" width="100%">
+  <img src="docs/images/genai/split-layers.gif" alt="Split into Layers on a street café photo: every person and object comes out on its own layer over a repainted background, and the Layers panel fills up as it works" width="100%">
+  <br>
+  <sub><b>Split into Layers</b>: one click turns this café photo into a stack of cut-out layers (people, tables, chairs, a bicycle, a dog) over a repainted background, shown here hidden one by one. Recorded in the app on an RTX 5090; the 3-minute wait is sped up.</sub>
 </p>
 
-ShotoPhopEX is a fork of [PhotoCraft](https://github.com/storytold/photocraft), the clean-room,
-pure-Rust reimplementation of a professional layered image editor. Upstream deliberately left
-generative AI out. This fork puts it in, the way a working artist wants it: every result lands on
-its own masked layer, the original pixels never change, and every model runs on your own machine.
+<br>
 
-The generative engine is a native Rust worker (`photocraft --engine`) with its own CUDA kernels.
-It reads model weights straight from a folder in ComfyUI's layout, so you can reuse files you
-already have, and it is now faster than ComfyUI itself on 11 of the 13 features it was measured
-on.
+> **Photoshop-style generative tools, without the cloud.** ShotoPhopEX is a full layered editor
+> (layers, masks, adjustment layers, type, vectors, brushes, real PSD files) with Generative
+> Fill, Expand, Remove, Edit, Split into Layers and text to image built in. Every model runs on
+> your own NVIDIA card through a native Rust engine with its own CUDA kernels, and every result
+> lands on its own masked layer, so the original pixels never change.
 
 <table>
   <tr>
     <td width="25%" valign="top">
-      <h3>🎨 Firefly-class tools</h3>
-      Fill, Expand, Edit, Remove, Remove Background, Angles, Upscale and Split into Layers, all from a selection and a prompt.
+      <h3>🎨 The tools artists use</h3>
+      Fill, Expand, Remove, Edit, Split into Layers, Clown Pass, Upscale, Angles and Select by text, all from a selection and a prompt.
     </td>
     <td width="25%" valign="top">
       <h3>⚡ Faster than ComfyUI</h3>
-      Our own int8 kernels, a resident text encoder and merged LoRAs. Upscale 2× runs in 24.2 s where ComfyUI takes 44.1 s.
+      Our own int8 kernels, resident encoders and merged LoRAs: a Krea 2 picture in 3 s, a MOSS Turbo picture in 2 s, Upscale 2× in 24 s against ComfyUI's 44 s.
     </td>
     <td width="25%" valign="top">
       <h3>🔒 Local and private</h3>
-      One executable plus NVIDIA's libraries. Nothing leaves your PC, and nothing needs an account or a credit.
+      One executable plus NVIDIA's libraries. Nothing leaves your PC, and there is no account, subscription or credit counter.
     </td>
     <td width="25%" valign="top">
       <h3>🤖 Agent-ready</h3>
-      Every generative action is a command, so the UI, the CLI and an MCP server can all drive it.
+      Every action is a command, so the UI, the CLI and an MCP server can all drive the same 500+ commands.
     </td>
   </tr>
 </table>
 
 ## 🎬 See it work
 
-Everything below was recorded in the app on an RTX 5090. The photo itself was made in the app
-with Qwen-Image-2.1, so no stock image is involved.
+Every clip below was recorded in the real app on one RTX 5090, at real speed unless it says
+otherwise. The photos themselves were generated in the app, so no stock images are involved.
+
+### New this week
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/object-select.gif" alt="The Object Selection tool hovering over a café scene: each object it would select lights up in its own colour, then a click selects one, and with Parts on it picks a head or hair instead of the whole person" width="100%">
+      <b>Object Selection, calmer and finer.</b> Hover, and what a click would take lights up in
+      its own colour about half a second after the pointer rests. Turn on <b>Parts</b> to pick a
+      head or hair, not the whole person.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/clown-pass.gif" alt="Clown Pass: every person and object in the photo is selected at once and placed on its own coloured layer inside a Clown Pass group" width="100%">
+      <b>Clown Pass.</b> Every person and thing in the picture, each on its own colour-coded,
+      edge-matted layer: the ID pass compositors know. 40 layers from a busy café in about 10 s.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/generative-remove.gif" alt="A rough selection around an object, then right-click, Generative Remove: the object disappears and the background continues behind it" width="100%">
+      <b>Generative Remove</b>, right from the selection's right-click menu. Lasso the bin,
+      and 10 s later the beach carries on behind it.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/expand.gif" alt="Generative Expand grows a portrait's canvas to the sides and the model continues the person's body and the scene past the old edges" width="100%">
+      <b>Generative Expand</b> that continues people, not just backdrops, with an outpainting
+      LoRA that keeps the original pixels in place. A 2 MP portrait grown to 3.6 MP in 32 s.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/krea-fill.gif" alt="Generative Fill with Krea 2 AnyPaint on a beach photo: a large lasso beside the woman is filled with a red and white striped parasol, taller than her, and a wooden lounger with a towel in its shade" width="100%">
+      <b>Krea 2 AnyPaint fill.</b> Lasso some empty sand, ask for a parasol and a lounger, and
+      Krea 2 paints them in at the right scale and light in 6.6 s.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
+      <b>MOSS Turbo</b>, the low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card
+      and draws a picture in 1.6 s on a 5090, lettering spelled right.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/edit-clothing.gif" alt="A clothing edit: the jacket is selected, the Generate panel in Edit mode is asked to change it, and the person now wears a new jacket while everything else stays the same" width="100%">
+      <b>Clothing edits.</b> Select by text "denim jacket", ask for black leather, and 7 s later only
+      the jacket has changed: face, hoodie and background stay put.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/angles.gif" alt="Generative Angles on a vintage rangefinder camera: the same camera re-rendered from the back, from a high angle and as a close-up" width="100%">
+      <b>Generative Angles.</b> Move the camera after the shot: a back view, a high angle, a
+      close-up, about 7 s each.
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/genai/quality.jpg" alt="The same prompt and seed at Image Quality Fast, Balanced and Best, side by side, with each one's time" width="100%">
+  <br>
+  <sub><b>Image Quality Fast · Balanced · Best.</b> Same prompt and seed; one switch trades seconds for detail, up to Krea 2 at about 2 MP (1440²). Times in the image were taken while recording.</sub>
+</p>
+
+### The essentials
 
 <table>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/genai/select-subject.gif" alt="Select, Subject: SAM 3.1 finds the woman in the photo and draws marching ants around her in about two seconds" width="100%">
-      <b>Select › Subject with SAM 3.1.</b> One click, and the selection is ready in 2.2 s on a
-      cold start or 0.6 s once the model is loaded.
+      <b>Select › Subject with SAM 3.1.</b> One click, ready in 2.2 s cold or 0.6 s warm.
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/genai/generative-edit.gif" alt="The Generate panel in Edit mode: the prompt make the jacket red is typed, a live preview sharpens, and three red-jacket variations appear" width="100%">
-      <b>Edit inside a selection.</b> Type "make the jacket red" and watch the live preview.
-      Three variations take 17.7 s, and each one lands on its own masked layer.
-    </td>
-  </tr>
-</table>
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/generate-panel.png" alt="The Generate panel in Image mode with a prompt and the finished 1024 by 1024 photo of a woman in a yellow rain jacket walking a golden retriever" width="100%">
-      <b>Generate Image</b> with Qwen-Image-2.1, 1024×1024 in 13.2 s.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/generative-fill.png" alt="The edit result with the jacket now red, the selection still active and the Variations counter on 2 of 3" width="100%">
-      <b>Variations.</b> Flip between results, and keep the one you like.
+      <b>Edit inside a selection.</b> "Make the jacket red", with a live preview. Three
+      variations, each on its own masked layer.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/genai/remove-before-after.png" alt="Before and after: an orange post beside the fence is gone after one Remove stroke, and the railing continues" width="100%">
-      <b>Remove</b> with one stroke: the orange post is gone and the railing carries on (4.6 s).
+      <b>Remove</b> with one brush stroke: the post is gone and the railing carries on.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/genai/split-layers.png" alt="Split into Layers: the woman on her own layer, moved left, over a cleanly filled background layer" width="100%">
-      <b>Split into Layers.</b> The subject comes out on its own layer over a filled background,
-      so you can move her (8.6 s).
+      <img src="docs/images/genai/generative-fill.png" alt="The edit result with the jacket now red, the selection still active and the Variations counter on 2 of 3" width="100%">
+      <b>Variations.</b> Flip between results and keep the one you like.
     </td>
   </tr>
 </table>
 
-## ✨ What it adds
+## ✨ Features
 
-| Feature | What it does | Default model | Warm time on an RTX 5090 |
+| Feature | What it does | Default model | Warm time, RTX 5090 |
 |---|---|---|---|
-| **Generate Image** | Text to image, into a new layer or document, with optional reference pictures | Qwen-Image-2.1 (Krea 2 Turbo selectable) | **3.9 s** |
+| **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best |
+| **MOSS Turbo** | The low-VRAM text to image: Kromoss with an 8-step DMD2 LoRA, Apache-2.0, strong lettering | Kromoss + DMD2 LoRA | **1.6 s** (1024×672) |
 | **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** |
-| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 | **3.2 s** |
+| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP |
 | **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s |
-| **Remove** | One stroke over an object: it is found, named, removed with its shadow, and the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** |
-| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 | **5.1 s** |
-| **Generative Expand** | Grow the canvas and continue the scene | Qwen-Image-2.1 | 10.0 s |
-| **Remove Background** | A soft alpha matte from the model's own RGBA output, as a layer mask | Qwen-Image-2.1 | **5.1 s** |
-| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-2.1 edit | 10.1 s |
-| **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying on the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
-| **Split into Layers** | Decompose a flat picture into separate RGBA layers | Qwen-Image-Layered | **92.6 s** (3 layers) |
-| **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", or a click | SAM 3.1 | **0.3 s** |
-| **MOSS-Image** | Permissive (Apache-2.0) text to image with strong text rendering | MOSS-Image SFT, 5B | 11.0 s (1024², 50 steps) |
+| **Remove · Generative Remove** | One stroke or a selection: the object is found, named and removed with its shadow; the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** (10.2 s from a lasso) |
+| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 (MOSS Edit Turbo on small cards) | **5.1 s** (7.1 s with a text selection) · 3.8 s MOSS Edit Turbo |
+| **Generative Expand** | Grow the canvas and continue the scene, people included | Qwen-Image-2.1 + Outpaint LoRA | about 10 s at 1 MP · 32 s to 3.6 MP |
+| **Split into Layers** | Every subject on its own matted layer, nearest on top, over a repainted background; Rough, Medium or Fine detail | SAM 3.1 + ViTMatte + fill | 4.2 s for one subject · 3–3.5 min for a busy 2 MP scene |
+| **Clown Pass** | Everything in the picture on its own colour-coded, edge-matted layer, no fills | SAM 3.1 + ViTMatte | **9.5 s** (40 layers, 2 MP) |
+| **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** |
+| **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** |
+| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-2.1 edit (2511 Angles LoRA selectable) | 7.2 s |
+| **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
 | **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
-Times are warm, through the app, at 864×1152 (about 1 MP). Bold rows are faster than ComfyUI on
-the same GPU. Every feature also takes **LoRAs** from your models folder, and Qwen-Image-Edit-2511
-is selectable for Fill, Edit, Remove, Expand and Angles at 4.4–7.3 s with its Lightning LoRAs. With warm-up on (the default), the
-first image right after launch takes 3.6 s (Krea 2) or 3.7 s (2.1) instead of 12.6–15.3 s.
+Times are warm, measured in the app at about 1 MP unless the row says otherwise (2026-10-28 to 2026-11-06). **Bold** means faster than ComfyUI on the
+same GPU or a feature ComfyUI has no matching graph for. Every feature also takes **LoRAs** from
+your models folder, and Qwen-Image-Edit-2511 with its Lightning LoRAs is selectable for Fill, Edit,
+Remove and Expand.
 
-**How it feels in the app**
+<details>
+<summary><b>How it feels in the app</b></summary>
 
 - **Window › Generate** is the panel in the dock: a switch for Image, Fill, Edit or Expand, then
   References (drop pictures on it), Prompt and Settings (model, quality, size, count), and one
   **Generate** button (Ctrl+Enter). Auto names the model it will use.
-- **Live preview** paints the picture on the canvas as it forms, step by step. Fast (the default)
-  costs nothing measurable; Sharp decodes a full-size preview every third step for about 0.2 s a
-  run. The finished picture is byte-identical either way.
-- **Under any selection**, a task bar offers Fill or Edit right where you are working.
-- **The Variations strip** at the canvas edge keeps the last runs as tiles: keep one, drop one, or
-  ask for more like it.
+- **Image Quality** is one switch: Fast (the default), Balanced, or Best (Krea 2 at about 2 MP,
+  Qwen-Image-2.1 at 40 steps with CFG 3).
+- **Live preview** paints the picture on the canvas as it forms, at no measurable cost.
+- **Under any selection**, a task bar offers Fill or Edit right where you are working, and the
+  right-click menu has Generative Fill and Generative Remove.
+- **The Object Selection tool (W)** waits until the pointer settles, tints what a click would
+  take in a colour of its own per object, and with **Parts** picks a piece (a head, the hair).
+- **Layer › Split into Layers** asks only one thing: Rough, Medium or Fine.
+- **The Variations strip** keeps the last runs as tiles: keep one, drop one, or ask for more.
 - **Window › Generations** is the library of every run, with Recreate, Place, Save and Copy prompt.
-- **The Object Selection tool (W)** tints what a click would select before you click, then refines
-  with include and exclude points. Quick Selection selects whole objects under a stroke.
 - **The engine dot** in the status bar shows the worker's state, with Start, Stop, Purge models
   and Show log.
+
+</details>
+
+## 💻 Runs on your card
+
+ShotoPhopEX is tuned on an RTX 5090 first, and it now has a real option for smaller cards too:
+**MOSS Turbo** for pictures and **MOSS Edit Turbo** for edits, both Apache-2.0, both inside
+about 12 GB.
+
+| Your card | What Auto uses | Status |
+|---|---|---|
+| **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
+| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟡 should work, not yet benchmarked |
+| **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB |
+| **Mac, 16 GB** | MOSS Turbo and MOSS Edit Turbo on MLX | ⚪ planned |
+| **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
+
+A **memory check at first launch** reads your card's memory and picks these defaults for you;
+bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
+Integrations › Memory profile** lets you choose another.
+Nothing is ever locked: every model is bring-your-own and selectable on any card.
 
 ## 📊 Benchmarks
 
@@ -161,59 +235,58 @@ first image right after launch takes 3.6 s (Krea 2) or 3.7 s (2.1) instead of 12
 </p>
 
 Same model, same seed, same settings and the same picture on both routes, one route on the GPU at
-a time, wall seconds through the app's CLI. "Warm" is the second request with a new seed (a
-repeated request would hit ComfyUI's cache). ComfyUI ran with `--fast fp8_matrix_mult`.
+a time. "Warm" is the second request with a new seed (a repeated request would hit ComfyUI's
+cache). ComfyUI ran with `--fast fp8_matrix_mult`.
 
-| Feature (864×1152, warm) | RTX 5090 native | RTX 5090 ComfyUI | Speed-up | RTX 3090 native |
-|---|---:|---:|---:|---:|
-| Select by text (SAM 3.1) | **0.3 s** | 0.6 s | 2.0× | pending |
-| Generative Fill (2.1) | **3.2 s** | 3.3 s | 1.03× | pending |
-| Text to image (Krea 2 Turbo, 8 steps) | **3.8 s** | 4.0 s | 1.05× | pending |
-| Text to image (Qwen-Image-2.1, 25 steps) | **3.9 s** | 4.2 s | 1.08× | pending |
-| Generative Edit (2.1) | **5.1 s** | 5.6 s | 1.10× | pending |
-| Remove Background (2.1 matte) | **5.1 s** | 5.5 s | 1.08× | pending |
-| Image from a reference (2.1) | **5.2 s** | 5.6 s | 1.08× | pending |
-| 2511 Angles (4 steps) | **4.4 s** | 4.5 s | 1.02× | pending |
-| 2511 edit (Lightning, 8 steps) | **7.25 s** | 8.4 s | 1.16× | pending |
-| 2511 full-quality edit (40 steps, CFG 4) | 86.8 s | 81.9 s | 0.94× | pending |
-| Generative Upscale 2× | **24.2 s** | 44.1 s | 1.82× | pending |
-| Split into Layers (3 layers, Qwen-Image-Layered) | **92.6 s** | 124.8 s | 1.35× | pending |
-| MOSS-Image (1024², 50 steps) | 11.0 s | 10.8 s | 0.98× | pending |
+| Feature (864×1152, warm) | ShotoPhopEX | ComfyUI | Speed-up |
+|---|---:|---:|---:|
+| Select by text (SAM 3.1) | **0.3 s** | 0.6 s | 2.0× |
+| Generative Fill (Qwen-Image-2.1) | **3.2 s** | 3.3 s | 1.03× |
+| Text to image (Krea 2 Turbo, 8 steps) | **3.8 s** | 4.0 s | 1.05× |
+| Text to image (Qwen-Image-2.1, 25 steps) | **3.9 s** | 4.2 s | 1.08× |
+| Generative Edit (Qwen-Image-2.1) | **5.1 s** | 5.6 s | 1.10× |
+| Remove Background (2.1 matte) | **5.1 s** | 5.5 s | 1.08× |
+| Image from a reference (Qwen-Image-2.1) | **5.2 s** | 5.6 s | 1.08× |
+| 2511 Angles (4 steps) | **4.4 s** | 4.5 s | 1.02× |
+| 2511 edit (Lightning, 8 steps) | **7.25 s** | 8.4 s | 1.16× |
+| 2511 full-quality edit (40 steps, CFG 4) | 86.8 s | 81.9 s | 0.94× |
+| Generative Upscale 2× | **24.2 s** | 44.1 s | 1.82× |
+| MOSS-Image (1024², 50 steps) | 11.0 s | 10.8 s | 0.98× |
 
-**RTX 5090:** 32 GB, Windows 11, measured 2026-10-28 and 2026-10-29. Upscale was measured
-against ComfyUI 0.43 with the same Restore LoRA at 0.5; natively it now runs 2×2 tiles of up to
-1.15 MP by default, where the ComfyUI route runs six square tiles. **RTX 3090:** the 24 GB tier is next on
-the [roadmap](#-roadmap); no numbers have been measured on one yet, so none are shown. Every run,
-its script and the raw reading are in [`docs/comfy/benchmarks.md`](docs/comfy/benchmarks.md).
+Measured on an RTX 5090 (32 GB, Windows 11) on 2026-10-28 and 29. Remove Background has since
+moved to SAM 3.1 + ViTMatte (0.45 s). Split into Layers, Clown Pass and the MOSS Turbo routes have
+no ComfyUI graph to compare against, so they are listed in [Features](#-features) only. No RTX
+3090 numbers exist yet, so none are shown. Every run, its script and the raw reading are in
+[`docs/comfy/benchmarks.md`](docs/comfy/benchmarks.md).
 
-What made it fast: Qwen-Image-2.1 runs as an int8 ConvRot DiT built once from the bf16 weights
-and cached, through our own kernels and a flash-attention path. The text encoder stays resident
-between requests, the conditioning is cached when only the seed changes, LoRAs are merged into
-the resident int8 weights once instead of costing a side path every step, and the 20 GB 2511 DiT
-stays resident between requests. Qwen-Image-Layered and 2511 run SageAttention2 (INT8
-attention) on every block where it holds the picture, and Upscale works on fewer, larger tiles. Outputs were checked against the ComfyUI route at every step
-(within 0.06/255, or byte-identical).
+<details>
+<summary><b>What makes it fast</b></summary>
 
-## 🚀 Install
+Qwen-Image-2.1 runs as an int8 ConvRot DiT built once from the bf16 weights and cached, through
+our own kernels and a flash-attention path. The text encoder stays resident between requests,
+the conditioning is cached when only the seed changes, and LoRAs are merged into the resident
+int8 weights once instead of costing a side path every step. Qwen-Image-Edit-2511 runs
+SageAttention2 (INT8 attention) on every block where it holds the picture, and Upscale works on
+fewer, larger tiles. MOSS Edit caches its reference keys and values once per edit. Outputs were
+checked against the ComfyUI route at every step (within 0.06/255, or byte-identical).
+
+</details>
+
+## 🚀 Quick start
 
 > [!IMPORTANT]
-> **There is no one-click download yet.** No release has been published on this repository, so
-> today the app is built from source. When the first release is up, the normal install becomes:
-> download `photocraft-<version>-windows-x64-portable.zip`, unzip, run `photocraft.exe`, and point
-> it at your models folder. The engine's crates live in a separate repository
-> (`CodyChuGit/genai-native`) that is private for now, so building it needs access to that
-> repository.
+> **There is no one-click download yet.** No release has been published, so today the app is
+> built from source on Windows. The engine's crates live in a separate repository
+> (`CodyChuGit/genai-native`) that is private for now, so building needs access to it.
 
 ### What you need
 
 | | |
 |---|---|
-| **GPU** | NVIDIA RTX 5090 (32 GB), the tier everything is tuned for today. Other cards are on the [roadmap](#-roadmap). |
+| **GPU** | NVIDIA RTX with 12 GB or more (32 GB for every model at full speed). See [Runs on your card](#-runs-on-your-card). |
 | **OS** | Windows 10 or 11, x64 |
-| **Disk** | About 60 GB for the default models, more for the 2511 and Layered extras |
-| **Build tools** | Git, Rust (rustup, MSVC toolchain), Visual Studio 2022 Build Tools (C++), CUDA Toolkit 13, the CUTLASS headers |
-
-### Normal install (build from source)
+| **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
+| **Build tools** | Git, Rust (rustup, MSVC), Visual Studio 2022 Build Tools (C++), CUDA Toolkit 13, the CUTLASS headers |
 
 **1. Install the tools** (PowerShell, once):
 
@@ -223,7 +296,7 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait
 git clone --depth 1 https://github.com/NVIDIA/cutlass C:\src\cutlass
 ```
 
-**2. Build the app with the engine compiled in** (from an "x64 Native Tools Command Prompt for VS 2022"):
+**2. Build** (from an "x64 Native Tools Command Prompt for VS 2022"):
 
 ```bat
 git clone -b photoshopex https://github.com/CodyChuGit/comfy-photocraft
@@ -234,56 +307,55 @@ set NVCC_APPEND_FLAGS=-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17
 cargo build --release -p photocraft -p photocraft-cli --features native-diffusion
 ```
 
-`CUDA_COMPUTE_CAP=120` targets the RTX 50 series. The first build takes a while, because it
-compiles the CUDA kernels too.
+`CUDA_COMPUTE_CAP` is 120 for the RTX 50 series, 89 for the 40 series and 86 for the 30 series.
+The first build takes a while, because it compiles the CUDA kernels too.
 
-**3. Download the models** into one folder, for example `D:\PhotoCraftModels`, in ComfyUI's
-layout. The [model table](#-models) lists every file and where it goes. If you already have
-ComfyUI, its `models` folder works as it is.
+**3. Get the models** into one folder in ComfyUI's layout (the [model table](#-models) lists every
+file). If you already have ComfyUI, its `models` folder works as it is.
 
 **4. Run it.** Start `target\release\photocraft.exe`, open **Edit › Preferences › AI
-Integrations**, set **Models folder** to your folder and **Native runtime folders** to your CUDA
-Toolkit's `bin\x64`, then press **Generate**. The first request loads the model; the ones after
-it run at the warm times above.
+Integrations**, set **Models folder** and **Native runtime folders** (your CUDA Toolkit's
+`bin\x64`), then press **Generate**.
 
-**Optional: make a portable folder** to copy to another PC, with the CUDA libraries beside the exe:
+<details>
+<summary><b>Make a portable folder</b> to copy to another PC</summary>
 
 ```powershell
 pwsh packaging/windows/runtime.ps1 -Cuda "$env:CUDA_PATH\bin\x64"
 pwsh packaging/windows/package.ps1 -Arch x64 -Native -NoMsi -SkipBuild
 ```
 
-## 🤖 Agentic install
+</details>
 
-Let a coding agent (Claude Code, Codex, or any agent with a terminal) do the whole install. Open
-it in an empty folder on the Windows PC and paste this:
+### 🤖 Or let an agent install it
+
+Open a coding agent (Claude Code, Codex, or any agent with a terminal) in an empty folder on the
+Windows PC and paste this:
 
 ```text
 Install ShotoPhopEX (https://github.com/CodyChuGit/comfy-photocraft, branch photoshopex) on this
-Windows PC and get its generative features working. Follow the README's "Install" and "Models"
-sections exactly. Work in this order and stop to ask me if a step fails:
+Windows PC and get its generative features working. Follow the README's "Quick start" and
+"Models" sections exactly. Work in this order and stop to ask me if a step fails:
 
-1. Run nvidia-smi and tell me the GPU and driver. Stop if there is no NVIDIA GPU.
+1. Run nvidia-smi and tell me the GPU, its memory and the driver. Stop if there is no NVIDIA GPU.
 2. Check for Git, rustup (MSVC toolchain), Visual Studio 2022 Build Tools with the C++ workload,
    the CUDA Toolkit 13 and the CUTLASS headers. Install whatever is missing with winget, as the
    README shows. Ask me before installing anything.
 3. Clone the repository on the photoshopex branch and build photocraft and photocraft-cli with
    --features native-diffusion from a VS 2022 x64 developer environment, setting CUDA_COMPUTE_CAP
-   for this GPU (120 for RTX 50-series, 89 for RTX 40-series, 86 for RTX 30-series), CUTLASS_DIR
-   and NVCC_APPEND_FLAGS as the README shows.
-4. Ask me where the models folder should go (suggest a drive with 60 GB free). Create the
-   ComfyUI layout in it (diffusion_models, text_encoders, vae, loras, checkpoints) and download
-   the README's default models from Hugging Face into the right subfolders. Skip any file that is
-   already there. If a repository is gated, tell me which licence to accept and wait.
+   for this GPU, CUTLASS_DIR and NVCC_APPEND_FLAGS as the README shows.
+4. Ask me where the models folder should go. Create the ComfyUI layout in it and download the
+   models the README lists for this card's memory (the full defaults on 24 GB or more, the MOSS
+   set on 12-16 GB) from Hugging Face. Skip files already there. If a repository is gated, tell
+   me which licence to accept and wait.
 5. Check every downloaded file's size against Hugging Face and list what you installed.
 6. Start target\release\photocraft.exe and tell me to set Edit > Preferences > AI Integrations >
-   Models folder to that folder and Native runtime folders to the CUDA Toolkit's bin\x64.
-7. When I say it is set, run one generation through photocraft-cli (check
-   `photocraft-cli run --help` for the syntax) and report how long it took.
+   Models folder and Native runtime folders (the CUDA Toolkit's bin\x64).
+7. When I say it is set, run one generation through photocraft-cli (see
+   `photocraft-cli run --help`) and report how long it took.
 ```
 
-The agent can drive the app after that too. Every generative action is a command, so a prompt
-like "select the car and turn it into a red vintage bicycle" works over the CLI or MCP:
+The agent can drive the app afterwards too, because every generative action is a command:
 
 ```sh
 photocraft-cli run street.jpg \
@@ -297,73 +369,81 @@ photocraft-cli mcp   # expose all 500+ commands, generative ones included, to an
 ## 🧠 Models
 
 The app ships no weights. You bring them, under each model's own licence, into one folder in
-ComfyUI's layout. Files come from the Comfy-Org repacks on Hugging Face (their `split_files/`
-folders).
+ComfyUI's layout. Most files come from the Comfy-Org repacks on Hugging Face.
 
-**Defaults (what Auto uses)**
-
-| Folder | File | From | Used for |
-|---|---|---|---|
-| `diffusion_models/` | `qwen_image_2.1_int8_convrot.safetensors` | `Comfy-Org/Qwen-Image-2.1` | Image, Fill, Edit, Expand, Remove, Remove Background, Angles, Upscale |
-| `text_encoders/` | `qwen3vl_8b_int8_convrot.safetensors` | `Comfy-Org/Qwen-Image-2.1` | the 2.1 text encoder, and the prompt rewriter |
-| `vae/` | `qwen_image_2.1_vae_bf16.safetensors` | `Comfy-Org/Qwen-Image-2.1` | 2.1's VAE (with alpha) |
-| `loras/` | `qwen-image-2.1-restore.safetensors` | `ausboss/Qwen-Image-2.1-Restore-LoRA` | Upscale |
-| `checkpoints/` | `sam3.1_multiplex_fp16.safetensors` | `Comfy-Org/sam3.1` | every Select and the object finder |
-| `diffusion_models/` | `qwen_image_layered_fp8mixed.safetensors` | `Comfy-Org/Qwen-Image-Layered_ComfyUI` | Split into Layers |
-| `vae/` | `qwen_image_layered_vae.safetensors` | `Comfy-Org/Qwen-Image-Layered_ComfyUI` | Split into Layers |
-| `text_encoders/` | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `Comfy-Org/Qwen-Image_ComfyUI` | Split into Layers and every 2511 route |
-
-**Selectable extras**
+**Core (24 GB and up)**
 
 | Folder | File | From | Used for |
 |---|---|---|---|
-| `diffusion_models/` | `krea2_turbo_fp8_scaled.safetensors` | `Comfy-Org/Krea-2` (accept Krea's licence first) | Krea 2 text to image and edit |
-| `text_encoders/` | `qwen3vl_4b_fp8_scaled.safetensors` | `Comfy-Org/Krea-2` | Krea 2's text encoder, and Prompt Enhance |
+| `diffusion_models/` | `krea2_turbo_fp8_scaled.safetensors` | `Comfy-Org/Krea-2` | Generate Image (the default), AnyPaint fill |
+| `text_encoders/` | `qwen3vl_4b_fp8_scaled.safetensors` | `Comfy-Org/Krea-2` | Krea 2's text encoder, Prompt Enhance |
 | `vae/` | `qwen_image_vae.safetensors` | `Comfy-Org/Qwen-Image_ComfyUI` | Krea 2 and 2511 |
-| `diffusion_models/` | `qwen_image_edit_2511_fp8mixed.safetensors` | `Comfy-Org/Qwen-Image_ComfyUI` | the 2511 routes |
-| `loras/` | `Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors`, `…-4steps-…` | `lightx2v/Qwen-Image-Edit-2511-Lightning` | 2511 at 8 or 4 steps |
-| `loras/` | `qwen-image-edit-2511-multiple-angles-lora.safetensors` | `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` | 2511 Angles |
-| `loras/` | `krea2_style_reference.safetensors` | `ostris/krea2_turbo_style_reference` | Krea 2 style reference |
-| `diffusion_models/` | `moss_image_sft_int8_convrot.safetensors` | `Comfy-Org/MOSS-Image` | MOSS-Image |
-| `text_encoders/` | `qwen3.5_9b_int8_convrot.safetensors`, plus `qwen35_tokenizer/tokenizer.json` | `Comfy-Org/MOSS-Image`; the tokenizer from `OpenMOSS-Team/MOSS-Image-SFT` | MOSS-Image's text encoder |
-| `vae/` | `flux2-vae_small.safetensors` | `Comfy-Org/MOSS-Image` | MOSS-Image |
-| `vae_approx/` | `taew2_1.safetensors`, `taeqi2_1.safetensors` | madebyollin (MIT) | optional: Sharp live previews |
+| `loras/` | `krea2_anypaint_rank32.safetensors` | `yijunwang2/krea2-anypaint` | Generative Fill (AnyPaint) |
+| `diffusion_models/` | `qwen_image_2.1_int8_convrot.safetensors` (or `_bf16`) | `Comfy-Org/Qwen-Image-2.1` | Fill, Edit, Expand, Remove, Upscale, Best quality |
+| `text_encoders/` | `qwen3vl_8b_int8_convrot.safetensors` (or `_bf16`) | `Comfy-Org/Qwen-Image-2.1` | the 2.1 text encoder |
+| `vae/` | `qwen_image_2.1_vae_bf16.safetensors` | `Comfy-Org/Qwen-Image-2.1` | 2.1's VAE (with alpha) |
+| `loras/` | `qwen-image-2.1-outpaint-v2.safetensors`, `qwen-image-2.1-outpaint.safetensors` | `ausboss/Qwen-Image-2.1-Outpaint-LoRA` | Generative Expand |
+| `loras/` | `qwen-image-2.1-restore.safetensors` | `ausboss/Qwen-Image-2.1-Restore-LoRA` | Upscale |
+| `checkpoints/` | `sam3.1_multiplex_fp16.safetensors` | `Comfy-Org/sam3.1` | every Select, Split, Clown Pass, Remove |
+| `vitmatte/` | `model.safetensors` + `config.json` | `hustvl/vitmatte-base-composition-1k` | hair-fine edges for Split, Clown Pass, Remove Background |
 
-**Licences matter.** Qwen-Image-2.1 is under the Qwen Research License (research and evaluation;
-commercial use needs Alibaba's agreement), and research models are on by default in this build.
-Krea 2 and SAM 3.1 are under their own community licences. Qwen-Image-Edit-2511,
-Qwen-Image-Layered, MOSS-Image and the Lightning and Angles LoRAs are Apache-2.0. The full catalogue, with
-sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comfy/models.md).
+**Low-VRAM set (12–16 GB)**
+
+| Folder | File | From | Used for |
+|---|---|---|---|
+| `diffusion_models/` | `kromoss_int8_convrot.safetensors` | `lodestones/Kromoss` | MOSS Turbo |
+| `loras/` | `kromoss-8-steps-dmd2-lora.safetensors` | `lodestones/Kromoss` (`8-steps-dmd2-lora`) | MOSS Turbo and MOSS Edit Turbo at 8 steps |
+| `diffusion_models/` | `moss_image_sft_int8_convrot.safetensors` | `Comfy-Org/MOSS-Image` | MOSS-Image and MOSS Edit |
+| `loras/` | `moss-image-edit/adapter_model.safetensors` + `adapter_config.json` | `chinoll/Moss-Image-Edit` | MOSS Edit and MOSS Edit Turbo |
+| `text_encoders/` | `qwen3.5_9b_int8_convrot.safetensors`, plus `qwen35_tokenizer/tokenizer.json` | `Comfy-Org/MOSS-Image`; the tokenizer from `OpenMOSS-Team/MOSS-Image-SFT` | MOSS's text encoder |
+| `vae/` | `flux2-vae_small.safetensors` | `Comfy-Org/MOSS-Image` | MOSS |
+
+**Optional extras**
+
+| Folder | File | From | Used for |
+|---|---|---|---|
+| `diffusion_models/` | `qwen_image_edit_2511_fp8mixed.safetensors` | `Comfy-Org/Qwen-Image_ComfyUI` | the 2511 routes |
+| `text_encoders/` | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `Comfy-Org/Qwen-Image_ComfyUI` | every 2511 route |
+| `loras/` | `Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors`, `…-4steps-…` | `lightx2v/Qwen-Image-Edit-2511-Lightning` | 2511 at 8 or 4 steps |
+| `loras/` | `qwen-image-edit-2511-multiple-angles-lora.safetensors` | `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` | Generative Angles |
+| `loras/` | `krea2_style_reference.safetensors` | `ostris/krea2_turbo_style_reference` | Krea 2 style reference |
+| `vae_approx/` | `taew2_1.safetensors`, `taeqi2_1.safetensors` | madebyollin (MIT) | Sharp live previews |
+
+**Licences matter.** Qwen-Image-2.1 and its LoRAs are under the Qwen Research License (research
+and evaluation; commercial use needs Alibaba's agreement). Krea 2, its LoRAs and SAM 3.1 are
+under their own community licences. Kromoss, MOSS-Image, Qwen-Image-Edit-2511 and the Lightning
+and Angles LoRAs are Apache-2.0; ViTMatte is MIT; check the MOSS Edit adapter's own card. The full
+catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comfy/models.md).
 
 ## 🗺️ Roadmap
 
-**Hardware tiers.** Everything is tuned on the RTX 5090 first; each later tier gets its own
-precision plan rather than a one-size build.
-
-| Tier | Hardware | Plan | Status |
-|---|---|---|---|
-| 1 | **RTX 5090** (32 GB) | int8 ConvRot everywhere, NVFP4 as an opt-in speed mode where quality holds | 🟢 in progress |
-| 2 | **RTX 3090** (24 GB) | int8 only (no fp8 or fp4 tensor cores on Ampere) | 🟡 next |
-| 3 | **16 GB NVIDIA cards** | 4-bit weights (NVFP4 on the 50 series, int4 on older cards), the text encoder loaded on demand, tiled VAE | ⚪ later |
-| 4 | **Mac, 16 GB unified memory** (MLX) | MLX 4-bit weights, one model resident at a time; Qwen-Image-2.1 with all its features, Krea 2 and SAM fit in the 8–9 GB a 16 GB Mac leaves | ⚪ later |
-| 4b | **Mac, 8 GB** ("super MOSS") | a small DiT around 2.5 GB at 4-bit with a ≤3B text encoder | ⚪ research |
-
-**Features and speed**
-
-- [x] Every generative feature native in Rust, no ComfyUI, no Python, no ONNX Runtime
+- [x] Every generative feature native in Rust: no ComfyUI, no Python, no ONNX Runtime
 - [x] Matching or beating ComfyUI's speed on every default feature
 - [x] LoRAs on every route, merged into the resident weights
-- [ ] **Speed pass:** clearly faster than ComfyUI everywhere, starting with Split into Layers and Upscale
-- [ ] **Precision study:** int8 vs fp8 vs NVFP4 per model, kept only where the pictures hold
-- [x] **MOSS-Image** (Apache-2.0, 5B), native and level with ComfyUI
-- [x] **Live previews** while generating, at no measurable cost
-- [ ] **A published release:** a portable zip and an installer, with a first-run "Get models" page that downloads the defaults
-- [ ] **RTX 3090 tier**, with its own benchmark column above
-- [ ] **16 GB tier and Mac**, sharing one "one model at a time, 4-bit" loading pattern
+- [x] Live previews while generating, at no measurable cost
+- [x] Split into Layers on SAM 3.1 + fills, with a Rough / Medium / Fine scale
+- [x] Clown Pass, Generative Remove, Object Selection with Parts
+- [x] Image Quality Fast / Balanced / Best that really changes the render
+- [x] MOSS Turbo and MOSS Edit Turbo: a 12 GB mode
+- [x] **Memory check at first launch** that picks models for your card
+- [ ] **One-click "Get models"** that downloads the right pack for your card
+- [ ] **A published release:** a portable zip and an installer
+- [ ] **RTX 3090 / 4090 benchmarks**, and 4-bit weights for 16 GB cards
+- [ ] **Mac** (MLX, 16 GB unified memory) on the MOSS stack
 
-The detailed plans: [`docs/comfy/roadmap.md`](docs/comfy/roadmap.md) (phases and definitions of
-done), [`docs/comfy/goals/rust-rebuild.md`](docs/comfy/goals/rust-rebuild.md) (the Rust rebuild)
-and [`docs/comfy/plan-native-engine.md`](docs/comfy/plan-native-engine.md) (the engine design).
+**What's next**
+
+| Step | What | Built on |
+|---|---|---|
+| 1 | **ControlNet**, native in Rust, with its own panel: guide a picture by pose, depth, edges or lines | [Qwen-Image-2.1 Fun ControlNet Union](https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union) |
+| 2 | **Pose posing**: drag a 3D armature (or hands, or several figures) into place instead of hunting for a pose image; the armature is only a front end, and ControlNet does the generating | step 1 |
+| 3 | **Apple Silicon** (in parallel with 1 and 2): an MLX rewrite, MOSS first, the larger models as 16 GB+ Macs allow | the MOSS stack |
+| 4 | **Style tuning**: LoRA and checkpoint tuning for better photoreal, anime and illustration output | every route's LoRA loading |
+| 5 | **Live paint**: generation that follows your brush in real time, locally | the live preview path, Krea 2 / MOSS Turbo |
+
+The detailed plans: [`docs/comfy/roadmap.md`](docs/comfy/roadmap.md),
+[`docs/comfy/goals/rust-rebuild.md`](docs/comfy/goals/rust-rebuild.md) and
+[`docs/comfy/plan-native-engine.md`](docs/comfy/plan-native-engine.md).
 
 ## 🏗️ How it works
 
@@ -372,15 +452,15 @@ flowchart LR
     UI["Editor UI<br/>(egui, wgpu canvas)"] --> CMD["Command engine<br/>generate.* · select.by*"]
     CLI["photocraft-cli · MCP"] --> CMD
     CMD -->|"prompt + pixels + mask<br/>(gn-engine protocol)"| W["Native worker<br/>photocraft --engine"]
-    W --> K["Rust model code<br/>Qwen-Image · Krea 2 · MOSS · SAM 3.1<br/>int8 / fp8 CUDA kernels"]
+    W --> K["Rust model code<br/>Krea 2 · Qwen-Image · MOSS · SAM 3.1 · ViTMatte<br/>int8 / fp8 CUDA kernels"]
     K --> M[("Models folder<br/>ComfyUI layout")]
     W -->|"RGBA result"| CMD
     CMD --> L["New masked layer<br/>+ Generations library"]
 ```
 
 - **Everything is a command.** `generate.fill`, `generate.image`, `generate.edit`,
-  `generate.expand`, `generate.upscale`, `select.byText` and the rest have parameter docs, tests and
-  undo, like every other command in the editor.
+  `generate.expand`, `generate.splitLayers`, `generate.clownPass`, `select.byText` and the rest
+  have parameter docs, tests and undo, like every other command in the editor.
 - **Non-destructive.** A result lands on a new layer with a mask cut from the selection, and the
   prompt, seed and model are recorded so it can be reproduced or varied.
 - **Never block, never crash.** Generation runs as a background job with progress and cancel. A
@@ -388,13 +468,18 @@ flowchart LR
 - **One process for the models.** The worker owns loading and residency, so the editor stays
   responsive and a model's memory is freed when you ask.
 
-Start with [`docs/comfy/README.md`](docs/comfy/README.md) for the fork's documentation, and
+Start with [`docs/comfy/README.md`](docs/comfy/README.md) for the fork's documentation and
 [`docs/comfy/architecture.md`](docs/comfy/architecture.md) for the design.
 
 ## 🖌️ The editor underneath
 
-Everything PhotoCraft does is still here: layers, masks, adjustment layers, layer styles, live
-type, vectors, brushes, filters, real PSD and PSB files, and a GPU compositor on wgpu.
+Everything [PhotoCraft](https://github.com/storytold/photocraft) does is still here: layers, masks,
+adjustment layers, layer styles, live type, vectors, brushes, filters, real PSD and PSB files, and
+a GPU compositor on wgpu.
+
+<p align="center">
+  <img src="docs/images/photocraft-demo.jpg" alt="ShotoPhopEX editing Hokusai's The Great Wave: type layers, a drop shadow, Vibrance and Curves adjustment layers, and the Curves editor over the histogram" width="100%">
+</p>
 
 <table>
   <tr>
@@ -419,14 +504,83 @@ type, vectors, brushes, filters, real PSD and PSB files, and a GPU compositor on
   </tr>
 </table>
 
-<h4>🧰 68 tools</h4>
+<details>
+<summary><b>🧰 All 68 tools</b></summary>
+
 Move · Artboard · Rectangular and Elliptical Marquee · Single Row Marquee · Single Column Marquee · Lasso · Polygonal Lasso · Magnetic Lasso · Object Selection · Quick Selection · Magic Wand · Crop · Perspective Crop · Slice · Slice Select · Frame · Eyedropper · Color Sampler · Ruler · Note · Count · Remove · Spot Healing Brush · Healing Brush · Patch · Content-Aware Move · Red Eye · Brush · Pencil · Mixer Brush · Color Replacement · Clone Stamp · Pattern Stamp · History Brush · Art History Brush · Eraser · Background Eraser · Magic Eraser · Gradient · Paint Bucket · Blur · Sharpen · Smudge · Dodge · Burn · Sponge · Pen · Freeform Pen · Curvature Pen · Add Anchor Point · Delete Anchor Point · Convert Point · Horizontal and Vertical Type · Horizontal and Vertical Type Mask · Path Selection · Direct Selection · Rectangle · Ellipse · Triangle · Polygon · Line · Custom Shape · Hand · Rotate View · Zoom
 
-The full feature list, file formats and platform notes are in upstream's
-[README](https://github.com/storytold/photocraft#readme). New contributors and agents: start with
-[`AGENTS.md`](AGENTS.md), then [`docs/`](docs/) and [`docs/comfy/`](docs/comfy/).
+</details>
 
-## License and credits
+The full feature list, file formats and platform notes are in upstream's
+[README](https://github.com/storytold/photocraft#readme).
+
+## ❓ FAQ
+
+<details>
+<summary><b>Does anything go to the cloud?</b></summary>
+
+No. The models run in a worker process on your own GPU, read from your own folder. There is no
+account, no telemetry for generations and no credit counter.
+
+</details>
+
+<details>
+<summary><b>Do I need ComfyUI or Python?</b></summary>
+
+No. The engine is native Rust with its own CUDA kernels. It only borrows ComfyUI's folder layout,
+so if you already have a ComfyUI `models` folder you can point the app at it and reuse the files.
+
+</details>
+
+<details>
+<summary><b>My card has 12 or 16 GB. Will it work?</b></summary>
+
+Yes, with the low-VRAM set: MOSS Turbo for pictures, MOSS Edit Turbo for edits and SAM 3.1 for
+selection, which peak at about 12 GiB. The larger models stay selectable; they may not fit.
+
+</details>
+
+<details>
+<summary><b>Can I use my own models and LoRAs?</b></summary>
+
+Yes. Every model is bring-your-own, and every route accepts LoRAs from your `loras` folder. The
+app never locks a model behind a licence switch; you are responsible for each model's own licence.
+
+</details>
+
+<details>
+<summary><b>Is it a Photoshop replacement?</b></summary>
+
+It is an alpha. The editor underneath is a mature clean-room reimplementation with real PSD
+support, and the generative tools are in daily use, but expect rough edges and report them in
+[Issues](https://github.com/CodyChuGit/comfy-photocraft/issues).
+
+</details>
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome on
+[CodyChuGit/comfy-photocraft](https://github.com/CodyChuGit/comfy-photocraft) (branch
+`photoshopex`). New contributors and agents: start with [`AGENTS.md`](AGENTS.md), then
+[`docs/`](docs/) and [`docs/comfy/`](docs/comfy/). If ShotoPhopEX saves you a subscription, a ⭐
+helps other people find it.
+
+## 🙏 Credits
+
+- **[ArtCraft](https://github.com/storytold/photocraft) and the PhotoCraft contributors**, full credit.
+  The whole editor is theirs: ShotoPhopEX is a branch of PhotoCraft that pulls in every upstream
+  release as it ships, so their fixes and features land here too. The generative layer is the only
+  part this fork adds.
+- **The model teams**, full credit for the weights everything runs on: the **Stable Diffusion**
+  community, whose open ecosystem (and ComfyUI's folder layout) this all grows from; **Krea** for
+  Krea 2; the **Qwen** team at Alibaba for Qwen-Image, Qwen-Image-Edit and Qwen3-VL; the **MOSS**
+  team (OpenMOSS) for MOSS-Image, plus lodestones for Kromoss; Meta for SAM 3.1, hustvl for
+  ViTMatte, and every LoRA author listed in [Models](#-models).
+- **The Civitai community**, for their kindness and generosity: the workflows, LoRAs and know-how
+  shared there (AusBoss's outpaint, restore and inpaint work among them) shaped many of these tools.
+- **Our lord and savior Jensen Huang**, for CUDA. 🙏
+
+## License
 
 ShotoPhopEX is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
 option, like upstream. Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, and the
@@ -435,10 +589,11 @@ images keep their own licences, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
 
 Built on [PhotoCraft](https://github.com/storytold/photocraft) by the ArtCraft team. This fork is
 not made or endorsed by them, and per [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt)
-it does not use the ArtCraft name or logos as its own.
+it does not use the ArtCraft name or logos as its own. Thanks to the authors of every open model
+and LoRA listed in [Models](#-models).
 
-Model weights are not part of this repository and keep their own licences (see
-[Models](#-models)). Every artwork shown is in the public domain; sources are in
+Model weights are not part of this repository and keep their own licences. Every artwork shown in
+the editor screenshots is in the public domain; sources are in
 [`docs/images/SOURCES.md`](docs/images/SOURCES.md).
 
 <sub>Adobe, Photoshop and Firefly are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. ShotoPhopEX is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with. NVIDIA, RTX and CUDA are trademarks of NVIDIA Corporation.</sub>
