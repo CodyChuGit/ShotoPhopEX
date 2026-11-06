@@ -672,6 +672,8 @@ fn a_notch_pans_the_canvas_at_once_without_a_glide() {
     let cmd = Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE };
     for (m, axis) in [(Modifiers::NONE, 1), (Modifiers::SHIFT, 0), (ctrl, 0), (cmd, 0)] {
         let mut h = harness();
+        // (ShotoPhopEX turns Zoom with Scroll Wheel on by default; this measures the pan.)
+        h.state_mut().session.edit_prefs(|p| p.general.zoom_with_scroll_wheel = false);
         let p = h.state().last_canvas_rect.center();
         h.hover_at(p);
         h.run_steps(2);
