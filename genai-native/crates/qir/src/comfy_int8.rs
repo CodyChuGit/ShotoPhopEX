@@ -231,8 +231,6 @@ mod tests {
     use std::process::Command;
 
     const DESCRIPTOR: &[u8] = br#"{"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}"#;
-    const PYTHON: &str = r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\python_embeded\python.exe";
-    const MODELS: &str = r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models";
 
     fn comfy_matrix() -> Vec<f32> {
         // int8_utils._build_hadamard's H4, Kronecker-expanded exactly as in that code.
@@ -399,7 +397,7 @@ print(json.dumps(dict(basis=flat(_build_hadamard(256)), cases=cases)))
 
     #[test]
     fn comfy_kitchen_cpu_weight_and_embedding_parity() -> Result<()> {
-        let python = std::env::var_os("COMFY_PYTHON").map(std::path::PathBuf::from).unwrap_or_else(|| PYTHON.into());
+        let python = std::path::PathBuf::from(std::env::var_os("COMFY_PYTHON").unwrap_or_default());
         if !python.is_file() {
             eprintln!("SKIP: ComfyUI embedded Python absent; set COMFY_PYTHON to run fixture parity");
             return Ok(());
@@ -436,7 +434,7 @@ print(json.dumps(dict(basis=flat(_build_hadamard(256)), cases=cases)))
     fn installed_files_header_and_descriptors_only() -> Result<()> {
         for (relative, count) in [("diffusion_models/qwen_image_2.1_int8_convrot.safetensors", 192), ("text_encoders/qwen3vl_8b_int8_convrot.safetensors", 254)]
         {
-            let path = Path::new(MODELS).join(relative);
+            let path = Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join(relative);
             if !path.is_file() {
                 eprintln!("SKIP: {} absent", path.display());
                 continue;

@@ -97,7 +97,7 @@
     }
   },
   "shared_tokenizer": {
-    "path": "C:\\Users\\5090\\Documents\\_eval\\weights\\krea2-turbo\\tokenizer\\tokenizer.json",
+    "path": "<krea2-turbo snapshot>/tokenizer/tokenizer.json",
     "same_vocab": true,
     "same_merges": true,
     "same_pretokenizer": false,

@@ -18,7 +18,7 @@ use qwen_image_rs::pipeline::Request;
 use qwen_image_rs::Result;
 
 fn root() -> PathBuf {
-    PathBuf::from(std::env::var("MOSS_ROOT").unwrap_or_else(|_| r"D:\PhotoCraftModels\moss-image".into()))
+    PathBuf::from(std::env::var("MOSS_ROOT").unwrap_or_default())
 }
 
 fn files() -> MossFiles {
@@ -165,7 +165,7 @@ fn picture_matches() -> Result<()> {
 fn taef2_previews_the_picture() -> Result<()> {
     use qwen_image_rs::preview::{latent_to_rgb, LatentSpace, TinyDecoder};
     let (dev, _) = dev()?;
-    let models = PathBuf::from(std::env::var("MOSS_TINY_ROOT").unwrap_or_else(|_| r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models".into()));
+    let models = PathBuf::from(std::env::var("MOSS_TINY_ROOT").or_else(|_| std::env::var("COMFY_MODELS")).unwrap_or_default());
     let file = TinyDecoder::file(&models, LatentSpace::Flux2).ok_or_else(|| anyhow::anyhow!("no taef2 under {}", models.display()))?;
     let tiny = TinyDecoder::load(&file, LatentSpace::Flux2, &dev)?;
     let r = reference("run_cat_512x512_s20_seed42.safetensors")?;
@@ -201,7 +201,7 @@ fn previews_leave_the_picture_alone() -> Result<()> {
     req.negative = String::new();
     let plain = p.generate(&req, &mut |_, _| {}, &|| false)?;
     println!("previews off: {:?}", plain.timings);
-    let models = PathBuf::from(std::env::var("MOSS_TINY_ROOT").unwrap_or_else(|_| r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models".into()));
+    let models = PathBuf::from(std::env::var("MOSS_TINY_ROOT").or_else(|_| std::env::var("COMFY_MODELS")).unwrap_or_default());
     let tiny = TinyDecoder::file(&models, LatentSpace::Flux2).map(|f| TinyDecoder::load(&f, LatentSpace::Flux2, p.device())).transpose()?;
     let out = root().join("ref_out");
     for (mode, name) in [(PreviewMode::Fast, "fast"), (PreviewMode::Sharp, "sharp")] {

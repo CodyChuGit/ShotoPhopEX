@@ -136,8 +136,7 @@ Every file in ComfyUI's `models/loras`, fetched from Hugging Face, sha256 record
 | `Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors` (648 MB, rank 128) | Viggle, `Viggle/Qwen-Image-2.1-viggle-turbo` | Qwen Research | 6-step sampling on the base 2.1 (about half the time, a little softer); not on top of the official Turbo checkpoint | `0c985917…c94b3` |
 | `bfs_body_swap_v1.0_qwen_2.1.safetensors` (200 MB), `bfs_head_v1.1_qwen_2.1.safetensors` (248 MB) | Alissonerdx, `Alissonerdx/BFS-Best-Face-Swap` | **MIT** | put a character from a second picture into a scene, whole body or head only (AusBoss's Person Swap workflow runs on them); the author asks for pictures of people who agreed | `7dc0a53a…b664`, `d1d748d5…a88e` |
 
-The workflow JSONs that came with them (the author's recipes, for reading) are in
-`C:\Users\5090\Documents\_eval\ausboss-downloads\`, outside the tree.
+The workflow JSONs that came with them (the author's recipes) are not kept in this repository.
 
 ### Qwen-Image-Layered (image to layers, permissive)
 
@@ -183,7 +182,7 @@ text-to-image base of that generation; its editing counterpart is Edit-2511.
 | Files | `vae_approx/taew2_1.safetensors` (22,642,902 bytes, SHA-256 `04766eac0221b5390b985ae3fdcca652cbb4b1e8b82b28ea7ff89dfad1b1a93f`, f16; git blob `ec1a2be4…` = the author's GitHub `madebyollin/taehv` `safetensors/taew2_1.safetensors`; lightx2v's mirror of the same name is a different encoding with another hash) and `vae_approx/taeqi2_1.safetensors` (30,591,264 bytes, SHA-256 `6578b31cc5e336233a2c842eba61b56425bbcac97c7088705f7c7db93291887e`, equal to the Hugging Face LFS id of `madebyollin/taeqi2_1`) |
 | What | TAEHV for the Wan 2.1 latent family (Krea 2, Qwen-Image-Edit-2511, the Layered VAE; a video decoder run on one latent frame) and TAESD's 16× RGBA variant for Qwen-Image-2.1's 64-channel VAE; both take the sampler's normalised latents. Native ports in genai-native `qir::preview` |
 | Licence | **MIT** (taehv repository LICENSE; taeqi2_1 model card `license: mit`), checked 2026-10-29 |
-| Where here | ComfyUI's `models/vae_approx/` (where ComfyUI keeps its own tiny decoders; ComfyUI looks for other names, so its previews are unchanged), linked into `_eval/native-models/vae_approx` |
+| Where here | ComfyUI's `models/vae_approx/` (where ComfyUI keeps its own tiny decoders; ComfyUI looks for other names, so its previews are unchanged) |
 | Role | **Preview while generating: Sharp**; without them Sharp shows Fast. Fast needs no file (ComfyUI's `latent_rgb_factors` for `Wan21` and `QwenImage21`, in the code) |
 
 Sources: [madebyollin/taehv](https://github.com/madebyollin/taehv) · [madebyollin/taeqi2_1](https://huggingface.co/madebyollin/taeqi2_1) · ComfyUI 0.43 `comfy/latent_formats.py`, `comfy/taesd/`.
@@ -214,9 +213,9 @@ Files (Comfy-Org/MOSS-Image, Apache-2.0 repack, 2026-10): `diffusion_models/moss
 (9.8 / 19.3 / 7.3 GB), `vae/flux2-vae_small` (250 MB) and `flux2-vae` (336 MB), and `loras/` with
 an edit LoRA and a colour/depth control LoRA (not wired natively yet). Qwen3.5's `tokenizer.json`
 comes from `OpenMOSS-Team/MOSS-Image-SFT/tokenizer/` and goes in `text_encoders/qwen35_tokenizer/`.
-On this PC (2026-10-29): SFT int8 DiT, the int8 encoder, both VAEs and the tokenizer in
-`D:\PhotoCraftModels\moss-image`, junctioned into the ComfyUI `models` folder as `moss-image`
-subfolders (C: had 30 GB free). ComfyUI supports it from v0.43.0.
+The SFT int8 DiT, the int8 encoder, both VAEs and the tokenizer can live on another drive and be
+junctioned into the ComfyUI `models` folder as `moss-image` subfolders. ComfyUI supports it from
+v0.43.0.
 
 Live previews (2026-10-30): Fast uses ComfyUI's `Flux2` latent→RGB factors on the unpacked 32
 channels; Sharp uses madebyollin's **TAEF2** (MIT, https://huggingface.co/madebyollin/taef2,
