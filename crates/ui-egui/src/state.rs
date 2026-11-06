@@ -348,6 +348,9 @@ pub struct UiState {
     /// Edit › Preferences › App Icon…'s window and the icon applied (`app_icon_ui`).
     #[serde(skip)]
     pub app_icon: crate::app_icon_ui::AppIconUi,
+    /// Help › Get AI Models…'s window (`get_models_ui`).
+    #[serde(skip)]
+    pub get_models: crate::get_models_ui::GetModelsUi,
     /// The Object Selection tool's SAM 3.1 mode: the object finder's probe, the last query
     /// (`object_select`).
     #[serde(skip)]
@@ -608,6 +611,7 @@ impl Default for UiState {
             hub: Default::default(),
             angles: Default::default(),
             app_icon: Default::default(),
+            get_models: Default::default(),
             object_select: Default::default(),
             engine: Default::default(),
             selected_guide: None,
