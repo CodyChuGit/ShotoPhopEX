@@ -41,9 +41,9 @@
 <br>
 
 <p align="center">
-  <img src="docs/images/genai/split-layers.gif" alt="Split into Layers on a street café photo: every person and object comes out on its own layer over a repainted background, and the Layers panel fills up as it works" width="100%">
+  <img src="docs/images/genai/split-layers.gif" alt="Split into Layers on a studio photo of a red apple, a yellow rubber duck and a blue mug on a grey table: each object comes out on its own layer, the Layers panel fills up, and hiding the layers one by one leaves an empty table and wall" width="100%">
   <br>
-  <sub><b>Split into Layers</b>: one click turns this café photo into a stack of cut-out layers (people, tables, chairs, a bicycle, a dog) over a repainted background, shown here hidden one by one. In this run the man on the left could not be cleared and stays in the background. Recorded in the app on an RTX 5090; the 2.6-minute wait is sped up.</sub>
+  <sub><b>Split into Layers</b>: name the subjects (here "apple, rubber duck, mug") and the apple, the duck and the mug each come out as a whole cut-out layer over a repainted background, shown here hidden one by one until only the empty table and wall are left. Recorded in the app on an RTX 5090; the 21-second wait is sped up.</sub>
 </p>
 
 <br>
