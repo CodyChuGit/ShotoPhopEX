@@ -220,8 +220,9 @@ about 12 GB.
 | **Mac, 16 GB** | MOSS Turbo and MOSS Edit Turbo on MLX | ⚪ planned |
 | **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
 
-A **memory check at first launch** that picks these defaults for you, with a "may not fit"
-badge on bigger models instead of hiding them, is [in review](https://github.com/CodyChuGit/comfy-photocraft/pull/58).
+A **memory check at first launch** reads your card's memory and picks these defaults for you;
+bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
+Integrations › Memory profile** lets you choose another.
 Nothing is ever locked: every model is bring-your-own and selectable on any card.
 
 ## 📊 Benchmarks
@@ -424,7 +425,7 @@ catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comf
 - [x] Clown Pass, Generative Remove, Object Selection with Parts
 - [x] Image Quality Fast / Balanced / Best that really changes the render
 - [x] MOSS Turbo and MOSS Edit Turbo: a 12 GB mode
-- [ ] **Memory check at first launch** that picks models for your card ([#58](https://github.com/CodyChuGit/comfy-photocraft/pull/58))
+- [x] **Memory check at first launch** that picks models for your card
 - [ ] **One-click "Get models"** that downloads the right pack for your card
 - [ ] **A published release:** a portable zip and an installer
 - [ ] **RTX 3090 / 4090 benchmarks**, and 4-bit weights for 16 GB cards
