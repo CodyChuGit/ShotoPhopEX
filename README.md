@@ -22,13 +22,13 @@
 </p>
 
 <p align="center">
-  <a href="#-see-it-work">Demos</a> ·
+  <a href="#-at-a-glance">At a glance</a> ·
   <a href="#-features">Features</a> ·
-  <a href="#-runs-on-your-card">Your GPU</a> ·
   <a href="#-benchmarks">Benchmarks</a> ·
-  <a href="#-quick-start">Quick start</a> ·
+  <a href="#-will-it-run-on-my-card">Your GPU</a> ·
+  <a href="#-install">Install</a> ·
+  <a href="#-install-with-an-agent">Agent install</a> ·
   <a href="#-models">Models</a> ·
-  <a href="#-roadmap">Roadmap</a> ·
   <a href="#-faq">FAQ</a>
 </p>
 
@@ -42,125 +42,122 @@
 
 <br>
 
-> **Photoshop-style generative tools, without the cloud.** ShotoPhopEX is a full layered editor
-> (layers, masks, adjustment layers, type, vectors, brushes, real PSD files) with Generative
-> Fill, Expand, Remove, Edit, Split into Layers and text to image built in. Every model runs on
-> your own NVIDIA card through a native Rust engine with its own CUDA kernels, and every result
-> lands on its own masked layer, so the original pixels never change.
+## ⚡ At a glance
 
-<table>
-  <tr>
-    <td width="25%" valign="top">
-      <h3>🎨 The tools artists use</h3>
-      Fill, Expand, Remove, Edit, Split into Layers, Clown Pass, Upscale, Angles and Select by text, all from a selection and a prompt.
-    </td>
-    <td width="25%" valign="top">
-      <h3>⚡ Faster than ComfyUI</h3>
-      Our own int8 kernels, resident encoders and merged LoRAs: a Krea 2 picture in 3 s, a MOSS Turbo picture in 2 s, Upscale 2× in 24 s against ComfyUI's 44 s.
-    </td>
-    <td width="25%" valign="top">
-      <h3>🔒 Local and private</h3>
-      One executable plus NVIDIA's libraries. Nothing leaves your PC, and there is no account, subscription or credit counter.
-    </td>
-    <td width="25%" valign="top">
-      <h3>🤖 Agent-ready</h3>
-      Every action is a command, so the UI, the CLI and an MCP server can all drive the same 500+ commands.
-    </td>
-  </tr>
-</table>
+ShotoPhopEX is a full layered photo editor (layers, masks, adjustment layers, type, vectors,
+brushes, real PSD files) with Photoshop-style generative tools built in. Every model runs on your
+own NVIDIA card through a native Rust engine with its own CUDA kernels, and every result lands on
+its own masked layer, so the original pixels never change.
 
-## 🎬 See it work
+| | |
+|---|---|
+| **What you get** | Generative Fill, Edit, Remove, Expand, Angles, Upscale, Split into Layers, Clown Pass, Select by text and text to image |
+| **Where it runs** | On your own NVIDIA RTX card, from 12 GB of VRAM, on Windows 10 or 11 |
+| **What it doesn't need** | No cloud, no account, no credits, no Python, no ComfyUI |
+| **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([benchmarks](#-benchmarks)) |
+| **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, SAM 3.1), in ComfyUI's folder layout |
+| **Status** | Alpha. Built from source today; no release yet ([install](#-install)) |
+| **Licence** | MIT or Apache-2.0. Each model keeps its own licence |
 
-Every clip below was recorded in the real app on one RTX 5090, at real speed unless it says
-otherwise. The photos themselves were generated in the app, so no stock images are involved.
+- 🎨 **The tools artists use.** Start from a selection and a prompt; the app picks the model.
+- ⚡ **Fast.** Our own int8 kernels, resident encoders and merged LoRAs.
+- 🔒 **Local and private.** One executable plus NVIDIA's libraries. Nothing leaves your PC.
+- 🤖 **Agent-ready.** Every action is a command, so the UI, the CLI and an MCP server drive the same 500+ commands.
 
-### New this week
+## ✨ Features
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/object-select.gif" alt="The Object Selection tool hovering over a café scene: each object it would select lights up in its own colour, then a click selects one, and with Parts on it picks a head or hair instead of the whole person" width="100%">
-      <b>Object Selection, calmer and finer.</b> Hover, and what a click would take lights up in
-      its own colour about half a second after the pointer rests. Turn on <b>Parts</b> to pick a
-      head or hair, not the whole person.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/clown-pass.gif" alt="Clown Pass: every person and object in the photo is selected at once and placed on its own coloured layer inside a Clown Pass group" width="100%">
-      <b>Clown Pass.</b> Every person and thing in the picture, each on its own colour-coded,
-      edge-matted layer: the ID pass compositors know. 40 layers from a busy café in about 10 s.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/generative-remove.gif" alt="A rough selection around an object, then right-click, Generative Remove: the object disappears and the background continues behind it" width="100%">
-      <b>Generative Remove</b>, right from the selection's right-click menu. Lasso the bin,
-      and 10 s later the beach carries on behind it.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/expand.gif" alt="Generative Expand grows a portrait's canvas to the sides and the model continues the person's body and the scene past the old edges" width="100%">
-      <b>Generative Expand</b> that continues people, not just backdrops, with an outpainting
-      LoRA that keeps the original pixels in place. A 2 MP portrait grown to 3.6 MP in 32 s.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/krea-fill.gif" alt="Generative Fill with Krea 2 AnyPaint on a beach photo: a large lasso beside the woman is filled with a red and white striped parasol, taller than her, and a wooden lounger with a towel in its shade" width="100%">
-      <b>Krea 2 AnyPaint fill.</b> Lasso some empty sand, ask for a parasol and a lounger, and
-      Krea 2 paints them in at the right scale and light in 6.6 s.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
-      <b>MOSS Turbo</b>, the low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card
-      and draws a picture in 1.6 s on a 5090, lettering spelled right.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/edit-clothing.gif" alt="A clothing edit: the jacket is selected, the Generate panel in Edit mode is asked to change it, and the person now wears a new jacket while everything else stays the same" width="100%">
-      <b>Clothing edits.</b> Select by text "denim jacket", ask for black leather, and 7 s later only
-      the jacket has changed: face, hoodie and background stay put.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/angles.gif" alt="Generative Angles on a vintage rangefinder camera: the same camera re-rendered from the back, from a high angle and as a close-up" width="100%">
-      <b>Generative Angles.</b> Move the camera after the shot: a back view, a high angle, a
-      close-up, about 7 s each.
-    </td>
-  </tr>
-</table>
+Every clip was recorded in the real app on one RTX 5090, at real speed unless it says otherwise.
+The photos were generated in the app too, so no stock images are involved. Times are warm.
+
+### Generative Fill
+
+<p align="center">
+  <img src="docs/images/genai/krea-fill.gif" alt="Generative Fill with Krea 2 AnyPaint on a beach photo: a large lasso beside the woman is filled with a red and white striped parasol, taller than her, and a wooden lounger with a towel in its shade" width="100%">
+</p>
+
+Lasso some empty sand, ask for a parasol and a lounger, and Krea 2 AnyPaint paints them in at the right scale and light. **6.6&nbsp;s.**
+
+### Generative Edit
+
+<p align="center">
+  <img src="docs/images/genai/generative-edit.gif" alt="The Generate panel in Edit mode: the prompt make the jacket red is typed, a live preview sharpens, and three red-jacket variations appear" width="100%">
+</p>
+
+Type what should change inside the selection ("make the jacket red") and watch the live preview sharpen. Three variations, each on its own masked layer. **5.1&nbsp;s.**
+
+### Clothing edits
+
+<p align="center">
+  <img src="docs/images/genai/edit-clothing.gif" alt="A clothing edit: the jacket is selected, the Generate panel in Edit mode is asked to change it, and the person now wears a new jacket while everything else stays the same" width="100%">
+</p>
+
+Select by text "denim jacket", ask for black leather, and only the jacket changes: face, hoodie and background stay put. **7&nbsp;s.**
+
+### Generative Remove
+
+<p align="center">
+  <img src="docs/images/genai/generative-remove.gif" alt="A rough selection around an object, then right-click, Generative Remove: the object disappears and the background continues behind it" width="100%">
+</p>
+
+Right-click a rough selection and choose Generative Remove. The bin is gone and the beach carries on behind it. **10&nbsp;s.**
+
+### Generative Expand
+
+<p align="center">
+  <img src="docs/images/genai/expand.gif" alt="Generative Expand grows a portrait's canvas to the sides and the model continues the person's body and the scene past the old edges" width="100%">
+</p>
+
+Grow the canvas and the scene continues, people included, with an outpainting LoRA that keeps the original pixels in place. A 2 MP portrait grown to 3.6 MP in **32&nbsp;s.**
+
+### Generative Angles
+
+<p align="center">
+  <img src="docs/images/genai/angles.gif" alt="Generative Angles on a vintage rangefinder camera: the same camera re-rendered from the back, from a high angle and as a close-up" width="100%">
+</p>
+
+Move the camera after the shot: a back view, a high angle, a close-up. **About 7&nbsp;s each.**
+
+### Text to image with MOSS Turbo
+
+<p align="center">
+  <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
+</p>
+
+The low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card and spells its lettering right. **1.6&nbsp;s** on a 5090.
+
+### Object Selection
+
+<p align="center">
+  <img src="docs/images/genai/object-select.gif" alt="The Object Selection tool hovering over a café scene: each object it would select lights up in its own colour, then a click selects one, and with Parts on it picks a head or hair instead of the whole person" width="100%">
+</p>
+
+Hover, and what a click would take lights up in its own colour once the pointer rests. Turn on **Parts** to pick a head or the hair instead of the whole person. **0.45&nbsp;s.**
+
+### Select Subject
+
+<p align="center">
+  <img src="docs/images/genai/select-subject.gif" alt="Select, Subject: SAM 3.1 finds the woman in the photo and draws marching ants around her in about two seconds" width="100%">
+</p>
+
+One click and SAM 3.1 finds the subject. **0.6&nbsp;s** warm, 2.2 s cold.
+
+### Clown Pass
+
+<p align="center">
+  <img src="docs/images/genai/clown-pass.gif" alt="Clown Pass: every person and object in the photo is selected at once and placed on its own coloured layer inside a Clown Pass group" width="100%">
+</p>
+
+Every person and thing in the picture on its own colour-coded, edge-matted layer: the ID pass compositors know. 40 layers from a busy café in **about 10&nbsp;s.**
+
+### Image Quality
 
 <p align="center">
   <img src="docs/images/genai/quality.jpg" alt="The same prompt and seed at Image Quality Fast, Balanced and Best, side by side, with each one's time" width="100%">
-  <br>
-  <sub><b>Image Quality Fast · Balanced · Best.</b> Same prompt and seed; one switch trades seconds for detail, up to Krea 2 at about 2 MP (1440²). Times in the image were taken while recording.</sub>
 </p>
 
-### The essentials
+One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to Krea 2 at about 2 MP (1440²). Same prompt and seed in all three.
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/select-subject.gif" alt="Select, Subject: SAM 3.1 finds the woman in the photo and draws marching ants around her in about two seconds" width="100%">
-      <b>Select › Subject with SAM 3.1.</b> One click, ready in 2.2 s cold or 0.6 s warm.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/generative-edit.gif" alt="The Generate panel in Edit mode: the prompt make the jacket red is typed, a live preview sharpens, and three red-jacket variations appear" width="100%">
-      <b>Edit inside a selection.</b> "Make the jacket red", with a live preview. Three
-      variations, each on its own masked layer.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/remove-before-after.png" alt="Before and after: an orange post beside the fence is gone after one Remove stroke, and the railing continues" width="100%">
-      <b>Remove</b> with one brush stroke: the post is gone and the railing carries on.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/genai/generative-fill.png" alt="The edit result with the jacket now red, the selection still active and the Variations counter on 2 of 3" width="100%">
-      <b>Variations.</b> Flip between results and keep the one you like.
-    </td>
-  </tr>
-</table>
-
-## ✨ Features
+### Every feature
 
 | Feature | What it does | Default model | Warm time, RTX 5090 |
 |---|---|---|---|
@@ -206,25 +203,6 @@ Remove and Expand.
 
 </details>
 
-## 💻 Runs on your card
-
-ShotoPhopEX is tuned on an RTX 5090 first, and it now has a real option for smaller cards too:
-**MOSS Turbo** for pictures and **MOSS Edit Turbo** for edits, both Apache-2.0, both inside
-about 12 GB.
-
-| Your card | What Auto uses | Status |
-|---|---|---|
-| **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
-| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟡 should work, not yet benchmarked |
-| **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB |
-| **Mac, 16 GB** | MOSS Turbo and MOSS Edit Turbo on MLX | ⚪ planned |
-| **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
-
-A **memory check at first launch** reads your card's memory and picks these defaults for you;
-bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
-Integrations › Memory profile** lets you choose another.
-Nothing is ever locked: every model is bring-your-own and selectable on any card.
-
 ## 📊 Benchmarks
 
 <p align="center">
@@ -255,7 +233,7 @@ cache). ComfyUI ran with `--fast fp8_matrix_mult`.
 
 Measured on an RTX 5090 (32 GB, Windows 11) on 2026-10-28 and 29. Remove Background has since
 moved to SAM 3.1 + ViTMatte (0.45 s). Split into Layers, Clown Pass and the MOSS Turbo routes have
-no ComfyUI graph to compare against, so they are listed in [Features](#-features) only. No RTX
+no ComfyUI graph to compare against, so they are listed in [Every feature](#every-feature) only. No RTX
 3090 numbers exist yet, so none are shown. Every run, its script and the raw reading are in
 [`docs/comfy/benchmarks.md`](docs/comfy/benchmarks.md).
 
@@ -272,7 +250,26 @@ checked against the ComfyUI route at every step (within 0.06/255, or byte-identi
 
 </details>
 
-## 🚀 Quick start
+## 💻 Will it run on my card?
+
+ShotoPhopEX is tuned on an RTX 5090 first, and smaller cards get a real option too:
+**MOSS Turbo** for pictures and **MOSS Edit Turbo** for edits, both Apache-2.0, both inside
+about 12 GB.
+
+| Your card | What Auto uses | Status |
+|---|---|---|
+| **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
+| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟡 should work, not yet benchmarked |
+| **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB |
+| **Mac, 16 GB** | MOSS Turbo and MOSS Edit Turbo on MLX | ⚪ planned |
+| **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
+
+A **memory check at first launch** reads your card's memory and picks these defaults for you;
+bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
+Integrations › Memory profile** lets you choose another.
+Nothing is ever locked: every model is bring-your-own and selectable on any card.
+
+## 🚀 Install
 
 > [!IMPORTANT]
 > **There is no one-click download yet.** No release has been published, so today the app is
@@ -283,10 +280,12 @@ checked against the ComfyUI route at every step (within 0.06/255, or byte-identi
 
 | | |
 |---|---|
-| **GPU** | NVIDIA RTX with 12 GB or more (32 GB for every model at full speed). See [Runs on your card](#-runs-on-your-card). |
+| **GPU** | NVIDIA RTX with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
 | **OS** | Windows 10 or 11, x64 |
 | **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
 | **Build tools** | Git, Rust (rustup, MSVC), Visual Studio 2022 Build Tools (C++), CUDA Toolkit 13, the CUTLASS headers |
+
+### Steps
 
 **1. Install the tools** (PowerShell, once):
 
@@ -304,10 +303,12 @@ cd ShotoPhopEX
 set CUDA_COMPUTE_CAP=120
 set CUTLASS_DIR=C:\src\cutlass\include
 set NVCC_APPEND_FLAGS=-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17
+set CUDARC_CUDA_VERSION=13030
 cargo build --release -p photocraft -p photocraft-cli --features native-diffusion
 ```
 
 `CUDA_COMPUTE_CAP` is 120 for the RTX 50 series, 89 for the 40 series and 86 for the 30 series.
+`CUDARC_CUDA_VERSION=13030` is the newest CUDA API level the bindings know; keep it for any CUDA 13 toolkit.
 The first build takes a while, because it compiles the CUDA kernels too.
 
 **3. Get the models** into one folder in ComfyUI's layout (the [model table](#-models) lists every
@@ -327,14 +328,14 @@ pwsh packaging/windows/package.ps1 -Arch x64 -Native -NoMsi -SkipBuild
 
 </details>
 
-### 🤖 Or let an agent install it
+## 🤖 Install with an agent
 
 Open a coding agent (Claude Code, Codex, or any agent with a terminal) in an empty folder on the
 Windows PC and paste this:
 
 ```text
 Install ShotoPhopEX (https://github.com/CodyChuGit/ShotoPhopEX) on this
-Windows PC and get its generative features working. Follow the README's "Quick start" and
+Windows PC and get its generative features working. Follow the README's "Install" and
 "Models" sections exactly. Work in this order and stop to ask me if a step fails:
 
 1. Run nvidia-smi and tell me the GPU, its memory and the driver. Stop if there is no NVIDIA GPU.
@@ -343,7 +344,7 @@ Windows PC and get its generative features working. Follow the README's "Quick s
    README shows. Ask me before installing anything.
 3. Clone the repository and build photocraft and photocraft-cli with
    --features native-diffusion from a VS 2022 x64 developer environment, setting CUDA_COMPUTE_CAP
-   for this GPU, CUTLASS_DIR and NVCC_APPEND_FLAGS as the README shows.
+   for this GPU, CUTLASS_DIR, NVCC_APPEND_FLAGS and CUDARC_CUDA_VERSION as the README shows.
 4. Ask me where the models folder should go. Create the ComfyUI layout in it and download the
    models the README lists for this card's memory (the full defaults on 24 GB or more, the MOSS
    set on 12-16 GB) from Hugging Face. Skip files already there. If a repository is gated, tell
@@ -481,28 +482,34 @@ a GPU compositor on wgpu.
   <img src="docs/images/photocraft-demo.jpg" alt="ShotoPhopEX editing Hokusai's The Great Wave: type layers, a drop shadow, Vibrance and Curves adjustment layers, and the Curves editor over the histogram" width="100%">
 </p>
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/photocraft-masks.jpg" alt="An elliptical selection around a face, and a Hue/Saturation layer with a mask that turns everything outside it gray" width="100%">
-      <b>Masks and selections</b>, which the generative tools build on.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/photocraft-layer-styles.jpg" alt="The Layer Style dialog editing an Outer Glow on a type layer over the Earthrise photograph" width="100%">
-      <b>Layer styles and type</b>, saved to real PSD files.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/photocraft-adjustments.jpg" alt="Levels and Vibrance adjustment layers on Monet's Impression, Sunrise, with the Levels editor and the Histogram panel" width="100%">
-      <b>Adjustment layers</b>, all non-destructive.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/photocraft-filters.jpg" alt="The Twirl filter dialog previewing live inside an elliptical selection on The Starry Night" width="100%">
-      <b>Filters</b> with live previews.
-    </td>
-  </tr>
-</table>
+<details>
+<summary><b>🖼️ More of the editor</b>: masks, layer styles, adjustment layers, filters</summary>
+
+<p align="center">
+  <img src="docs/images/photocraft-masks.jpg" alt="An elliptical selection around a face, and a Hue/Saturation layer with a mask that turns everything outside it gray" width="100%">
+</p>
+
+**Masks and selections**, which the generative tools build on.
+
+<p align="center">
+  <img src="docs/images/photocraft-layer-styles.jpg" alt="The Layer Style dialog editing an Outer Glow on a type layer over the Earthrise photograph" width="100%">
+</p>
+
+**Layer styles and type**, saved to real PSD files.
+
+<p align="center">
+  <img src="docs/images/photocraft-adjustments.jpg" alt="Levels and Vibrance adjustment layers on Monet's Impression, Sunrise, with the Levels editor and the Histogram panel" width="100%">
+</p>
+
+**Adjustment layers**, all non-destructive.
+
+<p align="center">
+  <img src="docs/images/photocraft-filters.jpg" alt="The Twirl filter dialog previewing live inside an elliptical selection on The Starry Night" width="100%">
+</p>
+
+**Filters** with live previews.
+
+</details>
 
 <details>
 <summary><b>🧰 All 68 tools</b></summary>
