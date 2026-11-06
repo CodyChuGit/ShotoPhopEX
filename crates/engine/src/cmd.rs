@@ -1403,6 +1403,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::actions_cmds::specs());
     v.extend(crate::generate_cmds::specs());
     v.extend(crate::generate_engine_cmds::specs());
+    v.extend(crate::model_packs::specs());
     v.extend(crate::generate_jobs::specs());
     v.extend(crate::select_ml_cmds::specs());
     // The dispatch guard's unit test needs a command that panics on purpose (REL-3).
