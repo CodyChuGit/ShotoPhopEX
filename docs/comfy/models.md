@@ -75,9 +75,8 @@ reference on, KV cache on, a 32-px redraw band. **Licence: Krea 2 Community Lice
 weights (inherited), Apache-2.0 for the pipeline code. Status for us: **installed on the
 owner's go 2026-10-26** (`models/loras/krea2_anypaint_rank32.safetensors`, 218 MB, sha256
 `3a7d09f6…412f7a`, equal to the repo's `SHA256SUMS`), **BYOM, never a default**; the recipe is
-in `plan-native-engine.md` §9 for the native engine, and the app's fill-from-reference on 2511
-(Apache-2.0) covers the use case today
-(`docs/comfy/research/notes/ausboss-krea2-clothing-workflow.md`, 2026-10-21).
+in the native engine, and the app's fill-from-reference on 2511
+(Apache-2.0) covers the use case today.
 
 The author's other three Krea 2 adapters, fetched the same day on the owner's go (rank 32,
 Krea 2 Community License, each repo's `SHA256SUMS` matched; all three are "functional
@@ -95,11 +94,11 @@ Sources: [yijunwang2/krea2-anypaint](https://huggingface.co/yijunwang2/krea2-any
 
 What a "stronger fill model" for the removal tools could be, after the stock set showed
 Qwen-Image-Edit-2511, Qwen-Image-2.1 and the whole-crop edit instruction all leaving the same
-objects (`benchmarks.md` §5i). None installed yet; the first is the candidate.
+objects. None installed yet; the first is the candidate.
 
 | Model | What it is | Licence | Notes |
 |---|---|---|---|
-| [prithivMLmods/QIE-2511-Object-Remover-v2](https://huggingface.co/prithivMLmods/QIE-2511-Object-Remover-v2) | a LoRA on Qwen-Image-Edit-2511 trained for object removal (January 2026; 225 MB; also the [v1](https://huggingface.co/prithivMLmods/Qwen-Image-Edit-2511-Object-Remover)) | Apache-2.0 (adapter) | the object is painted red in the input and the prompt is "Remove the red highlighted object from the scene"; a model trained to delete what is highlighted, against an edit model asked not to copy what it sees. **Installed 2026-10-22** as `qwen-edit-2511/remove-lightning-8` (the Lightning graph with the adapter loaded after the Lightning LoRA, stacked fine): the first variation of every removal under `auto`, the selection grown 6 px and painted red, the smoothed plain fill the second, the judge picking (`benchmarks.md` §5i). Removes thin and overlapping things the plain fill cannot (a tattoo, a fresco's earring, a figure's umbrella); leaves its red when handed a hole far bigger than the object, which the 6-px growth and `paint_left` keep out. |
+| [prithivMLmods/QIE-2511-Object-Remover-v2](https://huggingface.co/prithivMLmods/QIE-2511-Object-Remover-v2) | a LoRA on Qwen-Image-Edit-2511 trained for object removal (January 2026; 225 MB; also the [v1](https://huggingface.co/prithivMLmods/Qwen-Image-Edit-2511-Object-Remover)) | Apache-2.0 (adapter) | the object is painted red in the input and the prompt is "Remove the red highlighted object from the scene"; a model trained to delete what is highlighted, against an edit model asked not to copy what it sees. **Installed 2026-10-22** as `qwen-edit-2511/remove-lightning-8` (the Lightning graph with the adapter loaded after the Lightning LoRA, stacked fine): the first variation of every removal under `auto`, the selection grown 6 px and painted red, the smoothed plain fill the second, the judge picking. Removes thin and overlapping things the plain fill cannot (a tattoo, a fresco's earring, a figure's umbrella); leaves its red when handed a hole far bigger than the object, which the 6-px growth and `paint_left` keep out. |
 | [lrzjason/QwenEdit2509-ObjectRemovalAlpha](https://huggingface.co/lrzjason/QwenEdit2509-ObjectRemovalAlpha) | the same idea on 2509 (585 MB) | Apache-2.0 | the card admits less strength on some removals |
 | [FLUX.2 \[klein\] 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) + [fal's object-remove LoRA](https://huggingface.co/fal/flux-2-klein-4B-object-remove-lora) | a 4 B generation and editing model (January 2026), ~13 GB VRAM, about 2 s at 4 steps; the LoRA on the same red-highlight convention ("Remove the highlighted object from the scene", scale 1.1, the `_comfy_converted` file for ComfyUI) | Apache-2.0 (both); the 9B klein is FLUX non-commercial | a new family for the templates and later the native engine; the strongest at text and logo removal in a [2026 local comparison](https://note.com/ai_0049/n/n8051776106dc?hl=en) |
 | FLUX.1 Fill dev | the dedicated inpainting model | FLUX non-commercial | never a default |
@@ -124,9 +123,7 @@ Sources: [Qwen/Qwen-Image-2.1 model card](https://huggingface.co/Qwen/Qwen-Image
 
 ### Qwen-Image-2.1 LoRAs installed here (2026-10-26, the owner's go; BYOM, nothing ships)
 
-Read for the recipes in
-[`research/notes/ausboss-catalogue-2026-10.md`](research/notes/ausboss-catalogue-2026-10.md);
-every file in ComfyUI's `models/loras`, fetched from Hugging Face, sha256 recorded here.
+Every file in ComfyUI's `models/loras`, fetched from Hugging Face, sha256 recorded here.
 
 | File | Author, source | Licence | What it does (the author's held-out numbers) | sha256 |
 |---|---|---|---|---|
@@ -164,7 +161,7 @@ Sources: [Qwen/Qwen-Image-Layered](https://huggingface.co/Qwen/Qwen-Image-Layere
 | Released | 2025-12-23 (the Edit line ships dated snapshots: 2509 on 2025-09-22, then 2511) |
 | Capabilities | Single- and multi-image instruction editing, strong text rendering, pose/identity consistency; Lightning LoRAs give 4–8-step edits |
 | ComfyUI | Native since December 2025 (`TextEncodeQwenImageEditPlus` family of nodes; official templates on docs.comfy.org). The official template (2026-10) chains UNETLoader → ModelSamplingAuraFlow 3.1 → CFGNorm 1.0 → (Lightning LoRA) → KSampler euler/simple, 40 steps CFG 4 (Comfy's note: 20 steps CFG 4 is fine) or 4 steps CFG 1 with the LoRA, and puts `FluxKontextMultiReferenceLatentMethod index_timestep_zero` on both conditionings |
-| Speed tiers | **Lightning LoRAs by lightx2v, Apache-2.0** (checked 2026-10-09): `Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` and `…-8steps-V1.0-bf16.safetensors`, 850 MB each, in `ComfyUI/models/loras`. PhotoCraft templates: `qwen-edit-2511/fill` (40 steps), `fill-lightning-8` (the `auto` tier when its LoRA is installed), `fill-lightning-4`, and `fill-guided` (mask as a second reference image: best placement, 1.5–3× slower). The same repository's `qwen_image_edit_2511_fp8_e4m3fn_scaled.safetensors` (19 GB) gave noise with our graph under `--fast fp8_matrix_mult` on 2026-10-09: not used. Numbers in [`benchmarks.md`](benchmarks.md) |
+| Speed tiers | **Lightning LoRAs by lightx2v, Apache-2.0** (checked 2026-10-09): `Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` and `…-8steps-V1.0-bf16.safetensors`, 850 MB each, in `ComfyUI/models/loras`. PhotoCraft templates: `qwen-edit-2511/fill` (40 steps), `fill-lightning-8` (the `auto` tier when its LoRA is installed), `fill-lightning-4`, and `fill-guided` (mask as a second reference image: best placement, 1.5–3× slower). The same repository's `qwen_image_edit_2511_fp8_e4m3fn_scaled.safetensors` (19 GB) gave noise with our graph under `--fast fp8_matrix_mult` on 2026-10-09: not used |
 | Camera angles | **Multiple Angles LoRA by fal, Apache-2.0** (model card read 2026-10-12): `qwen-image-edit-2511-multiple-angles-lora.safetensors` in `ComfyUI/models/loras`, trained on 3000+ Gaussian-splatting render pairs, 96 cameras from the prompt `<sks> [azimuth] [elevation] [distance]` (8 directions from "front view" to "front-left quarter view", 4 heights from "low-angle shot" to "high-angle shot", "close-up" / "medium shot" / "wide shot"), strength 0.8–1.0. The repository's own `comfyui-workflow-multiple-angles.json` chains it before the 4-step Lightning LoRA, then ModelSamplingAuraFlow 3.1 and CFGNorm, 4 steps CFG 1, every node stock ComfyUI (checked against our server's `/object_info` 2026-10-12). PhotoCraft template `qwen-edit-2511/angles`, command `generate.angles`. Not run live here: the LoRA is not installed on the dev server and the app ships no weights; its estimate (5.5 s + 3.5 s/MP) is the 4-step tier's, unmeasured |
 | Licence | **Permissive: Apache-2.0** (model, Lightning and Multiple Angles LoRAs) |
 | Role here | **Default editor** for Generative Fill, Expand, Remove and Harmonize in any build that must stay commercially usable. |
@@ -230,7 +227,7 @@ Native (genai-native `qir::moss`, templates `moss-image/image` and `moss-image/i
 against the official pipeline on the same weights, encoder cosine 0.9996, DiT velocity cosine
 0.9999, VAE 60.7 dB (bf16 decode 60.0 dB), a 512² 20-step picture 25.3 dB (the same picture).
 Speed at 1024², 50 steps, CFG 3, warm, same GPU state: native 11.5–12.0 s of sampling, ComfyUI
-0.43 11.1 s (11.6 s in all); the first native port took 35.2 s (`devlog.md`). NVFP4 GEMMs at
+0.43 11.1 s (11.6 s in all); the first native port took 35.2 s. NVFP4 GEMMs at
 MOSS's shapes: ~1.4× the int8 ones with their activation quant, 13 % layer error against int8's
 1.2 % (the rebuild thread's bench, 2026-10-29).
 
@@ -271,7 +268,7 @@ Sources: [FLUX.2 / Z-Image on AWS (hands-on)](https://builder.aws.com/content/36
 running Qwen-Image-2.1, `auto` runs 2.1 for Generative Fill (`qwen-2.1/fill`), the removals
 (Content-Aware Fill, Remove, Spot Healing: `qwen-2.1/edit` on the crop), Generative Expand
 (`qwen-2.1/expand`) and Generative Edit (`qwen-2.1/edit`), and Qwen-Image-Edit-2511 is not
-used there (`generate_cmds::native21_auto`; numbers in `benchmarks.md`). The "Default
+used there (`generate_cmds::native21_auto`). The "Default
 (permissive build)" column below is still what a build without the opt-in runs; 2511 stays the
 template for a fill from a reference, Generative Angles and an image from references, which 2.1
 does not take yet.
@@ -304,9 +301,7 @@ does not take yet.
 | Qwen-Image-Edit-2511 fp8mixed | sized for 24 GB cards | yes |
 | Z-Image Turbo BF16 | ≈ 16 GB | yes |
 
-These are community figures (see sources above), not measurements on this machine. Phase 1 of the
-roadmap includes measuring them with `GET /system_stats` before and after a run and recording the
-numbers in [`devlog.md`](devlog.md).
+These are community figures (see sources above), not measurements on this machine.
 
 Measured on this machine (ComfyUI 0.39's "staged" sizes from its log, `/system_stats` free VRAM,
 2026-10-09; the card reports 31.8 GB):
@@ -317,7 +312,7 @@ Measured on this machine (ComfyUI 0.39's "staged" sizes from its log, `/system_s
 | … plus the prompt enhancer's Qwen3-VL-4B fp8 (the Krea 2 encoder) | + 5.0 GB ≈ 32.7 GB | not quite: 1.9 GB free, 2511 edits at 19–25 s while everything stays resident; the NVFP4 2511 encoder (5.7 GB file) brings the set back under the card |
 | Qwen-Image-2.1 int8 + Qwen3-VL-8B int8 + its VAE + SAM 3.1 fp16 | 6.8 + 8.7 + 0.6 + 1.6 GB file sizes ≈ 18 GB | yes, all together, with room for the enhancer: 2.1 and SAM can run turn by turn without a purge |
 | Krea 2 Turbo fp8 + Qwen3-VL-4B fp8 + VAE | 12.2 + 5.0 + 0.2 GB | yes; the enhancer shares this encoder, so it costs nothing extra |
-| Krea 2 Turbo **NVFP4** + Qwen3-VL-4B fp8 + VAE | 7.2 + 5.0 + 0.2 GB | yes: 18.5 GB free after a run against 13.4 GB with fp8, and 18 % faster (`benchmarks.md` §5f) |
+| Krea 2 Turbo **NVFP4** + Qwen3-VL-4B fp8 + VAE | 7.2 + 5.0 + 0.2 GB | yes: 18.5 GB free after a run against 13.4 GB with fp8, and 18 % faster |
 
 ### NVFP4 (Blackwell) alternatives
 

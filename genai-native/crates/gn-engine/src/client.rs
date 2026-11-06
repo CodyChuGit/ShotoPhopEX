@@ -409,18 +409,15 @@ pub fn rgba_blob(width: u32, height: u32, index: u32) -> Blob {
     Blob { width, height, channels: 4, index }
 }
 
-/// A random token for a spawned worker.
-pub fn new_token() -> String {
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let mut x = t as u64 ^ (std::process::id() as u64).rotate_left(32) ^ 0x9E37_79B9_7F4A_7C15;
-    let mut out = String::with_capacity(64);
-    for _ in 0..4 {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        out.push_str(&format!("{x:016x}"));
-    }
-    out
+/// A random token for a spawned worker: 256 bits from the operating system's random source,
+/// as 64 hex digits. The worker listens on loopback, which every account on the machine can
+/// reach, so the token is the only thing that keeps another account's process out; a clock- or
+/// pid-derived value could be guessed. `None` when the OS source fails, and then no worker is
+/// started rather than one with a weak token.
+pub fn new_token() -> Option<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).ok()?;
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[cfg(test)]

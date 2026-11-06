@@ -8,8 +8,8 @@
 //! the conforming preprocessor, C++17 and the dynamic CRT, which this script passes; the same
 //! three flags must reach candle-kernels' own nvcc calls through
 //! `NVCC_APPEND_FLAGS=-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17`, and cudarc 0.19
-//! wants `CUDARC_CUDA_VERSION=13030` for a 13.4 toolkit. The recipe is in PhotoshopEX's
-//! `docs/comfy/dev-environment-windows.md`.
+//! wants `CUDARC_CUDA_VERSION=13030` for a 13.4 toolkit. The recipe is in the root README's
+//! Install section.
 
 #[cfg(any(feature = "convrot", feature = "fusednorm", feature = "sage", feature = "sage2", feature = "fp8", feature = "flash"))]
 fn nvcc() -> cc::Build {

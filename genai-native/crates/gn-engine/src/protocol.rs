@@ -278,6 +278,39 @@ pub fn read_message<T: for<'de> Deserialize<'de>>(r: &mut impl Read) -> std::io:
     }
 }
 
+/// The most a greeting may be. `Hello` is a version and a 64-digit token, well under 1 KB.
+pub const MAX_HELLO: u32 = 4 * 1024;
+
+/// Read a peer's first message, before it has shown the token: one JSON frame of at most
+/// [`MAX_HELLO`] bytes, no blobs. Anyone on the machine can connect to loopback, so nothing an
+/// unauthenticated peer sends may make the worker allocate [`MAX_FRAME`]s. `Ok(None)` at a clean
+/// end of stream; an error for anything else.
+pub fn read_greeting<T: for<'de> Deserialize<'de>>(r: &mut impl Read) -> std::io::Result<Option<T>> {
+    let mut head = [0u8; 5];
+    match r.read_exact(&mut head) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
+    if head[4] != TAG_JSON || len > MAX_HELLO {
+        return Err(std::io::Error::other("the first message must be a short Hello"));
+    }
+    let mut bytes = vec![0u8; len as usize];
+    r.read_exact(&mut bytes)?;
+    serde_json::from_slice(&bytes).map(Some).map_err(std::io::Error::other)
+}
+
+/// Compare two secrets in time that depends only on their lengths, so a peer cannot learn a
+/// token a byte at a time from how fast it is refused.
+pub fn same_secret(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 /// Check that every blob a message names exists and has the bytes its size promises.
 pub fn check_blobs(refs: &[&Blob], blobs: &[Vec<u8>]) -> Result<(), String> {
     for b in refs {
@@ -299,6 +332,27 @@ impl RunRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_greeting_is_short_json_or_refused() {
+        let mut big = (MAX_HELLO + 1).to_le_bytes().to_vec();
+        big.push(TAG_JSON);
+        assert!(read_greeting::<Request>(&mut &big[..]).is_err(), "an oversized greeting is refused before it is read");
+        let mut blob = 4u32.to_le_bytes().to_vec();
+        blob.push(TAG_BLOB);
+        blob.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(read_greeting::<Request>(&mut &blob[..]).is_err(), "a blob before Hello is refused");
+        let mut ok = Vec::new();
+        write_json(&mut ok, &Request::Hello { version: VERSION, token: "t".into() }).unwrap_or_else(|e| panic!("{e}"));
+        assert!(matches!(read_greeting::<Request>(&mut &ok[..]), Ok(Some(Request::Hello { .. }))));
+        assert!(matches!(read_greeting::<Request>(&mut &[][..]), Ok(None)));
+    }
+
+    #[test]
+    fn secrets_compare_whole() {
+        assert!(same_secret("abc", "abc"));
+        assert!(!same_secret("abc", "abd") && !same_secret("abc", "ab") && !same_secret("", "a"));
+    }
 
     #[test]
     fn frames_and_messages_round_trip() {
