@@ -48,37 +48,11 @@ extern "C" {
         ft: i32,
         stream: *mut c_void,
     ) -> i32;
-    fn vae_nhwc_upsample2x_launch(
-        out: *mut c_void,
-        x: *const c_void,
-        b: i64,
-        h: i32,
-        w: i32,
-        c: i32,
-        stream: *mut c_void,
-    ) -> i32;
+    fn vae_nhwc_upsample2x_launch(out: *mut c_void, x: *const c_void, b: i64, h: i32, w: i32, c: i32, stream: *mut c_void) -> i32;
     #[allow(clippy::too_many_arguments)]
-    fn vae_rmsnorm_launch(
-        out: *mut c_void,
-        x: *const c_void,
-        gamma: *const c_void,
-        b: i64,
-        c: i32,
-        hw: i64,
-        silu: i32,
-        stream: *mut c_void,
-    ) -> i32;
+    fn vae_rmsnorm_launch(out: *mut c_void, x: *const c_void, gamma: *const c_void, b: i64, c: i32, hw: i64, silu: i32, stream: *mut c_void) -> i32;
     #[allow(clippy::too_many_arguments)]
-    fn vae_bias_residual_launch(
-        out: *mut c_void,
-        y: *const c_void,
-        bias: *const c_void,
-        r: *const c_void,
-        numel: i64,
-        hw: i64,
-        c: i32,
-        stream: *mut c_void,
-    );
+    fn vae_bias_residual_launch(out: *mut c_void, y: *const c_void, bias: *const c_void, r: *const c_void, numel: i64, hw: i64, c: i32, stream: *mut c_void);
 }
 
 /// Channel counts the norm kernel takes (`[8, 2048]`).
@@ -95,30 +69,15 @@ impl candle_core::CustomOp2 for VaeRmsNorm {
         "vae-rmsnorm"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("vae-rmsnorm is CUDA-only")
     }
 
-    fn cuda_fwd(
-        &self,
-        x: &CudaStorage,
-        x_l: &Layout,
-        g: &CudaStorage,
-        g_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, g: &CudaStorage, g_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = x.device().clone();
         let (b, c, h, w) = x_l.shape().dims4()?;
         if g_l.shape().elem_count() != c {
-            candle_core::bail!(
-                "vae-rmsnorm: gamma {:?} does not match C = {c}",
-                g_l.shape()
-            );
+            candle_core::bail!("vae-rmsnorm: gamma {:?} does not match C = {c}", g_l.shape());
         }
         if !rmsnorm_supports(c) {
             candle_core::bail!("vae-rmsnorm: C = {c} outside [8, 2048]");
@@ -159,8 +118,7 @@ pub fn rmsnorm(x: &Tensor, gamma: &Tensor, silu: bool) -> candle_core::Result<Te
     if x.dtype() != DType::BF16 || gamma.dtype() != DType::BF16 {
         candle_core::bail!("vae-rmsnorm: bf16 only");
     }
-    x.contiguous()?
-        .apply_op2_no_bwd(&gamma.contiguous()?, &VaeRmsNorm { silu })
+    x.contiguous()?.apply_op2_no_bwd(&gamma.contiguous()?, &VaeRmsNorm { silu })
 }
 
 struct VaeBiasResidual;
@@ -170,15 +128,7 @@ impl candle_core::CustomOp3 for VaeBiasResidual {
         "vae-bias-residual"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("vae-bias-residual is CUDA-only")
     }
 
@@ -194,12 +144,7 @@ impl candle_core::CustomOp3 for VaeBiasResidual {
         let dev = y.device().clone();
         let (b, c, h, w) = y_l.shape().dims4()?;
         if r_l.shape() != y_l.shape() || bias_l.shape().elem_count() != c {
-            candle_core::bail!(
-                "vae-bias-residual shape mismatch: y {:?} bias {:?} r {:?}",
-                y_l.shape(),
-                bias_l.shape(),
-                r_l.shape()
-            );
+            candle_core::bail!("vae-bias-residual shape mismatch: y {:?} bias {:?} r {:?}", y_l.shape(), bias_l.shape(), r_l.shape());
         }
         let yo = dense_byte_offset::<half::bf16>(y_l, "vae-bias-residual y")?;
         let bo = dense_byte_offset::<half::bf16>(bias_l, "vae-bias-residual bias")?;
@@ -240,19 +185,14 @@ pub fn bias_residual(y: &Tensor, bias: &Tensor, r: &Tensor) -> candle_core::Resu
             candle_core::bail!("vae-bias-residual: bf16 only");
         }
     }
-    y.contiguous()?
-        .apply_op3_no_bwd(&bias.contiguous()?, &r.contiguous()?, &VaeBiasResidual)
+    y.contiguous()?.apply_op3_no_bwd(&bias.contiguous()?, &r.contiguous()?, &VaeBiasResidual)
 }
 
 /// The candle reference chains (what `model::vae` runs without the fused ops).
 pub fn rmsnorm_reference(x: &Tensor, gamma: &Tensor, silu: bool) -> candle_core::Result<Tensor> {
     let c = x.dim(1)?;
     let xf = x.to_dtype(DType::F32)?;
-    let norm = xf
-        .sqr()?
-        .sum_keepdim(1)?
-        .sqrt()?
-        .clamp(1e-12, f64::INFINITY)?;
+    let norm = xf.sqr()?.sum_keepdim(1)?.sqrt()?.clamp(1e-12, f64::INFINITY)?;
     let y = (xf.broadcast_div(&norm)? * (c as f64).sqrt())?.to_dtype(x.dtype())?;
     let y = y.broadcast_mul(&gamma.reshape((1, c, 1, 1))?)?;
     if silu {
@@ -266,10 +206,7 @@ fn mismatches(a: &Tensor, b: &Tensor) -> candle_core::Result<usize> {
     // Compare the raw bf16 bit patterns (catches -0 vs +0 too).
     let a = a.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
     let b = b.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
-    Ok(a.iter()
-        .zip(&b)
-        .filter(|(x, y)| x.to_bits() != y.to_bits())
-        .count())
+    Ok(a.iter().zip(&b).filter(|(x, y)| x.to_bits() != y.to_bits()).count())
 }
 
 // ------------------------------------------------------------------ NHWC
@@ -309,11 +246,7 @@ impl NhwcRmsNorm {
         let dev = x.device().clone();
         let c = *x_l.shape().dims().last().unwrap_or(&0);
         if x_l.shape().rank() != 4 || g_l.shape().elem_count() != c {
-            candle_core::bail!(
-                "vae-nhwc-rmsnorm: x {:?} / gamma {:?} (want (B,H,W,C) and C)",
-                x_l.shape(),
-                g_l.shape()
-            );
+            candle_core::bail!("vae-nhwc-rmsnorm: x {:?} / gamma {:?} (want (B,H,W,C) and C)", x_l.shape(), g_l.shape());
         }
         if let Some((_, bl)) = bias {
             if bl.shape().elem_count() != c {
@@ -359,22 +292,10 @@ impl candle_core::CustomOp2 for NhwcRmsNorm {
     fn name(&self) -> &'static str {
         "vae-nhwc-rmsnorm"
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("vae-nhwc-rmsnorm is CUDA-only")
     }
-    fn cuda_fwd(
-        &self,
-        x: &CudaStorage,
-        x_l: &Layout,
-        g: &CudaStorage,
-        g_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, g: &CudaStorage, g_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         self.run(x, x_l, g, g_l, None)
     }
 }
@@ -383,15 +304,7 @@ impl candle_core::CustomOp3 for NhwcRmsNorm {
     fn name(&self) -> &'static str {
         "vae-nhwc-rmsnorm-bias"
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("vae-nhwc-rmsnorm is CUDA-only")
     }
     fn cuda_fwd(
@@ -417,12 +330,7 @@ fn check_bf16(ts: &[&Tensor], what: &str) -> candle_core::Result<()> {
 /// Channel RmsNorm × gamma (+ SiLU) of a `(B, H, W, C)` bf16 CUDA tensor —
 /// with `bias`, of `bf16(x + bias[c])` (the previous conv's bias, which then
 /// never round-trips through memory). Bit-identical to the NCHW candle chain.
-pub fn rmsnorm_nhwc(
-    x: &Tensor,
-    gamma: &Tensor,
-    bias: Option<&Tensor>,
-    silu: bool,
-) -> candle_core::Result<Tensor> {
+pub fn rmsnorm_nhwc(x: &Tensor, gamma: &Tensor, bias: Option<&Tensor>, silu: bool) -> candle_core::Result<Tensor> {
     check_bf16(&[x, gamma], "vae-nhwc-rmsnorm")?;
     let x = x.contiguous()?;
     let g = gamma.contiguous()?;
@@ -473,29 +381,17 @@ impl NhwcEpilogue {
         let dims = y_l.shape().dims();
         let c = *dims.last().unwrap_or(&0);
         if dims.len() != 4 || bias_l.shape().elem_count() != c {
-            candle_core::bail!(
-                "vae-nhwc-epilogue: y {:?} bias {:?}",
-                y_l.shape(),
-                bias_l.shape()
-            );
+            candle_core::bail!("vae-nhwc-epilogue: y {:?} bias {:?}", y_l.shape(), bias_l.shape());
         }
         match (self.mode, r, rbias) {
-            (1 | 2, Some((_, rl)), _) if rl.shape() != y_l.shape() => candle_core::bail!(
-                "vae-nhwc-epilogue: residual {:?} != y {:?}",
-                rl.shape(),
-                y_l.shape()
-            ),
+            (1 | 2, Some((_, rl)), _) if rl.shape() != y_l.shape() => candle_core::bail!("vae-nhwc-epilogue: residual {:?} != y {:?}", rl.shape(), y_l.shape()),
             (2, _, Some((_, rbl))) if rbl.shape().elem_count() != c => {
                 candle_core::bail!("vae-nhwc-epilogue: rbias {:?} != C = {c}", rbl.shape())
             }
             (3, Some((_, rl)), _) => {
                 let want = [dims[0], self.h, self.w, self.in_c];
                 if rl.shape().dims() != want || dims[1] != 2 * self.h || dims[2] != 2 * self.w {
-                    candle_core::bail!(
-                        "vae-nhwc-epilogue: DupUp source {:?} vs output {:?}",
-                        rl.shape(),
-                        y_l.shape()
-                    );
+                    candle_core::bail!("vae-nhwc-epilogue: DupUp source {:?} vs output {:?}", rl.shape(), y_l.shape());
                 }
             }
             _ => {}
@@ -547,22 +443,10 @@ impl candle_core::CustomOp2 for NhwcEpilogue {
     fn name(&self) -> &'static str {
         "vae-nhwc-bias"
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("vae-nhwc-epilogue is CUDA-only")
     }
-    fn cuda_fwd(
-        &self,
-        y: &CudaStorage,
-        y_l: &Layout,
-        b: &CudaStorage,
-        b_l: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, y: &CudaStorage, y_l: &Layout, b: &CudaStorage, b_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         self.run(y, y_l, b, b_l, None, None)
     }
 }
@@ -571,15 +455,7 @@ impl candle_core::CustomOp3 for NhwcEpilogue {
     fn name(&self) -> &'static str {
         "vae-nhwc-bias-residual"
     }
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("vae-nhwc-epilogue is CUDA-only")
     }
     fn cuda_fwd(
@@ -608,22 +484,11 @@ impl candle_core::CustomOp3 for NhwcEpilogue {
 /// `bf16(y + bias[c])` plus `residual` on a `(B, H, W, C)` bf16 CUDA tensor,
 /// with the same bf16 roundings as the candle broadcast_add + add chain.
 /// For [`Residual::DenseBiased`] pass `bias` as `[bias | rbias]` (2C).
-pub fn bias_epilogue_nhwc(
-    y: &Tensor,
-    bias: &Tensor,
-    residual: Residual<'_>,
-) -> candle_core::Result<Tensor> {
+pub fn bias_epilogue_nhwc(y: &Tensor, bias: &Tensor, residual: Residual<'_>) -> candle_core::Result<Tensor> {
     check_bf16(&[y, bias], "vae-nhwc-epilogue")?;
     let y = y.contiguous()?;
     let b = bias.contiguous()?;
-    let op = |mode| NhwcEpilogue {
-        mode,
-        h: 0,
-        w: 0,
-        in_c: 0,
-        repeats: 0,
-        ft: 0,
-    };
+    let op = |mode| NhwcEpilogue { mode, h: 0, w: 0, in_c: 0, repeats: 0, ft: 0 };
     match residual {
         Residual::None => y.apply_op2_no_bwd(&b, &op(0)),
         Residual::Dense(r) => {
@@ -643,14 +508,7 @@ pub fn bias_epilogue_nhwc(
             if ft == 0 || (out_c * factor) % in_c != 0 {
                 candle_core::bail!("vae-nhwc-epilogue: DupUp {in_c} -> {out_c} (ft {ft})");
             }
-            let e = NhwcEpilogue {
-                mode: 3,
-                h,
-                w,
-                in_c,
-                repeats: out_c * factor / in_c,
-                ft,
-            };
+            let e = NhwcEpilogue { mode: 3, h, w, in_c, repeats: out_c * factor / in_c, ft };
             y.apply_op3_no_bwd(&b, &x.contiguous()?, &e)
         }
     }
@@ -675,24 +533,13 @@ impl candle_core::CustomOp1 for NhwcUpsample2x {
         let rc = {
             let (op, _o) = out.device_ptr(&stream);
             unsafe {
-                vae_nhwc_upsample2x_launch(
-                    op as *mut c_void,
-                    xp as *const c_void,
-                    b as i64,
-                    h as i32,
-                    w as i32,
-                    c as i32,
-                    stream.cu_stream() as *mut c_void,
-                )
+                vae_nhwc_upsample2x_launch(op as *mut c_void, xp as *const c_void, b as i64, h as i32, w as i32, c as i32, stream.cu_stream() as *mut c_void)
             }
         };
         if rc != 0 {
             candle_core::bail!("vae-nhwc-upsample2x: launcher rejected {:?}", x_l.shape());
         }
-        Ok((
-            CudaStorage::wrap_cuda_slice(out, dev),
-            Shape::from((b, 2 * h, 2 * w, c)),
-        ))
+        Ok((CudaStorage::wrap_cuda_slice(out, dev), Shape::from((b, 2 * h, 2 * w, c))))
     }
 }
 
@@ -729,9 +576,7 @@ fn self_test_nhwc(dev: &candle_core::Device) -> candle_core::Result<Vec<(String,
         (1, 1036, 2, 3),
     ];
     for &(b, c, h, w) in &shapes {
-        let mut v = (Tensor::randn(0f32, 1f32, (b, c, h, w), dev)? * 3.0)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
+        let mut v = (Tensor::randn(0f32, 1f32, (b, c, h, w), dev)? * 3.0)?.flatten_all()?.to_vec1::<f32>()?;
         for (i, e) in v.iter_mut().enumerate() {
             if i % 97 == 0 {
                 *e = 0.0;
@@ -751,81 +596,41 @@ fn self_test_nhwc(dev: &candle_core::Device) -> candle_core::Result<Vec<(String,
         for silu in [false, true] {
             let ours = to_nchw(&rmsnorm_nhwc(&xn, &gamma, None, silu)?)?;
             let refr = rmsnorm_reference(&x, &gamma, silu)?;
-            out.push((
-                format!("nhwc rmsnorm ({b},{c},{h},{w}) silu={silu}"),
-                mismatches(&ours, &refr)?,
-            ));
+            out.push((format!("nhwc rmsnorm ({b},{c},{h},{w}) silu={silu}"), mismatches(&ours, &refr)?));
             let ours = to_nchw(&rmsnorm_nhwc(&xn, &gamma, Some(&bias), silu)?)?;
             let refr = rmsnorm_reference(&xb, &gamma, silu)?;
-            out.push((
-                format!("nhwc bias+rmsnorm ({b},{c},{h},{w}) silu={silu}"),
-                mismatches(&ours, &refr)?,
-            ));
+            out.push((format!("nhwc bias+rmsnorm ({b},{c},{h},{w}) silu={silu}"), mismatches(&ours, &refr)?));
         }
         let r = Tensor::randn(0f32, 2f32, (b, c, h, w), dev)?.to_dtype(DType::BF16)?;
         let rbias = Tensor::randn(0f32, 1f32, c, dev)?.to_dtype(DType::BF16)?;
         let b4 = |t: &Tensor| t.reshape((1, c, 1, 1));
         let cases: [(&str, Tensor, Tensor); 3] = [
-            (
-                "bias",
-                to_nchw(&bias_epilogue_nhwc(&xn, &bias, Residual::None)?)?,
-                x.broadcast_add(&b4(&bias)?)?,
-            ),
-            (
-                "bias+residual",
-                to_nchw(&bias_epilogue_nhwc(
-                    &xn,
-                    &bias,
-                    Residual::Dense(&to_nhwc(&r)?),
-                )?)?,
-                (x.broadcast_add(&b4(&bias)?)? + &r)?,
-            ),
+            ("bias", to_nchw(&bias_epilogue_nhwc(&xn, &bias, Residual::None)?)?, x.broadcast_add(&b4(&bias)?)?),
+            ("bias+residual", to_nchw(&bias_epilogue_nhwc(&xn, &bias, Residual::Dense(&to_nhwc(&r)?))?)?, (x.broadcast_add(&b4(&bias)?)? + &r)?),
             (
                 "bias+biased residual",
-                to_nchw(&bias_epilogue_nhwc(
-                    &xn,
-                    &bias,
-                    Residual::DenseBiased(&to_nhwc(&r)?, &rbias),
-                )?)?,
+                to_nchw(&bias_epilogue_nhwc(&xn, &bias, Residual::DenseBiased(&to_nhwc(&r)?, &rbias))?)?,
                 (x.broadcast_add(&b4(&bias)?)? + r.broadcast_add(&b4(&rbias)?)?)?,
             ),
         ];
         for (name, ours, refr) in cases {
-            out.push((
-                format!("nhwc {name} ({b},{c},{h},{w})"),
-                mismatches(&ours, &refr)?,
-            ));
+            out.push((format!("nhwc {name} ({b},{c},{h},{w})"), mismatches(&ours, &refr)?));
         }
         let ours = to_nchw(&upsample2x_nhwc(&xn)?)?;
         let refr = x.upsample_nearest2d(2 * h, 2 * w)?;
-        out.push((
-            format!("nhwc upsample2x ({b},{c},{h},{w})"),
-            mismatches(&ours, &refr)?,
-        ));
+        out.push((format!("nhwc upsample2x ({b},{c},{h},{w})"), mismatches(&ours, &refr)?));
     }
     // DupUp3D residual: the VAE's (in_c, out_c, factor_t) pairs, shrunk.
-    for &(b, in_c, out_c, ft, h, w) in &[
-        (1usize, 64usize, 64usize, 2usize, 4usize, 5usize),
-        (2, 32, 16, 2, 3, 3),
-        (1, 16, 8, 1, 4, 2),
-        (1, 1152, 576, 2, 2, 2),
-        (1, 288, 144, 1, 3, 2),
-    ] {
+    for &(b, in_c, out_c, ft, h, w) in
+        &[(1usize, 64usize, 64usize, 2usize, 4usize, 5usize), (2, 32, 16, 2, 3, 3), (1, 16, 8, 1, 4, 2), (1, 1152, 576, 2, 2, 2), (1, 288, 144, 1, 3, 2)]
+    {
         let xc = Tensor::randn(0f32, 1f32, (b, in_c, h, w), dev)?.to_dtype(DType::BF16)?;
         let y = Tensor::randn(0f32, 1f32, (b, out_c, 2 * h, 2 * w), dev)?.to_dtype(DType::BF16)?;
         let bias = Tensor::randn(0f32, 1f32, out_c, dev)?.to_dtype(DType::BF16)?;
-        let ours = to_nchw(&bias_epilogue_nhwc(
-            &to_nhwc(&y)?,
-            &bias,
-            Residual::DupUp(&to_nhwc(&xc)?, ft),
-        )?)?;
-        let sc = crate::model::vae::dup_up(&xc, in_c, out_c, ft)
-            .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+        let ours = to_nchw(&bias_epilogue_nhwc(&to_nhwc(&y)?, &bias, Residual::DupUp(&to_nhwc(&xc)?, ft))?)?;
+        let sc = crate::model::vae::dup_up(&xc, in_c, out_c, ft).map_err(|e| candle_core::Error::Msg(e.to_string()))?;
         let refr = (y.broadcast_add(&bias.reshape((1, out_c, 1, 1))?)? + sc)?;
-        out.push((
-            format!("nhwc bias+dupup ({b},{in_c}->{out_c},ft{ft},{h}x{w})"),
-            mismatches(&ours, &refr)?,
-        ));
+        out.push((format!("nhwc bias+dupup ({b},{in_c}->{out_c},ft{ft},{h}x{w})"), mismatches(&ours, &refr)?));
     }
     // Offset views: a B=1 narrow of a B=2 NHWC batch is dense at H*W*C.
     let big = Tensor::randn(0f32, 1f32, (2, 8, 8, 144), dev)?.to_dtype(DType::BF16)?;
@@ -835,27 +640,12 @@ fn self_test_nhwc(dev: &candle_core::Device) -> candle_core::Result<Vec<(String,
     let off = view.layout().start_offset();
     let bad = (off == 0) as usize;
     let pairs = [
-        (
-            "rmsnorm",
-            rmsnorm_nhwc(&view, &g, Some(&g), true)?,
-            rmsnorm_nhwc(&fresh, &g, Some(&g), true)?,
-        ),
-        (
-            "bias+residual",
-            bias_epilogue_nhwc(&view, &g, Residual::DenseBiased(&view, &g))?,
-            bias_epilogue_nhwc(&fresh, &g, Residual::DenseBiased(&fresh, &g))?,
-        ),
-        (
-            "upsample2x",
-            upsample2x_nhwc(&view)?,
-            upsample2x_nhwc(&fresh)?,
-        ),
+        ("rmsnorm", rmsnorm_nhwc(&view, &g, Some(&g), true)?, rmsnorm_nhwc(&fresh, &g, Some(&g), true)?),
+        ("bias+residual", bias_epilogue_nhwc(&view, &g, Residual::DenseBiased(&view, &g))?, bias_epilogue_nhwc(&fresh, &g, Residual::DenseBiased(&fresh, &g))?),
+        ("upsample2x", upsample2x_nhwc(&view)?, upsample2x_nhwc(&fresh)?),
     ];
     for (name, a, b) in pairs {
-        out.push((
-            format!("nhwc {name} offset view (start_offset {off})"),
-            mismatches(&a, &b)? + bad,
-        ));
+        out.push((format!("nhwc {name} offset view (start_offset {off})"), mismatches(&a, &b)? + bad));
     }
     // DupUp source as an offset view.
     let src = Tensor::randn(0f32, 1f32, (2, 4, 4, 64), dev)?.to_dtype(DType::BF16)?;
@@ -865,10 +655,7 @@ fn self_test_nhwc(dev: &candle_core::Device) -> candle_core::Result<Vec<(String,
     let gb = Tensor::randn(0f32, 1f32, 64, dev)?.to_dtype(DType::BF16)?;
     out.push((
         "nhwc dupup source offset view".to_string(),
-        mismatches(
-            &bias_epilogue_nhwc(&y, &gb, Residual::DupUp(&sv, 2))?,
-            &bias_epilogue_nhwc(&y, &gb, Residual::DupUp(&sf, 2))?,
-        )?,
+        mismatches(&bias_epilogue_nhwc(&y, &gb, Residual::DupUp(&sv, 2))?, &bias_epilogue_nhwc(&y, &gb, Residual::DupUp(&sf, 2))?)?,
     ));
     Ok(out)
 }
@@ -878,16 +665,7 @@ fn self_test_nhwc(dev: &candle_core::Device) -> candle_core::Result<Vec<(String,
 pub fn self_test(dev: &candle_core::Device) -> candle_core::Result<Vec<(String, usize)>> {
     let mut out = Vec::new();
     // (B, C, H, W): VAE channel counts, an odd C, C > 1024, a tile-edge W.
-    let shapes = [
-        (1, 1152, 8, 8),
-        (1, 576, 16, 12),
-        (1, 288, 9, 37),
-        (2, 144, 16, 16),
-        (1, 64, 5, 7),
-        (1, 100, 6, 6),
-        (1, 1030, 4, 4),
-        (1, 2048, 3, 3),
-    ];
+    let shapes = [(1, 1152, 8, 8), (1, 576, 16, 12), (1, 288, 9, 37), (2, 144, 16, 16), (1, 64, 5, 7), (1, 100, 6, 6), (1, 1030, 4, 4), (1, 2048, 3, 3)];
     for &(b, c, h, w) in &shapes {
         let mut x = (Tensor::randn(0f32, 1f32, (b, c, h, w), dev)? * 3.0)?;
         // A few exact zeros / negative zeros, and one all-zero pixel column.
@@ -909,19 +687,13 @@ pub fn self_test(dev: &candle_core::Device) -> candle_core::Result<Vec<(String, 
         for silu in [false, true] {
             let ours = rmsnorm(&x, &gamma, silu)?;
             let refr = rmsnorm_reference(&x, &gamma, silu)?;
-            out.push((
-                format!("rmsnorm ({b},{c},{h},{w}) silu={silu}"),
-                mismatches(&ours, &refr)?,
-            ));
+            out.push((format!("rmsnorm ({b},{c},{h},{w}) silu={silu}"), mismatches(&ours, &refr)?));
         }
         let bias = Tensor::randn(0f32, 1f32, c, dev)?.to_dtype(DType::BF16)?;
         let r = Tensor::randn(0f32, 2f32, (b, c, h, w), dev)?.to_dtype(DType::BF16)?;
         let ours = bias_residual(&x, &bias, &r)?;
         let refr = (x.broadcast_add(&bias.reshape((1, c, 1, 1))?)? + &r)?;
-        out.push((
-            format!("bias_residual ({b},{c},{h},{w})"),
-            mismatches(&ours, &refr)?,
-        ));
+        out.push((format!("bias_residual ({b},{c},{h},{w})"), mismatches(&ours, &refr)?));
     }
     // Offset views: a B=1 narrow of a B=2 batch is dense at offset C*H*W.
     let big = Tensor::randn(0f32, 1f32, (2, 144, 8, 8), dev)?.to_dtype(DType::BF16)?;
@@ -929,22 +701,10 @@ pub fn self_test(dev: &candle_core::Device) -> candle_core::Result<Vec<(String, 
     let fresh = view.to_dtype(DType::F32)?.to_dtype(DType::BF16)?;
     let gamma = Tensor::ones(144, DType::BF16, dev)?;
     let off = view.layout().start_offset();
-    let d = mismatches(
-        &rmsnorm(&view, &gamma, true)?,
-        &rmsnorm(&fresh, &gamma, true)?,
-    )?;
-    out.push((
-        format!("rmsnorm offset view (start_offset {off})"),
-        d + (off == 0) as usize,
-    ));
-    let d = mismatches(
-        &bias_residual(&view, &gamma, &view)?,
-        &bias_residual(&fresh, &gamma, &fresh)?,
-    )?;
-    out.push((
-        format!("bias_residual offset view (start_offset {off})"),
-        d + (off == 0) as usize,
-    ));
+    let d = mismatches(&rmsnorm(&view, &gamma, true)?, &rmsnorm(&fresh, &gamma, true)?)?;
+    out.push((format!("rmsnorm offset view (start_offset {off})"), d + (off == 0) as usize));
+    let d = mismatches(&bias_residual(&view, &gamma, &view)?, &bias_residual(&fresh, &gamma, &fresh)?)?;
+    out.push((format!("bias_residual offset view (start_offset {off})"), d + (off == 0) as usize));
     out.extend(self_test_nhwc(dev)?);
     Ok(out)
 }

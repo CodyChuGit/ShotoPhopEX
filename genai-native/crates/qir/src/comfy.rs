@@ -43,15 +43,9 @@ impl Mt19937 {
         state[0] = (seed & 0xffff_ffff) as u32;
         for j in 1..N {
             let prev = state[j - 1];
-            state[j] = 1_812_433_253u32
-                .wrapping_mul(prev ^ (prev >> 30))
-                .wrapping_add(j as u32);
+            state[j] = 1_812_433_253u32.wrapping_mul(prev ^ (prev >> 30)).wrapping_add(j as u32);
         }
-        Self {
-            state,
-            left: 1,
-            next: 0,
-        }
+        Self { state, left: 1, next: 0 }
     }
 
     fn next_state(&mut self) {
@@ -292,25 +286,11 @@ mod tests {
         1.3987053632736206,
         -0.15069834887981415,
     ];
-    const S3_HEAD: [f32; 4] = [
-        -0.07664429396390915,
-        0.35988152027130127,
-        -0.7820168137550354,
-        0.07152773439884186,
-    ];
-    const S3_TAIL: [f32; 4] = [
-        0.9464710354804993,
-        2.6077301502227783,
-        0.036344464868307114,
-        -0.7857550978660583,
-    ];
+    const S3_HEAD: [f32; 4] = [-0.07664429396390915, 0.35988152027130127, -0.7820168137550354, 0.07152773439884186];
+    const S3_TAIL: [f32; 4] = [0.9464710354804993, 2.6077301502227783, 0.036344464868307114, -0.7857550978660583];
 
     fn close(a: &[f32], b: &[f32]) {
-        let max = a
-            .iter()
-            .zip(b)
-            .map(|(x, y)| (x - y).abs())
-            .fold(0f32, f32::max);
+        let max = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
         assert!(max <= 2e-6, "max abs diff {max}: {a:?} vs {b:?}");
     }
 
@@ -398,7 +378,20 @@ mod tests {
         close(&s.sigmas[..4], &[1.0, 0.9795287847518921, 0.9582074880599976, 0.935981810092926]);
         close(&s.sigmas[22..], &[0.21375630795955658, 0.14775140583515167, 0.07669990509748459, 0.0]);
         let s = FlowSchedule::simple(8, q).unwrap();
-        close(&s.sigmas, &[1.0, 0.9331371784210205, 0.8567571043968201, 0.7686715722084045, 0.6659669280052185, 0.5446740984916687, 0.39924493432044983, 0.2216787487268448, 0.0]);
+        close(
+            &s.sigmas,
+            &[
+                1.0,
+                0.9331371784210205,
+                0.8567571043968201,
+                0.7686715722084045,
+                0.6659669280052185,
+                0.5446740984916687,
+                0.39924493432044983,
+                0.2216787487268448,
+                0.0,
+            ],
+        );
         // 30 steps: ss = 333.33.., int() truncation picks the rows.
         let s = FlowSchedule::simple(30, q).unwrap();
         close(&s.sigmas[..3], &[1.0, 0.9830156564712524, 0.9654479622840881]);
@@ -438,12 +431,7 @@ mod tests {
             return;
         }
         let tok = tokenizers::Tokenizer::from_file(&path).unwrap();
-        let ids = |p: &str| -> Vec<u32> {
-            tok.encode(crate::model::text_encoder::prompt::t2i_template(p), false)
-                .unwrap()
-                .get_ids()
-                .to_vec()
-        };
+        let ids = |p: &str| -> Vec<u32> { tok.encode(crate::model::text_encoder::prompt::t2i_template(p), false).unwrap().get_ids().to_vec() };
         assert_eq!(
             ids("a cat"),
             [151644, 8948, 198, 1092, 30782, 408, 323, 23643, 279, 3897, 9934, 13, 151645, 198, 151644, 872, 198, 64, 8251, 151645, 198, 151644, 77091, 198]
@@ -454,14 +442,13 @@ mod tests {
         );
         assert_eq!(
             ids("A (red) fox, 4k\nsecond line"),
-            [151644, 8948, 198, 1092, 30782, 408, 323, 23643, 279, 3897, 9934, 13, 151645, 198, 151644, 872, 198, 32, 320, 1151, 8, 38835, 11, 220, 19, 74, 198, 5569, 1555, 151645, 198, 151644, 77091, 198]
+            [
+                151644, 8948, 198, 1092, 30782, 408, 323, 23643, 279, 3897, 9934, 13, 151645, 198, 151644, 872, 198, 32, 320, 1151, 8, 38835, 11, 220, 19, 74,
+                198, 5569, 1555, 151645, 198, 151644, 77091, 198
+            ]
         );
         // The system turn ends at the second <|im_start|>: 14 tokens, what `generate` drops.
-        let sys = tok
-            .encode(format!("<|im_start|>system\n{}<|im_end|>\n", crate::model::text_encoder::prompt::SYS_PROMPT), false)
-            .unwrap()
-            .get_ids()
-            .len();
+        let sys = tok.encode(format!("<|im_start|>system\n{}<|im_end|>\n", crate::model::text_encoder::prompt::SYS_PROMPT), false).unwrap().get_ids().len();
         assert_eq!(sys, 14);
     }
 }

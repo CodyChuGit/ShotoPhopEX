@@ -257,7 +257,16 @@ impl Engine for QirCli {
     }
 
     fn run(&self, case: &Case, ctx: &RunCtx) -> Record {
-        let mut rec = Record { id: case.id.clone(), engine: self.name().into(), image: None, wall_ms: 0, engine_ms: None, seed: case.seed(), result: Value::Null, error: None };
+        let mut rec = Record {
+            id: case.id.clone(),
+            engine: self.name().into(),
+            image: None,
+            wall_ms: 0,
+            engine_ms: None,
+            seed: case.seed(),
+            result: Value::Null,
+            error: None,
+        };
         let args = match self.arguments(case, ctx) {
             Ok(a) => a,
             Err(e) => {
@@ -459,7 +468,11 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap_or_else(|e| panic!("{e}"));
         Image::new(200, 100).write(&d.join("pic.png")).unwrap_or_else(|e| panic!("{e}"));
         let ctx = RunCtx { images: d.clone(), out: d.join("run"), template: Some("qwen-2.1/image".into()) };
-        let e = ComfyCli { cli: PathBuf::from("photocraft-cli"), comfy_path: Some(PathBuf::from("C:/comfy")), prefs: vec![("integrations.allowResearchModels".into(), json!(true))] };
+        let e = ComfyCli {
+            cli: PathBuf::from("photocraft-cli"),
+            comfy_path: Some(PathBuf::from("C:/comfy")),
+            prefs: vec![("integrations.allowResearchModels".into(), json!(true))],
+        };
         let t2i = Case { id: "a".into(), kind: Kind::T2i { prompt: "a fox".into(), seed: 7, width: 1024, height: 768 } };
         let (args, produces) = e.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
         assert!(produces && args.contains(&"--new".to_string()) && args.contains(&"generate.image".to_string()));
@@ -485,7 +498,13 @@ mod tests {
         let log = "[I] get_learned_condition completed, taking 1.10s\n[I] sampling completed, taking 8.02s\n[I] generate_image completed in 9.70s";
         assert_eq!((seconds_after(log, "sampling completed, taking"), seconds_after(log, "generate_image completed in")), (Some(8020), Some(9700)));
         // qwen-image-rs: width and height as given, the extra flags, and its timings line.
-        let q = QirCli { exe: PathBuf::from("qir"), model: PathBuf::from("snap"), steps: 25, extra: vec!["--convrot".into(), "--comfy".into()], subcommand: "generate".into() };
+        let q = QirCli {
+            exe: PathBuf::from("qir"),
+            model: PathBuf::from("snap"),
+            steps: 25,
+            extra: vec!["--convrot".into(), "--comfy".into()],
+            subcommand: "generate".into(),
+        };
         let args = q.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
         assert!(args.windows(2).any(|w| w == ["--width", "1024"]) && args.windows(2).any(|w| w == ["--height", "768"]), "{args:?}");
         assert!(args.windows(3).any(|w| w == ["--convrot", "--comfy", "--out"]) && args.first().is_some_and(|a| a == "generate"), "{args:?}");
@@ -497,7 +516,13 @@ mod tests {
         assert!(args.contains(&"--convrot".to_string()) && !args.contains(&"--comfy".to_string()), "{args:?}");
         assert!(q.arguments(&fill, &ctx).is_err(), "a fill goes through the app");
         // Krea 2: its own subcommand, no `--comfy` or `--guidance`, 8 steps.
-        let k = QirCli { exe: PathBuf::from("qir"), model: PathBuf::from("krea"), steps: 8, extra: vec!["--convrot".into(), "--comfy".into()], subcommand: "generate-krea2".into() };
+        let k = QirCli {
+            exe: PathBuf::from("qir"),
+            model: PathBuf::from("krea"),
+            steps: 8,
+            extra: vec!["--convrot".into(), "--comfy".into()],
+            subcommand: "generate-krea2".into(),
+        };
         let args = k.arguments(&t2i, &ctx).unwrap_or_else(|e| panic!("{e}"));
         assert!(args.first().is_some_and(|a| a == "generate-krea2") && args.windows(2).any(|w| w == ["--steps", "8"]), "{args:?}");
         assert!(!args.contains(&"--comfy".to_string()) && !args.contains(&"--guidance".to_string()) && args.contains(&"--convrot".to_string()), "{args:?}");

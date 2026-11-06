@@ -22,9 +22,7 @@ impl FromStr for Seed {
         if t.eq_ignore_ascii_case("random") || t.eq_ignore_ascii_case("rand") {
             return Ok(Seed::Random);
         }
-        t.parse::<u64>()
-            .map(Seed::Fixed)
-            .map_err(|_| format!("--seed expects a non-negative integer or `random`, got `{s}`"))
+        t.parse::<u64>().map(Seed::Fixed).map_err(|_| format!("--seed expects a non-negative integer or `random`, got `{s}`"))
     }
 }
 
@@ -54,10 +52,7 @@ pub fn random_u64() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     h.write_u128(nanos);
     h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
     h.finish()
@@ -65,25 +60,13 @@ pub fn random_u64() -> u64 {
 
 /// Write `<dir>/seeds.tsv` (`file`, `seed`, `prompt`), one row per image, so a
 /// batch with random seeds can be reproduced image by image.
-pub fn write_manifest(
-    dir: &std::path::Path,
-    rows: &[(String, u64, String)],
-) -> std::io::Result<std::path::PathBuf> {
+pub fn write_manifest(dir: &std::path::Path, rows: &[(String, u64, String)]) -> std::io::Result<std::path::PathBuf> {
     use std::io::Write;
     let path = dir.join("seeds.tsv");
     let mut f = std::fs::File::create(&path)?;
     writeln!(f, "file\tseed\tprompt")?;
     for (file, seed, prompt) in rows {
-        let p: String = prompt
-            .chars()
-            .map(|c| {
-                if c == '\t' || c == '\n' || c == '\r' {
-                    ' '
-                } else {
-                    c
-                }
-            })
-            .collect();
+        let p: String = prompt.chars().map(|c| if c == '\t' || c == '\n' || c == '\r' { ' ' } else { c }).collect();
         writeln!(f, "{file}\t{seed}\t{p}")?;
     }
     Ok(path)

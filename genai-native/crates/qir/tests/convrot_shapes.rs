@@ -46,10 +46,14 @@ fn gemm_plans_on_this_card() -> qwen_image_rs::Result<()> {
         let best = times.iter().zip(&plans).filter_map(|(t, p)| t.map(|t| (t, p))).min_by(|a, b| a.0.total_cmp(&b.0));
         let sel = gemm_plan(m, n, k);
         let sel_t = times.iter().zip(&plans).find(|(_, p)| **p == sel).and_then(|(t, _)| *t);
-        let cells: Vec<String> = times.iter().zip(&plans).map(|(t, p)| match t {
-            Some(ms) => format!("{}:{:.0}", label(p), ops / ms / 1e9),
-            None => format!("{}:n/a", label(p)),
-        }).collect();
+        let cells: Vec<String> = times
+            .iter()
+            .zip(&plans)
+            .map(|(t, p)| match t {
+                Some(ms) => format!("{}:{:.0}", label(p), ops / ms / 1e9),
+                None => format!("{}:n/a", label(p)),
+            })
+            .collect();
         println!(
             "M={m} N={n} K={k} selected {} {:.0} TOPS | best {} {:.0} TOPS | {} | bit-identical={same}",
             label(&sel),

@@ -749,7 +749,8 @@ impl Stream {
         #[cfg(feature = "convrot")]
         if let (Some(up), Some(down)) = (&self.up.int8, &self.down.int8) {
             static FUSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if x.device().is_cuda() && x.dtype() == DType::BF16 && *FUSE.get_or_init(|| std::env::var("QIR_LAYERED_MLP_FUSE").map_or(true, |v| v.trim() != "0")) {
+            if x.device().is_cuda() && x.dtype() == DType::BF16 && *FUSE.get_or_init(|| std::env::var("QIR_LAYERED_MLP_FUSE").map_or(true, |v| v.trim() != "0"))
+            {
                 let k = x.dim(D::Minus1)?;
                 let (rows, hidden, out) = ((x.elem_count() / k) as f64, self.up.bias.elem_count() as f64, self.down.bias.elem_count() as f64);
                 let raw = crate::profile::scope("layered int8 convrot", 2.0 * rows * k as f64 * hidden, x.device(), || up.forward(x))?;
@@ -1010,7 +1011,9 @@ fn sage_check(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)
     if ![0, 10, 19].contains(&step) {
         return Ok(());
     }
-    let amax = |t: &Tensor| -> Result<f32> { Ok(t.abs()?.max_keepdim(3)?.max_keepdim(2)?.max_keepdim(1)?.flatten_all()?.max(0)?.to_dtype(DType::F32)?.to_scalar::<f32>()?) };
+    let amax = |t: &Tensor| -> Result<f32> {
+        Ok(t.abs()?.max_keepdim(3)?.max_keepdim(2)?.max_keepdim(1)?.flatten_all()?.max(0)?.to_dtype(DType::F32)?.to_scalar::<f32>()?)
+    };
     // Every block's range; the error comparison on the first two and the last.
     if ![0, 1, BLOCKS - 1].contains(&block) {
         tracing::info!(step, block, max_q = amax(q)?, max_k = amax(k)?, max_v = amax(v)?, "layered sage range");
@@ -1489,7 +1492,14 @@ impl LayeredDit {
     }
 
     /// [`Self::forward_latents`] with a first-block step cache ([`StepCache`]) for this CFG branch.
-    pub fn forward_latents_cached(&self, target: &Tensor, references: &[Tensor], text: &Tensor, timestep: &Tensor, cache: Option<&mut StepCache>) -> Result<Tensor> {
+    pub fn forward_latents_cached(
+        &self,
+        target: &Tensor,
+        references: &[Tensor],
+        text: &Tensor,
+        timestep: &Tensor,
+        cache: Option<&mut StepCache>,
+    ) -> Result<Tensor> {
         let packed = PackedImages::new(self.kind, target, references)?;
         let tp = text_positions(target.dim(0)?, text.dim(1)?, packed.rows, packed.cols, target.device())?;
         let rope = LayeredRope::new(&Tensor::cat(&[&tp, &packed.positions], 1)?, target.dtype())?;

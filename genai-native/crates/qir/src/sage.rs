@@ -15,24 +15,8 @@ use crate::Result;
 extern "C" {
     // Test helper (sage_ffi.cu): fill all SMs' shared memory with f16 NaN.
     fn sage_poison_smem_launch(stream: *mut c_void) -> i32;
-    fn sage_quant_q(
-        inp: *const c_void,
-        out_i8: *mut c_void,
-        scale: *mut f32,
-        b: i32,
-        h: i32,
-        n: i32,
-        stream: *mut c_void,
-    );
-    fn sage_quant_k(
-        inp: *const c_void,
-        out_i8: *mut c_void,
-        scale: *mut f32,
-        b: i32,
-        h: i32,
-        n: i32,
-        stream: *mut c_void,
-    );
+    fn sage_quant_q(inp: *const c_void, out_i8: *mut c_void, scale: *mut f32, b: i32, h: i32, n: i32, stream: *mut c_void);
+    fn sage_quant_k(inp: *const c_void, out_i8: *mut c_void, scale: *mut f32, b: i32, h: i32, n: i32, stream: *mut c_void);
     #[allow(clippy::too_many_arguments)]
     fn sage_attn(
         q_i8: *const c_void,
@@ -112,27 +96,11 @@ impl candle_core::CustomOp3 for SageAttn {
         "sage-attn"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("sage-attn is CUDA-only")
     }
 
-    fn cuda_fwd(
-        &self,
-        q: &CudaStorage,
-        ql: &Layout,
-        k: &CudaStorage,
-        kl: &Layout,
-        v: &CudaStorage,
-        vl: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, q: &CudaStorage, ql: &Layout, k: &CudaStorage, kl: &Layout, v: &CudaStorage, vl: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = q.device().clone();
         let (b, hq, s, d) = ql.shape().dims4()?;
         let (_, hk, skv, _) = kl.shape().dims4()?;
@@ -164,24 +132,8 @@ impl candle_core::CustomOp3 for SageAttn {
             let (op, _h) = o.device_ptr(&stream);
             let st = stream.cu_stream() as *mut c_void;
             unsafe {
-                sage_quant_q(
-                    qp as *const c_void,
-                    qip as *mut c_void,
-                    qsp as *mut f32,
-                    b as i32,
-                    hq as i32,
-                    s as i32,
-                    st,
-                );
-                sage_quant_k(
-                    kp as *const c_void,
-                    kip as *mut c_void,
-                    ksp as *mut f32,
-                    b as i32,
-                    hk as i32,
-                    skv as i32,
-                    st,
-                );
+                sage_quant_q(qp as *const c_void, qip as *mut c_void, qsp as *mut f32, b as i32, hq as i32, s as i32, st);
+                sage_quant_k(kp as *const c_void, kip as *mut c_void, ksp as *mut f32, b as i32, hk as i32, skv as i32, st);
                 sage_attn(
                     qip as *const c_void,
                     kip as *const c_void,
@@ -207,13 +159,7 @@ impl candle_core::CustomOp3 for SageAttn {
 /// INT8-QK / FP16-PV attention. `q,k,v` are `(B, H, S, D)` bf16 on CUDA;
 /// `scale` is the softmax scale (1/sqrt(D)); `causal` selects the causal mask.
 /// Returns `(B, H, S, D)` bf16. D must be a multiple of 64.
-pub fn sage_attention(
-    q: &Tensor,
-    k: &Tensor,
-    v: &Tensor,
-    scale: f32,
-    causal: bool,
-) -> Result<Tensor> {
+pub fn sage_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, causal: bool) -> Result<Tensor> {
     let q = q.contiguous()?;
     let k = k.contiguous()?;
     let vf = v.to_dtype(DType::F16)?.contiguous()?;
@@ -298,16 +244,11 @@ pub(crate) fn check_qk_view(xl: &Layout, what: &str) -> candle_core::Result<(usi
     let (b, n, h, d) = xl.shape().dims4()?;
     let st = xl.stride();
     if d != SAGE_HEAD_DIM || st[3] != 1 {
-        candle_core::bail!(
-            "{what}: need head_dim {SAGE_HEAD_DIM} stride-1, got d={d} stride {st:?}"
-        );
+        candle_core::bail!("{what}: need head_dim {SAGE_HEAD_DIM} stride-1, got d={d} stride {st:?}");
     }
     // float4 = 8 bf16: base offset and every outer stride must be multiples of 8.
     if !xl.start_offset().is_multiple_of(8) || st[..3].iter().any(|s| !s.is_multiple_of(8)) {
-        candle_core::bail!(
-            "{what}: view not 16-byte aligned (offset {}, strides {st:?})",
-            xl.start_offset()
-        );
+        candle_core::bail!("{what}: view not 16-byte aligned (offset {}, strides {st:?})", xl.start_offset());
     }
     Ok((b, n, h))
 }
@@ -315,19 +256,10 @@ pub(crate) fn check_qk_view(xl: &Layout, what: &str) -> candle_core::Result<(usi
 /// Validate the `(S, D/2)` cos/sin rows for a fused rope+quant over `n`
 /// tokens: matching shapes, D/2 = 64, row-contiguous (a dim-0 narrow keeps
 /// this). Returns D/2 (the row stride the kernels take).
-pub(crate) fn check_rope_tables(
-    cl: &Layout,
-    sl: &Layout,
-    n: usize,
-    what: &str,
-) -> candle_core::Result<usize> {
+pub(crate) fn check_rope_tables(cl: &Layout, sl: &Layout, n: usize, what: &str) -> candle_core::Result<usize> {
     let (cn, dhalf) = cl.shape().dims2()?;
     if cn != n || dhalf * 2 != SAGE_HEAD_DIM || sl.shape() != cl.shape() {
-        candle_core::bail!(
-            "{what}: cos {:?} / sin {:?} vs x ({n} tokens, d {SAGE_HEAD_DIM})",
-            cl.shape(),
-            sl.shape()
-        );
+        candle_core::bail!("{what}: cos {:?} / sin {:?} vs x ({n} tokens, d {SAGE_HEAD_DIM})", cl.shape(), sl.shape());
     }
     if !cl.is_contiguous() || !sl.is_contiguous() {
         candle_core::bail!("{what}: cos/sin must be row-contiguous (S, D/2)");
@@ -371,18 +303,7 @@ impl candle_core::CustomOp1 for QuantBshd {
                 QkRole::Key => sage_quant_k_bshd,
             };
             unsafe {
-                f(
-                    xp as *const c_void,
-                    op as *mut c_void,
-                    sp,
-                    b as i32,
-                    h as i32,
-                    n as i32,
-                    st[0] as u32,
-                    st[1] as u32,
-                    st[2] as u32,
-                    st_,
-                );
+                f(xp as *const c_void, op as *mut c_void, sp, b as i32, h as i32, n as i32, st[0] as u32, st[1] as u32, st[2] as u32, st_);
             }
         }
         Ok((CudaStorage::wrap_cuda_slice(out, dev), total.into()))
@@ -401,15 +322,7 @@ impl candle_core::CustomOp3 for RopeQuantBshd {
         "sage-rope-quant-bshd"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("sage-rope-quant-bshd is CUDA-only")
     }
 
@@ -470,34 +383,17 @@ impl candle_core::CustomOp3 for RopeQuantBshd {
 /// `cos,sin (S, D/2)` (the rows for exactly the view's tokens — narrow them on
 /// dim 0 alongside `x`'s dim-1 narrow) and quantize per `role` block. Equals
 /// `quant_bshd(rope_i_bshd(x, cos, sin), role)` bit-for-bit.
-pub fn rope_quant_bshd(
-    x: &Tensor,
-    cos: &Tensor,
-    sin: &Tensor,
-    role: QkRole,
-) -> Result<QuantizedQk> {
+pub fn rope_quant_bshd(x: &Tensor, cos: &Tensor, sin: &Tensor, role: QkRole) -> Result<QuantizedQk> {
     let (b, n, h, _) = x.dims4()?;
     let packed = x.apply_op3(cos, sin, RopeQuantBshd { role })?;
-    Ok(QuantizedQk {
-        packed,
-        b,
-        h,
-        n,
-        role,
-    })
+    Ok(QuantizedQk { packed, b, h, n, role })
 }
 
 /// Unfused per-block INT8 quant of an (already rotated) bf16 `(B,S,H,D)` view.
 pub fn quant_bshd(x: &Tensor, role: QkRole) -> Result<QuantizedQk> {
     let (b, n, h, _) = x.dims4()?;
     let packed = x.apply_op1(QuantBshd { role })?;
-    Ok(QuantizedQk {
-        packed,
-        b,
-        h,
-        n,
-        role,
-    })
+    Ok(QuantizedQk { packed, b, h, n, role })
 }
 
 /// Attention over pre-quantized q/k: the inputs are the q/k packed buffers and
@@ -517,46 +413,23 @@ impl candle_core::CustomOp3 for SageAttnPrequant {
         "sage-attn-prequant"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("sage-attn-prequant is CUDA-only")
     }
 
-    fn cuda_fwd(
-        &self,
-        q: &CudaStorage,
-        ql: &Layout,
-        k: &CudaStorage,
-        kl: &Layout,
-        v: &CudaStorage,
-        vl: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, q: &CudaStorage, ql: &Layout, k: &CudaStorage, kl: &Layout, v: &CudaStorage, vl: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = q.device().clone();
         let (b, hq, sq, hk, skv) = (self.b, self.hq, self.sq, self.hk, self.skv);
         let d = SAGE_HEAD_DIM;
         let q_len = QuantizedQk::packed_bytes(b, hq, sq, QkRole::Query);
         let k_len = QuantizedQk::packed_bytes(b, hk, skv, QkRole::Key);
-        if ql.start_offset() != 0
-            || ql.shape().elem_count() != q_len
-            || kl.start_offset() != 0
-            || kl.shape().elem_count() != k_len
-        {
+        if ql.start_offset() != 0 || ql.shape().elem_count() != q_len || kl.start_offset() != 0 || kl.shape().elem_count() != k_len {
             candle_core::bail!("sage-attn-prequant: packed q/k size mismatch vs dims");
         }
         let (vb, vs, vh, vd) = vl.shape().dims4()?;
         let vst = vl.stride();
         if vb != b || vs != skv || vh != hk || vd != d || vst[3] != 1 {
-            candle_core::bail!(
-                "sage-attn-prequant: v {:?} vs k ({b},{skv},{hk},{d})",
-                vl.shape()
-            );
+            candle_core::bail!("sage-attn-prequant: v {:?} vs k ({b},{skv},{hk},{d})", vl.shape());
         }
         let q_s = q.as_cuda_slice::<u8>()?;
         let k_s = k.as_cuda_slice::<u8>()?;
@@ -607,25 +480,11 @@ impl candle_core::CustomOp3 for SageAttnPrequant {
 /// INT8-QK / FP16-PV attention over pre-quantized `q` ([`QkRole::Query`]) and
 /// `k` ([`QkRole::Key`]); `v` is the f16 `(B,S,H,D)` view (may be an S-axis
 /// narrow). Returns `(B, q.n, H, D)` bf16.
-pub fn sage_attention_quantized(
-    q: &QuantizedQk,
-    k: &QuantizedQk,
-    v: &Tensor,
-    scale: f32,
-    causal: bool,
-) -> Result<Tensor> {
+pub fn sage_attention_quantized(q: &QuantizedQk, k: &QuantizedQk, v: &Tensor, scale: f32, causal: bool) -> Result<Tensor> {
     if q.role != QkRole::Query || k.role != QkRole::Key || q.b != k.b {
         anyhow::bail!("sage_attention_quantized: need (Query, Key) operands of equal batch");
     }
-    let op = SageAttnPrequant {
-        scale,
-        causal,
-        b: q.b,
-        hq: q.h,
-        sq: q.n,
-        hk: k.h,
-        skv: k.n,
-    };
+    let op = SageAttnPrequant { scale, causal, b: q.b, hq: q.h, sq: q.n, hk: k.h, skv: k.n };
     Ok(q.packed.apply_op3(&k.packed, v, op)?)
 }
 
@@ -635,13 +494,7 @@ pub fn sage_attention_quantized(
 /// `causal` selects the causal mask. Returns `(B,S,H,D)` bf16. D must be 128.
 /// = unfused quant + [`sage_attention_quantized`]; the DiT uses the fused
 /// [`rope_quant_bshd`] instead, this stays as the equivalence oracle.
-pub fn sage_attention_bshd(
-    q: &Tensor,
-    k: &Tensor,
-    v: &Tensor,
-    scale: f32,
-    causal: bool,
-) -> Result<Tensor> {
+pub fn sage_attention_bshd(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, causal: bool) -> Result<Tensor> {
     let q8 = quant_bshd(q, QkRole::Query)?;
     let k8 = quant_bshd(k, QkRole::Key)?;
     sage_attention_quantized(&q8, &k8, v, scale, causal)
@@ -702,28 +555,13 @@ pub fn self_test_bshd() -> Result<(f32, f32)> {
     let qh = q.transpose(1, 2)?.contiguous()?;
     let kh = k.transpose(1, 2)?.contiguous()?;
     let vh = vf.transpose(1, 2)?.contiguous()?;
-    let ot = sage_attention(
-        &qh.narrow(2, 0, txt)?,
-        &kh.narrow(2, 0, txt)?,
-        &vh.narrow(2, 0, txt)?,
-        sc,
-        true,
-    )?;
+    let ot = sage_attention(&qh.narrow(2, 0, txt)?, &kh.narrow(2, 0, txt)?, &vh.narrow(2, 0, txt)?, sc, true)?;
     let qi = qh.narrow(2, txt, s - txt)?;
     let oi = sage_attention(&qi, &kh, &vh, sc, false)?;
-    let refb = Tensor::cat(&[ot, oi], 2)?
-        .transpose(1, 2)?
-        .contiguous()?
-        .to_dtype(DType::F32)?; // (B,S,H,D)
+    let refb = Tensor::cat(&[ot, oi], 2)?.transpose(1, 2)?.contiguous()?.to_dtype(DType::F32)?; // (B,S,H,D)
 
     // BSHD path (new): narrow on dim 1, no transpose.
-    let ot = sage_attention_bshd(
-        &q.narrow(1, 0, txt)?,
-        &k.narrow(1, 0, txt)?,
-        &vf.narrow(1, 0, txt)?,
-        sc,
-        true,
-    )?;
+    let ot = sage_attention_bshd(&q.narrow(1, 0, txt)?, &k.narrow(1, 0, txt)?, &vf.narrow(1, 0, txt)?, sc, true)?;
     let qi = q.narrow(1, txt, s - txt)?;
     let oi = sage_attention_bshd(&qi, &k, &vf, sc, false)?;
     let ours = Tensor::cat(&[ot, oi], 1)?.to_dtype(DType::F32)?; // (B,S,H,D)
@@ -766,16 +604,8 @@ pub(crate) fn nan_aware_compare(ours: &Tensor, refb: &Tensor) -> Result<(f32, f3
             _ => mismatched_nans += 1,
         }
     }
-    let cos = if na > 0.0 && nb > 0.0 {
-        (dot / (na.sqrt() * nb.sqrt())) as f32
-    } else {
-        1.0
-    };
-    let maxabs = if mismatched_nans > 0 {
-        f32::NAN
-    } else {
-        maxabs as f32
-    };
+    let cos = if na > 0.0 && nb > 0.0 { (dot / (na.sqrt() * nb.sqrt())) as f32 } else { 1.0 };
+    let maxabs = if mismatched_nans > 0 { f32::NAN } else { maxabs as f32 };
     Ok((cos, maxabs))
 }
 
@@ -805,12 +635,7 @@ pub fn self_test_rope_quant() -> Result<RopeQuantReport> {
     let sc = (1.0 / (d as f64).sqrt()) as f32;
     let cos = Tensor::randn(0f32, 1f32, (s, d / 2), &dev)?.to_dtype(DType::BF16)?;
     let sin = Tensor::randn(0f32, 1f32, (s, d / 2), &dev)?.to_dtype(DType::BF16)?;
-    let mut rep = RopeQuantReport {
-        int8_mismatches: 0,
-        scale_mismatches: 0,
-        attn_cos: 1.0,
-        attn_maxabs: 0.0,
-    };
+    let mut rep = RopeQuantReport { int8_mismatches: 0, scale_mismatches: 0, attn_cos: 1.0, attn_maxabs: 0.0 };
     for b in [1usize, 2] {
         let q = Tensor::randn(0f32, 1f32, (b, s, h, d), &dev)?.to_dtype(DType::BF16)?;
         let k = Tensor::randn(0f32, 1f32, (b, s, h, d), &dev)?.to_dtype(DType::BF16)?;
@@ -818,19 +643,9 @@ pub fn self_test_rope_quant() -> Result<RopeQuantReport> {
         let qr = crate::rope::rope_i_bshd(&q, &cos, &sin)?;
         let kr = crate::rope::rope_i_bshd(&k, &cos, &sin)?;
         let fused = |x: &Tensor, off: usize, len: usize, role: QkRole| -> Result<QuantizedQk> {
-            rope_quant_bshd(
-                &x.narrow(1, off, len)?,
-                &cos.narrow(0, off, len)?,
-                &sin.narrow(0, off, len)?,
-                role,
-            )
+            rope_quant_bshd(&x.narrow(1, off, len)?, &cos.narrow(0, off, len)?, &sin.narrow(0, off, len)?, role)
         };
-        let narrows = [
-            (&q, &qr, 0, txt, QkRole::Query),
-            (&k, &kr, 0, txt, QkRole::Key),
-            (&q, &qr, txt, s - txt, QkRole::Query),
-            (&k, &kr, 0, s, QkRole::Key),
-        ];
+        let narrows = [(&q, &qr, 0, txt, QkRole::Query), (&k, &kr, 0, txt, QkRole::Key), (&q, &qr, txt, s - txt, QkRole::Query), (&k, &kr, 0, s, QkRole::Key)];
         let mut fq = Vec::new();
         for (x, xr, off, len, role) in narrows {
             let f = fused(x, off, len, role)?;
@@ -855,22 +670,12 @@ pub fn self_test_rope_quant() -> Result<RopeQuantReport> {
         let ot = sage_attention_quantized(&fq[0], &fq[1], &v.narrow(1, 0, txt)?, sc, true)?;
         let oi = sage_attention_quantized(&fq[2], &fq[3], &v, sc, false)?;
         let ours = Tensor::cat(&[ot, oi], 1)?;
-        let rt = sage_attention_bshd(
-            &qr.narrow(1, 0, txt)?,
-            &kr.narrow(1, 0, txt)?,
-            &v.narrow(1, 0, txt)?,
-            sc,
-            true,
-        )?;
+        let rt = sage_attention_bshd(&qr.narrow(1, 0, txt)?, &kr.narrow(1, 0, txt)?, &v.narrow(1, 0, txt)?, sc, true)?;
         let ri = sage_attention_bshd(&qr.narrow(1, txt, s - txt)?, &kr, &v, sc, false)?;
         let refb = Tensor::cat(&[rt, ri], 1)?;
         let (c, m) = nan_aware_compare(&ours, &refb)?;
         rep.attn_cos = rep.attn_cos.min(c);
-        rep.attn_maxabs = if m.is_nan() || rep.attn_maxabs.is_nan() {
-            f32::NAN
-        } else {
-            rep.attn_maxabs.max(m)
-        };
+        rep.attn_maxabs = if m.is_nan() || rep.attn_maxabs.is_nan() { f32::NAN } else { rep.attn_maxabs.max(m) };
     }
     Ok(rep)
 }
@@ -878,9 +683,7 @@ pub fn self_test_rope_quant() -> Result<RopeQuantReport> {
 /// Fill every SM's shared memory with f16 NaN (test helper): a kernel launched
 /// next on the same stream that reads shared memory it never wrote sees NaN.
 pub(crate) fn poison_smem(dev: &candle_core::Device) -> Result<()> {
-    let candle_core::Device::Cuda(cd) = dev else {
-        anyhow::bail!("poison_smem needs CUDA")
-    };
+    let candle_core::Device::Cuda(cd) = dev else { anyhow::bail!("poison_smem needs CUDA") };
     let rc = unsafe { sage_poison_smem_launch(cd.cuda_stream().cu_stream() as *mut c_void) };
     if rc != 0 {
         anyhow::bail!("sage_poison_smem_launch failed rc={rc}");
@@ -910,12 +713,7 @@ pub fn self_test_partial_tile() -> Result<(usize, f32)> {
     let qi = quant_bshd(&q.narrow(1, txt, s - txt)?, QkRole::Query)?;
     let kf = quant_bshd(&k, QkRole::Key)?;
     let vt = v.narrow(1, 0, txt)?;
-    let run = || -> Result<(Tensor, Tensor)> {
-        Ok((
-            sage_attention_quantized(&qt, &kt, &vt, sc, true)?,
-            sage_attention_quantized(&qi, &kf, &v, sc, false)?,
-        ))
-    };
+    let run = || -> Result<(Tensor, Tensor)> { Ok((sage_attention_quantized(&qt, &kt, &vt, sc, true)?, sage_attention_quantized(&qi, &kf, &v, sc, false)?)) };
     let poison = || poison_smem(&dev);
     let (ct, ci) = run()?;
     let mut nan = 0usize;

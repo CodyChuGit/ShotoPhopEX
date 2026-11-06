@@ -270,7 +270,11 @@ impl LayeredPipeline {
         // A resident DiT is used as it is when the prompt's conditioning is kept too.
         let kept = self.dit.lock().unwrap_or_else(|e| e.into_inner()).is_some()
             && self.conditioning.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|(p, _, _)| p == prompt);
-        let cache = if self.device.is_cuda() { self.int8_cache.as_ref().and_then(|dir| crate::int8_cache::entry(dir, &self.files.diffusion, &Default::default()).ok()) } else { None };
+        let cache = if self.device.is_cuda() {
+            self.int8_cache.as_ref().and_then(|dir| crate::int8_cache::entry(dir, &self.files.diffusion, &Default::default()).ok())
+        } else {
+            None
+        };
         // With an INT8 cache entry the linears come from it, so its pages are the ones to fault.
         let cached = cache.as_ref().is_some_and(|p| p.is_file());
         let prefetch = if !kept && self.device.is_cuda() && std::env::var("QIR_LAYERED_PREFETCH").map_or(true, |v| v != "0") {
@@ -361,7 +365,9 @@ impl LayeredPipeline {
                 let time = layered_timestep(schedule.sigma(i), &self.device)?;
                 let (pos, neg) = if let Some(texts) = &texts {
                     let input = Tensor::cat(&[&input, &input], 0)?;
-                    let velocities = dit.forward_prepared_cached(&input, texts, &time, None, &rope, (nn != nt).then_some((nt, nn)), step_caches.0.as_mut())?.narrow(1, 0, count)?;
+                    let velocities = dit
+                        .forward_prepared_cached(&input, texts, &time, None, &rope, (nn != nt).then_some((nt, nn)), step_caches.0.as_mut())?
+                        .narrow(1, 0, count)?;
                     (velocities.narrow(0, 0, 1)?, velocities.narrow(0, 1, 1)?)
                 } else {
                     let pos = dit.forward_prepared_cached(&input, &positive, &time, None, &rope, None, step_caches.0.as_mut())?.narrow(1, 0, count)?;

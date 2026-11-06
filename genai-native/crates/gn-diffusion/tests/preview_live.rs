@@ -13,8 +13,8 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use gn_diffusion::DiffusionEngine;
@@ -186,10 +186,10 @@ fn previews_leave_every_picture_alone() {
     }
     if wanted("edit2511") {
         // A centred rectangle, a third of each side, filled.
-        let mask: Vec<u8> = (0..H)
-            .flat_map(|y| (0..W).map(move |x| if (W / 3..2 * W / 3).contains(&x) && (H / 3..2 * H / 3).contains(&y) { 255 } else { 0 }))
-            .collect();
-        let mut c = Case { name: "edit2511-fill-8", req: request("qwen-edit-2511/fill-lightning-8", "fill", "a wooden bench"), blobs: vec![picture.clone(), mask] };
+        let mask: Vec<u8> =
+            (0..H).flat_map(|y| (0..W).map(move |x| if (W / 3..2 * W / 3).contains(&x) && (H / 3..2 * H / 3).contains(&y) { 255 } else { 0 })).collect();
+        let mut c =
+            Case { name: "edit2511-fill-8", req: request("qwen-edit-2511/fill-lightning-8", "fill", "a wooden bench"), blobs: vec![picture.clone(), mask] };
         c.req.image = Some(Blob { width: W, height: H, channels: 4, index: 0 });
         c.req.mask = Some(Blob { width: W, height: H, channels: 1, index: 1 });
         c.req.width = 0;

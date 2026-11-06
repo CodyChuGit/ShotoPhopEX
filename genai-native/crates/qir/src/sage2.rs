@@ -78,7 +78,19 @@ extern "C" {
         stream: *mut c_void,
     ) -> i32;
     #[allow(clippy::too_many_arguments)]
-    fn sage2_block_select_launch(scores: *const f32, lut: *mut i32, count: *mut i32, b: i32, h: i32, nq: i32, nk: i32, tau: f32, min_keep: i32, forced: i32, stream: *mut c_void) -> i32;
+    fn sage2_block_select_launch(
+        scores: *const f32,
+        lut: *mut i32,
+        count: *mut i32,
+        b: i32,
+        h: i32,
+        nq: i32,
+        nk: i32,
+        tau: f32,
+        min_keep: i32,
+        forced: i32,
+        stream: *mut c_void,
+    ) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn sage2_attn_sparse_launch(
         q_i8: *const c_void,
@@ -225,8 +237,7 @@ impl Sage2Qk {
     }
     /// Int8 + scale bytes (scratch excluded) — for bit-exact tests.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let used = Self::int8_bytes(self.b, self.h, self.n)
-            + 4 * self.b * self.h * self.role.scales_per_head(self.n);
+        let used = Self::int8_bytes(self.b, self.h, self.n) + 4 * self.b * self.h * self.role.scales_per_head(self.n);
         Ok(self.packed.narrow(0, 0, used)?.to_vec1::<u8>()?)
     }
 }
@@ -273,15 +284,7 @@ impl candle_core::CustomOp3 for RopeQuant2 {
         "sage2-rope-quant"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("sage2-rope-quant is CUDA-only")
     }
 
@@ -420,27 +423,11 @@ impl candle_core::CustomOp3 for Attn2 {
         "sage2-attn"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("sage2-attn is CUDA-only")
     }
 
-    fn cuda_fwd(
-        &self,
-        q: &CudaStorage,
-        ql: &Layout,
-        k: &CudaStorage,
-        kl: &Layout,
-        v: &CudaStorage,
-        vl: &Layout,
-    ) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(&self, q: &CudaStorage, ql: &Layout, k: &CudaStorage, kl: &Layout, v: &CudaStorage, vl: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = q.device().clone();
         let (b, hq, sq, hk, skv) = (self.b, self.hq, self.sq, self.hk, self.skv);
         let q_len = Sage2Qk::packed_bytes(b, hq, sq, Role::Query);
@@ -544,13 +531,7 @@ impl candle_core::CustomOp3 for Attn2 {
 pub fn rope_quant(x: &Tensor, cos: &Tensor, sin: &Tensor, role: Role) -> Result<Sage2Qk> {
     let (b, n, h, _) = x.dims4()?;
     let packed = x.apply_op3(cos, sin, RopeQuant2 { role })?;
-    Ok(Sage2Qk {
-        packed,
-        b,
-        h,
-        n,
-        role,
-    })
+    Ok(Sage2Qk { packed, b, h, n, role })
 }
 
 /// Per-channel FP8 quant of the f16 `(B,S,H,D)` V view for `accum`.
@@ -560,13 +541,7 @@ pub fn quant_v(v: &Tensor, accum: PvAccum) -> Result<Sage2V> {
     }
     let (b, n, h, _) = v.dims4()?;
     let packed = v.apply_op1(QuantV2 { accum })?;
-    Ok(Sage2V {
-        packed,
-        b,
-        h,
-        n,
-        accum,
-    })
+    Ok(Sage2V { packed, b, h, n, accum })
 }
 
 /// SA2 attention: returns `(B, q.n, Hq, D)` bf16. The PV accumulation mode is
@@ -589,17 +564,7 @@ pub fn attention(q: &Sage2Qk, k: &Sage2Qk, v: &Sage2V, scale: f32, causal: bool)
             v.n
         );
     }
-    let op = Attn2 {
-        scale,
-        causal,
-        accum: v.accum,
-        b: q.b,
-        hq: q.h,
-        sq: q.n,
-        hk: k.h,
-        skv: k.n,
-        sparse: None,
-    };
+    let op = Attn2 { scale, causal, accum: v.accum, b: q.b, hq: q.h, sq: q.n, hk: k.h, skv: k.n, sparse: None };
     Ok(q.packed.apply_op3(&k.packed, &v.packed, op)?)
 }
 
@@ -723,12 +688,7 @@ pub fn attend_block_causal_unfused(
     let vt = quant_v(&vf.narrow(1, 0, txt_len)?, accum)?;
     let ot = attention(&qt, &kt, &vt, scale, true)?; // (B,txt,H,D)
 
-    let qi = rope_quant(
-        &qh.narrow(1, txt_len, img)?,
-        &cos.narrow(0, txt_len, img)?,
-        &sin.narrow(0, txt_len, img)?,
-        Role::Query,
-    )?;
+    let qi = rope_quant(&qh.narrow(1, txt_len, img)?, &cos.narrow(0, txt_len, img)?, &sin.narrow(0, txt_len, img)?, Role::Query)?;
     let kf = rope_quant(kh, cos, sin, Role::Key)?;
     let vfq = quant_v(vf, accum)?;
     let oi = attention(&qi, &kf, &vfq, scale, false)?; // (B,img,H,D)
@@ -816,12 +776,7 @@ const _: () = assert!(std::mem::size_of::<S2Tasks>() == 688);
 
 impl S2Tasks {
     fn new(h: usize, b: usize) -> Self {
-        Self {
-            t: [S2Task::EMPTY; S2_MAX_TASKS],
-            ntask: 0,
-            h: h as u32,
-            b: b as u32,
-        }
+        Self { t: [S2Task::EMPTY; S2_MAX_TASKS], ntask: 0, h: h as u32, b: b as u32 }
     }
     fn push(&mut self, t: S2Task) {
         self.t[self.ntask as usize] = t;
@@ -886,12 +841,7 @@ pub fn quant_layer(
 
     let (b, s, h, _) = qh.dims4()?;
     if kh.dims() != qh.dims() || vf.dims() != qh.dims() {
-        anyhow::bail!(
-            "sage2::quant_layer: q {:?} / k {:?} / v {:?} shapes differ",
-            qh.dims(),
-            kh.dims(),
-            vf.dims()
-        );
+        anyhow::bail!("sage2::quant_layer: q {:?} / k {:?} / v {:?} shapes differ", qh.dims(), kh.dims(), vf.dims());
     }
     if qh.dtype() != DType::BF16 || kh.dtype() != DType::BF16 || vf.dtype() != DType::F16 {
         anyhow::bail!("sage2::quant_layer: need q,k bf16 and v f16");
@@ -903,18 +853,11 @@ pub fn quant_layer(
     if let Some(n) = norm {
         for (w, what) in [(n.wq, "wq"), (n.wk, "wk")] {
             if w.dtype() != DType::F32 || w.dims() != [D] {
-                anyhow::bail!(
-                    "sage2::quant_layer: norm {what} must be f32 ({D},), got {:?} {:?}",
-                    w.dtype(),
-                    w.dims()
-                );
+                anyhow::bail!("sage2::quant_layer: norm {what} must be f32 ({D},), got {:?} {:?}", w.dtype(), w.dims());
             }
         }
         if !(n.eps.is_finite() && n.eps > 0.0) {
-            anyhow::bail!(
-                "sage2::quant_layer: norm eps must be finite > 0, got {}",
-                n.eps
-            );
+            anyhow::bail!("sage2::quant_layer: norm eps must be finite > 0, got {}", n.eps);
         }
     }
     // Norm weights (or the q tensor again as a placeholder; unused when `norm` is None).
@@ -930,22 +873,15 @@ pub fn quant_layer(
     let (cs, cl) = cos.storage_and_layout();
     let (ss, sl) = sin.storage_and_layout();
     // The read guards stay alive until every kernel has been enqueued.
-    let (qc, kc, vc, cc, sc) = (
-        as_cuda(&qs, "q")?,
-        as_cuda(&ks, "k")?,
-        as_cuda(&vs, "v")?,
-        as_cuda(&cs, "cos")?,
-        as_cuda(&ss, "sin")?,
-    );
+    let (qc, kc, vc, cc, sc) = (as_cuda(&qs, "q")?, as_cuda(&ks, "k")?, as_cuda(&vs, "v")?, as_cuda(&cs, "cos")?, as_cuda(&ss, "sin")?);
     check_qk_view(ql, "sage2-quant-layer q")?;
     check_qk_view(kl, "sage2-quant-layer k")?;
     check_qk_view(vl, "sage2-quant-layer v")?;
     let dhalf = check_rope_tables(cl, sl, s, "sage2-quant-layer")?;
     let w_off = match norm {
-        Some(_) => Some((
-            crate::layout::dense_byte_offset::<f32>(wql, "sage2-quant-layer wq")?,
-            crate::layout::dense_byte_offset::<f32>(wkl, "sage2-quant-layer wk")?,
-        )),
+        Some(_) => {
+            Some((crate::layout::dense_byte_offset::<f32>(wql, "sage2-quant-layer wq")?, crate::layout::dense_byte_offset::<f32>(wkl, "sage2-quant-layer wk")?))
+        }
         None => None,
     };
     let (wqc, wkc) = (as_cuda(&wqs, "wq")?, as_cuda(&wks, "wk")?);
@@ -959,14 +895,7 @@ pub fn quant_layer(
     let v_t = Sage2V::packed_bytes(b, h, txt_len);
     let v_f = Sage2V::packed_bytes(b, h, s);
     let alloc = |n: usize| -> Result<CudaSlice<u8>> { Ok(unsafe { dev.alloc::<u8>(n)? }) };
-    let outs = [
-        alloc(q_t)?,
-        alloc(q_i)?,
-        alloc(k_t)?,
-        alloc(k_f)?,
-        alloc(v_t)?,
-        alloc(v_f)?,
-    ];
+    let outs = [alloc(q_t)?, alloc(q_i)?, alloc(k_t)?, alloc(k_f)?, alloc(v_t)?, alloc(v_f)?];
     let rc;
     {
         let bf = std::mem::size_of::<half::bf16>();
@@ -996,21 +925,11 @@ pub fn quant_layer(
             _og.push(g);
         }
         // Element pointers of token `tok` of a (B,S,H,D) view / row `tok` of cos,sin.
-        let at = |base: u64, l: &Layout, tok: usize| -> usize {
-            base as usize + (l.start_offset() + tok * l.stride()[1]) * bf
-        };
-        let row = |base: u64, l: &Layout, tok: usize| -> usize {
-            base as usize + (l.start_offset() + tok * dhalf) * bf
-        };
+        let at = |base: u64, l: &Layout, tok: usize| -> usize { base as usize + (l.start_offset() + tok * l.stride()[1]) * bf };
+        let row = |base: u64, l: &Layout, tok: usize| -> usize { base as usize + (l.start_offset() + tok * dhalf) * bf };
         let (qst, kst, vst) = (ql.stride(), kl.stride(), vl.stride());
         let strides = |st: &[usize]| (st[0] as u32, st[1] as u32, st[2] as u32);
-        let qk_task = |kind: u32,
-                       inp: usize,
-                       c: usize,
-                       sn: usize,
-                       out: usize,
-                       n: usize,
-                       st: (u32, u32, u32)| {
+        let qk_task = |kind: u32, inp: usize, c: usize, sn: usize, out: usize, n: usize, st: (u32, u32, u32)| {
             let role = if kind == S2_K { Role::Key } else { Role::Query };
             let (nblk, ncta) = match role {
                 Role::Query => (n.div_ceil(128) * 4, n.div_ceil(128) * 4),
@@ -1022,11 +941,7 @@ pub fn quant_layer(
                 inp: inp as *const c_void,
                 cos: c as *const c_void,
                 sin: sn as *const c_void,
-                partial: if role == Role::Key {
-                    (out + scr) as *mut f32
-                } else {
-                    std::ptr::null_mut()
-                },
+                partial: if role == Role::Key { (out + scr) as *mut f32 } else { std::ptr::null_mut() },
                 out: out as *mut c_void,
                 scale: (out + i8_len) as *mut f32,
                 kind,
@@ -1075,12 +990,7 @@ pub fn quant_layer(
         let tv = v_task(at(vp, vl, 0), op[4], txt_len, strides(vst));
         let fv = v_task(at(vp, vl, 0), op[5], s, strides(vst));
         // A partial pass writes into its K/V buffer's own scratch.
-        let partial = |t: &S2Task, kind: u32| S2Task {
-            kind,
-            ncta: 0,
-            nblocks: (t.nchunk as usize * h * b).div_ceil(S2_PART_PER_CTA) as u32,
-            ..*t
-        };
+        let partial = |t: &S2Task, kind: u32| S2Task { kind, ncta: 0, nblocks: (t.nchunk as usize * h * b).div_ceil(S2_PART_PER_CTA) as u32, ..*t };
         let table = |ts: &[S2Task]| {
             let mut t = S2Tasks::new(h, b);
             for x in ts {
@@ -1100,40 +1010,17 @@ pub fn quant_layer(
             table(&[fv, tv, partial(&fk, S2_KSUM), partial(&tk, S2_KSUM)]),
             table(&[fk, tk, iq, tq]),
         ];
-        rc = unsafe {
-            sage2_quant_layer_launch(
-                tables.as_ptr(),
-                tables.len() as i32,
-                stream.cu_stream() as *mut c_void,
-            )
-        };
+        rc = unsafe { sage2_quant_layer_launch(tables.as_ptr(), tables.len() as i32, stream.cu_stream() as *mut c_void) };
     }
     check_rc(rc, "sage2_quant_layer_launch")?;
     drop((qs, ks, vs, cs, ss, wqs, wks));
     let [o_qt, o_qi, o_kt, o_kf, o_vt, o_vf] = outs;
     let wrap = |o: CudaSlice<u8>| -> Tensor {
         let n = o.len();
-        Tensor::from_storage(
-            Storage::Cuda(CudaStorage::wrap_cuda_slice(o, dev.clone())),
-            n,
-            BackpropOp::none(),
-            false,
-        )
+        Tensor::from_storage(Storage::Cuda(CudaStorage::wrap_cuda_slice(o, dev.clone())), n, BackpropOp::none(), false)
     };
-    let qk = |packed: Tensor, n: usize, role: Role| Sage2Qk {
-        packed,
-        b,
-        h,
-        n,
-        role,
-    };
-    let vv = |packed: Tensor, n: usize| Sage2V {
-        packed,
-        b,
-        h,
-        n,
-        accum,
-    };
+    let qk = |packed: Tensor, n: usize, role: Role| Sage2Qk { packed, b, h, n, role };
+    let vv = |packed: Tensor, n: usize| Sage2V { packed, b, h, n, accum };
     Ok(Sage2Layer {
         qt: qk(wrap(o_qt), txt_len, Role::Query),
         kt: qk(wrap(o_kt), txt_len, Role::Key),
@@ -1152,9 +1039,7 @@ pub fn quant_layer(
 /// `(B,Sq,H,D)` f32. `causal`: query i sees keys j <= i (both from index 0).
 fn ref_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f64, causal: bool) -> Result<Tensor> {
     use candle_core::D as Dim;
-    let t = |x: &Tensor| -> Result<Tensor> {
-        Ok(x.to_dtype(DType::F32)?.transpose(1, 2)?.contiguous()?)
-    };
+    let t = |x: &Tensor| -> Result<Tensor> { Ok(x.to_dtype(DType::F32)?.transpose(1, 2)?.contiguous()?) };
     let (qf, kf, vf) = (t(q)?, t(k)?, t(v)?);
     let mut sc = (qf.matmul(&kf.transpose(Dim::Minus1, Dim::Minus2)?)? * scale)?;
     if causal {
@@ -1220,20 +1105,8 @@ impl Sage2Report {
 }
 
 fn count_diff(a: &Tensor, b: &Tensor) -> Result<usize> {
-    let a: Vec<u16> = a
-        .flatten_all()?
-        .to_dtype(DType::BF16)?
-        .to_vec1::<half::bf16>()?
-        .iter()
-        .map(|x| x.to_bits())
-        .collect();
-    let b: Vec<u16> = b
-        .flatten_all()?
-        .to_dtype(DType::BF16)?
-        .to_vec1::<half::bf16>()?
-        .iter()
-        .map(|x| x.to_bits())
-        .collect();
+    let a: Vec<u16> = a.flatten_all()?.to_dtype(DType::BF16)?.to_vec1::<half::bf16>()?.iter().map(|x| x.to_bits()).collect();
+    let b: Vec<u16> = b.flatten_all()?.to_dtype(DType::BF16)?.to_vec1::<half::bf16>()?.iter().map(|x| x.to_bits()).collect();
     if a.len() != b.len() {
         anyhow::bail!("count_diff: length {} vs {}", a.len(), b.len());
     }
@@ -1248,16 +1121,7 @@ fn byte_diff(a: &[u8], b: &[u8]) -> usize {
 /// same views: differing bytes over the six operands + differing outputs of
 /// [`attend_block_causal`] vs [`attend_block_causal_unfused`].
 #[allow(clippy::too_many_arguments)]
-fn fused_vs_unfused(
-    q: &Tensor,
-    k: &Tensor,
-    v: &Tensor,
-    cos: &Tensor,
-    sin: &Tensor,
-    txt: usize,
-    scale: f32,
-    accum: PvAccum,
-) -> Result<usize> {
+fn fused_vs_unfused(q: &Tensor, k: &Tensor, v: &Tensor, cos: &Tensor, sin: &Tensor, txt: usize, scale: f32, accum: PvAccum) -> Result<usize> {
     let s = q.dim(1)?;
     let img = s - txt;
     let l = quant_layer(q, k, v, cos, sin, txt, accum, None)?;
@@ -1310,43 +1174,25 @@ pub fn self_test() -> Result<Sage2Report> {
     let kbias = (Tensor::randn(0f32, 1f32, (1, 1, 1, d), &dev)? * 4.0)?;
     let mk = |b: usize| -> Result<(Tensor, Tensor, Tensor)> {
         let q = Tensor::randn(0f32, 1f32, (b, s, h, d), &dev)?.to_dtype(DType::BF16)?;
-        let k = Tensor::randn(0f32, 1f32, (b, s, h, d), &dev)?
-            .broadcast_add(&kbias)?
-            .broadcast_mul(&k_mask)?
-            .to_dtype(DType::BF16)?;
-        let v = Tensor::randn(0f32, 1f32, (b, s, h, d), &dev)?
-            .broadcast_mul(&v_mask)?
-            .to_dtype(DType::F16)?;
+        let k = Tensor::randn(0f32, 1f32, (b, s, h, d), &dev)?.broadcast_add(&kbias)?.broadcast_mul(&k_mask)?.to_dtype(DType::BF16)?;
+        let v = Tensor::randn(0f32, 1f32, (b, s, h, d), &dev)?.broadcast_mul(&v_mask)?.to_dtype(DType::F16)?;
         Ok((q, k, v))
     };
     let reference = |q: &Tensor, k: &Tensor, v: &Tensor| -> Result<Tensor> {
         let qr = crate::rope::rope_i_bshd(q, &cos, &sin)?;
         let kr = crate::rope::rope_i_bshd(k, &cos, &sin)?;
-        let ot = ref_attention(
-            &qr.narrow(1, 0, txt)?,
-            &kr.narrow(1, 0, txt)?,
-            &v.narrow(1, 0, txt)?,
-            scale,
-            true,
-        )?;
+        let ot = ref_attention(&qr.narrow(1, 0, txt)?, &kr.narrow(1, 0, txt)?, &v.narrow(1, 0, txt)?, scale, true)?;
         let oi = ref_attention(&qr.narrow(1, txt, s - txt)?, &kr, v, scale, false)?;
         Ok(Tensor::cat(&[ot, oi], 1)?)
     };
-    let cosine = |a: &Tensor, b: &Tensor| -> Result<f32> {
-        crate::sage::nan_aware_compare(a, b).map(|(c, _)| c)
-    };
+    let cosine = |a: &Tensor, b: &Tensor| -> Result<f32> { crate::sage::nan_aware_compare(a, b).map(|(c, _)| c) };
     let v1 = |q: &Tensor, k: &Tensor, v: &Tensor| -> Result<Tensor> {
         use crate::sage::{rope_quant_bshd, sage_attention_quantized, QkRole};
         let (ct, st) = (cos.narrow(0, 0, txt)?, sin.narrow(0, 0, txt)?);
         let qt = rope_quant_bshd(&q.narrow(1, 0, txt)?, &ct, &st, QkRole::Query)?;
         let kt = rope_quant_bshd(&k.narrow(1, 0, txt)?, &ct, &st, QkRole::Key)?;
         let ot = sage_attention_quantized(&qt, &kt, &v.narrow(1, 0, txt)?, sc, true)?;
-        let qi = rope_quant_bshd(
-            &q.narrow(1, txt, s - txt)?,
-            &cos.narrow(0, txt, s - txt)?,
-            &sin.narrow(0, txt, s - txt)?,
-            QkRole::Query,
-        )?;
+        let qi = rope_quant_bshd(&q.narrow(1, txt, s - txt)?, &cos.narrow(0, txt, s - txt)?, &sin.narrow(0, txt, s - txt)?, QkRole::Query)?;
         let kf = rope_quant_bshd(k, &cos, &sin, QkRole::Key)?;
         let oi = sage_attention_quantized(&qi, &kf, v, sc, false)?;
         Ok(Tensor::cat(&[ot, oi], 1)?)
@@ -1369,11 +1215,7 @@ pub fn self_test() -> Result<Sage2Report> {
     // 1. accuracy vs f32, B=1 and B=2; 2. lanes; 5. determinism.
     let (q2, k2, v2) = mk(2)?;
     for b in [1usize, 2] {
-        let (q, k, v) = if b == 2 {
-            (q2.clone(), k2.clone(), v2.clone())
-        } else {
-            mk(1)?
-        };
+        let (q, k, v) = if b == 2 { (q2.clone(), k2.clone(), v2.clone()) } else { mk(1)? };
         let r = reference(&q, &k, &v)?;
         for accum in [PvAccum::F16, PvAccum::F32] {
             let o = attend_block_causal(&q, &k, &v, &cos, &sin, txt, sc, accum, None)?;
@@ -1384,26 +1226,14 @@ pub fn self_test() -> Result<Sage2Report> {
                 PvAccum::F32 => rep.cos_f32 = rep.cos_f32.min(c),
             }
         }
-        rep.cos_v1 = rep
-            .cos_v1
-            .min(cosine(&v1(&q, &k, &v)?.to_dtype(DType::F32)?, &r)?);
+        rep.cos_v1 = rep.cos_v1.min(cosine(&v1(&q, &k, &v)?.to_dtype(DType::F32)?, &r)?);
     }
     let o2 = attend_block_causal(&q2, &k2, &v2, &cos, &sin, txt, sc, PvAccum::F16, None)?;
     let o2b = attend_block_causal(&q2, &k2, &v2, &cos, &sin, txt, sc, PvAccum::F16, None)?;
     rep.nondeterministic += count_diff(&o2, &o2b)?;
     for lane in 0..2 {
         // lane 1's views start at a nonzero batch offset (zero-copy narrow).
-        let o1 = attend_block_causal(
-            &q2.narrow(0, lane, 1)?,
-            &k2.narrow(0, lane, 1)?,
-            &v2.narrow(0, lane, 1)?,
-            &cos,
-            &sin,
-            txt,
-            sc,
-            PvAccum::F16,
-            None,
-        )?;
+        let o1 = attend_block_causal(&q2.narrow(0, lane, 1)?, &k2.narrow(0, lane, 1)?, &v2.narrow(0, lane, 1)?, &cos, &sin, txt, sc, PvAccum::F16, None)?;
         rep.lane_mismatches += count_diff(&o1, &o2.narrow(0, lane, 1)?)?;
     }
 
@@ -1413,35 +1243,18 @@ pub fn self_test() -> Result<Sage2Report> {
         rep.fused_mismatches += fused_vs_unfused(&q2, &k2, &v2, &cos, &sin, txt, sc, accum)?;
     }
     for lane in 0..2 {
-        rep.fused_mismatches += fused_vs_unfused(
-            &q2.narrow(0, lane, 1)?,
-            &k2.narrow(0, lane, 1)?,
-            &v2.narrow(0, lane, 1)?,
-            &cos,
-            &sin,
-            txt,
-            sc,
-            PvAccum::F16,
-        )?;
+        rep.fused_mismatches += fused_vs_unfused(&q2.narrow(0, lane, 1)?, &k2.narrow(0, lane, 1)?, &v2.narrow(0, lane, 1)?, &cos, &sin, txt, sc, PvAccum::F16)?;
     }
     rep.fused_mismatches += fused_vs_unfused(&q2, &k2, &v2, &cos, &sin, 21, sc, PvAccum::F16)?;
 
     // 3. S-axis offset views vs fresh copies, every op.
     {
         let pad = 5usize;
-        let big = |dt: DType| -> Result<Tensor> {
-            Ok(Tensor::randn(0f32, 1f32, (1, s + pad, h, d), &dev)?.to_dtype(dt)?)
-        };
+        let big = |dt: DType| -> Result<Tensor> { Ok(Tensor::randn(0f32, 1f32, (1, s + pad, h, d), &dev)?.to_dtype(dt)?) };
         let (qb, kb, vb) = (big(DType::BF16)?, big(DType::BF16)?, big(DType::F16)?);
-        let (qv, kv, vv) = (
-            qb.narrow(1, pad, s)?,
-            kb.narrow(1, pad, s)?,
-            vb.narrow(1, pad, s)?,
-        );
+        let (qv, kv, vv) = (qb.narrow(1, pad, s)?, kb.narrow(1, pad, s)?, vb.narrow(1, pad, s)?);
         let (qc, kc, vc) = (qv.copy()?, kv.copy()?, vv.copy()?);
-        let bytes = |a: Vec<u8>, b: Vec<u8>| {
-            a.iter().zip(&b).filter(|(x, y)| x != y).count() + a.len().abs_diff(b.len())
-        };
+        let bytes = |a: Vec<u8>, b: Vec<u8>| a.iter().zip(&b).filter(|(x, y)| x != y).count() + a.len().abs_diff(b.len());
         let qa = rope_quant(&qv, &cos, &sin, Role::Query)?;
         let qr = rope_quant(&qc, &cos, &sin, Role::Query)?;
         let ka = rope_quant(&kv, &cos, &sin, Role::Key)?;
@@ -1467,14 +1280,7 @@ pub fn self_test() -> Result<Sage2Report> {
         // (the norm must matter), plus a per-channel K bias as in mk().
         let raw = |b: usize| -> Result<Tensor> {
             Ok((Tensor::randn(0f32, 3f32, (b, pad + s, h, 2 * d), &dev)?
-                + Tensor::cat(
-                    &[
-                        Tensor::zeros((1, 1, 1, d), DType::F32, &dev)?,
-                        kbias.clone(),
-                    ],
-                    3,
-                )?
-                .broadcast_as((b, pad + s, h, 2 * d))?)?
+                + Tensor::cat(&[Tensor::zeros((1, 1, 1, d), DType::F32, &dev)?, kbias.clone()], 3)?.broadcast_as((b, pad + s, h, 2 * d))?)?
             .to_dtype(DType::BF16)?)
         };
         let mut bad = 0usize;
@@ -1487,40 +1293,19 @@ pub fn self_test() -> Result<Sage2Report> {
         }
         cases.push((r2.narrow(1, 0, s)?, v2.clone(), 21, PvAccum::F16));
         cases.push((r1.narrow(1, 0, s)?, v2.narrow(0, 0, 1)?, txt, PvAccum::F16));
-        cases.push((
-            r2.narrow(0, 1, 1)?.narrow(1, 0, s)?,
-            v2.narrow(0, 1, 1)?,
-            txt,
-            PvAccum::F16,
-        ));
-        cases.push((
-            r2.narrow(1, pad, s)?,
-            v2p.narrow(1, pad, s)?,
-            txt,
-            PvAccum::F16,
-        ));
+        cases.push((r2.narrow(0, 1, 1)?.narrow(1, 0, s)?, v2.narrow(0, 1, 1)?, txt, PvAccum::F16));
+        cases.push((r2.narrow(1, pad, s)?, v2p.narrow(1, pad, s)?, txt, PvAccum::F16));
         for (r, v, t, accum) in cases {
             let (b, _, _, _) = r.dims4()?;
             let (qr, kr) = (r.narrow(3, 0, d)?, r.narrow(3, d, d)?);
             // Standalone path exactly as dit.rs ran it: (rows, 2D) row-strided halves.
             let rows = r.contiguous()?.reshape((b * s * h, 2 * d))?;
-            let qn = crate::fusednorm::fused_rmsnorm_scale(&rows.narrow(1, 0, d)?, &wq, 1e-6)?
-                .reshape((b, s, h, d))?;
-            let kn = crate::fusednorm::fused_rmsnorm_scale(&rows.narrow(1, d, d)?, &wk, 1e-6)?
-                .reshape((b, s, h, d))?;
-            let norm = QkNorm {
-                wq: &wq,
-                wk: &wk,
-                eps: 1e-6,
-            };
+            let qn = crate::fusednorm::fused_rmsnorm_scale(&rows.narrow(1, 0, d)?, &wq, 1e-6)?.reshape((b, s, h, d))?;
+            let kn = crate::fusednorm::fused_rmsnorm_scale(&rows.narrow(1, d, d)?, &wk, 1e-6)?.reshape((b, s, h, d))?;
+            let norm = QkNorm { wq: &wq, wk: &wk, eps: 1e-6 };
             let a = quant_layer(&qr, &kr, &v, &cos, &sin, t, accum, Some(norm))?;
             let e = quant_layer(&qn, &kn, &v, &cos, &sin, t, accum, None)?;
-            for (x, y) in [
-                (&a.qt, &e.qt),
-                (&a.kt, &e.kt),
-                (&a.qi, &e.qi),
-                (&a.kf, &e.kf),
-            ] {
+            for (x, y) in [(&a.qt, &e.qt), (&a.kt, &e.kt), (&a.qi, &e.qi), (&a.kf, &e.kf)] {
                 bad += byte_diff(&x.to_bytes()?, &y.to_bytes()?);
             }
             for (x, y) in [(&a.vt, &e.vt), (&a.vf, &e.vf)] {
@@ -1541,12 +1326,7 @@ pub fn self_test() -> Result<Sage2Report> {
         let qt = rope_quant(&q.narrow(1, 0, txt)?, &ct, &st, Role::Query)?;
         let kt = rope_quant(&k.narrow(1, 0, txt)?, &ct, &st, Role::Key)?;
         let vt = quant_v(&v.narrow(1, 0, txt)?, PvAccum::F16)?;
-        let qi = rope_quant(
-            &q.narrow(1, txt, s - txt)?,
-            &cos.narrow(0, txt, s - txt)?,
-            &sin.narrow(0, txt, s - txt)?,
-            Role::Query,
-        )?;
+        let qi = rope_quant(&q.narrow(1, txt, s - txt)?, &cos.narrow(0, txt, s - txt)?, &sin.narrow(0, txt, s - txt)?, Role::Query)?;
         let kf = rope_quant(&k, &cos, &sin, Role::Key)?;
         let vq = quant_v(&v, PvAccum::F16)?;
         let ct_ = attention(&qt, &kt, &vt, sc, true)?;

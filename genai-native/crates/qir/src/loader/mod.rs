@@ -50,9 +50,7 @@ impl WeightSet {
         }
         let mut safet = Vec::new();
         let mut gguf = Vec::new();
-        for entry in std::fs::read_dir(dir)
-            .with_context(|| format!("reading weight dir {}", dir.display()))?
-        {
+        for entry in std::fs::read_dir(dir).with_context(|| format!("reading weight dir {}", dir.display()))? {
             let path = entry?.path();
             match WeightFormat::from_path(&path) {
                 Some(WeightFormat::Safetensors) => safet.push(path),
@@ -63,15 +61,9 @@ impl WeightSet {
         safet.sort();
         gguf.sort();
         if !gguf.is_empty() {
-            Ok(Self {
-                format: WeightFormat::Gguf,
-                files: gguf,
-            })
+            Ok(Self { format: WeightFormat::Gguf, files: gguf })
         } else if !safet.is_empty() {
-            Ok(Self {
-                format: WeightFormat::Safetensors,
-                files: safet,
-            })
+            Ok(Self { format: WeightFormat::Safetensors, files: safet })
         } else {
             bail!("no .safetensors or .gguf files in {}", dir.display());
         }
@@ -81,9 +73,7 @@ impl WeightSet {
     pub fn total_bytes(&self) -> Result<u64> {
         let mut total = 0;
         for f in &self.files {
-            total += std::fs::metadata(f)
-                .with_context(|| format!("stat {}", f.display()))?
-                .len();
+            total += std::fs::metadata(f).with_context(|| format!("stat {}", f.display()))?.len();
         }
         Ok(total)
     }

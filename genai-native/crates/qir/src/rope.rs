@@ -33,15 +33,7 @@ impl candle_core::CustomOp3 for RopeBshd {
         "rope-i-bshd"
     }
 
-    fn cpu_fwd(
-        &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> candle_core::Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         candle_core::bail!("rope-i-bshd is CUDA-only")
     }
 
@@ -65,11 +57,7 @@ impl candle_core::CustomOp3 for RopeBshd {
         }
         // The kernel indexes cos/sin as [s*Dhalf + j] assuming (S, D/2)
         // contiguous at offset 0.
-        if cl.start_offset() != 0
-            || !cl.is_contiguous()
-            || sl.start_offset() != 0
-            || !sl.is_contiguous()
-        {
+        if cl.start_offset() != 0 || !cl.is_contiguous() || sl.start_offset() != 0 || !sl.is_contiguous() {
             candle_core::bail!("rope-i-bshd expects contiguous (S, D/2) cos/sin");
         }
         let x_s = x.as_cuda_slice::<half::bf16>()?;

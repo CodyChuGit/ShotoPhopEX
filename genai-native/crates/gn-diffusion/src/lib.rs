@@ -30,15 +30,15 @@ use std::sync::Arc;
 
 use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, Preview, RunRequest};
 use gn_engine::server::{Engine, EngineError};
-use qwen_image_rs::preview::{Frame, LatentSpace, PreviewMode, Previewer, StepPreview, TinyDecoder, TINY_DIR};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::edit2511_pipeline::{self, Edit2511Pipeline, Edit2511Request};
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::layered_pipeline::LayeredPipeline;
 use qwen_image_rs::lora::{LoraFile, LoraStack};
 use qwen_image_rs::moss::pipeline::{self as moss, MossPipeline, Variant as MossVariant};
-use qwen_image_rs::pipeline::{is_snapshot, Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule};
-use serde_json::{json, Value};
+use qwen_image_rs::pipeline::{Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule, is_snapshot};
+use qwen_image_rs::preview::{Frame, LatentSpace, PreviewMode, Previewer, StepPreview, TINY_DIR, TinyDecoder};
+use serde_json::{Value, json};
 
 /// The model root's subdirectory for LoRA files (ComfyUI's `models/loras` layout: one file
 /// each); a request may also name a file by its absolute path.
@@ -283,8 +283,7 @@ fn with_edit_lora(params: &std::collections::BTreeMap<String, Value>) -> std::co
 fn with_lora_first(params: &std::collections::BTreeMap<String, Value>, file: &str) -> std::collections::BTreeMap<String, Value> {
     let mut out = params.clone();
     let mut list = params.get("loras").and_then(Value::as_array).cloned().unwrap_or_default();
-    let named =
-        list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == file)));
+    let named = list.iter().any(|l| l.get("file").and_then(Value::as_str).is_some_and(|f| Path::new(f.trim()).file_name().is_some_and(|n| n == file)));
     if !named {
         list.insert(0, json!({"file": file, "strength": 1.0}));
     }
@@ -550,11 +549,7 @@ impl DiffusionEngine {
     /// it is a ComfyUI `models` folder holding ComfyUI's 2.1 files (R4: no snapshot needed).
     fn qwen21_source(&self) -> Option<PathBuf> {
         let snap = self.snapshot_dir();
-        if is_snapshot(&snap) {
-            Some(snap)
-        } else {
-            qwen_image_rs::comfy_files::find_qwen21(&self.models_root).map(|_| self.models_root.clone())
-        }
+        if is_snapshot(&snap) { Some(snap) } else { qwen_image_rs::comfy_files::find_qwen21(&self.models_root).map(|_| self.models_root.clone()) }
     }
 
     pub fn krea2_dir(&self) -> PathBuf {
@@ -574,11 +569,7 @@ impl DiffusionEngine {
     /// Where Krea 2 loads from, as [`Self::qwen21_source`].
     fn krea2_source(&self) -> Option<PathBuf> {
         let dir = self.krea2_dir();
-        if krea2_pipeline::is_snapshot(&dir) {
-            Some(dir)
-        } else {
-            qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone())
-        }
+        if krea2_pipeline::is_snapshot(&dir) { Some(dir) } else { qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone()) }
     }
 
     fn has_family(&self, family: Family) -> bool {
@@ -605,8 +596,7 @@ impl DiffusionEngine {
                         || edit2511_defaults(t).is_some_and(|(_, _, names)| names.iter().all(|n| self.models_root.join("loras").join(n).is_file())))
                     && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_OUTPAINT || self.lora_path(QWEN21_OUTPAINT_LORA).is_ok_and(|p| p.is_file()))
-                    && (*t != TEMPLATE_OUTPAINT_TURBO
-                        || [QWEN21_OUTPAINT_LORA, QWEN21_TURBO_LORA].iter().all(|n| self.lora_path(n).is_ok_and(|p| p.is_file())))
+                    && (*t != TEMPLATE_OUTPAINT_TURBO || [QWEN21_OUTPAINT_LORA, QWEN21_TURBO_LORA].iter().all(|n| self.lora_path(n).is_ok_and(|p| p.is_file())))
                     && (*t != TEMPLATE_KREA2_FILL || self.lora_path(KREA2_ANYPAINT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_MOSS_TURBO || self.template_lora(MOSS_TURBO_LORA).is_some())
                     && (*t != TEMPLATE_MOSS_EDIT || self.moss_edit_lora().is_some())
@@ -760,13 +750,9 @@ impl DiffusionEngine {
             let mut sink = |f: Frame| preview(engine_preview(f));
             let mut viewer = Previewer::new(mode, LatentSpace::Wan21, self.tiny.as_ref(), &mut sink);
             let shown = (mode != PreviewMode::Off).then_some(&mut viewer as &mut dyn StepPreview);
-            let out = p.generate_previewed(&ask, |i, n| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Editing"), shown, cancel).map_err(|e| {
-                if cancel.load(Ordering::SeqCst) {
-                    EngineError::cancelled()
-                } else {
-                    EngineError::new(kind_of(&e), e.to_string())
-                }
-            });
+            let out = p
+                .generate_previewed(&ask, |i, n| progress(0.3 + 0.7 * i as f32 / n.max(1) as f32, "Editing"), shown, cancel)
+                .map_err(|e| if cancel.load(Ordering::SeqCst) { EngineError::cancelled() } else { EngineError::new(kind_of(&e), e.to_string()) });
             log_previews(mode, &viewer);
             out
         })();
@@ -838,13 +824,9 @@ impl DiffusionEngine {
             let mut viewer = Previewer::new(mode, LatentSpace::Layered, self.tiny.as_ref(), &mut sink);
             let shown = (mode != PreviewMode::Off).then_some(&mut viewer as &mut dyn StepPreview);
             p.set_step_cache(req.params.get("step_cache").and_then(Value::as_f64).map(|t| t as f32));
-            let out = p.split_previewed(&rgba, layers, &req.prompt, req.seed, steps, &mut report, shown, cancel).map_err(|e| {
-                if cancel.load(Ordering::SeqCst) {
-                    EngineError::cancelled()
-                } else {
-                    EngineError::new(kind_of(&e), e.to_string())
-                }
-            });
+            let out = p
+                .split_previewed(&rgba, layers, &req.prompt, req.seed, steps, &mut report, shown, cancel)
+                .map_err(|e| if cancel.load(Ordering::SeqCst) { EngineError::cancelled() } else { EngineError::new(kind_of(&e), e.to_string()) });
             log_previews(mode, &viewer);
             out
         })();
@@ -1161,7 +1143,10 @@ impl Engine for DiffusionEngine {
                 if free.is_none_or(|f| f < need) {
                     let gb = |b: u64| b as f64 / 1e9;
                     let why = format!("skipped: {:.1} GB free on the card, {:.1} GB wanted", free.map_or(0.0, gb), gb(need));
-                    return Ok((DoneInfo { images: Vec::new(), texts: vec![why], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
+                    return Ok((
+                        DoneInfo { images: Vec::new(), texts: vec![why], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 },
+                        Vec::new(),
+                    ));
                 }
             }
             let loaded = self.ensure_loaded(family, progress);
@@ -1175,7 +1160,10 @@ impl Engine for DiffusionEngine {
             if cancel.load(Ordering::SeqCst) {
                 return Err(EngineError::cancelled());
             }
-            return Ok((DoneInfo { images: Vec::new(), texts: vec!["warm".into()], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
+            return Ok((
+                DoneInfo { images: Vec::new(), texts: vec!["warm".into()], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 },
+                Vec::new(),
+            ));
         }
         if req.prompt.trim().is_empty() {
             return Err(EngineError::new(ErrorKind::BadRequest, "a prompt is needed"));
@@ -1204,7 +1192,7 @@ impl Engine for DiffusionEngine {
                     return Err(EngineError::new(
                         ErrorKind::BadRequest,
                         format!("batch is a Qwen-Image-2.1 edit's seeds, one for the picture and one for each reference ({} given)", 1 + req.references.len()),
-                    ))
+                    ));
                 }
             },
         };

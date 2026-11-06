@@ -18,14 +18,7 @@ pub struct FlowConfig {
 
 impl Default for FlowConfig {
     fn default() -> Self {
-        Self {
-            base_image_seq_len: 256.0,
-            max_image_seq_len: 8192.0,
-            base_shift: 0.5,
-            max_shift: 0.9,
-            shift_terminal: 0.02,
-            num_train_timesteps: 1000.0,
-        }
+        Self { base_image_seq_len: 256.0, max_image_seq_len: 8192.0, base_shift: 0.5, max_shift: 0.9, shift_terminal: 0.02, num_train_timesteps: 1000.0 }
     }
 }
 
@@ -93,10 +86,7 @@ mod tests {
         assert_eq!(s.num_steps(), 40);
         // sigmas strictly decreasing to ~shift_terminal, then 0.
         for i in 0..40 {
-            assert!(
-                s.sigmas[i] > s.sigmas[i + 1] - 1e-9,
-                "not decreasing at {i}"
-            );
+            assert!(s.sigmas[i] > s.sigmas[i + 1] - 1e-9, "not decreasing at {i}");
         }
         let terminal = s.sigmas[39];
         assert!((terminal - 0.02).abs() < 1e-6, "terminal={terminal}");

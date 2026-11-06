@@ -19,7 +19,6 @@ pub mod convert;
 #[cfg(feature = "convrot")]
 pub mod convrot;
 pub mod convrot_cache;
-pub mod int8_cache;
 #[cfg(feature = "cudnn")]
 pub mod cudnn_conv;
 pub mod device;
@@ -32,6 +31,7 @@ pub mod fp8;
 #[cfg(feature = "fusednorm")]
 pub mod fusednorm;
 pub mod gemm_tiles;
+pub mod int8_cache;
 #[cfg(feature = "fusednorm")]
 pub mod krea2_fused;
 pub mod krea2_pipeline;

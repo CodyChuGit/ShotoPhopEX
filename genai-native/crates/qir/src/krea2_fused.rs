@@ -9,18 +9,51 @@ use candle_core::backend::BackendStorage;
 use candle_core::cuda_backend::cudarc::driver::DevicePtr;
 use candle_core::{CpuStorage, CudaStorage, DType, Layout, Shape, Tensor};
 
-use crate::Result;
 use crate::layout::dense_byte_offset;
+use crate::Result;
 
 extern "C" {
     #[allow(clippy::too_many_arguments)]
-    fn qir_k2_rms_mod(y: *mut c_void, x: *const c_void, w: *const f32, scale: *const c_void, shift: *const c_void, rows: i32, c: i32, rows_per_batch: i32, mod_ld: c_long, eps: f32, stream: *mut c_void) -> i32;
+    fn qir_k2_rms_mod(
+        y: *mut c_void,
+        x: *const c_void,
+        w: *const f32,
+        scale: *const c_void,
+        shift: *const c_void,
+        rows: i32,
+        c: i32,
+        rows_per_batch: i32,
+        mod_ld: c_long,
+        eps: f32,
+        stream: *mut c_void,
+    ) -> i32;
     #[allow(clippy::too_many_arguments)]
-    fn qir_k2_head_rope(y: *mut c_void, x: *const c_void, w: *const f32, cs: *const f32, sn: *const f32, rows: c_long, heads: i32, s: i32, eps: f32, stream: *mut c_void) -> i32;
+    fn qir_k2_head_rope(
+        y: *mut c_void,
+        x: *const c_void,
+        w: *const f32,
+        cs: *const f32,
+        sn: *const f32,
+        rows: c_long,
+        heads: i32,
+        s: i32,
+        eps: f32,
+        stream: *mut c_void,
+    ) -> i32;
     fn qir_k2_swiglu(y: *mut c_void, g: *const c_void, u: *const c_void, n: usize, stream: *mut c_void) -> i32;
     fn qir_k2_sig_mul(y: *mut c_void, a: *const c_void, g: *const c_void, n: usize, stream: *mut c_void) -> i32;
     #[allow(clippy::too_many_arguments)]
-    fn qir_k2_gate_add(y: *mut c_void, x: *const c_void, v: *const c_void, gate: *const c_void, n: usize, c: i32, rows_per_batch: c_long, mod_ld: c_long, stream: *mut c_void) -> i32;
+    fn qir_k2_gate_add(
+        y: *mut c_void,
+        x: *const c_void,
+        v: *const c_void,
+        gate: *const c_void,
+        n: usize,
+        c: i32,
+        rows_per_batch: c_long,
+        mod_ld: c_long,
+        stream: *mut c_void,
+    ) -> i32;
 }
 
 fn check(rc: i32, what: &str) -> candle_core::Result<()> {
@@ -54,7 +87,14 @@ struct RmsMod {
 }
 
 impl RmsMod {
-    fn run(&self, x: &CudaStorage, x_l: &Layout, w: &CudaStorage, w_l: &Layout, m: Option<(&CudaStorage, &Layout)>) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn run(
+        &self,
+        x: &CudaStorage,
+        x_l: &Layout,
+        w: &CudaStorage,
+        w_l: &Layout,
+        m: Option<(&CudaStorage, &Layout)>,
+    ) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = x.device().clone();
         let c = *x_l.shape().dims().last().ok_or_else(|| candle_core::Error::Msg("rms of a scalar".into()))?;
         let rows = x_l.shape().elem_count() / c.max(1);
@@ -74,7 +114,21 @@ impl RmsMod {
             };
             let (op, _go) = out.device_ptr(&stream);
             check(
-                unsafe { qir_k2_rms_mod(op as *mut c_void, xp as *const c_void, wp as *const f32, sp as *const c_void, hp as *const c_void, rows as i32, c as i32, self.rows_per_batch.max(1) as i32, ld as c_long, self.eps, stream.cu_stream() as *mut c_void) },
+                unsafe {
+                    qir_k2_rms_mod(
+                        op as *mut c_void,
+                        xp as *const c_void,
+                        wp as *const f32,
+                        sp as *const c_void,
+                        hp as *const c_void,
+                        rows as i32,
+                        c as i32,
+                        self.rows_per_batch.max(1) as i32,
+                        ld as c_long,
+                        self.eps,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                },
                 "k2 rms",
             )?;
         }
@@ -101,7 +155,15 @@ impl candle_core::CustomOp3 for RmsMod {
     fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         no_cpu()
     }
-    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, w: &CudaStorage, w_l: &Layout, m: &CudaStorage, m_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(
+        &self,
+        x: &CudaStorage,
+        x_l: &Layout,
+        w: &CudaStorage,
+        w_l: &Layout,
+        m: &CudaStorage,
+        m_l: &Layout,
+    ) -> candle_core::Result<(CudaStorage, Shape)> {
         self.run(x, x_l, w, w_l, Some((m, m_l)))
     }
 }
@@ -132,7 +194,15 @@ impl candle_core::CustomOp3 for HeadRope {
     fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         no_cpu()
     }
-    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, w: &CudaStorage, w_l: &Layout, cs: &CudaStorage, cs_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(
+        &self,
+        x: &CudaStorage,
+        x_l: &Layout,
+        w: &CudaStorage,
+        w_l: &Layout,
+        cs: &CudaStorage,
+        cs_l: &Layout,
+    ) -> candle_core::Result<(CudaStorage, Shape)> {
         let dev = x.device().clone();
         let (_, s, h, d) = x_l.shape().dims4()?;
         if d != 128 {
@@ -150,7 +220,20 @@ impl candle_core::CustomOp3 for HeadRope {
             let (cos, sin) = if rotate { (cp, cp + (s * 64 * 4) as u64) } else { (0, 0) };
             let (op, _go) = out.device_ptr(&stream);
             check(
-                unsafe { qir_k2_head_rope(op as *mut c_void, xp as *const c_void, wp as *const f32, cos as *const f32, sin as *const f32, rows as c_long, h as i32, s as i32, self.eps, stream.cu_stream() as *mut c_void) },
+                unsafe {
+                    qir_k2_head_rope(
+                        op as *mut c_void,
+                        xp as *const c_void,
+                        wp as *const f32,
+                        cos as *const f32,
+                        sin as *const f32,
+                        rows as c_long,
+                        h as i32,
+                        s as i32,
+                        self.eps,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                },
                 "k2 head rope",
             )?;
         }
@@ -236,7 +319,15 @@ impl candle_core::CustomOp3 for GateAdd {
     fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
         no_cpu()
     }
-    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout, v: &CudaStorage, v_l: &Layout, m: &CudaStorage, m_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(
+        &self,
+        x: &CudaStorage,
+        x_l: &Layout,
+        v: &CudaStorage,
+        v_l: &Layout,
+        m: &CudaStorage,
+        m_l: &Layout,
+    ) -> candle_core::Result<(CudaStorage, Shape)> {
         let (_, s, c) = x_l.shape().dims3()?;
         if v_l.shape() != x_l.shape() {
             candle_core::bail!("k2 gate add: {:?} and {:?}", x_l.shape(), v_l.shape());
@@ -253,7 +344,19 @@ impl candle_core::CustomOp3 for GateAdd {
             let ld = m_l.stride().first().copied().unwrap_or(0);
             let (op, _go) = out.device_ptr(&stream);
             check(
-                unsafe { qir_k2_gate_add(op as *mut c_void, xp as *const c_void, vp as *const c_void, mp as *const c_void, n, c as i32, s as c_long, ld as c_long, stream.cu_stream() as *mut c_void) },
+                unsafe {
+                    qir_k2_gate_add(
+                        op as *mut c_void,
+                        xp as *const c_void,
+                        vp as *const c_void,
+                        mp as *const c_void,
+                        n,
+                        c as i32,
+                        s as c_long,
+                        ld as c_long,
+                        stream.cu_stream() as *mut c_void,
+                    )
+                },
                 "k2 gate add",
             )?;
         }
@@ -269,7 +372,7 @@ pub fn gate_add(x: &Tensor, v: &Tensor, mods: &Tensor, chunk: usize) -> Result<T
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candle_core::{D, Device};
+    use candle_core::{Device, D};
 
     fn max_err(a: &Tensor, b: &Tensor) -> Result<f32> {
         Ok((a.to_dtype(DType::F32)? - b.to_dtype(DType::F32)?)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?)

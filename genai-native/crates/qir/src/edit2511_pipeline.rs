@@ -342,7 +342,10 @@ impl Edit2511Pipeline {
                         Some(file) => Ok(file),
                         None => crate::layered_files::TensorFile::open(entry),
                     };
-                    match cached.and_then(|file| crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, file)).and_then(LayeredDit::load_int8) {
+                    match cached
+                        .and_then(|file| crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, file))
+                        .and_then(LayeredDit::load_int8)
+                    {
                         Ok(dit) => {
                             mark("DiT load (INT8 cache)")?;
                             crate::int8_cache::touch(entry);
@@ -366,7 +369,11 @@ impl Edit2511Pipeline {
                             LayeredDit::load(vb)
                         }
                     };
-                    let mut dit = if hit { resident_load(patches)? } else { LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?)? };
+                    let mut dit = if hit {
+                        resident_load(patches)?
+                    } else {
+                        LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder_patched(&self.files.diffusion, &self.device, patches)?)?
+                    };
                     if !hit {
                         mark("DiT load")?;
                         dit.bind_loras(&req.loras)?;

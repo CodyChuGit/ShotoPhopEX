@@ -27,14 +27,23 @@ fn fit_the_layered_latent_to_rgb_map() {
         let img = RgbaImage::from_raw(img.width(), img.height(), img.into_raw()).unwrap();
         let mut retained: Option<Tensor> = None;
         let mut decoded: Vec<Tensor> = Vec::new();
-        p.split_observed(&img, 3, "", 7, 20, |_, _| {}, &AtomicBool::new(false), |name, t| {
-            if name == "retained" {
-                retained = Some(t.to_device(&Device::Cpu)?.to_dtype(DType::F32)?);
-            } else if name.starts_with("decoded_") {
-                decoded.push(t.to_device(&Device::Cpu)?.to_dtype(DType::F32)?);
-            }
-            Ok(())
-        })
+        p.split_observed(
+            &img,
+            3,
+            "",
+            7,
+            20,
+            |_, _| {},
+            &AtomicBool::new(false),
+            |name, t| {
+                if name == "retained" {
+                    retained = Some(t.to_device(&Device::Cpu)?.to_dtype(DType::F32)?);
+                } else if name.starts_with("decoded_") {
+                    decoded.push(t.to_device(&Device::Cpu)?.to_dtype(DType::F32)?);
+                }
+                Ok(())
+            },
+        )
         .unwrap();
         let retained = retained.unwrap(); // (layers, 16, h, w)
         let (n, c, h, w) = retained.dims4().unwrap();

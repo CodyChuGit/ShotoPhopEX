@@ -16,11 +16,7 @@ use candle_core::Layout;
 /// Errors if the view is not dense: the kernels index a flat `m * n` slab.
 pub fn dense_offset(l: &Layout, what: &str) -> candle_core::Result<usize> {
     if !l.is_contiguous() {
-        candle_core::bail!(
-            "{what}: kernel needs a dense view, got shape {:?} strides {:?}",
-            l.shape(),
-            l.stride()
-        );
+        candle_core::bail!("{what}: kernel needs a dense view, got shape {:?} strides {:?}", l.shape(), l.stride());
     }
     Ok(l.start_offset())
 }
@@ -39,11 +35,7 @@ pub fn row_strided_2d(l: &Layout, what: &str) -> candle_core::Result<(usize, usi
     let (m, k) = l.shape().dims2()?;
     let st = l.stride();
     if k > 1 && st[1] != 1 {
-        candle_core::bail!(
-            "{what}: kernel needs unit-stride rows, got shape {:?} strides {:?}",
-            l.shape(),
-            st
-        );
+        candle_core::bail!("{what}: kernel needs unit-stride rows, got shape {:?} strides {:?}", l.shape(), st);
     }
     let ld = if m <= 1 { k } else { st[0] };
     if ld < k {
@@ -71,10 +63,7 @@ mod tests {
         let t = Tensor::zeros((1, drop + n, d), DType::F32, &Device::Cpu).unwrap();
         let v = t.narrow(1, drop, n).unwrap().contiguous().unwrap();
         assert_eq!(dense_offset(v.layout(), "v").unwrap(), drop * d);
-        assert_eq!(
-            super::dense_byte_offset::<f32>(v.layout(), "v").unwrap(),
-            (drop * d * 4) as u64
-        );
+        assert_eq!(super::dense_byte_offset::<f32>(v.layout(), "v").unwrap(), (drop * d * 4) as u64);
     }
 
     #[test]
@@ -108,10 +97,7 @@ mod tests {
         assert_eq!(row_strided_2d(p.layout(), "p").unwrap(), (k, 2 * k));
         // A row narrow of a column half adds drop * ld.
         let pr = p.narrow(0, 3, 4).unwrap();
-        assert_eq!(
-            row_strided_2d(pr.layout(), "pr").unwrap(),
-            (3 * 2 * k + k, 2 * k)
-        );
+        assert_eq!(row_strided_2d(pr.layout(), "pr").unwrap(), (3 * 2 * k + k, 2 * k));
     }
 
     #[test]
