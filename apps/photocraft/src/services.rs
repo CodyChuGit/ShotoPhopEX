@@ -817,33 +817,66 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
 const DOWNLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Fork: fetch an image for Edit › Preferences › App Icon…. The app builds no TLS stack, so this
-/// asks the system's `curl` (Windows 10 1803+, macOS and Linux ship it), with a time and size cap.
+/// asks the system's `curl` (Windows 10 1803+, macOS and Linux ship it), HTTPS only (redirects
+/// too), with a time cap and a size cap that holds even when the server sends no length.
 fn download(url: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
     let url = url.trim();
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err("the address must start with https:// or http://".into());
+    if !url.starts_with("https://") {
+        return Err("the address must start with https://".into());
     }
-    let mut cmd = std::process::Command::new("curl");
-    cmd.args(["--fail", "--silent", "--show-error", "--location", "--max-time", "30", "--max-filesize"])
+    let mut cmd = std::process::Command::new(curl_program());
+    cmd.args(["--fail", "--silent", "--show-error", "--location", "--max-redirs", "5", "--max-time", "30", "--max-filesize"])
         .arg(DOWNLOAD_MAX_BYTES.to_string())
-        .args(["--proto", "=http,https", "--"])
+        .args(["--proto", "=https", "--proto-redir", "=https", "--"])
         .arg(url)
-        .stdin(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
         // No console window flashing up behind the app (CREATE_NO_WINDOW).
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let out = cmd.output().map_err(|e| format!("couldn't run curl: {e}"))?;
-    if !out.status.success() {
-        let why = String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("curl: ").to_string();
-        return Err(if why.is_empty() { format!("the download failed ({})", out.status) } else { why });
+    let mut child = cmd.spawn().map_err(|e| format!("couldn't run curl: {e}"))?;
+    let mut body = Vec::new();
+    let read = child.stdout.take().map(|out| out.take(DOWNLOAD_MAX_BYTES + 1).read_to_end(&mut body));
+    if body.len() as u64 > DOWNLOAD_MAX_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("the file is larger than {} MB", DOWNLOAD_MAX_BYTES >> 20));
     }
-    if out.stdout.is_empty() {
+    let mut err = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.by_ref().take(4096).read_to_string(&mut err);
+    }
+    let status = child.wait().map_err(|e| format!("curl: {e}"))?;
+    if let Some(Err(e)) = read {
+        return Err(format!("the download failed: {e}"));
+    }
+    if !status.success() {
+        let why = err.trim().trim_start_matches("curl: ").to_string();
+        return Err(if why.is_empty() { format!("the download failed ({status})") } else { why });
+    }
+    if body.is_empty() {
         return Err("the address returned nothing".into());
     }
-    Ok(out.stdout)
+    Ok(body)
+}
+
+/// The system's curl by its full path on Windows (System32), so a `curl.exe` dropped beside the
+/// app or in the working folder is never the one that runs; elsewhere the usual PATH lookup.
+fn curl_program() -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot").map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), std::path::PathBuf::from);
+        root.join("System32").join("curl.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        std::path::PathBuf::from("curl")
+    }
 }
 
 /// Preferences ▸ General ▸ Beep When Done: the platform's default information beep.

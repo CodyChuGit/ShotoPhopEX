@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The worker token comes from the OS random source.
+getrandom = { workspace = true }
 
 [[bin]]
 name = "gn-engine"

@@ -123,7 +123,7 @@ impl FakeNative {
     pub fn start_with(options: Options) -> std::io::Result<Self> {
         let listener = gn_engine::server::bind()?;
         let port = listener.local_addr()?.port();
-        let token = gn_engine::client::new_token();
+        let token = gn_engine::client::new_token().ok_or_else(|| std::io::Error::other("no secure random source"))?;
         let state = Arc::new(Mutex::new(State::default()));
         let st = Arc::clone(&state);
         let t = token.clone();

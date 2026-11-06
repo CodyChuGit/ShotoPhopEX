@@ -6,8 +6,7 @@
 //! loaders take the root) and the 2.1 VAE's Wan-style names ([`Renamed`] with
 //! [`qwen21_vae_name`]). The Qwen tokenizer is assembled from the vocabulary, merges and added
 //! tokens ComfyUI keeps in its code tree (`comfy/text_encoders/qwen25_tokenizer`), the same
-//! pipeline as Qwen's `tokenizer.json`. Mapping: `docs/comfy/research/notes/rust-rebuild-r4-comfy-layout.md`
-//! in PhotoshopEX.
+//! pipeline as Qwen's `tokenizer.json`.
 
 use std::path::{Path, PathBuf};
 

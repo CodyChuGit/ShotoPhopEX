@@ -36,7 +36,7 @@ fn request(model: &str, task: &str, steps: u32) -> RunRequest {
 
 #[test]
 fn previews_arrive_only_when_asked_and_leave_the_result_alone() {
-    let token = new_token();
+    let token = new_token().unwrap_or_else(|| panic!("no OS random source"));
     let mut c = EngineClient::spawn(&exe(), &["--serve".into(), "--step-ms".into(), "1".into()], &token).unwrap_or_else(|e| panic!("{e}"));
     let mut off = Vec::new();
     let plain = c.run_previewed(&request("fake/image", "image", 4), &[], &mut |_, _| {}, &mut |p| off.push(p), &|| false).unwrap_or_else(|e| panic!("{e}"));
@@ -55,7 +55,7 @@ fn previews_arrive_only_when_asked_and_leave_the_result_alone() {
 
 #[test]
 fn a_spawned_worker_runs_reports_progress_and_quits() {
-    let token = new_token();
+    let token = new_token().unwrap_or_else(|| panic!("no OS random source"));
     let mut c = EngineClient::spawn(&exe(), &["--serve".into(), "--step-ms".into(), "2".into()], &token).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(c.engine, "fake");
     assert!(c.alive() && c.pid().is_some());
@@ -85,7 +85,7 @@ fn a_spawned_worker_runs_reports_progress_and_quits() {
 
 #[test]
 fn cancel_reaches_a_running_worker_and_a_killed_one_is_noticed() {
-    let token = new_token();
+    let token = new_token().unwrap_or_else(|| panic!("no OS random source"));
     let mut c = EngineClient::spawn(&exe(), &["--serve".into(), "--step-ms".into(), "50".into()], &token).unwrap_or_else(|e| panic!("{e}"));
     let flag = Arc::new(AtomicBool::new(false));
     let f2 = Arc::clone(&flag);
@@ -114,7 +114,7 @@ fn cancel_reaches_a_running_worker_and_a_killed_one_is_noticed() {
 
 #[test]
 fn pictures_travel_both_ways_and_the_token_is_checked() {
-    let token = new_token();
+    let token = new_token().unwrap_or_else(|| panic!("no OS random source"));
     let mut c = EngineClient::spawn(&exe(), &["--serve".into()], &token).unwrap_or_else(|e| panic!("{e}"));
     // A 1 MP input (4 MB) through an edit: the fake tints it and sends it back whole.
     let (w, h) = (1024u32, 1024u32);
@@ -148,7 +148,7 @@ fn pictures_travel_both_ways_and_the_token_is_checked() {
 #[test]
 fn a_worker_whose_client_vanishes_exits_by_itself() {
     use std::io::BufRead as _;
-    let token = new_token();
+    let token = new_token().unwrap_or_else(|| panic!("no OS random source"));
     // Spawned by hand so no client `Drop` can send Quit or kill it.
     let mut child = std::process::Command::new(exe())
         .arg("--serve")
@@ -184,7 +184,7 @@ fn a_worker_whose_client_vanishes_exits_by_itself() {
 #[test]
 fn a_stay_worker_outlives_its_clients_until_quit() {
     use std::io::BufRead as _;
-    let token = new_token();
+    let token = new_token().unwrap_or_else(|| panic!("no OS random source"));
     let mut child = std::process::Command::new(exe())
         .args(["--serve", "--stay"])
         .env("GN_ENGINE_TOKEN", &token)
@@ -221,4 +221,32 @@ fn a_stay_worker_outlives_its_clients_until_quit() {
     }
     let _ = child.wait();
     assert!(exited, "Quit ends a stay worker");
+}
+
+/// A local peer that connects first and never greets (or floods a huge frame) must not keep the
+/// editor out: the worker greets before it takes the engine, and refuses big pre-token frames.
+#[test]
+fn a_silent_or_flooding_peer_does_not_lock_the_editor_out() {
+    use std::io::Write;
+    let listener = gn_engine::server::bind().unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let token = new_token().unwrap();
+    let t = token.clone();
+    std::thread::spawn(move || {
+        let mut engine = gn_engine::fake::FakeEngine { step_ms: 1, resident: Vec::new(), installed: vec!["fake/image".into()], light: false };
+        let _ = gn_engine::server::serve_with(&listener, &t, &mut engine, true);
+    });
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let _silent = std::net::TcpStream::connect(addr).unwrap();
+    let mut flood = std::net::TcpStream::connect(addr).unwrap();
+    let mut head = (200u32 * 1024 * 1024).to_le_bytes().to_vec();
+    head.push(1);
+    let _ = flood.write_all(&head);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let started = Instant::now();
+    let mut c = EngineClient::connect(port, &token).unwrap_or_else(|e| panic!("the editor was kept out: {e}"));
+    assert!(started.elapsed().as_secs() < 3, "greeting waited on another peer");
+    let wrong = EngineClient::connect(port, "0".repeat(64).as_str());
+    assert!(wrong.is_err(), "a wrong token is refused");
+    c.run_previewed(&request("fake/image", "image", 2), &[], &mut |_, _| {}, &mut |_| {}, &|| false).unwrap_or_else(|e| panic!("{e}"));
 }
