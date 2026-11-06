@@ -1,4 +1,9 @@
 <p align="center">
+  💿 <a href="https://elasticstage.com/soundcloud/releases/whorehaus-ketamine-album"><b>Support me by buying my album</b></a>
+  · or <a href="https://music.apple.com/us/artist/whorehaus/6817717768">listen to my album on Apple Music</a>
+</p>
+
+<p align="center">
   <img alt="ShotoPhopEX" src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png" width="120">
 </p>
 
