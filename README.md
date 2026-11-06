@@ -21,9 +21,9 @@
   <img alt="Runs locally on NVIDIA RTX" src="https://img.shields.io/badge/runs%20on-NVIDIA%20RTX-76b900?style=flat-square&logo=nvidia&logoColor=white">
   <img alt="12 GB cards supported with MOSS" src="https://img.shields.io/badge/from-12%20GB%20VRAM-76b900?style=flat-square&logo=nvidia&logoColor=white">
   <img alt="No Python" src="https://img.shields.io/badge/Python-none-3a3a3a?style=flat-square&logo=python&logoColor=white">
-  <img alt="Faster than ComfyUI" src="https://img.shields.io/badge/vs%20ComfyUI-faster%20on%2011%20of%2013-2f7bf5?style=flat-square">
+  <img alt="Faster than ComfyUI" src="https://img.shields.io/badge/vs%20ComfyUI-faster%20on%2010%20of%2012-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-d69e2e?style=flat-square">
+  <img alt="Status: beta, v0.1.0" src="https://img.shields.io/badge/status-beta%20v0.1.0-d69e2e?style=flat-square">
   <a href="https://github.com/CodyChuGit/ShotoPhopEX/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/CodyChuGit/ShotoPhopEX?style=flat-square&logo=github"></a>
 </p>
 
@@ -62,7 +62,7 @@ its own masked layer, so the original pixels never change.
 | **What it doesn't need** | No cloud, no account, no credits, no Python, no ComfyUI |
 | **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([benchmarks](#-benchmarks)) |
 | **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, SAM 3.1), in ComfyUI's folder layout |
-| **Status** | Alpha. Downloads for Windows and Linux ([install](#-install)) |
+| **Status** | Beta, v0.1.0, the first release. Downloads for Windows and Linux ([install](#-install)) |
 | **Licence** | MIT or Apache-2.0. Each model keeps its own licence |
 
 - 🎨 **The tools artists use.** Start from a selection and a prompt; the app picks the model.
@@ -422,7 +422,8 @@ our own kernels and a flash-attention path. The text encoder stays resident betw
 the conditioning is cached when only the seed changes, and LoRAs are merged into the resident
 int8 weights once instead of costing a side path every step. Qwen-Image-Edit-2511 runs
 SageAttention2 (INT8 attention) on every block where it holds the picture, and Upscale works on
-fewer, larger tiles. MOSS Edit caches its reference keys and values once per edit. Outputs were
+fewer, larger tiles. The VAE decoder works in bounded blocks at 2 MP, so a Best-quality picture
+no longer spills out of VRAM while Krea 2 stays loaded. MOSS Edit caches its reference keys and values once per edit. Outputs were
 checked against the ComfyUI route at every step (within 0.06/255, or byte-identical).
 
 </details>
@@ -506,8 +507,12 @@ catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comf
 - [x] Image Quality Fast / Balanced / Best that really changes the render
 - [x] MOSS Turbo and MOSS Edit Turbo: a 12 GB mode
 - [x] **Memory check at first launch** that picks models for your card
-- [ ] **One-click "Get models"** that downloads the right pack for your card
-- [ ] **A published release:** a portable zip and an installer
+- [x] **One-click Get AI Models** (Help menu) that downloads the right pack for your card
+- [x] Generative Angles on Qwen-Image-Edit-2511 with the Multiple Angles LoRA
+- [x] A security pass on the app's own code (automation folders, model file parsing, downloads), with fuzz targets
+- [x] Best quality at 2 MP without the slow decode: the Krea 2 VAE decode at 1440² went from 14–45 s to 0.47 s
+- [ ] **The first release, v0.1.0:** Windows installer, portable zip and Linux `.tar.gz`, built in CI and being tested before it goes public
+- [ ] **Split into Layers on busy scenes:** some people can still stay in the background; a mask-aware remover is next
 - [ ] **RTX 3090 / 4090 benchmarks**, and 4-bit weights for 16 GB cards
 - [ ] **Mac** (MLX, 16 GB unified memory) on the MOSS stack
 
@@ -642,7 +647,7 @@ The additions in this fork are purely generative AI: the native engine, the Gene
 generative tools. They are open source under the same MIT or Apache-2.0 licences, and every model
 they run keeps its own licence (see [Models](#-models)).
 
-It is an alpha, so expect rough edges and report them in
+It is a first beta, so expect rough edges and report them in
 [Issues](https://github.com/CodyChuGit/ShotoPhopEX/issues).
 
 </details>
