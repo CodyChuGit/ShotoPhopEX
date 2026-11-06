@@ -144,6 +144,17 @@ jobs:
           pwsh packaging/windows/runtime.ps1 -Cuda $bin
       - name: Build and package (MSI + portable zip)
         shell: pwsh
+        # Authenticode signing (packaging/windows/sign.ps1): Azure Trusted Signing when its six
+        # secrets are set, else a .pfx; with none the files stay unsigned (SmartScreen warns).
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: pwsh packaging/windows/package.ps1 -Arch x64 -Native
       - name: The portable app starts on a PC without the CUDA Toolkit
         shell: pwsh
