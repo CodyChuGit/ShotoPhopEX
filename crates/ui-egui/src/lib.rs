@@ -52,6 +52,7 @@ pub mod icons;
 pub mod jobs_ui;
 pub(crate) mod last_brush;
 pub mod links;
+pub mod memory_profile_ui;
 pub mod menu_catalog;
 pub mod menus;
 pub mod model_picker;

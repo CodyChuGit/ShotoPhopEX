@@ -52,7 +52,7 @@ mod texels;
 use budget::nvidia_video_memory;
 pub use budget::{
     DEFER_PX, MIN_GPU_BUDGET, OVER_BUDGET, OVER_CANVAS_BUDGET, REFRESH_DEFERRED, REFRESH_OVER_BUDGET, canvas_budget, canvas_texture_bytes, memory_budget,
-    physical_memory, video_memory, vram_share,
+    nvidia_card_memory, physical_memory, video_memory, vram_share,
 };
 #[cfg(test)]
 use budget::{NVIDIA_VENDOR, bounded_output, drm_video_memory, parse_nvidia_smi};

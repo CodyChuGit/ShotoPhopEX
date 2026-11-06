@@ -399,6 +399,8 @@ pub(super) fn field_visible(section: &str, obj: &Map<String, Value>, k: &str, qu
     let drawn_elsewhere = (section == "interface" && matches!(k, "theme" | "appearanceMode" | "darkTheme" | "lightTheme" | "favoriteThemes"))
         // View › Rulers (⌘R) sets it, as in Photoshop.
         || path == "unitsAndRulers.showRulers"
+        // Written at launch; Memory profile's Auto row names it.
+        || path == "integrations.detectedMemoryProfile"
         || (section == "performance" && matches!(k, "useGpu" | "gpuBackend" | "gpuAdapter" | "renderingMode" | "memoryUsageMb"))
         // The browser presents frames itself: Low-Latency Drawing does nothing there.
         || (cfg!(target_arch = "wasm32") && path == "performance.lowLatencyDrawing")
@@ -476,6 +478,20 @@ fn field_rows(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>, ke
                 ui.label(RichText::new(tl!(&label)).color(t.text_dim));
                 let mut pairs: Vec<(String, &str)> = vec![("auto".into(), tl!("Auto"))];
                 pairs.extend(crate::i18n::Lang::for_picker().into_iter().map(|l| (l.code().to_string(), l.name())));
+                let mut cur = s.clone();
+                crate::widgets::dropdown(ui, &format!("pref-{path}"), tl!(&label), &mut cur, &pairs, 220.0);
+                obj.insert(k, json!(cur));
+            }
+            Value::String(s) if path == "integrations.memoryProfile" => {
+                use photocraft_engine::memory_profile::Profile;
+                ui.label(RichText::new(tl!(&label)).color(t.text_dim));
+                let detected = obj.get("detectedMemoryProfile").and_then(Value::as_str).and_then(Profile::from_name);
+                let auto = match detected {
+                    Some(p) => crate::i18n::fmt(tl!("Auto ({profile} detected)"), &[("profile", p.label())]),
+                    None => tl!("Auto (nothing detected)").to_string(),
+                };
+                let mut pairs: Vec<(String, &str)> = vec![("auto".into(), auto.as_str())];
+                pairs.extend(Profile::ALL.iter().map(|p| (p.name().to_string(), p.label())));
                 let mut cur = s.clone();
                 crate::widgets::dropdown(ui, &format!("pref-{path}"), tl!(&label), &mut cur, &pairs, 220.0);
                 obj.insert(k, json!(cur));

@@ -658,7 +658,7 @@ pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
 /// worker, the Qwen-Image-2.1 edit by instruction ([`angle_instruction`], about 6 s on the
 /// worker), else 2511 with the Multiple Angles LoRA on the same worker.
 pub fn angles_template(s: &Session) -> &'static str {
-    native21_auto(s, EDIT, false).unwrap_or(ANGLES_TEMPLATE)
+    native21_only(s, EDIT, false).unwrap_or(ANGLES_TEMPLATE)
 }
 
 /// The plain camera instruction the Qwen-Image-2.1 edit gets for a camera, which has no
@@ -700,6 +700,19 @@ pub fn angle_instruction(rotation: u32, tilt: i32, zoom: u32) -> Option<String> 
 /// fill is the 2.1 fill (the mask in view); an expand the in-context 2.1 expand. Without the
 /// opt-in or the worker, the 2511 orders stand (the permissive default).
 pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
+    // A small memory profile edits with MOSS Edit (permissive, so no research opt-in).
+    if command == EDIT
+        && let Some(t) = crate::memory_profile::edit_template(crate::memory_profile::active(s))
+        && loras::runs_native(s, t)
+    {
+        return Some(t);
+    }
+    native21_only(s, command, removal)
+}
+
+/// [`native21_auto`] without the memory profile: the Qwen-Image-2.1 route alone (Angles, whose
+/// camera instructions are written for 2.1's edit).
+fn native21_only(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
     let t = match command {
         FILL if removal => "qwen-2.1/edit",
         FILL => NATIVE21_FILL,
@@ -939,6 +952,7 @@ fn warm_need(template: &str) -> u64 {
     const GB: u64 = 1_000_000_000;
     match template.split('/').next().unwrap_or("") {
         t if t.starts_with("krea2") => WARM_KREA2_GB * GB,
+        t if t.starts_with("moss") => WARM_MOSS_GB * GB,
         _ => WARM_QWEN21_GB * GB,
     }
 }
@@ -946,6 +960,10 @@ fn warm_need(template: &str) -> u64 {
 const WARM_KREA2_GB: u64 = 20; // 18.2 GB resident
 #[cfg(not(target_arch = "wasm32"))]
 const WARM_QWEN21_GB: u64 = 27; // 25.0 GB resident
+/// MOSS in the worker's 12 GB mode keeps one model at a time (11.4–12.0 GiB peak, 2026-11-05):
+/// a warm-up on a 12 GB card wants most of it free.
+#[cfg(not(target_arch = "wasm32"))]
+const WARM_MOSS_GB: u64 = 10;
 
 /// Start the worker and load the default image template's models (`generate.engine.warmUp`):
 /// on a thread of its own, or with `wait` before returning (the bench). It is skipped on a card
@@ -953,7 +971,7 @@ const WARM_QWEN21_GB: u64 = 27; // 25.0 GB resident
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn native_warm_up(s: &Session, wait: bool) -> Result<Value> {
     use photocraft_genai::native::WarmUp;
-    let template = s.prefs().integrations.default_image_template.clone();
+    let template = default_image_template(s);
     photocraft_genai::template::find(&template).map_err(gen_err)?;
     native_backend(s)?;
     let b = native_current(s).ok_or_else(|| EngineError::Other("no native worker".into()))?;
@@ -1185,6 +1203,15 @@ pub(crate) fn short(prompt: &str) -> String {
 }
 
 /// A template id from a preference, or the built-in default when the preference is empty.
+/// The image template a run with none named uses: Preferences › Default Image Template, where
+/// `auto` (or nothing) is the memory profile's ([`crate::memory_profile::image_template`]).
+pub fn default_image_template(s: &Session) -> String {
+    match s.prefs().integrations.default_image_template.trim() {
+        "" | AUTO_TEMPLATE => crate::memory_profile::image_template(crate::memory_profile::active(s)).to_string(),
+        t => t.to_string(),
+    }
+}
+
 fn template_or(pref: &str, fallback: &str) -> String {
     let t = pref.trim();
     if t.is_empty() { fallback.to_string() } else { t.to_string() }
@@ -2399,7 +2426,7 @@ fn side(cmd: &str, p: &Value, key: &str, default: u32) -> Result<u32> {
 fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     let (default_template, default_model) = {
         let integrations = &s.prefs().integrations;
-        (template_or(&integrations.default_image_template, DEFAULT_IMAGE_TEMPLATE), integrations.default_generate_model.clone())
+        (default_image_template(s), integrations.default_generate_model.clone())
     };
     // References with no template named: the default image template when it takes them, else
     // the reference template (its own model file, so no `model` override from the preference).
