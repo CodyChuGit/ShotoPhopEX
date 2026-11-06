@@ -193,7 +193,7 @@ jobs:
           for w in "$RUNNER_TEMP"/wheels/*.whl; do python3 -m zipfile -e "$w" "$RUNNER_TEMP/cuda"; done
           C="$RUNNER_TEMP/cuda/nvidia/cu13"
           chmod +x "$C"/bin/* "$C"/nvvm/bin/*
-          (cd "$C/lib" && for f in libcublas libcublasLt libcudart libcurand libnvrtc; do ln -sf "$(ls $f.so.* | head -1)" "$f.so"; done)
+          (cd "$C/lib" && for f in libcublas libcublasLt libcudart libcurand libnvrtc; do set -- "$f".so.*; ln -sf "$1" "$f.so"; done)
           ln -s lib "$C/lib64"
           # The binaries link the driver's libcuda.so.1 (present wherever an NVIDIA driver is).
           # Link against Ubuntu's copy of it; it is never shipped.
@@ -235,7 +235,7 @@ jobs:
           merge-multiple: true
       - name: Checksums
         working-directory: files
-        run: sha256sum * > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       - name: Draft release (published by hand after the hardware smoke test)
         env:
           GH_TOKEN: ${{ github.token }}

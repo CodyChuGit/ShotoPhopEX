@@ -93,6 +93,7 @@ mod tests {
             help,
             [
                 "help.generativeFeatures",
+                "generate.getModels",
                 "help.artcraftWebsite",
                 "help.github",
                 "help.reportIssue",
