@@ -1,0 +1,71 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/image-ref",
+    "name": "Generate Image from References (Qwen-Image-Edit-2511, Lightning 8 steps)",
+    "family": "qwen-image-edit-2511",
+    "task": "image",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
+    "needsImage": false,
+    "needsMask": false,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
+      }
+    ],
+    "notes": "A new picture guided by one to three reference images (the Generate panel's deck in Image mode): ComfyUI's official 'Image Edit (Qwen-Image 2511)' nodes with the references on image1..image3 of both TextEncodeQwenImageEditPlus encoders, straight from LoadImage as the official graph wires its extra images, and an EmptySD3LatentImage of the requested size in place of the encoded picture (the pattern of ComfyUI's official Krea 2 style-reference graph, which feeds its references the same way and samples an empty latent). The 8-step Lightning LoRA as in `edit-lightning-8`. The prompt names the references as image 1, image 2, image 3 ('the person in image 1 wearing the jacket from image 2'). Verified against a live server's /object_info on 2026-10-11 (ComfyUI 0.39). References not given are pruned with their LoadImage node.",
+    "creator": "Alibaba Qwen",
+    "description": "A new picture guided by one to three reference images",
+    "badges": [
+      "references"
+    ],
+    "references": {
+      "max": 3,
+      "min": 1
+    },
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 7.5,
+      "perMegapixel": 5.5,
+      "perReference": 9
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/fill-lightning-4",
+    "name": "Generative Fill (Qwen-Image-Edit-2511, Lightning 4 steps)",
+    "family": "qwen-image-edit-2511",
+    "task": "fill",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
+    "needsImage": true,
+    "needsMask": true,
+    "defaults": {
+      "steps": 4,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+      }
+    ],
+    "promptFormat": "Add {prompt} to this image, fitting the scene's perspective, lighting and surroundings naturally. Change nothing else.",
+    "promptFormatImperative": "{prompt}. Fit the result to the scene's perspective, lighting and surroundings naturally, and change nothing else.",
+    "notes": "The `qwen-edit-2511/fill` graph with the 4-step Lightning LoRA, exactly ComfyUI's official template with its 'Enable 4steps LoRA' switch on: 4 steps at CFG 1. The fastest tier; the 8-step variant keeps more detail. Needs the 850 MB `Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` in ComfyUI/models/loras (https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning).",
+    "creator": "Alibaba Qwen",
+    "description": "Fills the selection in 4 steps: fastest, softer detail",
+    "badges": [
+      "fastest"
+    ],
+    "estimatedSeconds": {
+      "base": 5,
+      "perMegapixel": 3
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": [
+      "sampler",
+      "scheduler",
+      "denoise"
+    ]
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/fill-ref",
+    "name": "Generative Fill from a Reference (Qwen-Image-Edit-2511, 40 steps)",
+    "family": "qwen-image-edit-2511",
+    "task": "fill",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23).",
+    "needsImage": true,
+    "needsMask": true,
+    "eraseSelection": true,
+    "defaults": {
+      "steps": 40,
+      "guidance": 4.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      }
+    ],
+    "promptFormat": "The other images are references. The flat grey area of image 1 is the only part to change: paint {prompt} there, taken from the references exactly as they show it (its type, colour, material, pattern, details and fit), fitted to the pose, perspective and lighting of image 1, so that no grey remains. Keep everything outside that area exactly as it is.",
+    "promptFormatImperative": "The other images are references and the flat grey area of image 1 is the only part to change. {prompt}. Take it from the references exactly as they show it (type, colour, material, pattern, details and fit), fitted to the pose, perspective and lighting of image 1, so that no grey remains. Keep everything outside that area exactly as it is.",
+    "notes": "`fill` (40 steps at CFG 4) with one or two reference images on `image2`/`image3`, the selection flattened to mid-grey in the request (`eraseSelection`) and the prompt naming the hole: see `fill-ref-lightning-8` and docs/comfy/research/notes/ausboss-krea2-clothing-workflow.md. Quality `best` under Auto takes this one when references are given.",
+    "creator": "Alibaba Qwen",
+    "description": "Paints the selection with what a reference image shows, with 40 steps",
+    "badges": [
+      "40 steps",
+      "reference"
+    ],
+    "references": {
+      "max": 2
+    },
+    "estimatedSeconds": {
+      "base": 20,
+      "perMegapixel": 160,
+      "perReference": 40
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": []
+  }
+}

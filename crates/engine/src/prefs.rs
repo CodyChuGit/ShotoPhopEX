@@ -12,8 +12,9 @@
 //! OS config directory; the web shell: browser storage) and restore it with
 //! [`Session::load_prefs_json`].
 //!
-//! Engine-side values are applied by [`Session::apply_prefs`]: the history state limit (every
-//! open document), the effect-cache memory budget, and units for commands that report lengths.
+//! Engine-side values are applied by [`Session::apply_prefs`]: the history state limit and
+//! History Options › Allow Non-Linear History (every open document), the effect-cache memory
+//! budget, and units for commands that report lengths.
 //! Colour settings (`colorSettings`) are stored with the colour state
 //! ([`crate::color_cmds::ColorSettings`]) and persisted in the same document.
 
@@ -55,10 +56,13 @@ choice!(TypeUnit { Points = "points", Pixels = "pixels", Millimeters = "mm" } de
 choice!(PointSize { PostScript = "postScript", Traditional = "traditional" } default PostScript);
 choice!(Interpolation { BicubicAutomatic = "bicubicAutomatic", Nearest = "nearestNeighbor", Bilinear = "bilinear", Bicubic = "bicubic", BicubicSmoother = "bicubicSmoother", BicubicSharper = "bicubicSharper", PreserveDetails = "preserveDetails" } default BicubicAutomatic);
 choice!(ColorPicker { Adobe = "adobe", System = "system" } default Adobe);
-choice!(Theme { Pro = "pro", ProMedium = "proMedium", Studio = "studio", StudioLight = "studioLight", Classic = "classic" } default ProMedium);
+choice!(Theme { Pro = "pro", ProMedium = "proMedium", ProLightGray = "proLightGray", ProLight = "proLight", Studio = "studio", StudioLight = "studioLight", Classic = "classic", SolarizedDark = "solarizedDark", Adwaita = "adwaita", AdwaitaDark = "adwaitaDark", BreezeLight = "breezeLight", BreezeDark = "breezeDark", SoftDark = "softDark", SoftLight = "softLight" } default ProMedium);
+choice!(AppearanceMode { Auto = "auto", Dark = "dark", Light = "light" } default Dark);
+choice!(DarkTheme { Pro = "pro", ProMedium = "proMedium", Studio = "studio", SolarizedDark = "solarizedDark", AdwaitaDark = "adwaitaDark", BreezeDark = "breezeDark", SoftDark = "softDark" } default ProMedium);
+choice!(LightTheme { ProLight = "proLight", ProLightGray = "proLightGray", StudioLight = "studioLight", Classic = "classic", Adwaita = "adwaita", BreezeLight = "breezeLight", SoftLight = "softLight" } default ProLight);
 choice!(CanvasColor { Default = "default", Black = "black", DarkGray = "darkGray", MediumGray = "mediumGray", LightGray = "lightGray", Custom = "custom" } default Default);
 choice!(CanvasBorder { DropShadow = "dropShadow", Line = "line", None = "none" } default DropShadow);
-choice!(UiScale { Auto = "auto", P75 = "75", P100 = "100", P125 = "125", P150 = "150", P175 = "175", P200 = "200", P250 = "250", P300 = "300" } default Auto);
+choice!(UiScale { Auto = "auto", P75 = "75", P80 = "80", P85 = "85", P90 = "90", P95 = "95", P100 = "100", P105 = "105", P110 = "110", P115 = "115", P120 = "120", P125 = "125", P150 = "150", P175 = "175", P200 = "200", P250 = "250", P300 = "300" } default Auto);
 choice!(
     /// Graphics backend of the desktop app's window and GPU canvas (applies at next launch).
     /// `auto` lets PhotoCraft pick (DX12 for Intel adapters on Windows); `cpu` composites on the
@@ -71,11 +75,19 @@ choice!(
     /// CPU disables image acceleration; the native window may still need hardware graphics.
     RenderingMode { Auto = "auto", Gpu = "gpu", Cpu = "cpu" } default Auto
 );
+choice!(
+    /// Linux display server of the desktop app's window (applies at next launch). `x11` runs
+    /// PhotoCraft through XWayland on a Wayland session, where native file drag and drop works
+    /// (winit 0.30 has none on Wayland, issue #386); fractional scaling may then look softer.
+    /// It needs an X server (`DISPLAY`); without one PhotoCraft starts as `auto`. Other
+    /// platforms ignore it.
+    LinuxDisplayServer { Auto = "auto", X11 = "x11" } default Auto
+);
 choice!(UiFontSize { Tiny = "tiny", Small = "small", Medium = "medium", Large = "large" } default Small);
 choice!(LogDestination { Metadata = "metadata", TextFile = "textFile", Both = "both" } default Metadata);
 choice!(LogDetail { SessionsOnly = "sessionsOnly", Concise = "concise", Detailed = "detailed" } default Concise);
 choice!(Ask { Always = "always", Never = "never", Ask = "ask" } default Always);
-choice!(QuickExportFormat { Png = "png", Jpg = "jpg", Gif = "gif", Webp = "webp" } default Png);
+choice!(QuickExportFormat { Png = "png", Jpg = "jpg", Gif = "gif", Webp = "webp", Exr = "exr" } default Png);
 choice!(ExportLocation { Ask = "ask", SameFolder = "sameFolder" } default Ask);
 choice!(ExportMetadata { None = "none", Copyright = "copyright", All = "all" } default Copyright);
 choice!(
@@ -97,6 +109,12 @@ choice!(FontPreview { Off = "off", Small = "small", Medium = "medium", Large = "
 choice!(RawColorSpace { Srgb = "srgb", AdobeRgb = "adobeRgb", ProPhoto = "proPhoto", DisplayP3 = "displayP3" } default AdobeRgb);
 choice!(RawDepth { Eight = "8", Sixteen = "16" } default Sixteen);
 choice!(RawSharpen { None = "none", Screen = "screen", Glossy = "glossy", Matte = "matte" } default None);
+choice!(
+    /// How a raw file's colour filter array is filled in when it is developed: AHD
+    /// (Hirakawa–Parks) keeps edges cleanest, Malvar–He–Cutler is sharp and fast, bilinear is the
+    /// fastest and softest. Photoshop's Camera Raw has no such choice.
+    RawDemosaic { Ahd = "ahd", Mhc = "mhc", Bilinear = "bilinear" } default Ahd
+);
 
 impl Unit {
     /// Document pixels → this unit. `dpi` is the document resolution, `extent` the 100% length
@@ -138,13 +156,47 @@ impl Unit {
             Unit::Percent => "%",
         }
     }
-    /// Decimal places a readout in this unit needs.
+    /// Decimal places a readout in this unit needs, following Photoshop: whole pixels, one place
+    /// for points and percent, two for millimetres, centimetres and picas, three for inches
+    /// (#2434). [`fmt_decimals`] rounds to this many places and drops trailing zeros.
     pub fn decimals(self) -> usize {
         match self {
             Unit::Pixels => 0,
-            Unit::Points | Unit::Percent | Unit::Millimeters => 1,
-            _ => 2,
+            Unit::Points | Unit::Percent => 1,
+            Unit::Millimeters | Unit::Centimeters | Unit::Picas => 2,
+            Unit::Inches => 3,
         }
+    }
+    /// A length as typed in Photoshop's numeric fields: a number with an optional unit suffix
+    /// ("50%", "2.5 cm", "12pt", "3pc", "1,5 in", "100"). Returns the number and its unit (`None`
+    /// when there is no suffix, so the caller picks the default), or `None` if the text is not a
+    /// finite number followed by a known unit.
+    pub fn parse_length(text: &str) -> Option<(f64, Option<Unit>)> {
+        let t = text.trim();
+        let end = t.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '+'))).unwrap_or(t.len());
+        let (number, suffix) = t.split_at(end);
+        let v: f64 = number.trim().replace(',', ".").parse().ok()?;
+        if !v.is_finite() {
+            return None;
+        }
+        let suffix = suffix.trim();
+        let unit = if suffix.is_empty() { None } else { Some(Unit::from_suffix(suffix)?) };
+        Some((v, unit))
+    }
+    /// The unit a typed suffix names, in any case: `px`, `in` or `"`, `cm`, `mm`, `pt`, `pc` or
+    /// `pica`, `%`, and their long forms (`pixels`, `inches`, `centimetres`…). The one table every
+    /// length field reads.
+    pub fn from_suffix(suffix: &str) -> Option<Unit> {
+        Some(match suffix.to_ascii_lowercase().as_str() {
+            "px" | "pixel" | "pixels" => Unit::Pixels,
+            "in" | "inch" | "inches" | "\"" => Unit::Inches,
+            "cm" | "centimeter" | "centimeters" | "centimetre" | "centimetres" => Unit::Centimeters,
+            "mm" | "millimeter" | "millimeters" | "millimetre" | "millimetres" => Unit::Millimeters,
+            "pt" | "point" | "points" => Unit::Points,
+            "pc" | "pica" | "picas" => Unit::Picas,
+            "%" | "percent" => Unit::Percent,
+            _ => return None,
+        })
     }
 }
 
@@ -172,10 +224,13 @@ pub struct General {
     pub always_create_smart_objects_when_placing: bool,
     /// Scroll wheel zooms instead of panning.
     pub zoom_with_scroll_wheel: bool,
+    /// Wheel zoom eases over the frames of a notch; off, a notch is one instant ×1.1 step.
     pub animated_zoom: bool,
     pub zoom_resizes_windows: bool,
     pub use_legacy_free_transform: bool,
     pub auto_show_home_screen: bool,
+    /// Desktop: check published stable releases once in the background at launch.
+    pub automatically_check_updates: bool,
 }
 
 impl Default for General {
@@ -187,11 +242,13 @@ impl Default for General {
             export_clipboard: true,
             resize_image_during_place: true,
             always_create_smart_objects_when_placing: true,
-            zoom_with_scroll_wheel: false,
+            // Fork: on by default (upstream follows Photoshop's off; Alt + wheel then zooms).
+            zoom_with_scroll_wheel: true,
             animated_zoom: true,
             zoom_resizes_windows: false,
             use_legacy_free_transform: false,
             auto_show_home_screen: true,
+            automatically_check_updates: true,
         }
     }
 }
@@ -199,10 +256,22 @@ impl Default for General {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Interface {
+    /// Legacy single-theme preference, retained for old automation and saved settings.
     pub theme: Theme,
+    pub appearance_mode: AppearanceMode,
+    pub dark_theme: DarkTheme,
+    pub light_theme: LightTheme,
+    /// Theme shortcuts shown in the appearance button's context menu.
+    pub favorite_themes: Vec<Theme>,
     /// Pasteboard colour in standard screen mode (`canvasCustomColor` when "custom").
     pub canvas_color: CanvasColor,
     pub canvas_custom_color: String,
+    /// Show the repeating dot pattern on the canvas surround (including the empty workspace).
+    /// Disable for a uniform background, for example on OLED displays (#2264).
+    pub show_canvas_dots: bool,
+    /// List recent files on the Home screen (the empty workspace). Off hides the list; the
+    /// recent files themselves are kept and File > Open Recent still shows them.
+    pub show_home_recent_files: bool,
     /// Document border in standard screen mode.
     pub canvas_border: CanvasBorder,
     pub ui_scale: UiScale,
@@ -211,27 +280,48 @@ pub struct Interface {
     /// Command ids and the control protocol stay English.
     pub language: String,
     pub ui_font_size: UiFontSize,
-    /// Single colour channels (the Channels panel and the canvas) show in their colour, not gray.
     pub show_channels_in_color: bool,
     pub dynamic_color_sliders: bool,
     /// Draw menu item colours set with Edit › Menus.
     pub show_menu_colors: bool,
+    /// Layers panel thumbnails frame the layer's own pixels instead of the whole canvas, so small
+    /// objects in a large document stay visible (Photoshop's Clip Thumbnails to Layer Bounds; #4281).
+    pub clip_thumbnails_to_layer_bounds: bool,
     pub show_tooltips: bool,
+    /// Menus, popups and collapsing sections fade and slide, and scroll areas glide to a new
+    /// position. Off, everything changes at once (a reduced-motion mode; #1218, #3273).
+    pub enable_animations: bool,
     /// Move tool drags show only the layer's outline and an arrow, leaving its pixels in place
     /// until release. Off (the default), the pixels follow the pointer live inside the outline.
     pub show_bounding_box_when_dragging_layer: bool,
     /// Windows and Linux: use the system's title bar and window buttons instead of PhotoCraft's
     /// own one-row title bar (tiling window managers, desktops that draw their own decorations;
-    /// #1271, #1316). Read when the app starts. macOS always uses the system's.
+    /// #1271, #1316). The integrated title bar remains the default on Linux and Windows;
+    /// the system frame is opt-in. Read when the app starts. macOS always uses the system's.
     pub system_title_bar: bool,
+    /// Show the active document's file name in the title bar and the OS window title. The tabs
+    /// already name the file, so this can be turned off for a plain "PhotoCraft" title (#5037).
+    /// The unsaved-changes mark stays either way.
+    pub show_file_name_in_title: bool,
+    /// Notices (the lower-right cards) hide themselves after
+    /// [`Interface::notification_duration_seconds`] unless the pointer rests on them (#2022).
+    pub notification_auto_hide: bool,
+    /// Seconds a notice stays on screen before it hides itself (Auto Hide Notifications).
+    pub notification_duration_seconds: u32,
 }
 
 impl Default for Interface {
     fn default() -> Self {
         Self {
             theme: Theme::ProMedium,
+            appearance_mode: AppearanceMode::Dark,
+            dark_theme: DarkTheme::ProMedium,
+            light_theme: LightTheme::ProLight,
+            favorite_themes: Vec::new(),
             canvas_color: CanvasColor::Default,
             canvas_custom_color: "#282828".into(),
+            show_canvas_dots: true,
+            show_home_recent_files: true,
             canvas_border: CanvasBorder::DropShadow,
             ui_scale: UiScale::Auto,
             language: "auto".into(),
@@ -239,9 +329,14 @@ impl Default for Interface {
             show_channels_in_color: false,
             dynamic_color_sliders: true,
             show_menu_colors: true,
+            clip_thumbnails_to_layer_bounds: false,
             show_tooltips: true,
+            enable_animations: true,
             show_bounding_box_when_dragging_layer: false,
             system_title_bar: false,
+            show_file_name_in_title: true,
+            notification_auto_hide: true,
+            notification_duration_seconds: 6,
         }
     }
 }
@@ -253,7 +348,6 @@ pub struct Workspace {
     pub auto_show_hidden_panels: bool,
     pub open_documents_as_tabs: bool,
     pub enable_floating_document_window_docking: bool,
-    /// Taller document tabs with a larger title.
     pub large_tabs: bool,
     pub enable_narrow_options_bar: bool,
     pub remember_workspace_changes: bool,
@@ -273,49 +367,93 @@ impl Default for Workspace {
     }
 }
 
+impl Workspace {
+    /// Preferences ▸ Workspace ▸ Enable Narrow Options Bar: the options bar drops to its compact
+    /// height, as in Photoshop, so the document gets more room (see `panels::options_bar`).
+    pub fn narrow_options_bar(&self) -> bool {
+        self.enable_narrow_options_bar
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Tools {
     pub show_tooltips: bool,
-    /// Tool keys cycle a tool group only with ⇧ held (Photoshop's "Use Shift Key for Tool Switch").
+    /// Tool keys cycle a tool group only with ⇧ held (Photoshop's "Use Shift Key for Tool Switch", on by default there too).
     pub use_shift_key_for_tool_switch: bool,
-    /// A Zoom tool click also centres the view on the clicked point.
     pub zoom_clicked_point_to_center: bool,
     pub enable_flick_panning: bool,
-    /// The on-canvas brush resize gesture's vertical movement changes the hardness (off: the
-    /// opacity).
     pub vary_round_brush_hardness_on_hud: bool,
     /// Round snapped vector and transform coordinates to whole pixels.
     pub snap_vector_tools_and_transforms_to_pixel_grid: bool,
-    /// The size readout beside the pointer while dragging a marquee.
+    /// The size and angle readouts beside the pointer while a marquee or crop frame is drawn,
+    /// resized or turned (off: none).
     pub show_transformation_values: bool,
+    /// Move tool with Auto-Select: outline the layer a click would pick under the pointer.
+    pub show_highlight_on_rollover: bool,
     pub overscroll: bool,
-    /// Double-clicking a layer-mask thumbnail opens Select and Mask on the mask (off: the
-    /// Properties panel).
     pub double_click_layer_mask_launches_select_and_mask: bool,
     /// What the right mouse button does on the canvas with the Brush and other painting tools.
     pub right_click_with_painting_tools: RightClickPaint,
     /// Pen tablets: pressure, tilt and rotation reach the brush (off: a pen paints like a mouse).
     pub use_tablet_pressure: bool,
+    /// Pen pressure response: `[input, output]` control points in 0..1 that the pen's pressure
+    /// passes through before it reaches any brush ([`PressureCurve`]). Linear by default.
+    pub pressure_curve: Vec<[f32; 2]>,
+    /// Arrow-key nudges of one thing (the selected layers, the selection outline, the Free
+    /// Transform box) that follow each other within [`Tools::nudge_bundle_pause_ms`] are one
+    /// History state (#2259). Off: every press is a state.
+    pub bundle_nudges: bool,
+    /// The longest pause, in milliseconds, between two nudges that still bundle into one state.
+    /// Longer than a key's auto-repeat delay (about half a second), so a held key is one state.
+    pub nudge_bundle_pause_ms: u32,
 }
 
 impl Default for Tools {
     fn default() -> Self {
         Self {
             show_tooltips: true,
-            use_shift_key_for_tool_switch: false,
+            use_shift_key_for_tool_switch: true,
             zoom_clicked_point_to_center: false,
             enable_flick_panning: true,
             vary_round_brush_hardness_on_hud: true,
             snap_vector_tools_and_transforms_to_pixel_grid: true,
             show_transformation_values: true,
+            show_highlight_on_rollover: true,
             overscroll: true,
             double_click_layer_mask_launches_select_and_mask: true,
             right_click_with_painting_tools: RightClickPaint::BrushPicker,
             use_tablet_pressure: true,
+            pressure_curve: vec![[0.0, 0.0], [1.0, 1.0]],
+            bundle_nudges: true,
+            nudge_bundle_pause_ms: 1000,
         }
     }
 }
+
+/// Preferences › Tools › Pressure Curve, ready to evaluate: the same monotone cubic every brush
+/// dynamic uses for its own control ([`photocraft_paint::ResponseCurve`]), sanitised the same way,
+/// since a whole-section update or a hand-edited preferences file can store anything.
+pub use photocraft_paint::ResponseCurve as PressureCurve;
+
+mod cmds;
+mod customize;
+mod files;
+mod shortcuts;
+mod store;
+mod validate;
+
+pub use cmds::specs;
+#[cfg(test)]
+pub(crate) use files::write_files_atomically;
+pub use shortcuts::{
+    ALTERNATE_SHORTCUTS, BindKind, MAX_ALTERNATES, TEMPORARY_TOOLS, alternate_keys, bindable_items, conflicts, default_alternates, normalize_shortcut,
+    reserved_shortcut,
+};
+use store::read_lenient;
+pub use store::{InvalidPref, PREFS_VERSION, PrefsStore, read_section};
+pub use validate::{HIDDEN_UNTIL_IMPLEMENTED, LINUX_ONLY, SECTIONS, choices, gpu_adapter_matches, is_color, is_hidden, parse_hex, range};
+use validate::{check_value, get_path, keyed, set_path};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -337,8 +475,11 @@ impl Default for HistoryLog {
 #[serde(default, rename_all = "camelCase")]
 pub struct FileHandling {
     pub image_previews: Ask,
-    /// Save As writes the file extension in lower case.
     pub lowercase_extension: bool,
+    /// File › Save a Copy suggests the document's own name rather than "<name> copy" (#8080).
+    pub do_not_append_copy: bool,
+    /// Saves run in the background while you keep working (on), or in the foreground under a
+    /// modal progress dialog that blocks the app until the file is written (off).
     pub save_in_background: bool,
     /// Save recovery information (crash recovery autosave).
     pub autosave: bool,
@@ -346,12 +487,32 @@ pub struct FileHandling {
     pub autosave_minutes: u32,
     /// Offer to reopen recovered documents at launch.
     pub recover_on_launch: bool,
+    /// Open a file with no ICC profile as untagged even when its EXIF ColorSpace tag says sRGB.
     pub ignore_exif_profile_tag: bool,
+    /// Most renderers write ACEScg EXRs without stating the colour space. With this on, an EXR
+    /// that would otherwise open as linear sRGB opens as ACEScg (AP1, linear) instead.
+    pub exr_aces_cg: bool,
     pub ask_before_saving_layered_tiff: bool,
     pub maximize_psd_compatibility: Ask,
+    /// A `.pcraft` save also writes the flattened document at its canvas size as
+    /// `composite/full.png`. Off by default.
+    pub pcraft_full_composite: bool,
+    /// SVG groups deeper than this are rasterised on import; parser and document safety caps remain fixed.
+    pub rasterize_svg_groups_deeper_than: u32,
     pub recent_file_count: u32,
     /// Most recently opened files, newest first (File › Open Recent).
     pub recent_files: Vec<String>,
+    /// A folder whose `.cube`, `.3dl` and `.look` files Color Lookup lists under its built-in
+    /// looks (native only, #6558). Empty lists none.
+    pub lut_folder: String,
+}
+
+impl FileHandling {
+    /// What File › Save a Copy appends to the document's name: " copy", or nothing with Do not
+    /// append "copy" to filename when saving a copy (#8080).
+    pub fn copy_suffix(&self) -> &'static str {
+        if self.do_not_append_copy { "" } else { " copy" }
+    }
 }
 
 impl Default for FileHandling {
@@ -359,15 +520,20 @@ impl Default for FileHandling {
         Self {
             image_previews: Ask::Always,
             lowercase_extension: true,
+            do_not_append_copy: false,
             save_in_background: true,
             autosave: true,
             autosave_minutes: 10,
             recover_on_launch: true,
             ignore_exif_profile_tag: false,
+            exr_aces_cg: false,
             ask_before_saving_layered_tiff: true,
             maximize_psd_compatibility: Ask::Always,
+            pcraft_full_composite: false,
+            rasterize_svg_groups_deeper_than: photocraft_doc::MAX_GROUP_DEPTH as u32,
             recent_file_count: 20,
             recent_files: Vec::new(),
+            lut_folder: String::new(),
         }
     }
 }
@@ -399,15 +565,63 @@ impl Default for Export {
     }
 }
 
+/// [`Performance::memory_usage_mb`]'s default.
+pub const DEFAULT_MEMORY_USAGE_MB: u32 = 8192;
+
+/// The most Memory Usage the web build honours, in MB: a wasm module's linear memory tops out at
+/// 4 GiB, so a larger allowance (the desktop default is 8 GiB) would never trim anything. The
+/// effect cache is capped at it on every 32-bit build ([`SMALL_ADDRESS_SPACE`]).
+const WASM_MEMORY_USAGE_CAP_MB: u32 = 1536;
+
+/// A 32-bit address space (wasm32, 32-bit Windows): an effect cache budget beyond
+/// [`WASM_MEMORY_USAGE_CAP_MB`] would never evict before allocation fails.
+const SMALL_ADDRESS_SPACE: bool = cfg!(target_pointer_width = "32");
+
+/// The Memory Usage a build honours for a `stored` preference: capped on the web build (`web`).
+/// Separate from the target check so native tests exercise both.
+fn honoured_memory_usage_mb(stored: u32, web: bool) -> u32 {
+    if web { stored.min(WASM_MEMORY_USAGE_CAP_MB) } else { stored }
+}
+
+/// The smallest Effect Cache the Preferences dialog and `prefs.set` accept, in MB.
+const EFFECT_CACHE_MIN_MB: u32 = 16;
+
+/// The largest Effect Cache the Preferences dialog and `prefs.set` accept, in MB: on a build with
+/// a 32-bit address space (`small`) the cap there, so the field shows the budget the cache gets.
+fn effect_cache_max_mb(small: bool) -> u32 {
+    if small { WASM_MEMORY_USAGE_CAP_MB } else { 65536 }
+}
+
+/// The nearest Effect Cache the field accepts to a `stored` preference, in MB, on a build with a
+/// 32-bit address space (`small`) or not. Separate from the target check so native tests exercise
+/// both.
+fn accepted_effect_cache_mb(stored: u32, small: bool) -> u32 {
+    stored.clamp(EFFECT_CACHE_MIN_MB, effect_cache_max_mb(small))
+}
+
+/// The layer-effect cache budget a build honours for a `stored` preference, in bytes: within the
+/// range the field accepts, so a hand-edited 0 reports 16 MB, not 0. Separate from the target
+/// check so native tests exercise both.
+fn effect_cache_budget_bytes_for(stored: u32, small: bool) -> u64 {
+    u64::from(accepted_effect_cache_mb(stored, small)) << 20
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Performance {
     /// Memory PhotoCraft may use, in MB: bounds each document's pixels plus its History (the
-    /// oldest states are dropped beyond it).
+    /// oldest states are dropped beyond it), and the result of one transform.
     pub memory_usage_mb: u32,
+    /// Percent of physical RAM for the complete process; None preserves the legacy MB limit.
+    #[serde(default)]
+    pub memory_usage_percent: Option<u8>,
     /// Undo steps kept per document (History panel states).
     pub history_states: u32,
-    /// Display cache levels (mip levels kept for zoomed-out views).
+    /// Cache Levels, 1–8: the highest cache level the Histogram panel counts a large document at
+    /// (level n counts a proxy 2^(n-1) times smaller; 1 counts every pixel). Lower is more
+    /// accurate, higher faster. The panel picks the level from the document's size up to this;
+    /// the web build, which counts on the UI thread, reduces documents from a quarter of the size
+    /// the desktop does. Uncached Refresh always counts at level 1.
     pub cache_levels: u32,
     /// Side of the GPU canvas texture tiles, in pixels (applies at next launch).
     pub cache_tile_size: u32,
@@ -417,6 +631,28 @@ pub struct Performance {
     pub rendering_mode: Option<RenderingMode>,
     /// Graphics backend (applies at next launch; see [`GpuBackend`]).
     pub gpu_backend: GpuBackend,
+    /// Which graphics adapter the window and canvas use on a machine with several (applies at
+    /// next launch): part of the adapter's name, matched case-insensitively ("nvidia", "arc"). Empty
+    /// is automatic. `PHOTOCRAFT_GPU_ADAPTER` overrides it for one launch. If nothing matches or the
+    /// match can't present to the window, startup falls back to automatic and says so.
+    pub gpu_adapter: String,
+    /// Live previews of large documents (adjustment and filter dialogs, an adjustment layer's
+    /// sliders while they drag) render on a reduced copy: fast, but blocky when zoomed in. Off:
+    /// they render at full resolution.
+    pub low_resolution_previews: bool,
+    /// Low-latency drawing (applies at next launch): frames reach the screen without waiting for
+    /// vsync, so a stroke follows the pen about 50 ms sooner (the swap chain's wait, #1343). wgpu
+    /// picks Immediate where the driver has it (most Vulkan and DX12 drivers on Windows and X11),
+    /// so the canvas usually tears while it changes; Mailbox (no tearing) only where Immediate is
+    /// missing. Frames are capped at 240 fps. Off (the default): vsync, smooth but late. Desktop
+    /// only.
+    pub low_latency_drawing: bool,
+    /// Linux display server (applies at next launch; see [`LinuxDisplayServer`]).
+    pub linux_display_server: LinuxDisplayServer,
+    /// GPU memory the canvas compositor may hold for layer pages and effect maps, in MB; 0 is
+    /// automatic (a graphics card's own memory isn't charged for the document's pixels, memory
+    /// shared with the system is). Layers that don't fit redraw the whole document on the CPU.
+    pub gpu_memory_mb: u32,
     /// Memory budget of the layer-effect cache, in MB.
     pub effect_cache_mb: u32,
     pub legacy_compositing: bool,
@@ -428,23 +664,61 @@ impl Performance {
         self.rendering_mode.unwrap_or_else(|| if !self.use_gpu || self.gpu_backend == GpuBackend::Cpu { RenderingMode::Cpu } else { RenderingMode::Auto })
     }
 
+    /// [`Performance::memory_usage_mb`] as the build can honour it: capped on the web, where the
+    /// stored preference (a saved 8192 still loads) is larger than the module's address space.
+    pub fn effective_memory_usage_mb(&self) -> u32 {
+        honoured_memory_usage_mb(self.memory_usage_mb, cfg!(target_arch = "wasm32"))
+    }
+
     /// Pixel memory a document and its History may hold (Memory Usage), in bytes: beyond it
     /// the oldest history states are dropped.
     pub fn history_budget_bytes(&self) -> usize {
-        (self.memory_usage_mb as usize).saturating_mul(1 << 20)
+        (self.effective_memory_usage_mb() as usize).saturating_mul(1 << 20)
+    }
+
+    /// The byte limit History enforces now: none (only History States) while the scratch disk
+    /// is spilling, since tiles only History holds go to disk instead; otherwise
+    /// [`Self::history_budget_bytes`].
+    pub fn history_cap_bytes(&self) -> usize {
+        if photocraft_raster::spill::enabled() { 0 } else { self.history_budget_bytes() }
+    }
+
+    /// Pixel bytes kept in memory before tiles move to the scratch disk: half of Memory Usage
+    /// (the rest is for the GPU canvas, caches and the app). `PHOTOCRAFT_TILE_BUDGET_MB`
+    /// overrides it (tests, stress runs).
+    pub fn tile_budget_bytes(&self) -> usize {
+        let bytes = std::env::var("PHOTOCRAFT_TILE_BUDGET_MB")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(|mb| mb.saturating_mul(1 << 20))
+            .unwrap_or_else(|| u64::from(self.effective_memory_usage_mb()).saturating_mul(1 << 20) / 2);
+        usize::try_from(bytes).unwrap_or(usize::MAX)
+    }
+
+    /// The layer-effect cache budget the build honours, in bytes: [`Performance::effect_cache_mb`],
+    /// capped at 1536 MB on 32-bit builds (the web and 32-bit Windows).
+    pub fn effect_cache_budget_bytes(&self) -> usize {
+        usize::try_from(effect_cache_budget_bytes_for(self.effect_cache_mb, SMALL_ADDRESS_SPACE)).unwrap_or(usize::MAX)
     }
 }
 
 impl Default for Performance {
+    /// What a new install starts with, [`DEFAULT_MEMORY_USAGE_MB`] of Memory Usage among it.
     fn default() -> Self {
         Self {
-            memory_usage_mb: 8192,
+            memory_usage_mb: DEFAULT_MEMORY_USAGE_MB,
+            memory_usage_percent: Some(70),
             history_states: 50,
             cache_levels: 4,
             cache_tile_size: 8192,
             use_gpu: true,
             rendering_mode: None,
             gpu_backend: GpuBackend::Auto,
+            gpu_adapter: String::new(),
+            low_resolution_previews: true,
+            low_latency_drawing: false,
+            linux_display_server: LinuxDisplayServer::Auto,
+            gpu_memory_mb: 0,
             effect_cache_mb: 768,
             legacy_compositing: false,
         }
@@ -463,11 +737,15 @@ pub struct ScratchDisk {
 pub struct ScratchDisks {
     /// Disks for spilling tiles once the memory budget is reached (in priority order).
     pub disks: Vec<ScratchDisk>,
+    /// Largest the scratch file may grow, in MB; 0 = no limit. Reaching it pauses spilling
+    /// like a full disk (History's byte limit applies again). At least max(1 GB, 5 % of the
+    /// volume) is always left free, whatever this is set to.
+    pub size_limit_mb: u32,
 }
 
 impl Default for ScratchDisks {
     fn default() -> Self {
-        Self { disks: vec![ScratchDisk { path: "(system temp)".into(), enabled: true }] }
+        Self { disks: vec![ScratchDisk { path: "(system temp)".into(), enabled: true }], size_limit_mb: 0 }
     }
 }
 
@@ -556,6 +834,10 @@ pub struct UnitsAndRulers {
     pub print_resolution: f64,
     pub screen_resolution: f64,
     pub point_size: PointSize,
+    /// View › Rulers as last set: written when the user toggles the rulers and applied at
+    /// launch, so new and opened documents show them as Photoshop does. Set from the View
+    /// menu (⌘R), not from the Preferences dialog.
+    pub show_rulers: bool,
 }
 
 impl Default for UnitsAndRulers {
@@ -568,15 +850,32 @@ impl Default for UnitsAndRulers {
             print_resolution: 300.0,
             screen_resolution: 72.0,
             point_size: PointSize::PostScript,
+            show_rulers: false,
         }
     }
 }
 
+/// Rounds `v` to `decimals` places (half away from zero) and drops trailing zeros, so a readout
+/// never shows more precision than it has: 0.7995 at three places is `0.8`, never `0.799` or
+/// `0.800`, and a whole number keeps no `.0` (#2434).
+pub fn fmt_decimals(v: f64, decimals: usize) -> String {
+    let p = 10f64.powi(decimals as i32);
+    let r = (v * p).round() / p;
+    // -0.0 would format as "-0".
+    let r = if r == 0.0 { 0.0 } else { r };
+    let s = format!("{r:.*}", decimals);
+    // Only a fractional part may lose zeros: "550" must not become "55".
+    if !s.contains('.') {
+        return s;
+    }
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 impl UnitsAndRulers {
-    /// Format a length in document pixels in the ruler unit, e.g. `"2.50 in"`.
+    /// Format a length in document pixels in the ruler unit, e.g. `"2.5 in"`.
     pub fn format(&self, px: f64, dpi: f64, extent: f64) -> String {
         let v = self.rulers.from_px(px, dpi, extent, self.point_size.per_inch());
-        format!("{:.*}", self.rulers.decimals(), v)
+        fmt_decimals(v, self.rulers.decimals())
     }
 }
 
@@ -646,17 +945,17 @@ impl Default for PlugIns {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TypePrefs {
-    /// Typed straight quotes become curly quotes.
     pub smart_quotes: bool,
     pub missing_glyph_protection: bool,
     pub show_font_names_in_english: bool,
-    /// Esc commits type being edited (off: Esc cancels the edit).
     pub use_esc_to_commit: bool,
     pub text_engine: TextEngine,
     pub font_preview: FontPreview,
-    /// New type layers start with selected placeholder text (off: empty).
     pub fill_new_type_layers_with_placeholder: bool,
     pub recent_fonts: u32,
+    /// Favourite font families, starred in the font menu (`type.font.favorite`), in the order
+    /// they were added.
+    pub favorite_fonts: Vec<String>,
 }
 
 impl Default for TypePrefs {
@@ -670,7 +969,17 @@ impl Default for TypePrefs {
             font_preview: FontPreview::Medium,
             fill_new_type_layers_with_placeholder: true,
             recent_fonts: 10,
+            favorite_fonts: Vec::new(),
         }
+    }
+}
+
+impl TypePrefs {
+    /// Preferences ▸ Type ▸ Missing Glyph Protection: with it on (the default, as in Photoshop),
+    /// glyphs the chosen face lacks fall back through the coverage fonts (#1909). The text engine
+    /// applies this in `Session::apply_prefs`.
+    pub fn missing_glyph_protection(&self) -> bool {
+        self.missing_glyph_protection
     }
 }
 
@@ -679,7 +988,6 @@ impl Default for TypePrefs {
 pub struct EnhancedControls {
     pub scrubby_slider_acceleration: bool,
     pub touch_gestures: bool,
-    /// A trackpad pinch zooms the canvas.
     pub zoom_with_trackpad_pinch: bool,
     pub rotate_view_with_trackpad: bool,
 }
@@ -703,6 +1011,48 @@ pub struct RawDefaults {
     /// Photoshop does; off develops it with the defaults straight away. Automation opens never
     /// show the dialog.
     pub open_in_camera_raw: bool,
+    /// The demosaic method raws are developed with; the open-time Camera Raw dialog starts from it.
+    pub demosaic: RawDemosaic,
+    /// Keep a raw file's develop settings in a sidecar (`IMG_0001.xmp` beside `IMG_0001.CR2`),
+    /// as Camera Raw's "Save image settings in: Sidecar .xmp files"; the sidecar is read again
+    /// when the file is next opened. Off reads sidecars but never writes one.
+    pub write_xmp_sidecars: bool,
+}
+
+impl RawColorSpace {
+    /// The built-in profile `edit.convertToProfile` knows this space as.
+    pub fn profile_id(self) -> &'static str {
+        match self {
+            RawColorSpace::Srgb => "srgb",
+            RawColorSpace::AdobeRgb => "adobe-rgb-compat",
+            RawColorSpace::ProPhoto => "prophoto-compat",
+            RawColorSpace::DisplayP3 => "display-p3",
+        }
+    }
+}
+
+impl RawSharpen {
+    /// Camera Raw's output sharpening for this medium as the Detail panel's (amount, radius):
+    /// none, Screen (light, fine), Matte paper (stronger, wider: ink spreads), Glossy paper.
+    pub fn preset(self) -> Option<(f32, f32)> {
+        match self {
+            RawSharpen::None => None,
+            RawSharpen::Screen => Some((25.0, 1.0)),
+            RawSharpen::Matte => Some((35.0, 1.2)),
+            RawSharpen::Glossy => Some((40.0, 1.0)),
+        }
+    }
+}
+
+impl RawDemosaic {
+    /// The developer's method.
+    pub fn method(self) -> photocraft_io::raw::Demosaic {
+        match self {
+            RawDemosaic::Ahd => photocraft_io::raw::Demosaic::Ahd,
+            RawDemosaic::Mhc => photocraft_io::raw::Demosaic::Mhc,
+            RawDemosaic::Bilinear => photocraft_io::raw::Demosaic::Bilinear,
+        }
+    }
 }
 
 impl Default for RawDefaults {
@@ -715,6 +1065,8 @@ impl Default for RawDefaults {
             open_as_smart_object: false,
             apply_auto_tone: false,
             open_in_camera_raw: true,
+            demosaic: RawDemosaic::Ahd,
+            write_xmp_sidecars: true,
         }
     }
 }
@@ -726,11 +1078,253 @@ pub struct Integrations {
     pub allow_agent_control: bool,
     /// Default control port (0 = only when `--control` is given).
     pub control_port: u32,
+    /// Diffusion model file for the edit templates (empty = each template's default).
+    pub default_edit_model: String,
+    /// Diffusion model file for the text-to-image templates (empty = each template's default).
+    pub default_generate_model: String,
+    /// Workflow template `generate.fill` uses when the call names none (`generate.models` lists
+    /// them). `auto` takes the fastest permissive tier whose model files the server has
+    /// (`qwen-edit-2511/fill-lightning-8` with its LoRA installed, else `qwen-edit-2511/fill`);
+    /// `qwen-2.1/fill` is the research one.
+    pub default_fill_template: String,
+    /// Workflow template `generate.image` uses when the call names none. `auto` = the memory
+    /// profile's ([`crate::memory_profile::image_template`]): Krea 2 on a 24 GB card or larger,
+    /// MOSS turbo on a smaller one.
+    pub default_image_template: String,
+    /// The memory profile the AI defaults are matched to: `auto` (the one detected at launch,
+    /// [`Self::detected_memory_profile`]) or one of [`crate::memory_profile::PREF_NAMES`]. It
+    /// only changes what Auto picks; see [`crate::memory_profile`].
+    pub memory_profile: String,
+    /// The memory profile detected at the last launch from the graphics card (or a Mac's
+    /// unified memory); empty until the first launch that finds one.
+    pub detected_memory_profile: String,
+    /// Seconds a generation may take before it is interrupted.
+    pub generative_timeout_secs: u32,
+    /// Let Auto pick models whose licence allows research use only (Qwen-Image-2.1's native
+    /// routes, the matte model). On by default. It never blocks, hides or greys out a model: every
+    /// model is the owner's own files and any one can be chosen or requested whatever this says
+    /// (the owner's call, 2026-11-01); the picker shows the licence as a badge only.
+    pub allow_research_models: bool,
+    /// When the generative task bar (the Generate panel's compact form) shows under a
+    /// selection: `auto` = while the Generate panel is collapsed or hidden, `always`, `never`.
+    /// A saved `true` / `false` (before ShotoPhopEX's Generate panel) reads as `auto` / `never`.
+    #[serde(deserialize_with = "generative_bar_mode")]
+    pub show_generative_bar: String,
+    /// Enter in the Generate panel's prompt generates (Shift+Enter starts a new line);
+    /// otherwise Ctrl+Enter does and Enter is a new line.
+    pub enter_to_generate: bool,
+    /// The model picker groups a page's templates into one submenu per family once there are
+    /// eight or more.
+    pub group_models_by_family: bool,
+    /// Where the Variations strip (the candidates of the active document's recent generative
+    /// runs) sits over the canvas: `right`, `bottom` or `off`.
+    pub variations_strip: String,
+    /// What `auto` optimises for: `best` = the full-step base templates (the default),
+    /// `balanced` = the 8-step Lightning tier, `fast` = the 4-step tier where one
+    /// exists. A chosen template is never changed by this; see `generate_cmds::auto_order`.
+    pub quality: String,
+    /// The folder the Generations panel's Save writes results into (`generate.export` without
+    /// `dir`); empty = ask each time.
+    pub save_results_dir: String,
+    /// The file names of saved results: a pattern of [`EXPORT_NAME_TOKENS`] (`generate.export`
+    /// without `name`).
+    pub save_results_naming: String,
+    /// A sound when a generation ends: `off`, `done` (results), `doneAndFailed`.
+    pub alerts: String,
+    /// Rewrite every prompt with the vision-language model before a run (`generate.*`'s
+    /// `enhance`): names what the picture shows instead of "this", adds the detail the image
+    /// models want. The bar's Enhance button does it on demand when this is off.
+    pub enhance_prompts: bool,
+    /// Start the native worker when the editor opens and load the default image template's
+    /// models in the background (`generate.engine.warmUp`), so the first generation does not wait
+    /// for them; skipped when the card has too little free memory, given up when another
+    /// generation starts first.
+    pub warm_up_at_launch: bool,
+    /// Fast draft: Generative Fill and Edit on a Qwen-Image-Edit-2511 template of 20 steps or more
+    /// run with the native worker's first-block step cache, reusing most of the model on steps
+    /// that change little (the 40-step edit 39.4 to 24.8 s, the detail slightly softer); Split
+    /// into Layers too (3 layers 59.6 to 43.9 s, the composite unchanged to the eye, the faintest
+    /// layer different). Off by default.
+    pub fast_draft: bool,
+    /// What the canvas shows while a generation samples, over the place its result will take
+    /// (`photocraft_genai::PreviewMode`): `off` (nothing until the result), `fast` (the model's
+    /// estimate at its latent grid, next to free; the default) or `sharp` (through a tiny decoder,
+    /// up to full size, every few steps). Read at each run, so it takes effect on the next one.
+    pub preview_while_generating: String,
+    /// The native worker's runtime folders, `;`-separated: where NVIDIA's CUDA libraries
+    /// (cuBLAS, cuBLASLt, cuRAND, the CUDA runtime) live. Nothing is read from `PATH`. Empty =
+    /// the `runtime` folder beside the executable when a package put one there ([`Integrations::runtime_folders`]), else the
+    /// worker serves no native model.
+    pub runtime_path: String,
+    /// The native worker's model root: a ComfyUI `models` folder (read as it is: its
+    /// `diffusion_models/`, `text_encoders/`, `vae/`, `loras/`, `checkpoints/`), or the worker's
+    /// own folders (one subfolder per model). Empty = a folder found as [`Integrations::models_root`]
+    /// describes, else none.
+    pub models_path: String,
 }
 
 impl Default for Integrations {
     fn default() -> Self {
-        Self { allow_agent_control: true, control_port: 0 }
+        Self {
+            allow_agent_control: true,
+            control_port: 0,
+            default_edit_model: String::new(),
+            default_generate_model: String::new(),
+            default_fill_template: "auto".into(),
+            default_image_template: "auto".into(),
+            memory_profile: "auto".into(),
+            detected_memory_profile: String::new(),
+            generative_timeout_secs: 600,
+            allow_research_models: true,
+            show_generative_bar: "auto".into(),
+            enter_to_generate: false,
+            group_models_by_family: true,
+            variations_strip: "right".into(),
+            quality: "best".into(),
+            save_results_dir: String::new(),
+            save_results_naming: "{model}_{date}_{seed}".into(),
+            alerts: "off".into(),
+            enhance_prompts: false,
+            warm_up_at_launch: true,
+            fast_draft: false,
+            preview_while_generating: "fast".into(),
+            runtime_path: String::new(),
+            models_path: String::new(),
+        }
+    }
+}
+
+impl Integrations {
+    /// The runtime folders the native worker uses: [`Self::runtime_path`], or when that is empty
+    /// the `runtime` folder next to this executable, which `packaging/windows/runtime.ps1` puts
+    /// beside a packaged build. Empty when there is neither.
+    pub fn runtime_folders(&self) -> String {
+        let p = self.runtime_path.trim();
+        if p.is_empty() { bundled_runtime().unwrap_or_default() } else { p.to_string() }
+    }
+
+    /// The Models folder: [`Self::models_path`], or when that is empty the first folder of
+    /// `PHOTOCRAFT_MODELS`, `GN_MODELS` (the native worker's own variable) and the `models` folder
+    /// next to this executable, so a fresh install or a package that ships one needs no manual
+    /// step. Empty when there is none.
+    pub fn models_root(&self) -> String {
+        let p = self.models_path.trim();
+        if p.is_empty() { detected_models().unwrap_or_default() } else { p.to_string() }
+    }
+
+    /// Whether the native worker can serve models: runtime folders and a model root.
+    pub fn native_configured(&self) -> bool {
+        !self.runtime_folders().is_empty() && !self.models_root().is_empty()
+    }
+}
+
+/// The `models` folder of a retired ComfyUI install (`integrations.comfyPath` in preferences
+/// saved before 2026-10-29): `<dir>/ComfyUI/models` (the Windows portable build) or
+/// `<dir>/models` (a checkout), when it is a folder.
+fn comfy_models(dir: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if dir.is_empty() {
+            return None;
+        }
+        let d = std::path::Path::new(dir);
+        [d.join("ComfyUI").join("models"), d.join("models")].into_iter().find(|p| p.is_dir()).map(|p| p.to_string_lossy().into_owned())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dir;
+        None
+    }
+}
+
+/// The Models folder found without a preference ([`Integrations::models_root`]), looked up once.
+fn detected_models() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let env = ["PHOTOCRAFT_MODELS", "GN_MODELS"].into_iter().filter_map(std::env::var_os).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+            let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("models")));
+            env.chain(beside).find(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned())
+        })
+        .clone()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
+
+/// `<executable's folder>/runtime` when it is a folder, looked up once.
+fn bundled_runtime() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let dir = std::env::current_exe().ok()?.parent()?.join("runtime");
+            dir.is_dir().then(|| dir.to_string_lossy().into_owned())
+        })
+        .clone()
+    }
+    #[cfg(target_arch = "wasm32")]
+    None
+}
+
+/// `integrations.showGenerativeBar`: see [`Integrations::show_generative_bar`].
+pub const GENERATIVE_BAR_MODES: &[&str] = &["auto", "always", "never"];
+
+/// The tokens of `integrations.saveResultsNaming` (and `generate.export`'s `name`): the template
+/// id, the same, the UTC date as `YYYY-MM-DD_HHMMSS`, the seed, the prompt (40 safe characters),
+/// the result's number.
+pub const EXPORT_NAME_TOKENS: &[&str] = &["{model}", "{template}", "{date}", "{seed}", "{prompt}", "{n}"];
+
+/// `integrations.alerts`: see [`Integrations::alerts`].
+pub const ALERT_MODES: &[&str] = &["off", "done", "doneAndFailed"];
+
+/// `integrations.quality`: see [`Integrations::quality`].
+pub const QUALITY_MODES: &[&str] = &["best", "balanced", "fast"];
+
+/// `integrations.variationsStrip`: see [`Integrations::variations_strip`].
+pub const VARIATIONS_STRIP_PLACES: &[&str] = &["right", "bottom", "off"];
+
+/// Read `showGenerativeBar` as one of [`GENERATIVE_BAR_MODES`], accepting the boolean it used to
+/// be (and falling back to `auto` for anything else, so a hand-edited file never fails to load).
+fn generative_bar_mode<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Bool(false) => "never".into(),
+        serde_json::Value::String(s) if GENERATIVE_BAR_MODES.contains(&s.as_str()) => s,
+        _ => "auto".into(),
+    })
+}
+
+/// Actions panel Playback Options. These are saved independently of an action library.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Actions {
+    pub create_single_history_state: bool,
+}
+
+impl Default for Actions {
+    fn default() -> Self {
+        Self { create_single_history_state: true }
+    }
+}
+
+/// The History panel's History Options… (not part of Edit › Preferences in Photoshop either).
+/// Photoshop's snapshot options come with #3634.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HistoryOptions {
+    /// Allow Non-Linear History: editing after selecting an earlier state keeps the later
+    /// states (the new step is appended at the end), and deleting a state deletes only it.
+    pub allow_non_linear_history: bool,
+    /// Make Layer Visibility Changes Undoable: showing or hiding a layer is a history state.
+    pub make_layer_visibility_changes_undoable: bool,
+}
+
+impl Default for HistoryOptions {
+    fn default() -> Self {
+        Self { allow_non_linear_history: false, make_layer_visibility_changes_undoable: true }
     }
 }
 
@@ -743,6 +1337,20 @@ pub struct MenuCustomization {
     pub colors: BTreeMap<String, String>,
 }
 
+impl MenuCustomization {
+    /// False for the items Edit › Menus can't hide (#5096): the way back into this dialog
+    /// (Edit › Menus, Edit › Keyboard Shortcuts), Preferences, Save, Save As and Exit.
+    pub fn hideable(id: &str) -> bool {
+        !matches!(id, "edit.menus" | "edit.keyboardShortcuts" | "file.save" | "file.saveAs" | "file.exit") && !id.starts_with("edit.preferences")
+    }
+
+    /// Whether the menus leave `id` out. Items that can't be hidden stay shown even when an
+    /// older or hand-edited preferences file lists them.
+    pub fn is_hidden(&self, id: &str) -> bool {
+        Self::hideable(id) && self.hidden.iter().any(|h| h == id)
+    }
+}
+
 /// Edit › Toolbar: hidden tools and a custom order (tool names as in `ui.set {tool}`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -751,10 +1359,42 @@ pub struct ToolbarCustomization {
     pub order: Vec<String>,
 }
 
+/// Layer Mask Display Options (double-click the layer mask's row in the Channels panel, or Mask
+/// Options… on its Layers thumbnail): the colour and opacity of the layer mask rubylith (`\`,
+/// ⇧⌥-click the thumbnail). As in Photoshop, one setting for every mask, kept across restarts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LayerMaskOverlay {
+    /// `#rrggbb`.
+    pub color: String,
+    /// Percent, 0..=100.
+    pub opacity: f32,
+}
+
+impl Default for LayerMaskOverlay {
+    /// Photoshop's: red at 50 %.
+    fn default() -> Self {
+        Self { color: "#ff0000".into(), opacity: 50.0 }
+    }
+}
+
+impl LayerMaskOverlay {
+    /// The colour as 0..1 RGB; red if the stored value isn't a colour.
+    pub fn rgb(&self) -> [f32; 3] {
+        parse_hex(&self.color).unwrap_or([255, 0, 0]).map(|v| f32::from(v) / 255.0)
+    }
+
+    /// The opacity as a fraction (0..1); 50 % if the stored value isn't a number.
+    pub fn alpha(&self) -> f32 {
+        if self.opacity.is_finite() { self.opacity.clamp(0.0, 100.0) / 100.0 } else { 0.5 }
+    }
+}
+
 /// All preferences. JSON keys are the `edit.preferences.<section>` ids.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
+    pub actions: Actions,
     pub general: General,
     pub interface: Interface,
     pub workspace: Workspace,
@@ -774,9 +1414,20 @@ pub struct Preferences {
     pub enhanced_controls: EnhancedControls,
     pub raw_defaults: RawDefaults,
     pub integrations: Integrations,
+    /// History panel › History Options… (`history.options`).
+    pub history_options: HistoryOptions,
     /// Edit › Keyboard Shortcuts: command id → shortcut (`Cmd+Shift+N` notation); an empty
     /// string removes the default shortcut.
     pub shortcuts: BTreeMap<String, String>,
+    /// Edit › Keyboard Shortcuts: a command's further keys besides its main one (#3665),
+    /// command id → keys. A list replaces the command's default alternates
+    /// ([`ALTERNATE_SHORTCUTS`]); an empty list removes them. Settings files from before this
+    /// map load with nothing stored, so every command keeps its defaults.
+    pub alternate_shortcuts: BTreeMap<String, Vec<String>>,
+    /// Edit › Keyboard Shortcuts › Set: saved shortcut sets by name (`crate::shortcut_sets`).
+    pub shortcut_sets: BTreeMap<String, crate::shortcut_sets::ShortcutSet>,
+    /// The saved set in use ("" for the defaults).
+    pub shortcut_set: String,
     pub menus: MenuCustomization,
     pub toolbar: ToolbarCustomization,
     /// Edit › Check Spelling: words added to the dictionary ("Add").
@@ -789,265 +1440,68 @@ pub struct Preferences {
     /// as the user changes it and restored at launch when Workspace › Remember Workspace
     /// Changes is on. JSON owned by the shell.
     pub panel_layout: Value,
+    /// The Color panel's options (what it shows, its ramp, Web colors, which chip it edits),
+    /// kept across restarts as Photoshop keeps them. JSON owned by the shell.
+    pub color_panel: Value,
     /// The last choices of dialogs that remember them across restarts, by command id (Edit ›
     /// Fill…: `"edit.fill"` → its params). JSON owned by the shell.
     pub dialogs: BTreeMap<String, Value>,
+    /// The Brush Preset picker's remembered view: which card parts show (name, stroke, tip) and
+    /// the footer slider's card scale, saved as the user changes them and restored at launch.
+    /// JSON owned by the shell.
+    pub brush_picker: Value,
+    /// The brush the tool was last using (settings and tip references, never the full bitmaps;
+    /// shaped by `brush_cmds::remembered_brush`), restored at launch so the tool starts where it
+    /// was left. Written only when `ToolState::brush_rev` moves.
+    pub last_brush: Value,
+    /// The tools' options-bar settings (Move › Auto-Select, marquee Feather, tolerance, …) that
+    /// differ from their defaults, saved as the user changes them and restored at launch, as
+    /// Photoshop remembers each tool's options between sessions. JSON owned by the shell.
+    pub tool_options: Value,
+    /// Each painting tool's own brush (the Brush, the Eraser, the retouching tools…; see the
+    /// shell's `paint_mouse::sync_tool_brush`), saved as the user changes them and restored at
+    /// launch, as Photoshop keeps every tool's brush between sessions (#6212): `{"owner": tool,
+    /// "brushes": {tool: brush}}`, where `owner` is the tool whose brush `last_brush` holds and
+    /// the brushes are shaped by `brush_cmds::remembered_settings`. JSON owned by the shell.
+    pub tool_brushes: Value,
+    /// Last selected tool, restored at launch. A tool-name string owned and validated by the
+    /// shell; null in older files. Kept separate from tool options so neither overwrites the other.
+    pub selected_tool: Value,
+    /// View › Extras, the View › Show items (Pixel Grid, Grid, Guides, …) and the View › Snap To
+    /// targets that differ from their defaults, saved as the user toggles them and restored at
+    /// launch, as Photoshop keeps them between sessions (#3762). JSON owned by the shell.
+    pub view_extras: Value,
+    /// Recently Used Colors (`"#rrggbb"`, newest first), shown by the shape Fill and Stroke
+    /// popovers and kept between sessions as in Photoshop. Owned by the shell.
+    pub recent_colors: Vec<String>,
     /// File › Scripts › Script Events Manager: event → script bindings.
     pub script_events: crate::automate_cmds::ScriptEvents,
+    /// Layer Mask Display Options: the layer mask rubylith's colour and opacity.
+    pub layer_mask_overlay: LayerMaskOverlay,
+    /// The folder last saved or exported to through a save dialog, where a document with no
+    /// folder of its own (a new, untitled one) starts its first save. Empty before any save.
+    pub last_save_folder: String,
+    /// Fork: Edit › Preferences › App Icon…'s custom icons (owned by the shell's `app_icon_ui`).
+    pub app_icon: AppIcon,
 }
 
-/// Preferences dialog sections in Photoshop's order: (id, title).
-pub const SECTIONS: [(&str, &str); 18] = [
-    ("general", "General"),
-    ("interface", "Interface"),
-    ("workspace", "Workspace"),
-    ("tools", "Tools"),
-    ("historyLog", "History Log"),
-    ("fileHandling", "File Handling"),
-    ("export", "Export"),
-    ("performance", "Performance"),
-    ("scratchDisks", "Scratch Disks"),
-    ("cursors", "Cursors"),
-    ("transparencyAndGamut", "Transparency & Gamut"),
-    ("unitsAndRulers", "Units & Rulers"),
-    ("guidesGridAndSlices", "Guides, Grid & Slices"),
-    ("plugIns", "Plug-ins"),
-    ("type", "Type"),
-    ("enhancedControls", "Enhanced Controls"),
-    ("rawDefaults", "Camera Raw Defaults"),
-    ("integrations", "Integrations"),
-];
-
-/// Preferences that nothing reads yet, so Edit › Preferences doesn't show them: a control that
-/// does nothing is worse than a missing one (https://github.com/storytold/photocraft/issues/204).
-/// They still load, save and round-trip through `prefs.get` / `prefs.set` unchanged.
-///
-/// When you implement one, remove it here; the `prefs_usage` test fails while a listed
-/// preference is read anywhere outside `prefs.rs`, and while an unlisted one is read nowhere.
-pub const HIDDEN_UNTIL_IMPLEMENTED: &[&str] = &[
-    "general.colorPicker",
-    "general.beepWhenDone",
-    "general.exportClipboard",
-    "general.resizeImageDuringPlace",
-    "general.alwaysCreateSmartObjectsWhenPlacing",
-    "general.animatedZoom",
-    "general.zoomResizesWindows",
-    "interface.dynamicColorSliders",
-    "workspace.autoCollapseIconPanels",
-    "workspace.autoShowHiddenPanels",
-    "workspace.openDocumentsAsTabs",
-    "workspace.enableFloatingDocumentWindowDocking",
-    "workspace.enableNarrowOptionsBar",
-    "tools.enableFlickPanning",
-    "fileHandling.imagePreviews",
-    "fileHandling.saveInBackground",
-    "fileHandling.ignoreExifProfileTag",
-    "fileHandling.maximizePsdCompatibility",
-    "performance.cacheLevels",
-    "performance.effectCacheMb",
-    "performance.legacyCompositing",
-    "scratchDisks.disks",
-    "cursors.brushPreviewColor",
-    "unitsAndRulers.typeUnits",
-    "unitsAndRulers.columnWidth",
-    "unitsAndRulers.gutter",
-    "unitsAndRulers.printResolution",
-    "unitsAndRulers.screenResolution",
-    "plugIns.showExtensionPanels",
-    "plugIns.allowScriptsToConnect",
-    "plugIns.generatorEnabled",
-    "type.missingGlyphProtection",
-    "type.showFontNamesInEnglish",
-    "type.textEngine",
-    "type.fontPreview",
-    "type.recentFonts",
-    "enhancedControls.scrubbySliderAcceleration",
-    "enhancedControls.touchGestures",
-    "enhancedControls.rotateViewWithTrackpad",
-    "rawDefaults.colorSpace",
-    "rawDefaults.bitDepth",
-    "rawDefaults.resolution",
-    "rawDefaults.sharpenFor",
-    "rawDefaults.openAsSmartObject",
-    "rawDefaults.applyAutoTone",
-    // Agent access is governed by the launch flags (`--control`, the automation roots), not
-    // by these yet.
-    "integrations.allowAgentControl",
-    "integrations.controlPort",
-];
-
-/// Is the preference at `path` (`"section.key"`) hidden from the Preferences dialog?
-pub fn is_hidden(path: &str) -> bool {
-    HIDDEN_UNTIL_IMPLEMENTED.contains(&path)
+/// The user's own app icons: any image they chose, pasted or downloaded, kept here as a PNG so it
+/// travels with the preferences (desktop and web alike). Nothing ships in the repository.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppIcon {
+    /// The name of the icon in use; empty (or a name not in `icons`) is the built-in one.
+    pub active: String,
+    pub icons: Vec<CustomIcon>,
 }
 
-/// Choices of an enumerated preference (dotted path, e.g. `"cursors.painting"`).
-pub fn choices(path: &str) -> Option<&'static [&'static str]> {
-    Some(match path {
-        "general.colorPicker" => ColorPicker::NAMES,
-        "general.imageInterpolation" => Interpolation::NAMES,
-        "interface.theme" => Theme::NAMES,
-        "interface.canvasColor" => CanvasColor::NAMES,
-        "interface.canvasBorder" => CanvasBorder::NAMES,
-        "interface.uiScale" => UiScale::NAMES,
-        "interface.uiFontSize" => UiFontSize::NAMES,
-        "historyLog.destination" => LogDestination::NAMES,
-        "historyLog.detail" => LogDetail::NAMES,
-        "fileHandling.imagePreviews" | "fileHandling.maximizePsdCompatibility" => Ask::NAMES,
-        "export.quickExportFormat" => QuickExportFormat::NAMES,
-        "export.quickExportLocation" => ExportLocation::NAMES,
-        "export.metadata" => ExportMetadata::NAMES,
-        "cursors.painting" => PaintingCursor::NAMES,
-        "cursors.other" => OtherCursor::NAMES,
-        "tools.rightClickWithPaintingTools" => RightClickPaint::NAMES,
-        "transparencyAndGamut.gridSize" => CheckerSize::NAMES,
-        "transparencyAndGamut.gridColors" => CheckerColors::NAMES,
-        "unitsAndRulers.rulers" | "guidesGridAndSlices.gridUnit" => Unit::NAMES,
-        "unitsAndRulers.typeUnits" => TypeUnit::NAMES,
-        "unitsAndRulers.pointSize" => PointSize::NAMES,
-        "guidesGridAndSlices.guideStyle" | "guidesGridAndSlices.gridStyle" => LineStyle::NAMES,
-        "type.textEngine" => TextEngine::NAMES,
-        "type.fontPreview" => FontPreview::NAMES,
-        "rawDefaults.colorSpace" => RawColorSpace::NAMES,
-        "rawDefaults.bitDepth" => RawDepth::NAMES,
-        "rawDefaults.sharpenFor" => RawSharpen::NAMES,
-        "performance.gpuBackend" => GpuBackend::NAMES,
-        "performance.renderingMode" => RenderingMode::NAMES,
-        _ => return None,
-    })
-}
-
-/// Valid range of a numeric preference.
-pub fn range(path: &str) -> Option<(f64, f64)> {
-    Some(match path {
-        "fileHandling.autosaveMinutes" => (1.0, 240.0),
-        "fileHandling.recentFileCount" => (0.0, 100.0),
-        "export.jpegQuality" | "export.webpQuality" => (1.0, 100.0),
-        "performance.memoryUsageMb" => (256.0, 1_048_576.0),
-        "performance.historyStates" => (1.0, 1000.0),
-        "performance.cacheLevels" => (1.0, 8.0),
-        "performance.cacheTileSize" => (256.0, 16384.0),
-        "performance.effectCacheMb" => (16.0, 65536.0),
-        "transparencyAndGamut.gamutWarningOpacity" => (1.0, 100.0),
-        "unitsAndRulers.columnWidth" | "unitsAndRulers.gutter" => (0.0, 10_000.0),
-        "unitsAndRulers.printResolution" | "unitsAndRulers.screenResolution" | "rawDefaults.resolution" => (1.0, 10_000.0),
-        "guidesGridAndSlices.gridlineEvery" => (0.001, 10_000.0),
-        "guidesGridAndSlices.subdivisions" => (1.0, 100.0),
-        "type.recentFonts" => (0.0, 50.0),
-        "integrations.controlPort" => (0.0, 65535.0),
-        _ => return None,
-    })
-}
-
-/// Is this preference a `#rrggbb` colour?
-pub fn is_color(path: &str) -> bool {
-    if choices(path).is_some() || path.starts_with("shortcuts.") || path.starts_with("menus.") {
-        return false;
-    }
-    let leaf = path.rsplit('.').next().unwrap_or(path);
-    matches!(
-        leaf,
-        "guideColor"
-            | "smartGuideColor"
-            | "gridColor"
-            | "sliceColor"
-            | "canvasCustomColor"
-            | "brushPreviewColor"
-            | "gamutWarningColor"
-            | "customLight"
-            | "customDark"
-    )
-}
-
-pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
-    let s = s.trim().trim_start_matches('#');
-    if s.len() != 6 {
-        return None;
-    }
-    let b = |i: usize| s.get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok());
-    Some([b(0)?, b(2)?, b(4)?])
-}
-
-// ------------------------------------------------------------------ JSON paths
-
-/// Map keys that are command ids (which contain dots): `shortcuts.<id>`, `menus.colors.<id>`.
-fn keyed(path: &str) -> Option<(&str, &str)> {
-    for prefix in ["shortcuts.", "menus.colors."] {
-        if let Some(id) = path.strip_prefix(prefix) {
-            return Some((&prefix[..prefix.len() - 1], id));
-        }
-    }
-    None
-}
-
-fn get_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    if path.is_empty() {
-        return Some(root);
-    }
-    if let Some((map, id)) = keyed(path) {
-        return get_path(root, map)?.get(id);
-    }
-    path.split('.').try_fold(root, |v, k| v.get(k))
-}
-
-/// Set `value` at `path` (creating keys only inside free-form maps such as `shortcuts`).
-fn set_path(root: &mut Value, path: &str, value: Value) -> std::result::Result<(), String> {
-    if let Some((map, id)) = keyed(path) {
-        let mut cur = &mut *root;
-        for k in map.split('.') {
-            cur = cur.get_mut(k).ok_or_else(|| format!("unknown preference `{path}`"))?;
-        }
-        cur.as_object_mut().ok_or_else(|| format!("`{map}` is not a map"))?.insert(id.to_string(), value);
-        return Ok(());
-    }
-    let keys: Vec<&str> = path.split('.').filter(|k| !k.is_empty()).collect();
-    let Some((last, parents)) = keys.split_last() else { return Err("empty path".into()) };
-    let mut cur = root;
-    for k in parents {
-        cur = cur.get_mut(*k).ok_or_else(|| format!("unknown preference `{path}`"))?;
-    }
-    let free_map = matches!(parents.first(), Some(&"shortcuts")) || (parents.len() == 2 && parents[0] == "menus" && parents[1] == "colors");
-    let obj = cur.as_object_mut().ok_or_else(|| format!("`{path}` is not inside a section"))?;
-    if !obj.contains_key(*last) && !free_map {
-        return Err(format!("unknown preference `{path}`"));
-    }
-    obj.insert(last.to_string(), value);
-    Ok(())
-}
-
-/// Validate one value for `path` before it is stored (choices, ranges, colours).
-fn check_value(path: &str, v: &Value) -> std::result::Result<(), String> {
-    if path == "performance.renderingMode" && v.is_null() {
-        return Ok(()); // Legacy policy, resolved from useGpu and gpuBackend.
-    }
-    if let Some(c) = choices(path) {
-        let s = v.as_str().ok_or_else(|| format!("`{path}` must be one of {}", c.join("|")))?;
-        if !c.contains(&s) {
-            return Err(format!("`{path}` must be one of {} (got `{s}`)", c.join("|")));
-        }
-    }
-    if path == "interface.language" {
-        let ok = v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-        if !ok {
-            return Err("`interface.language` must be `auto` or a language code such as `en` or `ja`".into());
-        }
-    }
-    if let Some((lo, hi)) = range(path) {
-        let x = v.as_f64().ok_or_else(|| format!("`{path}` must be a number"))?;
-        if !(lo..=hi).contains(&x) {
-            return Err(format!("`{path}` must be within {lo}..{hi} (got {x})"));
-        }
-    }
-    if is_color(path) && v.as_str().and_then(parse_hex).is_none() {
-        return Err(format!("`{path}` must be a #rrggbb colour"));
-    }
-    if let Some(sc) = path.strip_prefix("shortcuts.") {
-        let s = v.as_str().ok_or_else(|| format!("shortcut for `{sc}` must be a string"))?;
-        if !s.is_empty() && normalize_shortcut(s).is_none() {
-            return Err(format!("`{s}` is not a valid shortcut (e.g. Cmd+Shift+N, F7)"));
-        }
-    }
-    Ok(())
+/// One custom app icon.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CustomIcon {
+    pub name: String,
+    /// Base64 of a square PNG, at most 256 px.
+    pub png: String,
 }
 
 impl Preferences {
@@ -1063,6 +1517,28 @@ impl Preferences {
 
     /// Set a value by dotted path, validating it. Unknown paths and wrong types are errors.
     pub fn set(&mut self, path: &str, value: Value) -> std::result::Result<(), String> {
+        if path == "alternateShortcuts" {
+            let obj = value.as_object().ok_or("`alternateShortcuts` maps command ids to lists of shortcuts")?;
+            let mut map = BTreeMap::new();
+            for (id, v) in obj {
+                map.insert(id.clone(), alternate_keys(v).map_err(|e| format!("`alternateShortcuts.{id}`: {e}"))?);
+            }
+            self.alternate_shortcuts = map;
+            return Ok(());
+        }
+        if let Some(id) = path.strip_prefix("alternateShortcuts.") {
+            // null = back to the command's default alternates.
+            match value {
+                Value::Null => {
+                    self.alternate_shortcuts.remove(id);
+                }
+                v => {
+                    let keys = alternate_keys(&v).map_err(|e| format!("`{path}`: {e}"))?;
+                    self.alternate_shortcuts.insert(id.to_string(), keys);
+                }
+            }
+            return Ok(());
+        }
         let value = match (path.strip_prefix("shortcuts."), &value) {
             // Normalise shortcut spelling so conflicts compare equal.
             (Some(_), Value::String(s)) if !s.is_empty() => Value::String(normalize_shortcut(s).ok_or_else(|| format!("`{s}` is not a valid shortcut"))?),
@@ -1093,6 +1569,10 @@ impl Preferences {
                 self.shortcuts.remove(id);
                 return Ok(());
             }
+            Some(("alternateShortcuts", id)) => {
+                self.alternate_shortcuts.remove(id);
+                return Ok(());
+            }
             Some(("menus.colors", id)) => {
                 self.menus.colors.remove(id);
                 return Ok(());
@@ -1104,9 +1584,15 @@ impl Preferences {
             self.shortcuts.clear();
             return Ok(());
         }
+        // The favourite fonts are the user's library, not a Type setting: resetting the Type
+        // section keeps them (only `type.favoriteFonts` itself, or Reset All, clears them).
+        let favorites = (path == "type").then(|| self.type_.favorite_fonts.clone());
         let mut root = self.to_json();
         set_path(&mut root, path, def)?;
         *self = serde_json::from_value(root).map_err(|e| e.to_string())?;
+        if let Some(favorites) = favorites {
+            self.type_.favorite_fonts = favorites;
+        }
         Ok(())
     }
 
@@ -1118,128 +1604,23 @@ impl Preferences {
             None => default,
         }
     }
-}
 
-// ------------------------------------------------------------------ shortcuts
-
-/// Canonical spelling of a shortcut: modifiers in `Cmd+Ctrl+Alt+Shift` order, key last
-/// (single characters upper-cased). `None` if it has no key or an unknown modifier.
-pub fn normalize_shortcut(s: &str) -> Option<String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (mut cmd, mut ctrl, mut alt, mut shift) = (false, false, false, false);
-    let mut key: Option<String> = None;
-    // A trailing "+" key is spelled "Cmd++".
-    let (body, plus_key) = if s.ends_with("++") || s == "+" { (s.trim_end_matches('+'), true) } else { (s, false) };
-    for part in body.split('+').filter(|p| !p.is_empty()) {
-        match part.to_ascii_lowercase().as_str() {
-            "cmd" | "command" | "⌘" | "meta" | "super" => cmd = true,
-            "ctrl" | "control" | "⌃" => ctrl = true,
-            "alt" | "option" | "opt" | "⌥" => alt = true,
-            "shift" | "⇧" => shift = true,
-            _ => {
-                if key.is_some() {
-                    return None;
-                }
-                let k = if part.chars().count() == 1 { part.to_uppercase() } else { capitalize(part) };
-                key = Some(k);
+    /// A command's further keys in effect (#3665): the user's list, else its defaults
+    /// ([`ALTERNATE_SHORTCUTS`]), normalised, without duplicates and without `primary` (the
+    /// command's main key in effect, which it already answers).
+    pub fn alternates(&self, id: &str, primary: Option<&str>) -> Vec<String> {
+        let main = primary.and_then(normalize_shortcut);
+        let keys: Vec<String> = match self.alternate_shortcuts.get(id) {
+            Some(list) => list.iter().filter_map(|s| normalize_shortcut(s)).collect(),
+            None => default_alternates(id).filter_map(normalize_shortcut).collect(),
+        };
+        let mut out: Vec<String> = Vec::with_capacity(keys.len());
+        for k in keys {
+            if main.as_ref() != Some(&k) && !out.contains(&k) {
+                out.push(k);
             }
         }
-    }
-    if plus_key {
-        if key.is_some() {
-            return None;
-        }
-        key = Some("+".into());
-    }
-    let key = key?;
-    let mut out = Vec::new();
-    if cmd {
-        out.push("Cmd");
-    }
-    if ctrl {
-        out.push("Ctrl");
-    }
-    if alt {
-        out.push("Alt");
-    }
-    if shift {
-        out.push("Shift");
-    }
-    let mut s = out.join("+");
-    if !s.is_empty() {
-        s.push('+');
-    }
-    s.push_str(&key);
-    Some(s)
-}
-
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) if f.is_ascii_alphabetic() => {
-            let rest: String = c.collect();
-            // Function keys stay upper-case (F1…F24); named keys are Title case.
-            if f.eq_ignore_ascii_case(&'f') && rest.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty() {
-                format!("F{rest}")
-            } else {
-                format!("{}{}", f.to_ascii_uppercase(), rest.to_ascii_lowercase())
-            }
-        }
-        _ => s.to_string(),
-    }
-}
-
-/// Hold-and-release gestures (#249): temporary tools that last while their key is held and give
-/// the previous tool back on release. They are bound like shortcuts (Edit › Keyboard Shortcuts ›
-/// Tools › Temporary, `edit.keyboardShortcuts`) but held rather than pressed, so they are not
-/// commands; the UI reads their keys through [`Preferences::shortcut`]. While a selection or
-/// shape is being dragged, the Hand key repositions it instead of panning (Photoshop's Space).
-pub const TEMPORARY_TOOLS: &[(&str, &str, &str)] = &[
-    ("tools.temporary.hand", "Hand Tool (hold)", "Space"),
-    ("tools.temporary.zoomIn", "Zoom In (hold, drag to scrub)", "Cmd+Space"),
-    ("tools.temporary.zoomOut", "Zoom Out (hold)", "Cmd+Alt+Space"),
-];
-
-/// Every bindable id with its default: commands, then the temporary tools.
-fn bindable() -> impl Iterator<Item = (&'static str, Option<&'static str>)> {
-    crate::command_specs().iter().map(|c| (c.id, c.shortcut)).chain(TEMPORARY_TOOLS.iter().map(|t| (t.0, Some(t.2))))
-}
-
-/// Shortcuts bound to more than one command: (shortcut, ids). `bindings` are (id, shortcut).
-pub fn conflicts<'a>(bindings: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<(String, Vec<String>)> {
-    let mut by: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (id, sc) in bindings {
-        if let Some(n) = normalize_shortcut(sc) {
-            by.entry(n).or_default().push(id.to_string());
-        }
-    }
-    by.into_iter().filter(|(_, ids)| ids.len() > 1).collect()
-}
-
-// ------------------------------------------------------------------ store
-
-/// The session's preferences plus a revision counter that moves on every change (frontends
-/// persist when it moves).
-#[derive(Clone, Debug, Default)]
-pub struct PrefsStore {
-    values: Preferences,
-    rev: u64,
-}
-
-impl PrefsStore {
-    pub fn get(&self) -> &Preferences {
-        &self.values
-    }
-    /// Change preferences; bumps the revision.
-    pub fn edit<R>(&mut self, f: impl FnOnce(&mut Preferences) -> R) -> R {
-        self.rev += 1;
-        f(&mut self.values)
-    }
-    pub fn rev(&self) -> u64 {
-        self.rev
+        out
     }
 }
 
@@ -1257,18 +1638,46 @@ impl Session {
     }
 
     /// Push engine-relevant preferences into live state: every document's history limit and
-    /// the layer-effect cache budget.
+    /// linearity, the transform and layer-effect cache budgets and the text engine's
+    /// missing-glyph protection.
     pub fn apply_prefs(&mut self) {
+        self.scratch_runtime.get_or_insert_with(crate::scratch::Runtime::default);
+        crate::scratch::configure(self.prefs());
+        self.scratch_epoch = photocraft_raster::spill::epoch();
         let n = self.prefs().performance.history_states.max(1) as usize;
-        let bytes = self.prefs().performance.history_budget_bytes();
-        let budget = self.prefs().performance.effect_cache_mb as usize;
+        let bytes = self.prefs().performance.history_cap_bytes();
+        let budget = self.prefs().performance.effect_cache_budget_bytes();
+        let non_linear = self.prefs().history_options.allow_non_linear_history;
         for st in &mut self.docs {
             st.history.max_states = n;
             st.history.max_bytes = bytes;
-            st.history.trim(&st.doc);
+            st.history.non_linear = non_linear;
+            st.trim_history();
         }
-        photocraft_compose::set_effect_cache_budget(budget << 20);
+        photocraft_compose::set_effect_cache_budget(budget);
+        crate::transform_cmds::set_budget(u64::from(self.prefs().performance.effective_memory_usage_mb()) << 20);
+        // Without waiting for the system font scan: this runs on the UI thread at launch.
+        photocraft_text::set_shared_missing_glyph_protection(self.prefs().type_.missing_glyph_protection());
         crate::plugin_cmds::sync_prefs(self);
+    }
+
+    /// Re-apply History's byte limit after the scratch disk paused (a write, create or
+    /// free-space failure) or resumed since it was last applied: while spilling is paused,
+    /// History again bounds the pixel memory it holds, as with no scratch disk. Runs before
+    /// every command; a single atomic load when nothing changed.
+    pub(crate) fn sync_scratch_state(&mut self) {
+        let epoch = photocraft_raster::spill::epoch();
+        if self.scratch_epoch == epoch {
+            return;
+        }
+        self.scratch_epoch = epoch;
+        let bytes = self.prefs().performance.history_cap_bytes();
+        for st in &mut self.docs {
+            if st.history.max_bytes != bytes {
+                st.history.max_bytes = bytes;
+                st.trim_history();
+            }
+        }
     }
 
     /// Everything persisted as one JSON document: the preferences plus `colorSettings`.
@@ -1281,7 +1690,7 @@ impl Session {
         let mut v = self.prefs().to_json();
         if let Value::Object(m) = &mut v {
             m.insert("colorSettings".into(), serde_json::to_value(&self.color.settings).unwrap_or(Value::Null));
-            m.insert("version".into(), json!(1));
+            m.insert("version".into(), json!(PREFS_VERSION));
             m.insert("presets".into(), self.presets.to_json(self));
         }
         v
@@ -1289,13 +1698,63 @@ impl Session {
 
     /// Restore preferences saved by [`Session::prefs_to_json`]. Missing keys keep their
     /// defaults and unknown keys are ignored, so files from older and newer versions load.
-    pub fn load_prefs_json(&mut self, s: &str) -> std::result::Result<(), String> {
+    /// A value of the wrong type (a hand-edited `"recentFileCount": "ten"`) keeps its default
+    /// and everything else still loads (#6611); the returned list names those values. Only
+    /// text that isn't a JSON object fails as a whole.
+    pub fn load_prefs_json(&mut self, s: &str) -> std::result::Result<Vec<InvalidPref>, String> {
         let mut v: Value = serde_json::from_str(s).map_err(|e| format!("preferences: {e}"))?;
+        if !v.is_object() {
+            return Err("preferences: expected a JSON object".into());
+        }
+        // Files before version 2 hold Use Shift Key for Tool Switch off because that was the
+        // default when they were written: every key is saved, chosen or not. Like Photoshop it is
+        // on by default now (#3528), so those files take the new default (#5647: a tool letter
+        // pressed again kept cycling its group). A choice made since is saved as version 2.
+        if v.get("version").and_then(Value::as_u64).unwrap_or(0) < 2
+            && let Some(tools) = v.get_mut("tools").and_then(Value::as_object_mut)
+            && tools.get("useShiftKeyForToolSwitch") == Some(&json!(false))
+        {
+            tools.remove("useShiftKeyForToolSwitch");
+        }
+        // Saved preferences before appearance modes had one concrete theme. Preserve its
+        // appearance instead of silently switching established users to Auto.
+        if let Some(interface) = v.get_mut("interface").and_then(Value::as_object_mut)
+            && !interface.contains_key("appearanceMode")
+            && let Some(theme) = interface.get("theme").and_then(Value::as_str).and_then(Theme::parse)
+        {
+            let (mode, slot) = match theme {
+                Theme::Pro | Theme::ProMedium | Theme::Studio | Theme::SolarizedDark | Theme::AdwaitaDark | Theme::BreezeDark | Theme::SoftDark => {
+                    ("dark", "darkTheme")
+                }
+                Theme::StudioLight | Theme::ProLightGray | Theme::ProLight | Theme::Classic | Theme::Adwaita | Theme::BreezeLight | Theme::SoftLight => {
+                    ("light", "lightTheme")
+                }
+            };
+            interface.insert("appearanceMode".into(), json!(mode));
+            // A partially migrated file may already contain a newer theme selection (#5139).
+            interface.entry(slot).or_insert_with(|| json!(theme.name()));
+        }
+        // Retired ComfyUI preferences are dropped. An empty Models folder takes the old install's
+        // `models` folder first, the place the native worker read weights from until 2026-10-29.
+        if let Some(i) = v.get_mut("integrations").and_then(Value::as_object_mut) {
+            let models_empty = i.get("modelsPath").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty());
+            if models_empty && let Some(m) = i.get("comfyPath").and_then(Value::as_str).and_then(|p| comfy_models(p.trim())) {
+                i.insert("modelsPath".into(), json!(m));
+            }
+            for key in ["comfyServer", "comfyPath", "comfyArgs", "engine", "engineStartOnLaunch", "engineStopOnQuit", "purgeModels", "modelPrecision"] {
+                i.remove(key);
+            }
+        }
         let color = v.as_object_mut().and_then(|m| m.remove("colorSettings"));
         let presets = v.as_object_mut().and_then(|m| m.remove("presets"));
-        let prefs: Preferences = serde_json::from_value(v).map_err(|e| format!("preferences: {e}"))?;
+        let mut invalid = Vec::new();
+        let mut prefs: Preferences = read_lenient(v, &[], &mut invalid);
+        // An Effect Cache the field no longer accepts (above the 32-bit cap, saved before the cap
+        // or by a 64-bit build; a hand-edited 0) loads as the nearest value it does. Otherwise
+        // Apply from another Preferences tab, which validates every value, would reject it.
+        prefs.performance.effect_cache_mb = accepted_effect_cache_mb(prefs.performance.effect_cache_mb, SMALL_ADDRESS_SPACE);
         if let Some(c) = color {
-            self.color.settings = serde_json::from_value(c).unwrap_or_default();
+            self.color.settings = read_lenient(c, &["colorSettings"], &mut invalid);
             photocraft_compose::psblend::set_text_gamma(self.color.settings.blend_text_gamma);
         }
         self.prefs.edit(|p| *p = prefs);
@@ -1303,7 +1762,7 @@ impl Session {
             self.load_presets_json(v);
         }
         self.apply_prefs();
-        Ok(())
+        Ok(invalid)
     }
 
     /// Full JSON view used by `prefs.get`: preferences plus `colorSettings`.
@@ -1316,8 +1775,14 @@ impl Session {
     }
 
     /// Set one dotted path, routing `colorSettings.*` to the colour state.
-    fn set_pref(&mut self, path: &str, value: Value) -> std::result::Result<(), String> {
-        if let Some(rest) = path.strip_prefix("colorSettings") {
+    /// Batches defer colour validation until their complete candidate is staged. Returns
+    /// whether colour settings were touched, including whole-section/root-object updates.
+    fn set_pref(&mut self, path: &str, value: Value, validate_color: bool) -> std::result::Result<bool, String> {
+        // The section itself or a path inside it: `colorSettingsworkingRgb`, `colorSettings.` and
+        // `colorSettings..workingRgb` are none, and the authorization policy doesn't treat them as one.
+        if let Some(rest) =
+            path.strip_prefix("colorSettings").filter(|r| r.is_empty() || r.strip_prefix('.').is_some_and(|c| c.split('.').all(|part| !part.is_empty())))
+        {
             let mut cur = serde_json::to_value(&self.color.settings).map_err(|e| e.to_string())?;
             let rest = rest.trim_start_matches('.');
             if rest.is_empty() {
@@ -1325,22 +1790,31 @@ impl Session {
             } else {
                 set_path(&mut cur, rest, value)?;
             }
-            self.color.settings = serde_json::from_value(cur).map_err(|e| format!("invalid value for `{path}`: {e}"))?;
-            crate::color_cmds::validate_settings(&self.color.settings)?;
+            let next = serde_json::from_value(cur).map_err(|e| format!("invalid value for `{path}`: {e}"))?;
+            if validate_color {
+                crate::color_cmds::validate_settings(&next)?;
+            }
+            self.color.settings = next;
             self.prefs.edit(|_| ());
-            return Ok(());
+            return Ok(true);
         }
         let mut next = self.prefs().clone();
-        if path.is_empty() || SECTIONS.iter().any(|(id, _)| *id == path) || matches!(path, "shortcuts" | "menus" | "toolbar") {
+        let mut color_changed = false;
+        if path.is_empty() || SECTIONS.iter().any(|(id, _)| *id == path) || matches!(path, "shortcuts" | "alternateShortcuts" | "menus" | "toolbar") {
             // Whole section (or everything): merge the object key by key so each value is checked.
             let obj = value.as_object().ok_or_else(|| format!("`{path}` needs an object"))?;
             for (k, v) in obj {
                 let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
                 if path.is_empty() && k == "colorSettings" {
-                    self.set_pref("colorSettings", v.clone())?;
+                    color_changed |= self.set_pref("colorSettings", v.clone(), validate_color)?;
                     continue;
                 }
-                if v.is_object() && !p.starts_with("shortcuts") && !p.ends_with(".colors") && next.get(&p).is_some_and(|c| c.is_object()) {
+                if v.is_object()
+                    && !p.starts_with("shortcuts")
+                    && !p.starts_with("alternateShortcuts")
+                    && !p.ends_with(".colors")
+                    && next.get(&p).is_some_and(|c| c.is_object())
+                {
                     for (k2, v2) in v.as_object().into_iter().flatten() {
                         next.set(&format!("{p}.{k2}"), v2.clone())?;
                     }
@@ -1351,293 +1825,92 @@ impl Session {
         } else {
             next.set(path, value)?;
         }
+        if next.actions.create_single_history_state != self.prefs().actions.create_single_history_state && crate::actions_cmds::history_policy_in_use(self) {
+            return Err("cannot change action history settings during playback".into());
+        }
+        // Old `prefs.set interface.theme` clients (by path or inside a section object) still
+        // select a visible theme.
+        if path == "interface.theme" || next.interface.theme != self.prefs().interface.theme {
+            match next.interface.theme {
+                Theme::Pro => {
+                    next.interface.dark_theme = DarkTheme::Pro;
+                    next.interface.appearance_mode = AppearanceMode::Dark;
+                }
+                Theme::ProMedium => {
+                    next.interface.dark_theme = DarkTheme::ProMedium;
+                    next.interface.appearance_mode = AppearanceMode::Dark;
+                }
+                Theme::Studio => {
+                    next.interface.dark_theme = DarkTheme::Studio;
+                    next.interface.appearance_mode = AppearanceMode::Dark;
+                }
+                Theme::StudioLight => {
+                    next.interface.light_theme = LightTheme::StudioLight;
+                    next.interface.appearance_mode = AppearanceMode::Light;
+                }
+                Theme::ProLightGray => {
+                    next.interface.light_theme = LightTheme::ProLightGray;
+                    next.interface.appearance_mode = AppearanceMode::Light;
+                }
+                Theme::ProLight => {
+                    next.interface.light_theme = LightTheme::ProLight;
+                    next.interface.appearance_mode = AppearanceMode::Light;
+                }
+                Theme::Classic => {
+                    next.interface.light_theme = LightTheme::Classic;
+                    next.interface.appearance_mode = AppearanceMode::Light;
+                }
+                Theme::Adwaita => {
+                    next.interface.light_theme = LightTheme::Adwaita;
+                    next.interface.appearance_mode = AppearanceMode::Light;
+                }
+                Theme::SolarizedDark => {
+                    next.interface.dark_theme = DarkTheme::SolarizedDark;
+                    next.interface.appearance_mode = AppearanceMode::Dark;
+                }
+                Theme::AdwaitaDark => {
+                    next.interface.dark_theme = DarkTheme::AdwaitaDark;
+                    next.interface.appearance_mode = AppearanceMode::Dark;
+                }
+                Theme::BreezeDark => {
+                    next.interface.dark_theme = DarkTheme::BreezeDark;
+                    next.interface.appearance_mode = AppearanceMode::Dark;
+                }
+                Theme::BreezeLight => {
+                    next.interface.light_theme = LightTheme::BreezeLight;
+                    next.interface.appearance_mode = AppearanceMode::Light;
+                }
+                Theme::SoftDark => {
+                    next.interface.dark_theme = DarkTheme::SoftDark;
+                    next.interface.appearance_mode = AppearanceMode::Dark;
+                }
+                Theme::SoftLight => {
+                    next.interface.light_theme = LightTheme::SoftLight;
+                    next.interface.appearance_mode = AppearanceMode::Light;
+                }
+            }
+        }
         self.prefs.edit(|p| *p = next);
-        Ok(())
+        Ok(color_changed)
     }
-}
-
-// ------------------------------------------------------------------ commands
-
-fn always(_: &Session) -> std::result::Result<(), String> {
-    Ok(())
-}
-
-fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
-    EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
-}
-
-fn prefs_get(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = p.get("path").and_then(Value::as_str).unwrap_or("");
-    let v = s.prefs_view();
-    get_path(&v, path).cloned().ok_or_else(|| bad("prefs.get", format!("unknown preference `{path}`")))
-}
-
-fn prefs_set(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "prefs.set";
-    let mut changes: Vec<(String, Value)> = Vec::new();
-    if let Some(path) = p.get("path").and_then(Value::as_str) {
-        changes.push((path.to_string(), p.get("value").cloned().ok_or_else(|| bad(cmd, "missing `value`"))?));
-    }
-    if let Some(m) = p.get("values").and_then(Value::as_object) {
-        changes.extend(m.iter().map(|(k, v)| (k.clone(), v.clone())));
-    }
-    if changes.is_empty() {
-        return Err(bad(cmd, "give `path` and `value`, or `values: {path: value, …}`"));
-    }
-    // All or nothing: validate against a scratch copy first.
-    let (saved_prefs, saved_color) = (s.prefs().clone(), s.color.settings.clone());
-    for (path, v) in &changes {
-        if let Err(e) = s.set_pref(path, v.clone()) {
-            s.prefs.edit(|p| *p = saved_prefs);
-            s.color.settings = saved_color;
-            return Err(bad(cmd, e));
-        }
-    }
-    s.apply_prefs();
-    let view = s.prefs_view();
-    let out: Map<String, Value> = changes.iter().map(|(k, _)| (k.clone(), get_path(&view, k).cloned().unwrap_or(Value::Null))).collect();
-    Ok(Value::Object(out))
-}
-
-fn prefs_reset(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = p.get("path").or_else(|| p.get("section")).and_then(Value::as_str);
-    match path {
-        Some("colorSettings") => s.color.settings = Default::default(),
-        // One colour setting: `Preferences` has no `colorSettings`, so take the default
-        // from `ColorSettings` and route it like `prefs.set` does.
-        Some(path) if path.starts_with("colorSettings.") => {
-            let defaults = serde_json::to_value(crate::color_cmds::ColorSettings::default()).map_err(|e| bad("prefs.reset", e.to_string()))?;
-            let key = path.strip_prefix("colorSettings.").unwrap_or(path);
-            let def = get_path(&defaults, key).cloned().ok_or_else(|| bad("prefs.reset", format!("unknown preference `{path}`")))?;
-            s.set_pref(path, def).map_err(|e| bad("prefs.reset", e))?;
-        }
-        None => {
-            s.color.settings = Default::default();
-            s.edit_prefs(|p| p.reset(None)).map_err(|e| bad("prefs.reset", e))?;
-        }
-        Some(path) => {
-            let mut next = s.prefs().clone();
-            next.reset(Some(path)).map_err(|e| bad("prefs.reset", e))?;
-            s.edit_prefs(|p| *p = next);
-        }
-    }
-    s.prefs.edit(|_| ());
-    s.apply_prefs();
-    if path.is_some_and(|path| keyed(path).is_some()) {
-        // The removed override is absent, so reading its old path would report an error.
-        Ok(Value::Null)
-    } else {
-        prefs_get(s, &json!({"path": path.unwrap_or("")}))
-    }
-}
-
-/// `edit.preferences.<section>`: the section's values (the GUI opens the dialog on it instead).
-fn preferences_section(s: &mut Session, p: &Value) -> Result<Value> {
-    let section = p.get("__section").and_then(Value::as_str).unwrap_or("general").to_string();
-    let title = SECTIONS.iter().find(|(id, _)| *id == section).map_or("General", |(_, t)| *t);
-    let values = s.prefs().get(&section).unwrap_or(Value::Null);
-    Ok(json!({"section": section, "title": title, "values": values}))
-}
-
-/// Edit › Keyboard Shortcuts (engine part): list, change and reset application shortcuts.
-fn keyboard_shortcuts(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "edit.keyboardShortcuts";
-    if let Some(r) = p.get("reset") {
-        match r {
-            Value::Bool(true) => s.edit_prefs(|p| p.shortcuts.clear()),
-            Value::Array(ids) => s.edit_prefs(|p| {
-                for id in ids.iter().filter_map(Value::as_str) {
-                    p.shortcuts.remove(id);
-                }
-            }),
-            _ => {}
-        }
-    }
-    if let Some(m) = p.get("set").and_then(Value::as_object) {
-        let mut next = s.prefs().clone();
-        for (id, v) in m {
-            if !bindable().any(|(b, _)| b == id) && !p.get("allowUnknown").and_then(Value::as_bool).unwrap_or(false) {
-                return Err(bad(cmd, format!("unknown command `{id}`")));
-            }
-            next.set(&format!("shortcuts.{id}"), v.clone()).map_err(|e| bad(cmd, e))?;
-        }
-        // Like Photoshop, a shortcut moved to a new command is taken away from the old one.
-        if p.get("removeConflicts").and_then(Value::as_bool).unwrap_or(true) {
-            for (id, v) in m {
-                let Some(sc) = v.as_str().and_then(normalize_shortcut) else { continue };
-                for (c, def) in bindable() {
-                    // Never strip a command that this same call is assigning:
-                    // two entries for one key are a clash inside the call, which
-                    // the returned conflicts list reports (#719). Stripping
-                    // each other here unbound both silently.
-                    if c == id || m.contains_key(c) {
-                        continue;
-                    }
-                    if next.shortcut(c, def).and_then(normalize_shortcut).as_deref() == Some(sc.as_str()) {
-                        next.shortcuts.insert(c.to_string(), String::new());
-                    }
-                }
-            }
-        }
-        s.edit_prefs(|p| *p = next);
-    }
-    let prefs = s.prefs();
-    let filter = p.get("filter").and_then(Value::as_str).map(str::to_ascii_lowercase);
-    let temporary = TEMPORARY_TOOLS.iter().map(|t| (t.0, t.1, &["Tools", "Temporary"][..], Some(t.2), true));
-    let list: Vec<Value> = crate::command_specs()
-        .iter()
-        .map(|c| (c.id, c.label, c.menu, c.shortcut, false))
-        .chain(temporary)
-        .filter(|c| filter.as_ref().is_none_or(|f| c.0.to_ascii_lowercase().contains(f) || c.1.to_ascii_lowercase().contains(f)))
-        .filter(|c| p.get("list").and_then(Value::as_bool).unwrap_or(false) || filter.is_some() || prefs.shortcuts.contains_key(c.0))
-        .map(|(id, label, menu, def, hold)| {
-            let mut v = json!({"id": id, "label": label, "menu": menu, "default": def, "shortcut": prefs.shortcut(id, def)});
-            if hold {
-                v["hold"] = json!(true);
-            }
-            v
-        })
-        .collect();
-    let bindings: Vec<(&str, &str)> = bindable().filter_map(|(id, def)| Some((id, prefs.shortcut(id, def)?))).collect();
-    let conflicts: Vec<Value> = conflicts(bindings).into_iter().map(|(sc, ids)| json!({"shortcut": sc, "commands": ids})).collect();
-    Ok(json!({"overrides": prefs.shortcuts, "commands": list, "conflicts": conflicts}))
-}
-
-/// Edit › Menus: hide/show items and give them colours.
-fn menus(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = |k: &str| -> Vec<String> {
-        p.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default()
-    };
-    const COLORS: [&str; 8] = ["none", "red", "orange", "yellow", "green", "blue", "violet", "gray"];
-    if let Some(m) = p.get("color").and_then(Value::as_object) {
-        for v in m.values() {
-            if let Some(c) = v.as_str().filter(|c| !COLORS.contains(c)) {
-                return Err(bad("edit.menus", format!("unknown colour `{c}` ({})", COLORS.join("|"))));
-            }
-        }
-    }
-    let (hide, show) = (ids("hide"), ids("show"));
-    s.edit_prefs(|pr| {
-        if p.get("reset").and_then(Value::as_bool) == Some(true) {
-            pr.menus = MenuCustomization::default();
-        }
-        for id in hide {
-            if !pr.menus.hidden.contains(&id) {
-                pr.menus.hidden.push(id);
-            }
-        }
-        pr.menus.hidden.retain(|h| !show.contains(h));
-        if let Some(m) = p.get("color").and_then(Value::as_object) {
-            for (id, v) in m {
-                match v.as_str() {
-                    Some(c) if c != "none" => {
-                        pr.menus.colors.insert(id.clone(), c.to_string());
-                    }
-                    _ => {
-                        pr.menus.colors.remove(id);
-                    }
-                }
-            }
-        }
-    });
-    Ok(serde_json::to_value(&s.prefs().menus).unwrap_or_default())
-}
-
-/// Edit › Toolbar: hide tools and reorder the toolbar.
-fn toolbar(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = |k: &str| -> Option<Vec<String>> { p.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()) };
-    s.edit_prefs(|pr| {
-        if p.get("reset").and_then(Value::as_bool) == Some(true) {
-            pr.toolbar = ToolbarCustomization::default();
-        }
-        if let Some(h) = ids("hidden") {
-            pr.toolbar.hidden = h;
-        }
-        if let Some(o) = ids("order") {
-            pr.toolbar.order = o;
-        }
-    });
-    Ok(serde_json::to_value(&s.prefs().toolbar).unwrap_or_default())
-}
-
-macro_rules! spec {
-    ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $run:expr, $journal:expr) => {
-        CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: always, run: $run, journal: $journal }
-    };
-}
-
-macro_rules! section {
-    ($id:literal, $label:literal) => {
-        CommandSpec { id: $id, label: $label, menu: &["Edit", "Preferences"], shortcut: None, params: r##"{}"##, enabled: always, run: |s, _| preferences_section(s, &json!({"__section": section_of($id)})), journal: false }
-    };
-}
-
-fn section_of(id: &str) -> &str {
-    id.rsplit('.').next().unwrap_or("general")
-}
-
-/// Preference command specs.
-pub fn specs() -> Vec<CommandSpec> {
-    vec![
-        spec!(
-            "prefs.get",
-            "Get Preferences",
-            [],
-            None,
-            r##"{"path":"section.key"?=everything (e.g. "performance.historyStates", "colorSettings.workingRgb")}"##,
-            prefs_get,
-            false
-        ),
-        spec!(
-            "prefs.set",
-            "Set Preferences",
-            [],
-            None,
-            r##"{"path":"section.key","value":json} or {"values":{"section.key":json,…}} (validated; all or nothing)"##,
-            prefs_set,
-            false
-        ),
-        spec!("prefs.reset", "Reset Preferences", [], None, r##"{"path":"section|section.key"?=everything}"##, prefs_reset, false),
-        section!("edit.preferences.general", "General…"),
-        section!("edit.preferences.interface", "Interface…"),
-        section!("edit.preferences.workspace", "Workspace…"),
-        section!("edit.preferences.tools", "Tools…"),
-        section!("edit.preferences.historyLog", "History Log…"),
-        section!("edit.preferences.fileHandling", "File Handling…"),
-        section!("edit.preferences.export", "Export…"),
-        section!("edit.preferences.performance", "Performance…"),
-        section!("edit.preferences.scratchDisks", "Scratch Disks…"),
-        section!("edit.preferences.cursors", "Cursors…"),
-        section!("edit.preferences.transparencyAndGamut", "Transparency & Gamut…"),
-        section!("edit.preferences.unitsAndRulers", "Units & Rulers…"),
-        section!("edit.preferences.guidesGridAndSlices", "Guides, Grid & Slices…"),
-        section!("edit.preferences.plugIns", "Plug-ins…"),
-        section!("edit.preferences.type", "Type…"),
-        section!("edit.preferences.enhancedControls", "Enhanced Controls…"),
-        section!("edit.preferences.rawDefaults", "Camera Raw…"),
-        section!("edit.preferences.integrations", "Integrations…"),
-        spec!(
-            "edit.keyboardShortcuts",
-            "Keyboard Shortcuts…",
-            ["Edit"],
-            Some("Cmd+Alt+Shift+K"),
-            r##"{"set":{"<command id>|tools.temporary.hand|zoomIn|zoomOut":"Cmd+Shift+X"|""(remove)|null(default)}?,"reset":true|["<id>",…]?,"removeConflicts":bool=true,"filter":str?,"list":bool=false}"##,
-            keyboard_shortcuts,
-            true
-        ),
-        spec!(
-            "edit.menus",
-            "Menus…",
-            ["Edit"],
-            Some("Cmd+Alt+Shift+M"),
-            r##"{"hide":["<id>",…]?,"show":["<id>",…]?,"color":{"<id>":"red|orange|yellow|green|blue|violet|gray|none"}?,"reset":bool=false}"##,
-            menus,
-            true
-        ),
-        spec!("edit.toolbar", "Toolbar…", ["Edit"], None, r##"{"hidden":["<tool>",…]?,"order":["<tool>",…]?,"reset":bool=false}"##, toolbar, true),
-    ]
 }
 
 #[cfg(test)]
 #[path = "prefs/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod color_settings_path_tests {
+    use crate::Session;
+    use serde_json::json;
+
+    #[test]
+    fn a_path_that_only_starts_with_color_settings_is_not_in_that_section() {
+        let mut s = Session::new();
+        let before = s.color.settings.clone();
+        for path in ["colorSettingsworkingRgb", "colorSettings.", "colorSettings..workingRgb"] {
+            assert!(s.execute("prefs.set", json!({"path": path, "value": "/dev/zero"})).is_err(), "{path}");
+        }
+        assert_eq!(s.color.settings, before);
+    }
+}

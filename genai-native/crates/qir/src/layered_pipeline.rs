@@ -1,0 +1,583 @@
+//! The shipped Layered graph: reference conditioning, Euler CFG, then independent RGBA slices.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use candle_core::{DType, Device, Tensor};
+/// The pictures split takes and returns.
+pub use image::RgbaImage;
+use tokenizers::Tokenizer;
+
+use crate::comfy::{torch_randn, FlowSchedule, Shift};
+use crate::layered_files::{LayeredFiles, TensorFile};
+use crate::model::qwen25_text::{load_tokenizer, tokenize, Qwen25TextEncoder};
+use crate::model::qwen_image_dit::{image_positions, patchify, text_positions, unpatchify, LayeredDit, LayeredRope};
+use crate::model::wan_vae::WanVae;
+use crate::preview::StepPreview;
+use crate::Result;
+
+pub const DEFAULT_STEPS: usize = 20;
+pub const CFG: f32 = 2.5;
+
+/// Draw before packing: PyTorch fills channel, slice, row, column in that order.
+pub fn layered_noise(seed: u64, layers: usize, height: usize, width: usize, device: &Device) -> Result<Tensor> {
+    anyhow::ensure!(layers > 0 && height > 0 && width > 0 && height.is_multiple_of(2) && width.is_multiple_of(2), "invalid Layered latent dimensions");
+    let frames = layers.checked_add(1).ok_or_else(|| anyhow::anyhow!("slice count overflow"))?;
+    let count = [16, frames, height, width].into_iter().try_fold(1usize, |n, d| n.checked_mul(d)).ok_or_else(|| anyhow::anyhow!("latent size overflow"))?;
+    Ok(Tensor::from_vec(torch_randn(seed, count).map_err(anyhow::Error::msg)?, (1, 16, frames, height, width), device)?)
+}
+
+/// AuraFlow replaces the sampling table; simple selects its rows and appends zero.
+pub fn layered_schedule(steps: usize) -> Result<FlowSchedule> {
+    FlowSchedule::simple(steps, Shift::Snr { shift: 1.0, multiplier: 1.0, timesteps: 1000 }).map_err(anyhow::Error::msg)
+}
+
+/// Layered's BaseModel passes sigma as f32, even with bf16 image activations.
+/// Qwen-Image-2.1's double bf16 rounding does not apply to this older DiT.
+pub fn layered_timestep(sigma: f32, device: &Device) -> Result<Tensor> {
+    anyhow::ensure!(sigma.is_finite() && (0.0..=1.0).contains(&sigma), "invalid flow sigma");
+    Ok(Tensor::from_slice(&[sigma], 1, device)?)
+}
+
+/// Preserve ComfyUI's denoised-space CFG and to_d arithmetic, including f32 cancellation.
+pub fn euler_cfg(x: &Tensor, positive: &Tensor, negative: &Tensor, sigma: f32, next: f32) -> Result<Tensor> {
+    anyhow::ensure!(sigma.is_finite() && sigma > 0.0 && next.is_finite() && next >= 0.0 && next <= sigma, "invalid Euler interval");
+    anyhow::ensure!(x.dims() == positive.dims() && x.dims() == negative.dims(), "CFG tensor shapes disagree");
+    let x = x.to_dtype(DType::F32)?;
+    let pos = (&x - (positive.to_dtype(DType::F32)? * sigma as f64)?)?;
+    let neg = (&x - (negative.to_dtype(DType::F32)? * sigma as f64)?)?;
+    let denoised = (&neg + ((pos - &neg)? * CFG as f64)?)?;
+    let derivative = ((&x - denoised)? / sigma as f64)?;
+    Ok((&x + (derivative * (next - sigma) as f64)?)?)
+}
+
+/// The CFG-combined denoised estimate [`euler_cfg`] steps towards (for a preview; the
+/// sampler's own arithmetic stays in `euler_cfg`).
+pub fn cfg_denoised(x: &Tensor, positive: &Tensor, negative: &Tensor, sigma: f32) -> Result<Tensor> {
+    let x = x.to_dtype(DType::F32)?;
+    let pos = (&x - (positive.to_dtype(DType::F32)? * sigma as f64)?)?;
+    let neg = (&x - (negative.to_dtype(DType::F32)? * sigma as f64)?)?;
+    Ok((&neg + ((pos - &neg)? * CFG as f64)?)?)
+}
+
+/// Drop the composite and move time to batch in LatentCutToBatch's order.
+pub fn retained_slices(latent: &Tensor) -> Result<Tensor> {
+    let (b, c, t, h, w) = latent.dims5()?;
+    anyhow::ensure!(b == 1 && c == 16 && t > 1, "expected a single Layered sample with retained slices");
+    Ok(latent.narrow(2, 1, t - 1)?.transpose(1, 2)?.contiguous()?.reshape((t - 1, 16, h, w))?)
+}
+
+/// SaveImage clips and truncates, preserving straight alpha without rounding to nearest.
+pub fn rgba_image(decoded: &Tensor) -> Result<RgbaImage> {
+    let (b, c, h, w) = decoded.dims4()?;
+    anyhow::ensure!(b == 1 && c == 4, "expected one decoded RGBA image");
+    let pixels = ((decoded.squeeze(0)?.permute((1, 2, 0))? + 1.0)? / 2.0)?.clamp(0.0, 1.0)?;
+    let bytes = (pixels * 255.0)?.to_dtype(DType::U8)?.to_device(&Device::Cpu)?.flatten_all()?.to_vec1::<u8>()?;
+    RgbaImage::from_raw(u32::try_from(w)?, u32::try_from(h)?, bytes).ok_or_else(|| anyhow::anyhow!("invalid RGBA byte count"))
+}
+
+/// File-backed stages avoid retaining the encoder alongside the diffusion model. On CUDA the DiT
+/// and the VAE stay resident between splits, and the prompt's conditioning is kept, so a split
+/// of the same prompt loads nothing; a new prompt drops the DiT for the text encoder (the two do
+/// not fit 32 GB together) and loads it again. `QIR_LAYERED_RESIDENT=0` loads every stage per
+/// split as before.
+pub struct LayeredPipeline {
+    files: LayeredFiles,
+    tokenizer: Tokenizer,
+    device: Device,
+    dtype: DType,
+    resident: bool,
+    dit: std::sync::Mutex<Option<LayeredDit>>,
+    vae: std::sync::Mutex<Option<std::sync::Arc<WanVae>>>,
+    /// The last prompt's text conditioning: (prompt, positive, negative).
+    conditioning: std::sync::Mutex<Option<(String, Tensor, Tensor)>>,
+    /// The [`crate::int8_cache`] folder; `None` when `QIR_INT8_CACHE=0`.
+    int8_cache: Option<std::path::PathBuf>,
+    /// The next splits' first-block step cache threshold as f32 bits (0: `QIR_STEP_CACHE`).
+    step_cache: std::sync::atomic::AtomicU32,
+}
+
+impl LayeredPipeline {
+    pub fn load(models_root: impl AsRef<Path>) -> Result<Self> {
+        Self::load_on_device(models_root, crate::device::best_device()?)
+    }
+
+    /// Choose CPU explicitly for parity; CUDA computes model activations in bf16.
+    pub fn load_on_device(models_root: impl AsRef<Path>, device: Device) -> Result<Self> {
+        let root = models_root.as_ref();
+        let files = LayeredFiles::resolve(root)?;
+        let tokenizer = crate::comfy_files::tokenizer_dir(root).ok_or_else(|| anyhow::anyhow!("ComfyUI Qwen tokenizer code tree not found"))?;
+        let resident = device.is_cuda() && std::env::var("QIR_LAYERED_RESIDENT").map_or(true, |v| v != "0");
+        Ok(Self {
+            files,
+            tokenizer: load_tokenizer(tokenizer)?,
+            dtype: if device.is_cuda() { DType::BF16 } else { DType::F32 },
+            device,
+            resident,
+            dit: std::sync::Mutex::new(None),
+            vae: std::sync::Mutex::new(None),
+            conditioning: std::sync::Mutex::new(None),
+            int8_cache: crate::int8_cache::enabled().then(|| crate::int8_cache::dir(root)),
+            step_cache: std::sync::atomic::AtomicU32::new(0),
+        })
+    }
+
+    /// The first-block step cache threshold for the splits that follow (the app's Fast draft;
+    /// changes the layers); `None` follows `QIR_STEP_CACHE`, unset = off.
+    pub fn set_step_cache(&self, threshold: Option<f32>) {
+        self.step_cache.store(threshold.filter(|t| t.is_finite() && *t > 0.0).map_or(0, f32::to_bits), Ordering::Relaxed);
+    }
+
+    /// The VAE, kept between splits when resident.
+    fn vae_shared(&self) -> Result<std::sync::Arc<WanVae>> {
+        let mut slot = self.vae.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = slot.as_ref() {
+            return Ok(v.clone());
+        }
+        let v = std::sync::Arc::new(self.vae()?);
+        if self.resident {
+            *slot = Some(v.clone());
+        }
+        Ok(v)
+    }
+
+    /// The prompt's (positive, negative) text conditioning: the kept one for the same prompt,
+    /// else the text encoder's, with the resident DiT dropped first to make room for it.
+    fn text_conditioning(&self, prompt: &str, check: &dyn Fn() -> Result<()>) -> Result<(Tensor, Tensor)> {
+        let mut slot = self.conditioning.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((p, pos, neg)) = slot.as_ref() {
+            if p == prompt {
+                tracing::info!("layered conditioning cache hit");
+                return Ok((pos.clone(), neg.clone()));
+            }
+        }
+        *slot = None;
+        if self.dit.lock().unwrap_or_else(|e| e.into_inner()).take().is_some() {
+            self.device.synchronize()?;
+            crate::device::trim_pool(&self.device);
+            tracing::info!("layered: dropped the resident DiT for the text encoder");
+        }
+        let (positive, negative) = {
+            let encoder = Qwen25TextEncoder::from_file(&self.files.text_encoder, self.dtype, &self.device)?;
+            let positive = encoder.forward(&tokenize(&self.tokenizer, prompt)?)?;
+            check()?;
+            let negative = encoder.forward(&tokenize(&self.tokenizer, "")?)?;
+            (positive, negative)
+        };
+        if self.resident {
+            *slot = Some((prompt.to_string(), positive.clone(), negative.clone()));
+        }
+        Ok((positive, negative))
+    }
+
+    /// The device the split runs on.
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    fn vae(&self) -> Result<WanVae> {
+        let vae = WanVae::load(TensorFile::open(&self.files.vae)?.builder("", self.dtype, &self.device)?)?;
+        anyhow::ensure!(vae.image_channels() == 4 && vae.can_encode(), "Layered requires an RGBA encoder and decoder");
+        Ok(vae)
+    }
+
+    /// Dimensions are supplied at graph resolution (multiples of 16); engine resizing is step 7.
+    /// Progress counts completed Euler steps. Cancellation is checked between model calls.
+    #[allow(clippy::too_many_arguments)]
+    pub fn split(
+        &self,
+        picture: &RgbaImage,
+        layers: usize,
+        prompt: &str,
+        seed: u64,
+        steps: usize,
+        progress: impl FnMut(usize, usize),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<RgbaImage>> {
+        self.split_observed(picture, layers, prompt, seed, steps, progress, cancel, |_, _| Ok(()))
+    }
+
+    /// Observe complete tensors at parity boundaries; the callback owns any copies it retains.
+    #[allow(clippy::too_many_arguments)]
+    pub fn split_observed(
+        &self,
+        picture: &RgbaImage,
+        layers: usize,
+        prompt: &str,
+        seed: u64,
+        steps: usize,
+        progress: impl FnMut(usize, usize),
+        cancel: &AtomicBool,
+        observe: impl FnMut(&str, &Tensor) -> Result<()>,
+    ) -> Result<Vec<RgbaImage>> {
+        self.split_inner(picture, layers, prompt, seed, steps, progress, None, cancel, observe)
+    }
+
+    /// [`Self::split`], showing the layers' denoised estimate `(layers, 16, h/8, w/8)`
+    /// (background first, the composite left out) to `preview` after the steps it asks for;
+    /// the layers are the same either way.
+    #[allow(clippy::too_many_arguments)]
+    pub fn split_previewed(
+        &self,
+        picture: &RgbaImage,
+        layers: usize,
+        prompt: &str,
+        seed: u64,
+        steps: usize,
+        progress: impl FnMut(usize, usize),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &AtomicBool,
+    ) -> Result<Vec<RgbaImage>> {
+        self.split_inner(picture, layers, prompt, seed, steps, progress, preview, cancel, |_, _| Ok(()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn split_inner(
+        &self,
+        picture: &RgbaImage,
+        layers: usize,
+        prompt: &str,
+        seed: u64,
+        steps: usize,
+        mut progress: impl FnMut(usize, usize),
+        mut preview: Option<&mut dyn StepPreview>,
+        cancel: &AtomicBool,
+        mut observe: impl FnMut(&str, &Tensor) -> Result<()>,
+    ) -> Result<Vec<RgbaImage>> {
+        let check = || -> Result<()> {
+            anyhow::ensure!(!cancel.load(Ordering::Relaxed), "Layered split cancelled");
+            Ok(())
+        };
+        check()?;
+        let (w, h) = (picture.width() as usize, picture.height() as usize);
+        anyhow::ensure!(
+            (1..=8).contains(&layers) && w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16),
+            "expected 1..8 layers and positive picture dimensions divisible by 16"
+        );
+        let schedule = layered_schedule(steps)?;
+        // `QIR_PROFILE=1`: each phase's seconds on stderr (the device synchronised at each mark).
+        let profile = std::env::var("QIR_PROFILE").is_ok_and(|v| v.trim() == "1");
+        let timing = profile || std::env::var("QIR_LAYERED_TIMING").is_ok_and(|v| v == "1");
+        let mut last = std::time::Instant::now();
+        let mut mark = |what: &str| -> Result<()> {
+            if timing {
+                self.device.synchronize()?;
+                eprintln!("layered {what}: {:.2} s", last.elapsed().as_secs_f32());
+                last = std::time::Instant::now();
+            }
+            Ok(())
+        };
+        // A resident DiT is used as it is when the prompt's conditioning is kept too.
+        let kept = self.dit.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+            && self.conditioning.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|(p, _, _)| p == prompt);
+        let cache = if self.device.is_cuda() {
+            self.int8_cache.as_ref().and_then(|dir| crate::int8_cache::entry(dir, &self.files.diffusion, &Default::default()).ok())
+        } else {
+            None
+        };
+        // With an INT8 cache entry the linears come from it, so its pages are the ones to fault.
+        let cached = cache.as_ref().is_some_and(|p| p.is_file());
+        let prefetch = if !kept && self.device.is_cuda() && std::env::var("QIR_LAYERED_PREFETCH").map_or(true, |v| v != "0") {
+            LayeredPrefetch::start(cache.clone().filter(|_| cached).unwrap_or_else(|| self.files.diffusion.clone()))
+        } else {
+            None
+        };
+        // LoadImage supplies RGB to VAEEncode; alpha is a separate, unused mask in this graph.
+        let rgb: Vec<f32> = picture.pixels().flat_map(|p| p.0[..3].iter().map(|v| (*v as f32 / 255.0) * 2.0 - 1.0)).collect();
+        let pixels = Tensor::from_vec(rgb, (1, h, w, 3), &self.device)?.permute((0, 3, 1, 2))?.contiguous()?;
+        let reference = self.vae_shared()?.encode(&pixels)?.unsqueeze(2)?;
+        observe("reference", &reference)?;
+        // Release reference scratch before loading the resident encoder.
+        crate::device::trim_pool(&self.device);
+        mark("reference encode")?;
+        check()?;
+        let (positive, negative) = self.text_conditioning(prompt, &check)?;
+        observe("positive_text", &positive)?;
+        observe("negative_text", &negative)?;
+        // The encoder's memory back to the driver before the 20 GB DiT arrives: kept in the
+        // pool, the two overfilled the 32 GB card and the first steps paged (50 s each, then 15
+        // under the profiler, 2026-10-27).
+        crate::device::trim_pool(&self.device);
+        mark("text encode")?;
+        crate::profile::report("layered text");
+        check()?;
+        let (lh, lw, frames) = (h / 8, w / 8, layers + 1);
+        let reference = patchify(&reference)?.to_dtype(self.dtype)?;
+        let ids = Tensor::cat(&[image_positions(1, frames, lh / 2, lw / 2, 0, &self.device)?, image_positions(1, 1, lh / 2, lw / 2, -1, &self.device)?], 1)?;
+        let pos_ids = text_positions(1, positive.dim(1)?, lh / 2, lw / 2, &self.device)?;
+        let neg_ids = text_positions(1, negative.dim(1)?, lh / 2, lw / 2, &self.device)?;
+        let batched = self.device.is_cuda() && std::env::var("QIR_LAYERED_CFG_BATCH").map_or(true, |v| v != "0");
+        let nt = positive.dim(1)?;
+        let nn = negative.dim(1)?;
+        let tokens = nt.max(nn);
+        let pad = |x: &Tensor| -> Result<Tensor> {
+            let n = x.dim(1)?;
+            Ok(if n == tokens { x.clone() } else { Tensor::cat(&[x, &Tensor::zeros((1, tokens - n, x.dim(2)?), x.dtype(), x.device())?], 1)? })
+        };
+        let texts = if batched { Some(Tensor::cat(&[pad(&positive)?, pad(&negative)?], 0)?) } else { None };
+        let rope_ids = if batched { text_positions(1, tokens, lh / 2, lw / 2, &self.device)? } else { pos_ids };
+        let rope = LayeredRope::new(&Tensor::cat(&[&rope_ids, &ids], 1)?, self.dtype)?;
+        let neg_rope = if batched { None } else { Some(LayeredRope::new(&Tensor::cat(&[&neg_ids, &ids], 1)?, self.dtype)?) };
+        let mut latent = layered_noise(seed, layers, lh, lw, &self.device)?;
+        observe("noise", &latent)?;
+        progress(0, steps);
+        {
+            // On CUDA the whole DiT goes on the device for the split's forwards (the encoder is
+            // gone by now: the two do not fit 32 GB together), else one block at a time.
+            let kept_dit = self.dit.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let dit = match kept_dit {
+                Some(d) => d,
+                None => {
+                    let d = if self.device.is_cuda() {
+                        match prefetch {
+                            Some(prefetch) if !cached => LayeredDit::from_resident_file(prefetch.finish()?, &self.device, cache.as_deref(), None)?,
+                            prefetch => {
+                                // The entry's prefaulted mapping (a failed prefetch only costs the faults).
+                                let entry = prefetch.and_then(|p| p.finish().ok());
+                                LayeredDit::from_resident_file(TensorFile::open(&self.files.diffusion)?, &self.device, cache.as_deref(), entry)?
+                            }
+                        }
+                    } else {
+                        LayeredDit::open_streamed(&self.files.diffusion, &self.device)?
+                    };
+                    // Finish uploads and release loading scratch before the denoising working set.
+                    crate::device::trim_pool(&self.device);
+                    if let Some((free, total)) = crate::device::free_vram(&self.device) {
+                        tracing::info!(driver_free_mib = free >> 20, total_mib = total >> 20, "layered DiT loaded");
+                    }
+                    d
+                }
+            };
+            mark("DiT load")?;
+            #[cfg(feature = "cuda")]
+            let pool = LayeredPool::retain(&self.device);
+            let cache = || match self.step_cache.load(Ordering::Relaxed) {
+                0 => crate::model::qwen_image_dit::StepCache::from_env(),
+                bits => crate::model::qwen_image_dit::StepCache::new(f32::from_bits(bits)),
+            };
+            // One cache over the batched CFG lanes, one per lane otherwise.
+            let mut step_caches = (cache(), cache());
+            for i in 0..steps {
+                check()?;
+                let packed = patchify(&latent)?.to_dtype(self.dtype)?;
+                let count = packed.dim(1)?;
+                let input = Tensor::cat(&[packed, reference.clone()], 1)?;
+                let time = layered_timestep(schedule.sigma(i), &self.device)?;
+                let (pos, neg) = if let Some(texts) = &texts {
+                    let input = Tensor::cat(&[&input, &input], 0)?;
+                    let velocities = dit
+                        .forward_prepared_cached(&input, texts, &time, None, &rope, (nn != nt).then_some((nt, nn)), step_caches.0.as_mut())?
+                        .narrow(1, 0, count)?;
+                    (velocities.narrow(0, 0, 1)?, velocities.narrow(0, 1, 1)?)
+                } else {
+                    let pos = dit.forward_prepared_cached(&input, &positive, &time, None, &rope, None, step_caches.0.as_mut())?.narrow(1, 0, count)?;
+                    check()?;
+                    let neg_rope = neg_rope.as_ref().ok_or_else(|| anyhow::anyhow!("missing negative RoPE"))?;
+                    let neg = dit.forward_prepared_cached(&input, &negative, &time, None, neg_rope, None, step_caches.1.as_mut())?.narrow(1, 0, count)?;
+                    (pos, neg)
+                };
+                let pos = unpatchify(&pos, frames, lh, lw)?.to_dtype(DType::F32)?;
+                let neg = unpatchify(&neg, frames, lh, lw)?.to_dtype(DType::F32)?;
+                observe(&format!("step_{i}.positive"), &pos)?;
+                observe(&format!("step_{i}.negative"), &neg)?;
+                check()?;
+                if let Some(p) = preview.as_deref_mut() {
+                    if p.wants(i + 1, steps) {
+                        match cfg_denoised(&latent, &pos, &neg, schedule.sigma(i)).and_then(|d| retained_slices(&d)) {
+                            Ok(x0) => p.show(i + 1, steps, &x0),
+                            Err(e) => tracing::warn!(error = %e, "preview skipped"),
+                        }
+                    }
+                }
+                latent = euler_cfg(&latent, &pos, &neg, schedule.sigma(i), schedule.sigmas[i + 1])?;
+                observe(&format!("step_{i}.latent"), &latent)?;
+                #[cfg(feature = "cuda")]
+                if pool.is_some() {
+                    self.device.synchronize()?;
+                }
+                progress(i + 1, steps);
+                crate::device::warn_if_paging(&self.device, "layered step");
+                if i == 0 {
+                    if let Some((free, _)) = crate::device::free_vram(&self.device) {
+                        tracing::info!(driver_free_mib = free >> 20, slack_mib = crate::device::pool_slack(&self.device) >> 20, "layered step 0 memory");
+                    }
+                }
+                if profile {
+                    mark(&format!("step {i}"))?;
+                }
+                if i == 0 {
+                    crate::profile::report("layered step 0");
+                }
+            }
+            // Finish checkpoint use before freeing its storage and loading the decoder.
+            self.device.synchronize()?;
+            mark("denoise")?;
+            if let Some(c) = &step_caches.0 {
+                tracing::info!(steps = c.steps, hits = c.hits, negative_hits = step_caches.1.as_ref().map_or(0, |n| n.hits), "layered step cache");
+            }
+            crate::profile::report("layered steps 1..");
+            if self.resident {
+                *self.dit.lock().unwrap_or_else(|e| e.into_inner()) = Some(dit);
+            }
+        }
+        crate::device::trim_pool(&self.device);
+        check()?;
+        let retained = retained_slices(&latent)?;
+        observe("retained", &retained)?;
+        let vae = self.vae_shared()?;
+        let mut images = Vec::with_capacity(layers);
+        for i in 0..layers {
+            check()?;
+            let raw = vae.denormalize(&retained.narrow(0, i, 1)?.contiguous()?)?;
+            let decoded = vae.decode(&raw)?;
+            observe(&format!("decoded_{i}"), &decoded)?;
+            images.push(rgba_image(&decoded)?);
+        }
+        mark("decode")?;
+        Ok(images)
+    }
+}
+
+/// Fault checkpoint pages concurrently with conditioning; cancel and join on every exit.
+pub(crate) struct LayeredPrefetch {
+    task: Option<std::thread::JoinHandle<Result<TensorFile>>>,
+    stop: std::sync::Arc<AtomicBool>,
+}
+
+impl LayeredPrefetch {
+    pub(crate) fn start(path: std::path::PathBuf) -> Option<Self> {
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let cancelled = stop.clone();
+        let task = std::thread::Builder::new()
+            .name("layered-prefetch".into())
+            .spawn(move || {
+                let file = TensorFile::open(path)?;
+                file.prefetch(&cancelled);
+                Ok(file)
+            })
+            .ok()?;
+        Some(Self { task: Some(task), stop })
+    }
+
+    pub(crate) fn finish(mut self) -> Result<TensorFile> {
+        self.task
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("missing Layered prefetch task"))?
+            .join()
+            .map_err(|_| anyhow::anyhow!("Layered checkpoint prefetch thread failed"))?
+    }
+}
+
+impl Drop for LayeredPrefetch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(task) = self.task.take() {
+            let _ = task.join();
+        }
+    }
+}
+
+/// Keep a bounded denoising workspace across step barriers, restoring the caller's pool policy.
+#[cfg(feature = "cuda")]
+pub(crate) struct LayeredPool {
+    device: candle_core::CudaDevice,
+    pool: candle_core::cuda_backend::cudarc::driver::sys::CUmemoryPool,
+    previous: u64,
+}
+
+#[cfg(feature = "cuda")]
+impl LayeredPool {
+    pub(crate) fn retain(device: &Device) -> Option<Self> {
+        use candle_core::cuda_backend::cudarc::driver::sys;
+        use sys::CUmemPool_attribute as A;
+        if std::env::var("QIR_LAYERED_POOL").is_ok_and(|v| v == "0") || std::env::var("QIR_POOL_RETAIN").is_ok_and(|v| v == "0") {
+            return None;
+        }
+        let Device::Cuda(device) = device else {
+            return None;
+        };
+        let ctx = device.cuda_stream().context().clone();
+        ctx.bind_to_thread().ok()?;
+        let mut pool = std::ptr::null_mut();
+        unsafe { sys::cuDeviceGetDefaultMemPool(&mut pool, ctx.cu_device()) }.result().ok()?;
+        let get = |attribute| -> Option<u64> {
+            let mut value = 0u64;
+            unsafe { sys::cuMemPoolGetAttribute(pool, attribute, (&mut value as *mut u64).cast()) }.result().ok()?;
+            Some(value)
+        };
+        let previous = get(A::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD)?;
+        let threshold = get(A::CU_MEMPOOL_ATTR_USED_MEM_CURRENT)?.saturating_add(2 << 30);
+        unsafe { sys::cuMemPoolSetAttribute(pool, A::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD, (&threshold as *const u64).cast_mut().cast()) }.result().ok()?;
+        Some(Self { device: device.clone(), pool, previous })
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for LayeredPool {
+    fn drop(&mut self) {
+        use candle_core::cuda_backend::cudarc::driver::sys;
+        let _ = self.device.cuda_stream().context().bind_to_thread();
+        let _ = unsafe {
+            sys::cuMemPoolSetAttribute(self.pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD, (&self.previous as *const u64).cast_mut().cast())
+        }
+        .result();
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod layered_pool_tests {
+    use super::*;
+    use candle_core::cuda_backend::cudarc::driver::sys;
+
+    #[test]
+    fn pool_policy_is_restored_on_error() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let Device::Cuda(cuda) = &device else { anyhow::bail!("CUDA required") };
+        let mut pool = std::ptr::null_mut();
+        unsafe { sys::cuDeviceGetDefaultMemPool(&mut pool, cuda.cuda_stream().context().cu_device()) }.result()?;
+        let threshold = || -> Result<u64> {
+            let mut value = 0u64;
+            unsafe { sys::cuMemPoolGetAttribute(pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD, (&mut value as *mut u64).cast()) }
+                .result()?;
+            Ok(value)
+        };
+        let before = threshold()?;
+        let guard = LayeredPool::retain(&device).ok_or_else(|| anyhow::anyhow!("pool retention unavailable or opted out"))?;
+        assert_eq!(guard.previous, before);
+        assert!(threshold()? >= 2 << 30);
+        let attempt = move || -> Result<()> {
+            let _guard = guard;
+            anyhow::bail!("test cancellation")
+        };
+        assert!(attempt().is_err());
+        assert_eq!(threshold()?, before);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod layered_prefetch_tests {
+    use super::*;
+
+    #[test]
+    fn prefetch_propagates_io_errors_and_joins_on_cancel() -> Result<()> {
+        let missing = std::env::temp_dir().join(format!("qir-missing-checkpoint-{}.safetensors", std::process::id()));
+        let task = LayeredPrefetch::start(missing).ok_or_else(|| anyhow::anyhow!("prefetch worker unavailable"))?;
+        assert!(task.finish().is_err());
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stopped = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_stopped = stopped.clone();
+        let task = std::thread::spawn(move || -> Result<TensorFile> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            while !worker_stop.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            worker_stopped.store(worker_stop.load(Ordering::Relaxed), Ordering::Relaxed);
+            anyhow::bail!("cancelled test worker")
+        });
+        drop(LayeredPrefetch { task: Some(task), stop });
+        assert!(stopped.load(Ordering::Relaxed), "drop must stop and join the worker");
+        Ok(())
+    }
+}

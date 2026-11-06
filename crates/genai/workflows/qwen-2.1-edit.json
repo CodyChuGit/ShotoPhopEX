@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "id": "qwen-2.1/edit",
+    "name": "Generative Edit (Qwen-Image-2.1, up to 9 references)",
+    "family": "qwen-image-2.1",
+    "task": "edit",
+    "license": "research",
+    "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_bf16.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_bf16.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
+    ],
+    "notes": "ComfyUI's official 'Image Edit (Qwen Image 2.1)' template (image_qwen_image_2_1_image_edit.json) without its optional prompt-enhancement encoder: UNETLoader → QwenImage21Cache, CLIPLoader type qwen_image, TextEncodeQwenImage21 (resolution 0 keeps the inputs' sizes) whose grouped `images` input takes the picture as images.image_1 and up to nine references as images.image_2…images.image_10 (the official template's limit of ten images); its third output is the empty latent sized to image_1. KSampler euler/simple 25 steps CFG 1, VAEDecode. The official notes say to name the images in the prompt as <image1>, <image2>, …; image 1 is the picture being edited. References not given are pruned with their LoadImage node. Verified against a live server's /object_info on 2026-10-11.",
+    "creator": "Alibaba Qwen",
+    "description": "In-context edit with up to nine reference images",
+    "badges": [
+      "references"
+    ],
+    "references": {
+      "max": 9
+    },
+    "estimatedSeconds": {
+      "base": 1.5,
+      "perMegapixel": 4.5,
+      "perReference": 2
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
+  }
+}

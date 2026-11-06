@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/angles",
+    "name": "Generative Angles (Qwen-Image-Edit-2511, Multiple Angles LoRA)",
+    "family": "qwen-image-edit-2511",
+    "task": "edit",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Multiple Angles LoRA is Apache-2.0 (fal, huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA, read 2026-10-12); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 4,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "qwen-image-edit-2511-multiple-angles-lora.safetensors"
+      },
+      {
+        "placeholder": "lightning",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+      }
+    ],
+    "notes": "The LoRA authors' own ComfyUI graph (comfyui-workflow-multiple-angles.json in the model repo, read 2026-10-12): the Multiple Angles LoRA then the 4-step Lightning LoRA on the model (both at strength 1), ModelSamplingAuraFlow 3.1, CFGNorm, the picture scaled by FluxKontextImageScale into both TextEncodeQwenImageEditPlus encoders and VAE-encoded as the latent, 4 steps euler/simple at CFG 1. The prompt is the LoRA's fixed vocabulary, `<sks> [azimuth] [elevation] [distance]` (8 × 4 × 3 = 96 cameras), built by `generate.angles` from rotation, tilt and zoom, so it gets no prompt format. Needs `qwen-image-edit-2511-multiple-angles-lora.safetensors` in ComfyUI/models/loras (the app ships no weights).",
+    "creator": "fal (LoRA), Alibaba Qwen",
+    "description": "Moves the camera around the subject: 8 directions, 4 heights, 3 distances",
+    "badges": [
+      "fast"
+    ],
+    "estimatedSeconds": {
+      "base": 5.5,
+      "perMegapixel": 3.5
+    },
+    "pages": [
+      "angles"
+    ],
+    "parameters": []
+  }
+}

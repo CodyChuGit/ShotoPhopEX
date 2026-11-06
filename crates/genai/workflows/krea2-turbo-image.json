@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "id": "krea2-turbo/image",
+    "name": "Generate Image (Krea 2 Turbo)",
+    "family": "krea2",
+    "task": "image",
+    "license": "community",
+    "licenseNote": "Krea 2 Community License (Krea.ai, 2026-06-22): open weights, commercial use allowed with conditions (reported revenue cap, content-filtering duty, derivative naming). Read krea.ai/krea-2-licensing before shipping a product on it.",
+    "needsImage": false,
+    "needsMask": false,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "krea2_turbo_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_4b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "wan_2.1_vae.safetensors"
+      }
+    ],
+    "notes": "Node names and settings follow ComfyUI's official 'Text to Image (Krea-2 Turbo)' template (image_krea2_turbo_t2i.json): UNETLoader, CLIPLoader type krea2, CLIPTextEncode, ConditioningZeroOut as the negative (Turbo runs at CFG 1, so a negative prompt has no effect), EmptyLatentImage, KSampler euler/simple 8 steps denoise 1, VAEDecode. The template's optional prompt-enhance step (TextGenerate on the Qwen3-VL encoder) and style LoRA switch are left out; prompt enhancement belongs to the assistant work (proposal L2).",
+    "creator": "Krea",
+    "description": "Fast, photographic text to image",
+    "badges": [
+      "fast"
+    ],
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 2,
+      "perMegapixel": 5
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
+  }
+}

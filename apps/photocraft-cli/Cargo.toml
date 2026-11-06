@@ -1,6 +1,6 @@
 [package]
 name = "photocraft-cli"
-description = "Headless Photocraft: convert, inspect, run commands, batch, MCP server"
+description = "Headless PhotoCraft: convert, inspect, run commands, batch, MCP server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,8 @@ build = "build.rs"
 # Open HEIC/HEIF photos (the optional photocraft-heif crate). Not default so distributors choose
 # it; official builds (CI, packaging/, release) build with `--features heif`.
 heif = ["photocraft-codecs/heif"]
+# The native worker serves Qwen-Image-2.1 too (needs nvcc; see crates/genai/Cargo.toml).
+native-diffusion = ["photocraft-genai/native-diffusion"]
 
 [lints]
 workspace = true
@@ -25,11 +27,24 @@ path = "src/main.rs"
 [dependencies]
 photocraft-automation = { path = "../../crates/automation" }
 photocraft-engine = { workspace = true }
+photocraft-genai = { workspace = true }
 photocraft-io = { workspace = true }
 photocraft-format = { path = "../../crates/format" }
 photocraft-codecs = { workspace = true }
+clap = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+# The in-process fake native worker, for the batch tests that run generative steps.
+photocraft-genai = { workspace = true, features = ["fake-server"] }
+# Synthetic camera raws (#7789).
+photocraft-raw = { workspace = true, features = ["testgen"] }
+# Shell completions and man pages (examples/man-and-completions.rs, for the packages); not in
+# the binary.
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for photocraft-cli.exe; build.rs only uses it when targeting Windows.

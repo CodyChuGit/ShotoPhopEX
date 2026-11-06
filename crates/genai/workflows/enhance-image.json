@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "id": "enhance/image",
+    "name": "Prompt Enhancer for text to image (Qwen3-VL 4B)",
+    "family": "qwen3-vl",
+    "task": "text",
+    "license": "permissive",
+    "licenseNote": "Qwen3-VL-4B is Apache-2.0 (Alibaba Qwen, 2025-10); the file is the one Krea 2's templates use as their text encoder. The app ships no weights.",
+    "needsImage": false,
+    "needsMask": false,
+    "defaults": {
+      "steps": 0,
+      "guidance": 0.0
+    },
+    "models": [
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_4b_fp8_scaled.safetensors"
+      }
+    ],
+    "notes": "Prompt expansion without a picture, as ComfyUI's official Krea 2 template does it: TextGenerate on the Qwen3-VL 4B encoder with the engine's instructions as the system turn (`system`) and the user's idea as the user turn (`prompt`), temperature 0.3, at most 220 tokens (about 1.5–2 s on the 5090). PreviewAny reports the paragraph in the history. `thinking` is true on purpose (see enhance/edit: the node's thinking=false appends an empty <think> block this non-thinking Instruct model cannot follow). The engine also uses this graph to rewrite an edit instruction blind when no picture is given.",
+    "creator": "Alibaba Qwen",
+    "description": "Expands an idea into a detailed prompt with the Qwen3-VL 4B encoder",
+    "badges": [],
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "enhance"
+    ],
+    "parameters": [
+      "system"
+    ]
+  }
+}

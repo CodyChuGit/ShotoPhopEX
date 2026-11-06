@@ -1,0 +1,170 @@
+//! SAM 3.1 CLIP in f32, with a resizer following the checkpoint compute precision.
+
+use crate::linear::Linear;
+use std::path::Path;
+
+use anyhow::{Result, ensure};
+use candle_core::{Device, Tensor};
+use candle_nn::{Embedding, LayerNorm, Module};
+
+use crate::{prompt::Loader, weights::split_qkv};
+
+const CONTEXT: usize = 32;
+const WIDTH: usize = 1024;
+const HEADS: usize = 16;
+const HEAD_DIM: usize = 64;
+
+/// The fixed-context CLIP encoder and language projection, without pooled CLIP output.
+/// CLIP stays f32; an explicitly selected F16 CUDA checkpoint also converts the resizer.
+pub struct TextEncoder {
+    tokens: Embedding,
+    positions: Tensor,
+    blocks: Vec<Block>,
+    final_norm: LayerNorm,
+    resizer: Linear,
+}
+
+impl TextEncoder {
+    /// Load raw SAM checkpoint names and cast the selected parameters to f32.
+    /// Buffered loading avoids unsafe memory mapping and does not upload unrelated weights.
+    pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self> {
+        Self::from_checkpoint(&crate::weights::Checkpoint::open(path)?, device)
+    }
+
+    /// Load this part from the shared checkpoint buffer.
+    pub fn from_checkpoint(checkpoint: &crate::weights::Checkpoint, device: &Device) -> Result<Self> {
+        let loader = Loader { checkpoint, device };
+        let lang = "detector.backbone.language_backbone";
+        let encoder = format!("{lang}.encoder");
+        let tokens = Embedding::new(loader.get(&format!("{encoder}.token_embedding.weight"), &[49408, WIDTH])?, WIDTH);
+        let positions = loader.get(&format!("{encoder}.positional_embedding"), &[CONTEXT, WIDTH])?;
+        let blocks = (0..24).map(|i| Block::load(&loader, &format!("{encoder}.transformer.resblocks.{i}"))).collect::<Result<_>>()?;
+        Ok(Self {
+            tokens,
+            positions,
+            blocks,
+            final_norm: loader.norm(&format!("{encoder}.ln_final"), WIDTH)?,
+            resizer: loader.linear(&format!("{lang}.resizer"), WIDTH, 256)?,
+        })
+    }
+
+    /// Encode one already-tokenized prompt as `[1,32,256]` and its unchanged validity mask.
+    /// Mask entries mark valid keys; padded queries still produce features, as in ComfyUI.
+    pub fn encode(&self, ids: &[u32; CONTEXT], mask: &[bool; CONTEXT]) -> Result<(Tensor, [bool; CONTEXT])> {
+        ensure!(ids.iter().all(|&id| id < 49408), "CLIP token id exceeds vocabulary");
+        let device = self.positions.device();
+        let ids = Tensor::from_slice(ids, (1, CONTEXT), device)?;
+        let mut x = self.tokens.forward(&ids)?.broadcast_add(&self.positions)?;
+        // ComfyUI adds separate finite padding and causal biases; their overlap is -inf.
+        let bias: Vec<f32> =
+            (0..CONTEXT).flat_map(|q| (0..CONTEXT).map(move |k| if mask[k] { 0.0 } else { -f32::MAX } + if k > q { -f32::MAX } else { 0.0 })).collect();
+        let bias = Tensor::from_vec(bias, (1, 1, CONTEXT, CONTEXT), device)?;
+        for block in &self.blocks {
+            x = block.forward(&x, &bias)?;
+        }
+        Ok((self.resizer.forward(&self.final_norm.forward(&x)?.to_dtype(self.resizer.weight().dtype())?)?, *mask))
+    }
+}
+
+struct Block {
+    norm1: LayerNorm,
+    q: Linear,
+    k: Linear,
+    v: Linear,
+    out: Linear,
+    norm2: LayerNorm,
+    fc1: Linear,
+    fc2: Linear,
+}
+
+impl Block {
+    fn load(loader: &Loader<'_>, p: &str) -> Result<Self> {
+        let (qw, kw, vw) = split_qkv(&loader.get(&format!("{p}.attn.in_proj_weight"), &[3 * WIDTH, WIDTH])?)?;
+        let (qb, kb, vb) = split_qkv(&loader.get(&format!("{p}.attn.in_proj_bias"), &[3 * WIDTH])?)?;
+        Ok(Self {
+            norm1: loader.norm(&format!("{p}.ln_1"), WIDTH)?,
+            q: Linear::new(qw.contiguous()?, Some(qb))?,
+            k: Linear::new(kw.contiguous()?, Some(kb))?,
+            v: Linear::new(vw.contiguous()?, Some(vb))?,
+            out: loader.linear(&format!("{p}.attn.out_proj"), WIDTH, WIDTH)?,
+            norm2: loader.norm(&format!("{p}.ln_2"), WIDTH)?,
+            fc1: loader.linear(&format!("{p}.mlp.c_fc"), WIDTH, 4096)?,
+            fc2: loader.linear(&format!("{p}.mlp.c_proj"), 4096, WIDTH)?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor, bias: &Tensor) -> Result<Tensor> {
+        let normalized = self.norm1.forward(x)?;
+        let heads = |projection: &Linear| -> candle_core::Result<Tensor> {
+            projection.forward(&normalized)?.reshape((1, CONTEXT, HEADS, HEAD_DIM))?.transpose(1, 2)?.contiguous()
+        };
+        let (q, k, v) = (heads(&self.q)?, heads(&self.k)?, heads(&self.v)?);
+        let scores = (q.matmul(&k.transpose(2, 3)?)? * (1.0 / (HEAD_DIM as f64).sqrt()))?.broadcast_add(bias)?;
+        let attention = candle_nn::ops::softmax_last_dim(&scores)?.matmul(&v)?;
+        let attention = attention.transpose(1, 2)?.contiguous()?.reshape((1, CONTEXT, WIDTH))?;
+        let x = (x + self.out.forward(&attention)?)?;
+        let hidden = self.fc1.forward(&self.norm2.forward(&x)?)?;
+        let activated = (&hidden * candle_nn::ops::sigmoid(&(&hidden * 1.702)?)?)?;
+        Ok((&x + self.fc2.forward(&activated)?)?)
+    }
+}
+
+/// Local CLIP BPE tokenizer with the worker's fixed 32-token window.
+pub struct ClipTokenizer(tokenizers::Tokenizer);
+impl ClipTokenizer {
+    /// Read a SAM 3.1 model folder's tokenizer.json, retaining its normalization and BPE rules, or, for a
+    /// folder, assemble the same tokenizer from its `vocab.json` and `merges.txt` (ComfyUI's
+    /// `comfy/sd1_tokenizer`: no file of ours needed beside a ComfyUI install).
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if path.is_dir() {
+            return Self::from_vocab_dir(path);
+        }
+        Ok(Self(tokenizers::Tokenizer::from_file(path).map_err(|e| anyhow::anyhow!("{e}"))?))
+    }
+
+    /// OpenAI CLIP's byte-level BPE (NFC, whitespace runs to one space, lowercase, CLIP's split
+    /// pattern, `</w>` word ends) from `dir`'s vocabulary and merges, as CLIP's tokenizer.json.
+    pub fn from_vocab_dir(dir: &Path) -> Result<Self> {
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).map_err(|e| anyhow::anyhow!("read {}: {e}", dir.join(f).display()));
+        let vocab: serde_json::Value = serde_json::from_str(&read("vocab.json")?)?;
+        let merges: Vec<serde_json::Value> = read("merges.txt")?
+            .lines()
+            .filter(|l| !l.starts_with("#version") && !l.is_empty())
+            .map(|l| l.split_once(' ').map(|(a, b)| serde_json::json!([a, b])).ok_or_else(|| anyhow::anyhow!("merges.txt: no pair in {l:?}")))
+            .collect::<Result<_>>()?;
+        let special = |id: u32, content: &str, normalized: bool| serde_json::json!({"id": id, "content": content, "single_word": false, "lstrip": false, "rstrip": false, "normalized": normalized, "special": true});
+        let json = serde_json::json!({
+            "version": "1.0",
+            "truncation": null,
+            "padding": null,
+            "added_tokens": [special(49406, "<|startoftext|>", true), special(49407, "<|endoftext|>", false)],
+            "normalizer": {"type": "Sequence", "normalizers": [{"type": "NFC"}, {"type": "Replace", "pattern": {"Regex": r"\s+"}, "content": " "}, {"type": "Lowercase"}]},
+            "pre_tokenizer": {"type": "Sequence", "pretokenizers": [
+                {"type": "Split", "pattern": {"Regex": r"<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"}, "behavior": "Removed", "invert": true},
+                {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": true},
+            ]},
+            "post_processor": {"type": "RobertaProcessing", "sep": ["<|endoftext|>", 49407], "cls": ["<|startoftext|>", 49406], "trim_offsets": false, "add_prefix_space": false},
+            "decoder": {"type": "ByteLevel", "add_prefix_space": true, "trim_offsets": true, "use_regex": true},
+            "model": {"type": "BPE", "dropout": null, "unk_token": "<|endoftext|>", "continuing_subword_prefix": "", "end_of_word_suffix": "</w>",
+                "fuse_unk": false, "byte_fallback": false, "ignore_merges": false, "vocab": vocab, "merges": merges},
+        });
+        Ok(Self(
+            tokenizers::Tokenizer::from_bytes(serde_json::to_vec(&json)?)
+                .map_err(|e| anyhow::anyhow!("assemble the CLIP tokenizer from {}: {e}", dir.display()))?,
+        ))
+    }
+    /// Disable special-token insertion, keep 30 pieces, then add BOS/EOS and zero padding.
+    pub fn encode(&self, text: &str) -> Result<([u32; CONTEXT], [bool; CONTEXT])> {
+        let enc = self.0.encode(text, false).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut ids = [0; CONTEXT];
+        let mut valid = [false; CONTEXT];
+        ids[0] = 49406;
+        let pieces = enc.get_ids();
+        let n = pieces.len().min(CONTEXT - 2);
+        ids[1..n + 1].copy_from_slice(&pieces[..n]);
+        ids[n + 1] = 49407;
+        valid[..n + 2].fill(true);
+        Ok((ids, valid))
+    }
+}

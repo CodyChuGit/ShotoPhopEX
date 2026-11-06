@@ -1,13 +1,15 @@
-PhotoCraft app icon (photocraft.svg, photocraft-small.svg and every file derived from them in
+ShotoPhopEX app icon (photocraft.svg, photocraft-small.svg and every file derived from them in
 this directory: photocraft-1024.png, photocraft.icns, photocraft.ico, hicolor/).
 
-Original artwork made for this project by the project owner: an engraving-style drawing created
-in ArtCraft, then vectorised. No third-party material. Licensed like the rest of PhotoCraft,
-under either of
+Original artwork made for this branch (2026-10-09, redrawn 2026-10-29 and 2026-11-01): a navy
+rounded tile with the letters "Sp", rendered by packaging/icon-tile.py from a bold sans (this
+render: Inter Display Bold, SIL Open Font License; rendered letters are not font software). No third-party material; the
+"Ps" mark and the icon artwork of Adobe Photoshop are Adobe's trademarks and are not reproduced.
+Licensed like the rest of the project, under either of
 
   * Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
   * MIT license (https://opensource.org/licenses/MIT)
 
 at your option.
 
-Regenerate the derived files with packaging/icons.sh.
+Regenerate the derived files with packaging/icon-px.py and `cargo xtask ico`.

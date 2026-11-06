@@ -1,0 +1,42 @@
+{
+  "meta": {
+    "id": "sam3.1/segment",
+    "name": "Select by Text (SAM 3.1)",
+    "family": "sam3.1",
+    "task": "segment",
+    "license": "community",
+    "licenseNote": "SAM 3.1 (Meta, 2026-03-27) ships under the SAM License: research and commercial use allowed with no thresholds; military, nuclear, espionage and weapons uses banned; the licence travels with any redistribution; Meta may change the terms. The app ships no weights.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 1,
+      "guidance": 0.0
+    },
+    "models": [
+      {
+        "placeholder": "ckpt",
+        "folder": "checkpoints",
+        "default": "sam3.1_multiplex_fp16.safetensors"
+      }
+    ],
+    "notes": "Node names follow ComfyUI's official 'Image Segment (SAM3)' template (utility_image_segment_sam3.json): CheckpointLoaderSimple loads the SAM 3.1 checkpoint (MODEL + CLIP), CLIPTextEncode on that CLIP turns the phrase into conditioning (≤ 32 tokens; comma-separated terms; 'term:N' caps instances), SAM3_Detect returns one mask per instance (individual_masks true) after 2 decoder refinement passes. MaskToImage + SaveImage write one PNG per instance; PhotoCraft reads each as coverage, picks an instance or unions them, and combines with the current selection.",
+    "creator": "Meta",
+    "description": "Finds the objects a phrase names",
+    "badges": [],
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1.5,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "select",
+      "matte"
+    ],
+    "parameters": [
+      "threshold"
+    ]
+  }
+}

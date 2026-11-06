@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "id": "qwen-2.1/expand",
+    "name": "Generative Expand (Qwen-Image-2.1)",
+    "family": "qwen-image-2.1",
+    "task": "expand",
+    "license": "research",
+    "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
+    "needsImage": true,
+    "needsMask": true,
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
+    },
+    "expandMargin": 1.0,
+    "promptFormat": "Extend this image beyond its current edges with {prompt}, continuing the scene naturally and matching its perspective, lighting and style.",
+    "promptFormatImperative": "{prompt}. Extend the image beyond its current edges, continuing the scene naturally and matching its perspective, lighting and style.",
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_bf16.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_bf16.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
+    ],
+    "notes": "Qwen-Image-2.1 edits in context and regenerates the whole picture, so an expand gives it the picture alone as its reference (ImageCrop at {{ref_x}},{{ref_y}} {{ref_w}}×{{ref_h}}: the canvas's new area, prefilled with replicated edge colours or grey, would otherwise come back as content, tried 2026-10-20) and samples a latent of the whole canvas's size (EmptyLatentImage {{width}}×{{height}} instead of the encoder node's own latent); the editor then masks the result to the new area. On the native engine the picture's tokens sit at their own position inside the canvas (the reference's offset), so an asymmetric expand lines up; ComfyUI's TextEncodeQwenImage21 centres every reference on the target, so through ComfyUI this template lines up for symmetric expands only. The selection mask is not sent to the model (needsMask keeps the engine's expand request shape). expandMargin 1: the whole picture goes along as the reference; shown a strip of it, the model painted a second fox into a one-sided expansion (2026-10-20). Nodes verified against a live server's /object_info on 2026-10-11 (the fill graph's) plus ImageCrop and EmptyLatentImage.",
+    "creator": "Alibaba Qwen",
+    "description": "Qwen-Image-2.1 continues the scene in context: quick",
+    "badges": [],
+    "estimatedSeconds": {
+      "base": 8,
+      "perMegapixel": 22
+    },
+    "pages": [
+      "expand"
+    ],
+    "parameters": []
+  }
+}

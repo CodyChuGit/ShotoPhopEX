@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "id": "qwen-2.1/image-ref",
+    "name": "Image from References (Qwen-Image-2.1)",
+    "family": "qwen-image-2.1",
+    "task": "image",
+    "license": "research",
+    "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
+    "needsImage": false,
+    "needsMask": false,
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_bf16.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_bf16.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
+    ],
+    "notes": "A new picture at the asked size from one to nine reference pictures, the Qwen-Image-2.1 way: the text-to-image template (qwen-2.1/image) with the references on TextEncodeQwenImage21's images inputs and its vae, as the official edit template (image_qwen_image_2_1_edit.json) feeds them, and the empty latent at width × height instead of the first picture's size. Made for the Rust rebuild (docs/comfy/goals/rust-rebuild.md R2) so Generate Image with references stops needing 2511 on ComfyUI; the native worker (genai-native gn-diffusion qwen-2.1/image-ref) is its main route. The ComfyUI graph uses only nodes and inputs the shipped 2.1 templates use; this combination of them was not run live.",
+    "creator": "Alibaba Qwen",
+    "description": "A new picture from up to nine reference images",
+    "badges": [
+      "references"
+    ],
+    "references": {
+      "max": 9,
+      "min": 1
+    },
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 6,
+      "perMegapixel": 10,
+      "perReference": 4
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
+  }
+}

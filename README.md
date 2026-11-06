@@ -1,429 +1,598 @@
 <p align="center">
-  <a href="https://getartcraft.com/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
-      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
-    </picture>
-  </a>
+  <img alt="ShotoPhopEX" src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png" width="120">
 </p>
 
-<h1 align="center">PhotoCraft</h1>
+<h1 align="center">ShotoPhopEX</h1>
 
 <p align="center">
-  <b>Image editing; an open-source, clean-room reimplementation of Adobe Photoshop, rebuilt in pure Rust.</b><br>
-  Layers, masks, adjustment layers, layer styles, type, vectors, brushes and real PSD files,<br>
-  in a native app written entirely in Rust. Open source, offline, and yours.
+  <b>The layered image editor with a generative AI studio inside it.</b><br>
+  Fill, Expand, Remove, Edit, Split into Layers and text to image, on open-weight models,<br>
+  running on your own GPU. Written in Rust. No cloud, no account, no credits, no Python, no ComfyUI.
 </p>
 
 <p align="center">
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
-  <img alt="macOS · Windows · Linux · FreeBSD · Web" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20FreeBSD%20%C2%B7%20Web-native-2f7bf5?style=flat-square">
+  <img alt="Runs locally on NVIDIA RTX" src="https://img.shields.io/badge/runs%20on-NVIDIA%20RTX-76b900?style=flat-square&logo=nvidia&logoColor=white">
+  <img alt="12 GB cards supported with MOSS" src="https://img.shields.io/badge/from-12%20GB%20VRAM-76b900?style=flat-square&logo=nvidia&logoColor=white">
+  <img alt="No Python" src="https://img.shields.io/badge/Python-none-3a3a3a?style=flat-square&logo=python&logoColor=white">
+  <img alt="Faster than ComfyUI" src="https://img.shields.io/badge/vs%20ComfyUI-faster%20on%2011%20of%2013-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: early alpha" src="https://img.shields.io/badge/status-early%20alpha-d69e2e?style=flat-square">
+  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-d69e2e?style=flat-square">
+  <a href="https://github.com/CodyChuGit/ShotoPhopEX/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/CodyChuGit/ShotoPhopEX?style=flat-square&logo=github"></a>
 </p>
 
 <p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
-</p>
-
-<p align="center">
-  <a href="https://getartcraft.com/apps/photocraft"><b>PhotoCraft on getartcraft.com</b></a> ·
-  <a href="https://getartcraft.com/">ArtCraft</a> ·
-  <a href="https://getartcraft.com/apps">All Crafting Apps</a>
+  <a href="#-see-it-work">Demos</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="#-runs-on-your-card">Your GPU</a> ·
+  <a href="#-benchmarks">Benchmarks</a> ·
+  <a href="#-quick-start">Quick start</a> ·
+  <a href="#-models">Models</a> ·
+  <a href="#-roadmap">Roadmap</a> ·
+  <a href="#-faq">FAQ</a>
 </p>
 
 <br>
 
 <p align="center">
-  <img src="docs/images/photocraft-demo.jpg" alt="PhotoCraft editing Hokusai's The Great Wave: a caption card with a drop shadow, Title and Credit type layers, Vibrance and Curves adjustment layers, and the Curves editor drawn over the image's histogram" width="100%">
+  <img src="docs/images/genai/split-layers.gif" alt="Split into Layers on a street café photo: every person and object comes out on its own layer over a repainted background, and the Layers panel fills up as it works" width="100%">
   <br>
-  <sub>A caption card with a drop shadow, live type, and Vibrance and Curves adjustment layers, with the Curves editor open.<br>
-  <i>The Great Wave off Kanagawa</i>, Katsushika Hokusai, c. 1831</sub>
-</p>
-
-> [!NOTE]
-> **ArtCraft is a community of artists from all walks of life.** Digital, generative, music,
-> games &mdash; if you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
-
-<p align="center">
-  <a href="#features">Features</a> ·
-  <a href="#everything-in-the-box">Everything in the box</a> ·
-  <a href="#psd-without-compromise">PSD</a> ·
-  <a href="#built-for-agents">Agents</a> ·
-  <a href="#under-the-hood">Under the hood</a> ·
-  <a href="#get-started">Get started</a> ·
-  <a href="#downloads">Downloads</a> ·
-  <a href="#the-crafting-apps">Crafting Apps</a> ·
-  <a href="https://discord.gg/artcraft">Discord</a>
+  <sub><b>Split into Layers</b>: one click turns this café photo into a stack of cut-out layers (people, tables, chairs, a bicycle, a dog) over a repainted background, shown here hidden one by one. Recorded in the app on an RTX 5090; the 3-minute wait is sped up.</sub>
 </p>
 
 <br>
+
+> **Photoshop-style generative tools, without the cloud.** ShotoPhopEX is a full layered editor
+> (layers, masks, adjustment layers, type, vectors, brushes, real PSD files) with Generative
+> Fill, Expand, Remove, Edit, Split into Layers and text to image built in. Every model runs on
+> your own NVIDIA card through a native Rust engine with its own CUDA kernels, and every result
+> lands on its own masked layer, so the original pixels never change.
 
 <table>
   <tr>
     <td width="25%" valign="top">
-      <h3>🎛️ Familiar by design</h3>
-      The menus, shortcuts, panels and tools are where your hands expect them, from ⌘J to ⇧⌘D. If you know Photoshop, you already know PhotoCraft.
+      <h3>🎨 The tools artists use</h3>
+      Fill, Expand, Remove, Edit, Split into Layers, Clown Pass, Upscale, Angles and Select by text, all from a selection and a prompt.
     </td>
     <td width="25%" valign="top">
-      <h3>⚡ Native and fast</h3>
-      A GPU compositor on wgpu (Metal, Vulkan, DX12, WebGPU), copy-on-write tiles and multithreaded filters. No Electron, no web view, no waiting.
+      <h3>⚡ Faster than ComfyUI</h3>
+      Our own int8 kernels, resident encoders and merged LoRAs: a Krea 2 picture in 3 s, a MOSS Turbo picture in 2 s, Upscale 2× in 24 s against ComfyUI's 44 s.
     </td>
     <td width="25%" valign="top">
-      <h3>🗂️ Real PSD files</h3>
-      Open, edit and save layered Photoshop documents. Re-saving keeps the render of 307 of the 309 psd-tools test files.
+      <h3>🔒 Local and private</h3>
+      One executable plus NVIDIA's libraries. Nothing leaves your PC, and there is no account, subscription or credit counter.
     </td>
     <td width="25%" valign="top">
       <h3>🤖 Agent-ready</h3>
-      Every action is a command, so you can drive the same engine from the UI, the CLI, a JSON control channel or an MCP server.
+      Every action is a command, so the UI, the CLI and an MCP server can all drive the same 500+ commands.
     </td>
   </tr>
 </table>
 
-<br>
+## 🎬 See it work
 
-## Features
+Every clip below was recorded in the real app on one RTX 5090, at real speed unless it says
+otherwise. The photos themselves were generated in the app, so no stock images are involved.
 
-Every screenshot here is the real app at work on public-domain art, rendered offscreen through its control channel.
+### New this week
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/photocraft-adjustments.jpg" alt="Monet's Impression, Sunrise with Levels and Vibrance adjustment layers; the Levels editor and the Histogram panel with mean, standard deviation and median are open on the right" width="100%">
-      <br>
-      <sub>Levels and Vibrance adjustment layers, with the live Histogram panel.<br><i>Impression, Sunrise</i>, Claude Monet, 1872</sub>
-      <h3>Edit without regret</h3>
-      Adjustment layers keep every edit live. Stack Levels, Curves, Vibrance, Hue/Saturation and a dozen more, mask them to an area, reorder them, or turn them off, and your original pixels never change.
-      <br><br>
-      <b>16 adjustment layers</b> that also apply directly to pixels, including Curves with per-channel editing, Levels with a live histogram, Black &amp; White, Channel Mixer, Gradient Map, Photo Filter, Selective Color and Color Lookup (.cube, .3dl, .look). Plus Shadows/Highlights, Replace Color, Match Color, HDR Toning, Desaturate and Equalize.
+      <img src="docs/images/genai/object-select.gif" alt="The Object Selection tool hovering over a café scene: each object it would select lights up in its own colour, then a click selects one, and with Parts on it picks a head or hair instead of the whole person" width="100%">
+      <b>Object Selection, calmer and finer.</b> Hover, and what a click would take lights up in
+      its own colour about half a second after the pointer rests. Turn on <b>Parts</b> to pick a
+      head or hair, not the whole person.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/photocraft-layer-styles.jpg" alt="The Layer Style dialog editing an Outer Glow on the EARTHRISE type layer, with Stroke also enabled, over the Apollo 8 Earthrise photograph" width="100%">
-      <br>
-      <sub>Outer Glow and Stroke on a live type layer, in the Layer Style dialog.<br><i>Earthrise</i>, William Anders / NASA, 1968</sub>
-      <h3>Styles that sell the shot</h3>
-      Drop Shadow, Inner Shadow, Outer and Inner Glow, Bevel &amp; Emboss, Satin, Stroke, and Color, Gradient and Pattern Overlay, live on any layer, including type. Patterns come from a library (built-ins, Edit › Define Pattern, <code>.pat</code> import/export) and PSD <code>Patt</code> blocks.
-      <br><br>
-      Copy and paste styles between layers, hide all effects at once, and open styles straight from your PSDs, rendered to match Photoshop.
+      <img src="docs/images/genai/clown-pass.gif" alt="Clown Pass: every person and object in the photo is selected at once and placed on its own coloured layer inside a Clown Pass group" width="100%">
+      <b>Clown Pass.</b> Every person and thing in the picture, each on its own colour-coded,
+      edge-matted layer: the ID pass compositors know. 40 layers from a busy café in about 10 s.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/photocraft-masks.jpg" alt="Vermeer's Girl with a Pearl Earring: an elliptical selection around the face, and a Hue/Saturation layer with an elliptical mask that turns everything outside the face gray" width="100%">
-      <br>
-      <sub>An elliptical selection becomes the mask of a Hue/Saturation layer, so only the face keeps its color.<br><i>Girl with a Pearl Earring</i>, Johannes Vermeer, c. 1665</sub>
-      <h3>Selections that understand your image</h3>
-      Marquees, lassos and the Magic Wand for precision; Quick Selection, Object Selection and Select Subject when you want the computer to do the tracing; Select and Mask to refine hair-fine edges.
-      <br><br>
-      Feather, expand, contract, smooth, grow, reselect. Turn any selection into a layer mask, a vector path or a shape. Smart selection runs on your machine, with no cloud and no account.
+      <img src="docs/images/genai/generative-remove.gif" alt="A rough selection around an object, then right-click, Generative Remove: the object disappears and the background continues behind it" width="100%">
+      <b>Generative Remove</b>, right from the selection's right-click menu. Lasso the bin,
+      and 10 s later the beach carries on behind it.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/photocraft-type.jpg" alt="Bierstadt's Among the Sierra Nevada with the headline SIERRA NEVADA being edited on the canvas in Georgia, a byline, and a paragraph caption; the Character and Paragraph controls are open" width="100%">
-      <br>
-      <sub>A headline edited in place, with a byline and a paragraph of body text.<br><i>Among the Sierra Nevada, California</i>, Albert Bierstadt, 1868</sub>
-      <h3>Type that sets beautifully</h3>
-      Point and paragraph text, edited right on the canvas, with full Character and Paragraph controls: font, weight, size, leading, tracking, alignment and colour.
-      <br><br>
-      Type layers stay editable, take layer styles, and round-trip through PSD.
+      <img src="docs/images/genai/expand.gif" alt="Generative Expand grows a portrait's canvas to the sides and the model continues the person's body and the scene past the old edges" width="100%">
+      <b>Generative Expand</b> that continues people, not just backdrops, with an outpainting
+      LoRA that keeps the original pixels in place. A 2 MP portrait grown to 3.6 MP in 32 s.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/photocraft-vector.jpg" alt="A lotus badge built from shape layers (Lotus, Water, Sun, Badge and Dotted Ring) over Monet's Water Lilies, with the lotus path's anchor points selected" width="100%">
-      <br>
-      <sub>A badge made of shape layers: a gradient-filled lotus, a star and a dotted ring.<br><i>Water Lilies</i>, Claude Monet, 1906</sub>
-      <h3>Pixel-perfect vectors</h3>
-      Rectangle, Ellipse, Triangle, Polygon, Line and the Pen tool, with resolution-independent shape layers, gradient fills, and dashed, aligned strokes.
-      <br><br>
-      Combine shapes (unite, subtract, intersect, exclude), keep paths in the Paths panel, use them as vector masks, or stroke and fill them. 116 of 116 shape layers in our PSD corpus match Photoshop's pixels.
+      <img src="docs/images/genai/krea-fill.gif" alt="Generative Fill with Krea 2 AnyPaint on a beach photo: a large lasso beside the woman is filled with a red and white striped parasol, taller than her, and a wooden lounger with a towel in its shade" width="100%">
+      <b>Krea 2 AnyPaint fill.</b> Lasso some empty sand, ask for a parasol and a lounger, and
+      Krea 2 paints them in at the right scale and light in 6.6 s.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/photocraft-filters.jpg" alt="The Twirl filter dialog at a 320 degree angle, previewing live inside an elliptical selection on Van Gogh's The Starry Night" width="100%">
-      <br>
-      <sub>Twirl previews live on the canvas, only inside the selection.<br><i>The Starry Night</i>, Vincent van Gogh, 1889</sub>
-      <h3>See it before you commit</h3>
-      Every filter dialog previews live on the canvas, through your selection. Blurs (Gaussian, Box, Motion, Radial, Surface, Smart, Lens, Shape, and the Blur Gallery: Tilt-Shift, Iris, Field, Spin, Path), sharpening, Reduce Noise, distortions (Twirl, Wave, Ripple, Displace, Shear, Zig Zag…), Pixelate, Stylize (Oil Paint, Wind, Extrude…), Render (Clouds, Fibers, Lens Flare, Lighting Effects) and more.
-      <br><br>
-      Run filters on a smart object and they stay editable: change, hide, reorder or mask them at any time.
-      <br><br>
-      Large-radius blurs use running-sum box passes across all cores: a radius-180 Gaussian on 3.6 MP takes under a second.
+      <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
+      <b>MOSS Turbo</b>, the low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card
+      and draws a picture in 1.6 s on a 5090, lettering spelled right.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/photocraft-transform.jpg" alt="Free Transform handles around a rotated copy of Ansel Adams' The Tetons and the Snake River, with the History panel listing Open, Duplicate Layer, Free Transform and other steps" width="100%">
-      <br>
-      <sub>Free Transform on a rotated print, with every step listed in History.<br><i>The Tetons and the Snake River</i>, Ansel Adams, 1942</sub>
-      <h3>Shape it any way you like</h3>
-      Free Transform with scale, rotate, skew, distort and perspective; exact 90° and 180° rotations and flips; Transform Again. Layers, type, shapes, masks and selections all transform together.
-      <br><br>
-      Full history, Toggle Last State and the History Brush mean every step can be undone, even one brush stroke at a time.
+      <img src="docs/images/genai/edit-clothing.gif" alt="A clothing edit: the jacket is selected, the Generate panel in Edit mode is asked to change it, and the person now wears a new jacket while everything else stays the same" width="100%">
+      <b>Clothing edits.</b> Select by text "denim jacket", ask for black leather, and 7 s later only
+      the jacket has changed: face, hoodie and background stay put.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/photocraft-export-light.jpg" alt="The Export As dialog in the light theme over Klimt's The Kiss: JPG at quality 90, scaled to 50 percent, with a preview and an estimated size of about 684K" width="100%">
-      <br>
-      <sub>Export As in the light theme, with a preview and a file-size estimate.<br><i>The Kiss</i>, Gustav Klimt, 1907–1908</sub>
-      <h3>Ship it anywhere</h3>
-      Export As with format, quality, transparency and scale, plus a preview and an instant file-size estimate. Quick Export to PNG in one click.
-      <br><br>
-      Choose a dark Pro theme, the airy Studio themes, or a Classic look.
+      <img src="docs/images/genai/angles.gif" alt="Generative Angles on a vintage rangefinder camera: the same camera re-rendered from the back, from a high angle and as a close-up" width="100%">
+      <b>Generative Angles.</b> Move the camera after the shot: a back view, a high angle, a
+      close-up, about 7 s each.
     </td>
   </tr>
 </table>
 
-<br>
+<p align="center">
+  <img src="docs/images/genai/quality.jpg" alt="The same prompt and seed at Image Quality Fast, Balanced and Best, side by side, with each one's time" width="100%">
+  <br>
+  <sub><b>Image Quality Fast · Balanced · Best.</b> Same prompt and seed; one switch trades seconds for detail, up to Krea 2 at about 2 MP (1440²). Times in the image were taken while recording.</sub>
+</p>
 
-## Everything in the box
+### The essentials
 
 <table>
   <tr>
-    <td width="33%" valign="top">
-      <h4>🧰 34 tools</h4>
-      Move · Rectangular and Elliptical Marquee · Lasso · Polygonal Lasso · Magnetic Lasso · Magic Wand · Quick Selection · Object Selection · Crop · Eyedropper · Brush · Pencil · Mixer Brush · Color Replacement · Eraser · Clone Stamp · Healing Brush · Spot Healing · History Brush · Gradient · Paint Bucket · Blur · Sharpen · Smudge · Dodge · Burn · Sponge · Pen · Path Selection · Type · five Shape tools · Hand · Zoom
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/select-subject.gif" alt="Select, Subject: SAM 3.1 finds the woman in the photo and draws marching ants around her in about two seconds" width="100%">
+      <b>Select › Subject with SAM 3.1.</b> One click, ready in 2.2 s cold or 0.6 s warm.
     </td>
-    <td width="33%" valign="top">
-      <h4>🖌️ A real brush engine</h4>
-      Shape Dynamics, Scattering, Texture, Dual Brush, Color Dynamics, Transfer, Brush Pose, Wet Edges, Build-up and Smoothing (including Pulled String), driven by pen pressure, tilt, rotation and direction. Brush presets, Define Brush from Selection, and deterministic, replayable strokes.
-    </td>
-    <td width="33%" valign="top">
-      <h4>🗃️ Layers, done properly</h4>
-      Groups, clipping masks, pixel and vector masks, fill layers (solid, gradient and pattern), adjustment layers, live smart objects with smart filters and lossless transforms and warps, multi-layer selection with align, distribute and link, alpha channels and Quick Mask, 27 blend modes, opacity and fill, locks, colour labels, layer filters, merge, flatten, rasterize, Layer via Copy/Cut, Paste Into.
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/generative-edit.gif" alt="The Generate panel in Edit mode: the prompt make the jacket red is typed, a live preview sharpens, and three red-jacket variations appear" width="100%">
+      <b>Edit inside a selection.</b> "Make the jacket red", with a live preview. Three
+      variations, each on its own masked layer.
     </td>
   </tr>
   <tr>
-    <td width="33%" valign="top">
-      <h4>🎨 Any colour, any depth</h4>
-      RGB, Grayscale, CMYK and Lab documents at 8, 16 and 32 bits per channel. Bit depth and colour model are runtime data, so every tool works at every depth.
-      <br><br>
-      Real ICC colour management in pure Rust: embedded profiles, Assign and Convert to Profile with all four rendering intents and black point compensation, soft proofing (⌘Y) and Gamut Warning (⇧⌘Y) on the GPU.
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/remove-before-after.png" alt="Before and after: an orange post beside the fence is gone after one Remove stroke, and the railing continues" width="100%">
+      <b>Remove</b> with one brush stroke: the post is gone and the railing carries on.
     </td>
-    <td width="33%" valign="top">
-      <h4>🗂️ Formats</h4>
-      PSD and PSB, layered TIFF (Photoshop's layer data in the TIFF, read and written in either byte order), SVG (opens as shape layers, places as a vector Smart Object), plus flat PNG, JPEG, TIFF, WebP (lossy and lossless), GIF, BMP, TGA, ICO, QOI, PNM, OpenEXR, Radiance HDR and AVIF, with symmetric read and write at 8, 16 and 32 bits, HEIC photos from iPhone and Mac (read; in official builds, an optional <code>--features heif</code> build feature), and the native <code>.pcraft</code> format.
-    </td>
-    <td width="33%" valign="top">
-      <h4>🪄 The everyday essentials</h4>
-      Auto Tone, Contrast and Color · Equalize · Image and Canvas Size · Crop and Trim · Reveal All · Edit › Fill and Stroke · Copy Merged · Paste in Place · guides, rulers, grid and snapping · Actions record and replay · a command palette (⌘K).
+    <td width="50%" valign="top">
+      <img src="docs/images/genai/generative-fill.png" alt="The edit result with the jacket now red, the selection still active and the Variations counter on 2 of 3" width="100%">
+      <b>Variations.</b> Flip between results and keep the one you like.
     </td>
   </tr>
 </table>
 
-<br>
+## ✨ Features
 
-## PSD without compromise
+| Feature | What it does | Default model | Warm time, RTX 5090 |
+|---|---|---|---|
+| **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best |
+| **MOSS Turbo** | The low-VRAM text to image: Kromoss with an 8-step DMD2 LoRA, Apache-2.0, strong lettering | Kromoss + DMD2 LoRA | **1.6 s** (1024×672) |
+| **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** |
+| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP |
+| **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s |
+| **Remove · Generative Remove** | One stroke or a selection: the object is found, named and removed with its shadow; the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** (10.2 s from a lasso) |
+| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 (MOSS Edit Turbo on small cards) | **5.1 s** (7.1 s with a text selection) · 3.8 s MOSS Edit Turbo |
+| **Generative Expand** | Grow the canvas and continue the scene, people included | Qwen-Image-2.1 + Outpaint LoRA | about 10 s at 1 MP · 32 s to 3.6 MP |
+| **Split into Layers** | Every subject on its own matted layer, nearest on top, over a repainted background; Rough, Medium or Fine detail | SAM 3.1 + ViTMatte + fill | 4.2 s for one subject · 3–3.5 min for a busy 2 MP scene |
+| **Clown Pass** | Everything in the picture on its own colour-coded, edge-matted layer, no fills | SAM 3.1 + ViTMatte | **9.5 s** (40 layers, 2 MP) |
+| **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** |
+| **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** |
+| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-2.1 edit (2511 Angles LoRA selectable) | 7.2 s |
+| **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
+| **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
-PhotoCraft's PSD support is a standalone crate written from Adobe's public specification and tested against a corpus of real-world files.
+Times are warm, measured in the app at about 1 MP unless the row says otherwise (2026-10-28 to 2026-11-06). **Bold** means faster than ComfyUI on the
+same GPU or a feature ComfyUI has no matching graph for. Every feature also takes **LoRAs** from
+your models folder, and Qwen-Image-Edit-2511 with its Lightning LoRAs is selectable for Fill, Edit,
+Remove and Expand.
 
-- **Faithful round trips:** opening and re-saving a document renders the same for 307 of the 309 files in the psd-tools test set and 169 of 170 in our mixed ag-psd/psd-tools set (`crates/io/tests/corpus.rs`; fetch the psd-tools set with `cargo xtask corpus --psd-tools`), and anything we don't model yet (raw blocks, descriptors, extras) is carried over instead of being dropped. A re-saved file is not byte-identical to its source: PhotoCraft rewrites image resources, layer records and the composite. Only the standalone `photocraft-psd` crate, parsing and writing a file without the document model, reproduces every parseable corpus file byte for byte (`crates/psd/tests/corpus.rs`).
-- **Pixels that match:** a composite oracle compares our render with Photoshop's own merged image, covering gradient interpolation (Classic, Perceptual and Linear), layer effects, shape strokes, clipping and fill opacity.
-- **Large documents:** PSB, 16 and 32-bit files, and CMYK and Lab documents open natively.
+<details>
+<summary><b>How it feels in the app</b></summary>
 
-## Built for agents
+- **Window › Generate** is the panel in the dock: a switch for Image, Fill, Edit or Expand, then
+  References (drop pictures on it), Prompt and Settings (model, quality, size, count), and one
+  **Generate** button (Ctrl+Enter). Auto names the model it will use.
+- **Image Quality** is one switch: Fast (the default), Balanced, or Best (Krea 2 at about 2 MP,
+  Qwen-Image-2.1 at 40 steps with CFG 3).
+- **Live preview** paints the picture on the canvas as it forms, at no measurable cost.
+- **Under any selection**, a task bar offers Fill or Edit right where you are working, and the
+  right-click menu has Generative Fill and Generative Remove.
+- **The Object Selection tool (W)** waits until the pointer settles, tints what a click would
+  take in a colour of its own per object, and with **Parts** picks a piece (a head, the hair).
+- **Layer › Split into Layers** asks only one thing: Rough, Medium or Fine.
+- **The Variations strip** keeps the last runs as tiles: keep one, drop one, or ask for more.
+- **Window › Generations** is the library of every run, with Recreate, Place, Save and Copy prompt.
+- **The engine dot** in the status bar shows the worker's state, with Start, Stop, Purge models
+  and Show log.
 
-Every menu item, tool and dialog runs a command from one registry of 500+ commands. The UI, the CLI, the JSON control channel and the MCP server all call the same commands, so anything you can click, a script or an AI agent can do too.
+</details>
 
-```sh
-# Headless: open, edit, save
-photocraft-cli run wave.psd \
-  --cmd filter.sharpen.smartSharpen     --params '{"amount":80}' \
-  --cmd layer.newAdjustmentLayer.curves --params '{"points":[[0,0],[64,48],[192,212],[255,255]]}' \
-  --out wave-final.png
+## 💻 Runs on your card
 
-# Apply one action list to a folder of images
-photocraft-cli batch --actions grade.json --in ./raw --out ./graded
+ShotoPhopEX is tuned on an RTX 5090 first, and it now has a real option for smaller cards too:
+**MOSS Turbo** for pictures and **MOSS Edit Turbo** for edits, both Apache-2.0, both inside
+about 12 GB.
 
-# Every subcommand explains itself
-photocraft-cli batch --help
+| Your card | What Auto uses | Status |
+|---|---|---|
+| **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
+| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟡 should work, not yet benchmarked |
+| **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB |
+| **Mac, 16 GB** | MOSS Turbo and MOSS Edit Turbo on MLX | ⚪ planned |
+| **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
 
-# Let an agent drive it over MCP (headless, or bridged to the running app)
-photocraft-cli mcp
-```
+A **memory check at first launch** reads your card's memory and picks these defaults for you;
+bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
+Integrations › Memory profile** lets you choose another.
+Nothing is ever locked: every model is bring-your-own and selectable on any card.
 
-The desktop app also offers an authenticated, loopback-only control channel (`photocraft --control`) for inspecting UI state, driving tools with pointer events, and taking offscreen screenshots. Every image in this README was rendered that way. See [`docs/control-protocol.md`](docs/control-protocol.md).
+## 📊 Benchmarks
 
-## Under the hood
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/genai/bench-5090-dark.svg">
+    <img alt="Bar chart of warm seconds per result on an RTX 5090, native engine against ComfyUI. Select by text 0.3 vs 0.6 s, Generative Fill 3.2 vs 3.3, Krea 2 text to image 3.8 vs 4.0, Qwen-Image-2.1 text to image 3.9 vs 4.2, Edit 5.1 vs 5.6, Remove Background 5.1 vs 5.5, Image from a reference 5.2 vs 5.6, 2511 edit 7.3 vs 8.4, Upscale 2x 24.2 vs 44.1." src="docs/images/genai/bench-5090-light.svg" width="100%">
+  </picture>
+</p>
 
-- **Engine first:** a pure-data document model and a command engine, with a thin egui UI on top. Layering is enforced at build time across 24 crates.
-- **Two compositors:** a CPU compositor serves as the reference oracle, and a wgpu compositor puts the canvas on the GPU. They are tested against each other.
-- **Copy-on-write tiles:** 256² sparse tiles make undo cheap and huge canvases light, and effect maps are cached per layer state.
-- **Runs in the browser:** the whole engine and UI compile to WebAssembly.
-- **Clean-room:** implemented from public specs and observed behaviour only. No proprietary code, shaders or assets.
-- **Tested:** more than 1,700 tests, including PSD round trips, synthetic generators, compositor oracles and multi-depth checks.
+Same model, same seed, same settings and the same picture on both routes, one route on the GPU at
+a time. "Warm" is the second request with a new seed (a repeated request would hit ComfyUI's
+cache). ComfyUI ran with `--fast fp8_matrix_mult`.
 
-## Get started
+| Feature (864×1152, warm) | ShotoPhopEX | ComfyUI | Speed-up |
+|---|---:|---:|---:|
+| Select by text (SAM 3.1) | **0.3 s** | 0.6 s | 2.0× |
+| Generative Fill (Qwen-Image-2.1) | **3.2 s** | 3.3 s | 1.03× |
+| Text to image (Krea 2 Turbo, 8 steps) | **3.8 s** | 4.0 s | 1.05× |
+| Text to image (Qwen-Image-2.1, 25 steps) | **3.9 s** | 4.2 s | 1.08× |
+| Generative Edit (Qwen-Image-2.1) | **5.1 s** | 5.6 s | 1.10× |
+| Remove Background (2.1 matte) | **5.1 s** | 5.5 s | 1.08× |
+| Image from a reference (Qwen-Image-2.1) | **5.2 s** | 5.6 s | 1.08× |
+| 2511 Angles (4 steps) | **4.4 s** | 4.5 s | 1.02× |
+| 2511 edit (Lightning, 8 steps) | **7.25 s** | 8.4 s | 1.16× |
+| 2511 full-quality edit (40 steps, CFG 4) | 86.8 s | 81.9 s | 0.94× |
+| Generative Upscale 2× | **24.2 s** | 44.1 s | 1.82× |
+| MOSS-Image (1024², 50 steps) | 11.0 s | 10.8 s | 0.98× |
 
-```sh
-git clone https://github.com/storytold/photocraft
-cd photocraft
-cargo run --release -p photocraft -- image.psd   # the desktop app
-cargo test --workspace                           # the test suite
-```
+Measured on an RTX 5090 (32 GB, Windows 11) on 2026-10-28 and 29. Remove Background has since
+moved to SAM 3.1 + ViTMatte (0.45 s). Split into Layers, Clown Pass and the MOSS Turbo routes have
+no ComfyUI graph to compare against, so they are listed in [Features](#-features) only. No RTX
+3090 numbers exist yet, so none are shown. Every run, its script and the raw reading are in
+[`docs/comfy/benchmarks.md`](docs/comfy/benchmarks.md).
 
-Japanese fonts for the UI and Type tool come from [craft-fonts](https://github.com/storytold/craft-fonts), an optional build input (desktop release builds always include it). Without it PhotoCraft uses your system's CJK fonts:
+<details>
+<summary><b>What makes it fast</b></summary>
 
-```sh
-git clone https://github.com/storytold/craft-fonts ../craft-fonts
-CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo run --release -p photocraft
-```
+Qwen-Image-2.1 runs as an int8 ConvRot DiT built once from the bf16 weights and cached, through
+our own kernels and a flash-attention path. The text encoder stays resident between requests,
+the conditioning is cached when only the seed changes, and LoRAs are merged into the resident
+int8 weights once instead of costing a side path every step. Qwen-Image-Edit-2511 runs
+SageAttention2 (INT8 attention) on every block where it holds the picture, and Upscale works on
+fewer, larger tiles. MOSS Edit caches its reference keys and values once per edit. Outputs were
+checked against the ComfyUI route at every step (within 0.06/255, or byte-identical).
 
-New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md), then [`docs/`](docs/).
+</details>
 
-Installers for macOS, Windows, Linux, FreeBSD and the web are attached to each [GitHub release](https://github.com/storytold/photocraft/releases). On Linux you can pick an AppImage, a `.deb`, an `.rpm`, a tarball or a Flatpak bundle. The bundle needs the freedesktop runtime from [Flathub](https://flathub.org/setup), which `flatpak` offers to install along with it:
-
-```sh
-flatpak install --user photocraft-<version>-linux-x86_64.flatpak   # or -linux-aarch64
-flatpak run ai.storyteller.photocraft
-```
-
-The AppImage needs no install: the first run registers its launcher icon and menu entry in `~/.local/share` so the dock shows PhotoCraft's icon on Wayland. Set `PHOTOCRAFT_NO_DESKTOP_INTEGRATION=1` to skip that, and see [`docs/releasing.md`](docs/releasing.md) › Linux to undo it.
-
-On macOS, the command-line tool comes as `photocraft-cli-<version>-macos-universal.zip`. The binary is signed with the same Developer ID as the app and notarized by Apple. A bare binary can't carry a stapled notarization ticket the way the DMG does, so the first time you run it macOS checks the notarization online. You can confirm it yourself:
-
-```sh
-ditto -x -k photocraft-cli-<version>-macos-universal.zip .
-spctl --assess --type install -vv photocraft-cli-<version>-macos-universal/photocraft-cli
-# ... accepted, source=Notarized Developer ID
-```
-
-On FreeBSD 14 (x86_64), the release has a tarball laid out like `/usr/local`. Install the runtime libraries, then unpack it there:
-
-```sh
-pkg install libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
-tar -xzf photocraft-<version>-freebsd-x86_64.tar.gz --strip-components 1 -C /usr/local
-photocraft
-```
-
-Maintainers: [`docs/releasing.md`](docs/releasing.md) explains how releases are built, signed and published.
+## 🚀 Quick start
 
 > [!IMPORTANT]
-> **Status:** PhotoCraft is in early alpha, and we want to be straight about where it stands: much of Photoshop's feature surface exists in some form, but **it is not yet a Photoshop replacement for daily professional work**. The biggest gaps are AI/generative features, about twenty missing tools, depth in typography and pro workflows, and plug-in compatibility. Every Photoshop menu item is wired to a command ([`docs/parity.md`](docs/parity.md)), but that measures wiring, not behaviour. The honest, dimension-by-dimension picture and where we're going next are in the [roadmap's parity assessment](docs/roadmap.md#honest-parity-assessment-2026-10-05). Expect rough edges, and please file issues (include your OS, document size, layer count and a screenshot). You can also tell us what broke on [Discord](https://discord.gg/artcraft).
+> **There is no one-click download yet.** No release has been published, so today the app is
+> built from source on Windows. Everything is in this one repository: the editor, and the
+> native generative engine in [`genai-native/`](genai-native/).
 
-## Documentation
+### What you need
 
-Developer, architecture, automation, format, and security documentation is maintained in the [PhotoCraft documentation book](book/).
-
-## Security
-
-Security architecture, threat modeling, parser hardening, fuzzing, and vulnerability reporting are covered in the [security documentation](book/src/security/) and the repository [security policy](SECURITY.md).
-
-## Test corpora
-
-PhotoCraft is tested against real files: our own Photoshop-authored oracle PSDs in
-[photocraft-corpus](https://github.com/storytold/photocraft-corpus) plus the psd-tools, ag-psd and PngSuite sets, pinned and
-sha256-verified. Fetch them with `cargo xtask corpus --all` and run the tests with
-`cargo xtask test-corpus` (details in [docs/development.md](docs/development.md#test-corpora)).
-
-## Downloads
-
-**New to PhotoCraft?** Download it from the [PhotoCraft page on getartcraft.com](https://getartcraft.com/apps/photocraft). That's the easiest way to install it.
-
-**Want a specific build or format?** On GitHub, the [latest release](https://github.com/storytold/photocraft/releases/latest) has every build listed below, and [all releases](https://github.com/storytold/photocraft/releases) has earlier versions and their notes. `<ver>` in the file names is the version number, and `SHA256SUMS.txt` lists a checksum for every file.
-
-### Windows
-
-| Build | Installer | Portable |
-|---|---|---|
-| x64 (64-bit Intel/AMD) | `photocraft-<ver>-windows-x64.msi` | `photocraft-<ver>-windows-x64-portable.zip` |
-| arm64 (Snapdragon and other ARM PCs) | `photocraft-<ver>-windows-arm64.msi` | `photocraft-<ver>-windows-arm64-portable.zip` |
-| x86 (32-bit) | `photocraft-<ver>-windows-x86.msi` | `photocraft-<ver>-windows-x86-portable.zip` |
-
-Installers and executables are code-signed.
-
-### macOS
-
-| Build | File | Notes |
-|---|---|---|
-| App, universal (Apple silicon + Intel) | `photocraft-<ver>-macos-universal.dmg` | Signed and notarized |
-| Command-line tool, universal | `photocraft-cli-<ver>-macos-universal.zip` | Signed and notarized |
-
-### Linux
-
-| Format | x86_64 | aarch64 (ARM64) | Notes |
-|---|---|---|---|
-| AppImage | `photocraft-<ver>-linux-x86_64.AppImage` | `photocraft-<ver>-linux-aarch64.AppImage` | Runs anywhere; updates itself with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) (`.zsync` files) |
-| Flatpak | `photocraft-<ver>-linux-x86_64.flatpak` | `photocraft-<ver>-linux-aarch64.flatpak` | Sandboxed; `flatpak install --user <file>` |
-| Debian/Ubuntu | `photocraft-<ver>-linux-x86_64.deb` | `photocraft-<ver>-linux-aarch64.deb` | |
-| Fedora/RHEL/openSUSE | `photocraft-<ver>-linux-x86_64.rpm` | `photocraft-<ver>-linux-aarch64.rpm` | |
-| Tarball | `photocraft-<ver>-linux-x86_64.tar.gz` | `photocraft-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
-
-### FreeBSD
-
-| Build | File |
+| | |
 |---|---|
-| x86_64 | `photocraft-<ver>-freebsd-x86_64.tar.gz` |
+| **GPU** | NVIDIA RTX with 12 GB or more (32 GB for every model at full speed). See [Runs on your card](#-runs-on-your-card). |
+| **OS** | Windows 10 or 11, x64 |
+| **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
+| **Build tools** | Git, Rust (rustup, MSVC), Visual Studio 2022 Build Tools (C++), CUDA Toolkit 13, the CUTLASS headers |
 
-### Web (WebAssembly)
+**1. Install the tools** (PowerShell, once):
 
-| Build | File | Notes |
+```powershell
+winget install Git.Git Rustlang.Rustup Nvidia.CUDA
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+git clone --depth 1 https://github.com/NVIDIA/cutlass C:\src\cutlass
+```
+
+**2. Build** (from an "x64 Native Tools Command Prompt for VS 2022"):
+
+```bat
+git clone https://github.com/CodyChuGit/ShotoPhopEX
+cd ShotoPhopEX
+set CUDA_COMPUTE_CAP=120
+set CUTLASS_DIR=C:\src\cutlass\include
+set NVCC_APPEND_FLAGS=-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17
+cargo build --release -p photocraft -p photocraft-cli --features native-diffusion
+```
+
+`CUDA_COMPUTE_CAP` is 120 for the RTX 50 series, 89 for the 40 series and 86 for the 30 series.
+The first build takes a while, because it compiles the CUDA kernels too.
+
+**3. Get the models** into one folder in ComfyUI's layout (the [model table](#-models) lists every
+file). If you already have ComfyUI, its `models` folder works as it is.
+
+**4. Run it.** Start `target\release\photocraft.exe`, open **Edit › Preferences › AI
+Integrations**, set **Models folder** and **Native runtime folders** (your CUDA Toolkit's
+`bin\x64`), then press **Generate**.
+
+<details>
+<summary><b>Make a portable folder</b> to copy to another PC</summary>
+
+```powershell
+pwsh packaging/windows/runtime.ps1 -Cuda "$env:CUDA_PATH\bin\x64"
+pwsh packaging/windows/package.ps1 -Arch x64 -Native -NoMsi -SkipBuild
+```
+
+</details>
+
+### 🤖 Or let an agent install it
+
+Open a coding agent (Claude Code, Codex, or any agent with a terminal) in an empty folder on the
+Windows PC and paste this:
+
+```text
+Install ShotoPhopEX (https://github.com/CodyChuGit/ShotoPhopEX) on this
+Windows PC and get its generative features working. Follow the README's "Quick start" and
+"Models" sections exactly. Work in this order and stop to ask me if a step fails:
+
+1. Run nvidia-smi and tell me the GPU, its memory and the driver. Stop if there is no NVIDIA GPU.
+2. Check for Git, rustup (MSVC toolchain), Visual Studio 2022 Build Tools with the C++ workload,
+   the CUDA Toolkit 13 and the CUTLASS headers. Install whatever is missing with winget, as the
+   README shows. Ask me before installing anything.
+3. Clone the repository and build photocraft and photocraft-cli with
+   --features native-diffusion from a VS 2022 x64 developer environment, setting CUDA_COMPUTE_CAP
+   for this GPU, CUTLASS_DIR and NVCC_APPEND_FLAGS as the README shows.
+4. Ask me where the models folder should go. Create the ComfyUI layout in it and download the
+   models the README lists for this card's memory (the full defaults on 24 GB or more, the MOSS
+   set on 12-16 GB) from Hugging Face. Skip files already there. If a repository is gated, tell
+   me which licence to accept and wait.
+5. Check every downloaded file's size against Hugging Face and list what you installed.
+6. Start target\release\photocraft.exe and tell me to set Edit > Preferences > AI Integrations >
+   Models folder and Native runtime folders (the CUDA Toolkit's bin\x64).
+7. When I say it is set, run one generation through photocraft-cli (see
+   `photocraft-cli run --help`) and report how long it took.
+```
+
+The agent can drive the app afterwards too, because every generative action is a command:
+
+```sh
+photocraft-cli run street.jpg \
+  --cmd select.byText  --params '{"prompt":"the parked car"}' \
+  --cmd generate.fill  --params '{"prompt":"a red vintage bicycle leaning on the wall"}' \
+  --out street-bicycle.png
+
+photocraft-cli mcp   # expose all 500+ commands, generative ones included, to an MCP agent
+```
+
+## 🧠 Models
+
+The app ships no weights. You bring them, under each model's own licence, into one folder in
+ComfyUI's layout. Most files come from the Comfy-Org repacks on Hugging Face.
+
+**Core (24 GB and up)**
+
+| Folder | File | From | Used for |
+|---|---|---|---|
+| `diffusion_models/` | `krea2_turbo_fp8_scaled.safetensors` | `Comfy-Org/Krea-2` | Generate Image (the default), AnyPaint fill |
+| `text_encoders/` | `qwen3vl_4b_fp8_scaled.safetensors` | `Comfy-Org/Krea-2` | Krea 2's text encoder, Prompt Enhance |
+| `vae/` | `qwen_image_vae.safetensors` | `Comfy-Org/Qwen-Image_ComfyUI` | Krea 2 and 2511 |
+| `loras/` | `krea2_anypaint_rank32.safetensors` | `yijunwang2/krea2-anypaint` | Generative Fill (AnyPaint) |
+| `diffusion_models/` | `qwen_image_2.1_int8_convrot.safetensors` (or `_bf16`) | `Comfy-Org/Qwen-Image-2.1` | Fill, Edit, Expand, Remove, Upscale, Best quality |
+| `text_encoders/` | `qwen3vl_8b_int8_convrot.safetensors` (or `_bf16`) | `Comfy-Org/Qwen-Image-2.1` | the 2.1 text encoder |
+| `vae/` | `qwen_image_2.1_vae_bf16.safetensors` | `Comfy-Org/Qwen-Image-2.1` | 2.1's VAE (with alpha) |
+| `loras/` | `qwen-image-2.1-outpaint-v2.safetensors`, `qwen-image-2.1-outpaint.safetensors` | `ausboss/Qwen-Image-2.1-Outpaint-LoRA` | Generative Expand |
+| `loras/` | `qwen-image-2.1-restore.safetensors` | `ausboss/Qwen-Image-2.1-Restore-LoRA` | Upscale |
+| `checkpoints/` | `sam3.1_multiplex_fp16.safetensors` | `Comfy-Org/sam3.1` | every Select, Split, Clown Pass, Remove |
+| `vitmatte/` | `model.safetensors` + `config.json` | `hustvl/vitmatte-base-composition-1k` | hair-fine edges for Split, Clown Pass, Remove Background |
+
+**Low-VRAM set (12–16 GB)**
+
+| Folder | File | From | Used for |
+|---|---|---|---|
+| `diffusion_models/` | `kromoss_int8_convrot.safetensors` | `lodestones/Kromoss` | MOSS Turbo |
+| `loras/` | `kromoss-8-steps-dmd2-lora.safetensors` | `lodestones/Kromoss` (`8-steps-dmd2-lora`) | MOSS Turbo and MOSS Edit Turbo at 8 steps |
+| `diffusion_models/` | `moss_image_sft_int8_convrot.safetensors` | `Comfy-Org/MOSS-Image` | MOSS-Image and MOSS Edit |
+| `loras/` | `moss-image-edit/adapter_model.safetensors` + `adapter_config.json` | `chinoll/Moss-Image-Edit` | MOSS Edit and MOSS Edit Turbo |
+| `text_encoders/` | `qwen3.5_9b_int8_convrot.safetensors`, plus `qwen35_tokenizer/tokenizer.json` | `Comfy-Org/MOSS-Image`; the tokenizer from `OpenMOSS-Team/MOSS-Image-SFT` | MOSS's text encoder |
+| `vae/` | `flux2-vae_small.safetensors` | `Comfy-Org/MOSS-Image` | MOSS |
+
+**Optional extras**
+
+| Folder | File | From | Used for |
+|---|---|---|---|
+| `diffusion_models/` | `qwen_image_edit_2511_fp8mixed.safetensors` | `Comfy-Org/Qwen-Image_ComfyUI` | the 2511 routes |
+| `text_encoders/` | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `Comfy-Org/Qwen-Image_ComfyUI` | every 2511 route |
+| `loras/` | `Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors`, `…-4steps-…` | `lightx2v/Qwen-Image-Edit-2511-Lightning` | 2511 at 8 or 4 steps |
+| `loras/` | `qwen-image-edit-2511-multiple-angles-lora.safetensors` | `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` | Generative Angles |
+| `loras/` | `krea2_style_reference.safetensors` | `ostris/krea2_turbo_style_reference` | Krea 2 style reference |
+| `vae_approx/` | `taew2_1.safetensors`, `taeqi2_1.safetensors` | madebyollin (MIT) | Sharp live previews |
+
+**Licences matter.** Qwen-Image-2.1 and its LoRAs are under the Qwen Research License (research
+and evaluation; commercial use needs Alibaba's agreement). Krea 2, its LoRAs and SAM 3.1 are
+under their own community licences. Kromoss, MOSS-Image, Qwen-Image-Edit-2511 and the Lightning
+and Angles LoRAs are Apache-2.0; ViTMatte is MIT; check the MOSS Edit adapter's own card. The full
+catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comfy/models.md).
+
+## 🗺️ Roadmap
+
+- [x] Every generative feature native in Rust: no ComfyUI, no Python, no ONNX Runtime
+- [x] Matching or beating ComfyUI's speed on every default feature
+- [x] LoRAs on every route, merged into the resident weights
+- [x] Live previews while generating, at no measurable cost
+- [x] Split into Layers on SAM 3.1 + fills, with a Rough / Medium / Fine scale
+- [x] Clown Pass, Generative Remove, Object Selection with Parts
+- [x] Image Quality Fast / Balanced / Best that really changes the render
+- [x] MOSS Turbo and MOSS Edit Turbo: a 12 GB mode
+- [x] **Memory check at first launch** that picks models for your card
+- [ ] **One-click "Get models"** that downloads the right pack for your card
+- [ ] **A published release:** a portable zip and an installer
+- [ ] **RTX 3090 / 4090 benchmarks**, and 4-bit weights for 16 GB cards
+- [ ] **Mac** (MLX, 16 GB unified memory) on the MOSS stack
+
+**What's next**
+
+| Step | What | Built on |
 |---|---|---|
-| Static site | `photocraft-web-<ver>.zip` | Runs in a modern browser; host it on any static server |
+| 1 | **ControlNet**, native in Rust, with its own panel: guide a picture by pose, depth, edges or lines | [Qwen-Image-2.1 Fun ControlNet Union](https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union) |
+| 2 | **Pose posing**: drag a 3D armature (or hands, or several figures) into place instead of hunting for a pose image; the armature is only a front end, and ControlNet does the generating | step 1 |
+| 3 | **Apple Silicon** (in parallel with 1 and 2): an MLX rewrite, MOSS first, the larger models as 16 GB+ Macs allow | the MOSS stack |
+| 4 | **Style tuning**: LoRA and checkpoint tuning for better photoreal, anime and illustration output | every route's LoRA loading |
+| 5 | **Live paint**: generation that follows your brush in real time, locally | the live preview path, Krea 2 / MOSS Turbo |
 
-## The Crafting Apps
+The detailed plans: [`docs/comfy/roadmap.md`](docs/comfy/roadmap.md),
+[`docs/comfy/goals/rust-rebuild.md`](docs/comfy/goals/rust-rebuild.md) and
+[`docs/comfy/plan-native-engine.md`](docs/comfy/plan-native-engine.md).
 
-PhotoCraft is one of the **Crafting Apps**: free, open-source creative tools from the
-[ArtCraft](https://getartcraft.com/) team, each written from scratch in Rust and each able to
-stand on its own.
+## 🏗️ How it works
 
-| | App | What it's for | Code | Learn more |
-|:-:|---|---|---|---|
-| <img src="https://raw.githubusercontent.com/storytold/photocraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.photocraft.png" alt="" width="32" height="32"> | **PhotoCraft** | **Image editing: layers, masks, type and real PSD files · you are here** | [GitHub](https://github.com/storytold/photocraft) | [Website](https://getartcraft.com/apps/photocraft) |
-| <img src="https://raw.githubusercontent.com/storytold/vectorcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.vectorcraft.png" alt="" width="32" height="32"> | **VectorCraft** | Vector illustration | [GitHub](https://github.com/storytold/vectorcraft) | [Website](https://getartcraft.com/apps/vectorcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/filmcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.filmcraft.png" alt="" width="32" height="32"> | **FilmCraft** | Video editing, color and sound | [GitHub](https://github.com/storytold/filmcraft) | [Website](https://getartcraft.com/apps/filmcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/lightcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.lightcraft.png" alt="" width="32" height="32"> | **LightCraft** | Photo library and raw development | [GitHub](https://github.com/storytold/lightcraft) | [Website](https://getartcraft.com/apps/lightcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/pdfcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.pdfcraft.png" alt="" width="32" height="32"> | **PdfCraft** | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/pdfcraft) | [Website](https://getartcraft.com/apps/pdfcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/effectcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.effectcraft.png" alt="" width="32" height="32"> | **EffectCraft** | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [Website](https://getartcraft.com/apps/effectcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/designcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.designcraft.png" alt="" width="32" height="32"> | **DesignCraft** | Page layout and publishing | [GitHub](https://github.com/storytold/designcraft) | [Website](https://getartcraft.com/apps/designcraft) |
+```mermaid
+flowchart LR
+    UI["Editor UI<br/>(egui, wgpu canvas)"] --> CMD["Command engine<br/>generate.* · select.by*"]
+    CLI["photocraft-cli · MCP"] --> CMD
+    CMD -->|"prompt + pixels + mask<br/>(gn-engine protocol)"| W["Native worker<br/>photocraft --engine"]
+    W --> K["Rust model code<br/>Krea 2 · Qwen-Image · MOSS · SAM 3.1 · ViTMatte<br/>int8 / fp8 CUDA kernels"]
+    K --> M[("Models folder<br/>ComfyUI layout")]
+    W -->|"RGBA result"| CMD
+    CMD --> L["New masked layer<br/>+ Generations library"]
+```
 
-And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
+- **Everything is a command.** `generate.fill`, `generate.image`, `generate.edit`,
+  `generate.expand`, `generate.splitLayers`, `generate.clownPass`, `select.byText` and the rest
+  have parameter docs, tests and undo, like every other command in the editor.
+- **Non-destructive.** A result lands on a new layer with a mask cut from the selection, and the
+  prompt, seed and model are recorded so it can be reproduced or varied.
+- **Never block, never crash.** Generation runs as a background job with progress and cancel. A
+  missing model or a stopped worker is a sentence in the app, not a crash.
+- **One process for the models.** The worker owns loading and residency, so the editor stays
+  responsive and a model's memory is freed when you ask.
 
-The Crafting Apps share the same conventions: clean-room and pure Rust, native on macOS, Windows and Linux, in the browser via WebAssembly, and fully drivable by agents.
+Start with [`docs/comfy/README.md`](docs/comfy/README.md) for the fork's documentation and
+[`docs/comfy/architecture.md`](docs/comfy/architecture.md) for the design.
 
-<br>
+## 🖌️ The editor underneath
 
-<p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
-</p>
-
-<h3 align="center">Come make things with us</h3>
-
-<p align="center">
-  Our Discord is where artists of every kind hang out: people who paint, shoot, draw, cut film,
-  set type, and people still figuring out what they like to make. Share what you're working on,
-  ask for help, tell us what's broken, or tell us what you wish these tools could do.
-  Whatever your medium and however long you've been at it, you're welcome here.
-</p>
-
-<p align="center">
-  <a href="https://discord.gg/artcraft"><b>discord.gg/artcraft</b></a> ·
-  <a href="https://getartcraft.com/">getartcraft.com</a> ·
-  <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
-  <a href="https://getartcraft.com/apps/photocraft">PhotoCraft</a>
-</p>
-
----
-
-## License and credits
-
-PhotoCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors. Required notices are in [NOTICE](NOTICE).
-
-Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
-with its author, source and license in [ATTRIBUTION.md](ATTRIBUTION.md).
-
-Every artwork shown is in the public domain (Wikimedia Commons, NASA, U.S. National Archives); sources are listed in [`docs/images/SOURCES.md`](docs/images/SOURCES.md).
-
-The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
-ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and PhotoCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
-Forks and modified versions must remove them.
-
-<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. PhotoCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
+Everything [PhotoCraft](https://github.com/storytold/photocraft) does is still here: layers, masks,
+adjustment layers, layer styles, live type, vectors, brushes, filters, real PSD and PSB files, and
+a GPU compositor on wgpu.
 
 <p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
+  <img src="docs/images/photocraft-demo.jpg" alt="ShotoPhopEX editing Hokusai's The Great Wave: type layers, a drop shadow, Vibrance and Curves adjustment layers, and the Curves editor over the histogram" width="100%">
 </p>
 
-## Star history
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-masks.jpg" alt="An elliptical selection around a face, and a Hue/Saturation layer with a mask that turns everything outside it gray" width="100%">
+      <b>Masks and selections</b>, which the generative tools build on.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-layer-styles.jpg" alt="The Layer Style dialog editing an Outer Glow on a type layer over the Earthrise photograph" width="100%">
+      <b>Layer styles and type</b>, saved to real PSD files.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-adjustments.jpg" alt="Levels and Vibrance adjustment layers on Monet's Impression, Sunrise, with the Levels editor and the Histogram panel" width="100%">
+      <b>Adjustment layers</b>, all non-destructive.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-filters.jpg" alt="The Twirl filter dialog previewing live inside an elliptical selection on The Starry Night" width="100%">
+      <b>Filters</b> with live previews.
+    </td>
+  </tr>
+</table>
 
-[![Star History Chart](https://api.star-history.com/svg?repos=storytold/photocraft&type=Date&legend=top-left)](https://www.star-history.com/?repos=storytold%2Fphotocraft&type=date&legend=top-left)
+<details>
+<summary><b>🧰 All 68 tools</b></summary>
+
+Move · Artboard · Rectangular and Elliptical Marquee · Single Row Marquee · Single Column Marquee · Lasso · Polygonal Lasso · Magnetic Lasso · Object Selection · Quick Selection · Magic Wand · Crop · Perspective Crop · Slice · Slice Select · Frame · Eyedropper · Color Sampler · Ruler · Note · Count · Remove · Spot Healing Brush · Healing Brush · Patch · Content-Aware Move · Red Eye · Brush · Pencil · Mixer Brush · Color Replacement · Clone Stamp · Pattern Stamp · History Brush · Art History Brush · Eraser · Background Eraser · Magic Eraser · Gradient · Paint Bucket · Blur · Sharpen · Smudge · Dodge · Burn · Sponge · Pen · Freeform Pen · Curvature Pen · Add Anchor Point · Delete Anchor Point · Convert Point · Horizontal and Vertical Type · Horizontal and Vertical Type Mask · Path Selection · Direct Selection · Rectangle · Ellipse · Triangle · Polygon · Line · Custom Shape · Hand · Rotate View · Zoom
+
+</details>
+
+The full feature list, file formats and platform notes are in upstream's
+[README](https://github.com/storytold/photocraft#readme).
+
+## ❓ FAQ
+
+<details>
+<summary><b>Does anything go to the cloud?</b></summary>
+
+No. The models run in a worker process on your own GPU, read from your own folder. There is no
+account, no telemetry for generations and no credit counter.
+
+</details>
+
+<details>
+<summary><b>Do I need ComfyUI or Python?</b></summary>
+
+No. The engine is native Rust with its own CUDA kernels. It only borrows ComfyUI's folder layout,
+so if you already have a ComfyUI `models` folder you can point the app at it and reuse the files.
+
+</details>
+
+<details>
+<summary><b>My card has 12 or 16 GB. Will it work?</b></summary>
+
+Yes, with the low-VRAM set: MOSS Turbo for pictures, MOSS Edit Turbo for edits and SAM 3.1 for
+selection, which peak at about 12 GiB. The larger models stay selectable; they may not fit.
+
+</details>
+
+<details>
+<summary><b>Can I use my own models and LoRAs?</b></summary>
+
+Yes. Every model is bring-your-own, and every route accepts LoRAs from your `loras` folder. The
+app never locks a model behind a licence switch; you are responsible for each model's own licence.
+
+</details>
+
+<details>
+<summary><b>Is it a Photoshop replacement?</b></summary>
+
+It is an alpha. The editor underneath is a mature clean-room reimplementation with real PSD
+support, and the generative tools are in daily use, but expect rough edges and report them in
+[Issues](https://github.com/CodyChuGit/ShotoPhopEX/issues).
+
+</details>
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome on
+[CodyChuGit/ShotoPhopEX](https://github.com/CodyChuGit/ShotoPhopEX). New contributors and agents: start with [`AGENTS.md`](AGENTS.md), then
+[`docs/`](docs/) and [`docs/comfy/`](docs/comfy/). If ShotoPhopEX saves you a subscription, a ⭐
+helps other people find it.
+
+## 🙏 Credits
+
+- **[ArtCraft](https://github.com/storytold/photocraft) and the PhotoCraft contributors**, full credit.
+  The whole editor is theirs: ShotoPhopEX is a branch of PhotoCraft that pulls in every upstream
+  release as it ships, so their fixes and features land here too. The generative layer is the only
+  part this fork adds.
+- **The model teams**, full credit for the weights everything runs on: the **Stable Diffusion**
+  community, whose open ecosystem (and ComfyUI's folder layout) this all grows from; **Krea** for
+  Krea 2; the **Qwen** team at Alibaba for Qwen-Image, Qwen-Image-Edit and Qwen3-VL; the **MOSS**
+  team (OpenMOSS) for MOSS-Image, plus lodestones for Kromoss; Meta for SAM 3.1, hustvl for
+  ViTMatte, and every LoRA author listed in [Models](#-models).
+- **The Civitai community**, for their kindness and generosity: the workflows, LoRAs and know-how
+  shared there (AusBoss's outpaint, restore and inpaint work among them) shaped many of these tools.
+- **Our lord and savior Jensen Huang**, for CUDA. 🙏
+
+## License
+
+ShotoPhopEX is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
+option, like upstream. Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, and the
+ShotoPhopEX contributors. Required notices are in [NOTICE](NOTICE); bundled fonts, icons and
+images keep their own licences, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
+
+Built on [PhotoCraft](https://github.com/storytold/photocraft) by the ArtCraft team. This fork is
+not made or endorsed by them, and per [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt)
+it does not use the ArtCraft name or logos as its own. Thanks to the authors of every open model
+and LoRA listed in [Models](#-models).
+
+Model weights are not part of this repository and keep their own licences. Every artwork shown in
+the editor screenshots is in the public domain; sources are in
+[`docs/images/SOURCES.md`](docs/images/SOURCES.md).
+
+<sub>Adobe, Photoshop and Firefly are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. ShotoPhopEX is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with. NVIDIA, RTX and CUDA are trademarks of NVIDIA Corporation.</sub>

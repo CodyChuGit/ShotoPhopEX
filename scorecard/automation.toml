@@ -1,5 +1,5 @@
 # Scorecard checklist: automation (#219). The command count and the menu wiring number come from
-# docs/parity.md.
+# docs/parity-checklist.md.
 # Statuses must be true on main. Verified against 4b53f62 on 2026-10-05.
 area = "automation"
 title = "Automation"
@@ -9,21 +9,21 @@ order = 6
 id = "AUTO-1"
 target = "Every menu item dispatches a command id (UI, CLI, control channel and MCP share them)"
 status = "done"
-note = "docs/parity.md: all menu items live; menus.rs is_live"
+note = "docs/parity-checklist.md: all menu items live; menus.rs is_live"
 
 [[item]]
 id = "AUTO-219-1"
 target = "Record actions in a document-independent form (implicit layer, merged type keystrokes)"
-status = "missing"
+status = "partial"
 issue = 219
-note = "actions.rs:47 copies raw journal entries with explicit layer ids"
+note = "actions_record.rs/actions_cmds.rs: active layer ids are dropped, uniquely named layers replay by name, Type tool keystrokes and Move-tool nudge runs fold, document activation records an opening-order offset, and point text placement scales with the playback canvas; numeric-only receivers, ambiguous layer names and paragraph box placement remain open, #4514"
 
 [[item]]
 id = "AUTO-219-2"
 target = "Actions panel: step and dialog toggles, reorder, delete a step, Stop, sets, .atn import"
-status = "missing"
+status = "done"
 issue = 219
-note = "Panel deletes whole actions only (actions.rs:146)"
+note = "2026-10-12: set folders (collapsible, drag between sets, actions.assignSet), dialog toggle column (playback opens the step's dialog seeded with its values and resumes on OK; actions.dialog), Insert Stop… (actions.insert), step toggles, reorder, delete a step; Load/Save Actions (.atn) in the panel menu, CLI batch and actions.load/save (atn_cmds.rs): 90 Photoshop events map to commands both ways, the rest are kept verbatim and fail at playback by name; step toggles, reorder and delete a step done; Stop steps play (actions.stopMessage) but there is no Insert Stop menu item; sets and dialog toggles are stored and round-trip but the panel neither groups by set nor edits the dialog toggle"
 
 [[item]]
 id = "AUTO-219-3"
@@ -35,16 +35,16 @@ note = "actions.list/get/record/stop/play/delete in actions_cmds.rs; the panel, 
 [[item]]
 id = "AUTO-219-4"
 target = "Replay tests for crop, filters, selections and styled text on a second document"
-status = "missing"
+status = "done"
 issue = 219
-note = "One replay test (actions.rs:171: new layer, rect select, fill)"
+note = "actions_cmds.rs: a_recorded_edit_run_replays_on_a_second_document records a crop, a Gaussian Blur, a selection fill and faux-bold type on one document and replays all of them onto a second (plus the original layer/select/fill replay)"
 
 [[item]]
 id = "AUTO-219-5"
 target = "Batch: subfolders, open documents, naming template, progress/cancel, error log, stop"
 status = "partial"
 issue = 219
-note = "file_cmds.rs:590-631 folder/array input, per-file errors; no recursion, template or cancel"
+note = "file_cmds/batch_run.rs and batch_naming.rs: flat subfolder output and last-result-wins names measured in Photoshop 2026; live open-document source; file naming components and serials; UTF-16 LE error log; stop-on-error; CLI and Batch dialog, #4579. Desktop Esc asks Continue/Stop, retaining one plan and error log; a read-only canvas preview shows each scratch-session input without a progress bar. Inputs are not live tabs with Layers panel content, so full window parity remains open."
 
 [[item]]
 id = "AUTO-219-6"
@@ -79,4 +79,4 @@ id = "AUTO-219-10"
 target = "Agent acceptance suite grown to 30-50 workflows"
 status = "partial"
 issue = 219
-note = "automation/tests/agent_tasks.rs runs 10 workflows over MCP"
+note = "automation/tests/it/agent_tasks.rs runs 10 workflows over MCP"
