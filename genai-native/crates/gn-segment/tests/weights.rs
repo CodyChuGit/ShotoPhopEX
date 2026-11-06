@@ -1,7 +1,7 @@
 use anyhow::Result;
 use candle_core::{DType, Device, Tensor};
 use gn_segment::weights::{expected_shapes, split_qkv, validate};
-use std::{fs, path::Path};
+use std::fs;
 
 #[test]
 fn qkv_splits_weights_and_biases_in_order() -> Result<()> {
@@ -25,7 +25,7 @@ fn qkv_splits_weights_and_biases_in_order() -> Result<()> {
 
 #[test]
 fn validates_real_checkpoint_when_present() -> Result<()> {
-    let path = Path::new(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models\checkpoints\sam3.1_multiplex_fp16.safetensors");
+    let path = &std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join("checkpoints/sam3.1_multiplex_fp16.safetensors");
     if !path.exists() {
         return Ok(());
     }

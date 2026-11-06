@@ -10,13 +10,15 @@ use qwen_image_rs::layered_files::{LayeredFiles, LayeredLinear};
 use qwen_image_rs::model::qwen25_text::{load_tokenizer, prefix_cut, prompt_template, tokenize, Qwen25Config, Qwen25TextEncoder};
 
 fn root() -> PathBuf {
-    std::env::var_os("QIR_COMFY_MODELS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models"))
+    std::env::var_os("QIR_COMFY_MODELS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).to_path_buf())
 }
 
 fn tokenizer_path() -> PathBuf {
     std::env::var_os("QIR_QWEN25_TOKENIZER")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\comfy\text_encoders\qwen25_tokenizer"))
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_DIR").unwrap_or_default()).join("comfy/text_encoders/qwen25_tokenizer"))
 }
 
 fn metadata() -> anyhow::Result<serde_json::Value> {

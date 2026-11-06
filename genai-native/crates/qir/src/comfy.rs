@@ -424,7 +424,7 @@ mod tests {
     /// `tokenizer.json`: needs the official snapshot, so it runs only where it is.
     #[test]
     fn prompt_tokens_match_comfy() {
-        let model = std::path::Path::new(r"C:\Users\5090\Documents\_eval\weights\qwen-image-2.1");
+        let model = &std::path::Path::new(&std::env::var_os("QWEN21_SNAPSHOT").unwrap_or_default()).to_path_buf();
         let path = model.join("processor/tokenizer.json");
         if !path.is_file() {
             eprintln!("skipped: no snapshot at {}", model.display());

@@ -35,7 +35,7 @@ fn fixture() -> anyhow::Result<Fixtures> {
 
 fn checkpoint() -> Option<PathBuf> {
     let path = std::env::var_os("QIR_LAYERED_DIT").map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models\diffusion_models\qwen_image_layered_fp8mixed.safetensors")
+        std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join("diffusion_models/qwen_image_layered_fp8mixed.safetensors")
     });
     if path.is_file() {
         Some(path)
