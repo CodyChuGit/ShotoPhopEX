@@ -665,12 +665,35 @@ helps other people find it.
   The whole editor is theirs: ShotoPhopEX is a branch of PhotoCraft that pulls in every upstream
   release as it ships, so their fixes and features land here too. The generative layer is the only
   part this fork adds.
-- **The model teams**, full credit for the weights everything runs on: the **Stable Diffusion**
-  community, whose open ecosystem (and ComfyUI's folder layout) this all grows from; **Krea** for
-  Krea 2; the **Qwen** team at Alibaba for Qwen-Image, Qwen-Image-Edit and Qwen3-VL; the **MOSS**
-  team (OpenMOSS) for MOSS-Image, plus lodestones for Kromoss; Meta for SAM 3.1, hustvl for
-  ViTMatte, and every LoRA author listed in [Models](#-models).
-- **The Civitai community**, for their kindness and generosity: the workflows, LoRAs and know-how
+- **The model teams**, full credit for the weights everything runs on:
+  - the **Stable Diffusion** community, whose open ecosystem this all grows from, and
+    [ComfyUI](https://github.com/comfyanonymous/ComfyUI), whose folder layout the app reads;
+    [Comfy-Org](https://huggingface.co/Comfy-Org) for the repacks most files come from
+    ([Krea-2](https://huggingface.co/Comfy-Org/Krea-2),
+    [Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1),
+    [Qwen-Image_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI),
+    [MOSS-Image](https://huggingface.co/Comfy-Org/MOSS-Image),
+    [sam3.1](https://huggingface.co/Comfy-Org/sam3.1));
+  - [**Krea**](https://www.krea.ai) for Krea 2;
+  - the [**Qwen**](https://huggingface.co/Qwen) team at Alibaba for Qwen-Image, Qwen-Image-Edit and Qwen3-VL;
+  - the **MOSS** team ([OpenMOSS-Team](https://huggingface.co/OpenMOSS-Team), with
+    [MOSS-Image-SFT](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT)) for MOSS-Image, and
+    [lodestones](https://huggingface.co/lodestones) for [Kromoss](https://huggingface.co/lodestones/Kromoss)
+    and its 8-step DMD2 LoRA;
+  - **Meta** for SAM 3.1, and [hustvl](https://huggingface.co/hustvl) for
+    [ViTMatte](https://huggingface.co/hustvl/vitmatte-base-composition-1k).
+- **The LoRA and adapter authors:**
+  [AusBoss](https://huggingface.co/ausboss) for the
+  [Outpaint](https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA) and
+  [Restore](https://huggingface.co/ausboss/Qwen-Image-2.1-Restore-LoRA) LoRAs;
+  [yijunwang2](https://huggingface.co/yijunwang2) for [Krea 2 AnyPaint](https://huggingface.co/yijunwang2/krea2-anypaint);
+  [fal](https://huggingface.co/fal) for the [Multiple Angles LoRA](https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA);
+  [lightx2v](https://huggingface.co/lightx2v) for the [2511 Lightning LoRAs](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning);
+  [ostris](https://huggingface.co/ostris) for the [Krea 2 style reference](https://huggingface.co/ostris/krea2_turbo_style_reference);
+  [chinoll](https://huggingface.co/chinoll) for [Moss-Image-Edit](https://huggingface.co/chinoll/Moss-Image-Edit);
+  and [madebyollin](https://huggingface.co/madebyollin) for the tiny preview decoders
+  ([TAESD](https://github.com/madebyollin/taesd)).
+- **The [Civitai](https://civitai.com) community**, for their kindness and generosity: the workflows, LoRAs and know-how
   shared there (AusBoss's outpaint, restore and inpaint work among them) shaped many of these tools.
 - **Our lord and savior Jensen Huang**, for CUDA. 🙏
 
