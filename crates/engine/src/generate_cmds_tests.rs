@@ -1069,3 +1069,31 @@ fn a_blank_expand_of_a_cut_off_subject_runs_in_two_stages_and_leaves_one_layer()
     let d = s.active().unwrap();
     assert_eq!((d.doc.size.width, d.doc.size.height), (64, 48));
 }
+
+#[test]
+fn angles_runs_the_multiple_angles_lora_and_the_auto_line_names_the_outpaint_expand() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("loras")).unwrap();
+    let mut s = Session::new();
+    s.edit_prefs(|p| {
+        p.integrations.models_path = dir.path().to_string_lossy().into_owned();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = true;
+        p.integrations.quality = "best".into();
+    });
+    // Without the LoRA in loras/: the 2.1 instruction edit stands in; with it, 2511 + the LoRA,
+    // research opt-in or not.
+    assert_eq!(angles_template(&s), "qwen-2.1/edit");
+    std::fs::write(dir.path().join("loras").join(ANGLES_LORA), b"x").unwrap();
+    assert_eq!(angles_template(&s), ANGLES_TEMPLATE);
+    s.edit_prefs(|p| p.integrations.allow_research_models = false);
+    assert_eq!(angles_template(&s), ANGLES_TEMPLATE);
+    s.edit_prefs(|p| p.integrations.allow_research_models = true);
+
+    // Expand's Auto line: 2511's expand until the Outpaint LoRA is there, then the 2.1 edit it
+    // actually runs through.
+    assert_eq!(likely_auto_in(&s, EXPAND, "best"), DEFAULT_EXPAND_TEMPLATE);
+    std::fs::write(dir.path().join("loras").join(OUTPAINT_LORA), b"x").unwrap();
+    assert_eq!(likely_auto_in(&s, EXPAND, "best"), OUTPAINT_EDIT_TEMPLATE);
+    assert!(native21_picks(&s).contains(&("autoExpand", OUTPAINT_EDIT_TEMPLATE)));
+}
