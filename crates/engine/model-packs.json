@@ -280,7 +280,7 @@
    "bytes": 2737397,
    "sha256": "621a70c4778287b1abf8c27c61b841d797fda2aeff01033374dd19624bcfa249",
    "libraries": [
-    "cuda_cudart-windows-x86_64-13.4.92-archive/bin/cudart64_13.dll"
+    "cuda_cudart-windows-x86_64-13.4.92-archive/bin/x64/cudart64_13.dll"
    ]
   },
   {
@@ -290,8 +290,8 @@
    "bytes": 422415931,
    "sha256": "0974318e9861a61cb9091cf7de8d4c2880e9787fe311cb4bcbd08865663c5f43",
    "libraries": [
-    "libcublas-windows-x86_64-13.8.0.4-archive/bin/cublas64_13.dll",
-    "libcublas-windows-x86_64-13.8.0.4-archive/bin/cublasLt64_13.dll"
+    "libcublas-windows-x86_64-13.8.0.4-archive/bin/x64/cublas64_13.dll",
+    "libcublas-windows-x86_64-13.8.0.4-archive/bin/x64/cublasLt64_13.dll"
    ]
   },
   {
@@ -301,7 +301,7 @@
    "bytes": 56255209,
    "sha256": "5f15b55cb83938b36a1f01aa9fb32715984e8495c2217081387a0c8ca836ff62",
    "libraries": [
-    "libcurand-windows-x86_64-10.4.4.72-archive/bin/curand64_10.dll"
+    "libcurand-windows-x86_64-10.4.4.72-archive/bin/x64/curand64_10.dll"
    ]
   }
  ],
