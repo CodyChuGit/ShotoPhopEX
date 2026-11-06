@@ -1,4 +1,10 @@
 <p align="center">
+  💿 <a href="https://elasticstage.com/soundcloud/releases/whorehaus-ketamine-album"><b>Support me by buying my album</b></a>
+  · or <a href="https://music.apple.com/us/artist/whorehaus/6817717768">listen to my album on Apple Music</a>
+  · or on <a href="https://open.spotify.com/album/2ONFHybxfXt6XBqiMP5YQB">Spotify</a>
+</p>
+
+<p align="center">
   <img alt="ShotoPhopEX" src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png" width="120">
 </p>
 
@@ -289,14 +295,6 @@ Grow the canvas and the scene continues, people included, with an outpainting Lo
 
 Move the camera after the shot: a side view, a high angle, a close-up, with the Multiple Angles LoRA on Qwen-Image-Edit-2511. **About 10&nbsp;s each.**
 
-### Text to image with MOSS Turbo
-
-<p align="center">
-  <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
-</p>
-
-The low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card and spells its lettering right. **1.6&nbsp;s** on a 5090.
-
 ### Object Selection
 
 <p align="center">
@@ -320,6 +318,14 @@ One click and SAM 3.1 finds the subject. **0.6&nbsp;s** warm, 2.2 s cold.
 </p>
 
 Every person and thing in the picture on its own colour-coded, edge-matted layer: the ID pass compositors know. 40 layers from a busy café in **about 10&nbsp;s.**
+
+### Text to image with MOSS Turbo
+
+<p align="center">
+  <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
+</p>
+
+The low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card and spells its lettering right. **1.6&nbsp;s** on a 5090.
 
 ### Image Quality
 
