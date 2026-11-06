@@ -102,7 +102,7 @@ chmod 755 "$STAGE/install.sh"
 
 # The binaries must find the bundled libraries through their RUNPATH, not the build machine's.
 if command -v readelf >/dev/null; then
-  readelf -d "$STAGE/bin/photocraft" | grep -q 'ORIGIN/runtime' || { echo 'error: photocraft has no RUNPATH to $ORIGIN/runtime' >&2; exit 1; }
+  readelf -d "$STAGE/bin/photocraft" | grep -q 'ORIGIN/runtime' || { echo "error: photocraft has no RUNPATH to \$ORIGIN/runtime" >&2; exit 1; }
 fi
 # Start the CLI with nothing from the build machine on the loader path but the driver library
 # (DRIVER_LIB_DIR: a folder with libcuda.so.1, for a build machine without an NVIDIA driver).
