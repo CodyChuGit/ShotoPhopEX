@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/fill",
+    "name": "Generative Fill (Qwen-Image-Edit-2511, 40 steps)",
+    "family": "qwen-image-edit-2511",
+    "task": "fill",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23).",
+    "needsImage": true,
+    "needsMask": true,
+    "defaults": {
+      "steps": 40,
+      "guidance": 4.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      }
+    ],
+    "promptFormat": "Add {prompt} to this image, fitting the scene's perspective, lighting and surroundings naturally. Change nothing else.",
+    "promptFormatImperative": "{prompt}. Fit the result to the scene's perspective, lighting and surroundings naturally, and change nothing else.",
+    "notes": "Node names and settings follow ComfyUI's official 'Image Edit (Qwen-Image 2511)' template (2026-10): UNETLoader → ModelSamplingAuraFlow shift 3.1 → CFGNorm 1.0 → KSampler euler/simple, denoise 1, 40 steps at CFG 4 (Comfy's own note accepts 20 steps); FluxKontextMultiReferenceLatentMethod index_timestep_zero on both conditionings; FluxKontextImageScale brings the input to the model's ~1 MP working size. Inpainting is added with core nodes: the mask PNG is loaded, turned into a MASK and applied with SetLatentNoiseMask, so only the selected area is regenerated. The Lightning variants (`fill-lightning-8`, `fill-lightning-4`) add the Apache-2.0 LoRA after CFGNorm.",
+    "creator": "Alibaba Qwen",
+    "description": "Fills the selection with 40 steps: slowest, most careful",
+    "badges": [
+      "40 steps"
+    ],
+    "estimatedSeconds": {
+      "base": 20,
+      "perMegapixel": 160
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": [
+      "sampler",
+      "scheduler",
+      "denoise"
+    ]
+  }
+}

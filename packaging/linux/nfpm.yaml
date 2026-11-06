@@ -17,7 +17,7 @@ vendor: Learning Machines LLC
 homepage: https://getartcraft.com/apps/photocraft
 license: MIT OR Apache-2.0
 description: |-
-  Open-source, native image editor that works the way Photoshop users expect.
+  Open-source, native image editor with familiar, professional tools.
   Layers, masks, adjustment layers, layer styles, type and brushes; opens and
   saves layered PSD/PSB files; 8/16/32-bit documents; GPU compositing (wgpu).
   Includes photocraft-cli, a headless converter and command runner.
@@ -75,6 +75,12 @@ contents:
   - src: ${STAGE}/usr/share/
     dst: /usr/share/
     type: tree
+  # Debian's zsh reads vendor-completions, not /usr/share/zsh/site-functions as Fedora's and
+  # openSUSE's do (its debian/rules sets --enable-additional-fpath).
+  - src: /usr/share/zsh/site-functions/_photocraft-cli
+    dst: /usr/share/zsh/vendor-completions/_photocraft-cli
+    type: symlink
+    packager: deb
 
 scripts:
   postinstall: packaging/linux/postinst.sh

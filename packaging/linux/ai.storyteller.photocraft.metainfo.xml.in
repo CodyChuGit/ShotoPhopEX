@@ -5,15 +5,15 @@
   <id>ai.storyteller.photocraft</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT OR Apache-2.0</project_license>
-  <name>PhotoCraft</name>
-  <summary>Edit photos and layered Photoshop documents</summary>
+  <name>ShotoPhopEX</name>
+  <summary>Edit photos and layered PSD documents</summary>
   <developer id="ai.storyteller">
     <name>Learning Machines LLC</name>
   </developer>
   <description>
     <p>
-      PhotoCraft is an open-source, native image editor that works the way Photoshop users
-      expect: familiar menus, shortcuts, panels and tools, with layers, masks, adjustment
+      ShotoPhopEX is an open-source, native image editor with the familiar menus,
+      shortcuts, panels and tools professionals expect: layers, masks, adjustment
       layers, layer styles, type and brushes.
     </p>
     <ul>
@@ -26,10 +26,9 @@
   <launchable type="desktop-id">ai.storyteller.photocraft.desktop</launchable>
   <icon type="stock">ai.storyteller.photocraft</icon>
   <!-- Only url types known to appstream 0.15 (Ubuntu 22.04, where CI validates): no vcs-browser. -->
-  <url type="homepage">https://getartcraft.com/apps/photocraft</url>
-  <url type="bugtracker">https://github.com/storytold/photocraft/issues</url>
-  <url type="help">https://github.com/storytold/photocraft</url>
-  <url type="contact">https://discord.gg/artcraft</url>
+  <url type="homepage">https://github.com/CodyChuGit/ShotoPhopEX</url>
+  <url type="bugtracker">https://github.com/CodyChuGit/ShotoPhopEX/issues</url>
+  <url type="help">https://github.com/CodyChuGit/ShotoPhopEX</url>
   <categories>
     <category>Graphics</category>
     <category>RasterGraphics</category>
@@ -62,6 +61,9 @@
   <provides>
     <binary>photocraft</binary>
     <mediatype>application/x-photocraft</mediatype>
+    <mediatype>image/x-paintnet</mediatype>
+    <mediatype>image/openraster</mediatype>
+    <mediatype>application/x-krita</mediatype>
     <mediatype>image/vnd.adobe.photoshop</mediatype>
     <mediatype>image/x-psb</mediatype>
   </provides>

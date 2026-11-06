@@ -14,24 +14,13 @@ use photocraft_doc::{
 use photocraft_geom::{Affine, Size};
 use serde::{Deserialize, Serialize};
 
-/// Current manifest version written by this build.
-pub const FORMAT_VERSION: u32 = 1;
+pub use craft_pcraft_format::{FORMAT_VERSION, Hash, TileRef};
 
-/// Hex-encoded BLAKE3 hash (64 chars).
-pub type Hash = String;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Manifest {
-    pub format_version: u32,
-    /// Free-form writer identification, e.g. `photocraft-format 0.1.0`.
-    pub generator: String,
-    pub document: DocM,
-    /// Optional previews present in the bundle.
-    #[serde(default)]
-    pub thumbnail: Option<String>,
-    #[serde(default)]
-    pub composite: Option<String>,
-}
+/// The manifest: craft-pcraft-format's envelope (`format_version`, `generator`, the optional
+/// `thumbnail` and `composite` previews) around the document [`DocM`]. A save with the full-size
+/// composite adds a `full_composite` member after the envelope; [`crate::read_full_composite`]
+/// reads it.
+pub type Manifest = craft_pcraft_format::Manifest<DocM>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocM {
@@ -46,6 +35,9 @@ pub struct DocM {
     pub layers: Vec<LayerM>,
     pub channels: Vec<ChannelM>,
     pub guides: Guides,
+    /// The rulers' zero point in document pixels (absent in older files: the top-left).
+    #[serde(default)]
+    pub ruler_origin: [f64; 2],
     pub selection: Option<SurfaceM>,
     pub metadata: MetadataM,
     pub global_light: GlobalLight,
@@ -59,6 +51,9 @@ pub struct DocM {
     /// The temporary Quick Mask channel (saved while Quick Mask mode is on).
     #[serde(default)]
     pub quick_mask: Option<ChannelM>,
+    /// Quick Mask was entered with no selection.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quick_mask_unselected: bool,
     /// Patterns stored with the document.
     #[serde(default)]
     pub patterns: Vec<PatternM>,
@@ -81,6 +76,9 @@ pub struct DocM {
     /// Window › Timeline.
     #[serde(default)]
     pub timeline: Option<photocraft_doc::Timeline>,
+    /// The JPEG quality / WebP encoding File › Save reuses.
+    #[serde(default, skip_serializing_if = "photocraft_doc::FileEncoding::is_empty")]
+    pub file_encoding: photocraft_doc::FileEncoding,
     /// Image › Analysis: measurement scale, count groups, ruler.
     #[serde(default)]
     pub measurement: photocraft_doc::Measurement,
@@ -146,13 +144,6 @@ pub struct NamedPathM {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TileRef {
-    pub tx: i32,
-    pub ty: i32,
-    pub hash: Hash,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceM {
     pub format: PixelFormat,
     /// Default ("untouched") pixel as hex of its little-endian encoded bytes.
@@ -164,6 +155,10 @@ pub struct SurfaceM {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VideoDataM {
     pub frames: Vec<SurfaceM>,
+    /// Optional for backward compatibility with native documents created before original
+    /// frame snapshots were stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_frames: Option<Vec<SurfaceM>>,
     pub source: photocraft_doc::VideoSource,
     pub fps: f32,
     #[serde(default)]
@@ -223,8 +218,15 @@ pub struct LayerM {
     /// Blend If ranges (empty = everything blends).
     #[serde(default, skip_serializing_if = "photocraft_doc::BlendIf::is_default")]
     pub blend_if: photocraft_doc::BlendIf,
+    /// Advanced Blending switches (knockout, as-group, transparency shapes, masks hide effects);
+    /// omitted at Photoshop's defaults, and missing in older files = the defaults.
+    #[serde(default, skip_serializing_if = "photocraft_doc::AdvancedBlending::is_default")]
+    pub advanced: photocraft_doc::AdvancedBlending,
     #[serde(default)]
     pub video: Option<VideoDataM>,
+    /// The layer's own XMP packet (missing in older files = none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xmp: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -239,6 +241,9 @@ pub enum ContentM {
         /// Artboard (Layer › New › Artboard).
         #[serde(default)]
         artboard: Option<photocraft_doc::Artboard>,
+        /// A Photoshop Frame's stroke, drawn along the group's vector mask.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame_stroke: Option<ShapeStroke>,
     },
     Adjustment {
         adjustment: Adjustment,
@@ -277,9 +282,24 @@ pub enum ContentM {
         stroke: Option<ShapeStroke>,
         #[serde(default)]
         live: Option<LiveShape>,
+        /// Arrow parameters stored separately for backward compatibility.
+        /// Older PhotoCraft versions ignore this optional field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arrow_live: Option<LiveShape>,
+        /// The path's density as the fill's mask; older files have none (100 %).
+        #[serde(default = "full_density")]
+        density: f32,
+        /// The path's feather in px; older files have none.
+        #[serde(default)]
+        feather: f32,
     },
     Smart {
+        /// Shared source identity; older bundles did not record it.
+        #[serde(default)]
+        contents_id: Option<u64>,
         source: SmartSourceM,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vector_preview: Option<VectorPreviewM>,
         transform: Affine,
         smart_filters: Vec<SmartFilter>,
         cache: Option<SurfaceM>,
@@ -296,6 +316,17 @@ pub enum ContentM {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         perspective: Option<[f64; 9]>,
     },
+}
+
+/// The native source remains separate from this optional display-only SVG blob.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VectorPreviewM {
+    pub source_hash: [u8; 32],
+    pub svg: Hash,
+}
+
+fn full_density() -> f32 {
+    1.0
 }
 
 fn yes() -> bool {
@@ -339,6 +370,8 @@ fn default_channel_opacity() -> f32 {
 pub struct MetadataM {
     pub xmp: Option<String>,
     pub exif: Option<Hash>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text: Vec<(String, String)>,
     /// (id, name, blob)
     pub psd_resources: Vec<(u16, String, Hash)>,
     /// (signature hex, key hex, blob)
@@ -361,5 +394,18 @@ mod channel_tests {
         assert_eq!(c.color, photocraft_doc::AlphaChannel::DEFAULT_COLOR);
         assert_eq!(c.opacity, 0.5);
         assert_eq!(c.indicates, photocraft_doc::ColorIndicates::MaskedAreas);
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    /// Shapes saved before Density and Feather load at 100 % and no feather.
+    #[test]
+    fn older_shapes_load_at_full_density_without_feather() {
+        let old = serde_json::json!({ "kind": "shape", "fill": null, "cache": null, "psd_raw": null });
+        let ContentM::Shape { density, feather, .. } = serde_json::from_value(old).unwrap() else { panic!("a shape") };
+        assert_eq!((density, feather), (1.0, 0.0));
     }
 }

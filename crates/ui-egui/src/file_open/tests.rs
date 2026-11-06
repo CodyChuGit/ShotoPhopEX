@@ -1,4 +1,5 @@
 use super::*;
+use crate::file_dialog::{self, FileDialogAnswer, FileDialogRequest};
 use crate::{Services, menus, notices};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::Document;
@@ -12,13 +13,12 @@ type Written = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
 
 /// An app whose importer names the document after the file (like `photocraft-io`) and reports a
 /// warning for names containing "warn", and fails for bytes "bad"; the exporter warns for ".png"
-/// and the writer records what it wrote.
-fn app_with(pick_open: Option<(String, Vec<u8>)>, pick_save: Option<String>) -> (PhotocraftApp, Written) {
+/// and the writer records what it wrote. Its file dialogs answer with `answers`, in order.
+fn app_with(answers: Vec<Option<FileDialogAnswer>>) -> (PhotocraftApp, Written) {
     let written: Written = Rc::default();
     let w = written.clone();
-    let mut pick_open = pick_open;
     let services = Services {
-        import: Some(Box::new(|name: &str, bytes: &[u8]| {
+        import: Some(Box::new(|name: &str, bytes: &[u8], _opts: &photocraft_io::ImportOptions| {
             if bytes == b"bad" {
                 return Err("not an image".into());
             }
@@ -29,8 +29,7 @@ fn app_with(pick_open: Option<(String, Vec<u8>)>, pick_save: Option<String>) -> 
             let warnings = if path.ends_with(".png") { vec!["Layers were flattened".to_string()] } else { Vec::new() };
             Ok((b"out".to_vec(), warnings))
         })),
-        pick_open: Some(Box::new(move || pick_open.take().map(|(name, bytes)| (name, Ok(bytes))))),
-        pick_save: Some(Box::new(move |_s: &str| pick_save.clone())),
+        file_dialog: Some(file_dialog::fake(answers).0),
         write: Some(Box::new(move |p: &str, b: &[u8]| {
             w.borrow_mut().push((p.to_string(), b.to_vec()));
             Ok(())
@@ -38,6 +37,26 @@ fn app_with(pick_open: Option<(String, Vec<u8>)>, pick_save: Option<String>) -> 
         ..Default::default()
     };
     (PhotocraftApp::new(photocraft_engine::Session::new(), services), written)
+}
+
+/// The end of a frame: the dialog asked for is shown, and its answer acted on.
+fn answer(app: &mut PhotocraftApp) {
+    app.poll_file_dialog(&egui::Context::default(), None);
+}
+
+/// Files named `names` (holding `bytes`) in a fresh directory for `tag`: (directory, paths).
+fn files(tag: &str, names: &[&str], bytes: &[u8]) -> (std::path::PathBuf, Vec<String>) {
+    let dir = std::env::temp_dir().join(format!("photocraft-file-open-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let paths = names
+        .iter()
+        .map(|name| {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().into_owned()
+        })
+        .collect();
+    (dir, paths)
 }
 
 #[test]
@@ -50,7 +69,7 @@ fn display_name_is_the_file_name() {
 
 #[test]
 fn open_file_sets_name_path_and_recent() {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     let w = app.open_file("/pics/cat.psd", b"x").unwrap();
     assert!(w.is_empty());
     let st = app.session.active().unwrap();
@@ -62,35 +81,55 @@ fn open_file_sets_name_path_and_recent() {
 }
 
 #[test]
+fn affinity_preview_does_not_acquire_the_source_path_even_when_renamed() {
+    for automation in [false, true] {
+        for path in ["/pics/source.af", "/pics/renamed.psd"] {
+            let (mut app, written) = app_with(vec![None]);
+            // The fake importer supplies the preview; its source signature controls path policy.
+            if automation {
+                app.open_automation_bytes(&display_name(path), b"\x00\xffKA").unwrap();
+                app.opened_from(path);
+            } else {
+                app.open_file(path, b"\x00\xffKA").unwrap();
+            }
+            assert!(app.session.active().unwrap().source_read_only);
+            assert!(app.session.active().unwrap().path.is_none());
+            assert_eq!(app.ui.recent_files.first().map(String::as_str), Some(path));
+            // Save asks for a new file (cancelled here) instead of writing over the source.
+            assert_eq!(menus::invoke(&mut app, &egui::Context::default(), "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+            answer(&mut app);
+            assert!(written.borrow().is_empty());
+        }
+    }
+}
+
+#[test]
 fn file_open_dialog_sets_path_so_save_writes_in_place() {
     // The dialog returns a full path: the document is named after the file, not the path.
-    let (mut app, written) = app_with(Some(("/pics/cat.psd".into(), b"x".to_vec())), None);
+    let (dir, paths) = files("in-place", &["cat.psd"], b"x");
+    let (mut app, written) = app_with(vec![Some(FileDialogAnswer::Paths(paths.clone()))]);
     let ctx = egui::Context::default();
-    menus::invoke(&mut app, &ctx, "file.open", json!({})).unwrap();
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.open", json!({})).unwrap(), json!({"fileDialog": "open"}));
+    answer(&mut app);
     let st = app.session.active().unwrap();
     assert_eq!(st.doc.name, "cat.psd");
-    assert_eq!(st.path.as_deref(), Some("/pics/cat.psd"));
-    assert_eq!(app.ui.recent_files.first().map(String::as_str), Some("/pics/cat.psd"));
-    // File › Save goes straight back to the file (pick_save would return None = cancelled).
+    assert_eq!(st.path.as_ref(), paths.first());
+    assert_eq!(app.ui.recent_files.first(), paths.first());
+    // File › Save goes straight back to the file, without a dialog.
     let r = menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
-    assert_eq!(r["path"], "/pics/cat.psd");
-    assert_eq!(written.borrow().last().map(|(p, _)| p.clone()).as_deref(), Some("/pics/cat.psd"));
+    assert_eq!(r["path"], paths[0]);
+    assert!(!app.file_dialog_open());
+    assert_eq!(written.borrow().last().map(|(p, _)| p), paths.first());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn file_open_dialog_opens_every_selected_path() {
-    let dir = std::env::temp_dir().join(format!("photocraft-issue-595-open-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let paths = ["one.psd", "two.png"].map(|name| {
-        let path = dir.join(name);
-        std::fs::write(&path, b"x").unwrap();
-        path.to_string_lossy().into_owned()
-    });
-    let (mut app, _) = app_with(None, None);
-    let selected = paths.to_vec();
-    app.services.pick_open_paths = Some(Box::new(move || Some(selected.clone())));
+    let (dir, paths) = files("issue-595", &["one.psd", "two.png"], b"x");
+    let (mut app, _) = app_with(vec![Some(FileDialogAnswer::Paths(paths.clone()))]);
 
     menus::invoke(&mut app, &egui::Context::default(), "file.open", json!({})).unwrap();
+    answer(&mut app);
 
     assert_eq!(app.session.documents().len(), 2);
     assert_eq!(
@@ -102,18 +141,70 @@ fn file_open_dialog_opens_every_selected_path() {
 }
 
 #[test]
-fn cancelling_multi_file_open_does_not_fall_back_to_single_file_picker() {
-    let (mut app, _) = app_with(Some(("/pics/unexpected.psd".into(), b"x".to_vec())), None);
-    app.services.pick_open_paths = Some(Box::new(|| None));
+fn cancelling_file_open_opens_nothing() {
+    let (mut app, _) = app_with(vec![None]);
 
     menus::invoke(&mut app, &egui::Context::default(), "file.open", json!({})).unwrap();
+    answer(&mut app);
 
     assert!(app.session.documents().is_empty());
+    assert!(!app.ui.status_error, "Cancel is not an error");
+    assert!(!app.file_dialog_open());
+}
+
+#[test]
+fn the_web_hands_over_contents_rather_than_paths() {
+    let (mut app, _) = app_with(vec![Some(FileDialogAnswer::Contents("cat.png".into(), b"x".to_vec()))]);
+    menus::invoke(&mut app, &egui::Context::default(), "file.open", json!({})).unwrap();
+    answer(&mut app);
+    let st = app.session.active().unwrap();
+    assert_eq!((st.doc.name.as_str(), st.path.as_deref()), ("cat.png", None));
+}
+
+#[test]
+fn the_web_opens_every_selected_file() {
+    let files = vec![("one.png".into(), b"x".to_vec()), ("broken.png".into(), b"bad".to_vec()), ("two.jpg".into(), b"x".to_vec())];
+    let (mut app, _) = app_with(vec![Some(FileDialogAnswer::ContentsMany(files))]);
+    menus::invoke(&mut app, &egui::Context::default(), "file.open", json!({})).unwrap();
+    answer(&mut app);
+    // Each good file is its own tab; the broken one is reported without stopping the rest.
+    let names: Vec<_> = app.session.documents().iter().map(|st| st.doc.name.as_str()).collect();
+    assert_eq!(names, ["one.png", "two.jpg"]);
+    assert!(app.ui.notices.iter().any(|n| n.error && n.title.contains("broken.png")), "{:?}", app.ui.notices);
+}
+
+/// #5749: the web shell reads dropped files itself, so it asks where they landed: image files
+/// dropped on the canvas are placed from their bytes, presets and drops elsewhere are opened.
+#[test]
+fn web_drops_onto_the_canvas_are_placed_from_their_bytes() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    let names = vec!["photo.png".to_string(), "brushes.abr".to_string()];
+    // No pointer known: nothing is placed.
+    assert_eq!(app.dropped_on_canvas(&ctx, &names), [false, false]);
+    let at = Rc::new(std::cell::Cell::new(egui::pos2(400.0, 300.0)));
+    let reported = at.clone();
+    app.services.cursor_pos = Some(Box::new(move |_: &egui::Context| Some(reported.get())));
+    assert_eq!(app.dropped_on_canvas(&ctx, &names), [true, false]);
+    at.set(egui::pos2(20.0, 20.0));
+    assert_eq!(app.dropped_on_canvas(&ctx, &names), [false, false], "off the canvas: opened");
+    let layers = layer_count(&app);
+    app.drop_places.push_back(crate::file_open::DropPlace::Bytes("photo.png".into(), png_bytes(4, 3)));
+    app.drop_places.push_back(crate::file_open::DropPlace::Bytes("bad.png".into(), b"bad".to_vec()));
+    app.place_next_dropped(&ctx);
+    assert_eq!(layer_count(&app), layers + 1);
+    assert_eq!(app.ui.transform.as_ref().and_then(|t| t.made), Some(crate::state::MadeLayer::Place));
+    crate::transform_tool::commit(&mut app);
+    // The undecodable one is reported, not placed.
+    app.place_next_dropped(&ctx);
+    assert_eq!(layer_count(&app), layers + 1);
+    assert!(app.ui.notices.iter().any(|n| n.error && n.title.contains("bad.png")), "{:?}", app.ui.notices);
+    assert!(app.drop_places.is_empty());
 }
 
 #[test]
 fn pcraft_documents_save_in_place_but_flat_files_ask() {
-    let (mut app, written) = app_with(None, None);
+    let (mut app, written) = app_with(vec![None]);
     let ctx = egui::Context::default();
     app.open_file("/pics/work.pcraft", b"x").unwrap();
     let r = menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
@@ -121,13 +212,15 @@ fn pcraft_documents_save_in_place_but_flat_files_ask() {
     assert_eq!(written.borrow().len(), 1);
     // A PNG goes through Save As (cancelled here), not silently flattened over the original.
     app.open_file("/pics/flat.png", b"x").unwrap();
-    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap_err(), "cancelled");
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
     assert_eq!(written.borrow().len(), 1);
+    assert!(!app.ui.status_error);
 }
 
 #[test]
 fn templates_open_as_new_untitled_documents() {
-    let (mut app, written) = app_with(None, None);
+    let (mut app, written) = app_with(Vec::new());
     let ctx = egui::Context::default();
     app.open_file("/pics/card.PSDT", b"x").unwrap();
     app.open_file("/pics/card.psdt", b"x").unwrap();
@@ -136,25 +229,19 @@ fn templates_open_as_new_untitled_documents() {
     assert!(app.session.documents().iter().all(|d| d.path.is_none()));
     assert_eq!(app.ui.recent_files.first().map(String::as_str), Some("/pics/card.psdt"));
     // File › Save asks for a new name (cancelled here) rather than suggesting the template.
-    let suggested: Rc<RefCell<Vec<String>>> = Rc::default();
-    let rec = suggested.clone();
-    app.services.pick_save = Some(Box::new(move |s: &str| {
-        rec.borrow_mut().push(s.to_string());
-        None
-    }));
-    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap_err(), "cancelled");
-    assert_eq!(*suggested.borrow(), ["Untitled-2.psd"]);
+    let (show, asked) = file_dialog::fake(vec![None]);
+    app.services.file_dialog = Some(show);
+    menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
+    answer(&mut app);
+    assert_eq!(*asked.borrow(), [FileDialogRequest::Save { suggested: "Untitled-2.psd".into() }]);
     assert!(written.borrow().is_empty());
 }
 
 #[test]
 fn import_warnings_reach_status_notice_and_control_response() {
-    let dir = std::env::temp_dir().join(format!("photocraft-open-warn-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("warn.psd");
-    std::fs::write(&path, b"x").unwrap();
-    let p = path.to_string_lossy().to_string();
-    let (mut app, _) = app_with(None, None);
+    let (dir, paths) = files("warn", &["warn.psd"], b"x");
+    let p = paths[0].clone();
+    let (mut app, _) = app_with(Vec::new());
     let ctx = egui::Context::default();
     let r = menus::invoke(&mut app, &ctx, "file.open", json!({ "path": p })).unwrap();
     assert_eq!(r["warnings"][0], "Adjustment layer \"Curves 1\" was flattened");
@@ -170,7 +257,7 @@ fn import_warnings_reach_status_notice_and_control_response() {
 
 #[test]
 fn export_warnings_reach_status_notice_and_control_response() {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     let ctx = egui::Context::default();
     app.open_file("/pics/cat.psd", b"x").unwrap();
     let r = menus::invoke(&mut app, &ctx, "file.saveAs", json!({ "path": "/pics/cat.png" })).unwrap();
@@ -186,36 +273,44 @@ fn export_warnings_reach_status_notice_and_control_response() {
 
 #[test]
 fn open_failures_are_errors_and_leave_no_document() {
-    let (mut app, _) = app_with(Some(("/pics/broken.psd".into(), b"bad".to_vec())), None);
+    let (dir, paths) = files("broken", &["broken.psd"], b"bad");
+    let (mut app, _) = app_with(vec![Some(FileDialogAnswer::Paths(paths))]);
     let ctx = egui::Context::default();
     menus::invoke(&mut app, &ctx, "file.open", json!({})).unwrap();
+    answer(&mut app);
     assert!(app.session.documents().is_empty());
     assert!(app.ui.recent_files.is_empty());
     assert!(app.ui.status_error);
     assert!(app.ui.status.starts_with("Couldn't open broken.psd"), "{}", app.ui.status);
     assert!(app.ui.notices.last().is_some_and(|n| n.error));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_picked_file_that_cannot_be_read_is_reported_like_any_open_failure() {
-    let (mut app, _) = app_with(None, None);
-    let mut picked = Some(("C:/photos/big.psb".to_string(), Err("The parameter is incorrect. (os error 87)".to_string())));
-    app.services.pick_open = Some(Box::new(move || picked.take()));
-    app.open_dialog_file();
+    let missing = std::env::temp_dir().join("photocraft-missing-dir").join("big.psb").to_string_lossy().into_owned();
+    let picked = || Some(FileDialogAnswer::Paths(vec![missing.clone()]));
+    let (mut app, _) = app_with(vec![picked(), picked(), None]);
+    app.open_dialog_file().unwrap();
+    answer(&mut app);
     assert!(app.session.documents().is_empty());
     assert!(app.ui.status_error);
     let notice = app.ui.notices.last().unwrap();
-    assert!(notice.error && notice.title.contains("Couldn't open big.psb: The parameter is incorrect"), "{}", notice.title);
-    // Commands that read a picked file (scripts, notes, Place) get the same message as an error.
-    app.services.pick_open = Some(Box::new(|| Some(("C:/photos/big.psb".to_string(), Err("denied".to_string())))));
-    assert_eq!(app.pick_file_bytes(), Some(Err("big.psb: denied".to_string())));
-    app.services.pick_open = Some(Box::new(|| None));
-    assert_eq!(app.pick_file_bytes(), None, "cancelled");
+    assert!(notice.error && notice.title.starts_with("Couldn't open big.psb: "), "{}", notice.title);
+    // Commands that read a picked file (scripts, notes, Place) fail with the file's name.
+    app.ui.status_error = false;
+    app.pick_file_bytes(|_, _, _| Err("read".into())).unwrap();
+    answer(&mut app);
+    assert!(app.ui.status_error && app.ui.status.starts_with("big.psb: "), "{}", app.ui.status);
+    app.ui.status_error = false;
+    app.pick_file_bytes(|_, _, _| Err("read".into())).unwrap();
+    answer(&mut app);
+    assert!(!app.ui.status_error, "cancelled");
 }
 
 #[test]
 fn open_paths_reports_each_failure_without_panicking() {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     let missing = std::env::temp_dir().join("photocraft-definitely-missing-file.psd").to_string_lossy().to_string();
     let dir = std::env::temp_dir().to_string_lossy().to_string();
     let n = app.open_paths(&[missing, String::new(), dir, "\u{0}".into()]);
@@ -237,7 +332,7 @@ fn os_open_events_open_files_with_paths() {
     std::fs::write(&a, b"x").unwrap();
     std::fs::write(&b, b"x").unwrap();
     let paths: Vec<String> = [&a, &b].iter().map(|p| p.to_string_lossy().to_string()).collect();
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     let mut queue = vec![OsEvent::Open(paths.clone())];
     app.services.os_events = Some(Box::new(move || std::mem::take(&mut queue)));
     let ctx = egui::Context::default();
@@ -251,9 +346,31 @@ fn os_open_events_open_files_with_paths() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The viewport commands an `Open` event sends: focus, or an attention request on native Wayland
+/// where winit can't focus (#3708).
+fn raise_commands(is_wayland: bool) -> Vec<egui::ViewportCommand> {
+    let (mut app, _) = app_with(Vec::new());
+    app.services.is_wayland = is_wayland;
+    let mut queue = vec![OsEvent::Open(Vec::new())];
+    app.services.os_events = Some(Box::new(move || std::mem::take(&mut queue)));
+    let mut out = egui::Context::default().run_ui(egui::RawInput::default(), |ui| app.drain_os_events(ui.ctx()));
+    out.textures_delta.clear();
+    out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
+}
+
+#[test]
+fn an_os_open_brings_the_window_forward_or_asks_for_attention_on_wayland() {
+    use egui::{UserAttentionType, ViewportCommand};
+    let attention = ViewportCommand::RequestUserAttention(UserAttentionType::Informational);
+    let x11 = raise_commands(false);
+    assert!(x11.contains(&ViewportCommand::Focus) && !x11.contains(&attention), "{x11:?}");
+    let wayland = raise_commands(true);
+    assert!(wayland.contains(&attention) && !wayland.contains(&ViewportCommand::Focus), "{wayland:?}");
+}
+
 #[test]
 fn os_quit_and_empty_events_do_not_panic() {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     let mut queue = vec![OsEvent::Open(Vec::new()), OsEvent::Quit];
     app.services.os_events = Some(Box::new(move || std::mem::take(&mut queue)));
     app.drain_os_events(&egui::Context::default());
@@ -283,7 +400,7 @@ fn doc_names(app: &PhotocraftApp) -> Vec<String> {
 
 #[test]
 fn dropped_files_open_with_path_and_recent() {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     let dir = std::env::temp_dir().join(format!("photocraft-drop-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let abs = dir.join("dropped.psd");
@@ -322,7 +439,7 @@ fn png_bytes(w: u32, h: u32) -> Vec<u8> {
 
 /// An app with one open document whose canvas showed at (100, 50)–(700, 550) last frame.
 fn app_with_canvas() -> PhotocraftApp {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     app.open_bytes("canvas.psd", b"x").unwrap();
     app.drop_canvas_rect = Some(egui::Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(700.0, 550.0)));
     app
@@ -344,6 +461,9 @@ fn files_dropped_onto_the_canvas_are_placed_in_free_transform_one_by_one() {
     std::fs::create_dir_all(&dir).unwrap();
     let abs = dir.join("photo.png");
     std::fs::write(&abs, png_bytes(200, 100)).unwrap();
+    let svg = dir.join("logo.svg");
+    std::fs::write(&svg, b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"10\"><rect width=\"20\" height=\"10\" fill=\"red\"/></svg>")
+        .unwrap();
     let ctx = egui::Context::default();
     let mut app = app_with_canvas();
     let (layers, steps) = (layer_count(&app), history_steps(&app));
@@ -385,7 +505,37 @@ fn files_dropped_onto_the_canvas_are_placed_in_free_transform_one_by_one() {
     app.place_next_dropped(&ctx);
     assert!(app.ui.transform.is_none() && app.drop_places.is_empty());
     assert!(app.ui.recent_files.is_empty(), "placing isn't opening");
+    app.open_dropped(&ctx, vec![dropped(svg, Err("egui's reader must not be used".into()))], Some(egui::pos2(400.0, 300.0)));
+    app.place_next_dropped(&ctx);
+    let st = app.session.active().unwrap();
+    let placed_svg = st.doc.layer(st.active_layer.unwrap()).unwrap();
+    assert_eq!(placed_svg.name, "logo");
+    assert!(matches!(placed_svg.content, photocraft_doc::LayerContent::Smart(_)), "SVG drops use Place Embedded");
+    assert!(app.ui.transform.is_some(), "SVG drop should enter Free Transform");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #4833: a file dropped on the canvas on its own while the previous one is still in Free
+/// Transform applies that box and is placed at once, instead of waiting unseen for ↩.
+#[test]
+fn a_separate_drop_applies_the_open_transform_and_places_at_once() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    let (layers, steps) = (layer_count(&app), history_steps(&app));
+    let at = Some(egui::pos2(400.0, 300.0));
+    app.open_dropped(&ctx, vec![dropped("first.png", Ok(png_bytes(4, 4)))], at);
+    app.place_next_dropped(&ctx);
+    assert!(app.ui.transform.is_some(), "the first file is in Free Transform");
+    app.open_dropped(&ctx, vec![dropped("second.png", Ok(png_bytes(2, 2)))], at);
+    app.place_next_dropped(&ctx);
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, "second", "placed without waiting for ↩");
+    assert_eq!(app.ui.transform.as_ref().and_then(|t| t.made), Some(crate::state::MadeLayer::Place));
+    // The first place was applied, not taken back: both layers, one Place Embedded step each.
+    assert_eq!(layer_count(&app), layers + 2);
+    assert!(app.drop_places.is_empty());
+    crate::transform_tool::commit(&mut app);
+    assert_eq!(history_steps(&app), steps + 2);
 }
 
 /// #1099: switching tabs after an actual canvas drop cancels the place in its source document.
@@ -441,7 +591,7 @@ fn files_dropped_on_the_tabs_open_at_that_slot() {
     // One tab at (100, 20)–(200, 46): its left half is slot 0, its right half and beyond slot 1.
     let tab = egui::Rect::from_min_max(egui::pos2(100.0, 20.0), egui::pos2(200.0, 46.0));
     let strip = egui::Rect::from_min_max(egui::pos2(92.0, 14.0), egui::pos2(700.0, 50.0));
-    app.tab_strip = Some(crate::canvas::TabStrip { rect: strip, tabs: vec![tab] });
+    app.tab_strip = Some(crate::canvas::TabStrip { rect: strip, tabs: vec![(0, tab)] });
     assert_eq!(app.drop_target(&ctx, Some(egui::pos2(120.0, 30.0))), crate::file_open::DropTarget::Tabs(0));
     assert_eq!(app.drop_target(&ctx, Some(egui::pos2(180.0, 30.0))), crate::file_open::DropTarget::Tabs(1));
     assert_eq!(app.drop_target(&ctx, Some(egui::pos2(600.0, 30.0))), crate::file_open::DropTarget::Tabs(1));
@@ -452,10 +602,48 @@ fn files_dropped_on_the_tabs_open_at_that_slot() {
     assert_eq!(app.ui.views.len(), 3);
     assert_eq!(app.ui.views[2].zoom, 3.0, "views move with their documents");
     // Past the last tab: opened at the end.
-    let tabs = (0..3).map(|i| tab.translate(egui::vec2(104.0 * i as f32, 0.0))).collect();
+    let tabs = (0..3).map(|i| (i, tab.translate(egui::vec2(104.0 * i as f32, 0.0)))).collect();
     app.tab_strip = Some(crate::canvas::TabStrip { rect: strip, tabs });
     app.open_dropped(&ctx, vec![dropped("last.png", Ok(b"x".to_vec()))], Some(egui::pos2(600.0, 30.0)));
     assert_eq!(app.session.documents().last().map(|d| d.doc.name.as_str()), Some("last.png"));
+}
+
+#[test]
+fn a_drop_slot_counts_documents_not_the_tabs_shown() {
+    // #1276: when the tabs overflow into the » menu, the shown tabs aren't documents 0, 1, 2…
+    // Documents 4, 5 and 6 shown: a drop before document 5's tab opens at position 5.
+    let tab = |i: usize, x: f32| (i, egui::Rect::from_min_max(egui::pos2(x, 20.0), egui::pos2(x + 100.0, 46.0)));
+    let strip = crate::canvas::TabStrip {
+        rect: egui::Rect::from_min_max(egui::pos2(0.0, 14.0), egui::pos2(700.0, 50.0)),
+        tabs: vec![tab(4, 0.0), tab(5, 104.0), tab(6, 208.0)],
+    };
+    assert_eq!(strip.slot(20.0), 4);
+    assert_eq!(strip.slot(130.0), 5);
+    assert_eq!(strip.slot(500.0), 7, "past the last shown tab: after it");
+    assert_eq!(crate::canvas::TabStrip { rect: strip.rect, tabs: vec![] }.slot(10.0), 0);
+}
+
+/// #5687: files dropped from another app's window bring PhotoCraft to the front (a focus request
+/// in the frame that takes the drop), so the source window ends up behind it.
+#[test]
+fn a_drop_brings_the_window_to_the_front() {
+    let dir = std::env::temp_dir().join(format!("photocraft-drop-focus-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("photo.png");
+    std::fs::write(&file, png_bytes(8, 8)).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 600.0)).with_max_steps(8).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        PhotocraftApp::new(photocraft_engine::Session::new(), Services::default())
+    });
+    h.run_steps(2);
+    let focus = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+        h.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Focus))
+    };
+    assert!(!focus(&h), "no focus request without a drop");
+    h.input_mut().dropped_files.push(dropped(file, Err("read from the path".into())));
+    h.step();
+    assert!(focus(&h), "the drop brings the window forward");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The whole app (eframe harness, real layout): over the tab strip, the pointer read from the OS
@@ -483,7 +671,7 @@ fn drag_and_drop_in_the_running_app() {
     let strip = h.state().tab_strip.clone().expect("the tab strip is drawn");
     assert_eq!(strip.tabs.len(), 2);
     // Hovering over the first tab's left half: slot 0.
-    let over_first = egui::pos2(strip.tabs[0].left() + 4.0, strip.tabs[0].center().y);
+    let over_first = egui::pos2(strip.tabs[0].1.left() + 4.0, strip.tabs[0].1.center().y);
     pointer.set(over_first);
     h.input_mut().hovered_files.push(egui::HoveredFile { path: Some(file.clone()), ..Default::default() });
     h.step();
@@ -518,14 +706,24 @@ fn drag_and_drop_in_the_running_app() {
 
 #[test]
 fn views_and_windows_stay_with_their_documents() {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     for name in ["a.psd", "b.psd", "c.psd", "d.psd"] {
         app.open_bytes(name, b"x").unwrap();
     }
     for (i, v) in app.ui.views.iter_mut().enumerate() {
         v.zoom = i as f32 + 1.0;
     }
-    app.ui.windows = (0..4).map(|document| crate::state::DocWindow { id: document as u64, document, view: Default::default(), open: true }).collect();
+    app.ui.windows = (0..4)
+        .map(|document| crate::state::DocWindow {
+            id: document as u64,
+            document,
+            view: Default::default(),
+            open: true,
+            floating: false,
+            focused: false,
+            position: None,
+        })
+        .collect();
     let zooms = |app: &PhotocraftApp| app.ui.views.iter().map(|v| v.zoom).collect::<Vec<_>>();
     let windows = |app: &PhotocraftApp| app.ui.windows.iter().map(|w| (w.id, w.document)).collect::<Vec<_>>();
     assert_eq!(app.run("document.move", json!({"document": 0, "to": 3})).unwrap(), json!({"document": 3}));
@@ -573,7 +771,7 @@ fn files_dropped_off_the_canvas_open_as_documents() {
 
 #[test]
 fn notices_are_capped_and_dismissable_state_round_trips() {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     for i in 0..10 {
         notices::post(&mut app, format!("n{i}"), vec![], false, None);
     }
@@ -588,7 +786,7 @@ fn notices_are_capped_and_dismissable_state_round_trips() {
 
 #[test]
 fn notices_render_without_panicking() {
-    let (mut app, _) = app_with(None, None);
+    let (mut app, _) = app_with(Vec::new());
     notices::post(&mut app, "Opened a.psd with 9 warnings", (0..9).map(|i| format!("warning {i}")).collect(), false, None);
     notices::error(&mut app, "Couldn't open b.psd: not an image".into());
     let ctx = egui::Context::default();
@@ -597,19 +795,335 @@ fn notices_render_without_panicking() {
     assert_eq!(app.ui.notices.len(), 2);
 }
 
-/// Preferences › File Handling › Use Lower Case Extension: an extension typed in capitals in the
-/// Save As dialog is written in lower case (off: as typed). The folder keeps its case.
 #[test]
-fn save_as_lowercases_the_extension_with_the_preference() {
-    for (lower, expect) in [(true, "/Pics.V2/Cat.psd"), (false, "/Pics.V2/Cat.PSD")] {
-        let (mut app, written) = app_with(None, Some("/Pics.V2/Cat.PSD".into()));
-        app.run("file.new", json!({"width": 4, "height": 4})).unwrap();
-        app.run("prefs.set", json!({"values": {"fileHandling.lowercaseExtension": lower}})).unwrap();
-        let (path, _) = app.save_as(None).unwrap();
-        assert_eq!(path, expect);
-        assert_eq!(written.borrow().last().map(|(p, _)| p.clone()).as_deref(), Some(expect));
+fn open_documents_as_tabs_preference_controls_floating_windows() {
+    let (mut app, _) = app_with(Vec::new());
+    app.session.edit_prefs(|p| p.workspace.open_documents_as_tabs = false);
+    app.open_bytes("a.psd", b"x").unwrap();
+    assert_eq!(app.ui.windows.len(), 1);
+    assert_eq!(app.ui.windows[0].document, 0);
+
+    app.run("file.new", json!({"width": 100, "height": 100})).unwrap();
+    assert_eq!(app.ui.windows.len(), 2);
+    assert_eq!(app.ui.windows[1].document, 1);
+
+    // Opening with preference true docks into tabs, creating no new floating window
+    app.session.edit_prefs(|p| p.workspace.open_documents_as_tabs = true);
+    app.open_bytes("b.psd", b"x").unwrap();
+    assert_eq!(app.ui.windows.len(), 2);
+}
+
+#[test]
+fn natural_order_counts_numbers_by_value() {
+    use std::cmp::Ordering;
+    assert_eq!(natural_cmp("File_2.psd", "File_10.psd"), Ordering::Less);
+    assert_eq!(natural_cmp("file_1.psd", "File_2.psd"), Ordering::Less, "case-insensitive");
+    assert_eq!(natural_cmp("File_03.psd", "File_10.psd"), Ordering::Less, "leading zeros");
+    assert_eq!(natural_cmp("a.psd", "a.psd"), Ordering::Equal);
+    assert_eq!(natural_cmp("a", "ab"), Ordering::Less);
+    assert_eq!(natural_cmp("File_02.psd", "File_2.psd").then(Ordering::Equal), "File_02.psd".cmp("File_2.psd"), "equal by value: by text");
+    let mut names = vec!["File_10.psd", "File_9.psd", "file_1.psd", "File_100.psd", "b.psd", "A.psd", "File_03.psd"];
+    names.sort_by(|a, b| natural_cmp(a, b));
+    assert_eq!(names, ["A.psd", "b.psd", "file_1.psd", "File_03.psd", "File_9.psd", "File_10.psd", "File_100.psd"]);
+}
+
+/// Files on the command line open before the first frame applies the interface language: their
+/// status line follows the preference, not the English default.
+#[test]
+fn open_paths_reports_in_the_interface_language_before_the_first_frame() {
+    let pattern = |i: u8| {
+        let mut surface = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
+        surface.fill_rect(photocraft_geom::Rect::new(0, 0, 4, 4), &[f32::from(i) / 3.0, 0.5, 0.2, 1.0]);
+        let mut p = photocraft_doc::Pattern::new("Launch", surface, 4, 4);
+        p.id = format!("6f1c2c1e-0000-4000-8000-00000000000{i}");
+        p
+    };
+    let bytes = photocraft_io::pattern_map::write_pat(&[pattern(1), pattern(2), pattern(3)]).unwrap();
+    let (dir, paths) = files("launch-language", &["launch.pat"], &bytes);
+    let (mut app, _) = app_with(Vec::new());
+    app.session.edit_prefs(|p| p.interface.language = "ar".into());
+    crate::i18n::set_current(crate::i18n::Lang::EN);
+    assert_eq!(app.open_paths(&paths), 1);
+    let ar = crate::i18n::Lang::from_code("ar").unwrap();
+    let want =
+        crate::i18n::fmt(&crate::i18n::trn(ar, 3, "Imported {n} pattern from {file}", "Imported {n} patterns from {file}"), &[("n", "3"), ("file", "launch")]);
+    assert_eq!(app.ui.status, want);
+    crate::i18n::set_current(crate::i18n::Lang::EN);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #3248: several files opened at once (File › Open, the command line, Finder) open in name order.
+#[test]
+fn open_paths_opens_a_set_in_name_order() {
+    let (dir, paths) = files("sorted", &["File_10.psd", "File_2.psd", "file_1.psd", "File_03.psd"], b"x");
+    let (mut app, _) = app_with(Vec::new());
+    assert_eq!(app.open_paths(&paths), 4);
+    assert_eq!(doc_names(&app), ["file_1.psd", "File_2.psd", "File_03.psd", "File_10.psd"]);
+    assert_eq!(app.session.active().and_then(|s| s.path.clone()).as_deref(), Some(paths[0].as_str()), "the last in order is active");
+    assert!(app.jobs.batches.is_empty(), "nothing left opening");
+    // The next set goes after.
+    let (dir2, more) = files("sorted-2", &["b.psd", "a.psd"], b"x");
+    assert_eq!(app.open_paths(&more), 2);
+    assert_eq!(doc_names(&app), ["file_1.psd", "File_2.psd", "File_03.psd", "File_10.psd", "a.psd", "b.psd"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+/// #3248: a set opening in the background keeps its order however the opens finish (a small file
+/// decodes before a big one named before it).
+#[test]
+fn a_set_of_background_opens_keeps_its_order_however_they_finish() {
+    use crate::jobs_ui::{self, OpenOrder, OpenTab};
+    use photocraft_engine::jobs::JobId;
+    let (mut app, _) = app_with(Vec::new());
+    app.open_bytes("existing.psd", b"x").unwrap();
+    let batch = jobs_ui::begin_batch(&mut app);
+    let tab = |seq: usize| OpenTab { job: JobId(100 + seq as u64), name: format!("f{seq}.psd"), path: None, slot: None, order: Some(OpenOrder { batch, seq }) };
+    app.jobs.opens.extend((0..4).map(tab));
+    // f1 opened at once (a preset file, say, or background jobs off for it).
+    app.jobs.opens.remove(1);
+    let index = app.session.add_document(Document::new("f1.psd", Size::new(4, 4), ColorMode::Rgb, SampleType::U8), None);
+    assert_eq!(index, 1);
+    jobs_ui::opened_in_order(&mut app.jobs, OpenOrder { batch, seq: 1 });
+    jobs_ui::end_batch(&mut app);
+    assert_eq!(app.jobs.batches.len(), 1, "kept while members are opening");
+    // The rest finish out of order: last, first, third.
+    for seq in [3usize, 0, 2] {
+        let i = app.jobs.opens.iter().position(|o| o.order.is_some_and(|x| x.seq == seq)).unwrap();
+        let tab = app.jobs.opens.remove(i);
+        let index = app.session.add_document(Document::new(&tab.name, Size::new(4, 4), ColorMode::Rgb, SampleType::U8), None);
+        let id = app.session.documents()[index].doc.id;
+        jobs_ui::finish_open_tab(&mut app, &tab, &json!({"document": index, "docId": id.0})).unwrap();
     }
-    assert_eq!(crate::lowercase_extension("/a.B/README"), "/a.B/README");
-    assert_eq!(crate::lowercase_extension(r"C:\X\.Hidden"), r"C:\X\.Hidden");
-    assert_eq!(crate::lowercase_extension("x.Tar.GZ"), "x.Tar.gz");
+    assert_eq!(doc_names(&app), ["existing.psd", "f0.psd", "f1.psd", "f2.psd", "f3.psd"]);
+    assert_eq!(app.session.active().map(|d| d.doc.name.as_str()), Some("f2.psd"), "the one that just opened is active");
+    assert_eq!(app.ui.views.len(), 5, "views follow their documents");
+    assert!(app.jobs.batches.is_empty(), "forgotten once every member opened");
+    // A tab with a slot (dropped on the tabs) keeps it; one from a forgotten set goes to the end.
+    let dropped = OpenTab { job: JobId(200), name: "dropped.psd".into(), path: None, slot: Some(0), order: None };
+    let index = app.session.add_document(Document::new("dropped.psd", Size::new(4, 4), ColorMode::Rgb, SampleType::U8), None);
+    let id = app.session.documents()[index].doc.id;
+    jobs_ui::finish_open_tab(&mut app, &dropped, &json!({"document": index, "docId": id.0})).unwrap();
+    let late = OpenTab { job: JobId(201), name: "late.psd".into(), path: None, slot: None, order: Some(OpenOrder { batch: 999, seq: 0 }) };
+    let index = app.session.add_document(Document::new("late.psd", Size::new(4, 4), ColorMode::Rgb, SampleType::U8), None);
+    let id = app.session.documents()[index].doc.id;
+    jobs_ui::finish_open_tab(&mut app, &late, &json!({"document": index, "docId": id.0})).unwrap();
+    assert_eq!(doc_names(&app), ["dropped.psd", "existing.psd", "f0.psd", "f1.psd", "f2.psd", "f3.psd", "late.psd"]);
+}
+
+/// #4373: Save a Copy is recorded in an action, like Save and Save As, and played back as a copy:
+/// the document keeps its own file and unsaved changes.
+#[test]
+fn save_a_copy_is_recorded_and_replayed_as_a_copy() {
+    let (mut app, written) = app_with(vec![Some(FileDialogAnswer::SaveTo("/pics/copy.png".into()))]);
+    let ctx = egui::Context::default();
+    app.open_file("/pics/work.pcraft", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("actions.record", json!({})).unwrap();
+    app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    menus::invoke(&mut app, &ctx, "file.saveACopy", json!({})).unwrap();
+    answer(&mut app);
+    app.run("actions.stop", json!({})).unwrap();
+    assert_eq!(app.session.actions.list[0].steps.last(), Some(&("file.saveACopy".to_string(), json!({"path": "/pics/copy.png"}))));
+    assert_eq!(crate::actions::label_of("file.saveACopy"), "Save a Copy");
+    written.borrow_mut().clear();
+    let played = app.run("actions.play", json!({"action": 0})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    assert_eq!(written.borrow().iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["/pics/copy.png"]);
+    let st = app.session.active().unwrap();
+    assert_eq!(st.path.as_deref(), Some("/pics/work.pcraft"), "the document keeps its file");
+    assert!(st.is_dirty(), "and its unsaved changes");
+}
+
+/// #7207: File › Export › Export As is recorded in an action with its destination and settings,
+/// as Save a Copy is, and played back without the dialog: on another document it exports that
+/// document, with the recorded format, quality and scale.
+#[test]
+fn export_as_is_recorded_and_replayed() {
+    type Exported = Rc<RefCell<Vec<(String, u32, u32, Option<u8>)>>>;
+    let exported: Exported = Rc::default();
+    let e = exported.clone();
+    let services = Services {
+        export: Some(Box::new(move |doc: &Document, path: &str, s: &crate::ExportSettings| {
+            e.borrow_mut().push((path.to_string(), doc.size.width, doc.size.height, s.jpeg_quality));
+            Ok((b"out".to_vec(), Vec::new()))
+        })),
+        file_dialog: Some(file_dialog::fake(vec![Some(FileDialogAnswer::SaveTo("/pics/out.jpg".into()))]).0),
+        write: Some(Box::new(|_: &str, _: &[u8]| Ok(()))),
+        ..Default::default()
+    };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 40, "height": 20})).unwrap();
+    app.run("actions.record", json!({})).unwrap();
+    let id = menus::invoke(&mut app, &ctx, "file.export.exportAs", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    fields.insert("format".into(), json!("jpg"));
+    fields.insert("quality".into(), json!(70));
+    fields.insert("scale".into(), json!(50));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    answer(&mut app);
+    app.run("actions.stop", json!({})).unwrap();
+    assert_eq!(*exported.borrow(), [("/pics/out.jpg".to_string(), 20, 10, Some(70))]);
+    let (step_id, step) = app.session.actions.list[0].steps.last().cloned().unwrap();
+    assert_eq!(step_id, "file.export.exportAs");
+    assert_eq!((&step["path"], &step["format"], &step["quality"], &step["scale"]), (&json!("/pics/out.jpg"), &json!("jpg"), &json!(70), &json!(50)));
+    assert!(step.as_object().unwrap().keys().all(|k| !k.starts_with("__")), "only the destination and the dialog's settings: {step}");
+    assert_eq!(crate::actions::label_of("file.export.exportAs"), "Export As");
+
+    app.run("file.new", json!({"width": 100, "height": 60})).unwrap();
+    exported.borrow_mut().clear();
+    let played = app.run("actions.play", json!({"action": 0})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    assert_eq!(*exported.borrow(), [("/pics/out.jpg".to_string(), 50, 30, Some(70))], "the played document, scaled as recorded");
+    assert!(app.ui.dialogs.is_empty(), "no dialog on playback");
+}
+
+/// #4400: a new document saved under a name is listed in Open Recent (and on the Home screen),
+/// as opening it is; a Save a Copy isn't, since the document doesn't live there.
+#[test]
+fn saving_a_new_document_lists_it_in_recent_files() {
+    let (mut app, _written) = app_with(vec![Some(FileDialogAnswer::SaveTo("/pics/new.psd".into())), Some(FileDialogAnswer::SaveTo("/pics/copy.png".into()))]);
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 4, "height": 4})).unwrap();
+    assert!(app.ui.recent_files.is_empty());
+    menus::invoke(&mut app, &ctx, "file.saveAs", json!({})).unwrap();
+    answer(&mut app);
+    assert_eq!(app.ui.recent_files, ["/pics/new.psd"]);
+    assert_eq!(app.session.prefs().file_handling.recent_files, ["/pics/new.psd"], "kept for the next launch");
+    menus::invoke(&mut app, &ctx, "file.saveACopy", json!({})).unwrap();
+    answer(&mut app);
+    assert_eq!(app.ui.recent_files, ["/pics/new.psd"], "a copy isn't the document's file");
+}
+
+/// #4559: a file whose type uses a font that isn't installed opens with a notice naming it, as
+/// Photoshop warns on open (the CLI and automation already did); the file still opens. Type in
+/// an installed face adds nothing, and a font the importer already warned about isn't repeated.
+#[test]
+fn opening_type_in_a_missing_font_warns() {
+    fn doc_with_type(font: Option<&str>) -> Document {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 40, "height": 20})).unwrap();
+        let mut p = json!({"text": "Hi", "x": 2, "y": 12, "size": 10});
+        if let Some(f) = font {
+            p["font"] = json!(f);
+        }
+        s.execute("type.create", p).unwrap();
+        (*s.active().unwrap().doc).clone()
+    }
+    const MISSING: &str = "NoSuchFamily4559";
+    let warning = format!("font '{MISSING}' is not installed; text may render using a fallback face");
+    let (with_missing, installed) = (doc_with_type(Some(MISSING)), doc_with_type(None));
+    let already = warning.clone();
+    let services = Services {
+        import: Some(Box::new(move |name: &str, _bytes: &[u8], _opts: &photocraft_io::ImportOptions| {
+            Ok(match name {
+                "installed.psd" => (installed.clone(), Vec::new()),
+                "warned.psd" => (with_missing.clone(), vec![already.clone()]),
+                _ => (with_missing.clone(), Vec::new()),
+            })
+        })),
+        ..Default::default()
+    };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    let warnings = app.open_bytes("poster.psd", b"x").unwrap();
+    assert_eq!(warnings, vec![warning.clone()]);
+    assert!(app.ui.status.contains(MISSING), "{}", app.ui.status);
+    assert_eq!(app.ui.notices.len(), 1);
+    assert_eq!(app.ui.notices[0].lines, vec![warning.clone()]);
+    assert_eq!(app.session.documents().len(), 1, "the file still opens");
+    // Type in an installed face: no notice.
+    assert!(app.open_bytes("installed.psd", b"x").unwrap().is_empty());
+    assert_eq!(app.ui.notices.len(), 1);
+    // The importer's own warning for the same font isn't doubled.
+    assert_eq!(app.open_bytes("warned.psd", b"x").unwrap(), vec![warning]);
+}
+
+/// A file name that isn't valid Unicode on this platform: non-UTF-8 bytes on Unix, an unpaired
+/// surrogate on Windows.
+fn non_unicode_path() -> std::path::PathBuf {
+    #[cfg(unix)]
+    let name = {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::OsStr::from_bytes(b"img\xFF.png").to_owned()
+    };
+    #[cfg(windows)]
+    let name = {
+        use std::os::windows::ffi::OsStringExt;
+        let mut wide: Vec<u16> = "img".encode_utf16().collect();
+        wide.push(0xD800);
+        wide.extend(".png".encode_utf16());
+        std::ffi::OsString::from_wide(&wide)
+    };
+    std::env::temp_dir().join(name)
+}
+
+/// #6601: a lossy copy of such a name is another file's name, so it is refused instead.
+#[test]
+fn a_path_that_is_not_valid_unicode_is_refused_not_rewritten() {
+    let bad = non_unicode_path();
+    let open = path_text(&bad, false).unwrap_err();
+    assert!(open.contains("not valid Unicode") && open.contains("open it again"), "{open}");
+    let save = path_text(&bad, true).unwrap_err();
+    assert!(save.contains("not valid Unicode") && save.contains("another name"), "{save}");
+    let good = std::env::temp_dir().join("img é.png");
+    assert_eq!(path_text(&good, true).as_deref(), Ok(good.to_str().unwrap()));
+}
+
+/// #6598: opening a file that is already open shows its document, as Photoshop does, rather than
+/// a second copy bound to the same file (saving one would overwrite the other). The path is
+/// compared as the file it names: another spelling of it, a symlink to it or, with background
+/// opens, a file still opening finds the same tab.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn opening_an_open_file_again_shows_its_tab() {
+    let (dir, paths) = files("already-open", &["a.psd", "b.psd"], b"x");
+    let (a, b) = (&paths[0], &paths[1]);
+    let (mut app, _) = app_with(Vec::new());
+    app.open_path(a).unwrap();
+    app.open_path(b).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.ui.chrome.home = Some(2);
+    // Open Recent, File › Open, a drop: all go through `open_path`.
+    #[allow(unused_mut)]
+    let mut spellings = vec![a.clone(), dir.join(".").join("a.psd").to_string_lossy().into_owned()];
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.psd");
+        std::os::unix::fs::symlink(a, &link).unwrap();
+        spellings.push(link.to_string_lossy().into_owned());
+    }
+    for again in spellings {
+        app.session.set_active(1);
+        app.ui.chrome.home = Some(2);
+        app.open_path(&again).unwrap();
+        assert_eq!(doc_names(&app), ["a.psd", "b.psd"], "{again}");
+        assert_eq!(app.session.active_index(), Some(0), "{again}");
+        assert_eq!(app.ui.chrome.home, None, "the Home screen gives way to the document");
+    }
+    assert!(app.session.documents()[1].is_dirty(), "b keeps its unsaved changes");
+    // A set holding an open file opens only the others.
+    let (dir2, more) = files("already-open-set", &["c.psd"], b"x");
+    assert_eq!(app.open_paths(&[b.clone(), more[0].clone()]), 1);
+    assert_eq!(doc_names(&app), ["a.psd", "b.psd", "c.psd"]);
+    // In the background: an open document, then a file still opening, show their tabs.
+    app.background_jobs = true;
+    app.open_path(a).unwrap();
+    assert!(app.jobs.opens.is_empty());
+    assert_eq!(app.session.active_index(), Some(0));
+    let (dir3, late) = files("already-open-bg", &["d.psd"], b"x");
+    app.open_path(&late[0]).unwrap();
+    let job = app.jobs.opens[0].job;
+    app.jobs.focus = None;
+    app.open_path(&late[0]).unwrap();
+    assert_eq!(app.jobs.opens.len(), 1, "one tab for the file still opening");
+    assert_eq!(app.jobs.focus, Some(job));
+    // A template still loading opens again as another Untitled, as it does once loaded.
+    let (dir4, template) = files("already-open-template", &["e.psdt"], b"x");
+    app.open_path(&template[0]).unwrap();
+    app.open_path(&template[0]).unwrap();
+    assert_eq!(app.jobs.opens.len(), 3, "two Untitleds from the template");
+    for d in [dir, dir2, dir3, dir4] {
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

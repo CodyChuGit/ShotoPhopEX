@@ -35,7 +35,11 @@ pub struct RefineParams {
     pub feather: f32,
     /// 0–100.
     pub contrast: f32,
-    /// −100–100 (% of `max(radius, 4 px)`).
+    /// −100–100. A curve on the refined coverage, applied last: each pixel's odds (`a / (1 − a)`)
+    /// are multiplied by `49^(shift / 100)`, so at −100% a half-covered pixel drops to 2% and at
+    /// +100% it rises to 98%. Fully selected and unselected pixels never change, so Shift Edge
+    /// moves only soft borders and a hard edge stays put (measured against the reference
+    /// application: the fit holds within ±0.05 in log-odds at feathers of 2, 5 and 10 px).
     pub shift_edge: f32,
 }
 
@@ -59,8 +63,10 @@ impl RefineParams {
     fn feather_sigma(&self) -> f32 {
         self.feather.max(0.0) / 2.0
     }
-    fn shift_px(&self) -> i32 {
-        (self.shift_edge.clamp(-100.0, 100.0) / 100.0 * self.radius.max(4.0)).round().clamp(-64.0, 64.0) as i32
+    /// The factor Shift Edge multiplies each pixel's odds by: `49^(shift / 100)`, 1 at 0%.
+    fn shift_odds(&self) -> f32 {
+        let s = self.shift_edge.clamp(-100.0, 100.0) / 100.0;
+        if s.is_finite() { 49f32.powf(s) } else { 1.0 }
     }
     fn uses_image(&self) -> bool {
         self.radius > 0.0
@@ -73,14 +79,13 @@ impl RefineParams {
         } else {
             0
         };
-        edge + (3.0 * self.smooth_sigma()).ceil() as i32 + (3.0 * self.feather_sigma()).ceil() as i32 + self.shift_px().abs() + 2
+        edge + (3.0 * self.smooth_sigma()).ceil() as i32 + (3.0 * self.feather_sigma()).ceil() as i32 + 2
     }
     /// How far the refined mask can extend beyond the original.
     pub fn spread(&self) -> i32 {
         (if self.uses_image() { self.radius.ceil() as i32 } else { 0 })
             + (3.0 * self.smooth_sigma()).ceil() as i32
             + (3.0 * self.feather_sigma()).ceil() as i32
-            + self.shift_px().max(0)
             + 1
     }
 }
@@ -217,35 +222,17 @@ pub fn gaussian_blur(src: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
     out
 }
 
-/// Grey dilation (`grow`) or erosion by about `r` pixels: alternating 3×3 square and cross steps
-/// (an octagonal structuring element).
+/// Grey dilation (`grow`) or erosion with the octagonal element of `r` alternating
+/// 3×3 square/cross steps. Masks without NaNs or negative zero use O(w*h*log(r+1))
+/// work; those values retain the original comparison order. Invalid sizes return an empty buffer.
 pub fn morph(src: &[f32], w: usize, h: usize, r: usize, grow: bool) -> Vec<f32> {
-    let mut cur = src.to_vec();
-    let mut nxt = cur.clone();
-    let pick = |a: f32, b: f32| if grow { a.max(b) } else { a.min(b) };
-    for k in 0..r {
-        let square = k % 2 == 0;
-        for y in 0..h {
-            for x in 0..w {
-                let mut v = cur[y * w + x];
-                for dy in -1i32..=1 {
-                    for dx in -1i32..=1 {
-                        if (dx != 0 && dy != 0 && !square) || (dx == 0 && dy == 0) {
-                            continue;
-                        }
-                        let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                        if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
-                            v = pick(v, cur[ny as usize * w + nx as usize]);
-                        }
-                    }
-                }
-                nxt[y * w + x] = v;
-            }
-        }
-        std::mem::swap(&mut cur, &mut nxt);
-    }
-    cur
+    morphology::morph(src, w, h, r, grow)
 }
+
+mod brush;
+mod morphology;
+
+pub use brush::{EdgeBrush, EdgeStroke, MAX_SWEPT_AREA, SIZE_RANGE as BRUSH_SIZE_RANGE, brush_surface, painted_tiles, stroke_area, swept_area};
 
 /// Running max (or min) over a window of radius `r` (edge-clipped), van Herk / Gil–Werman:
 /// three comparisons per sample whatever the radius.
@@ -276,7 +263,7 @@ fn max_square(src: &[f32], w: usize, h: usize, r: usize, max: bool) -> Vec<f32> 
     let (mut g, mut hb) = (Vec::new(), Vec::new());
     let mut tmp = vec![0.0f32; w * h];
     for y in 0..h {
-        running_extreme(&src[y * w..(y + 1) * w], &mut tmp[y * w..(y + 1) * w], r, max, &mut g, &mut hb);
+        running_extreme(&src[y * w..(y + 1) * w], &mut tmp[y * w..(y + 1) * w], r.min(w.saturating_sub(1)), max, &mut g, &mut hb);
     }
     let mut out = vec![0.0f32; w * h];
     let (mut col, mut res) = (vec![0.0f32; h], vec![0.0f32; h]);
@@ -284,7 +271,7 @@ fn max_square(src: &[f32], w: usize, h: usize, r: usize, max: bool) -> Vec<f32> 
         for y in 0..h {
             col[y] = tmp[y * w + x];
         }
-        running_extreme(&col, &mut res, r, max, &mut g, &mut hb);
+        running_extreme(&col, &mut res, r.min(h.saturating_sub(1)), max, &mut g, &mut hb);
         for y in 0..h {
             out[y * w + x] = res[y];
         }
@@ -314,6 +301,18 @@ pub fn edge_width(img: &RgbImage, r: usize) -> Vec<f32> {
 
 /// Refines a soft mask buffer `m` (`w × h`) with `img` as guide (required when `radius > 0`).
 pub fn refine_buffer(img: Option<&RgbImage>, m: &[f32], w: usize, h: usize, p: &RefineParams) -> Vec<f32> {
+    refine_buffer_with(img, m, w, h, p, None)
+}
+
+/// The Refine Edge Brush over one buffer: signed coverage (`w × h`, see [`EdgeBrush`]) and the
+/// box radius of its colour estimate.
+#[derive(Clone, Copy)]
+struct BrushBuf<'a> {
+    v: &'a [f32],
+    window: usize,
+}
+
+fn refine_buffer_with(img: Option<&RgbImage>, m: &[f32], w: usize, h: usize, p: &RefineParams, brush: Option<BrushBuf>) -> Vec<f32> {
     let mut a = m.to_vec();
     if let (true, Some(img)) = (p.uses_image(), img) {
         let bin: Vec<bool> = m.iter().map(|v| *v >= 0.5).collect();
@@ -338,10 +337,23 @@ pub fn refine_buffer(img: Option<&RgbImage>, m: &[f32], w: usize, h: usize, p: &
                     Some(wd) => wd[i].clamp(1.5, p.radius.max(1.5)),
                     None => p.radius,
                 };
-                let wgt = (reff + 1.0 - dist[i]).clamp(0.0, 1.0);
+                let mut wgt = (reff + 1.0 - dist[i]).clamp(0.0, 1.0);
+                // Restored by the brush: the original edge.
+                if let Some(b) = brush.and_then(|b| b.v.get(i)).filter(|b| **b < 0.0) {
+                    wgt *= 1.0 + b;
+                }
                 if wgt > 0.0 {
                     a[i] = m[i] + (q[i].clamp(0.0, 1.0) - m[i]) * wgt;
                 }
+            }
+        }
+    }
+    // Added by the brush: coverage estimated from the image.
+    if let (Some(b), Some(img)) = (brush.filter(|b| b.v.iter().any(|v| *v > 0.0)), img) {
+        let est = brush::estimate(img, m, b.v, w, h, b.window);
+        for ((ai, ei), bi) in a.iter_mut().zip(&est).zip(b.v) {
+            if *bi > 0.0 {
+                *ai += (ei - *ai) * bi;
             }
         }
     }
@@ -360,23 +372,75 @@ pub fn refine_buffer(img: Option<&RgbImage>, m: &[f32], w: usize, h: usize, p: &
             *v = ((*v - 0.5) * gain + 0.5).clamp(0.0, 1.0);
         }
     }
-    let d = p.shift_px();
-    if d != 0 {
-        a = morph(&a, w, h, d.unsigned_abs() as usize, d > 0);
+    let k = p.shift_odds();
+    if (k - 1.0).abs() >= 1.0e-6 {
+        for v in &mut a {
+            *v = shift_coverage(*v, k);
+        }
     }
     a
+}
+
+/// Shift Edge on one coverage value: its odds times `k`. 0 and 1 stay exact.
+fn shift_coverage(v: f32, k: f32) -> f32 {
+    let v = v.clamp(0.0, 1.0);
+    if v <= 0.0 || v >= 1.0 {
+        return v;
+    }
+    let shifted = k * v / (k * v + (1.0 - v));
+    if shifted.is_finite() { shifted.clamp(0.0, 1.0) } else { v }
+}
+
+/// Most pixels one refine should cover. Its result is a dense [`Region`] over [`refine_area`]
+/// (about two bytes a pixel while it is assembled), so callers refuse a larger refine up front
+/// rather than allocate it: 2³⁰ pixels, a 32k × 32k selection.
+pub const MAX_REFINE_AREA: u64 = 1 << 30;
+
+/// The area [`refine_mask`] and [`refine_mask_brushed`] compute and allocate their result over:
+/// `content` grown by how far `p` can spread it, plus where `brush` adds, within `canvas`. Empty
+/// when `content` misses the canvas.
+pub fn refine_area(content: Rect, canvas: Rect, p: &RefineParams, brush: Option<&EdgeBrush>) -> Rect {
+    let content = content.intersect(&canvas);
+    if content.is_empty() {
+        return Rect::EMPTY;
+    }
+    content.inflate(p.spread()).union(&brush.map_or(Rect::EMPTY, EdgeBrush::added_bounds)).intersect(&canvas)
 }
 
 /// Refines a selection mask. `mask(r)` returns coverage over `r` (row-major); `content` bounds
 /// its non-zero pixels; the result is clipped to `canvas`. `sampler` supplies the guide image
 /// (only read when `radius > 0`). Returns `None` when nothing remains selected.
 pub fn refine_mask(sampler: &dyn Sampler, mask: &(dyn Fn(Rect) -> Vec<f32> + Sync), content: Rect, canvas: Rect, p: &RefineParams) -> Option<Region> {
-    let content = content.intersect(&canvas);
-    if content.is_empty() {
+    refine_mask_with(sampler, mask, content, canvas, p, None)
+}
+
+/// [`refine_mask`] with the Refine Edge Brush: where `brush` adds, coverage comes from the image
+/// (the area can reach beyond the edge-detection band); where it restores, the original edge
+/// stays. The sampler is read wherever the brush adds, whatever the radius.
+pub fn refine_mask_brushed(
+    sampler: &dyn Sampler,
+    mask: &(dyn Fn(Rect) -> Vec<f32> + Sync),
+    content: Rect,
+    canvas: Rect,
+    p: &RefineParams,
+    brush: Option<&EdgeBrush>,
+) -> Option<Region> {
+    refine_mask_with(sampler, mask, content, canvas, p, brush)
+}
+
+fn refine_mask_with(
+    sampler: &dyn Sampler,
+    mask: &(dyn Fn(Rect) -> Vec<f32> + Sync),
+    content: Rect,
+    canvas: Rect,
+    p: &RefineParams,
+    brush: Option<&EdgeBrush>,
+) -> Option<Region> {
+    let bbox = refine_area(content, canvas, p, brush);
+    if bbox.is_empty() {
         return None;
     }
-    let bbox = content.inflate(p.spread()).intersect(&canvas);
-    let halo = p.halo();
+    let halo = p.halo() + brush.map_or(0, |b| i32::try_from(b.window() * 4).unwrap_or(i32::MAX));
     let mut tiles = Vec::new();
     let mut y = bbox.y0;
     while y < bbox.y1 {
@@ -401,11 +465,17 @@ pub fn refine_mask(sampler: &dyn Sampler, mask: &(dyn Fn(Rect) -> Vec<f32> + Syn
             }
             out
         };
-        if (first == 0.0 || first == 1.0) && m.iter().all(|v| *v == first) {
+        let painted = brush.filter(|b| !b.bounds().intersect(&r).is_empty()).map(|b| b.read(r));
+        let adds = painted.as_ref().is_some_and(|v| v.iter().any(|v| *v > 0.0));
+        if !adds && (first == 0.0 || first == 1.0) && m.iter().all(|v| *v == first) {
             return (*t, vec![q(first); cw * ch]);
         }
-        let img = p.uses_image().then(|| sampler.rgb(r));
-        let out = refine_buffer(img.as_ref(), &m, rw, rh, p);
+        let img = (p.uses_image() || adds).then(|| sampler.rgb(r));
+        let bb = match (&painted, brush) {
+            (Some(v), Some(b)) => Some(BrushBuf { v, window: b.window() }),
+            _ => None,
+        };
+        let out = refine_buffer_with(img.as_ref(), &m, rw, rh, p, bb);
         (*t, core(&out))
     };
     #[cfg(not(target_arch = "wasm32"))]
@@ -669,12 +739,30 @@ mod tests {
         assert!(f[5 * w + 29] > 0.5 && f[5 * w + 29] < 0.8 && f[5 * w + 31] > 0.1);
         let c = refine_buffer(None, &f, w, h, &RefineParams { contrast: 100.0, ..Default::default() });
         assert!(c[5 * w + 29] == 1.0 && c[5 * w + 31] == 0.0);
-        let grown = refine_buffer(None, &m, w, h, &RefineParams { shift_edge: 100.0, ..Default::default() });
-        assert_eq!(grown[5 * w + 33], 1.0);
-        assert_eq!(grown[5 * w + 34], 0.0);
-        let shrunk = refine_buffer(None, &m, w, h, &RefineParams { shift_edge: -50.0, ..Default::default() });
-        assert_eq!(shrunk[5 * w + 27], 1.0);
-        assert_eq!(shrunk[5 * w + 28], 0.0);
+        // Shift Edge leaves a hard edge where it is, at any amount: only soft coverage moves.
+        for shift_edge in [-100.0, -50.0, 50.0, 100.0] {
+            let s = refine_buffer(None, &m, w, h, &RefineParams { shift_edge, ..Default::default() });
+            assert_eq!(s, m, "Shift Edge {shift_edge}% moved a hard edge");
+        }
+        // Coverage before → after, read off the reference application's feathered edges.
+        for (shift_edge, before, after) in [
+            (-100.0, 0.898, 0.153),
+            (-100.0, 0.612, 0.031),
+            (-100.0, 0.965, 0.357),
+            (-50.0, 0.537, 0.141),
+            (-50.0, 0.898, 0.557),
+            (100.0, 0.102, 0.847),
+            (100.0, 0.388, 0.969),
+        ] {
+            let flat = vec![before; w * h];
+            let s = refine_buffer(None, &flat, w, h, &RefineParams { shift_edge, ..Default::default() });
+            assert!((s[5 * w + 30] - after).abs() < 0.01, "{shift_edge}%: {before} became {}, expected {after}", s[5 * w + 30]);
+        }
+        // So a feathered edge moves: at −100% its half-covered point lands where it was 98%.
+        let soft = refine_buffer(None, &m, w, h, &RefineParams { feather: 6.0, ..Default::default() });
+        let pulled = refine_buffer(None, &m, w, h, &RefineParams { feather: 6.0, shift_edge: -100.0, ..Default::default() });
+        let half = |v: &[f32]| (0..w).find(|x| v[5 * w + x] < 0.5).unwrap_or(w);
+        assert!(half(&pulled) < half(&soft), "−100% did not pull the soft edge in");
         let sm = refine_buffer(None, &m, w, h, &RefineParams { smooth: 50.0, ..Default::default() });
         assert!(sm[5 * w + 10] == 1.0 && sm[5 * w + 50] == 0.0);
     }

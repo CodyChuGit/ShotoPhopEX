@@ -11,7 +11,7 @@
 
 use photocraft_color::ColorMode;
 use photocraft_doc::Adjustment;
-use photocraft_doc::adjust::{CurvePoint, HueRange, LevelsChannel, ToneSpace};
+use photocraft_doc::adjust::{CURVE_MAP_LEN, CurvePoint, HueRange, LevelsChannel, ToneSpace, curve_map, curve_map_outputs};
 use serde_json::{Map, Value, json};
 
 use crate::{EngineError, Result};
@@ -73,7 +73,7 @@ pub fn default_for(kind: &str, mode: ColorMode) -> Result<Adjustment> {
 /// None or of another kind). `mode` picks the Levels/Curves channel space when neither the params
 /// nor the base name one.
 pub fn from_params(kind: &str, p: &Value, base: Option<&Adjustment>, mode: ColorMode) -> Result<Adjustment> {
-    let cmd = format!("adjustment `{kind}`");
+    let cmd = format!("{kind} adjustment");
     if !p.is_object() && !p.is_null() {
         return Err(bad(&cmd, "params must be an object"));
     }
@@ -203,7 +203,7 @@ pub fn from_params(kind: &str, p: &Value, base: Option<&Adjustment>, mode: Color
             };
             Adjustment::GradientMap { stops, reverse: r.boolean("reverse", rev0)?, dither: r.boolean("dither", dither0)? }
         }
-        "selectiveColor" => crate::adjust_cmds::selective_from_params(p, base.filter(|b| matches!(b, Adjustment::SelectiveColor { .. }))),
+        "selectiveColor" => crate::adjust_cmds::selective_from_params(p, base.filter(|b| matches!(b, Adjustment::SelectiveColor { .. })))?,
         "colorLookup" => crate::adjust_cmds::lookup_from_params(p, base.filter(|b| matches!(b, Adjustment::ColorLookup { .. })))?,
         other => return Err(bad("adjustment", format!("unknown adjustment kind `{other}`"))),
     })
@@ -236,15 +236,19 @@ pub fn to_params(adj: &Adjustment) -> Value {
             }
             v
         }
-        Adjustment::Curves { master, per_channel, space, black } => {
-            let mut v = json!({"points": curve_arr(master)});
+        Adjustment::Curves { master, per_channel, space, black, pencil } => {
+            let arr = |c: &[CurvePoint]| if *pencil { map_arr(c) } else { curve_arr(c) };
+            let mut v = json!({"points": arr(master)});
             let ink = if black.len() >= 2 { black.clone() } else { identity_curve() };
             let chans = per_channel.iter().cloned().chain(std::iter::once(ink));
             for (key, c) in channel_keys(*space).iter().zip(chans) {
-                v[*key] = curve_arr(&c);
+                v[*key] = arr(&c);
             }
             if *space == ToneSpace::Lab {
-                v["points"] = curve_arr(&per_channel[0]);
+                v["points"] = arr(&per_channel[0]);
+            }
+            if *pencil {
+                v["pencil"] = json!(true);
             }
             v
         }
@@ -391,6 +395,9 @@ fn hue_saturation(r: &Reader<'_>, base: Option<&Adjustment>) -> Result<Adjustmen
     let colorize = r.boolean("colorize", c)?;
     // Colorize hue is 0..360, a shift is -180..180.
     let hue = if colorize { r.num("hue", h.rem_euclid(360.0), 0.0, 360.0)? } else { r.num("hue", h, -180.0, 180.0)? };
+    // Turning Colorize on starts at 25% saturation unless one is given, like the dialog's
+    // checkbox and Photoshop; an explicit 0 stays 0, which colorizes to grey (#2326).
+    let s = if colorize && !c { s.max(25.0) } else { s };
     let (saturation, lightness) = (r.num("saturation", s, if colorize { 0.0 } else { -100.0 }, 100.0)?, r.num("lightness", l, -100.0, 100.0)?);
     for (i, key) in HUE_RANGES.iter().enumerate() {
         let Some(o) = r.object(key)? else { continue };
@@ -464,13 +471,476 @@ fn identity_curve() -> Vec<CurvePoint> {
     vec![CurvePoint { input: 0.0, output: 0.0 }, CurvePoint { input: 1.0, output: 1.0 }]
 }
 
+const CURVE_COORDINATE_PRECISION: f32 = 100.0;
+const CURVE_POINT_DUPLICATE_DISTANCE: f32 = 0.5 / 255.0;
+
 fn curve_arr(c: &[CurvePoint]) -> Value {
     let c = if c.len() >= 2 { c.to_vec() } else { identity_curve() };
-    json!(c.iter().map(|p| [(p.input * 255.0 * 100.0).round() / 100.0, (p.output * 255.0 * 100.0).round() / 100.0]).collect::<Vec<_>>())
+    json!(
+        c.iter()
+            .map(|p| {
+                [
+                    (p.input * 255.0 * CURVE_COORDINATE_PRECISION).round() / CURVE_COORDINATE_PRECISION,
+                    (p.output * 255.0 * CURVE_COORDINATE_PRECISION).round() / CURVE_COORDINATE_PRECISION,
+                ]
+            })
+            .collect::<Vec<_>>()
+    )
 }
 
 /// Most points a curve may have (Photoshop allows 16; the PSD record holds 19).
 pub const MAX_CURVE_POINTS: usize = 19;
+
+/// Points Photoshop's "Edit points to modify the curve" places on a pencil-drawn curve at most.
+const MAX_FITTED_POINTS: usize = 16;
+
+/// Most Smooth passes one `smooth` param applies.
+pub const MAX_SMOOTH_PASSES: f32 = 10.0;
+
+/// A pencil-mode curve as params: its [`CURVE_MAP_LEN`] outputs in 0..255.
+fn map_arr(c: &[CurvePoint]) -> Value {
+    json!(curve_map_outputs(c).iter().map(|o| (o * 255.0 * CURVE_COORDINATE_PRECISION).round() / CURVE_COORDINATE_PRECISION).collect::<Vec<_>>())
+}
+
+/// `lut` (evenly spaced over 0..=1) at `x`, linearly interpolated.
+fn lut_at(lut: &[f32], x: f32) -> f32 {
+    let Some(last) = lut.len().checked_sub(1) else { return x };
+    let f = x.clamp(0.0, 1.0) * last as f32;
+    let i = (f.floor() as usize).min(last);
+    let (a, b) = (lut.get(i).copied().unwrap_or(x), lut.get((i + 1).min(last)).copied().unwrap_or(x));
+    a + (b - a) * (f - i as f32)
+}
+
+/// A point curve drawn into a pencil-mode map (Photoshop switching to "Draw to modify the curve").
+pub fn points_to_map(points: &[CurvePoint]) -> Vec<CurvePoint> {
+    let lut = photocraft_compose::adjust::curve_lut(points);
+    let last = (CURVE_MAP_LEN - 1) as f32;
+    curve_map(&(0..CURVE_MAP_LEN).map(|k| lut_at(&lut, k as f32 / last)).collect::<Vec<_>>())
+}
+
+/// A pencil-mode map turned back into a point curve (Photoshop's "Edit points to modify the
+/// curve"): the endpoints, then the worst-fitting input until the spline is within one level of
+/// the map or [`MAX_FITTED_POINTS`] are placed.
+pub fn map_to_points(map: &[CurvePoint]) -> Vec<CurvePoint> {
+    let target = curve_map_outputs(map);
+    let last = CURVE_MAP_LEN - 1;
+    let at = |k: usize| CurvePoint { input: k as f32 / last as f32, output: target.get(k).copied().unwrap_or(0.0) };
+    let mut pts = vec![at(0), at(last)];
+    while pts.len() < MAX_FITTED_POINTS {
+        let lut = photocraft_compose::adjust::curve_lut(&pts);
+        let worst = (0..CURVE_MAP_LEN)
+            .map(|k| (k, (lut_at(&lut, k as f32 / last as f32) - target.get(k).copied().unwrap_or(0.0)).abs()))
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        let Some((k, _)) = worst.filter(|w| w.1 > 1.0 / 255.0) else { break };
+        let p = at(k);
+        if pts.iter().any(|q| (q.input - p.input).abs() < CURVE_POINT_DUPLICATE_DISTANCE) {
+            break;
+        }
+        pts.push(p);
+        pts.sort_by(|a, b| a.input.total_cmp(&b.input));
+    }
+    pts
+}
+
+/// One pass of Curves' Smooth button over pencil-mode outputs (any scale): each value becomes
+/// the mean of a symmetric window of up to three neighbours a side, so straight runs and the two
+/// endpoints stay put while jagged strokes even out.
+pub fn smooth_curve_map(outputs: &mut [f32]) {
+    const RADIUS: usize = 3;
+    let src = outputs.to_vec();
+    let n = src.len();
+    for (k, out) in outputs.iter_mut().enumerate() {
+        let r = RADIUS.min(k).min(n.saturating_sub(k + 1));
+        if r == 0 {
+            continue;
+        }
+        let window = src.get(k - r..=k + r).unwrap_or_default();
+        *out = window.iter().sum::<f32>() / window.len().max(1) as f32;
+    }
+}
+
+/// Whether a pencil-mode curve maps every level to itself.
+fn is_identity_map(c: &[CurvePoint]) -> bool {
+    let last = (CURVE_MAP_LEN - 1) as f32;
+    curve_map_outputs(c).iter().enumerate().all(|(k, o)| (o - k as f32 / last).abs() < 0.5 / 255.0)
+}
+
+/// Fixed-target Curves eyedroppers. The UI keeps the sampled operation provisional; this helper
+/// only resolves a sample into an ordinary Curves adjustment that the existing command can apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurvesEyedropper {
+    Black,
+    NeutralGray,
+    White,
+}
+
+/// Verify that serializing and parsing `points` keeps every point and the requested anchor.
+fn curve_round_trip_keeps_anchor(points: &[CurvePoint], input: f32, output: f32) -> bool {
+    let Ok(parsed) = parse_curve("curves eyedropper", "curve", &curve_arr(points)) else { return false };
+    if parsed.len() != points.len() {
+        return false;
+    }
+    let serialized = |value: f32| ((value * 255.0 * CURVE_COORDINATE_PRECISION).round() / CURVE_COORDINATE_PRECISION) / 255.0;
+    let (input, output) = (serialized(input), serialized(output));
+    parsed.iter().any(|point| (point.input - input).abs() < 1e-6 && (point.output - output).abs() < 1e-6)
+}
+
+fn move_curve_endpoint(points: &mut [CurvePoint], sample: f32, black: bool) {
+    let sample = sample.clamp(0.0, 1.0);
+    let mut candidate = points.to_vec();
+    if black {
+        for p in &mut candidate {
+            p.input = sample + p.input * (1.0 - sample);
+        }
+        if let Some(first) = candidate.first_mut() {
+            first.input = sample;
+            first.output = 0.0;
+        }
+    } else {
+        for p in &mut candidate {
+            p.input *= sample;
+        }
+        if let Some(last) = candidate.last_mut() {
+            last.input = sample;
+            last.output = 1.0;
+        }
+    }
+
+    // `curve_arr` stores hundredths of a 0..255 level, while `parse_curve` drops points
+    // separated by less than half a level. Scaling an endpoint toward the sample can collapse
+    // several edited points together even when the target endpoint itself survives. Check that
+    // the full curve survives the actual serializer and parser.
+    let target = if black { 0.0 } else { 1.0 };
+    if curve_round_trip_keeps_anchor(&candidate, sample, target) {
+        points.clone_from_slice(&candidate);
+        return;
+    }
+
+    // If scaling collapses any points, keep the user's point positions and edits, and make the
+    // two points nearest the selected endpoint a target plateau. Near an endpoint sample, those
+    // two points bracket the sample; the plateau is representable and leaves the rest of the
+    // curve intact.
+    if black {
+        for point in points.iter_mut().rev().take(2) {
+            point.output = 0.0;
+        }
+    } else {
+        for point in points.iter_mut().take(2) {
+            point.output = 1.0;
+        }
+    }
+}
+
+fn anchor_curve(points: &mut Vec<CurvePoint>, input: f32, output: f32) {
+    let (input, output) = (input.clamp(0.0, 1.0), output.clamp(0.0, 1.0));
+    let mut candidate = points.clone();
+    if let Some(point) = candidate.iter_mut().find(|p| (p.input - input).abs() < CURVE_POINT_DUPLICATE_DISTANCE) {
+        point.input = input;
+        point.output = output;
+    } else if candidate.len() < MAX_CURVE_POINTS {
+        candidate.push(CurvePoint { input, output });
+    } else if let Some((index, _)) = candidate
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index > 0 && *index + 1 < candidate.len())
+        .min_by(|(_, a), (_, b)| (a.input - input).abs().total_cmp(&(b.input - input).abs()))
+        && let Some(point) = candidate.get_mut(index)
+    {
+        *point = CurvePoint { input, output };
+    }
+    candidate.sort_by(|a, b| a.input.total_cmp(&b.input));
+    if curve_round_trip_keeps_anchor(&candidate, input, output) {
+        *points = candidate;
+        return;
+    }
+
+    // A channel sample can land between two points only half a level apart. Moving one point to
+    // the sample would then make the parser collapse the pair, so retain their positions and make
+    // the bracketing pair a deterministic neutral plateau instead.
+    let Some(last) = points.len().checked_sub(1) else { return };
+    let split = points.partition_point(|point| point.input < input);
+    let mut lower = split.saturating_sub(1).min(last);
+    let mut upper = split.min(last);
+    if lower == upper {
+        if upper < last {
+            upper += 1;
+        } else {
+            lower = lower.saturating_sub(1);
+        }
+    }
+    if let Some(point) = points.get_mut(lower) {
+        point.output = output;
+    }
+    if let Some(point) = points.get_mut(upper) {
+        point.output = output;
+    }
+}
+
+/// Rec. 709 luma in the sampled display-RGB values. This is the neutral level the gray picker
+/// should preserve when it removes a colour cast.
+fn rgb_luma(rgb: [f32; 3]) -> f32 {
+    rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
+}
+
+/// Find the master-curve input whose output is closest to `target`. The master curve is kept
+/// intact by the gray picker, so channel curves must target its inverse to preserve final luma.
+/// A non-monotone or flat curve may not have an exact inverse; the first nearest LUT entry gives
+/// a deterministic best fit.
+fn inverse_master_target(master: &[CurvePoint], target: f32) -> f32 {
+    if photocraft_doc::adjust::is_identity_curve(master) {
+        return target;
+    }
+    let lut = photocraft_compose::adjust::curve_lut(master);
+    let Some(denominator) = lut.len().checked_sub(1).filter(|last| *last > 0) else { return target };
+    let mut best_input = target;
+    let mut best_error = f32::INFINITY;
+    for (index, value) in lut.iter().enumerate() {
+        let error = (*value - target).abs();
+        if error < best_error {
+            best_error = error;
+            best_input = index as f32 / denominator as f32;
+        }
+    }
+    best_input
+}
+
+/// The sample and colour modes both eyedroppers (Levels, Curves) support: RGB, and Grayscale
+/// without the Neutral Gray picker.
+fn check_eyedropper(cmd: &str, picker: CurvesEyedropper, sample: [f32; 3], mode: ColorMode) -> Result<()> {
+    if sample.iter().any(|v| !v.is_finite()) {
+        return Err(bad(cmd, "sample components must be finite"));
+    }
+    if !matches!(mode, ColorMode::Rgb | ColorMode::Grayscale) {
+        return Err(bad(cmd, "only RGB and Grayscale documents are supported"));
+    }
+    if mode == ColorMode::Grayscale && picker == CurvesEyedropper::NeutralGray {
+        return Err(bad(cmd, "Neutral Gray is unavailable for Grayscale documents"));
+    }
+    Ok(())
+}
+
+/// The smallest input range Levels allows (two levels), as the parser enforces.
+const LEVELS_MIN_RANGE: f32 = 2.0 / 255.0;
+
+/// Moves the input black (or white) of `c` to `sample`, so the sample maps to the output black
+/// (white). The other input end moves away if it would leave less than two levels between them.
+fn set_levels_input(c: &mut LevelsChannel, sample: f32, black: bool) {
+    if black {
+        c.in_black = sample.clamp(0.0, 1.0 - LEVELS_MIN_RANGE);
+        c.in_white = c.in_white.max(c.in_black + LEVELS_MIN_RANGE).min(1.0);
+    } else {
+        c.in_white = sample.clamp(LEVELS_MIN_RANGE, 1.0);
+        c.in_black = c.in_black.min(c.in_white - LEVELS_MIN_RANGE).max(0.0);
+    }
+}
+
+/// Sets the midtone gamma of `c` so `sample` maps to `target` (both 0..1). Bisection over the
+/// gamma range on the compositor's own Levels curve (monotone in gamma), so the shadow toe is
+/// accounted for. A sample at or outside the input range, or a target outside the output range,
+/// can't be reached by gamma and leaves `c` unchanged.
+fn set_levels_gamma(c: &mut LevelsChannel, sample: f32, target: f32) {
+    let u = (sample - c.in_black) / (c.in_white - c.in_black).max(1e-6);
+    let span = c.out_white - c.out_black;
+    let t = (target - c.out_black) / span;
+    if !(u > 0.0 && u < 1.0) || span.abs() < 1e-6 || !(t > 0.0 && t < 1.0) {
+        return;
+    }
+    let reached = |gamma: f32| {
+        let trial = LevelsChannel { gamma, ..c.clone() };
+        (photocraft_compose::adjust::levels(&trial, sample) - c.out_black) / span
+    };
+    let (mut lo, mut hi) = (0.01f32.ln(), 9.99f32.ln());
+    for _ in 0..40 {
+        let mid = (lo + hi) / 2.0;
+        if reached(mid.exp()) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    c.gamma = ((lo + hi) / 2.0).exp().clamp(0.01, 9.99);
+}
+
+/// Photoshop's Levels eyedroppers on the Levels in `base` (params, as for `from_params`), from a
+/// colour sample of the image the Levels adjust. RGB: Set Black/White Point move each channel's
+/// input black/white to the sample's value in that channel, so the sample maps to the output
+/// black/white; Set Neutral Gray Point sets each channel's midtone gamma so the channel maps to
+/// the sample's luma, removing the cast while keeping its brightness. The composite record is
+/// kept. Grayscale: Black/White move the composite input; there is no gray picker.
+pub fn levels_eyedropper(base: &Value, picker: CurvesEyedropper, sample: [f32; 3], mode: ColorMode) -> Result<Adjustment> {
+    const CMD: &str = "levels eyedropper";
+    check_eyedropper(CMD, picker, sample, mode)?;
+    let mut adjustment = from_params("levels", base, None, mode)?;
+    let Adjustment::Levels { master, per_channel, space, .. } = &mut adjustment else {
+        return Err(bad(CMD, "expected a Levels adjustment"));
+    };
+    if *space != ToneSpace::Rgb {
+        return Err(bad(CMD, "only RGB channel Levels are supported"));
+    }
+    let sample = sample.map(|v| v.clamp(0.0, 1.0));
+    if mode == ColorMode::Grayscale {
+        set_levels_input(master, (sample[0] + sample[1] + sample[2]) / 3.0, picker == CurvesEyedropper::Black);
+        return Ok(adjustment);
+    }
+    match picker {
+        CurvesEyedropper::Black | CurvesEyedropper::White => {
+            for (c, v) in per_channel.iter_mut().zip(sample) {
+                set_levels_input(c, v, picker == CurvesEyedropper::Black);
+            }
+        }
+        CurvesEyedropper::NeutralGray => {
+            let target = rgb_luma(sample);
+            for (c, v) in per_channel.iter_mut().zip(sample) {
+                set_levels_gamma(c, v, target);
+            }
+        }
+    }
+    Ok(adjustment)
+}
+
+/// The eyedropper of adjustment `kind` ("levels" or "curves"): [`levels_eyedropper`] or
+/// [`curves_eyedropper`].
+pub fn adjustment_eyedropper(kind: &str, base: &Value, picker: CurvesEyedropper, sample: [f32; 3], mode: ColorMode) -> Result<Adjustment> {
+    match kind {
+        "levels" => levels_eyedropper(base, picker, sample, mode),
+        "curves" => curves_eyedropper(base, picker, sample, mode),
+        _ => Err(bad(EYEDROPPER, "`eyedropper` applies to Levels and Curves only")),
+    }
+}
+
+/// Resolve a merged-composite colour sample into the black, luma-preserving neutral-gray or white target.
+/// RGB uses the three channel curves. Grayscale uses the composite curve and has no gray picker.
+/// Other colour models stay unsupported until their native channel semantics can be sampled.
+pub fn curves_eyedropper(base: &Value, picker: CurvesEyedropper, sample: [f32; 3], mode: ColorMode) -> Result<Adjustment> {
+    check_eyedropper("curves eyedropper", picker, sample, mode)?;
+    // The pickers place points: a pencil-drawn curve is first fitted with points, as when
+    // Photoshop leaves the pencil for point editing.
+    let mut base = base.clone();
+    if let Some(o) = base.as_object_mut() {
+        o.remove("smooth");
+        if o.get("pencil").and_then(Value::as_bool) == Some(true) {
+            o.insert("pencil".into(), json!(false));
+        }
+    }
+    let mut adjustment = from_params("curves", &base, None, mode)?;
+    let Adjustment::Curves { master, per_channel, .. } = &mut adjustment else {
+        return Err(bad("curves eyedropper", "expected a Curves adjustment"));
+    };
+    let sample = sample.map(|v| v.clamp(0.0, 1.0));
+    if mode == ColorMode::Grayscale {
+        let tone = (sample[0] + sample[1] + sample[2]) / 3.0;
+        move_curve_endpoint(master, tone, picker == CurvesEyedropper::Black);
+        return Ok(adjustment);
+    }
+    match picker {
+        CurvesEyedropper::Black | CurvesEyedropper::White => {
+            let black = picker == CurvesEyedropper::Black;
+            for (curve, value) in per_channel.iter_mut().zip(sample) {
+                move_curve_endpoint(curve, value, black);
+            }
+            if let Some(endpoint) = if black { master.first_mut() } else { master.last_mut() } {
+                endpoint.output = if black { 0.0 } else { 1.0 };
+            }
+        }
+        CurvesEyedropper::NeutralGray => {
+            // Use sampled luma instead of a fixed mid-gray so removing a cast keeps the sample's
+            // brightness. The per-channel curves precede the composite curve, so invert the
+            // existing master curve while preserving it.
+            let target = inverse_master_target(master, rgb_luma(sample));
+            for (curve, value) in per_channel.iter_mut().zip(sample) {
+                anchor_curve(curve, value, target);
+            }
+        }
+    }
+    Ok(adjustment)
+}
+
+/// The `eyedropper` param of the Levels and Curves commands (`kind`), so agents and the CLI can
+/// drive the dialog's Set Black/Neutral Gray/White Point pickers:
+/// `{"point":"black"|"gray"|"white","at":[x,y]}` samples the merged composite at document pixel
+/// (x, y) (`"size"`: the Eyedropper's Sample Size, 1 = Point Sample), or `"color":[r,g,b]` (0–1)
+/// gives the sample directly. The rest of `p` is the adjustment the picker edits. `None` without
+/// the key.
+pub fn eyedropper_from_params(s: &crate::Session, kind: &str, p: &Value) -> Result<Option<Adjustment>> {
+    let Some(e) = p.get("eyedropper") else { return Ok(None) };
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let (picker, sample) = eyedropper_sample(&d.doc, None, e)?;
+    let mut base = p.clone();
+    if let Some(o) = base.as_object_mut() {
+        o.remove("eyedropper");
+    }
+    adjustment_eyedropper(kind, &base, picker, sample, d.doc.mode).map(Some)
+}
+
+/// The `eyedropper` param of `layer.setAdjustment` on Levels or Curves adjustment layer `layer`:
+/// the Properties panel's Set Black/Neutral Gray/White Point pickers. `at` samples the image the
+/// layer adjusts (the composite with the layer hidden, like its Properties histogram), so clicking
+/// the same pixel again maps it the same way. The picker edits the layer's adjustment with the
+/// other keys of `p` merged over it. `None` without the key.
+pub fn layer_eyedropper(s: &crate::Session, layer: photocraft_doc::LayerId, p: &Value) -> Result<Option<Adjustment>> {
+    let Some(e) = p.get("eyedropper") else { return Ok(None) };
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let l = d.doc.layer(layer).ok_or(EngineError::NoLayer(layer))?;
+    let (kind, adj) = match &l.content {
+        photocraft_doc::LayerContent::Adjustment(adj @ Adjustment::Curves { .. }) => ("curves", adj),
+        photocraft_doc::LayerContent::Adjustment(adj @ Adjustment::Levels { .. }) => ("levels", adj),
+        _ => return Err(bad(EYEDROPPER, "`eyedropper` applies to Levels and Curves adjustment layers only")),
+    };
+    let mut rest = p.clone();
+    if let Some(o) = rest.as_object_mut() {
+        o.remove("eyedropper");
+    }
+    let current = if user_keys(&rest).is_empty() { adj.clone() } else { from_params(kind, &rest, Some(adj), d.doc.mode)? };
+    let (picker, sample) = eyedropper_sample(&d.doc, Some(layer), e)?;
+    adjustment_eyedropper(kind, &to_params(&current), picker, sample, d.doc.mode).map(Some)
+}
+
+const EYEDROPPER: &str = "eyedropper";
+
+/// The picker and sample of an `eyedropper` param; `at` samples `doc` with layer `hide` hidden.
+fn eyedropper_sample(doc: &photocraft_doc::Document, hide: Option<photocraft_doc::LayerId>, e: &Value) -> Result<(CurvesEyedropper, [f32; 3])> {
+    const CMD: &str = EYEDROPPER;
+    let picker = match e.get("point").and_then(Value::as_str) {
+        Some("black") => CurvesEyedropper::Black,
+        Some("gray") => CurvesEyedropper::NeutralGray,
+        Some("white") => CurvesEyedropper::White,
+        _ => return Err(bad(CMD, "`eyedropper.point` must be \"black\", \"gray\" or \"white\"")),
+    };
+    let triple = |v: &Value| -> Option<[f64; 3]> {
+        let a = v.as_array().filter(|a| a.len() == 3)?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    let sample = if let Some(c) = e.get("color") {
+        let c = triple(c).ok_or_else(|| bad(CMD, "`eyedropper.color` must be [r, g, b] in 0..1"))?;
+        c.map(|v| v as f32)
+    } else if let Some(at) = e.get("at") {
+        let xy = at.as_array().filter(|a| a.len() == 2).and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]));
+        let [x, y] = xy.filter(|xy| xy.iter().all(|v| v.is_finite())).ok_or_else(|| bad(CMD, "`eyedropper.at` must be [x, y] in document pixels"))?;
+        let (w, h) = (f64::from(doc.size.width), f64::from(doc.size.height));
+        if x < 0.0 || y < 0.0 || x >= w || y >= h {
+            return Err(bad(CMD, "`eyedropper.at` is outside the image"));
+        }
+        let size = crate::sample_cmds::size_param(CMD, e)?;
+        let all = crate::sample_cmds::SampleLayers::All;
+        let [r, g, b, a] = match hide {
+            Some(id) => {
+                let mut below = doc.clone();
+                if let Some(l) = below.layer_mut(id) {
+                    l.visible = false;
+                }
+                crate::sample_cmds::sample_color(&below, None, x, y, size, all)
+            }
+            None => crate::sample_cmds::sample_color(doc, None, x, y, size, all),
+        };
+        if a <= 0.0 {
+            return Err(bad(CMD, "the sampled pixel is transparent"));
+        }
+        [r, g, b]
+    } else {
+        return Err(bad(CMD, "`eyedropper` needs `at` [x, y] or `color` [r, g, b]"));
+    };
+    Ok((picker, sample))
+}
 
 /// `[[in, out], …]` in 0..255: sorted by input, duplicates collapsed, 2..=19 points.
 pub fn parse_curve(cmd: &str, key: &str, v: &Value) -> Result<Vec<CurvePoint>> {
@@ -482,32 +952,67 @@ pub fn parse_curve(cmd: &str, key: &str, v: &Value) -> Result<Vec<CurvePoint>> {
     let mut pts = Vec::with_capacity(a.len());
     for q in a {
         let q = q.as_array().filter(|q| q.len() == 2).ok_or_else(err)?;
-        let x = q.first().and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(err)?;
-        let y = q.get(1).and_then(Value::as_f64).filter(|y| y.is_finite()).ok_or_else(err)?;
+        // Like Photoshop, a point outside 0..255 is refused rather than moved onto the edge.
+        let level = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|v| (-1e-6..=255.0 + 1e-6).contains(v));
+        let x = level(q.first()).ok_or_else(err)?;
+        let y = level(q.get(1)).ok_or_else(err)?;
         pts.push(CurvePoint { input: (x as f32).clamp(0.0, 255.0) / 255.0, output: (y as f32).clamp(0.0, 255.0) / 255.0 });
     }
     pts.sort_by(|a, b| a.input.total_cmp(&b.input));
-    pts.dedup_by(|later, earlier| (later.input - earlier.input).abs() < 0.5 / 255.0);
+    pts.dedup_by(|later, earlier| (later.input - earlier.input).abs() < CURVE_POINT_DUPLICATE_DISTANCE);
     if pts.len() < 2 || pts.len() > MAX_CURVE_POINTS {
         return Err(err());
     }
     Ok(pts)
 }
 
+/// A pencil-mode map param: exactly [`CURVE_MAP_LEN`] outputs in 0..255.
+fn parse_map(cmd: &str, key: &str, v: &Value) -> Result<Vec<CurvePoint>> {
+    let err = || bad(cmd, format!("`{key}` must be {CURVE_MAP_LEN} output levels in 0..255 (a pencil-drawn map) or [input, output] pairs"));
+    let a = v.as_array().filter(|a| a.len() == CURVE_MAP_LEN).ok_or_else(err)?;
+    let outs =
+        a.iter().map(|x| x.as_f64().filter(|x| x.is_finite()).map(|x| (x as f32).clamp(0.0, 255.0) / 255.0)).collect::<Option<Vec<_>>>().ok_or_else(err)?;
+    Ok(curve_map(&outs))
+}
+
+/// A Curves channel param in the adjustment's mode: `[[in, out], …]` points (drawn into a map in
+/// pencil mode) or a [`CURVE_MAP_LEN`]-level map (fitted with points outside pencil mode).
+fn parse_curve_in(cmd: &str, key: &str, v: &Value, pencil: bool) -> Result<Vec<CurvePoint>> {
+    if v.as_array().and_then(|a| a.first()).is_some_and(Value::is_number) {
+        let map = parse_map(cmd, key, v)?;
+        Ok(if pencil { map } else { map_to_points(&map) })
+    } else {
+        let pts = parse_curve(cmd, key, v)?;
+        Ok(if pencil { points_to_map(&pts) } else { pts })
+    }
+}
+
 fn curves(r: &Reader<'_>, base: Option<&Adjustment>, mode: ColorMode) -> Result<Adjustment> {
-    let (mut master, mut chans, base_space) = match base {
-        Some(Adjustment::Curves { master, per_channel, space, black }) => {
-            (master.clone(), [per_channel[0].clone(), per_channel[1].clone(), per_channel[2].clone(), black.clone()], Some(*space))
+    let (mut master, mut chans, base_space, base_pencil) = match base {
+        Some(Adjustment::Curves { master, per_channel, space, black, pencil }) => {
+            (master.clone(), [per_channel[0].clone(), per_channel[1].clone(), per_channel[2].clone(), black.clone()], Some(*space), *pencil)
         }
-        _ => (identity_curve(), std::array::from_fn(|_| identity_curve()), None),
+        _ => (identity_curve(), std::array::from_fn(|_| identity_curve()), None, false),
     };
     let space = space_of(r, base_space, mode);
     if base_space.is_some_and(|b| b != space) {
         chans = std::array::from_fn(|_| identity_curve());
     }
+    let pencil = r.boolean("pencil", base_pencil)?;
+    // Every stored curve in the adjustment's mode: maps are drawn from the spline when switching
+    // to the pencil, fitted with points when switching back, and filled out to full maps.
+    let convert = |c: Vec<CurvePoint>| match (base_pencil, pencil) {
+        (false, true) => points_to_map(&c),
+        (true, false) => map_to_points(&c),
+        (true, true) if c.len() != CURVE_MAP_LEN => curve_map(&curve_map_outputs(&c)),
+        _ => c,
+    };
+    let [c0, c1, c2, k] = chans;
+    let [m, c0, c1, c2, k] = [master, c0, c1, c2, k].map(convert);
+    (master, chans) = (m, [c0, c1, c2, k]);
     let composite = r.get("points").or_else(|| r.get("gray"));
     if let Some(v) = composite {
-        let c = parse_curve(r.cmd, "points", v)?;
+        let c = parse_curve_in(r.cmd, "points", v, pencil)?;
         if space == ToneSpace::Lab {
             chans[0] = c;
         } else {
@@ -518,12 +1023,25 @@ fn curves(r: &Reader<'_>, base: Option<&Adjustment>, mode: ColorMode) -> Result<
         if let Some(v) = r.get(key)
             && let Some(slot) = chans.get_mut(i)
         {
-            *slot = parse_curve(r.cmd, key, v)?;
+            *slot = parse_curve_in(r.cmd, key, v, pencil)?;
+        }
+    }
+    let passes = r.num("smooth", 0.0, 0.0, MAX_SMOOTH_PASSES)?.round() as usize;
+    if pencil {
+        // Smoothed, then held at the params' precision so `to_params` round-trips exactly.
+        let level = |o: f32| (o * 255.0 * CURVE_COORDINATE_PRECISION).round() / CURVE_COORDINATE_PRECISION / 255.0;
+        for c in std::iter::once(&mut master).chain(chans.iter_mut()) {
+            let mut outs = curve_map_outputs(c);
+            for _ in 0..passes {
+                smooth_curve_map(&mut outs);
+            }
+            *c = curve_map(&outs.into_iter().map(level).collect::<Vec<_>>());
         }
     }
     let [c0, c1, c2, black] = chans;
-    let black = if space == ToneSpace::Cmyk && !photocraft_doc::adjust::is_identity_curve(&black) { black } else { Vec::new() };
-    Ok(Adjustment::Curves { master, per_channel: [c0, c1, c2], space, black })
+    let identity = if pencil { is_identity_map(&black) } else { photocraft_doc::adjust::is_identity_curve(&black) };
+    let black = if space == ToneSpace::Cmyk && !identity { black } else { Vec::new() };
+    Ok(Adjustment::Curves { master, per_channel: [c0, c1, c2], space, black, pencil })
 }
 
 fn levels_obj(c: &LevelsChannel) -> Value {
@@ -563,248 +1081,4 @@ pub fn user_keys(p: &Value) -> Map<String, Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const KINDS: [&str; 15] = [
-        "invert",
-        "brightnessContrast",
-        "threshold",
-        "posterize",
-        "exposure",
-        "vibrance",
-        "hueSaturation",
-        "levels",
-        "curves",
-        "colorBalance",
-        "blackWhite",
-        "photoFilter",
-        "channelMixer",
-        "gradientMap",
-        "selectiveColor",
-    ];
-
-    /// A non-default parameter set per kind (RGB channel keys for Levels/Curves).
-    pub(crate) fn sample(kind: &str) -> Value {
-        match kind {
-            "brightnessContrast" => json!({"brightness": 20, "contrast": -10, "legacy": true}),
-            "threshold" => json!({"level": 100}),
-            "posterize" => json!({"levels": 7}),
-            "exposure" => json!({"exposure": 1.5, "offset": 0.1, "gamma": 1.4}),
-            "vibrance" => json!({"vibrance": 30, "saturation": -20}),
-            "hueSaturation" => {
-                json!({"hue": 25, "saturation": -20, "lightness": 10, "reds": {"hue": 10, "saturation": -30, "lightness": 5, "range": [300, 340, 20, 50]}})
-            }
-            "levels" => json!({"inBlack": 10, "inWhite": 240, "outBlack": 5, "outWhite": 250, "gamma": 1.2, "red": {"inBlack": 3, "gamma": 0.8}}),
-            "curves" => json!({"points": [[0, 0], [128, 150], [255, 255]], "blue": [[0, 20], [255, 235]]}),
-            "colorBalance" => json!({"shadows": [10, -5, 0], "midtones": [0, 20, -30], "highlights": [5, 5, 5], "preserveLuminosity": false}),
-            "blackWhite" => json!({"reds": 120, "blues": -40, "tint": true, "tintColor": "#d0a070"}),
-            "photoFilter" => json!({"color": "#3366cc", "density": 40, "preserveLuminosity": false}),
-            "channelMixer" => json!({"red": [80, 30, -10, 5], "blue": [0, 10, 90, 0]}),
-            "gradientMap" => json!({"stops": [[0, "#000000"], [0.5, "#ff0000"], [1, [1, 1, 1]]], "reverse": true, "dither": true}),
-            "selectiveColor" => json!({"method": "absolute", "reds": [10, 0, -20, 5]}),
-            _ => json!({}),
-        }
-    }
-
-    #[test]
-    fn every_kind_round_trips_through_params() {
-        for mode in [ColorMode::Rgb, ColorMode::Cmyk, ColorMode::Lab, ColorMode::Grayscale] {
-            for kind in KINDS {
-                let mut p = sample(kind);
-                if matches!(kind, "levels" | "curves") && default_space(mode) != ToneSpace::Rgb {
-                    // Off RGB the channel keys are the document's.
-                    p.as_object_mut().unwrap().retain(|k, _| !matches!(k.as_str(), "red" | "blue"));
-                }
-                let a = from_params(kind, &p, None, mode).unwrap_or_else(|e| panic!("{kind} {mode:?}: {e}"));
-                assert_ne!(Some(&a), default_for(kind, mode).ok().as_ref().filter(|_| kind != "invert"), "{kind} params ignored");
-                let back = from_params(kind, &to_params(&a), None, mode).unwrap();
-                assert_eq!(to_params(&back), to_params(&a), "{kind} {mode:?}");
-                // A partial update keeps everything it doesn't name.
-                let again = from_params(kind, &json!({}), Some(&a), mode).unwrap();
-                assert_eq!(again, a, "{kind} {mode:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn params_reach_the_model() {
-        let a = from_params("colorBalance", &json!({"midtones": [50, 0, -200]}), None, ColorMode::Rgb).unwrap();
-        assert_eq!(a, Adjustment::ColorBalance { shadows: [0.0; 3], midtones: [50.0, 0.0, -100.0], highlights: [0.0; 3], preserve_luminosity: true });
-        let a = from_params("channelMixer", &json!({"monochrome": true}), None, ColorMode::Rgb).unwrap();
-        assert!(matches!(a, Adjustment::ChannelMixer { matrix, monochrome: true } if matrix[0] == [0.4, 0.4, 0.2, 0.0]));
-        let a = from_params("photoFilter", &json!({"filter": "cooling80", "density": 60}), None, ColorMode::Rgb).unwrap();
-        assert!(matches!(a, Adjustment::PhotoFilter { color, density, .. } if color[2] == 1.0 && (density - 0.6).abs() < 1e-6));
-        let a = from_params("blackWhite", &json!({"reds": 120, "tint": true}), None, ColorMode::Rgb).unwrap();
-        assert!(matches!(a, Adjustment::BlackWhite { weights, tint: Some(_) } if weights[0] == 120.0 && weights[1] == 60.0));
-        let a = from_params("hueSaturation", &json!({"blues": {"hue": 40}}), None, ColorMode::Rgb).unwrap();
-        assert!(matches!(&a, Adjustment::HueSaturation { ranges, .. } if ranges[4].hue == 40.0 && ranges[0].is_neutral()));
-        let a = from_params("gradientMap", &json!({"stops": [[1, "#ffffff"], [0, "#000000"]], "dither": true}), None, ColorMode::Rgb).unwrap();
-        assert!(matches!(&a, Adjustment::GradientMap { stops, dither: true, .. } if stops[0].0 == 0.0));
-        // CMYK curves: ink channels; Lab: lightness without a composite.
-        let a = from_params("curves", &json!({"black": [[0, 0], [255, 200]]}), None, ColorMode::Rgb).unwrap();
-        assert!(matches!(&a, Adjustment::Curves { space: ToneSpace::Cmyk, black, .. } if black.len() == 2));
-        let a = from_params("curves", &json!({"points": [[0, 40], [255, 255]]}), None, ColorMode::Lab).unwrap();
-        assert!(matches!(&a, Adjustment::Curves { space: ToneSpace::Lab, per_channel, .. } if per_channel[0][0].output > 0.1));
-        let a = from_params("levels", &json!({"inBlack": 20}), None, ColorMode::Cmyk).unwrap();
-        assert!(matches!(&a, Adjustment::Levels { space: ToneSpace::Cmyk, master, .. } if (master.in_black - 20.0 / 255.0).abs() < 1e-6));
-    }
-
-    #[test]
-    fn bad_params_are_errors_not_panics() {
-        for (kind, p) in [
-            ("curves", json!({"points": "abc"})),
-            ("curves", json!({"points": [[0, 0]]})),
-            ("curves", json!({"red": [[0, 0], [1]]})),
-            ("curves", json!({"points": [[5, 5], [5, 9]]})),
-            ("levels", json!({"red": 3})),
-            ("levels", json!({"inBlack": "x"})),
-            ("hueSaturation", json!({"reds": {"range": [1, 2]}})),
-            ("hueSaturation", json!({"colorize": 1})),
-            ("colorBalance", json!({"shadows": [1, 2]})),
-            ("blackWhite", json!({"tintColor": "#zz0000"})),
-            ("photoFilter", json!({"filter": "nope"})),
-            ("photoFilter", json!({"color": [1]})),
-            ("channelMixer", json!({"red": [1, 2, 3]})),
-            ("gradientMap", json!({"stops": [[0, "#000"]]})),
-            ("gradientMap", json!({"stops": 7})),
-            ("nope", json!({})),
-            ("levels", json!([1, 2])),
-        ] {
-            assert!(from_params(kind, &p, None, ColorMode::Rgb).is_err(), "{kind} {p}");
-        }
-        // Out-of-range numbers clamp.
-        let a = from_params("hueSaturation", &json!({"hue": 1e9, "saturation": -1e9}), None, ColorMode::Rgb).unwrap();
-        assert!(matches!(a, Adjustment::HueSaturation { hue: 180.0, saturation: -100.0, .. }));
-        let a = from_params("levels", &json!({"inBlack": 250, "inWhite": 10}), None, ColorMode::Rgb).unwrap();
-        assert!(matches!(a, Adjustment::Levels { master, .. } if master.in_white > master.in_black));
-    }
-
-    #[test]
-    fn hue_range_sliders_stay_ordered() {
-        let a = from_params("hueSaturation", &json!({"greens": {"range": [100, 90, 200, 150]}}), None, ColorMode::Rgb).unwrap();
-        let Adjustment::HueSaturation { ranges, .. } = a else { panic!() };
-        let b = ranges[2].bounds;
-        assert!(b[0] <= b[1] && b[1] <= b[2] && b[2] <= b[3] && b[3] - b[0] < 360.0, "{b:?}");
-    }
-
-    /// A colourful 16×16 document (`mode`, `depth`) for command tests.
-    fn colourful(mode: &str, depth: u32) -> crate::Session {
-        let mut s = crate::Session::new();
-        s.execute("file.new", json!({"width": 16, "height": 16, "mode": mode, "depth": depth})).unwrap();
-        for (i, c) in ["#c83c28", "#3c8c50", "#2850b4", "#d2b464"].iter().enumerate() {
-            s.execute("select.rect", json!({"x": (i % 2) * 8, "y": (i / 2) * 8, "width": 8, "height": 8})).unwrap();
-            s.execute("edit.fill", json!({"color": c})).unwrap();
-        }
-        s.execute("select.deselect", json!({})).unwrap();
-        s
-    }
-
-    fn pixels(s: &crate::Session) -> Vec<Vec<f32>> {
-        let d = s.active().unwrap();
-        let bg = d.doc.layers[0].surface().unwrap();
-        [(2, 2), (10, 2), (2, 10), (10, 10)].iter().map(|&(x, y)| bg.pixel(x, y)).collect()
-    }
-
-    #[test]
-    fn destructive_commands_apply_their_params_at_every_depth() {
-        for depth in [8, 16, 32] {
-            for kind in KINDS.iter().filter(|k| **k != "invert") {
-                let mut s = colourful("rgb", depth);
-                let before = pixels(&s);
-                let steps = s.active().unwrap().history.past_len();
-                s.execute(&format!("image.adjustments.{kind}"), sample(kind)).unwrap_or_else(|e| panic!("{kind} @{depth}: {e}"));
-                assert_ne!(pixels(&s), before, "{kind} @{depth} changed nothing");
-                assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "{kind}: one history step");
-                // Identity params leave the pixels alone (within one 8-bit step).
-                let mut s = colourful("rgb", depth);
-                s.execute(&format!("image.adjustments.{kind}"), to_params(&default_for(kind, ColorMode::Rgb).unwrap())).unwrap();
-                if !matches!(*kind, "threshold" | "posterize" | "blackWhite" | "gradientMap" | "photoFilter") {
-                    for (a, b) in pixels(&s).iter().zip(&before) {
-                        assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.0 / 255.0 + 1e-4), "{kind} @{depth}: {a:?} vs {b:?}");
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn destructive_levels_dont_clip_in_32_bit() {
-        // Input 15..230, gamma 1.3, output 10..245: black and white land on the output range in
-        // integer documents, but in a 32-bit document the curve runs on past it (then 0..1).
-        let params = json!({"inBlack": 15, "inWhite": 230, "gamma": 1.3, "outBlack": 10, "outWhite": 245});
-        for (depth, low, high) in [(8, 10.0, 245.0), (16, 10.0, 245.0), (32, 0.0, 255.0)] {
-            let mut s = crate::Session::new();
-            s.execute("file.new", json!({"width": 16, "height": 16, "depth": depth, "background": "white"})).unwrap();
-            s.execute("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 16})).unwrap();
-            s.execute("edit.fill", json!({"color": "#000000"})).unwrap();
-            s.execute("select.deselect", json!({})).unwrap();
-            s.execute("image.adjustments.levels", params.clone()).unwrap();
-            let px = pixels(&s);
-            assert!((px[0][0] * 255.0 - low).abs() < 0.6, "black @{depth}: {:?}", px[0]);
-            assert!((px[1][0] * 255.0 - high).abs() < 0.6, "white @{depth}: {:?}", px[1]);
-        }
-    }
-
-    #[test]
-    fn cmyk_and_lab_documents_use_their_channels() {
-        let mut s = colourful("cmyk", 8);
-        let before = pixels(&s);
-        // More black ink darkens every patch.
-        s.execute("image.adjustments.curves", json!({"black": [[0, 0], [255, 180]]})).unwrap();
-        let after = pixels(&s);
-        assert!(after.iter().zip(&before).all(|(a, b)| a[3] > b[3] + 0.05), "{after:?} vs {before:?}");
-        let mut s = colourful("lab", 16);
-        let before = pixels(&s);
-        s.execute("image.adjustments.levels", json!({"lightness": {"outBlack": 60}})).unwrap();
-        let after = pixels(&s);
-        assert!(after.iter().zip(&before).all(|(a, b)| a[0] >= b[0]), "lightness lifted {after:?} vs {before:?}");
-        // The adjustment layer of a CMYK document defaults to ink channels.
-        let mut s = colourful("cmyk", 8);
-        s.execute("layer.newAdjustmentLayer.curves", json!({})).unwrap();
-        let id = s.active().unwrap().active_layer.unwrap();
-        let l = s.active().unwrap().doc.layer(id).unwrap().clone();
-        assert!(matches!(l.content, photocraft_doc::LayerContent::Adjustment(Adjustment::Curves { space: ToneSpace::Cmyk, .. })));
-    }
-
-    #[test]
-    fn set_adjustment_merges_and_resets() {
-        let mut s = colourful("rgb", 8);
-        s.execute("layer.newAdjustmentLayer.colorBalance", json!({"midtones": [30, 0, 0]})).unwrap();
-        s.execute("layer.setAdjustment", json!({"highlights": [0, 0, -20]})).unwrap();
-        let id = s.active().unwrap().active_layer.unwrap();
-        let adj = |s: &crate::Session| match &s.active().unwrap().doc.layer(id).unwrap().content {
-            photocraft_doc::LayerContent::Adjustment(a) => a.clone(),
-            _ => panic!(),
-        };
-        assert!(matches!(adj(&s), Adjustment::ColorBalance { midtones: [30.0, 0.0, 0.0], highlights: [0.0, 0.0, -20.0], .. }));
-        s.execute("layer.setAdjustment", json!({"layer": id.0})).unwrap();
-        assert_eq!(adj(&s), default_for("colorBalance", ColorMode::Rgb).unwrap());
-        // Bad params are errors and leave the layer alone.
-        s.execute("layer.setAdjustment", json!({"midtones": [10, 10, 10]})).unwrap();
-        let kept = adj(&s);
-        for bad in [json!({"midtones": "x"}), json!({"preserveLuminosity": 3}), json!({"shadows": [1]})] {
-            assert!(s.execute("layer.setAdjustment", bad.clone()).is_err(), "{bad}");
-            assert_eq!(adj(&s), kept);
-        }
-    }
-
-    #[test]
-    fn commands_reject_bad_params_gracefully() {
-        let mut s = colourful("rgb", 8);
-        for (kind, p) in [
-            ("curves", json!({"points": [[0, 0]]})),
-            ("levels", json!({"red": "dark"})),
-            ("gradientMap", json!({"stops": [[0, 1, 2]]})),
-            ("photoFilter", json!({"filter": 3})),
-            ("channelMixer", json!({"gray": [1, 2]})),
-            ("hueSaturation", json!({"reds": 4})),
-            ("blackWhite", json!({"tint": "yes"})),
-        ] {
-            for prefix in ["image.adjustments.", "layer.newAdjustmentLayer."] {
-                let r = s.execute(&format!("{prefix}{kind}"), p.clone());
-                assert!(matches!(r, Err(EngineError::BadParams { .. })), "{prefix}{kind} {p}: {r:?}");
-            }
-        }
-    }
-}
+mod tests;

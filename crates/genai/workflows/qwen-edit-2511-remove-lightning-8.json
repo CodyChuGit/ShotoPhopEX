@@ -1,0 +1,63 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/remove-lightning-8",
+    "name": "Generative Remove (Qwen-Image-Edit-2511, Object Remover LoRA, Lightning 8 steps)",
+    "family": "qwen-image-edit-2511",
+    "task": "fill",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01); the Object Remover v2 LoRA is Apache-2.0 (prithivMLmods, 2026-01).",
+    "needsImage": true,
+    "needsMask": true,
+    "highlight": "red",
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
+      },
+      {
+        "placeholder": "remover",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Object-Remover-v2-9200.safetensors"
+      }
+    ],
+    "promptFormat": "{prompt}",
+    "promptFormatImperative": "{prompt}",
+    "notes": "The `qwen-edit-2511/fill-lightning-8` graph with a second LoraLoaderModelOnly after the Lightning one: prithivMLmods' Object Remover v2 (https://huggingface.co/prithivMLmods/QIE-2511-Object-Remover-v2, 225 MB, trained on 2511 to delete what is painted red). `highlight` tells the engine to paint the hole solid red in the request picture and to send the adapter's trigger sentence, \"Remove the red highlighted object from the scene.\", instead of the removal wording; the noise mask and the layer mask are as for any fill. Stacking with the Lightning LoRA is the measurement of 2026-10-22 (benchmarks.md 5i).",
+    "creator": "Alibaba Qwen",
+    "description": "Removes what the selection covers with an adapter trained for it: 8 steps",
+    "badges": [
+      "fast"
+    ],
+    "estimatedSeconds": {
+      "base": 7.5,
+      "perMegapixel": 5.5
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": [
+      "sampler",
+      "scheduler"
+    ]
+  }
+}

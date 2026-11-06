@@ -41,7 +41,10 @@ pub const TABLE: &[(&str, Class)] = &[
     ("codecs", Class::Standalone),
     // Optional HEIF/HEIC decoder (heic-rs), used only by `codecs` behind its `heif` feature.
     ("heif", Class::Standalone),
+    // IPP client for CUPS printing (pure Rust, no dependencies), used by `engine` on Unix.
+    ("ipp", Class::Standalone),
     ("raw", Class::Standalone),
+    ("affinity", Class::Standalone),
     ("adobe-assets", Class::Standalone),
     // Pen tablet input (the one isolated `unsafe` helper: AppKit interop on macOS).
     ("tablet", Class::Standalone),
@@ -59,6 +62,9 @@ pub const TABLE: &[(&str, Class)] = &[
     ("viewport", Class::Layer(4)),
     ("ml", Class::Layer(4)),
     ("plugins", Class::Layer(4)),
+    // Generative backends (ComfyUI client, workflow templates); the engine's `generate.*`
+    // commands drive it. Pixels only: it never sees a document.
+    ("genai", Class::Layer(4)),
     ("engine", Class::Layer(5)),
     ("ui-egui", Class::Layer(6)),
     ("automation", Class::Layer(6)),
@@ -68,6 +74,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("photocraft", Class::Exempt),
     ("cli", Class::Exempt),
     ("web", Class::Exempt),
+    ("web-boot", Class::Exempt),
     ("xtask", Class::Exempt),
 ];
 
@@ -97,7 +104,7 @@ fn standalone_exception(from: &str, to: &str) -> bool {
 
 /// External crates that constitute a UI toolkit / windowing dependency.
 /// Entries ending in `*` are prefixes.
-pub const UI_CRATES: &[&str] = &["egui", "eframe", "winit", "egui_kittest", "rfd", "bevy*"];
+pub const UI_CRATES: &[&str] = &["egui", "eframe", "winit", "egui_kittest", "craft-ui", "rfd", "bevy*"];
 
 /// First layer allowed to use UI crates.
 pub const UI_MIN_LAYER: u8 = 6;
@@ -198,11 +205,8 @@ pub fn check(crates: &[Crate]) -> Vec<Violation> {
                 match classify(&d.name) {
                     // Unregistered deps are reported on their own entry.
                     None => {}
-                    Some(Class::Testkit) => {
-                        if d.kind != DepKind::Dev {
-                            out.push(Violation::TestkitAsNormalDep { krate: c.name.clone() });
-                        }
-                    }
+                    Some(Class::Testkit) if d.kind != DepKind::Dev => out.push(Violation::TestkitAsNormalDep { krate: c.name.clone() }),
+                    Some(Class::Testkit) => {}
                     Some(dc) => {
                         let to = dc.layer().unwrap_or(u8::MAX);
                         if to >= layer && !(to == layer && intra_layer_allowed(&c.name, &d.name)) {
@@ -344,11 +348,12 @@ mod tests {
 
     #[test]
     fn ui_crates_below_l6_flagged() {
-        for dep in ["egui", "eframe", "winit", "egui_kittest", "rfd", "bevy_ecs", "bevy"] {
+        for dep in ["egui", "eframe", "winit", "egui_kittest", "craft-ui", "rfd", "bevy_ecs", "bevy"] {
             let v = check(&[c("photocraft-engine", &[(dep, Normal, false)])]);
             assert!(matches!(v[..], [Violation::UiBelowL6 { layer: 5, .. }]), "{dep}");
         }
         assert!(check(&[c("photocraft-engine", &[("egui_extras_not", Normal, false)])]).is_empty());
+        assert!(check(&[c("photocraft-ui-egui", &[("craft-ui", Normal, false)])]).is_empty());
         assert!(check(&[c("photocraft-platform", &[("winit", Normal, false)])]).is_empty());
     }
 
@@ -371,7 +376,7 @@ mod tests {
 
     #[test]
     fn apps_and_xtask_exempt() {
-        for app in ["photocraft", "photocraft-cli", "photocraft-web", "xtask"] {
+        for app in ["photocraft", "photocraft-cli", "photocraft-web", "photocraft-web-boot", "xtask"] {
             assert!(check(&[c(app, &[("egui", Normal, false), ("photocraft-ui-egui", Normal, true)])]).is_empty());
         }
     }

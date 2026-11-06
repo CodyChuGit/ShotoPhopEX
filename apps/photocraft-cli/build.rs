@@ -12,13 +12,30 @@ fn main() -> std::io::Result<()> {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return Ok(());
     }
+    // Printing to PDF (winprint's `PdfCreateRenderer`) imports Windows.Data.Pdf.dll, which
+    // stripped Windows images (NTLite, some N/LTSC builds) lack. A load-time import stops the exe
+    // from starting at all ("windows.data.pdf.dll was not found", #5884), so load it on first use;
+    // the print command checks for it first and reports an error instead.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/DELAYLOAD:windows.data.pdf.dll");
+        // Fork: the CUDA libraries of the native engine (`native-diffusion`) load in the
+        // `--engine` worker only, as in apps/photocraft/build.rs (which says why).
+        println!("cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION");
+        if std::env::var_os("CARGO_FEATURE_NATIVE_DIFFUSION").is_some() {
+            let major = std::env::var("CUDARC_CUDA_VERSION").ok().and_then(|v| v.trim().parse::<u32>().ok()).map_or(13, |v| v / 1000);
+            println!("cargo:rustc-link-arg-bins=/DELAYLOAD:cublas64_{major}.dll");
+            println!("cargo:rustc-link-arg-bins=/DELAYLOAD:cublasLt64_{major}.dll");
+            println!("cargo:rustc-link-arg-bins=/DELAYLOAD:curand64_10.dll");
+        }
+        println!("cargo:rustc-link-arg-bins=delayimp.lib");
+    }
     let mut res = winresource::WindowsResource::new();
     // FileVersion / ProductVersion strings and the numeric FILEVERSION / PRODUCTVERSION are left
     // to `WindowsResource::new`, which reads the Cargo package version. A pre-release such as
     // `1.2.3-rc.1` stays in the strings; the numeric fields are `1.2.3.0`.
     res.set_icon("../../assets/app-icon/photocraft.ico")
-        .set("ProductName", "PhotoCraft")
-        .set("FileDescription", "PhotoCraft command-line interface")
+        .set("ProductName", "ShotoPhopEX")
+        .set("FileDescription", "ShotoPhopEX command-line interface")
         .set("CompanyName", "Learning Machines LLC")
         .set("LegalCopyright", "Copyright (c) the PhotoCraft authors. MIT OR Apache-2.0.")
         .set("OriginalFilename", "photocraft-cli.exe")

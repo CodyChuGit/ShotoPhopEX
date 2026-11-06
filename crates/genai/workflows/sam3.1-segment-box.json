@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "id": "sam3.1/segment-box",
+    "name": "Select by Box (SAM 3.1)",
+    "family": "sam3.1",
+    "task": "segment",
+    "license": "community",
+    "licenseNote": "SAM 3.1 (Meta, 2026-03-27) ships under the SAM License: research and commercial use allowed with no thresholds; military, nuclear, espionage and weapons uses banned; the licence travels with any redistribution; Meta may change the terms. The app ships no weights.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 1,
+      "guidance": 0.0
+    },
+    "models": [
+      {
+        "placeholder": "ckpt",
+        "folder": "checkpoints",
+        "default": "sam3.1_multiplex_fp16.safetensors"
+      }
+    ],
+    "notes": "The `sam3.1/segment-point` graph prompted with a box: PrimitiveBoundingBox (stock ComfyUI) feeds SAM3_Detect's bboxes in the request's own pixels (the engine scales the canvas rectangle to the request size), and positive_coords / negative_coords take JSON lists of points inside or outside the object ('[]' when none; checked live 2026-10-16: an empty list is accepted, a negative point trims the mask). No conditioning, so the detector segments the object the box frames (individual_masks true, 2 refinement passes). The prompt placeholder is bound but unused (the backend requires one).",
+    "creator": "Meta",
+    "description": "Finds the object a dragged box frames",
+    "badges": [],
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1.5,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "select"
+    ],
+    "parameters": [
+      "threshold",
+      "points",
+      "negatives",
+      "bx",
+      "by",
+      "bw",
+      "bh"
+    ]
+  }
+}

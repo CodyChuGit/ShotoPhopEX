@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "id": "krea2-turbo/edit",
+    "name": "Generative Edit (Krea 2 Turbo, General Edit V2)",
+    "family": "krea2",
+    "task": "edit",
+    "license": "community",
+    "licenseNote": "Krea 2 Turbo: Krea 2 Community License (Krea.ai, 2026-06-22; commercial use with conditions). The General Edit V2 LoRA (conradlocke, 2026-10-16): free for personal and non-commercial use, a commercial licence from its author otherwise (Krea 2 Identity Edit V2 License). Bring your own files; never a default.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "krea2_turbo_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_4b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "wan_2.1_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "krea2_general_edit_v2.safetensors"
+      }
+    ],
+    "notes": "The comfyui-krea2edit nodes' graph (lbouaraba/comfyui-krea2edit v2, Apache-2.0; its workflows/krea2_identity_edit.json read 2026-10-27), single-image mode: the edit LoRA on the model, Krea2EditModelPatch with the picture as the clean in-context source (frame 1, 'aligned (trained)', fit mode, ref_boost 4 as the General Edit V2 card recommends for Turbo), Krea2EditGroundedEncode with the picture in the encoder's view at 768 px for the instruction and empty for the negative (CFG 1 does not use it), an empty latent at the picture's size, KSampler euler/simple 8 steps CFG 1. The two custom nodes are not in ComfyUI core: on the ComfyUI route the app names them as missing. ShotoPhopEX's native worker serves this template itself (genai-native gn-diffusion krea2-turbo/edit) when the LoRA is in its loras folder.",
+    "creator": "Krea · conradlocke",
+    "description": "Edit by instruction on Krea 2: swap, recolour, relight, restyle",
+    "badges": [
+      "fast"
+    ],
+    "estimatedSeconds": {
+      "base": 4,
+      "perMegapixel": 8
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
+  }
+}

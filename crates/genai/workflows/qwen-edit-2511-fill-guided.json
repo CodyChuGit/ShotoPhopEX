@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/fill-guided",
+    "name": "Generative Fill (Qwen-Image-Edit-2511, Lightning 8 steps, mask-guided, slower)",
+    "family": "qwen-image-edit-2511",
+    "task": "fill",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
+    "needsImage": true,
+    "needsMask": true,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
+      }
+    ],
+    "promptFormat": "Image 2 is a mask of image 1: the white area marks the only part of image 1 to change. Edit image 1 so that the white area of image 2 shows {prompt}, fitting the scene's perspective, lighting and surroundings naturally. Keep everything outside that area exactly as it is.",
+    "promptFormatImperative": "Image 2 is a mask of image 1: the white area marks the only part of image 1 to change. Inside that area: {prompt}. Fit the result to the scene naturally and keep everything outside that area exactly as it is.",
+    "notes": "`fill-lightning-8` plus the selection mask as `image2` of both TextEncodeQwenImageEditPlus nodes (scaled like image 1) and an instruction that names it, so the model knows where the edit goes: the latent noise mask alone confines the change but does not tell the model about it. Measured 2026-10-09 (docs/comfy/benchmarks.md §3): the best placement of the 2511 variants, at 1.5–3× the time of `fill-lightning-8` because the second reference image adds another ~1 MP of tokens. Opt-in from the picker; `auto` does not choose it.",
+    "creator": "Alibaba Qwen",
+    "description": "Shows the model where the selection is: best placement, slower",
+    "badges": [
+      "guided"
+    ],
+    "estimatedSeconds": {
+      "base": 16,
+      "perMegapixel": 6
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": []
+  }
+}

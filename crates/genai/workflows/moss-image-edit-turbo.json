@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "id": "moss-image/edit-turbo",
+    "name": "Generative Edit (MOSS Edit Turbo, 8-step)",
+    "family": "moss-image",
+    "task": "edit",
+    "license": "permissive",
+    "licenseNote": "MOSS-Image-SFT is Apache-2.0 (OpenMOSS); the MOSS Edit LoRA (chinoll/Moss-Image-Edit, 2026-10) has no licence on its weights, its code (Chenkin-x/Moss-Image-Edit) is GPLv3; bring your own files. The app ships no weights.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "moss_image_sft_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3.5_9b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "flux2-vae_small.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "moss-image-edit/adapter_model.safetensors"
+      },
+      {
+        "placeholder": "lora2",
+        "folder": "loras",
+        "default": "kromoss-8-steps-dmd2-lora.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native gn-diffusion moss-image/edit-turbo). MOSS Edit (chinoll/Moss-Image-Edit, rank-64 LoRA on MOSS-Image-SFT, models/loras/…/moss-image-edit/adapter_model.safetensors) as its edit contract has it: the picture (long edge 1024, 512 in 12 GB mode) encoded by the FLUX.2 VAE and run once through the DiT as reference tokens at t = 0 (frame 1, attending only to itself), its keys and values cached and attended by the target at every step; the output at the picture's aspect at about 1 MP. Kromoss' 8-step DMD2 LoRA stacked on it: 8 Euler steps, CFG 1 (no negative pass). The low-VRAM edit (fits 12 GB).",
+    "creator": "chinoll · lodestones · OpenMOSS",
+    "description": "Fast, low-VRAM edit by instruction (8 steps, fits 12 GB)",
+    "badges": [
+      "fast"
+    ],
+    "estimatedSeconds": {
+      "base": 4,
+      "perMegapixel": 3
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
+  }
+}

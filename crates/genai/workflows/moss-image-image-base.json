@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "id": "moss-image/image-base",
+    "name": "Generate Image (MOSS-Image Base)",
+    "family": "moss-image",
+    "task": "image",
+    "license": "permissive",
+    "licenseNote": "MOSS-Image-Base is Apache-2.0 (OpenMOSS, 2026-10); the ComfyUI repack Comfy-Org/MOSS-Image is Apache-2.0; its Qwen3.5-9B text encoder is Apache-2.0. The app ships no weights.",
+    "needsImage": false,
+    "needsMask": false,
+    "defaults": {
+      "steps": 50,
+      "guidance": 3.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "moss_image_base_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3.5_9b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "flux2-vae_small.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native qir::moss) with the official pipeline's settings: Qwen3.5-9B's last hidden state for the prompt in its chat template with thinking on, 50 Euler steps on the shift-5 schedule snapped to the 1000-step training grid, CFG 3 whose negative branch is the empty prompt with DiT block 22 skipped, the FLUX.2 small decoder. Files from Comfy-Org/MOSS-Image (each may sit one subfolder deep) and Qwen3.5's tokenizer.json in text_encoders/qwen35_tokenizer/.",
+    "creator": "OpenMOSS",
+    "description": "The base model, before fine-tuning",
+    "badges": [
+      "text"
+    ],
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 2,
+      "perMegapixel": 11
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
+  }
+}

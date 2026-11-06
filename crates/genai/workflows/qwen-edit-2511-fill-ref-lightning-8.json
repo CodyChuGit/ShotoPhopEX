@@ -1,0 +1,60 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/fill-ref-lightning-8",
+    "name": "Generative Fill from a Reference (Qwen-Image-Edit-2511, Lightning 8 steps)",
+    "family": "qwen-image-edit-2511",
+    "task": "fill",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
+    "needsImage": true,
+    "needsMask": true,
+    "eraseSelection": true,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
+      }
+    ],
+    "promptFormat": "The other images are references. The flat grey area of image 1 is the only part to change: paint {prompt} there, taken from the references exactly as they show it (its type, colour, material, pattern, details and fit), fitted to the pose, perspective and lighting of image 1, so that no grey remains. Keep everything outside that area exactly as it is.",
+    "promptFormatImperative": "The other images are references and the flat grey area of image 1 is the only part to change. {prompt}. Take it from the references exactly as they show it (type, colour, material, pattern, details and fit), fitted to the pose, perspective and lighting of image 1, so that no grey remains. Keep everything outside that area exactly as it is.",
+    "notes": "`fill-lightning-8` with one or two reference images on `image2`/`image3` of both TextEncodeQwenImageEditPlus nodes (straight from LoadImage, as the official 2511 graph wires references; a slot not given is pruned with its node, meta.references). What the picture shows is taken from AusBoss's 'Krea 2 Clothing From Reference' workflow (studied 2026-10-21, docs/comfy/research/notes/ausboss-krea2-clothing-workflow.md): the selection is flattened to mid-grey in the request (`eraseSelection`, the engine's `erase`), so the model sees a hole to paint instead of the old object to copy, and the prompt names the hole; the enhancer, when on, sees the picture and the first reference side by side and describes the thing to take exactly as the reference shows it. Same model files as the plain fill, so no extra download; ~9 s more per reference (benchmarks §5g).",
+    "creator": "Alibaba Qwen",
+    "description": "Paints the selection with what a reference image shows, in 8 steps",
+    "badges": [
+      "fast",
+      "reference"
+    ],
+    "references": {
+      "max": 2
+    },
+    "estimatedSeconds": {
+      "base": 7.5,
+      "perMegapixel": 5.5,
+      "perReference": 9
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": []
+  }
+}

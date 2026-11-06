@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/expand-lightning-8",
+    "name": "Generative Expand (Qwen-Image-Edit-2511, Lightning 8 steps)",
+    "family": "qwen-image-edit-2511",
+    "task": "expand",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
+    "needsImage": true,
+    "needsMask": true,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
+      }
+    ],
+    "promptFormat": "Extend this image beyond its current edges with {prompt}, continuing the scene naturally and matching its perspective, lighting and style.",
+    "promptFormatImperative": "{prompt}. Extend the image beyond its current edges, continuing the scene naturally and matching its perspective, lighting and style.",
+    "notes": "Outpainting with the `fill-lightning-8` graph and one difference: the text encoder's reference (image1) is the picture alone, cropped out of the uploaded canvas by ImageCrop at {{ref_x}},{{ref_y}} {{ref_w}}×{{ref_h}} (the engine fills these), while the sampling latent is the whole padded canvas under the noise mask. Shown the padded canvas as its reference, the edit model reproduced the padding (replicated edges or grey) as content; shown the picture alone it paints beyond it.",
+    "creator": "Alibaba Qwen",
+    "description": "Continues the scene past the edges in 8 steps",
+    "badges": [
+      "fast"
+    ],
+    "estimatedSeconds": {
+      "base": 7.5,
+      "perMegapixel": 5.5
+    },
+    "pages": [
+      "expand"
+    ],
+    "parameters": []
+  }
+}

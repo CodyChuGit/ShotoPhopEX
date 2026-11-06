@@ -13,6 +13,7 @@ contextual, command-ID and plural translations; missing entries fall back to Eng
 | 日本語 | `ja` | one form |
 | 한국어 | `ko` | one form |
 | Русский | `ru` | one / few / many |
+| Українська | `uk` | one / few / many (teens use many) |
 | Français | `fr` | singular for 0 and 1 / plural for 2+ |
 | 繁體中文 | `zh-hant` | one form |
 | Español | `es` | one / other |
@@ -22,11 +23,25 @@ contextual, command-ID and plural translations; missing entries fall back to Eng
 | Português (Brasil) | `pt-br` | singular for 0 and 1 / plural for 2+ |
 | Italiano | `it` | one / other |
 | Polski | `pl` | one / few (2–4, not 12–14) / many |
+| Ελληνικά | `el` | one / other |
+| Nederlands | `nl` | one / other |
+| Magyar | `hu` | one form |
+| Tiếng Việt | `vi` | one form |
+| Srpski | `sr` | one / few / many (teens use many) |
+| हिन्दी | `hi` | one / other |
+| Svenska | `sv` | one / other |
+| Suomi | `fi` | one / other (partitive after every count but 1) |
+| Dansk | `da` | one / other |
+| Norsk bokmål | `nb` | one / other |
 
-Every non-English catalog covers the current menu labels, `tl!` literals, blend mode names,
-and generated preference labels. Tests enforce that coverage. This does not include every
-engine error or status message: those remain English, as do automation command IDs and
-user-provided document, layer and preset names.
+Languages registered with `complete_menus` cover the current menu labels, `tl!` literals, blend
+mode names, and generated preference labels. A string a catalog lacks shows in English:
+`cargo xtask i18n-coverage` lists the missing strings per language, and `cargo xtask ci` prints
+that list as its last step without failing. Vietnamese (`vi`) is
+selectable, resolves regional tags such as `vi-VN`, and covers all current stable localization
+keys. `complete_menus` remains false while generated/dynamic long-tail labels are still under
+review. This does not include every engine error or status message: those remain English, as do
+automation command IDs and user-provided document, layer and preset names.
 
 ## Switch without restarting
 
@@ -38,9 +53,13 @@ documents, undo history and tools remain available throughout a language change.
 
 The existing preference store saves the selection for future launches. `auto` follows the
 native system locale; an unsupported code follows the same fallback. Regional tags such as
-`fr-CA`, `ko-KR` and `zh-CN` resolve to the corresponding registered catalog. Traditional and
+`fr-CA`, `ko-KR`, `vi-VN` and `zh-CN` resolve to the corresponding registered catalog. Traditional and
 Simplified Chinese remain distinct. Every Portuguese locale (`pt`, `pt-BR`, `pt-PT`) uses the
-Brazilian Portuguese catalog.
+Brazilian Portuguese catalog. The Serbian catalog is written in Latin script (Ekavian); every
+Serbian locale (`sr-RS`, `sr-Latn-RS`, `sr_RS@latin`, and Cyrillic `sr-Cyrl-RS`) resolves to it.
+Swedish locales from Sweden and Finland (`sv-SE`, `sv-FI`, `sv_FI.UTF-8`) use the Swedish catalog;
+Finnish (`fi-FI`) uses the Finnish one. Every Norwegian locale (`nb-NO`, the macrolanguage `no`,
+and Nynorsk `nn-NO` from POSIX systems) uses the Bokmål catalog.
 
 ### First launch and system language
 
@@ -82,6 +101,31 @@ This is hot switching among the bundled catalogs. Catalog files are embedded wit
 `include_str!`; editing a TSV file requires a rebuild. External catalog watching and
 file-resource hot reload are not implemented.
 
+## Right-to-left languages
+
+Arabic, Hebrew, Persian, Urdu and the other right-to-left languages listed in
+`i18n::dir_for_code` mirror the window's chrome when chosen: the menu bar starts at the right
+with File, the toolbox docks on the right and the panel dock and its rail on the left, and the
+title, options and status bars read from the right (`crates/ui-egui/src/direction.rs`). The
+direction follows the language code, so a catalog needs no extra setting.
+
+Not mirrored yet: panel interiors, dialogs, menu rows (shortcuts stay on the right), submenus
+(they open to the right), document tabs and the canvas. egui 0.37 lays text out with the Unicode
+Bidirectional Algorithm (each paragraph takes the direction of its first strong letter), so
+catalogs, layer names and document names are handed to it in logical order, as typed; never
+pre-reorder a label. The title line forces a left-to-right paragraph so "— PhotoCraft" stays at
+the right of a right-to-left document name, and `bidi_text::elide` cuts a right-to-left name at
+its logical end. Document text is laid out by the text engine.
+
+Arabic (`ar`) is the first right-to-left catalog: Modern Standard Arabic, Western digits, the six
+CLDR plural forms (zero|one|two|few|many|other). To check the mirrored layout with any language, launch with
+`PHOTOCRAFT_UI_DIRECTION=rtl` (or `ltr` to force left-to-right); it is read once per process
+and has no effect on the web build:
+
+```sh
+PHOTOCRAFT_UI_DIRECTION=rtl cargo run -p photocraft-ui-egui --example snapshot -- --out rtl.png
+```
+
 ## Fonts
 
 The native lazy CJK font loader prioritises the selected Japanese, Korean or Chinese script.
@@ -101,7 +145,7 @@ detection remain separate outstanding work. Switching catalogs does not supply m
 3. Translate the meaning of the English source keys. Preserve `{name}` placeholders, escaped
    characters and the trailing `…` on dialog commands. Use `@id` to disambiguate a command
    label and `@plural` for count-sensitive text. Keep product names such as PhotoCraft.
-4. Set `complete_menus` when the catalog covers all enforced keys. Add source and license
+4. Set `complete_menus` once `cargo xtask i18n-coverage` lists nothing missing for the language. Add source and license
    attribution for translation assets, then run the catalog and shell tests.
 
 ```sh

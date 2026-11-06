@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "id": "sam3.1/segment-point",
+    "name": "Select by Point (SAM 3.1)",
+    "family": "sam3.1",
+    "task": "segment",
+    "license": "community",
+    "licenseNote": "SAM 3.1 (Meta, 2026-03-27) ships under the SAM License: research and commercial use allowed with no thresholds; military, nuclear, espionage and weapons uses banned; the licence travels with any redistribution; Meta may change the terms. The app ships no weights.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 1,
+      "guidance": 0.0
+    },
+    "models": [
+      {
+        "placeholder": "ckpt",
+        "folder": "checkpoints",
+        "default": "sam3.1_multiplex_fp16.safetensors"
+      }
+    ],
+    "notes": "The `sam3.1/segment` graph prompted with points instead of text: SAM3_Detect's positive_coords and negative_coords take JSON lists of pixel coordinates in the request's own pixels (the engine scales the canvas points to the request size; '[]' when there are none, which the node accepts, checked live 2026-10-16); no conditioning, so the detector segments whatever object the positive points land on and keeps clear of the negative ones (individual_masks true, 2 refinement passes). The prompt placeholder is bound but unused (the backend requires one).",
+    "creator": "Meta",
+    "description": "Finds the object under a click, clear of the spots marked to exclude",
+    "badges": [],
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 1.5,
+      "perMegapixel": 0
+    },
+    "pages": [
+      "select"
+    ],
+    "parameters": [
+      "threshold",
+      "points",
+      "negatives"
+    ]
+  }
+}

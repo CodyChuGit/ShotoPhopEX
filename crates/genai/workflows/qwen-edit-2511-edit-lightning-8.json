@@ -1,0 +1,58 @@
+{
+  "meta": {
+    "id": "qwen-edit-2511/edit-lightning-8",
+    "name": "Generative Edit (Qwen-Image-Edit-2511, Lightning 8 steps)",
+    "family": "qwen-image-edit-2511",
+    "task": "edit",
+    "license": "permissive",
+    "licenseNote": "Qwen-Image-Edit-2511 is Apache-2.0 (Alibaba Qwen, 2025-12-23); the Lightning LoRA is Apache-2.0 (lightx2v, 2026-01).",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_edit_2511_fp8mixed.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_vae.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
+      }
+    ],
+    "promptFormat": "Change this image so that it shows {prompt}, keeping everything else exactly as it is.",
+    "promptFormatImperative": "{prompt}. Keep everything else exactly as it is.",
+    "notes": "ComfyUI's official 'Image Edit (Qwen-Image 2511)' graph as the model is meant to be used: the whole picture is the reference and the latent, no noise mask, the instruction decides what changes. The 8-step Lightning LoRA (LoraLoaderModelOnly after CFGNorm) as in `fill-lightning-8`. The engine masks the result layer to the selection when there is one, so a local edit shows only where the user wants it while the model still sees the whole scene. Reference images (the Generate panel's deck, `references` on generate.edit) bind `image2` and `image3` of both encoders straight from LoadImage, as the official graph wires them (the encoder scales them itself); the prompt calls them image 2 and image 3. A reference not given is pruned with its node (meta.references).",
+    "creator": "Alibaba Qwen",
+    "description": "Changes the picture by instruction in 8 steps; up to two reference images",
+    "badges": [
+      "fast"
+    ],
+    "references": {
+      "max": 2
+    },
+    "estimatedSeconds": {
+      "base": 7.5,
+      "perMegapixel": 5.5,
+      "perReference": 9
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
+  }
+}

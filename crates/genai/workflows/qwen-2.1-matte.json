@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "id": "qwen-2.1/matte",
+    "name": "Remove Background (Qwen-Image-2.1)",
+    "family": "qwen-image-2.1",
+    "task": "matte",
+    "license": "research",
+    "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
+    },
+    "promptFormat": "Remove the background, keeping only {prompt}, and output a PNG image",
+    "promptFormatImperative": "{prompt}",
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_bf16.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_bf16.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      }
+    ],
+    "notes": "ComfyUI's official 'Background Removal (Qwen Image 2.1)' template (image_qwen_image_2_1_background_removal.json): the 2.1 edit graph with the picture as image_1 at its own size (resolution 0) and the instruction 'Remove the background, and output a PNG image'. The 2.1 VAE decodes RGBA, so the saved PNG carries the subject's matte in its alpha channel (verified live 2026-10-09: colour type 6, soft edges). The engine sends that exact instruction when the prompt is empty (it starts with an imperative verb, so promptFormatImperative passes it through) and 'Remove the background, keeping only {prompt}, …' when the prompt names the subject to keep; it uses the alpha as a layer mask or selection and never the re-rendered pixels.",
+    "creator": "Alibaba Qwen",
+    "description": "Cuts the subject out with real alpha",
+    "badges": [],
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 4,
+      "perMegapixel": 10
+    },
+    "pages": [
+      "matte"
+    ],
+    "parameters": []
+  }
+}
