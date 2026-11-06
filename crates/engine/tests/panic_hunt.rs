@@ -95,6 +95,12 @@ fn no_command_panics_or_hangs_on_adversarial_params() {
     ];
     let mut bad: Vec<String> = Vec::new();
     for spec in command_specs() {
+        // Get AI Models downloads gigabytes from Hugging Face and NVIDIA into the Models folder
+        // (or Documents) as a background job: never start it here. Its params are checked in
+        // model_packs' own tests.
+        if spec.id == photocraft_engine::model_packs::GET {
+            continue;
+        }
         for p in &params {
             // Print and Print One Copy reach real printers (lp, or the Windows driver): fuzz them
             // as dry runs so the hunt never prints a page.
