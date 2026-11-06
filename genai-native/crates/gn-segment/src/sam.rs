@@ -70,9 +70,10 @@ pub struct Options {
     /// combined by maximum instead of OR.
     pub soft: f32,
     /// A single click's other meanings: SAM's three multimask heads ranked with the one of best
-    /// predicted IoU first (`None` and `Some(0)`: that one, ComfyUI's choice), then the other two
-    /// largest first ([`ranked_head`]); taken modulo three. "Next match" on a click that picked
-    /// a whole person when the shirt was meant.
+    /// predicted IoU first (`Some(0)`: that one, ComfyUI's choice), then the other two largest
+    /// first ([`ranked_head`]); taken modulo three. "Next match" on a click that picked a whole
+    /// person when the shirt was meant. `None` on the point route: the largest of the three, the
+    /// whole object (best IoU took a 44-pixel window of a lighthouse clicked near it, 2026-11-06).
     pub candidate: Option<usize>,
 }
 
@@ -297,11 +298,15 @@ impl Sam31 {
         let scale = |p: &[f32; 2]| [p[0] / w * INPUT as f32, p[1] / h * INPUT as f32];
         let mut pts: Vec<([f32; 2], i32)> = positives.iter().map(|p| (scale(p), 1)).collect();
         pts.extend(negatives.iter().map(|p| (scale(p), 0)));
+        let pick = opts.candidate.unwrap_or(WHOLE);
+        // Every refinement pass gets the clicks again with the mask, as SAM's interactive
+        // refinement does: the mask alone on a small part reads as no object (object score
+        // below 0) and the click selected nothing (2026-11-06).
         let t = Instant::now();
         if self.device.is_cuda() {
-            let mut logits = self.forward_segment_device_pick(&emb.vision.interactive_fpn, &pts, None, None, opts.candidate)?;
+            let mut logits = self.forward_segment_device_pick(&emb.vision.interactive_fpn, &pts, None, None, Some(pick))?;
             for _ in 1..opts.refine_iterations.max(1) {
-                logits = self.forward_segment_device(&emb.vision.interactive_fpn, &[], None, Some(&logits))?;
+                logits = self.forward_segment_device_pick(&emb.vision.interactive_fpn, &pts, None, Some(&logits), Some(pick))?;
             }
             timing.heads_ms = t.elapsed().as_millis() as u64;
             let t = Instant::now();
@@ -309,9 +314,9 @@ impl Sam31 {
             timing.post_ms = t.elapsed().as_millis() as u64;
             return Ok((Instance::from_mask(mask, emb.width, emb.height, 1.0, [0.0; 4]), timing));
         }
-        let mut logit = self.forward_segment_pick(&emb.vision.interactive_fpn, &pts, None, None, opts.candidate)?;
+        let mut logit = self.forward_segment_pick(&emb.vision.interactive_fpn, &pts, None, None, Some(pick))?;
         for _ in 1..opts.refine_iterations.max(1) {
-            logit = self.forward_segment(&emb.vision.interactive_fpn, &[], None, Some(&logit))?;
+            logit = self.forward_segment_pick(&emb.vision.interactive_fpn, &pts, None, Some(&logit), Some(pick))?;
         }
         timing.heads_ms = t.elapsed().as_millis() as u64;
         let t = Instant::now();
@@ -586,10 +591,16 @@ fn threshold(logits: &[f32]) -> Vec<f32> {
     logits.iter().map(|v| if *v > 0.0 { 1.0 } else { 0.0 }).collect()
 }
 
+/// [`ranked_head`]'s whole object: the largest of a click's three answers.
+const WHOLE: usize = usize::MAX;
+
 /// The multimask token (1..=3) of a single click's `c`-th meaning: the head of best predicted
 /// IoU first (what [`select_head`] takes), then the other two by mask area, largest first; `c`
-/// modulo three.
+/// modulo three; [`WHOLE`]: the largest.
 fn ranked_head(iou: &[f32; 4], areas: &[f32; 3], c: usize) -> usize {
+    if c == WHOLE {
+        return (1..4).fold(1, |big, t| if areas[t - 1] > areas[big - 1] { t } else { big });
+    }
     let mut best = 1;
     for t in 2..4 {
         if iou[t] > iou[best] {
@@ -638,6 +649,15 @@ mod tests {
         let iou = [0.0, 0.7, 0.9, 0.8];
         let areas = [100.0, 5000.0, 900.0];
         assert_eq!((0..4).map(|c| ranked_head(&iou, &areas, c)).collect::<Vec<_>>(), vec![2, 3, 1, 2]);
+    }
+
+    #[test]
+    fn a_click_with_no_candidate_takes_the_whole_object() {
+        // The lighthouse click of 2026-11-06: best IoU is a 44-pixel window, the tower 6353.
+        let iou = [0.145, 0.148, -4.79, -0.95];
+        assert_eq!(ranked_head(&iou, &[44.0, 6353.0, 115.0], WHOLE), 2);
+        assert_eq!(ranked_head(&iou, &[44.0, 6353.0, 115.0], 0), 1);
+        assert_eq!(ranked_head(&iou, &[50.0, 50.0, 50.0], WHOLE), 1);
     }
 
     #[test]

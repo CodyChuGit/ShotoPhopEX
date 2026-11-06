@@ -108,8 +108,10 @@ pub struct LastQuery {
     pub negatives: Vec<[f64; 2]>,
     pub bbox: Option<[f64; 4]>,
     pub mode: String,
-    /// Which of a single click's meanings it selected (`candidate`; 0 the detector's best).
-    pub candidate: u32,
+    /// Which of a single click's meanings it selected (`candidate`; 0 the detector's best);
+    /// `None`: the plain click's whole object, so Next Match starts at 0 (the whole object is
+    /// usually the same mask as 1).
+    pub candidate: Option<u32>,
     /// The document's history length after it ran (another edit since ends the refinement).
     pub past_len: usize,
 }
@@ -449,7 +451,7 @@ pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egu
     match app.run("select.byPoint", q) {
         Ok(_) => {
             if let (Some(doc), Some(past_len)) = (doc, app.session.active().map(|d| d.history.past_len())) {
-                app.ui.object_select.last = Some(LastQuery { doc, positives, negatives: Vec::new(), bbox, mode: mode.to_string(), candidate: 0, past_len });
+                app.ui.object_select.last = Some(LastQuery { doc, positives, negatives: Vec::new(), bbox, mode: mode.to_string(), candidate: None, past_len });
             }
             // The picture's selection changed under the probe; the next pause asks again.
             app.ui.object_select.probe = None;
@@ -517,7 +519,7 @@ pub fn next_match(app: &mut PhotocraftApp) {
         return;
     }
     let mut next = last.clone();
-    next.candidate = (last.candidate + 1) % 3;
+    next.candidate = Some(last.candidate.map_or(0, |c| (c + 1) % 3));
     let o = &app.ui.tool_options;
     let mut q = json!({"mode": next.mode, "sampleAllLayers": o.sample_all.object_selection, "refine": o.refine_edge, "points": next.positives, "candidate": next.candidate});
     mask_stack(app, &mut q);
