@@ -95,22 +95,28 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'cuda'
           $dl = Join-Path $env:RUNNER_TEMP 'cuda-dl'
           New-Item -ItemType Directory -Force $root, $dl | Out-Null
-          foreach ($c in 'cuda_nvcc', 'cuda_crt', 'libnvvm', 'cuda_cudart', 'cuda_cccl', 'cuda_nvrtc', 'libcublas', 'libcurand') {
-            # Header-only packages (cuda_cccl) can ship one archive for every platform.
+          foreach ($c in 'cuda_nvcc', 'cuda_crt', 'libnvvm', 'cuda_cudart', 'cuda_nvrtc', 'libcublas', 'libcurand') {
             $entry = $manifest.$c.'windows-x86_64'
-            if (-not $entry) { $entry = $manifest.$c.'source' }
-            if (-not $entry) { $entry = $manifest.$c.'linux-x86_64' }
-            if (-not $entry) { throw "${c} has no usable archive in CUDA $env:CUDA_REDIST ($($manifest.$c.PSObject.Properties.Name -join ', '))" }
+            if (-not $entry) { throw "${c} has no windows-x86_64 archive in CUDA $env:CUDA_REDIST" }
             $file = Split-Path $entry.relative_path -Leaf
             $archive = Join-Path $dl $file
             Invoke-WebRequest "$base/$($entry.relative_path)" -OutFile $archive
             if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $entry.sha256) { throw "${c}: checksum mismatch" }
-            if ($file.EndsWith('.zip')) { Expand-Archive $archive $dl -Force } else { tar -xf $archive -C $dl; if ($LASTEXITCODE) { throw "${c}: tar failed" } }
+            Expand-Archive $archive $dl -Force
             # Each archive holds one <name>-archive folder with bin, include, lib...: merge them into one tree.
-            robocopy (Join-Path $dl ($file -replace '\.(zip|tar\.xz)$', '')) $root /E /NFL /NDL /NJH /NJS /NP | Out-Null
+            robocopy (Join-Path $dl ($file -replace '\.zip$', '')) $root /E /NFL /NDL /NJH /NJS /NP | Out-Null
             if ($LASTEXITCODE -ge 8) { throw "${c}: copy failed ($LASTEXITCODE)" }
             Write-Host "$c $($manifest.$c.version)"
           }
+          # CCCL (CUB, Thrust, libcu++) is no longer in the CUDA 13 redist manifest: take NVIDIA's wheel,
+          # the same one the Linux job uses, and put its include\cccl into the tree where nvcc looks.
+          python -m pip download -q --no-deps --only-binary=:all: --platform win_amd64 --dest $dl nvidia-cuda-cccl==13.3.5.0.6
+          if ($LASTEXITCODE) { throw 'cuda_cccl: pip download failed' }
+          $whl = Get-ChildItem $dl -Filter 'nvidia_cuda_cccl-*.whl' | Select-Object -First 1
+          Expand-Archive $whl.FullName (Join-Path $dl 'cccl') -Force
+          robocopy (Join-Path $dl 'cccl\nvidia\cu13\include') (Join-Path $root 'include') /E /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { throw "cuda_cccl: copy failed ($LASTEXITCODE)" }
+          if (-not (Test-Path (Join-Path $root 'include\cccl\cub\cub.cuh'))) { throw 'cuda_cccl: headers missing' }
           $global:LASTEXITCODE = 0
           "CUDA_PATH=$root", "CUDA_ROOT=$root", "CUDA_HOME=$root" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "$root\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
