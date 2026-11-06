@@ -22,7 +22,7 @@ pub fn check_at_launch(app: &mut PhotocraftApp) -> Option<Profile> {
     if let Err(e) = crate::prefs_ui::save_preferences(app) {
         log::warn!("couldn't save the detected memory profile: {e}");
     }
-    let gb = nvidia.or(unified).map_or_else(String::new, |b| format!("{:.0}", b as f64 / (1u64 << 30) as f64));
+    let gb = nvidia.or(unified).map_or_else(String::new, |b| format!("{}", (b as f64 / (1u64 << 30) as f64).round()));
     log::info!("memory profile: {} ({gb} GB detected)", p.name());
     let models = if p.small() { tl!("MOSS Turbo for images and MOSS Edit Turbo for edits") } else { tl!("Krea 2 and Qwen-Image-2.1") };
     let chosen = app.session.prefs().integrations.memory_profile.trim() != "auto";
