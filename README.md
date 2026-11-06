@@ -72,9 +72,27 @@ its own masked layer, so the original pixels never change.
 
 ## 🚀 Install
 
-Download the newest build from the [**Releases page**](https://github.com/CodyChuGit/ShotoPhopEX/releases/latest).
-There are two Windows downloads with the same app inside (pick one) and a Linux `.tar.gz`. None
-of them includes models: you add those once (step 3 below).
+Download a build from the [**v0.1.0 release**](https://github.com/CodyChuGit/ShotoPhopEX/releases/latest).
+Pick one file; none of them includes models (you add those on first launch).
+
+| Download | For | Size |
+|---|---|---|
+| [`photocraft-0.1.0-windows-x64.msi`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.0/photocraft-0.1.0-windows-x64.msi) | **Windows installer**: Start menu entry, uninstalls from Settings | 490 MB |
+| [`photocraft-0.1.0-windows-x64-portable.zip`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.0/photocraft-0.1.0-windows-x64-portable.zip) | **Windows portable**: extract and run, nothing installed | 541 MB |
+| [`photocraft-0.1.0-linux-x86_64.tar.gz`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.0/photocraft-0.1.0-linux-x86_64.tar.gz) | **Linux**: run from the folder, or install with `install.sh` | 609 MB |
+| [`SHA256SUMS`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.0/SHA256SUMS) | Checksums for the three files above | |
+
+**Check the download (optional).** Compare the file's hash with its line in `SHA256SUMS`:
+
+```powershell
+Get-FileHash .\photocraft-0.1.0-windows-x64.msi   # Windows (PowerShell)
+```
+```sh
+sha256sum -c SHA256SUMS --ignore-missing          # Linux, in the folder with both files
+```
+
+**SmartScreen.** The Windows files are not code-signed, so on first run Windows shows
+**"Windows protected your PC"**. Click **More info**, then **Run anyway**. It only asks once per file.
 
 ### What you need
 
@@ -87,9 +105,8 @@ of them includes models: you add those once (step 3 below).
 
 ### Windows installer (`.msi`)
 
-1. Download `photocraft-<version>-windows-x64.msi` and open it.
-2. Windows may show **"Windows protected your PC"**, because the installer is not code-signed
-   yet. Click **More info › Run anyway**.
+1. Download `photocraft-0.1.0-windows-x64.msi` and open it.
+2. If SmartScreen shows **"Windows protected your PC"**, click **More info › Run anyway**.
 3. Click through the wizard. It installs for your account only (no administrator needed) into
    `%LOCALAPPDATA%\Programs\ArtCraft\PhotoCraft`; tick **Install for all users** on the first
    page to put it in Program Files instead.
@@ -100,7 +117,7 @@ stay in `%APPDATA%\Photocraft` until you delete them.
 
 ### Portable zip (`-portable.zip`)
 
-1. Download `photocraft-<version>-windows-x64-portable.zip`.
+1. Download `photocraft-0.1.0-windows-x64-portable.zip`.
 2. Right-click it › **Properties**, tick **Unblock**, then **OK**. Otherwise Windows may block the
    app's files.
 3. Extract it anywhere (a USB drive works), for example `D:\ShotoPhopEX`.
@@ -112,22 +129,22 @@ The zip runs in portable mode: preferences, presets and the Generations library 
 
 ### First launch (both)
 
-**3. Get the models.** **Help › Get AI Models…** downloads the right pack for your card into one
+**Get the models.** **Help › Get AI Models…** downloads the right pack for your card into one
 folder. Or bring your own in ComfyUI's layout: the [model table](#-models) lists every file, and
 an existing ComfyUI `models` folder works as it is.
 
-**4. Point the app at them.** Open **Edit › Preferences › AI Integrations**, set **Models
+**Point the app at them.** Open **Edit › Preferences › AI Integrations**, set **Models
 folder**, leave **Native runtime folders** empty (the bundled `runtime` folder is used), and press
 **Generate**. A memory check on the first launch picks the right models for your card.
 
 ### Linux (`.tar.gz`)
 
-1. Download `photocraft-<version>-linux-x86_64.tar.gz` and extract it:
-   `tar -xzf photocraft-<version>-linux-x86_64.tar.gz`
-2. Run it from the folder with `./photocraft-<version>-linux-x86_64/bin/photocraft`, or install it
+1. Download `photocraft-0.1.0-linux-x86_64.tar.gz` and extract it:
+   `tar -xzf photocraft-0.1.0-linux-x86_64.tar.gz`
+2. Run it from the folder with `./photocraft-0.1.0-linux-x86_64/bin/photocraft`, or install it
    with its menu entry and icon:
    ```sh
-   cd photocraft-<version>-linux-x86_64
+   cd photocraft-0.1.0-linux-x86_64
    ./install.sh               # for your account, into ~/.local (no root)
    sudo ./install.sh /usr/local   # or for everyone
    ```
@@ -135,10 +152,10 @@ folder**, leave **Native runtime folders** empty (the bundled `runtime` folder i
 
 The CUDA libraries ship in `bin/runtime`, so only the NVIDIA driver is needed. Remove it with
 `./install.sh --uninstall` (the same prefix you installed to); preferences stay in
-`~/.config/photocraft`. Then do steps 3 and 4 above.
+`~/.config/photocraft`. Then do the first-launch steps above.
 
 <details>
-<summary><b>Build from source on Linux</b></summary>
+<summary><b>Build from source on Linux</b> (developers; the download above is all most people need)</summary>
 
 You need an NVIDIA driver 580+, the CUDA Toolkit 13 (`nvcc`, with its `lib64` on the loader
 path), Git, a C++ compiler, and Rust from [rustup](https://rustup.rs). Then:
@@ -155,14 +172,14 @@ cargo build --release -p photocraft -p photocraft-cli --features native-diffusio
 ./target/release/photocraft
 ```
 
-Then set the **Models folder** as in step 4. If the engine reports missing CUDA libraries, add
+Then set the **Models folder** as in the first-launch steps. If the engine reports missing CUDA libraries, add
 your toolkit's `lib64` folder (for example `/usr/local/cuda/lib64`) to `LD_LIBRARY_PATH`.
 `packaging/linux/package-native.sh --cuda-lib <that lib64>` makes the release `.tar.gz`.
 
 </details>
 
 <details>
-<summary><b>Build from source on Windows</b></summary>
+<summary><b>Build from source on Windows</b> (developers)</summary>
 
 Needs Git, Rust (rustup, MSVC), Visual Studio 2022 Build Tools (C++), the CUDA Toolkit 13 and the
 CUTLASS headers.
@@ -205,30 +222,14 @@ pwsh packaging/windows/package.ps1 -Arch x64 -Native -SkipBuild
 
 ## 🤖 Install with an agent
 
-Open a coding agent (Claude Code, Codex, or any agent with a terminal) in an empty folder on the
-Windows PC and paste this:
+Open a coding agent (Claude Code, Codex, or any agent with a terminal) and paste this:
 
 ```text
-Install ShotoPhopEX (https://github.com/CodyChuGit/ShotoPhopEX) on this
-Windows PC and get its generative features working. Follow the README's "Install" and
-"Models" sections exactly. Work in this order and stop to ask me if a step fails:
-
-1. Run nvidia-smi and tell me the GPU, its memory and the driver. Stop if there is no NVIDIA GPU.
-2. Check for Git, rustup (MSVC toolchain), Visual Studio 2022 Build Tools with the C++ workload,
-   the CUDA Toolkit 13 and the CUTLASS headers. Install whatever is missing with winget, as the
-   README shows. Ask me before installing anything.
-3. Clone the repository and build photocraft and photocraft-cli with
-   --features native-diffusion from a VS 2022 x64 developer environment, setting CUDA_COMPUTE_CAP
-   for this GPU, CUTLASS_DIR, NVCC_APPEND_FLAGS and CUDARC_CUDA_VERSION as the README shows.
-4. Ask me where the models folder should go. Create the ComfyUI layout in it and download the
-   models the README lists for this card's memory (the full defaults on 24 GB or more, the MOSS
-   set on 12-16 GB) from Hugging Face. Skip files already there. If a repository is gated, tell
-   me which licence to accept and wait.
-5. Check every downloaded file's size against Hugging Face and list what you installed.
-6. Start target\release\photocraft.exe and tell me to set Edit > Preferences > AI Integrations >
-   Models folder and Native runtime folders (the CUDA Toolkit's bin\x64).
-7. When I say it is set, run one generation through photocraft-cli (see
-   `photocraft-cli run --help`) and report how long it took.
+Install ShotoPhopEX on this PC from the latest release at
+https://github.com/CodyChuGit/ShotoPhopEX/releases/latest, following the README's Install
+section. Run nvidia-smi first and stop if there is no NVIDIA GPU with 12 GB or more.
+Check the download against SHA256SUMS, install it, start the app, and tell me to open
+Help > Get AI Models… to download the models for my card.
 ```
 
 The agent can drive the app afterwards too, because every generative action is a command:
@@ -667,7 +668,7 @@ helps other people find it.
   part this fork adds.
 - **The model teams**, full credit for the weights everything runs on:
   - the **Stable Diffusion** community, whose open ecosystem this all grows from, and
-    [ComfyUI](https://github.com/comfyanonymous/ComfyUI), whose folder layout the app reads;
+    [ComfyUI](https://github.com/Comfy-Org/ComfyUI), whose folder layout the app reads;
     [Comfy-Org](https://huggingface.co/Comfy-Org) for the repacks most files come from
     ([Krea-2](https://huggingface.co/Comfy-Org/Krea-2),
     [Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1),
