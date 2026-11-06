@@ -66,7 +66,7 @@ its own masked layer, so the original pixels never change.
 
 ## ✨ Features
 
-Every clip was recorded in the real app on one RTX 5090, at real speed unless it says otherwise.
+Every clip was recorded in the real app on one RTX 5090. The clips play back faster than real time; the time under each one is the real, measured time.
 The photos were generated in the app too, so no stock images are involved. Times are warm.
 
 ### Generative Fill
