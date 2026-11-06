@@ -2,6 +2,8 @@
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/photocraft", "apps/photocraft-cli", "xtask"]
+# The native engine (genai-native/) is its own workspace: the app uses its crates by path.
+exclude = ["genai-native"]
 
 [workspace.package]
 version = "0.20.2"

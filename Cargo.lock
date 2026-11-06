@@ -3281,7 +3281,6 @@ dependencies = [
 [[package]]
 name = "gn-diffusion"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=60da753fae51cff5a8839b913f6364a4609e1f64#60da753fae51cff5a8839b913f6364a4609e1f64"
 dependencies = [
  "anyhow",
  "gn-engine",
@@ -3292,7 +3291,6 @@ dependencies = [
 [[package]]
 name = "gn-engine"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=60da753fae51cff5a8839b913f6364a4609e1f64#60da753fae51cff5a8839b913f6364a4609e1f64"
 dependencies = [
  "serde",
  "serde_json",
@@ -3301,7 +3299,6 @@ dependencies = [
 [[package]]
 name = "gn-perception"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=60da753fae51cff5a8839b913f6364a4609e1f64#60da753fae51cff5a8839b913f6364a4609e1f64"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -3313,7 +3310,6 @@ dependencies = [
 [[package]]
 name = "gn-segment"
 version = "0.1.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=60da753fae51cff5a8839b913f6364a4609e1f64#60da753fae51cff5a8839b913f6364a4609e1f64"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -6719,7 +6715,6 @@ dependencies = [
 [[package]]
 name = "qwen-image-rs"
 version = "0.0.0"
-source = "git+https://github.com/CodyChuGit/genai-native.git?rev=60da753fae51cff5a8839b913f6364a4609e1f64#60da753fae51cff5a8839b913f6364a4609e1f64"
 dependencies = [
  "anyhow",
  "candle-core",

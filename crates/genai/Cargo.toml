@@ -31,12 +31,12 @@ thiserror = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = { workspace = true }
 # The native engine's worker channel (plan-native-engine §3.4) and its perception models (SAM 3.1
-# on candle, plan Phase 1 / Rust rebuild R1), pinned by commit; the repository is private for now,
-# so `.cargo/config.toml` fetches it with the system git. The NVIDIA runtime libraries come from a
-# folder the user names (`integrations.runtimePath`), put on the worker's `PATH`.
-gn-engine = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "60da753fae51cff5a8839b913f6364a4609e1f64" }
-gn-perception = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "60da753fae51cff5a8839b913f6364a4609e1f64", default-features = false, features = ["engine"] }
-gn-diffusion = { git = "https://github.com/CodyChuGit/genai-native.git", rev = "60da753fae51cff5a8839b913f6364a4609e1f64", features = ["cuda"], optional = true }
+# on candle, plan Phase 1 / Rust rebuild R1) live in this repository under `genai-native/`. The
+# NVIDIA runtime libraries come from a folder the user names (`integrations.runtimePath`), put on
+# the worker's `PATH`.
+gn-engine = { path = "../../genai-native/crates/gn-engine" }
+gn-perception = { path = "../../genai-native/crates/gn-perception", default-features = false, features = ["engine"] }
+gn-diffusion = { path = "../../genai-native/crates/gn-diffusion", features = ["cuda"], optional = true }
 # The worker's log: the engines speak `tracing`; with `RUST_LOG` set the worker writes their
 # phase timings (load, encode, sampling, decode) to its stderr.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }

@@ -1,7 +1,3 @@
 [alias]
 xtask = "run -p xtask --"
 
-# `genai-native` is a private git dependency for now: fetch it with the system git, which has
-# the gh credential helper, instead of cargo's built-in client.
-[net]
-git-fetch-with-cli = true
