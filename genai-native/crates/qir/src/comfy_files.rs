@@ -335,7 +335,7 @@ mod tests {
 
     /// This PC's ComfyUI `models` folder, when there.
     fn comfy_models() -> Option<PathBuf> {
-        let p = PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models");
+        let p = std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).to_path_buf();
         p.is_dir().then_some(p)
     }
 
@@ -358,7 +358,7 @@ mod tests {
     /// shape, and nothing in ComfyUI's file is left over (a bijection, on the real headers).
     #[test]
     fn the_vae_map_is_a_bijection_on_the_real_files() -> Result<()> {
-        let snap = PathBuf::from(r"C:\Users\5090\Documents\_eval\weights\qwen-image-2.1\vae\diffusion_pytorch_model.safetensors");
+        let snap = std::path::Path::new(&std::env::var_os("QWEN21_SNAPSHOT").unwrap_or_default()).join("vae/diffusion_pytorch_model.safetensors");
         let Some(models) = comfy_models().filter(|_| snap.is_file()) else { return Ok(()) };
         let comfy = models.join("vae").join("qwen_image_2.1_vae_bf16.safetensors");
         let (a, b) = unsafe { (MmapedSafetensors::new(&snap)?, MmapedSafetensors::new(&comfy)?) };
@@ -376,7 +376,7 @@ mod tests {
     /// The assembled tokenizer gives Qwen's `tokenizer.json`'s ids, special tokens included.
     #[test]
     fn the_assembled_tokenizer_matches_qwens() -> Result<()> {
-        let reference = PathBuf::from(r"C:\Users\5090\Documents\_eval\weights\qwen-image-2.1\processor\tokenizer.json");
+        let reference = std::path::Path::new(&std::env::var_os("QWEN21_SNAPSHOT").unwrap_or_default()).join("processor/tokenizer.json");
         let Some(dir) = comfy_models().and_then(|m| tokenizer_dir(&m)).filter(|_| reference.is_file()) else { return Ok(()) };
         let ours = qwen_tokenizer(&dir)?;
         let theirs = Tokenizer::from_file(&reference).map_err(|e| anyhow::anyhow!("{e}"))?;

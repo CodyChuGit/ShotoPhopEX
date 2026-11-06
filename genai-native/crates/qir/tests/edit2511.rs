@@ -74,7 +74,7 @@ fn full_comfy_preparation() -> anyhow::Result<()> {
     Ok(())
 }
 fn models() -> PathBuf {
-    std::env::var_os("QIR_COMFY_MODELS").map(PathBuf::from).unwrap_or_else(|| r"C:/Users/5090/ComfyUI/ComfyUI_windows_portable/ComfyUI/models".into())
+    std::env::var_os("QIR_COMFY_MODELS").map(PathBuf::from).unwrap_or_else(|| std::env::var_os("COMFY_MODELS").unwrap_or_default().into())
 }
 #[test]
 #[ignore = "requires installed original 2511 model headers and optional adapter files; CPU only"]

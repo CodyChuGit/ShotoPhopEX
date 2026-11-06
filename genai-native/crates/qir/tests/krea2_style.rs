@@ -166,7 +166,7 @@ fn installed_style_encoder() -> anyhow::Result<()> {
     use qwen_image_rs::model::{text_encoder, vision};
     use qwen_image_rs::pipeline::RefImage;
     let dev = Device::Cpu;
-    let root = PathBuf::from(r"C:/Users/5090/ComfyUI/ComfyUI_windows_portable/ComfyUI/models");
+    let root = std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).to_path_buf();
     let path = root.join("text_encoders/qwen3vl_4b_fp8_scaled.safetensors");
     let vb = candle_nn::VarBuilder::from_backend(Box::new(CpuCheckpoint::open(path)?), DType::F32, dev.clone());
     let oracle = candle_core::safetensors::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/generated/krea2_style_encoder.safetensors"), &dev)?;
@@ -223,7 +223,7 @@ fn installed_style_encoder() -> anyhow::Result<()> {
 fn installed_style_reference_latents() -> anyhow::Result<()> {
     use qwen_image_rs::{model::wan_vae::WanVae, pipeline::RefImage};
     let dev = Device::Cpu;
-    let path = PathBuf::from(r"C:/Users/5090/ComfyUI/ComfyUI_windows_portable/ComfyUI/models/vae/qwen_image_vae.safetensors");
+    let path = std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join("vae/qwen_image_vae.safetensors");
     // SAFETY: the installed VAE checkpoint is immutable during this test.
     let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[path], DType::F32, &dev)? };
     let vae = WanVae::load(vb)?;
@@ -247,7 +247,7 @@ fn installed_style_reference_latents() -> anyhow::Result<()> {
 fn installed_style_dit_and_two_steps() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
     let dev = Device::Cpu;
-    let root = PathBuf::from(r"C:/Users/5090/ComfyUI/ComfyUI_windows_portable/ComfyUI/models");
+    let root = std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).to_path_buf();
     let vb = candle_nn::VarBuilder::from_backend(
         Box::new(CpuCheckpoint::open(root.join("diffusion_models/krea2_turbo_fp8_scaled.safetensors"))?),
         DType::F32,

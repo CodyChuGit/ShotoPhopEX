@@ -1,6 +1,6 @@
 {
   "arguments": {
-    "comfy": "C:\\Users\\5090\\ComfyUI\\ComfyUI_windows_portable\\ComfyUI",
+    "comfy": "<ComfyUI>",
     "models": null,
     "full": true,
     "device": "cpu",

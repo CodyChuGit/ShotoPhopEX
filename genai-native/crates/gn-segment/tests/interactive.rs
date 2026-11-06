@@ -26,7 +26,7 @@ fn compare(name: &str, actual: &[f32], expected: &[f32]) {
 fn interactive_heads_match_comfyui_f32() -> Result<()> {
     let path = std::env::var_os("GN_SAM31_CHECKPOINT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models\checkpoints\sam3.1_multiplex_fp16.safetensors"));
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join("checkpoints/sam3.1_multiplex_fp16.safetensors"));
     if !path.exists() {
         eprintln!("skipping interactive parity: checkpoint absent at {}", path.display());
         return Ok(());
