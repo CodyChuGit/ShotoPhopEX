@@ -35,6 +35,8 @@ pub mod limits {
     pub const GGUF_KV: u64 = 1 << 20;
     /// Elements in one GGUF array value (tokenizer vocabularies run to ~150 k).
     pub const GGUF_ARRAY: u64 = 1 << 24;
+    /// How deep GGUF arrays may nest (real files nest one level, if at all).
+    pub const GGUF_NESTING: usize = 8;
     /// Bytes in one GGUF string.
     pub const GGUF_STRING: u64 = 1 << 20;
     /// Dimensions of one tensor.
