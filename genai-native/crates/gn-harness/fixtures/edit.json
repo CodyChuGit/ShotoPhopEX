@@ -1,0 +1,13 @@
+{
+  "suite": "edit",
+  "cases": [
+    { "id": "edit-fox-winter-s7", "kind": "edit", "image": "krea2-fox.png", "seed": 7, "prompt": "make it winter: snow on the ground and on the fox's back, cold grey light" },
+    { "id": "edit-boat-blue-s7", "kind": "edit", "image": "matte-boat.png", "seed": 7, "prompt": "turn the boat blue" },
+    { "id": "edit-lighthouse-storm-s7", "kind": "edit", "image": "matte-lighthouse.png", "seed": 7, "prompt": "make the sky stormy with dark clouds and rain in the distance" },
+    { "id": "edit-balloon-red-s7", "kind": "edit", "image": "similar-balloon.png", "seed": 7, "prompt": "make the balloon bright red" },
+    { "id": "edit-compass-sand-s7", "kind": "edit", "image": "transparent-compass.png", "seed": 7, "prompt": "place the compass on wet beach sand with small shells around it" },
+    { "id": "edit-portrait-night-s7", "kind": "edit", "image": "user-drawing-edit-portrait.png", "seed": 7, "prompt": "change the lighting to a warm candle-lit night scene" },
+    { "id": "edit-fox-ref-boat-s7", "kind": "edit", "image": "krea2-fox.png", "seed": 7, "references": ["matte-boat.png"], "prompt": "put the fox from image 1 into the boat from image 2, sitting at the bow" },
+    { "id": "edit-stormy-ref-balloon-s11", "kind": "edit", "image": "edit-stormy.png", "seed": 11, "references": ["similar-balloon.png"], "prompt": "add the balloon from image 2 to the sky of image 1, far away and small" }
+  ]
+}

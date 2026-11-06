@@ -1,0 +1,2247 @@
+//! `qwen-image-rs` CLI.
+
+use anyhow::Context;
+use candle_core::{DType, IndexOp, Tensor};
+use clap::{Parser, Subcommand};
+
+use qwen_image_rs::{device, loader::WeightSet, Result};
+
+#[derive(Parser)]
+#[command(name = "qwen-image-rs", version, about = "Qwen-Image-2.1 inference in Rust/CUDA")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// Where `--convrot` finds its prequantized DiT weights (`convrot_cache`).
+#[derive(clap::Args, Clone, Debug)]
+struct ConvrotCacheArgs {
+    /// Cache dir for the prequantized ConvRot DiT (built once per transformer,
+    /// then loaded on every --convrot run). Default: $QIR_CONVROT_CACHE, else
+    /// $XDG_CACHE_HOME/qwen-image-rs/convrot, else ~/.cache/qwen-image-rs/convrot.
+    #[arg(long)]
+    convrot_cache: Option<std::path::PathBuf>,
+    /// Do not use the cache: rotate + INT8-quantize the DiT on load.
+    #[arg(long, conflicts_with = "rebuild_convrot_cache")]
+    no_convrot_cache: bool,
+    /// Rebuild this transformer's cache entry, then load it.
+    #[arg(long)]
+    rebuild_convrot_cache: bool,
+}
+
+impl ConvrotCacheArgs {
+    fn spec(&self) -> qwen_image_rs::convrot_cache::CacheSpec {
+        qwen_image_rs::convrot_cache::CacheSpec::from_cli(self.convrot_cache.as_deref(), self.no_convrot_cache, self.rebuild_convrot_cache)
+    }
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// GPU/CPU smoke test: allocate, matmul, reduce — proves the backend end to end.
+    Smoke {
+        /// Square matrix dimension.
+        #[arg(long, default_value_t = 1024)]
+        n: usize,
+    },
+    /// Self-test the ConvRot INT8 GEMM bridge (candle -> CUTLASS kernel -> candle).
+    ConvrotTest,
+    /// Time the ConvRot INT8 GEMM + dequant per CUTLASS tile config at the DiT
+    /// shapes (separate and merged q/k/v and gate/proj), checking every config
+    /// is bit-identical.
+    GemmBench {
+        /// Timed launches per (shape, config).
+        #[arg(long, default_value_t = 30)]
+        iters: usize,
+        /// Batch size B (M = B * (txt + 4096) for the image-sequence shapes).
+        #[arg(long, default_value_t = 1)]
+        batch: usize,
+        /// Text tokens per lane (the prompt length after the system prefix).
+        #[arg(long, default_value_t = 21)]
+        txt: usize,
+        /// The Layered/2511 DiT's shapes (width 3072, MLP 12288) at `--m` rows instead, plus
+        /// the whole `ConvRotLinear::forward` (activation rotate + quantize + GEMM) per shape.
+        #[arg(long)]
+        layered: bool,
+        /// Rows for `--layered` (Split at 864x1152, 3 layers, CFG batched: ~39k).
+        #[arg(long, default_value_t = 8272)]
+        m: usize,
+    },
+    /// Time Krea 2's linear shapes three ways (bf16 matmul, fp8 dequantized + bf16, fp8
+    /// matmul through cuBLASLt): launches back to back, one synchronise per shape.
+    Fp8Bench {
+        #[arg(long, default_value_t = 20)]
+        iters: usize,
+        /// Rows (image + text tokens).
+        #[arg(long, default_value_t = 4160)]
+        m: usize,
+    },
+    /// Self-test the SageAttention INT8-QK/FP16-PV kernel vs an f32 reference.
+    SageTest,
+    /// Self-test the fused LayerNorm+AdaLN kernel vs the candle reference.
+    FusednormTest,
+    /// Self-test the cuDNN VAE conv (feature `cudnn`) vs candle's im2col conv.
+    CudnnTest,
+    /// Self-test the fused VAE RmsNorm / bias+residual kernels (feature
+    /// `fusednorm`): bit-identical to the candle op chains.
+    VaeFusedTest,
+    /// Micro-benchmark the DiT's dominant ops (MLP GEMM vs attention) in bf16.
+    Bench {
+        #[arg(long, default_value_t = 4117)]
+        seq: usize,
+        #[arg(long, default_value_t = 30)]
+        iters: usize,
+    },
+    /// Resolve and report a component's on-disk weight set (safetensors or GGUF).
+    Info {
+        /// Directory holding .safetensors shards or a .gguf file.
+        #[arg(long)]
+        weights: std::path::PathBuf,
+    },
+    /// Text-to-image: prompt -> PNG (tokenize -> text encode -> denoise -> VAE).
+    Generate {
+        /// The model snapshot directory (contains processor/, text_encoder/, transformer/, vae/).
+        #[arg(long)]
+        model: std::path::PathBuf,
+        #[arg(long)]
+        prompt: String,
+        /// Square picture side in pixels (a multiple of 16); `--width`/`--height` override it.
+        #[arg(long, default_value_t = 1024)]
+        size: usize,
+        /// Picture width in pixels (a multiple of 16); defaults to `--size`.
+        #[arg(long)]
+        width: Option<usize>,
+        /// Picture height in pixels (a multiple of 16); defaults to `--size`.
+        #[arg(long)]
+        height: Option<usize>,
+        #[arg(long, default_value_t = 40)]
+        steps: usize,
+        /// Noise seed: a number (with --batch N, lanes use seed..seed+N-1) or
+        /// `random` (a fresh seed per image, printed + written to seeds.tsv).
+        #[arg(long, default_value = "42")]
+        seed: qwen_image_rs::seed::Seed,
+        /// ComfyUI's conventions (`qwen_image_rs::comfy`): torch's CPU noise for the seed, the
+        /// `simple` schedule over `ModelSamplingFlux`'s sigmas (shift 0.69) and its timestep
+        /// rounding, so a picture matches ComfyUI's for the same prompt, seed and steps.
+        #[arg(long)]
+        comfy: bool,
+        /// Quantize the DiT block linears to Q8_0 (GGUF) — lower VRAM.
+        #[arg(long)]
+        quant: bool,
+        /// ConvRot W8A8 INT8 for the DiT attn/MLP linears (`convrot` feature).
+        #[arg(long)]
+        convrot: bool,
+        #[command(flatten)]
+        cache: ConvrotCacheArgs,
+        /// Q8_0-quantize the text encoder (weight-only, ~half VRAM).
+        #[arg(long)]
+        quant_text: bool,
+        /// Load the text encoder from a pre-quantized GGUF (from prequantize-text)
+        /// instead of quantizing on load — smaller VRAM pool, no ~58 s load.
+        #[arg(long)]
+        text_gguf: Option<std::path::PathBuf>,
+        /// VAE decode tiling: `auto` (default) decodes the whole image when its
+        /// working set fits in free VRAM, else 32-latent tiles; `0` forces the
+        /// whole image; `N` forces N×N latent tiles (overlap N/4).
+        #[arg(long, default_value = "auto")]
+        vae_tile: qwen_image_rs::model::vae::VaeTiling,
+        /// True-CFG guidance scale. 1.0 = single forward (fast); >1 runs the DiT
+        /// twice per step (cond + negative) for stronger prompt adherence.
+        #[arg(long, default_value_t = 1.0)]
+        guidance: f32,
+        /// Negative prompt for CFG (used only when --guidance > 1).
+        #[arg(long, default_value = "")]
+        negative: String,
+        /// Force the VAE decode in f32 (default: bf16 on CUDA).
+        #[arg(long)]
+        vae_f32: bool,
+        /// Number of images to generate for this prompt in ONE batched denoise,
+        /// each with its own seed (seed, seed+1, ...). 1 = single image (default).
+        /// 4 is the efficient max on a 24GB card; B>=5 pays a per-image tax.
+        #[arg(long, default_value_t = 1)]
+        batch: usize,
+        /// Output PNG (used when --batch 1). Written verbatim.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Output directory for --batch > 1: writes 000.png..00N.png (one per
+        /// seed). Required when --batch > 1.
+        #[arg(long)]
+        out_dir: Option<std::path::PathBuf>,
+        /// Debug: also save each image's final latent as NNN.latent.safetensors
+        /// (for the self-consistency check / debugging). Writes beside the PNG(s).
+        #[arg(long)]
+        emit_latents: bool,
+    },
+    /// Batch text-to-image: many prompts, each model loaded ONCE (encode all ->
+    /// denoise all -> decode all), amortizing the ~24s of model loads.
+    Batch {
+        #[arg(long)]
+        model: std::path::PathBuf,
+        /// File with one prompt per line.
+        #[arg(long)]
+        prompts: std::path::PathBuf,
+        #[arg(long, default_value_t = 1024)]
+        size: usize,
+        #[arg(long, default_value_t = 40)]
+        steps: usize,
+        /// Noise seed: `random` (default — a fresh seed per prompt, printed and
+        /// written to <out-dir>/seeds.tsv) or a number (prompt i uses seed+i).
+        #[arg(long, default_value = "random")]
+        seed: qwen_image_rs::seed::Seed,
+        #[arg(long)]
+        quant: bool,
+        /// ConvRot W8A8 INT8 for the DiT attn/MLP linears (`convrot` feature).
+        #[arg(long)]
+        convrot: bool,
+        #[command(flatten)]
+        cache: ConvrotCacheArgs,
+        /// Q8_0-quantize the text encoder (weight-only, ~half VRAM).
+        #[arg(long)]
+        quant_text: bool,
+        /// Resident mode: load all three models once and keep them in VRAM,
+        /// streaming prompts (needs --text-gguf --convrot to fit comfortably).
+        #[arg(long)]
+        resident: bool,
+        /// Load the text encoder from a pre-quantized GGUF (from prequantize-text).
+        #[arg(long)]
+        text_gguf: Option<std::path::PathBuf>,
+        /// VAE decode tiling: `auto` (default; whole image when it fits in free
+        /// VRAM, else 32-latent tiles), `0` = whole image, `N` = N×N tiles.
+        #[arg(long, default_value = "auto")]
+        vae_tile: qwen_image_rs::model::vae::VaeTiling,
+        /// True-CFG guidance scale (1.0 = single forward; >1 = two forwards/step).
+        #[arg(long, default_value_t = 1.0)]
+        guidance: f32,
+        /// Negative prompt for CFG (used only when --guidance > 1).
+        #[arg(long, default_value = "")]
+        negative: String,
+        /// Force the VAE decode in f32 (default: bf16 on CUDA).
+        #[arg(long)]
+        vae_f32: bool,
+        /// Output directory (writes 000.png, 001.png, ...).
+        #[arg(long)]
+        out_dir: std::path::PathBuf,
+    },
+    /// Encode input_ids through the Qwen3-VL text encoder to prompt embeddings (Phase 3).
+    TextEncode {
+        /// The text_encoder/ directory (config.json + *.safetensors shards).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// A safetensors file with an `input_ids` tensor (from the embeds dump).
+        #[arg(long)]
+        input_ids: std::path::PathBuf,
+        /// Number of leading system-prompt tokens to drop.
+        #[arg(long, default_value_t = 0)]
+        drop: usize,
+        /// Q8_0-quantize the text encoder (weight-only, ~half VRAM).
+        #[arg(long)]
+        quant: bool,
+        /// Output embeddings safetensors path.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Run the full flow-match denoise loop (DiT x N steps) to a final latent (Phase 4).
+    Denoise {
+        /// transformer/ weights directory.
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// safetensors with initial noise under `hidden_states` (or `latent`).
+        #[arg(long)]
+        noise: std::path::PathBuf,
+        /// safetensors with prompt embeddings under `embeds`.
+        #[arg(long)]
+        embeds: std::path::PathBuf,
+        #[arg(long, default_value_t = 40)]
+        steps: usize,
+        /// Quantize the DiT block linears to Q8_0 (GGUF).
+        #[arg(long)]
+        quant: bool,
+        /// ConvRot W8A8 INT8 for the DiT attn/MLP linears (`convrot` feature).
+        #[arg(long)]
+        convrot: bool,
+        #[command(flatten)]
+        cache: ConvrotCacheArgs,
+        /// Output final latent safetensors path.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Run one DiT forward on dumped inputs and save the joint output (Phase 4).
+    DitForward {
+        /// The transformer/ directory (config.json + *.safetensors shards).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// dit_io.safetensors with hidden_states/encoder_hidden_states/timestep.
+        #[arg(long)]
+        inputs: std::path::PathBuf,
+        /// Quantize the DiT block linears to Q8_0 (GGUF).
+        #[arg(long)]
+        quant: bool,
+        /// ConvRot W8A8 INT8 for the DiT attn/MLP linears (`convrot` feature).
+        #[arg(long)]
+        convrot: bool,
+        #[command(flatten)]
+        cache: ConvrotCacheArgs,
+        /// Output safetensors path (joint output tensor).
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Pre-quantize the Qwen3-VL text encoder to a Q8_0 GGUF file, so
+    /// `--text-gguf` loads it directly (no bf16-on-GPU transient, no ~58 s
+    /// quantize-on-load) — keeps the resident-mode VRAM pool small.
+    PrequantizeText {
+        /// The text_encoder/ directory (bf16 config.json + *.safetensors shards).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// Output .gguf file.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Pre-quantize the DiT's ConvRot linears to a weights file (rotated INT8 +
+    /// col scale), so `generate --convrot` on that file skips the load-time
+    /// rotate+quant and mmaps ~half the bytes. Requires the `convrot` feature.
+    PrequantizeConvrot {
+        /// The transformer/ directory (bf16 config.json + *.safetensors shards).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// Output .safetensors file (drop it in a dir and point --model's
+        /// transformer at that dir, or pass the dir to dit-forward --weights).
+        /// Omit it to (re)build this transformer's `--convrot` cache entry
+        /// instead (pre-warming the default load path).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Cache dir when --out is omitted (default as for --convrot).
+        #[arg(long)]
+        convrot_cache: Option<std::path::PathBuf>,
+    },
+    /// Decode a saved latent (.pt) through the VAE to an RGBA PNG (Phase 2).
+    VaeDecode {
+        /// The vae/ directory (holds config.json + *.safetensors).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// A packed latent saved by the diffusers oracle (`*.latent.pt`).
+        #[arg(long)]
+        latent: std::path::PathBuf,
+        /// Decode the VAE in bf16 (default: f32 reference).
+        #[arg(long)]
+        bf16: bool,
+        /// Output PNG path.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Tiled decode with this latent tile size (0 = whole image), overlap
+        /// tile/4 — the same path generate/batch use with `--vae-tile`.
+        #[arg(long, default_value_t = 0)]
+        tile: usize,
+        /// Decode this many times and print each wall time (the first includes
+        /// warm-up: cuDNN algo pick, allocator growth).
+        #[arg(long, default_value_t = 1)]
+        iters: usize,
+    },
+    /// Edit a picture (with up to nine more references) through the resident pipeline, with
+    /// ComfyUI's conventions (Phase 3).
+    Edit {
+        /// The model snapshot directory.
+        #[arg(long)]
+        model: std::path::PathBuf,
+        #[arg(long)]
+        prompt: String,
+        /// The picture being edited (`<image1>`), then the references (`<image2>`, …).
+        #[arg(long, required = true)]
+        image: Vec<std::path::PathBuf>,
+        /// Output size; the first picture's (rounded to 32) when not given.
+        #[arg(long)]
+        width: Option<usize>,
+        #[arg(long)]
+        height: Option<usize>,
+        #[arg(long, default_value_t = 25)]
+        steps: usize,
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
+        #[arg(long, default_value_t = 1.0)]
+        guidance: f32,
+        #[arg(long, default_value = "")]
+        negative: String,
+        /// ConvRot W8A8 INT8 for the DiT (`convrot` feature).
+        #[arg(long)]
+        convrot: bool,
+        #[command(flatten)]
+        cache: ConvrotCacheArgs,
+        /// Run the whole joint sequence every step instead of caching the text and reference
+        /// rows' keys and values (the plain reference for the cache; several times slower).
+        #[arg(long)]
+        no_prefix_cache: bool,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Krea 2's conditioning for a prompt through the Qwen3-VL-4B encoder (Phase 4 parity):
+    /// the twelve tapped states after the template's prefix, saved as `(tokens, 12*2560)`.
+    Krea2Cond {
+        /// The converted encoder (`text_encoder/model.safetensors`, keys `model.*`).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// A Qwen3-VL `tokenizer.json`.
+        #[arg(long)]
+        tokenizer: std::path::PathBuf,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Text to image with Krea 2 Turbo through the resident pipeline, ComfyUI's conventions
+    /// (Phase 4).
+    GenerateKrea2 {
+        /// The Krea 2 weights folder (tokenizer/, text_encoder/, transformer/, vae/).
+        #[arg(long)]
+        model: std::path::PathBuf,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long, default_value_t = 1024)]
+        width: usize,
+        #[arg(long, default_value_t = 1024)]
+        height: usize,
+        #[arg(long, default_value_t = 8)]
+        steps: usize,
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
+        /// ConvRot W8A8 INT8 for the DiT's block linears (`convrot` feature).
+        #[arg(long)]
+        convrot: bool,
+        #[command(flatten)]
+        cache: ConvrotCacheArgs,
+        /// Make the picture this many times on the resident pipeline (the timings of the
+        /// later runs are the warm ones); the last is saved.
+        #[arg(long, default_value_t = 1)]
+        repeat: usize,
+        /// An edit: the picture (PNG/JPEG) the instruction in `--prompt` changes; the target takes
+        /// its size (floored to 16) unless `--width`/`--height` are given as 0.
+        #[arg(long)]
+        image: Option<std::path::PathBuf>,
+        /// LoRA files (`path` or `path@strength`), e.g. the krea2_edit General Edit V2.
+        #[arg(long)]
+        lora: Vec<String>,
+        /// The edit's pull toward its picture (the target's attention to it multiplied by this).
+        #[arg(long, default_value_t = 1.0)]
+        ref_boost: f32,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// One Krea 2 DiT forward on a dumped latent (`x`) and conditioning (`cond`) at `--t`,
+    /// saved as `dit_out` (Phase 4 parity).
+    Krea2DitForward {
+        /// The converted transformer directory (`transformer/model.safetensors`).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// The safetensors holding `x` `(1, 16, h, w)`.
+        #[arg(long)]
+        inputs: std::path::PathBuf,
+        /// The safetensors holding `cond` `(tokens, 12*2560)`.
+        #[arg(long)]
+        cond: std::path::PathBuf,
+        #[arg(long, default_value_t = 1.0)]
+        t: f32,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Decode a dumped Wan 2.1 latent (`z_raw`, the VAE's own space) through the ported decoder
+    /// and save the picture as `(1, 1, H, W, 3)` in `[0, 1]`, ComfyUI's shape (Phase 4 parity).
+    WanVaeDecode {
+        /// The VAE file (`wan_2.1_vae.safetensors`).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        #[arg(long)]
+        latent: std::path::PathBuf,
+        /// Decode in bf16 (f32 otherwise).
+        #[arg(long)]
+        bf16: bool,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Rewrite one of ComfyUI's `fp8_scaled` repacks as bf16 safetensors (the fp8 linears
+    /// dequantised with their `weight_scale`, everything else copied), for the loaders.
+    ConvertFp8 {
+        #[arg(long)]
+        src: std::path::PathBuf,
+        #[arg(long)]
+        dst: std::path::PathBuf,
+    },
+    /// Run the Qwen3-VL vision tower on dumped patches and save its features (Phase 3 parity).
+    VisionForward {
+        /// The text_encoder/ directory (holds `model.visual.*`).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// safetensors with `patches` (N, 1536) in the tower's input order.
+        #[arg(long)]
+        inputs: std::path::PathBuf,
+        /// The patch grid the patches came from.
+        #[arg(long)]
+        grid_h: usize,
+        #[arg(long)]
+        grid_w: usize,
+        /// Output safetensors: `merged`, `deepstack_0..2`.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// The edit conditioning for a prompt with one picture: the vision tower, the text encoder
+    /// with the picture spliced in, the DiT's conditioning and slot (Phase 3 parity).
+    EditCond {
+        /// The text_encoder/ directory.
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// The snapshot's processor/tokenizer.json.
+        #[arg(long)]
+        tokenizer: std::path::PathBuf,
+        /// The picture (sides already multiples of 32).
+        #[arg(long)]
+        image: std::path::PathBuf,
+        #[arg(long)]
+        prompt: String,
+        /// Output safetensors: `full_hidden` (S, 4096), `cond` (kept, 4096); slot printed.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Encode a PNG through the VAE to the normalised packed latent (Phase 3: edit, fill).
+    VaeEncode {
+        /// The vae/ directory (holds config.json + *.safetensors, encoder included).
+        #[arg(long)]
+        weights: std::path::PathBuf,
+        /// The picture (any PNG; sides must be multiples of 16; alpha 1 where missing).
+        #[arg(long)]
+        image: std::path::PathBuf,
+        /// Encode in bf16 (default: f32 reference).
+        #[arg(long)]
+        bf16: bool,
+        /// Output safetensors: `latent` (1, H/16·W/16, 64) f32, normalised (the DiT's space).
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Also decode the latent back and write the round trip here (a PNG).
+        #[arg(long)]
+        roundtrip: Option<std::path::PathBuf>,
+    },
+    /// Parity and regression gates: compare a run's outputs with a reference (CPU only).
+    Compare {
+        #[command(subcommand)]
+        what: CompareCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompareCommand {
+    /// PSNR and largest byte difference of two same-size PNGs (RGB when both are opaque).
+    Png { ours: std::path::PathBuf, reference: std::path::PathBuf },
+    /// Cosine, max |a-b| and MSE of two latents (safetensors key `latent`). Batched lanes are
+    /// not bit-reproducible (INT8 split-K atomics, batch-dependent GEMM tiling), so this gates
+    /// self-consistency of a seed across batch sizes, not bit-exactness.
+    Latent {
+        a: std::path::PathBuf,
+        b: std::path::PathBuf,
+        /// Lowest passing cosine (self-consistency runs at about 0.9999).
+        #[arg(long, default_value_t = 0.99)]
+        threshold: f64,
+    },
+    /// The `dit-forward` oracle gate: our `output` tensor against the oracle's.
+    Dit {
+        ours: std::path::PathBuf,
+        oracle: std::path::PathBuf,
+        /// The trailing rows that are image tokens (1024² is 4096).
+        #[arg(long, default_value_t = 4096)]
+        image_tokens: usize,
+    },
+    /// Layered RGBA outputs, `<prefix>-1..3.png` in each folder, never resized.
+    Layered {
+        native: std::path::PathBuf,
+        reference: std::path::PathBuf,
+        #[arg(long, default_value = "native")]
+        native_prefix: String,
+        #[arg(long, default_value = "comfy")]
+        reference_prefix: String,
+        /// Fail above this RGB mean error (bytes, over visible pixels) or below --iou-limit.
+        #[arg(long)]
+        rgb_limit: Option<f64>,
+        #[arg(long, default_value_t = 0.99)]
+        iou_limit: f64,
+        #[arg(long, default_value_t = 127)]
+        visible_alpha_threshold: u8,
+        /// Place both on a common transparent canvas (top-left) when sizes differ.
+        #[arg(long)]
+        pad_canvas: bool,
+    },
+    /// Raw `*.rgba` artifacts (bench and LoRA tile dumps) in two folders, matched by name.
+    Raw {
+        before: std::path::PathBuf,
+        after: std::path::PathBuf,
+        /// Allowed RGB mean error in bytes.
+        #[arg(long, default_value_t = 1.0)]
+        limit: f64,
+    },
+}
+
+fn main() -> Result<()> {
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
+
+    match Cli::parse().command {
+        Command::Smoke { n } => smoke(n),
+        Command::ConvrotTest => convrot_test(),
+        Command::GemmBench { iters, layered: true, m, .. } => layered_gemm_bench(iters, m),
+        Command::GemmBench { iters, batch, txt, .. } => gemm_bench(iters, batch, txt),
+        Command::Fp8Bench { iters, m } => fp8_bench(iters, m),
+        Command::SageTest => sage_test(),
+        Command::FusednormTest => fusednorm_test(),
+        Command::CudnnTest => cudnn_test(),
+        Command::VaeFusedTest => vae_fused_test(),
+        Command::Bench { seq, iters } => bench(seq, iters),
+        Command::Batch {
+            model,
+            prompts,
+            size,
+            steps,
+            seed,
+            quant,
+            convrot,
+            cache,
+            quant_text,
+            resident,
+            text_gguf,
+            vae_tile,
+            guidance,
+            negative,
+            vae_f32,
+            out_dir,
+        } => batch(
+            &model,
+            &prompts,
+            size,
+            steps,
+            seed,
+            quant,
+            convrot,
+            &cache.spec(),
+            quant_text,
+            resident,
+            text_gguf.as_deref(),
+            vae_tile,
+            guidance,
+            &negative,
+            vae_f32,
+            &out_dir,
+        ),
+        Command::Info { weights } => info(&weights),
+        Command::Generate {
+            model,
+            prompt,
+            size,
+            width,
+            height,
+            steps,
+            seed,
+            comfy,
+            quant,
+            convrot,
+            cache,
+            quant_text,
+            text_gguf,
+            vae_tile,
+            guidance,
+            negative,
+            vae_f32,
+            batch,
+            out,
+            out_dir,
+            emit_latents,
+        } => generate(
+            &model,
+            &prompt,
+            (width.unwrap_or(size), height.unwrap_or(size)),
+            steps,
+            seed,
+            comfy,
+            quant,
+            convrot,
+            &cache.spec(),
+            quant_text,
+            text_gguf.as_deref(),
+            vae_tile,
+            guidance,
+            &negative,
+            vae_f32,
+            batch,
+            out.as_deref(),
+            out_dir.as_deref(),
+            emit_latents,
+        ),
+        Command::PrequantizeText { weights, out } => prequantize_text(&weights, &out),
+        Command::PrequantizeConvrot { weights, out, convrot_cache } => prequantize_convrot(&weights, out.as_deref(), convrot_cache.as_deref()),
+        Command::VaeEncode { weights, image, bf16, out, roundtrip } => vae_encode(&weights, &image, bf16, &out, roundtrip.as_deref()),
+        Command::Compare { what } => compare(what),
+        Command::VisionForward { weights, inputs, grid_h, grid_w, out } => vision_forward(&weights, &inputs, grid_h, grid_w, &out),
+        Command::Krea2Cond { weights, tokenizer, prompt, out } => krea2_cond(&weights, &tokenizer, &prompt, &out),
+        Command::WanVaeDecode { weights, latent, bf16, out } => wan_vae_decode(&weights, &latent, bf16, &out),
+        Command::Krea2DitForward { weights, inputs, cond, t, out } => krea2_dit_forward(&weights, &inputs, &cond, t, &out),
+        Command::GenerateKrea2 { model, prompt, width, height, steps, seed, convrot, cache, repeat, image, lora, ref_boost, out } => {
+            generate_krea2(&model, &prompt, width, height, steps, seed, convrot, &cache.spec(), repeat, image.as_deref(), &lora, ref_boost, &out)
+        }
+        Command::ConvertFp8 { src, dst } => {
+            let t0 = std::time::Instant::now();
+            let r = qwen_image_rs::convert::dequantize_fp8_file(&src, &dst)?;
+            println!("wrote {} ({} dequantised, {} copied, {} dropped) in {:.1} s", dst.display(), r.dequantized, r.copied, r.dropped, t0.elapsed().as_secs_f32());
+            Ok(())
+        }
+        Command::Edit { model, prompt, image, width, height, steps, seed, guidance, negative, convrot, cache, no_prefix_cache, out } => edit(
+            &model,
+            &prompt,
+            &image,
+            (width.unwrap_or(0), height.unwrap_or(0)),
+            steps,
+            seed,
+            guidance,
+            &negative,
+            convrot,
+            &cache.spec(),
+            !no_prefix_cache,
+            &out,
+        ),
+        Command::EditCond { weights, tokenizer, image, prompt, out } => edit_cond(&weights, &tokenizer, &image, &prompt, &out),
+        Command::VaeDecode { weights, latent, bf16, out, tile, iters } => vae_decode(&weights, &latent, bf16, &out, tile, iters),
+        Command::TextEncode { weights, input_ids, drop, quant, out } => text_encode(&weights, &input_ids, drop, quant, &out),
+        Command::DitForward { weights, inputs, quant, convrot, cache, out } => dit_forward(&weights, &inputs, quant, convrot, &cache.spec(), &out),
+        Command::Denoise { weights, noise, embeds, steps, quant, convrot, cache, out } => {
+            denoise(&weights, &noise, &embeds, steps, quant, convrot, &cache.spec(), &out)
+        }
+    }
+}
+
+/// Guided noise prediction. Runs the DiT on the conditional prompt; when
+/// `guidance > 1` and a negative embedding is present, also runs it on the
+/// negative and combines `v = v_uncond + guidance·(v_cond − v_uncond)` (true
+/// CFG — ~2× the DiT cost). Returns the f32 noise prediction over the image
+/// tokens. `guidance ≤ 1` keeps the single-forward fast path.
+#[allow(clippy::too_many_arguments)]
+fn guided_noise_pred(
+    dit: &qwen_image_rs::model::dit::QwenImageDit,
+    latents_dt: &Tensor,
+    cond: &Tensor,
+    neg: Option<&Tensor>,
+    guidance: f32,
+    tt: &Tensor,
+    (h, w): (usize, usize),
+    img_seq: usize,
+) -> Result<Tensor> {
+    let joint = dit.forward(latents_dt, cond, tt, h, w)?;
+    let (_b, jl, _) = joint.dims3()?;
+    let v_cond = joint.narrow(1, jl - img_seq, img_seq)?.to_dtype(DType::F32)?;
+    if guidance > 1.0 {
+        if let Some(neg) = neg {
+            let ju = dit.forward(latents_dt, neg, tt, h, w)?;
+            let (_b, jlu, _) = ju.dims3()?;
+            let v_uncond = ju.narrow(1, jlu - img_seq, img_seq)?.to_dtype(DType::F32)?;
+            return Ok((&v_uncond + ((&v_cond - &v_uncond)? * guidance as f64)?)?);
+        }
+    }
+    Ok(v_cond)
+}
+
+/// The DiT's VarBuilder over the files `convrot_cache::resolve_dit_files`
+/// picks: under `--convrot` the cached prequantized file (built on first use),
+/// else the transformer dir's own safetensors.
+fn dit_vb(
+    dir: &std::path::Path,
+    convrot: bool,
+    cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    dtype: DType,
+    dev: &candle_core::Device,
+) -> Result<candle_nn::VarBuilder<'static>> {
+    let files = qwen_image_rs::convrot_cache::resolve_dit_files(dir, convrot, cache)?;
+    Ok(unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? })
+}
+
+/// Load the text encoder, preferring a pre-quantized GGUF (`--text-gguf`) which
+/// loads Q8_0 directly (no bf16-on-GPU transient); otherwise mmap the bf16
+/// safetensors and (optionally) quantize on load.
+fn load_text_encoder(
+    model: &std::path::Path,
+    dev: &candle_core::Device,
+    dtype: DType,
+    quant_text: bool,
+    text_gguf: Option<&std::path::Path>,
+) -> Result<qwen_image_rs::model::text_encoder::QwenTextEncoder> {
+    use qwen_image_rs::model::text_encoder::{QwenTextEncoder, TextConfig};
+    if let Some(g) = text_gguf {
+        let qvb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(g, dev)?;
+        QwenTextEncoder::load_gguf(&TextConfig::default(), qvb)
+    } else {
+        let files = WeightSet::resolve(&model.join("text_encoder"))?.files;
+        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
+        QwenTextEncoder::load(&TextConfig::default(), quant_text, vb)
+    }
+}
+
+/// Standalone text-to-image: prompt -> PNG. Loads the three models one at a
+/// time (text encoder -> DiT -> VAE), freeing each before the next so the
+/// pipeline fits in 24 GB.
+#[allow(clippy::too_many_arguments)]
+fn generate(
+    model: &std::path::Path,
+    prompt: &str,
+    (width, height): (usize, usize),
+    steps: usize,
+    seed: qwen_image_rs::seed::Seed,
+    comfy: bool,
+    quant: bool,
+    convrot: bool,
+    cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    quant_text: bool,
+    text_gguf: Option<&std::path::Path>,
+    vae_tile: qwen_image_rs::model::vae::VaeTiling,
+    guidance: f32,
+    negative: &str,
+    vae_f32: bool,
+    batch: usize,
+    out: Option<&std::path::Path>,
+    out_dir: Option<&std::path::Path>,
+    emit_latents: bool,
+) -> Result<()> {
+    if batch < 1 {
+        anyhow::bail!("--batch must be >= 1");
+    }
+    if width == 0 || height == 0 || !width.is_multiple_of(16) || !height.is_multiple_of(16) {
+        anyhow::bail!("--width/--height must be positive multiples of 16 ({width}x{height} asked)");
+    }
+    if steps == 0 {
+        anyhow::bail!("--steps must be >= 1");
+    }
+    // Output-target validation up front (before the ~20s of model loads).
+    if batch == 1 && out.is_none() {
+        anyhow::bail!("--out <file> is required for --batch 1");
+    }
+    if batch > 1 && out_dir.is_none() {
+        anyhow::bail!("--out-dir <dir> is required for --batch > 1 (writes 000.png..)");
+    }
+    // Warn on the non-applicable output flag rather than silently ignoring it.
+    if batch == 1 && out_dir.is_some() {
+        tracing::warn!("--out-dir ignored for --batch 1 (writing --out)");
+    }
+    if batch > 1 && out.is_some() {
+        tracing::warn!("--out ignored for --batch > 1 (writing --out-dir/NNN.png)");
+    }
+    // One concrete seed per lane (`--seed N` -> N, N+1, ...; `--seed random` ->
+    // a fresh seed each), reported per image and in seeds.tsv for --batch > 1.
+    let seeds = seed.resolve(batch);
+    let mut manifest: Vec<(String, u64, String)> = Vec::with_capacity(batch);
+    tracing::info!(seed = %seed, ?seeds, "seeds");
+    use qwen_image_rs::model::dit::QwenImageDit;
+    use qwen_image_rs::model::scheduler::{FlowConfig, FlowMatchEuler};
+    use qwen_image_rs::model::text_encoder::prompt as tmpl;
+    use qwen_image_rs::model::{config::VaeConfig, vae};
+    use tokenizers::Tokenizer;
+
+    let dev = device::best_device()?;
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let load_vb = |dir: std::path::PathBuf, dt: DType| -> Result<candle_nn::VarBuilder> {
+        let files = WeightSet::resolve(&dir)?.files;
+        Ok(unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dt, &dev)? })
+    };
+    // The VAE runs in bf16 on CUDA by default (tensor-core convs, ~2x decode);
+    // --vae-f32 forces the f32 reference path.
+    let vae_dt = if vae_f32 { DType::F32 } else { dtype };
+
+    // Tokenize the t2i chat template; drop = system-prefix token count.
+    let tok = Tokenizer::from_file(model.join("processor/tokenizer.json")).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+    let sysp = format!("<|im_start|>system\n{}<|im_end|>\n", tmpl::SYS_PROMPT);
+    let drop = tok.encode(sysp, false).map_err(|e| anyhow::anyhow!("encode sys: {e}"))?.get_ids().len();
+
+    // 1. Text encoder -> prompt embeddings (+ negative, for CFG). Freed after.
+    let t_phase = std::time::Instant::now();
+    let (embeds, neg_embeds) = {
+        let te = load_text_encoder(model, &dev, dtype, quant_text, text_gguf)?;
+        tracing::info!(load_s = t_phase.elapsed().as_secs_f32(), "text encoder loaded");
+        let encode = |p: &str| -> Result<Tensor> {
+            let ids: Vec<u32> = tok.encode(tmpl::t2i_template(p), false).map_err(|e| anyhow::anyhow!("encode: {e}"))?.get_ids().to_vec();
+            let seq = ids.len();
+            let hidden = te.forward(&Tensor::from_vec(ids, (1, seq), &dev)?)?;
+            Ok(hidden.narrow(1, drop, seq - drop)?.contiguous()?)
+        };
+        let cond = encode(prompt)?;
+        let neg = if guidance > 1.0 { Some(encode(negative)?) } else { None };
+        (cond, neg)
+    };
+    dev.synchronize()?;
+    let encode_s = t_phase.elapsed().as_secs_f32();
+    tracing::info!(shape = ?embeds.dims(), guidance, encode_s, "prompt embeddings");
+
+    // Broadcast the (1, txt, 4096) embeds across the batch lanes (all lanes share
+    // the prompt; only the seed differs). Materialized so the fused kernels read
+    // real per-row data, not a stride-0 view. B=1 leaves the tensor untouched:
+    // it is the TE output narrowed past the system prefix, which candle keeps
+    // as a zero-copy view at start_offset drop*4096 (`contiguous()` is a no-op
+    // for it). Every fused bridge honors that offset (crate::layout); one that
+    // did not made B=1 condition on the system-prompt rows
+    // (qwen-image-rs-b1-off-prompt).
+    let embeds = if batch > 1 {
+        let (_, t, hd) = embeds.dims3()?;
+        embeds.broadcast_as((batch, t, hd))?.contiguous()?
+    } else {
+        embeds
+    };
+    let neg_embeds = match neg_embeds {
+        Some(n) if batch > 1 => {
+            let (_, t, hd) = n.dims3()?;
+            Some(n.broadcast_as((batch, t, hd))?.contiguous()?)
+        }
+        other => other,
+    };
+
+    // 2. DiT + flow-match denoise -> final latent (freed after).
+    let (lw, lh) = (width / 16, height / 16); // vae spatial compression
+    let img_seq = lw * lh;
+    // The schedule: diffusers' resolution-shifted FlowMatchEuler, or ComfyUI's `simple` over
+    // the model's shift-0.69 sigmas. Both are (timestep for the DiT, Euler delta) per step.
+    let (tsteps, dts): (Vec<f32>, Vec<f32>) = if comfy {
+        use qwen_image_rs::comfy::{comfy_timestep, FlowSchedule};
+        let s = FlowSchedule::simple(steps, FlowSchedule::QWEN_IMAGE_21).map_err(anyhow::Error::msg)?;
+        ((0..steps).map(|i| comfy_timestep(s.sigma(i))).collect(), (0..steps).map(|i| s.dt(i)).collect())
+    } else {
+        let s = FlowMatchEuler::new(&FlowConfig::default(), steps, img_seq);
+        (s.timesteps().iter().map(|t| (*t / 1000.0) as f32).collect(), (0..steps).map(|i| s.dt(i) as f32).collect())
+    };
+    let t_phase = std::time::Instant::now();
+    let (latent, denoise_s) = {
+        let dit = QwenImageDit::load(32, 64, quant, convrot, dit_vb(&model.join("transformer"), convrot, cache, dtype, &dev)?)?;
+        tracing::info!(load_s = t_phase.elapsed().as_secs_f32(), "DiT loaded");
+        let t_denoise = std::time::Instant::now();
+        // One seed per lane: lane i uses (seed + i), resetting the RNG each lane
+        // so lane i's NOISE is identical to a sequential `generate --seed (seed+i)`
+        // run. The resulting IMAGE is NOT bit-identical to that single run — the
+        // fast path is non-deterministic and diverges by batch size (different
+        // GEMM tiling); that divergence is intended (see HANDOVER). Do NOT
+        // collapse this into a single set_seed + N draws.
+        let mut lanes = Vec::with_capacity(batch);
+        for &lane_seed in &seeds {
+            if comfy {
+                // ComfyUI's noise: torch's CPU generator over the [1, 64, H, W] latent.
+                let noise = qwen_image_rs::comfy::noise_packed(lane_seed, lh, lw).map_err(anyhow::Error::msg)?;
+                lanes.push(Tensor::from_vec(noise, (1, img_seq, 64), &dev)?);
+            } else {
+                dev.set_seed(lane_seed)?;
+                lanes.push(Tensor::randn(0f32, 1f32, (1, img_seq, 64), &dev)?);
+            }
+        }
+        let mut latents = Tensor::cat(&lanes, 0)?.to_dtype(DType::F32)?; // (batch, img, 64)
+        for (i, (t, dt)) in tsteps.iter().zip(&dts).enumerate() {
+            let tt = Tensor::from_vec(vec![*t], (1,), &dev)?;
+            let np = guided_noise_pred(&dit, &latents.to_dtype(dtype)?, &embeds, neg_embeds.as_ref(), guidance, &tt, (lh, lw), img_seq)?;
+            latents = (latents + (&np * *dt as f64)?)?;
+            if i % 10 == 0 || i + 1 == steps {
+                tracing::info!(step = i, "denoising");
+            }
+            // Debug: `QIR_DUMP_STEPS=<dir>` writes every step's latent (packed, f32) and the
+            // velocity that made it, for trajectory comparisons against another sampler.
+            if let Ok(dir) = std::env::var("QIR_DUMP_STEPS") {
+                let mut m = std::collections::HashMap::new();
+                m.insert("latent".to_string(), latents.contiguous()?);
+                m.insert("v".to_string(), np.contiguous()?);
+                let _ = std::fs::create_dir_all(&dir);
+                candle_core::safetensors::save(&m, std::path::Path::new(&dir).join(format!("step-{i:02}.safetensors")))?;
+            }
+        }
+        dev.synchronize()?;
+        let denoise_s = t_denoise.elapsed().as_secs_f32();
+        tracing::info!(denoise_s, steps, per_step_ms = denoise_s * 1000.0 / steps as f32, "denoised");
+        (latents, denoise_s)
+    };
+
+    // 3. VAE decode -> RGBA PNG.
+    let cfg_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(model.join("vae/config.json"))?)?;
+    let f32vec = |k: &str| -> Vec<f32> { cfg_json[k].as_array().map_or(vec![], |a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect()) };
+    let vmodel = vae::QwenImageVae::load(&VaeConfig::default(), &f32vec("latents_mean"), &f32vec("latents_std"), load_vb(model.join("vae"), vae_dt)?)?;
+    // One VAE (loaded above) decodes every lane's latent in a loop.
+    if let Some(d) = out_dir {
+        if batch > 1 {
+            std::fs::create_dir_all(d)?;
+        }
+    }
+    let mut decode_s = 0f32;
+    for (i, &lane_seed) in seeds.iter().enumerate() {
+        let li = latent.narrow(0, i, 1)?; // (1, img, 64)
+        let z = vae::unpack_latents_hw(&li, lh, lw)?;
+        let t_dec = std::time::Instant::now();
+        let img = vmodel.decode_auto(&z, vae_tile)?;
+        dev.synchronize()?;
+        decode_s += t_dec.elapsed().as_secs_f32();
+        tracing::info!(lane = i, decode_ms = t_dec.elapsed().as_millis(), "decoded");
+        let (w, h, bytes) = vae::to_rgba_u8(&img)?;
+        let buf: image::RgbaImage = image::ImageBuffer::from_raw(w as u32, h as u32, bytes).context("image buffer")?;
+        let path = if batch == 1 {
+            out.expect("--out validated present for batch 1").to_path_buf()
+        } else {
+            out_dir.expect("--out-dir validated present for batch > 1").join(format!("{i:03}.png"))
+        };
+        buf.save(&path)?;
+        if emit_latents {
+            let lp = path.with_extension("latent.safetensors");
+            let mut m = std::collections::HashMap::new();
+            m.insert("latent".to_string(), li.contiguous()?);
+            candle_core::safetensors::save(&m, &lp)?;
+        }
+        println!("wrote {} (seed {}, {w}x{h})", path.display(), lane_seed);
+        manifest.push((path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), lane_seed, prompt.to_string()));
+    }
+    if let (true, Some(d)) = (batch > 1, out_dir) {
+        let m = qwen_image_rs::seed::write_manifest(d, &manifest)?;
+        println!("seeds -> {}", m.display());
+    }
+    // One line a harness can read: the compute phases without the model loads.
+    tracing::info!(encode_s, denoise_s, decode_s, comfy, width, height, steps, "timings");
+    Ok(())
+}
+
+/// Batch generation: load each model once for all prompts (encode all -> free
+/// -> denoise all -> free -> decode all), so the ~24s of model loads is paid
+/// once instead of per image.
+#[allow(clippy::too_many_arguments)]
+fn batch(
+    model: &std::path::Path,
+    prompts_path: &std::path::Path,
+    size: usize,
+    steps: usize,
+    seed: qwen_image_rs::seed::Seed,
+    quant: bool,
+    convrot: bool,
+    cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    quant_text: bool,
+    resident: bool,
+    text_gguf: Option<&std::path::Path>,
+    vae_tile: qwen_image_rs::model::vae::VaeTiling,
+    guidance: f32,
+    negative: &str,
+    vae_f32: bool,
+    out_dir: &std::path::Path,
+) -> Result<()> {
+    use qwen_image_rs::model::dit::QwenImageDit;
+    use qwen_image_rs::model::scheduler::{FlowConfig, FlowMatchEuler};
+    use qwen_image_rs::model::text_encoder::prompt as tmpl;
+    use qwen_image_rs::model::{config::VaeConfig, vae};
+    use tokenizers::Tokenizer;
+
+    let dev = device::best_device()?;
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let load_vb = |dir: std::path::PathBuf, dt: DType| -> Result<candle_nn::VarBuilder> {
+        let files = WeightSet::resolve(&dir)?.files;
+        Ok(unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dt, &dev)? })
+    };
+    // The VAE runs in bf16 on CUDA by default (tensor-core convs, ~2x decode);
+    // --vae-f32 forces the f32 reference path.
+    let vae_dt = if vae_f32 { DType::F32 } else { dtype };
+    std::fs::create_dir_all(out_dir)?;
+
+    let prompts: Vec<String> = std::fs::read_to_string(prompts_path)?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    tracing::info!(n = prompts.len(), "batch prompts");
+    // One concrete seed per prompt (`--seed random`, the default, draws a fresh
+    // one each); written to <out-dir>/seeds.tsv so any image can be reproduced.
+    let seeds = seed.resolve(prompts.len());
+    std::fs::create_dir_all(out_dir)?;
+    let manifest: Vec<(String, u64, String)> = prompts.iter().enumerate().map(|(i, p)| (format!("{i:03}.png"), seeds[i], p.clone())).collect();
+    let manifest_path = qwen_image_rs::seed::write_manifest(out_dir, &manifest)?;
+    tracing::info!(seed = %seed, path = %manifest_path.display(), "seeds");
+
+    let tok = Tokenizer::from_file(model.join("processor/tokenizer.json")).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+    let sysp = format!("<|im_start|>system\n{}<|im_end|>\n", tmpl::SYS_PROMPT);
+    let drop = tok.encode(sysp, false).map_err(|e| anyhow::anyhow!("encode sys: {e}"))?.get_ids().len();
+
+    let hw = size / 16;
+    let img_seq = hw * hw;
+    let vae_cfg = |k: &str| -> Result<Vec<f32>> {
+        let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(model.join("vae/config.json"))?)?;
+        Ok(j[k].as_array().map_or(vec![], |a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect()))
+    };
+    let save_png = |img: &Tensor, path: std::path::PathBuf| -> Result<()> {
+        let (w, h, bytes) = vae::to_rgba_u8(img)?;
+        let buf: image::RgbaImage = image::ImageBuffer::from_raw(w as u32, h as u32, bytes).context("image buffer")?;
+        buf.save(path)?;
+        Ok(())
+    };
+
+    // Resident pipeline: load all three models ONCE and keep them in VRAM,
+    // running encode->denoise->decode per prompt without freeing between them.
+    // Needs everything to fit at once — pass --quant-text (and --convrot) so the
+    // 8B encoder + DiT + VAE stay under 24 GB. Amortizes the one-time loads
+    // across every prompt (the batch/serve win).
+    if resident {
+        let te = load_text_encoder(model, &dev, dtype, quant_text, text_gguf)?;
+        let dit = QwenImageDit::load(32, 64, quant, convrot, dit_vb(&model.join("transformer"), convrot, cache, dtype, &dev)?)?;
+        let vmodel = vae::QwenImageVae::load(&VaeConfig::default(), &vae_cfg("latents_mean")?, &vae_cfg("latents_std")?, load_vb(model.join("vae"), vae_dt)?)?;
+        let sched = FlowMatchEuler::new(&FlowConfig::default(), steps, img_seq);
+        // Negative embedding (encoded once; shared by every prompt) for CFG.
+        let neg_embeds = if guidance > 1.0 {
+            let ids: Vec<u32> = tok.encode(tmpl::t2i_template(negative), false).map_err(|e| anyhow::anyhow!("encode neg: {e}"))?.get_ids().to_vec();
+            let seq = ids.len();
+            Some(te.forward(&Tensor::from_vec(ids, (1, seq), &dev)?)?.narrow(1, drop, seq - drop)?.contiguous()?)
+        } else {
+            None
+        };
+        tracing::info!("resident: all three models loaded, streaming prompts");
+        for (i, p) in prompts.iter().enumerate() {
+            let t_enc = std::time::Instant::now();
+            let ids: Vec<u32> = tok.encode(tmpl::t2i_template(p), false).map_err(|e| anyhow::anyhow!("encode: {e}"))?.get_ids().to_vec();
+            let seq = ids.len();
+            let emb = te.forward(&Tensor::from_vec(ids, (1, seq), &dev)?)?.narrow(1, drop, seq - drop)?.contiguous()?;
+            dev.synchronize()?;
+            let enc_ms = t_enc.elapsed().as_millis();
+            let t_dn = std::time::Instant::now();
+            dev.set_seed(seeds[i])?;
+            let mut latents = Tensor::randn(0f32, 1f32, (1, img_seq, 64), &dev)?.to_dtype(DType::F32)?;
+            for (si, t) in sched.timesteps().iter().enumerate() {
+                let tt = Tensor::from_vec(vec![(*t / 1000.0) as f32], (1,), &dev)?;
+                let np = guided_noise_pred(&dit, &latents.to_dtype(dtype)?, &emb, neg_embeds.as_ref(), guidance, &tt, (hw, hw), img_seq)?;
+                latents = (latents + (np * sched.dt(si))?)?;
+            }
+            dev.synchronize()?;
+            let dn_ms = t_dn.elapsed().as_millis();
+            let t_dec = std::time::Instant::now();
+            let z = vae::unpack_latents(&latents, 64)?;
+            let img = vmodel.decode_auto(&z, vae_tile)?;
+            dev.synchronize()?;
+            let dec_ms = t_dec.elapsed().as_millis();
+            save_png(&img, out_dir.join(format!("{i:03}.png")))?;
+            tracing::info!(image = i, seed = seeds[i], enc_ms, denoise_ms = dn_ms, decode_ms = dec_ms, "done (resident)");
+        }
+        println!("wrote {} images to {} (resident; seeds in {})", prompts.len(), out_dir.display(), manifest_path.display());
+        return Ok(());
+    }
+
+    // Phase 1: encode every prompt (+ the shared negative). Text encoder loaded
+    // once, then freed.
+    let mut embeds_list = Vec::with_capacity(prompts.len());
+    let mut neg_embeds = None;
+    {
+        let te = load_text_encoder(model, &dev, dtype, quant_text, text_gguf)?;
+        let encode = |p: &str| -> Result<Tensor> {
+            let ids: Vec<u32> = tok.encode(tmpl::t2i_template(p), false).map_err(|e| anyhow::anyhow!("encode: {e}"))?.get_ids().to_vec();
+            let seq = ids.len();
+            let hidden = te.forward(&Tensor::from_vec(ids, (1, seq), &dev)?)?;
+            Ok(hidden.narrow(1, drop, seq - drop)?.contiguous()?)
+        };
+        for p in &prompts {
+            embeds_list.push(encode(p)?);
+        }
+        if guidance > 1.0 {
+            neg_embeds = Some(encode(negative)?);
+        }
+    }
+    tracing::info!("encoded {} prompts", embeds_list.len());
+
+    // Phase 2: denoise every prompt (DiT loaded once, then freed).
+    let mut latents_list = Vec::with_capacity(prompts.len());
+    {
+        let dit = QwenImageDit::load(32, 64, quant, convrot, dit_vb(&model.join("transformer"), convrot, cache, dtype, &dev)?)?;
+        let sched = FlowMatchEuler::new(&FlowConfig::default(), steps, img_seq);
+        for (i, emb) in embeds_list.iter().enumerate() {
+            dev.set_seed(seeds[i])?;
+            let mut latents = Tensor::randn(0f32, 1f32, (1, img_seq, 64), &dev)?.to_dtype(DType::F32)?;
+            for (si, t) in sched.timesteps().iter().enumerate() {
+                let tt = Tensor::from_vec(vec![(*t / 1000.0) as f32], (1,), &dev)?;
+                let np = guided_noise_pred(&dit, &latents.to_dtype(dtype)?, emb, neg_embeds.as_ref(), guidance, &tt, (hw, hw), img_seq)?;
+                latents = (latents + (np * sched.dt(si))?)?;
+            }
+            latents_list.push(latents);
+            tracing::info!(image = i, "denoised");
+        }
+    }
+
+    // Phase 3: decode every latent (VAE loaded once).
+    let vmodel = vae::QwenImageVae::load(&VaeConfig::default(), &vae_cfg("latents_mean")?, &vae_cfg("latents_std")?, load_vb(model.join("vae"), vae_dt)?)?;
+    for (i, lat) in latents_list.iter().enumerate() {
+        let z = vae::unpack_latents(lat, 64)?;
+        let img = vmodel.decode_auto(&z, vae_tile)?;
+        save_png(&img, out_dir.join(format!("{i:03}.png")))?;
+        tracing::info!(image = i, seed = seeds[i], "decoded");
+    }
+    println!("wrote {} images to {} (seeds in {})", prompts.len(), out_dir.display(), manifest_path.display());
+    Ok(())
+}
+
+/// Phase 4: full flow-match denoise loop -> final latent.
+#[allow(clippy::too_many_arguments)]
+fn denoise(
+    weights: &std::path::Path,
+    noise: &std::path::Path,
+    embeds: &std::path::Path,
+    steps: usize,
+    quant: bool,
+    convrot: bool,
+    cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    out: &std::path::Path,
+) -> Result<()> {
+    use qwen_image_rs::model::dit::QwenImageDit;
+    use qwen_image_rs::model::scheduler::{FlowConfig, FlowMatchEuler};
+
+    let dev = device::best_device()?;
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    tracing::info!(device = device::label(&dev), steps, "denoise");
+
+    let vb = dit_vb(weights, convrot, cache, dtype, &dev)?;
+    let model = QwenImageDit::load(32, 64, quant, convrot, vb)?;
+
+    let nmap = candle_core::safetensors::load(noise, &dev)?;
+    let mut latents = nmap.get("hidden_states").or_else(|| nmap.get("latent")).context("noise file needs `hidden_states` or `latent`")?.to_dtype(DType::F32)?;
+    if latents.dims().len() == 2 {
+        latents = latents.unsqueeze(0)?;
+    }
+    let (_b, img_seq, _) = latents.dims3()?;
+    let hw = (img_seq as f64).sqrt() as usize;
+
+    let emap = candle_core::safetensors::load(embeds, &dev)?;
+    let mut enc = emap.get("embeds").context("embeds file needs `embeds`")?.clone();
+    if enc.dims().len() == 2 {
+        enc = enc.unsqueeze(0)?;
+    }
+    let enc = enc.to_dtype(dtype)?;
+
+    let sched = FlowMatchEuler::new(&FlowConfig::default(), steps, img_seq);
+    let ts = sched.timesteps().to_vec();
+    for (i, t) in ts.iter().enumerate() {
+        let tt = Tensor::from_vec(vec![(*t / 1000.0) as f32], (1,), &dev)?;
+        let out_joint = model.forward(&latents.to_dtype(dtype)?, &enc, &tt, hw, hw)?;
+        // image tokens = last img_seq of the joint sequence
+        let (_b, joint, _) = out_joint.dims3()?;
+        let noise_pred = out_joint.narrow(1, joint - img_seq, img_seq)?.to_dtype(DType::F32)?;
+        latents = (latents + (noise_pred * sched.dt(i))?)?;
+        if i % 10 == 0 || i + 1 == ts.len() {
+            tracing::info!(step = i, t, "denoising");
+        }
+    }
+
+    let mut map = std::collections::HashMap::new();
+    map.insert("latent".to_string(), latents.contiguous()?); // (1, seq, 64)
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {} ({} steps)", out.display(), steps);
+    Ok(())
+}
+
+/// Phase 4: run one DiT forward on dumped inputs, save the joint output.
+fn dit_forward(
+    weights: &std::path::Path,
+    inputs: &std::path::Path,
+    quant: bool,
+    convrot: bool,
+    cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    out: &std::path::Path,
+) -> Result<()> {
+    use qwen_image_rs::model::dit::QwenImageDit;
+
+    let dev = device::best_device()?;
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    tracing::info!(device = device::label(&dev), "dit-forward");
+
+    let vb = dit_vb(weights, convrot, cache, dtype, &dev)?;
+    let model = QwenImageDit::load(32, 64, quant, convrot, vb)?;
+
+    let m = candle_core::safetensors::load(inputs, &dev)?;
+    let get = |k: &str| -> Result<Tensor> { Ok(m.get(k).context(format!("missing {k}"))?.to_dtype(dtype)?) };
+    let hidden = get("hidden_states")?;
+    let enc = get("encoder_hidden_states")?;
+    let ts = get("timestep")?;
+    let (_b, img, _) = hidden.dims3()?;
+    let hw = (img as f64).sqrt() as usize;
+    tracing::info!(img, hw, "running DiT forward");
+
+    let output = model.forward(&hidden, &enc, &ts, hw, hw)?.to_dtype(DType::F32)?;
+    tracing::info!(shape = ?output.dims(), "DiT output");
+
+    let mut map = std::collections::HashMap::new();
+    map.insert("output".to_string(), output.i(0)?.contiguous()?);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Phase 3: run the Qwen3-VL text encoder on dumped input_ids, drop the system
+/// prefix, save the pre-final-norm hidden states.
+fn text_encode(weights: &std::path::Path, input_ids_path: &std::path::Path, drop: usize, quant: bool, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::text_encoder::{QwenTextEncoder, TextConfig};
+
+    let dev = device::best_device()?;
+    tracing::info!(device = device::label(&dev), "text-encode");
+
+    let set = WeightSet::resolve(weights)?;
+    let files = set.files.clone();
+    // bf16: the 8B encoder is ~16 GB in bf16 (fits the 24 GB 4090) and matches
+    // the oracle's bf16 compute. F32 would be 32 GB and OOM.
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
+    let cfg = TextConfig::default();
+    let model = QwenTextEncoder::load(&cfg, quant, vb)?;
+
+    let ids_map = candle_core::safetensors::load(input_ids_path, &dev)?;
+    let ids = ids_map.get("input_ids").context("no 'input_ids' in file")?.to_dtype(DType::U32)?;
+    let seq = ids.dims1()?;
+    let ids = ids.reshape((1, seq))?;
+    tracing::info!(seq, drop, "running encoder");
+
+    let hidden = model.forward(&ids)?; // (1, seq, hidden)
+    let kept = seq - drop;
+    let embeds = hidden.narrow(1, drop, kept)?.i(0)?.to_dtype(DType::F32)?.contiguous()?; // (kept, hidden)
+    tracing::info!(shape = ?embeds.dims(), "embeddings");
+
+    let mut map = std::collections::HashMap::new();
+    map.insert("embeds".to_string(), embeds);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {} (kept {kept} tokens)", out.display());
+    Ok(())
+}
+
+/// Phase 2: load the VAE decoder, decode a saved packed latent, save RGBA PNG.
+/// Load the VAE from a `vae/` directory (config + shards) in the given working dtype.
+fn load_vae(weights: &std::path::Path, dtype: DType, dev: &candle_core::Device) -> Result<qwen_image_rs::model::vae::QwenImageVae> {
+    use qwen_image_rs::model::{config::VaeConfig, vae};
+    let cfg_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(weights.join("config.json"))?).context("parsing vae config.json")?;
+    let f32vec = |k: &str| -> Result<Vec<f32>> {
+        Ok(cfg_json[k].as_array().with_context(|| format!("config.{k} not an array"))?.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
+    };
+    let files = WeightSet::resolve(weights)?.files;
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
+    vae::QwenImageVae::load(&VaeConfig::default(), &f32vec("latents_mean")?, &f32vec("latents_std")?, vb)
+}
+
+/// Phase 3: an edit through the resident pipeline (what the engine worker runs).
+#[allow(clippy::too_many_arguments)]
+fn edit(
+    model: &std::path::Path,
+    prompt: &str,
+    images: &[std::path::PathBuf],
+    (width, height): (usize, usize),
+    steps: usize,
+    seed: u64,
+    guidance: f32,
+    negative: &str,
+    convrot: bool,
+    cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    prefix_cache: bool,
+    out: &std::path::Path,
+) -> Result<()> {
+    use qwen_image_rs::pipeline::{Options, Pipeline, RefImage, Request, Schedule};
+    let opts = Options { convrot, cache: cache.clone(), prefix_cache, ..Options::default() };
+    let mut report = |f: f32, m: &str| tracing::info!(progress = f, "{m}");
+    let t0 = std::time::Instant::now();
+    let p = Pipeline::load(model, opts, &mut report)?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
+    let mut references = Vec::new();
+    for path in images {
+        let img = image::open(path).with_context(|| format!("reading {}", path.display()))?.to_rgba8();
+        references.push(RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw(), offset: None });
+    }
+    let req =
+        Request { prompt: prompt.to_string(), negative: negative.to_string(), width, height, steps, seed, guidance, schedule: Schedule::Comfy, references, loras: Default::default(), ref_boost: 1.0 };
+    let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
+    let pic = p.generate(&req, &mut report, &|| false)?;
+    let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
+    buf.save(out)?;
+    println!("wrote {} ({}x{}, seed {seed})", out.display(), pic.width, pic.height);
+    Ok(())
+}
+
+/// Phase 4: a Krea 2 Turbo picture through the resident pipeline.
+#[allow(clippy::too_many_arguments)]
+fn generate_krea2(
+    model: &std::path::Path,
+    prompt: &str,
+    width: usize,
+    height: usize,
+    steps: usize,
+    seed: u64,
+    convrot: bool,
+    cache: &qwen_image_rs::convrot_cache::CacheSpec,
+    repeat: usize,
+    image: Option<&std::path::Path>,
+    loras: &[String],
+    ref_boost: f32,
+    out: &std::path::Path,
+) -> Result<()> {
+    use qwen_image_rs::krea2_pipeline::{Krea2Options, Krea2Pipeline};
+    use qwen_image_rs::pipeline::{RefImage, Request, Schedule};
+    let mut report = |f: f32, m: &str| tracing::info!(progress = f, "{m}");
+    let t0 = std::time::Instant::now();
+    let p = Krea2Pipeline::load(model, Krea2Options { convrot, cache: cache.clone() }, &mut report)?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
+    let references = match image {
+        Some(path) => {
+            let img = image::open(path).with_context(|| format!("open {}", path.display()))?.to_rgba8();
+            vec![RefImage { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw(), offset: None }]
+        }
+        None => Vec::new(),
+    };
+    let mut stack = qwen_image_rs::lora::LoraStack::default();
+    for spec in loras {
+        let (path, strength) = match spec.rsplit_once('@') {
+            Some((p, s)) => (p, s.parse::<f32>().with_context(|| format!("the strength in {spec}"))?),
+            None => (spec.as_str(), 1.0),
+        };
+        stack.layers.push((std::sync::Arc::new(qwen_image_rs::lora::LoraFile::load(std::path::Path::new(path), p.device(), p.dtype())?), strength));
+    }
+    let req = Request { prompt: prompt.to_string(), negative: String::new(), width, height, steps, seed, guidance: 1.0, schedule: Schedule::Comfy, references, loras: stack, ref_boost };
+    let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
+    let mut pic = p.generate(&req, &mut report, &|| false)?;
+    for _ in 1..repeat {
+        pic = p.generate(&req, &mut report, &|| false)?;
+    }
+    let buf: image::RgbaImage = image::ImageBuffer::from_raw(pic.width, pic.height, pic.rgba).context("image buffer")?;
+    buf.save(out)?;
+    println!("wrote {} ({}x{}, seed {seed})", out.display(), pic.width, pic.height);
+    Ok(())
+}
+
+/// Phase 4: one Krea 2 DiT forward on dumped inputs, for the parity check against ComfyUI's.
+fn krea2_dit_forward(weights: &std::path::Path, inputs: &std::path::Path, cond: &std::path::Path, t: f32, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::krea2::{Krea2Config, Krea2Dit, TAPS, TEXT_DIM};
+    let dev = device::best_device()?;
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let files = WeightSet::resolve(weights)?.files;
+    let t0 = std::time::Instant::now();
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
+    let dit = Krea2Dit::load(&Krea2Config::default(), false, vb)?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "krea 2 dit loaded");
+    let x = candle_core::safetensors::load(inputs, &dev)?.get("x").context("no `x`")?.to_dtype(dtype)?;
+    let c = candle_core::safetensors::load(cond, &dev)?.get("cond").context("no `cond`")?.to_dtype(dtype)?;
+    let (tokens, _) = c.dims2()?;
+    let c = c.reshape((1, tokens, TAPS.len(), TEXT_DIM))?;
+    let t0 = std::time::Instant::now();
+    let y = dit.forward(&x, t, &c)?;
+    dev.synchronize()?;
+    tracing::info!(ms = t0.elapsed().as_millis(), shape = ?y.dims(), "forward");
+    let mut map = std::collections::HashMap::new();
+    map.insert("dit_out".to_string(), y.to_dtype(DType::F32)?.contiguous()?);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Phase 4: the Wan 2.1 VAE decoder on a dumped latent, for the parity check against ComfyUI's.
+fn wan_vae_decode(weights: &std::path::Path, latent: &std::path::Path, bf16: bool, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::wan_vae::WanVae;
+    let dev = device::best_device()?;
+    let t0 = std::time::Instant::now();
+    let dtype = if bf16 && matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[weights.to_path_buf()], dtype, &dev)? };
+    let vae = WanVae::load(vb)?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "wan 2.1 vae loaded");
+    let m = candle_core::safetensors::load(latent, &dev)?;
+    let z = m.get("z_raw").context("no `z_raw`")?.to_dtype(DType::F32)?;
+    let z = if z.dims().len() == 5 { z.squeeze(2)? } else { z };
+    let t0 = std::time::Instant::now();
+    let img = vae.decode(&z)?; // (1, 3, H, W) in [-1, 1]
+    dev.synchronize()?;
+    tracing::info!(ms = t0.elapsed().as_millis(), shape = ?img.dims(), "decoded");
+    let (b, _, h, w) = img.dims4()?;
+    let pic = ((img.permute((0, 2, 3, 1))?.clamp(-1.0, 1.0)? + 1.0)? * 0.5)?.reshape((b, 1, h, w, 3))?.contiguous()?;
+    let mut map = std::collections::HashMap::new();
+    map.insert("decoded".to_string(), pic);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Phase 4: Krea 2's conditioning for a prompt, for the parity check against ComfyUI's.
+fn krea2_cond(weights: &std::path::Path, tokenizer: &std::path::Path, prompt: &str, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::krea2;
+    use qwen_image_rs::model::text_encoder::{QwenTextEncoder, TextConfig};
+    let dev = device::best_device()?;
+    let dtype = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let tok = tokenizers::Tokenizer::from_file(tokenizer).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+    let ids: Vec<u32> = tok.encode(krea2::template(prompt), false).map_err(|e| anyhow::anyhow!("encode: {e}"))?.get_ids().to_vec();
+    tracing::info!(tokens = ids.len(), end = krea2::template_end(&ids), "prompt");
+    let files = WeightSet::resolve(weights)?.files;
+    let t0 = std::time::Instant::now();
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, dtype, &dev)? };
+    let te = QwenTextEncoder::load_at(&TextConfig::qwen3vl_4b(), false, vb.pp("model"))?;
+    tracing::info!(load_s = t0.elapsed().as_secs_f32(), "encoder loaded");
+    let t0 = std::time::Instant::now();
+    let cond = krea2::condition(&te, &ids, &dev)?; // (keep, 12, 2560)
+    dev.synchronize()?;
+    tracing::info!(ms = t0.elapsed().as_millis(), shape = ?cond.dims(), "conditioning");
+    let (keep, n, d) = cond.dims3()?;
+    let flat = cond.reshape((keep, n * d))?.to_dtype(DType::F32)?.contiguous()?;
+    let mut map = std::collections::HashMap::new();
+    map.insert("cond".to_string(), flat);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {} ({keep} tokens x {} )", out.display(), n * d);
+    Ok(())
+}
+
+/// Phase 3: the vision tower on dumped patches, for the parity check against ComfyUI's.
+fn vision_forward(weights: &std::path::Path, inputs: &std::path::Path, grid_h: usize, grid_w: usize, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::vision::{VisionConfig, VisionTower};
+    let dev = device::best_device()?;
+    let files = WeightSet::resolve(weights)?.files;
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, &dev)? };
+    let cfg = VisionConfig::default();
+    let tower = VisionTower::load(&cfg, vb.pp("model").pp("visual"))?;
+    let m = candle_core::safetensors::load(inputs, &dev)?;
+    let patches = m.get("patches").context("no `patches`")?.to_dtype(DType::F32)?;
+    let t = std::time::Instant::now();
+    let feats = tower.forward(&patches, grid_h, grid_w)?;
+    dev.synchronize()?;
+    tracing::info!(ms = t.elapsed().as_millis(), tokens = feats.tokens(), "vision tower");
+    let mut map = std::collections::HashMap::new();
+    map.insert("merged".to_string(), feats.merged.contiguous()?);
+    for (i, d) in feats.deepstack.iter().enumerate() {
+        map.insert(format!("deepstack_{i}"), d.contiguous()?);
+    }
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Phase 3: the whole edit conditioning for one picture, for the parity check.
+fn edit_cond(weights: &std::path::Path, tokenizer: &std::path::Path, image: &std::path::Path, prompt: &str, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::model::text_encoder::{self, prompt as tmpl};
+    use qwen_image_rs::model::vision::{self, VisionConfig, VisionTower};
+    let dev = device::best_device()?;
+    let files = WeightSet::resolve(weights)?.files;
+    let vb32 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, DType::F32, &dev)? };
+    let tower = VisionTower::load(&VisionConfig::default(), vb32.pp("model").pp("visual"))?;
+    let img = image::open(image)?.to_rgb8();
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let rgb = Tensor::from_slice(img.as_raw(), (h, w, 3), &dev)?.to_dtype(DType::F32)?.permute((2, 0, 1))?.contiguous()?;
+    let rgb = (rgb / 255.0)?;
+    let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
+    let feats = tower.forward(&patches, gh, gw)?;
+    tracing::info!(tokens = feats.tokens(), "vision tower");
+    let snapshot = weights.parent().context("text_encoder/ has no parent")?;
+    let te = load_text_encoder(snapshot, &dev, DType::BF16, false, None)?;
+    let tok = tokenizers::Tokenizer::from_file(tokenizer).map_err(|e| anyhow::anyhow!("tokenizer: {e}"))?;
+    let ids: Vec<u32> = tok.encode(tmpl::edit_template(prompt, 1), false).map_err(|e| anyhow::anyhow!("encode: {e}"))?.get_ids().to_vec();
+    let drop = tok.encode(format!("<|im_start|>system\n{}<|im_end|>\n", tmpl::SYS_PROMPT), false).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().len();
+    tracing::info!(tokens = ids.len(), drop, "prompt");
+    let (hidden, spans) = te.forward_with_images(&ids, &[&feats])?;
+    let (cond, slots) = text_encoder::condition(&hidden, &spans, drop)?;
+    println!("spans {spans:?} slots {slots:?} hidden {:?} cond {:?}", hidden.dims(), cond.dims());
+    let mut map = std::collections::HashMap::new();
+    map.insert("full_hidden".to_string(), hidden.i(0)?.to_dtype(DType::F32)?.contiguous()?);
+    map.insert("cond".to_string(), cond.i(0)?.to_dtype(DType::F32)?.contiguous()?);
+    map.insert("merged".to_string(), feats.merged.contiguous()?);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Phase 3: encode a PNG to the normalised packed latent (and optionally decode it back).
+fn vae_encode(weights: &std::path::Path, image: &std::path::Path, bf16: bool, out: &std::path::Path, roundtrip: Option<&std::path::Path>) -> Result<()> {
+    use qwen_image_rs::model::vae;
+    let dev = device::best_device()?;
+    let dtype = if bf16 && matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    tracing::info!(device = device::label(&dev), ?dtype, "vae-encode");
+    let model = load_vae(weights, dtype, &dev)?;
+    let img = image::open(image).with_context(|| format!("reading {}", image.display()))?.to_rgba8();
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let x = vae::from_rgba_u8(w, h, img.as_raw(), &dev)?;
+    let t = std::time::Instant::now();
+    let z = model.encode(&x)?; // (1, 64, H/16, W/16) f32, normalised
+    dev.synchronize()?;
+    tracing::info!(shape = ?z.dims(), encode_ms = t.elapsed().as_millis(), "encoded");
+    let (_, c, lh, lw) = z.dims4()?;
+    let packed = z.reshape((1, c, lh * lw))?.transpose(1, 2)?.contiguous()?;
+    let mut map = std::collections::HashMap::new();
+    map.insert("latent".to_string(), packed);
+    candle_core::safetensors::save(&map, out)?;
+    println!("wrote {} ({lw}x{lh} latent)", out.display());
+    if let Some(rt) = roundtrip {
+        let pic = model.decode_auto(&z, vae::VaeTiling::Auto)?;
+        let (pw, ph, bytes) = vae::to_rgba_u8(&pic)?;
+        let buf: image::RgbaImage = image::ImageBuffer::from_raw(pw as u32, ph as u32, bytes).context("image buffer")?;
+        buf.save(rt)?;
+        println!("wrote {} (round trip)", rt.display());
+    }
+    Ok(())
+}
+
+fn vae_decode(weights: &std::path::Path, latent: &std::path::Path, bf16: bool, out: &std::path::Path, tile: usize, iters: usize) -> Result<()> {
+    use qwen_image_rs::model::{config::VaeConfig, vae};
+
+    let dev = device::best_device()?;
+    tracing::info!(device = device::label(&dev), "vae-decode");
+
+    // Read vae/config.json for latents_mean/std and shape params.
+    let cfg_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(weights.join("config.json"))?).context("parsing vae config.json")?;
+    let f32vec = |k: &str| -> Result<Vec<f32>> {
+        Ok(cfg_json[k].as_array().with_context(|| format!("config.{k} not an array"))?.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
+    };
+    let latents_mean = f32vec("latents_mean")?;
+    let latents_std = f32vec("latents_std")?;
+    let cfg = VaeConfig::default();
+
+    // Resolve the safetensors shard(s) in the vae dir.
+    let set = WeightSet::resolve(weights)?;
+    let files: Vec<_> = set.files.clone();
+    let vae_dt = if bf16 { DType::BF16 } else { DType::F32 };
+    let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, vae_dt, &dev)? };
+    let model = vae::QwenImageVae::load(&cfg, &latents_mean, &latents_std, vb)?;
+
+    // Load the packed latent. Prefer a safetensors sidecar (candle-native);
+    // fall back to a torch .pt pickle.
+    let packed = if latent.extension().and_then(|e| e.to_str()) == Some("safetensors") {
+        let map = candle_core::safetensors::load(latent, &dev)?;
+        map.get("latent").or_else(|| map.values().next()).context("no 'latent' tensor in safetensors")?.to_dtype(DType::F32)?
+    } else {
+        candle_core::pickle::read_all(latent)?.into_iter().next().context("no tensor in .pt file")?.1.to_device(&dev)?.to_dtype(DType::F32)?
+    };
+    tracing::info!(?packed, shape = ?packed.dims(), "loaded latent");
+    let packed = if packed.dims().len() == 3 {
+        packed
+    } else {
+        anyhow::bail!("expected packed latent (B, seq, z*4), got {:?}", packed.dims());
+    };
+    let z = vae::unpack_latents(&packed, cfg.latent_channels)?;
+    tracing::info!(shape = ?z.dims(), "unpacked latent");
+
+    let mut img = None;
+    for it in 0..iters.max(1) {
+        let t = std::time::Instant::now();
+        let out = if tile > 0 { model.decode_tiled(&z, tile, (tile / 4).max(1))? } else { model.decode(&z)? };
+        dev.synchronize()?;
+        println!("decode iter {it}: {} ms", t.elapsed().as_millis());
+        img = Some(out);
+    }
+    let img = img.context("no decode ran")?;
+    tracing::info!(shape = ?img.dims(), "decoded image");
+    let (w, h, bytes) = vae::to_rgba_u8(&img)?;
+    let buf: image::RgbaImage = image::ImageBuffer::from_raw(w as u32, h as u32, bytes).context("image buffer")?;
+    buf.save(out)?;
+    println!("wrote {} ({w}x{h} RGBA)", out.display());
+    Ok(())
+}
+
+/// `gemm-bench`: ms per launch plan for each DiT INT8 GEMM shape.
+fn gemm_bench(iters: usize, batch: usize, txt: usize) -> Result<()> {
+    #[cfg(feature = "convrot")]
+    {
+        use qwen_image_rs::convrot::{bench_gemm_plans, gemm_plan, EpilogueOut, GemmPlan, GEMM_CONFIGS};
+        // M = B * (txt + 4096 image tokens at 1024²).
+        let m = (4096 + txt) * batch;
+        let shapes = [
+            (m, 4096, 4096),  // to_v / to_out
+            (m, 8192, 4096),  // merged q|k
+            (m, 24576, 4096), // merged gate|proj
+            (m, 4096, 12288), // mlp out
+            (m, 64, 4096),    // proj_out
+            (2, 16384, 4096), // modulation
+            (2, 4096, 4096),  // norm_out / time_embed.linear_2
+        ];
+        for (i, c) in GEMM_CONFIGS.iter().enumerate() {
+            println!("cfg {i}: TB {:?} warp {:?} stages {} swizzle {}", c.tb, c.warp, c.stages, c.swizzle);
+        }
+        // Every compiled config alone, then each large config with the
+        // partial last M-tile (the text rows past 4096) split off to the
+        // small config 2 (`a+2`).
+        let mut plans: Vec<GemmPlan> = (0..GEMM_CONFIGS.len() as u8).map(GemmPlan::single).collect();
+        for main in [0u8, 1, 3, 4] {
+            plans.push(GemmPlan { main, tail: Some(2) });
+        }
+        let label = |p: &GemmPlan| match p.tail {
+            None => format!("{}", p.main),
+            Some(t) => format!("{}+{t}", p.main),
+        };
+        let mut all_same = true;
+        for (out, list) in [(EpilogueOut::Bf16, &shapes[..]), (EpilogueOut::F16, &shapes[..1])] {
+            for (m, n, k, times, same) in bench_gemm_plans(list, &plans, out, iters)? {
+                let flop = 2.0 * (m * n * k) as f64;
+                let cells: Vec<String> = times
+                    .iter()
+                    .zip(&plans)
+                    .map(|(t, p)| match t {
+                        Some(ms) => format!("{}:{ms:.4}ms/{:.0}T", label(p), flop / ms / 1e9),
+                        None => format!("{}:n/a", label(p)),
+                    })
+                    .collect();
+                println!("{out:?} M={m} N={n} K={k} [selected {}] {} bit-identical={same}", label(&gemm_plan(m, n, k)), cells.join(" "));
+                // A plan that cannot launch (n/a) is a failure, not a vacuous match.
+                all_same &= same && times.iter().all(Option::is_some);
+            }
+        }
+        anyhow::ensure!(all_same, "launch plans disagree or failed to launch (must all run, bit-identical)");
+        Ok(())
+    }
+    #[cfg(not(feature = "convrot"))]
+    {
+        let _ = (iters, batch, txt);
+        anyhow::bail!("build with --features convrot (needs CUTLASS_DIR)")
+    }
+}
+
+/// `gemm-bench --layered`: the Layered DiT's INT8 linears at `m` rows, the GEMM alone per launch
+/// plan and the whole forward (rotate + quantize + GEMM, one synchronise per shape).
+fn layered_gemm_bench(iters: usize, m: usize) -> Result<()> {
+    #[cfg(feature = "convrot")]
+    {
+        use candle_core::{DType, Device, Tensor};
+        use qwen_image_rs::convrot::{bench_gemm_plans, gemm_plan, ConvRotLinear, EpilogueOut, GemmPlan, GEMM_CONFIGS};
+        let shapes = [
+            (m, 3072, 3072),  // q / k / v / out
+            (m, 12288, 3072), // MLP up
+            (m, 3072, 12288), // MLP down
+        ];
+        let plans: Vec<GemmPlan> = (0..GEMM_CONFIGS.len() as u8).map(GemmPlan::single).collect();
+        for (m, n, k, times, _) in bench_gemm_plans(&shapes, &plans, EpilogueOut::Bf16, iters)? {
+            let flop = 2.0 * (m * n * k) as f64;
+            let cells: Vec<String> = times.iter().enumerate().map(|(i, t)| t.map_or(format!("{i}:n/a"), |ms| format!("{i}:{ms:.3}ms/{:.0}T", flop / ms / 1e9))).collect();
+            println!("gemm M={m} N={n} K={k} [selected {}] {}", gemm_plan(m, n, k).main, cells.join(" "));
+        }
+        let dev = Device::new_cuda(0)?;
+        let r = qwen_image_rs::model::rotation::regular_hadamard_256(&dev)?;
+        for &(m, n, k) in &shapes {
+            let w = Tensor::randn(0f32, 1f32, (n, k), &dev)?.to_dtype(DType::BF16)?;
+            let x = Tensor::randn(0f32, 1f32, (m, k), &dev)?.to_dtype(DType::BF16)?;
+            let linear = ConvRotLinear::from_weight(&w, &r)?;
+            linear.forward(&x)?;
+            dev.synchronize()?;
+            let t0 = std::time::Instant::now();
+            for _ in 0..iters {
+                linear.forward(&x)?;
+            }
+            dev.synchronize()?;
+            let ms = t0.elapsed().as_secs_f64() * 1e3 / iters as f64;
+            println!("forward M={m} N={n} K={k}: {ms:.3} ms, {:.0} TOPS", 2.0 * (m * n * k) as f64 / ms / 1e9);
+        }
+        Ok(())
+    }
+    #[cfg(not(feature = "convrot"))]
+    {
+        let _ = (iters, m);
+        anyhow::bail!("build with --features convrot (needs CUTLASS_DIR)")
+    }
+}
+
+/// Krea 2's linear shapes, three ways: the bf16 matmul, the fp8 file's layer dequantized then
+/// multiplied in bf16, and the fp8 matmul (`qwen_image_rs::fp8`).
+fn fp8_bench(iters: usize, m: usize) -> Result<()> {
+    use candle_core::{DType, Tensor};
+    use qwen_image_rs::fp8::Fp8Linear;
+    let dev = qwen_image_rs::device::best_device()?;
+    let cpu = candle_core::Device::Cpu;
+    let x = Tensor::randn(0f32, 1.0, (m, 6144), &dev)?.to_dtype(DType::BF16)?;
+    for (n, k) in [(6144usize, 6144usize), (1536, 6144), (16384, 6144), (6144, 16384)] {
+        let xk = if k == 6144 { x.clone() } else { Tensor::randn(0f32, 1.0, (m, k), &dev)?.to_dtype(DType::BF16)? };
+        let w = (Tensor::randn(0f32, 1.0, (n, k), &cpu)? * 0.02)?;
+        let wb = w.to_dtype(DType::BF16)?.to_device(&dev)?;
+        let w8 = (&w * 50.0)?.to_dtype(DType::F8E4M3)?.to_device(&dev)?;
+        let scale = Tensor::new(&[0.02f32], &dev)?;
+        let mm = Fp8Linear::new(w8.clone(), &scale, false)?;
+        let full = Fp8Linear::new(w8, &scale, true)?;
+        let flop = 2.0 * (m * n * k) as f64;
+        let mut cells = Vec::new();
+        for (name, f) in [
+            ("bf16", Box::new(|| Ok(xk.matmul(&wb.t()?)?)) as Box<dyn Fn() -> Result<Tensor>>),
+            ("fp8 dequantized", Box::new(|| full.forward(&xk))),
+            ("fp8 matmul", Box::new(|| mm.forward(&xk))),
+        ] {
+            let _ = f()?;
+            dev.synchronize()?;
+            let t0 = std::time::Instant::now();
+            for _ in 0..iters {
+                let _ = f()?;
+            }
+            dev.synchronize()?;
+            let ms = t0.elapsed().as_secs_f64() * 1e3 / iters as f64;
+            cells.push(format!("{name} {ms:.3} ms {:.0} TFLOPS", flop / ms / 1e9));
+        }
+        println!("M={m} N={n} K={k}: {}", cells.join(" | "));
+    }
+    Ok(())
+}
+
+/// Self-test the ConvRot INT8 GEMM bridge end to end.
+fn convrot_test() -> Result<()> {
+    #[cfg(feature = "convrot")]
+    {
+        let maxdiff = qwen_image_rs::convrot::self_test()?;
+        println!("convrot int8-gemm bridge: max abs diff vs CPU int ref = {maxdiff} ({})", if maxdiff == 0 { "EXACT — bridge OK" } else { "MISMATCH" });
+        // (M, N, K): the odd-M alignment case + the DiT tail-linear shapes.
+        let mut epi_bad = 0usize;
+        for (m, n, k) in [(37, 256, 512), (2, 4096, 256), (2, 16384, 4096), (37, 64, 4096)] {
+            let (bad_bf, bad_hf) = qwen_image_rs::convrot::self_test_epilogue(m, n, k)?;
+            println!(
+                "convrot dequant epilogue vs host ref (M={m} N={n} K={k}): bf16 mismatches = {bad_bf}, f16 mismatches = {bad_hf} ({})",
+                if bad_bf == 0 && bad_hf == 0 { "EXACT" } else { "MISMATCH" }
+            );
+            epi_bad += bad_bf + bad_hf;
+        }
+        // Row-split launch plans (head + tail launch) vs one launch, byte for
+        // byte (`qwen-image-rs-gemm-tiling-push`): tails of 21 / 64 / 127 rows
+        // (one and two 64-row tail tiles) and the B = 2 M.
+        {
+            use qwen_image_rs::convrot::{bench_gemm_plans, EpilogueOut, GemmPlan};
+            let plans = [GemmPlan::single(0), GemmPlan::single(3), GemmPlan { main: 3, tail: Some(2) }];
+            let shapes = [(4117, 4096, 4096), (4160, 4096, 4096), (4223, 4096, 4096), (8234, 4096, 12288)];
+            for out in [EpilogueOut::Bf16, EpilogueOut::F16] {
+                for (m, n, k, times, same) in bench_gemm_plans(&shapes, &plans, out, 1)? {
+                    // A plan that fails to launch is skipped by the bench:
+                    // count it as a failure, not a vacuous match.
+                    let ok = same && times.iter().all(Option::is_some);
+                    println!("convrot row-split plan vs single launch ({out:?}, M={m} N={n} K={k}): {}", if ok { "EXACT" } else { "MISMATCH" });
+                    epi_bad += usize::from(!ok);
+                }
+            }
+        }
+        let (d16, a16) = qwen_image_rs::convrot::self_test_f16_vs_cast()?;
+        let f16_ok = d16 <= a16 / 128.0;
+        println!(
+            "convrot f16 epilogue vs bf16 epilogue + cast (to_v shape): max abs diff = {d16:.3e} of max |y| {a16:.3e} ({})",
+            if f16_ok { "OK" } else { "MISMATCH" }
+        );
+        let cos = qwen_image_rs::convrot::self_test_linear()?;
+        println!("convrot INT8 linear vs bf16: cosine = {cos:.5} ({})", if cos > 0.99 { "OK" } else { "TOO LOW" });
+        let (cr_ms, bf_ms) = qwen_image_rs::convrot::bench_linear(50)?;
+        println!("MLP-shape timing: convrot {cr_ms:.3} ms vs bf16 {bf_ms:.3} ms ({:.2}x)", bf_ms / cr_ms);
+        // Fused rotate+quantize vs the f64 host reference and the old path.
+        let mut rq_ok = true;
+        for c in qwen_image_rs::convrot::self_test_rotate_quant(&[(37, 256), (300, 4096), (64, 12288), (5, 16384)])? {
+            println!(
+                "convrot fused rotate+quant (M={} K={}): vs f64 ref max|dq|={} ({} of {} differ), scale rel {:.1e}; vs old bf16-GEMM path max|dq|={} ({} differ, {:.3}%), scale rel {:.1e} ({})",
+                c.m,
+                c.k,
+                c.ref_max_diff,
+                c.ref_mismatches,
+                c.m * c.k,
+                c.ref_scale_rel,
+                c.old_max_diff,
+                c.old_mismatches,
+                100.0 * c.old_mismatches as f64 / (c.m * c.k) as f64,
+                c.old_scale_rel,
+                if c.ok() { "OK" } else { "MISMATCH" }
+            );
+            rq_ok &= c.ok();
+        }
+        let rq_rej = qwen_image_rs::convrot::self_test_rotate_quant_rejects()?;
+        println!("convrot fused rotate+quant rejects K=128/384/16640, M=0 empty: {}", if rq_rej { "OK" } else { "MISMATCH" });
+        for (m, n, k, c) in qwen_image_rs::convrot::self_test_linear_fused_vs_unfused()? {
+            println!("convrot linear fused vs unfused forward (M={m} N={n} K={k}): cosine = {c:.7} ({})", if c > 0.9999 { "OK" } else { "TOO LOW" });
+            rq_ok &= c > 0.9999;
+        }
+        for (k, f, u) in qwen_image_rs::convrot::bench_rotate_quant(50)? {
+            println!("activation rotate+quant (M=4117 K={k}): fused {f:.3} ms vs bf16 GEMM + quant {u:.3} ms ({:.2}x)", u / f);
+        }
+        // Fused SwiGLU + rotate + quantize (silu(g)*p never stored).
+        let mut swg_ok = true;
+        for c in qwen_image_rs::convrot::self_test_swiglu_rotate_quant(&[(37, 256), (300, 4096), (64, 12288), (5, 16384)])? {
+            println!(
+                "convrot fused swiglu+rotate+quant (M={} K={}): vs f64 ref max|dq|={} ({} of {} differ), scale rel {:.1e}; vs candle silu*mul + rotate+quant max|dq|={} ({} differ, {:.3}%), scale rel {:.1e} ({})",
+                c.m,
+                c.k,
+                c.ref_max_diff,
+                c.ref_mismatches,
+                c.m * c.k,
+                c.ref_scale_rel,
+                c.old_max_diff,
+                c.old_mismatches,
+                100.0 * c.old_mismatches as f64 / (c.m * c.k) as f64,
+                c.old_scale_rel,
+                if c.ok_with_old(2, 2.0 / 256.0) {
+                    "OK"
+                } else {
+                    "MISMATCH"
+                }
+            );
+            // The candle path rounds silu(g) and the product to bf16 (two
+            // roundings): up to 2 int8 steps / 2^-7 scale vs the fused f32.
+            swg_ok &= c.ok_with_old(2, 2.0 / 256.0);
+        }
+        for (what, ok) in qwen_image_rs::convrot::self_test_swiglu_views()? {
+            println!("convrot fused swiglu view contract: {what}: {}", if ok { "OK" } else { "MISMATCH" });
+            swg_ok &= ok;
+        }
+        for (what, c) in qwen_image_rs::convrot::self_test_linear_swiglu()? {
+            println!(
+                "convrot linear forward_swiglu vs forward(silu(g)*p) ({what}, M=257 N=4096 K=12288): cosine = {c:.7} ({})",
+                if c > 0.9999 { "OK" } else { "TOO LOW" }
+            );
+            swg_ok &= c > 0.9999;
+        }
+        // Merged projections (q|k interleaved, shared quant for v, gate|proj).
+        for (what, ok) in qwen_image_rs::convrot::self_test_merged()? {
+            println!("convrot merged projection: {what}: {}", if ok { "OK" } else { "MISMATCH" });
+            swg_ok &= ok;
+        }
+        let (sf, su) = qwen_image_rs::convrot::bench_swiglu_quant(50)?;
+        println!("MLP-out activation path (M=4117 K=12288): fused swiglu+rotate+quant {sf:.3} ms vs silu + mul + rotate+quant {su:.3} ms ({:.2}x)", su / sf);
+        if maxdiff != 0 || epi_bad != 0 || !f16_ok || !rq_ok || !rq_rej || !swg_ok {
+            anyhow::bail!("convrot self-test FAILED (bit-exactness / rotate+quant bounds)");
+        }
+        report_offset_views("convrot", qwen_image_rs::convrot::self_test_offset_views()?)
+    }
+    #[cfg(not(feature = "convrot"))]
+    anyhow::bail!("build with --features convrot (needs CUTLASS_DIR)")
+}
+
+/// Self-test SageAttention (INT8-QK / FP16-PV) vs an f32 softmax-attention
+/// reference, non-causal and causal.
+fn sage_test() -> Result<()> {
+    #[cfg(feature = "sage")]
+    {
+        for causal in [false, true] {
+            let cos = qwen_image_rs::sage::self_test(causal)?;
+            println!("sage INT8 attn (causal={causal}) vs f32 ref: cosine = {cos:.5} ({})", if cos > 0.99 { "OK" } else { "TOO LOW" });
+        }
+        let rope_cos = qwen_image_rs::rope::self_test()?;
+        println!("rope-i BSHD vs candle rope_i: cosine = {rope_cos:.6} ({})", if rope_cos > 0.999 { "OK" } else { "TOO LOW" });
+        let (bshd_cos, maxabs) = qwen_image_rs::sage::self_test_bshd()?;
+        let bshd_ok = bshd_cos > 0.9999 && maxabs.is_finite() && maxabs < 0.01;
+        println!("sage BSHD vs BHSD (block-causal split): cosine = {bshd_cos:.6}, maxabs = {maxabs:.4} ({})", if bshd_ok { "OK" } else { "MISMATCH" });
+        let (pt_nan, pt_diff) = qwen_image_rs::sage::self_test_partial_tile()?;
+        let pt_ok = pt_nan == 0 && pt_diff == 0.0;
+        println!(
+            "sage partial last K/V tile under NaN-poisoned smem (txt=21, S=293): NaN = {pt_nan}, maxabs vs clean = {pt_diff:.4} ({})",
+            if pt_ok { "OK" } else { "FAIL" }
+        );
+        let rq = qwen_image_rs::sage::self_test_rope_quant()?;
+        let rq_ok = rq.int8_mismatches == 0 && rq.scale_mismatches == 0 && rq.attn_maxabs == 0.0 && rq.attn_cos > 0.9999;
+        println!(
+            "fused rope+quant vs rope->quant (4 narrows, B=1,2): int8 mismatches = {}, scale mismatches = {}, attn cosine = {:.6}, maxabs = {:.4} ({})",
+            rq.int8_mismatches,
+            rq.scale_mismatches,
+            rq.attn_cos,
+            rq.attn_maxabs,
+            if rq_ok { "OK" } else { "MISMATCH" }
+        );
+        #[cfg(feature = "sage2")]
+        let s2_ok = {
+            let r = qwen_image_rs::sage2::self_test()?;
+            println!(
+                "sage2 block-causal (txt=37, S=293, B=1,2, K bias, zero V/K channel) vs f32 ref: cosine fp16-accum = {:.6}, fp32-accum = {:.6} (v1 on same inputs {:.6}); non-finite = {} ({})",
+                r.cos_f16,
+                r.cos_f32,
+                r.cos_v1,
+                r.nonfinite,
+                if r.cos_f16 >= 0.999 && r.cos_f32 >= 0.999 && r.nonfinite == 0 { "OK" } else { "FAIL" }
+            );
+            println!(
+                "sage2 B=2 lanes vs B=1: mismatches = {}; offset views vs copies: mismatches = {}; run-twice: mismatches = {} ({})",
+                r.lane_mismatches,
+                r.offset_mismatches,
+                r.nondeterministic,
+                if r.lane_mismatches == 0 && r.offset_mismatches == 0 && r.nondeterministic == 0 { "OK" } else { "FAIL" }
+            );
+            println!(
+                "sage2 partial last K/V tile under NaN-poisoned smem (txt=21, S=293): NaN = {}, maxabs vs clean = {:.4} ({})",
+                r.poison_nan,
+                r.poison_maxabs,
+                if r.poison_nan == 0 && r.poison_maxabs == 0.0 { "OK" } else { "FAIL" }
+            );
+            println!(
+                "sage2 fused per-layer quant (3 launches) vs per-op kernels (B=1,2, offset views, txt=37/21, fp16+fp32 accum): payload/scale/output mismatches = {} ({})",
+                r.fused_mismatches,
+                if r.fused_mismatches == 0 { "BIT-IDENTICAL" } else { "MISMATCH" }
+            );
+            match r.norm_fused_mismatches {
+                Some(n) => println!(
+                    "sage2 q/k RMSNorm fused into the quant (raw head-interleaved q|k views) vs fused_rmsnorm_scale + quant (B=1,2 lanes, S-offset, txt=37/21, fp16+fp32 accum): payload/scale/output mismatches = {n} ({})",
+                    if n == 0 { "BIT-IDENTICAL" } else { "MISMATCH" }
+                ),
+                None => println!("sage2 q/k RMSNorm fusion check: skipped (needs fusednorm)"),
+            }
+            r.ok()
+        };
+        #[cfg(not(feature = "sage2"))]
+        let s2_ok = true;
+        if !rq_ok {
+            anyhow::bail!("fused rope+quant is not bit-exact vs rope->quant");
+        }
+        if !s2_ok {
+            anyhow::bail!("sage2 self-test failed");
+        }
+        if !pt_ok {
+            anyhow::bail!("sage partial-tile attention reads stale shared memory");
+        }
+        Ok(())
+    }
+    #[cfg(not(feature = "sage"))]
+    anyhow::bail!("build with --features sage")
+}
+
+/// Self-test the fused LayerNorm+AdaLN kernel vs the candle reference.
+/// Print the offset-view regression results and fail if any bridge read the
+/// wrong rows (`qwen-image-rs-b1-off-prompt`).
+#[cfg(any(feature = "fusednorm", feature = "convrot"))]
+fn report_offset_views(group: &str, results: Vec<(&'static str, bool)>) -> Result<()> {
+    let mut bad = Vec::new();
+    for (op, ok) in results {
+        println!("{group} {op} on a nonzero-offset view vs fresh copy: {}", if ok { "BIT-IDENTICAL" } else { "MISMATCH" });
+        if !ok {
+            bad.push(op);
+        }
+    }
+    if !bad.is_empty() {
+        anyhow::bail!("{group}: bridges ignore the view offset: {bad:?}");
+    }
+    Ok(())
+}
+
+fn vae_fused_test() -> Result<()> {
+    #[cfg(feature = "fusednorm")]
+    {
+        let dev = device::best_device()?;
+        let mut bad = 0;
+        for (case, n) in qwen_image_rs::vae_fused::self_test(&dev)? {
+            println!("{case}: {n} mismatching elements ({})", if n == 0 { "BIT-IDENTICAL" } else { "FAIL" });
+            bad += (n > 0) as usize;
+        }
+        if bad > 0 {
+            anyhow::bail!("vae-fused-test: {bad} case(s) not bit-identical");
+        }
+        println!("vae-fused-test: all OK");
+        Ok(())
+    }
+    #[cfg(not(feature = "fusednorm"))]
+    anyhow::bail!("vae-fused-test needs --features fusednorm")
+}
+
+fn cudnn_test() -> Result<()> {
+    #[cfg(feature = "cudnn")]
+    {
+        let dev = device::best_device()?;
+        let fails = qwen_image_rs::cudnn_conv::self_test(&dev)?;
+        if fails > 0 {
+            anyhow::bail!("cudnn-test: {fails} case(s) failed");
+        }
+        println!("cudnn-test: all OK");
+        Ok(())
+    }
+    #[cfg(not(feature = "cudnn"))]
+    anyhow::bail!("cudnn-test needs --features cudnn")
+}
+
+fn fusednorm_test() -> Result<()> {
+    #[cfg(feature = "fusednorm")]
+    {
+        let cos = qwen_image_rs::fusednorm::self_test()?;
+        println!("fused norm+AdaLN vs candle: cosine = {cos:.6} ({})", if cos > 0.999 { "OK" } else { "TOO LOW" });
+        for n in [4096usize, 128usize] {
+            let cos = qwen_image_rs::fusednorm::self_test_rmsnorm(n)?;
+            println!("fused RMSNorm×weight (N={n}) vs candle: cosine = {cos:.6} ({})", if cos > 0.9999 { "OK" } else { "TOO LOW" });
+        }
+        let cos = qwen_image_rs::fusednorm::self_test_gated()?;
+        println!("fused gated residual vs candle: cosine = {cos:.6} ({})", if cos > 0.9999 { "OK" } else { "TOO LOW" });
+        let mut bad = Vec::new();
+        for (case, diff) in qwen_image_rs::fusednorm::self_test_rmsnorm128_bits()? {
+            println!("RMSNorm N=128 16-lane vs CTA-per-row kernel, {case}: {diff} mismatches ({})", if diff == 0 { "OK" } else { "FAIL" });
+            if diff != 0 {
+                bad.push(case);
+            }
+        }
+        if !bad.is_empty() {
+            anyhow::bail!("fusednorm: N=128 RMSNorm kernel not bit-identical: {bad:?}");
+        }
+        for (case, diff) in qwen_image_rs::fusednorm::self_test_residual_norm_mod_bits()? {
+            println!("residual+norm_mod fused vs gated_residual -> norm_mod, {case}: {diff} mismatches ({})", if diff == 0 { "OK" } else { "FAIL" });
+            if diff != 0 {
+                bad.push(case);
+            }
+        }
+        if !bad.is_empty() {
+            anyhow::bail!("fusednorm: fused residual+norm_mod not bit-identical: {bad:?}");
+        }
+        report_offset_views("fusednorm", qwen_image_rs::fusednorm::self_test_offset_views()?)
+    }
+    #[cfg(not(feature = "fusednorm"))]
+    anyhow::bail!("build with --features fusednorm")
+}
+
+/// Micro-benchmark the DiT's per-layer dominant ops in bf16 on the active
+/// device, to see whether the workload is GEMM-bound or attention-bound.
+fn bench(seq: usize, iters: usize) -> Result<()> {
+    let dev = device::best_device()?;
+    let dt = if matches!(dev, candle_core::Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
+    let (h, inter, heads, hd) = (4096usize, 12288usize, 32usize, 128usize);
+    let x = Tensor::randn(0f32, 1f32, (seq, h), &dev)?.to_dtype(dt)?;
+    let wqkv = Tensor::randn(0f32, 1f32, (3 * h, h), &dev)?.to_dtype(dt)?;
+    let wo = Tensor::randn(0f32, 1f32, (h, h), &dev)?.to_dtype(dt)?;
+    let wgate = Tensor::randn(0f32, 1f32, (inter, h), &dev)?.to_dtype(dt)?;
+    let wup = Tensor::randn(0f32, 1f32, (inter, h), &dev)?.to_dtype(dt)?;
+    let wdown = Tensor::randn(0f32, 1f32, (h, inter), &dev)?.to_dtype(dt)?;
+    let q = Tensor::randn(0f32, 1f32, (heads, seq, hd), &dev)?.to_dtype(dt)?;
+    let k = Tensor::randn(0f32, 1f32, (heads, seq, hd), &dev)?.to_dtype(dt)?;
+    let v = Tensor::randn(0f32, 1f32, (heads, seq, hd), &dev)?.to_dtype(dt)?;
+
+    let time = |name: &str, f: &dyn Fn() -> Result<()>| -> Result<()> {
+        f()?; // warmup
+        dev.synchronize()?;
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters {
+            f()?;
+        }
+        dev.synchronize()?;
+        let ms = t0.elapsed().as_secs_f64() * 1e3 / iters as f64;
+        println!("  {name:20} {ms:8.3} ms/iter");
+        Ok(())
+    };
+
+    println!("seq={seq} dtype={dt:?} iters={iters}");
+    time("attn_proj (qkv+o)", &|| {
+        let _ = x.matmul(&wqkv.t()?)?;
+        let _ = x.matmul(&wo.t()?)?;
+        Ok(())
+    })?;
+    time("mlp (gate+up+down)", &|| {
+        let g = candle_nn::ops::silu(&x.matmul(&wgate.t()?)?)?;
+        let u = x.matmul(&wup.t()?)?;
+        let _ = (g * u)?.matmul(&wdown.t()?)?;
+        Ok(())
+    })?;
+    time("attention (S^2)", &|| {
+        let scale = 1.0 / (hd as f64).sqrt();
+        let a = (q.matmul(&k.transpose(1, 2)?)? * scale)?;
+        let a = candle_nn::ops::softmax_last_dim(&a)?;
+        let _ = a.matmul(&v)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Allocate two NxN matrices, matmul, and reduce — the minimal end-to-end
+/// exercise of the active candle backend (CPU by default, CUDA under `--features cuda`).
+fn smoke(n: usize) -> Result<()> {
+    let dev = device::best_device()?;
+    tracing::info!(device = device::label(&dev), n, "smoke: allocating");
+    let a = Tensor::randn(0f32, 1f32, (n, n), &dev)?.to_dtype(DType::F32)?;
+    let b = Tensor::randn(0f32, 1f32, (n, n), &dev)?;
+    let start = std::time::Instant::now();
+    let c = a.matmul(&b)?;
+    let sum = c.sum_all()?.to_scalar::<f32>()?;
+    let elapsed = start.elapsed();
+    let gflop = 2.0 * (n as f64).powi(3) / 1e9;
+    println!("device={} n={n} sum={sum:.3} matmul={:.3}ms ({:.1} GFLOP/s)", device::label(&dev), elapsed.as_secs_f64() * 1e3, gflop / elapsed.as_secs_f64(),);
+    Ok(())
+}
+
+/// Pre-quantize the DiT's ConvRot linears (every weight
+/// `dit::is_convrot_target` names: the 224 block linears + the rotated tail
+/// linears) to one safetensors file — the same builder (and header tags) as
+/// the default `--convrot` cache (`convrot_cache`), written atomically. Each
+/// target `<prefix>.weight` (bf16) becomes `<prefix>.weight_i8` (rotated INT8,
+/// U8 bytes) + `<prefix>.col_scale` (f32); all other tensors are copied bf16.
+/// A dir holding this file is used as-is by `--convrot` (no cache). Without
+/// `out`, the file goes to `weights`' cache entry (what `--convrot` loads).
+fn prequantize_convrot(weights: &std::path::Path, out: Option<&std::path::Path>, cache_dir: Option<&std::path::Path>) -> Result<()> {
+    use qwen_image_rs::convrot_cache as cc;
+    let files = WeightSet::resolve(weights)?.files;
+    anyhow::ensure!(!cc::files_hold_prequant(&files)?, "{} is already prequantized (holds *.weight_i8)", weights.display());
+    let out = match out {
+        Some(o) => o.to_path_buf(),
+        None => {
+            let root = cc::CacheSpec::from_cli(cache_dir, false, false).root.context("no cache dir: pass --out or --convrot-cache (or set HOME)")?;
+            cc::entry_path(&root, weights)?
+        }
+    };
+    let out = out.as_path();
+    let meta = std::collections::HashMap::from([
+        (cc::META_POLICY.to_string(), qwen_image_rs::model::dit::convrot_policy_tag()),
+        (cc::META_SOURCE.to_string(), cc::source_fingerprint(weights, &files)?),
+    ]);
+    let n_quant = cc::build(&files, out, meta)?;
+    println!("prequantized {n_quant} convrot linears -> {}", out.display());
+    Ok(())
+}
+
+/// The Qwen3-VL text-encoder decoder linears (Q8_0-quantized in the GGUF);
+/// everything else (embedding, norms) is stored F16.
+fn is_text_linear(name: &str) -> bool {
+    const SUFFIXES: [&str; 7] =
+        [".q_proj.weight", ".k_proj.weight", ".v_proj.weight", ".o_proj.weight", ".gate_proj.weight", ".up_proj.weight", ".down_proj.weight"];
+    name.contains(".layers.") && SUFFIXES.iter().any(|s| name.ends_with(s))
+}
+
+/// Pre-quantize the text encoder to a Q8_0 GGUF (linears Q8_0, embedding+norms
+/// F16), containing only the tensors the text-only encoder loads. Loaded later
+/// via `--text-gguf` without ever materializing a bf16 weight on the GPU.
+fn prequantize_text(weights: &std::path::Path, out: &std::path::Path) -> Result<()> {
+    use candle_core::quantized::{gguf_file, GgmlDType, QTensor};
+    use std::collections::HashMap;
+
+    let set = WeightSet::resolve(weights)?;
+    tracing::info!(files = set.files.len(), "loading bf16 text encoder (CPU)");
+    let mut full: HashMap<String, Tensor> = HashMap::new();
+    for f in &set.files {
+        for (k, v) in candle_core::safetensors::load(f, &candle_core::Device::Cpu)? {
+            full.insert(k, v);
+        }
+    }
+    // Only the tensors the text-only encoder uses: the language-model embedding
+    // and decoder layers (skips the vision tower, final norm, lm_head).
+    let mut names: Vec<String> =
+        full.keys().filter(|n| n.starts_with("model.language_model.embed_tokens") || n.starts_with("model.language_model.layers.")).cloned().collect();
+    names.sort();
+    let mut qtensors: Vec<(String, QTensor)> = Vec::with_capacity(names.len());
+    let mut n_q8 = 0usize;
+    for name in &names {
+        let t = &full[name];
+        let dt = if is_text_linear(name) {
+            n_q8 += 1;
+            GgmlDType::Q8_0
+        } else {
+            GgmlDType::F16
+        };
+        qtensors.push((name.clone(), QTensor::quantize(t, dt)?));
+    }
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let refs: Vec<(&str, &QTensor)> = qtensors.iter().map(|(n, q)| (n.as_str(), q)).collect();
+    let mut f = std::fs::File::create(out)?;
+    gguf_file::write(&mut f, &[], &refs)?;
+    println!("wrote {} tensors ({n_q8} Q8_0 linears + {} F16) -> {}", refs.len(), refs.len() - n_q8, out.display());
+    Ok(())
+}
+
+/// `qir compare`: print the measurements and fail (exit 1) when the gate does not pass.
+fn compare(what: CompareCommand) -> Result<()> {
+    use qwen_image_rs::compare;
+    let passed = match what {
+        CompareCommand::Png { ours, reference } => {
+            let (psnr, max) = compare::png(&ours, &reference)?;
+            println!("psnr_db={psnr:.2} maxabs={max} identical={}", psnr.is_infinite());
+            true
+        }
+        CompareCommand::Latent { a, b, threshold } => {
+            let (sa, a) = compare::tensor(&a, "latent")?;
+            let (sb, b) = compare::tensor(&b, "latent")?;
+            anyhow::ensure!(a.len() == b.len(), "shape mismatch {sa:?} vs {sb:?}");
+            let (cos, maxabs, mse) = compare::stats(&a, &b);
+            let ok = cos > threshold;
+            println!("cosine={cos:.7} maxabs={maxabs:.6} mse={mse:.3e} (thr={threshold}) -> {}", if ok { "OK" } else { "DIVERGED" });
+            ok
+        }
+        CompareCommand::Dit { ours, oracle, image_tokens } => {
+            let (cos, mse, per_token) = compare::dit(&ours, &oracle, image_tokens)?;
+            println!("overall_cos={cos:.6} mse={mse:.6e} per_token_cos_mean={per_token:.6}");
+            true
+        }
+        CompareCommand::Layered { native, reference, native_prefix, reference_prefix, rgb_limit, iou_limit, visible_alpha_threshold, pad_canvas } => {
+            let mut ok = true;
+            for i in 1..=3 {
+                let a = native.join(format!("{native_prefix}-{i}.png"));
+                let b = reference.join(format!("{reference_prefix}-{i}.png"));
+                let l = compare::layer(i, &a, &b, visible_alpha_threshold, pad_canvas)?;
+                println!("{}", serde_json::to_string(&l)?);
+                if let Some(limit) = rgb_limit {
+                    ok &= l.rgb_mae <= limit && l.alpha_iou >= iou_limit;
+                }
+            }
+            ok
+        }
+        CompareCommand::Raw { before, after, limit } => {
+            let rows = compare::raw_dirs(&before, &after, limit)?;
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+            rows.iter().all(|r| r.pass)
+        }
+    };
+    if !passed {
+        eprintln!("compare: gate failed");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Resolve a weight directory and print format + shard count + total size.
+fn info(weights: &std::path::Path) -> Result<()> {
+    let set = WeightSet::resolve(weights).context("resolving weight set")?;
+    let bytes = set.total_bytes()?;
+    println!("format={:?} files={} total={:.2} GiB", set.format, set.files.len(), bytes as f64 / (1024.0 * 1024.0 * 1024.0),);
+    for f in &set.files {
+        println!("  {}", f.display());
+    }
+    Ok(())
+}
