@@ -1,0 +1,212 @@
+name: ShotoPhopEX release
+
+# Fork: builds the native (CUDA) release on GitHub's runners and attaches it to a draft release.
+#   Windows x64: photocraft-<v>-windows-x64.msi and photocraft-<v>-windows-x64-portable.zip
+#   Linux x86_64: photocraft-<v>-linux-x86_64.tar.gz
+# Compiling the CUDA kernels needs the toolkit and CUTLASS, not a GPU; the generative features
+# are smoke-tested on real hardware before the draft is published by hand. No model weights ship.
+#
+# A pushed tag vX.Y.Z builds that version and makes a draft release for it. A manual run builds
+# the branch it is started on and only uploads workflow artifacts, unless `draft` is ticked.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for the file names (empty: Cargo.toml)"
+        type: string
+        default: ""
+      draft:
+        description: "Also create a draft release v<version> with the files"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shotophopex-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.1"
+  # The kernels are built for this architecture and carry its PTX, so they also run on every
+  # newer card: 86 covers the RTX 30, 40 and 50 series.
+  CUDA_COMPUTE_CAP: "86"
+  CUDARC_CUDA_VERSION: "13030"
+  CUTLASS_REF: v4.8.1
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: v
+        name: Resolve the version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            v="${INPUT_VERSION#v}"
+          else
+            v="$(awk '/^\[/ { p = ($0 == "[workspace.package]"); next } p && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml)"
+          fi
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "not a version: $v" >&2; exit 1; }
+          # The binaries report Cargo.toml's version (About, the update check), so a tag must match it.
+          cargo_v="$(awk '/^\[/ { p = ($0 == "[workspace.package]"); next } p && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml)"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$v" != "$cargo_v" ]]; then
+            echo "tag v$v does not match Cargo.toml's version $cargo_v; bump [workspace.package] version first" >&2; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-2025
+    timeout-minutes: 300
+    env:
+      PHOTOCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      NVCC_APPEND_FLAGS: "-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+          rustup default $env:RUST_TOOLCHAIN
+      - name: CUDA Toolkit 13.3 (compiler and the libraries the engine links)
+        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        with:
+          cuda: "13.3.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "curand", "curand_dev", "crt", "nvvm", "cccl", "nvrtc", "nvrtc_dev"]'
+          use-github-cache: false
+      - name: CUTLASS headers
+        shell: pwsh
+        run: |
+          git clone --quiet --depth 1 --branch $env:CUTLASS_REF https://github.com/NVIDIA/cutlass "$env:RUNNER_TEMP\cutlass"
+          "CUTLASS_DIR=$env:RUNNER_TEMP\cutlass\include" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: WiX 5
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+      - uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
+        with:
+          arch: x64
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: native-sm${{ env.CUDA_COMPUTE_CAP }}
+      - name: Runtime folder (the CUDA libraries that ship beside the exe)
+        shell: pwsh
+        run: |
+          $bin = if (Test-Path "$env:CUDA_PATH\bin\x64\cudart64_13.dll") { "$env:CUDA_PATH\bin\x64" } else { "$env:CUDA_PATH\bin" }
+          pwsh packaging/windows/runtime.ps1 -Cuda $bin
+      - name: Build and package (MSI + portable zip)
+        shell: pwsh
+        run: pwsh packaging/windows/package.ps1 -Arch x64 -Native
+      - name: The portable app starts on a PC without the CUDA Toolkit
+        shell: pwsh
+        run: |
+          $zip = Get-Item "dist/release/photocraft-$env:PHOTOCRAFT_VERSION-windows-x64-portable.zip"
+          $dir = Join-Path $env:RUNNER_TEMP 'portable-check'
+          Expand-Archive $zip $dir -Force
+          # Only Windows itself on PATH: anything the exe needs must come from its own folder.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          & (Join-Path $dir 'photocraft-cli.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw "photocraft-cli.exe did not start from the zip ($LASTEXITCODE)" }
+          if (-not (Test-Path (Join-Path $dir 'runtime\cublasLt64_13.dll'))) { throw 'the zip has no runtime folder' }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-x64
+          if-no-files-found: error
+          path: |
+            dist/release/*.msi
+            dist/release/*-portable.zip
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      PHOTOCRAFT_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q build-essential pkg-config libxkbcommon-dev libwayland-dev libx11-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - name: CUDA 13 compiler and libraries (NVIDIA's pip wheels, no GPU needed)
+        run: |
+          set -euo pipefail
+          python3 -m pip download -q --no-deps --only-binary=:all: --dest "$RUNNER_TEMP/wheels" \
+            nvidia-cuda-nvcc==13.5.37 nvidia-cuda-crt==13.5.37 nvidia-nvvm==13.5.37 nvidia-cuda-runtime==13.5.37 \
+            nvidia-cuda-cccl==13.3.5.0.6 nvidia-cublas==13.10.0.20 nvidia-curand==10.4.5.25 nvidia-cuda-nvrtc==13.5.37
+          mkdir -p "$RUNNER_TEMP/cuda"
+          for w in "$RUNNER_TEMP"/wheels/*.whl; do python3 -m zipfile -e "$w" "$RUNNER_TEMP/cuda"; done
+          C="$RUNNER_TEMP/cuda/nvidia/cu13"
+          chmod +x "$C"/bin/* "$C"/nvvm/bin/*
+          (cd "$C/lib" && for f in libcublas libcublasLt libcudart libcurand libnvrtc; do ln -sf "$(ls $f.so.* | head -1)" "$f.so"; done)
+          ln -s lib "$C/lib64"
+          # The binaries link the driver's libcuda.so.1 (present wherever an NVIDIA driver is).
+          # Link against Ubuntu's copy of it; it is never shipped.
+          mkdir -p "$RUNNER_TEMP/cuda-link" && cd "$RUNNER_TEMP/cuda-link"
+          apt-get download -q libnvidia-compute-580
+          dpkg -x libnvidia-compute-580_*.deb x
+          cp -L x/usr/lib/x86_64-linux-gnu/libcuda.so.1 . && ln -sf libcuda.so.1 libcuda.so && rm -rf x ./*.deb
+          {
+            echo "CUDA_HOME=$C"; echo "CUDA_PATH=$C"; echo "CUDA_ROOT=$C"
+            echo "LIBRARY_PATH=$C/lib:$RUNNER_TEMP/cuda-link"; echo "CUDA_LIB=$C/lib"
+          } >> "$GITHUB_ENV"
+          echo "$C/bin" >> "$GITHUB_PATH"
+          "$C/bin/nvcc" --version
+      - name: CUTLASS headers
+        run: |
+          git clone --quiet --depth 1 --branch "$CUTLASS_REF" https://github.com/NVIDIA/cutlass "$RUNNER_TEMP/cutlass"
+          echo "CUTLASS_DIR=$RUNNER_TEMP/cutlass/include" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: native-sm${{ env.CUDA_COMPUTE_CAP }}
+      - name: Build and package (tar.gz)
+        run: DRIVER_LIB_DIR="$RUNNER_TEMP/cuda-link" packaging/linux/package-native.sh --cuda-lib "$CUDA_LIB"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: linux-x86_64
+          if-no-files-found: error
+          path: dist/release/*.tar.gz
+
+  draft:
+    needs: [version, windows, linux]
+    if: github.ref_type == 'tag' || inputs.draft
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: files
+          merge-multiple: true
+      - name: Checksums
+        working-directory: files
+        run: sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Draft release (published by hand after the hardware smoke test)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.version.outputs.version }}
+        run: |
+          gh release create "$TAG" files/* --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "ShotoPhopEX $TAG" --generate-notes
