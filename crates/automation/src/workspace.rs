@@ -392,6 +392,8 @@ pub fn authorize_engine_command(id: &str, params: &Value) -> Result<(), Automati
                 | "layer.videoLayers.replaceFootage"
                 | "layer.videoLayers.reloadFrame"
                 | "generate.export"
+                // Downloads gigabytes into the Models folder (or Documents) and can set it.
+                | "models.get"
         )
         || command_uses_ambient_path(id, params)
         || profile_command_may_read_ambient(id, params)
