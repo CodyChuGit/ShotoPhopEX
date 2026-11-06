@@ -66,21 +66,82 @@ its own masked layer, so the original pixels never change.
 
 ## 🚀 Install
 
-> [!IMPORTANT]
-> **There is no one-click download yet.** No release has been published, so today the app is
-> built from source on Windows. Everything is in this one repository: the editor, and the
-> native generative engine in [`genai-native/`](genai-native/).
+Download the newest build from the [**Releases page**](https://github.com/CodyChuGit/ShotoPhopEX/releases/latest).
+There are two Windows downloads with the same app inside; pick one. Neither includes models:
+you add those once (step 3 below).
 
 ### What you need
 
 | | |
 |---|---|
-| **GPU** | NVIDIA RTX with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
+| **GPU** | NVIDIA RTX 40 or 50 series with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
+| **Driver** | NVIDIA driver 580 or newer (CUDA 13). Nothing else: the CUDA libraries the app needs ship with it. |
 | **OS** | Windows 10 or 11, x64 |
 | **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
-| **Build tools** | Git, Rust (rustup, MSVC), Visual Studio 2022 Build Tools (C++), CUDA Toolkit 13, the CUTLASS headers |
 
-### Steps
+### Windows installer (`.msi`)
+
+1. Download `photocraft-<version>-windows-x64.msi` and open it.
+2. Windows may show **"Windows protected your PC"**, because the installer is not code-signed
+   yet. Click **More info › Run anyway**.
+3. Click through the wizard. It installs for your account only (no administrator needed) into
+   `%LOCALAPPDATA%\Programs\ArtCraft\PhotoCraft`; tick **Install for all users** on the first
+   page to put it in Program Files instead.
+4. Start **ShotoPhopEX** from the Start menu.
+
+Uninstall it from **Settings › Apps › Installed apps**. Your preferences and Generations library
+stay in `%APPDATA%\Photocraft` until you delete them.
+
+### Portable zip (`-portable.zip`)
+
+1. Download `photocraft-<version>-windows-x64-portable.zip`.
+2. Right-click it › **Properties**, tick **Unblock**, then **OK**. Otherwise Windows may block the
+   app's files.
+3. Extract it anywhere (a USB drive works), for example `D:\ShotoPhopEX`.
+4. Run `photocraft.exe`. If SmartScreen appears, click **More info › Run anyway**.
+
+The zip runs in portable mode: preferences, presets and the Generations library are kept in a
+`PhotoCraftData` folder next to the exe, and nothing is written to `%APPDATA%`. Delete
+`portable.txt` to use the normal per-user folders instead. To remove it, delete the folder.
+
+### First launch (both)
+
+**3. Get the models** into one folder in ComfyUI's layout. The [model table](#-models) lists every
+file. If you already have ComfyUI, its `models` folder works as it is.
+
+**4. Point the app at them.** Open **Edit › Preferences › AI Integrations**, set **Models
+folder**, leave **Native runtime folders** empty (the bundled `runtime` folder is used), and press
+**Generate**. A memory check on the first launch picks the right models for your card.
+
+### Linux
+
+There is no Linux download yet. The editor is cross-platform, and the native engine was first
+developed on Linux, but the full generative build has not been tested on Linux in this repository
+yet, so treat this as a preview and [report what breaks](https://github.com/CodyChuGit/ShotoPhopEX/issues).
+
+You need an NVIDIA driver 580+, the CUDA Toolkit 13 (`nvcc`, with its `lib64` on the loader
+path), Git, a C++ compiler, and Rust from [rustup](https://rustup.rs). Then:
+
+```sh
+# Debian/Ubuntu build dependencies for the editor (other distros: the same packages by their names)
+sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+git clone --depth 1 https://github.com/NVIDIA/cutlass ~/src/cutlass
+git clone https://github.com/CodyChuGit/ShotoPhopEX && cd ShotoPhopEX
+export CUDA_COMPUTE_CAP=89            # 120 for RTX 50, 89 for RTX 40, 86 for RTX 30
+export CUTLASS_DIR=~/src/cutlass/include
+export CUDARC_CUDA_VERSION=13030
+cargo build --release -p photocraft -p photocraft-cli --features native-diffusion
+./target/release/photocraft
+```
+
+Then set the **Models folder** as in step 4. If the engine reports missing CUDA libraries, add
+your toolkit's `lib64` folder (for example `/usr/local/cuda/lib64`) to `LD_LIBRARY_PATH`.
+
+<details>
+<summary><b>Build from source on Windows</b></summary>
+
+Needs Git, Rust (rustup, MSVC), Visual Studio 2022 Build Tools (C++), the CUDA Toolkit 13 and the
+CUTLASS headers.
 
 **1. Install the tools** (PowerShell, once):
 
@@ -103,22 +164,17 @@ cargo build --release -p photocraft -p photocraft-cli --features native-diffusio
 ```
 
 `CUDA_COMPUTE_CAP` is 120 for the RTX 50 series, 89 for the 40 series and 86 for the 30 series.
-`CUDARC_CUDA_VERSION=13030` is the newest CUDA API level the bindings know; keep it for any CUDA 13 toolkit.
-The first build takes a while, because it compiles the CUDA kernels too.
+`CUDARC_CUDA_VERSION=13030` is the newest CUDA API level the bindings know; keep it for any CUDA
+13 toolkit. The first build takes a while, because it compiles the CUDA kernels too.
 
-**3. Get the models** into one folder in ComfyUI's layout (the [model table](#-models) lists every
-file). If you already have ComfyUI, its `models` folder works as it is.
+**3. Run it.** Start `target\release\photocraft.exe` and set **Models folder** as above, plus
+**Native runtime folders** (your CUDA Toolkit's `bin\x64`).
 
-**4. Run it.** Start `target\release\photocraft.exe`, open **Edit › Preferences › AI
-Integrations**, set **Models folder** and **Native runtime folders** (your CUDA Toolkit's
-`bin\x64`), then press **Generate**.
-
-<details>
-<summary><b>Make a portable folder</b> to copy to another PC</summary>
+**Make the release packages** (the zip and the MSI; the MSI needs WiX 5):
 
 ```powershell
 pwsh packaging/windows/runtime.ps1 -Cuda "$env:CUDA_PATH\bin\x64"
-pwsh packaging/windows/package.ps1 -Arch x64 -Native -NoMsi -SkipBuild
+pwsh packaging/windows/package.ps1 -Arch x64 -Native -SkipBuild
 ```
 
 </details>
