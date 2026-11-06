@@ -47,6 +47,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
+      upstream: ${{ steps.v.outputs.upstream }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - id: v
@@ -70,6 +71,10 @@ jobs:
             echo "tag v$v does not match Cargo.toml's version $cargo_v; bump [workspace.package] version first" >&2; exit 1
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          # The upstream PhotoCraft release this build is based on (build_info::UPSTREAM_VERSION).
+          up="$(sed -n 's/^pub const UPSTREAM_VERSION: &str = "\([0-9.]*\)";$/\1/p' crates/engine/src/build_info.rs)"
+          [[ "$up" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "UPSTREAM_VERSION not found in build_info.rs" >&2; exit 1; }
+          echo "upstream=$up" >> "$GITHUB_OUTPUT"
 
   windows:
     needs: version
@@ -244,6 +249,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ needs.version.outputs.version }}
+          UPSTREAM: ${{ needs.version.outputs.upstream }}
         run: |
           gh release create "$TAG" files/* --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
-            --title "ShotoPhopEX $TAG" --generate-notes
+            --title "ShotoPhopEX $TAG" \
+            --notes "Based on PhotoCraft $UPSTREAM ([storytold/photocraft](https://github.com/storytold/photocraft/releases/tag/v$UPSTREAM))." \
+            --generate-notes
