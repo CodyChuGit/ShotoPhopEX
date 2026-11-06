@@ -32,7 +32,18 @@ struct VaeConv {
     /// The weight in the implicit GEMM's KRSC layout, when the convolution takes that path.
     #[cfg(feature = "convrot")]
     krsc: Option<Tensor>,
+    /// A decoder convolution: on candle's im2col it goes in bands of rows past
+    /// [`DECODER_IM2COL_BYTES`].
+    decoder: bool,
 }
+
+/// Bytes of im2col scratch a decoder convolution off the implicit GEMM builds in one go: past
+/// this it goes in bands of [`DECODER_CONV_ROWS`] rows. The head (96 channels to 3, which the
+/// implicit GEMM does not take) builds 9·96·H·W bf16 values: 3.6 GB at 1440², enough beside a
+/// resident DiT to spill to shared memory on Windows. 2 GiB keeps a 1024² decode (1.8 GB) whole,
+/// as before.
+const DECODER_IM2COL_BYTES: usize = 2 << 30;
+const DECODER_CONV_ROWS: usize = 128;
 
 std::thread_local! {
     static DECODER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -64,6 +75,7 @@ impl VaeConv {
             conv: Conv2d::new(w, Some(b), Conv2dConfig { padding: k / 2, ..Default::default() }),
             #[cfg(feature = "convrot")]
             krsc,
+            decoder: DECODER.with(|d| d.get()),
         })
     }
 
@@ -72,6 +84,18 @@ impl VaeConv {
         if let (Some(krsc), Some(bias)) = (&self.krsc, self.conv.bias()) {
             if x.dtype() == DType::BF16 {
                 return crate::vae_conv::conv2d_nchw(x, krsc, bias);
+            }
+        }
+        if self.decoder && x.device().is_cuda() {
+            let (_, c, h, w) = x.dims4()?;
+            let (_, _, kh, kw) = self.conv.weight().dims4()?;
+            let scratch = c.saturating_mul(kh * kw).saturating_mul(h).saturating_mul(w).saturating_mul(x.dtype().size_in_bytes());
+            if kh > 1 && scratch > DECODER_IM2COL_BYTES && h > DECODER_CONV_ROWS {
+                let y = crate::model::vae::conv_row_tiles(x, self.conv.weight(), self.conv.config().padding, DECODER_CONV_ROWS)?;
+                return Ok(match self.conv.bias() {
+                    Some(b) => y.broadcast_add(&b.reshape((1, b.dim(0)?, 1, 1))?)?,
+                    None => y,
+                });
             }
         }
         Ok(self.conv.forward(x)?)
@@ -154,31 +178,80 @@ impl ResidualBlock {
     }
 }
 
+/// Bytes of f32 attention scores the decoder computes in one go: past this the queries go in
+/// blocks of rows. A 1440² picture has 32 400 keys, so whole it needs 4.2 GB of scores, as much
+/// again for their softmax and half that in bf16: beside a resident DiT that over-subscribes the
+/// card, and on Windows the driver spills it to shared memory (decodes of 14-67 s instead of
+/// 0.7 s). Each query row's softmax only sees its own scores, so the blocks change only the
+/// peak. 1 GiB keeps a 1024² decode (16 384 keys, exactly 1 GiB) whole, as before.
+const DECODER_SCORE_BYTES: usize = 1 << 30;
+/// The size of one block of scores once the queries are split.
+const DECODER_SCORE_BLOCK_BYTES: usize = 256 << 20;
+
 /// `AttentionBlock`: one head over the frame's pixels.
 struct AttentionBlock {
     norm: RmsNorm,
     to_qkv: VaeConv,
     proj: VaeConv,
     dim: usize,
+    /// The decoder's: queries go in blocks past [`DECODER_SCORE_BYTES`]. The encoder's stays
+    /// whole, so an edit's conditioning is bit-identical to before.
+    blocked: bool,
 }
 
 impl AttentionBlock {
     fn load(dim: usize, vb: VarBuilder) -> Result<Self> {
-        Ok(Self { norm: RmsNorm::load(dim, vb.pp("norm"))?, to_qkv: conv2d(dim, 3 * dim, 1, vb.pp("to_qkv"))?, proj: conv2d(dim, dim, 1, vb.pp("proj"))?, dim })
+        Ok(Self {
+            norm: RmsNorm::load(dim, vb.pp("norm"))?,
+            to_qkv: conv2d(dim, 3 * dim, 1, vb.pp("to_qkv"))?,
+            proj: conv2d(dim, dim, 1, vb.pp("proj"))?,
+            dim,
+            blocked: DECODER.with(|d| d.get()),
+        })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let (b, c, h, w) = x.dims4()?;
-        let qkv = self.to_qkv.forward(&self.norm.forward(x)?)?.reshape((b, 3 * c, h * w))?.transpose(1, 2)?; // (B, HW, 3C)
+        let n = h * w;
+        let qkv = self.to_qkv.forward(&self.norm.forward(x)?)?.reshape((b, 3 * c, n))?.transpose(1, 2)?; // (B, HW, 3C)
         let q = qkv.narrow(2, 0, c)?.contiguous()?.to_dtype(DType::F32)?;
-        let k = qkv.narrow(2, c, c)?.contiguous()?.to_dtype(DType::F32)?;
+        let kt = qkv.narrow(2, c, c)?.contiguous()?.to_dtype(DType::F32)?.transpose(1, 2)?;
         let v = qkv.narrow(2, 2 * c, c)?.contiguous()?;
-        // Scores in f32 whatever the model's dtype (a 1024² picture has 16 384 keys).
-        let scores = (q.matmul(&k.transpose(1, 2)?)? / (self.dim as f64).sqrt())?;
-        let attn = candle_nn::ops::softmax(&scores, D::Minus1)?.to_dtype(v.dtype())?;
-        let out = attn.matmul(&v)?.transpose(1, 2)?.reshape((b, c, h, w))?;
+        drop(qkv);
+        let score_bytes = b.saturating_mul(n).saturating_mul(n).saturating_mul(4);
+        let rows = if self.blocked && score_bytes > DECODER_SCORE_BYTES {
+            (DECODER_SCORE_BLOCK_BYTES / b.saturating_mul(n).saturating_mul(4).max(1)).max(1)
+        } else {
+            n
+        };
+        let out = attend_rows(&q, &kt, &v, (self.dim as f64).sqrt(), rows)?;
+        let out = out.transpose(1, 2)?.reshape((b, c, h, w))?;
         Ok((self.proj.forward(&out)? + x)?)
     }
+}
+
+/// `softmax(q·kᵀ / scale)·v` for `q (B, N, C)` f32, `kt (B, C, M)` f32 and `v (B, M, C)`, taking
+/// `rows` queries at a time (all of them when `rows ≥ N`). Scores are f32 whatever `v`'s dtype
+/// (a 1024² picture has 16 384 keys); the result has `v`'s.
+fn attend_rows(q: &Tensor, kt: &Tensor, v: &Tensor, scale: f64, rows: usize) -> Result<Tensor> {
+    let attend = |q: &Tensor| -> Result<Tensor> {
+        let scores = (q.matmul(kt)? / scale)?;
+        let attn = candle_nn::ops::softmax(&scores, D::Minus1)?.to_dtype(v.dtype())?;
+        Ok(attn.matmul(v)?)
+    };
+    let n = q.dim(1)?;
+    if rows >= n {
+        return attend(q);
+    }
+    let rows = rows.max(1);
+    let mut parts = Vec::with_capacity(n.div_ceil(rows));
+    let mut r = 0;
+    while r < n {
+        let len = rows.min(n - r);
+        parts.push(attend(&q.narrow(1, r, len)?)?);
+        r += len;
+    }
+    Ok(Tensor::cat(&parts, 1)?)
 }
 
 /// `Resample` upsampling for one frame: nearest 2× then a 3×3 convolution to half the
@@ -465,4 +538,29 @@ pub fn rgba_to_rgba_u8(img: &Tensor) -> Result<(usize, usize, Vec<u8>)> {
     anyhow::ensure!(c == 4, "RGBA conversion wants 4 channels, got {c}");
     let hwc = ((img.i(0)?.permute((1, 2, 0))?.clamp(-1.0, 1.0)? + 1.0)? * 127.5)?.round()?.to_dtype(DType::U8)?.contiguous()?;
     Ok((w, h, hwc.flatten_all()?.to_vec1::<u8>()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Queries in blocks give the attention of all of them at once: each row's softmax only
+    /// sees its own scores (uneven last block, one row, more rows than queries).
+    #[test]
+    fn blocked_attention_matches_whole() -> Result<()> {
+        let dev = Device::Cpu;
+        let (b, n, c) = (2, 37, 8);
+        let q = (Tensor::arange(0f32, (b * n * c) as f32, &dev)?.reshape((b, n, c))?.sin()? * 2.0)?;
+        let k = (Tensor::arange(0f32, (b * n * c) as f32, &dev)?.reshape((b, n, c))?.cos()? * 1.5)?;
+        let v = Tensor::arange(0f32, (b * n * c) as f32, &dev)?.reshape((b, n, c))?.affine(0.01, -1.0)?;
+        let kt = k.transpose(1, 2)?;
+        let whole = attend_rows(&q, &kt, &v, (c as f64).sqrt(), n)?;
+        for rows in [1, 5, 16, 36, 37, 100] {
+            let got = attend_rows(&q, &kt, &v, (c as f64).sqrt(), rows)?;
+            assert_eq!(got.dims(), whole.dims());
+            let diff = (got - &whole)?.abs()?.max_all()?.to_scalar::<f32>()?;
+            assert!(diff < 1e-6, "rows {rows}: {diff}");
+        }
+        Ok(())
+    }
 }
