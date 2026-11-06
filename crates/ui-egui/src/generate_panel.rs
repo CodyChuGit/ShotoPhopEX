@@ -667,6 +667,8 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 enum Action {
     /// Preferences › AI Integrations, where the Models folder is set.
     OpenModelsFolder,
+    /// Help › Get AI Models…: download the memory profile's model pack.
+    GetModels,
     Generate,
     Cancel(JobId),
     Enhance,
@@ -739,6 +741,7 @@ fn apply(app: &mut PhotocraftApp, a: Action) {
             app.ui.generate.confirm_clear = false;
         }
         Action::OpenEditor(on) => app.ui.generate.editor = on,
+        Action::GetModels => crate::get_models_ui::open(app),
         Action::OpenModelsFolder => {
             crate::prefs_ui::open_preferences(app, "integrations");
         }
@@ -843,8 +846,11 @@ fn full(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, action: &mut Opt
     ui.spacing_mut().item_spacing.y = 6.0;
     // First run: no Models folder yet (nothing to migrate from an old ComfyUI install).
     if app.session.prefs().integrations.models_root().is_empty() {
-        callout(ui, t, "folder-open", tl!("Choose the folder that holds your model weights to use the generative tools"), t.accent);
+        callout(ui, t, "folder-open", tl!("Download the AI models matched to this computer, or choose a folder that already holds them"), t.accent);
         let w = ui.available_width();
+        if widgets::primary_button(ui, tl!("Get AI Models…"), w).clicked() {
+            *action = Some(Action::GetModels);
+        }
         if widgets::secondary_button(ui, tl!("Set Models Folder…"), w).clicked() {
             *action = Some(Action::OpenModelsFolder);
         }

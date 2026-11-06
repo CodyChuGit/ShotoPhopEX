@@ -45,6 +45,7 @@ pub mod dock;
 pub mod file_dialog;
 pub mod file_open;
 pub mod frame_stages;
+pub mod get_models_ui;
 pub mod gpu_status;
 pub mod i18n;
 mod icon_data;
