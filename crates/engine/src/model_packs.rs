@@ -130,6 +130,21 @@ pub fn installed(root: &std::path::Path, f: &ModelFile) -> bool {
     std::fs::metadata(path_of(root, f)).is_ok_and(|m| m.is_file() && m.len() == f.bytes)
 }
 
+/// Bytes still to fetch for `f`: none when installed, else what a resumable `.part` lacks.
+fn left(root: Option<&std::path::Path>, f: &ModelFile) -> u64 {
+    let Some(root) = root else { return f.bytes };
+    if installed(root, f) {
+        return 0;
+    }
+    let dest = path_of(root, f);
+    let had = std::fs::metadata(part_of(&dest)).map(|m| m.len()).unwrap_or(0);
+    f.bytes.saturating_sub(had.min(f.bytes))
+}
+
+fn part_of(dest: &std::path::Path) -> std::path::PathBuf {
+    dest.with_file_name(format!("{}.part", dest.file_name().and_then(|n| n.to_str()).unwrap_or("download")))
+}
+
 fn path_of(root: &std::path::Path, f: &ModelFile) -> std::path::PathBuf {
     let mut p = root.to_path_buf();
     for part in f.folder.split('/').filter(|s| !s.is_empty()) {
@@ -164,7 +179,7 @@ fn file_json(root: Option<&std::path::Path>, f: &ModelFile) -> Value {
 
 fn pack_json(m: &Manifest, root: Option<&std::path::Path>, p: &Pack) -> Value {
     let files: Vec<Value> = p.files.iter().filter_map(|id| m.file(id)).map(|f| file_json(root, f)).collect();
-    let missing: u64 = p.files.iter().filter_map(|id| m.file(id)).filter(|f| !root.is_some_and(|r| installed(r, f))).map(|f| f.bytes).sum();
+    let missing: u64 = p.files.iter().filter_map(|id| m.file(id)).map(|f| left(root, f)).sum();
     let total: u64 = p.files.iter().filter_map(|id| m.file(id)).map(|f| f.bytes).sum();
     json!({"id": p.id, "name": p.name, "description": p.description, "files": files, "bytes": total, "missingBytes": missing})
 }
@@ -308,7 +323,7 @@ fn fetch_verified(
 ) -> std::result::Result<(), String> {
     let dir = dest.parent().ok_or("no folder")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
-    let part = dest.with_file_name(format!("{}.part", dest.file_name().and_then(|n| n.to_str()).unwrap_or("download")));
+    let part = part_of(dest);
     for attempt in 0..2 {
         // A part already longer than the file can't be resumed.
         if std::fs::metadata(&part).is_ok_and(|m| m.len() > bytes) {
@@ -569,11 +584,15 @@ mod tests {
             gated: false,
         };
         assert!(!installed(&dir, &f));
+        assert_eq!(left(Some(&dir), &f), 3);
         std::fs::create_dir_all(dir.join("loras").join("sub")).unwrap();
+        std::fs::write(dir.join("loras").join("sub").join("x.safetensors.part"), b"a").unwrap();
+        assert_eq!(left(Some(&dir), &f), 2, "a partial download counts what it already has");
         std::fs::write(dir.join("loras").join("sub").join("x.safetensors"), b"ab").unwrap();
         assert!(!installed(&dir, &f), "short file");
         std::fs::write(dir.join("loras").join("sub").join("x.safetensors"), b"abc").unwrap();
         assert!(installed(&dir, &f));
+        assert_eq!(left(Some(&dir), &f), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

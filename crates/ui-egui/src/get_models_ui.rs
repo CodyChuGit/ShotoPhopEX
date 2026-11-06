@@ -48,7 +48,13 @@ pub fn menu(app: &mut PhotocraftApp, id: &str, _params: &Value) -> Option<Result
 }
 
 fn gb(b: u64) -> String {
-    if b >= 1_000_000_000 { format!("{:.1} GB", b as f64 / 1e9) } else { format!("{} MB", (b as f64 / 1e6).round()) }
+    if b >= 1_000_000_000 {
+        format!("{:.1} GB", b as f64 / 1e9)
+    } else if b >= 1_000_000 {
+        format!("{} MB", (b as f64 / 1e6).round())
+    } else {
+        format!("{} KB", (b as f64 / 1e3).ceil())
+    }
 }
 
 fn start(app: &mut PhotocraftApp) {
@@ -73,8 +79,11 @@ fn start(app: &mut PhotocraftApp) {
 /// Follow the job: when it ends, show the outcome and refresh the list.
 fn poll(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let Some(id) = app.ui.get_models.job else { return };
-    let Some(info) = app.session.job(id) else {
+    // A job that has ended leaves the running list on the frame it ends (the status bar may
+    // collect it first), so look in the recent ones too.
+    let Some(info) = app.session.job(id).or_else(|| app.session.jobs_with_recent().into_iter().rev().find(|j| j.id == id)) else {
         app.ui.get_models.job = None;
+        refresh(app);
         return;
     };
     match info.state {
@@ -218,14 +227,15 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             .filter(|e| extras.iter().any(|x| Some(x.as_str()) == e["id"].as_str()))
             .filter_map(|e| e["missingBytes"].as_u64())
             .sum();
-        let missing = pack["missingBytes"].as_u64().unwrap_or(0) + extra_missing;
+        let runtime_missing = if info["runtime"]["needed"] == true { info["runtime"]["bytes"].as_u64().unwrap_or(0) } else { 0 };
+        let missing = pack["missingBytes"].as_u64().unwrap_or(0) + extra_missing + runtime_missing;
         if let Some(j) = job.as_ref().filter(|_| running) {
             ui.add(egui::ProgressBar::new(j.progress).show_percentage().desired_width(400.0));
             ui.label(RichText::new(&j.message).small().color(t.text_dim));
             if crate::widgets::secondary_button(ui, tl!("Cancel"), 90.0).clicked() {
                 cancel = true;
             }
-        } else if missing == 0 && info["runtime"]["needed"] != true {
+        } else if missing == 0 {
             ui.label(RichText::new(tl!("Everything for this profile is installed.")).color(t.accent));
         } else {
             let label = crate::i18n::fmt(tl!("Download {size}"), &[("size", &gb(missing))]);
