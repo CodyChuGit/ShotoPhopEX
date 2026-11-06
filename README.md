@@ -289,14 +289,6 @@ Grow the canvas and the scene continues, people included, with an outpainting Lo
 
 Move the camera after the shot: a side view, a high angle, a close-up, with the Multiple Angles LoRA on Qwen-Image-Edit-2511. **About 10&nbsp;s each.**
 
-### Text to image with MOSS Turbo
-
-<p align="center">
-  <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
-</p>
-
-The low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card and spells its lettering right. **1.6&nbsp;s** on a 5090.
-
 ### Object Selection
 
 <p align="center">
@@ -328,6 +320,14 @@ Every person and thing in the picture on its own colour-coded, edge-matted layer
 </p>
 
 One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to Krea 2 at about 2 MP (1440²). Same prompt and seed in all three.
+
+### Text to image with MOSS Turbo
+
+<p align="center">
+  <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
+</p>
+
+The low-VRAM option: an 8-step Apache-2.0 model that fits a 12 GB card and spells its lettering right. **1.6&nbsp;s** on a 5090.
 
 ### Every feature
 
