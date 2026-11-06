@@ -114,6 +114,15 @@ pub struct LastQuery {
     pub candidate: Option<u32>,
     /// The document's history length after it ran (another edit since ends the refinement).
     pub past_len: usize,
+    /// The background job still applying it: `past_len` is taken when it ends ([`on_event`]),
+    /// as the result lands in the history only then (Next Match found a click's history one
+    /// step longer than recorded and refused, 2026-11-06).
+    pub job: Option<u64>,
+}
+
+/// The background job a command's answer names while it runs.
+fn pending_job(v: &Value) -> Option<u64> {
+    v.get("pending").and_then(Value::as_bool).filter(|p| *p).and_then(|_| v.get("job").and_then(Value::as_u64))
 }
 
 /// The tool's state in `UiState::object_select`. Never saved.
@@ -300,8 +309,21 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
-/// A probe job ended (`jobs_ui::on_event`).
+/// A probe job ended, or the job applying the last click (`jobs_ui::on_event`).
 pub fn on_event(app: &mut PhotocraftApp, e: &JobEvent) {
+    if e.command == "select.byPoint" {
+        let past_len = app.session.active().filter(|d| e.document == Some(d.doc.id)).map(|d| d.history.past_len());
+        if let Some(last) = app.ui.object_select.last.as_mut().filter(|l| l.job == Some(e.id.0)) {
+            match (&e.outcome, past_len) {
+                (JobOutcome::Done(_), Some(n)) => {
+                    last.job = None;
+                    last.past_len = n;
+                }
+                _ => app.ui.object_select.last = None,
+            }
+        }
+        return;
+    }
     if e.command != "select.probe" {
         return;
     }
@@ -449,9 +471,11 @@ pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egu
     };
     let doc = app.session.active().map(|d| d.doc.id);
     match app.run("select.byPoint", q) {
-        Ok(_) => {
+        Ok(v) => {
             if let (Some(doc), Some(past_len)) = (doc, app.session.active().map(|d| d.history.past_len())) {
-                app.ui.object_select.last = Some(LastQuery { doc, positives, negatives: Vec::new(), bbox, mode: mode.to_string(), candidate: None, past_len });
+                let job = pending_job(&v);
+                app.ui.object_select.last =
+                    Some(LastQuery { doc, positives, negatives: Vec::new(), bbox, mode: mode.to_string(), candidate: None, past_len, job });
             }
             // The picture's selection changed under the probe; the next pause asks again.
             app.ui.object_select.probe = None;
@@ -466,7 +490,7 @@ pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egu
 fn refine_last(app: &mut PhotocraftApp, point: [f64; 2], include: bool) -> bool {
     let Some(last) = app.ui.object_select.last.clone() else { return false };
     let current = app.session.active().map(|d| (d.doc.id, d.history.past_len()));
-    if current != Some((last.doc, last.past_len)) {
+    if last.job.is_some() || current != Some((last.doc, last.past_len)) {
         return false;
     }
     // Take the last result back, then ask again with every point so far.
@@ -489,8 +513,9 @@ fn refine_last(app: &mut PhotocraftApp, point: [f64; 2], include: bool) -> bool 
         q["box"] = json!(b);
     }
     match app.run("select.byPoint", q) {
-        Ok(_) => {
+        Ok(v) => {
             next.past_len = app.session.active().map_or(0, |d| d.history.past_len());
+            next.job = pending_job(&v);
             app.ui.object_select.last = Some(next);
             app.ui.object_select.probe = None;
             app.ui.object_select.hover = None;
@@ -510,7 +535,7 @@ pub fn next_match(app: &mut PhotocraftApp) {
         .object_select
         .last
         .clone()
-        .filter(|l| current == Some((l.doc, l.past_len)) && l.positives.len() == 1 && l.negatives.is_empty() && l.bbox.is_none())
+        .filter(|l| l.job.is_none() && current == Some((l.doc, l.past_len)) && l.positives.len() == 1 && l.negatives.is_empty() && l.bbox.is_none())
     else {
         crate::notices::post(app, tl!("Click an object first; Next Match swaps what that click selected"), Vec::new(), false, None);
         return;
@@ -524,8 +549,9 @@ pub fn next_match(app: &mut PhotocraftApp) {
     let mut q = json!({"mode": next.mode, "sampleAllLayers": o.sample_all.object_selection, "refine": o.refine_edge, "points": next.positives, "candidate": next.candidate});
     mask_stack(app, &mut q);
     match app.run("select.byPoint", q) {
-        Ok(_) => {
+        Ok(v) => {
             next.past_len = app.session.active().map_or(0, |d| d.history.past_len());
+            next.job = pending_job(&v);
             app.ui.object_select.last = Some(next);
             app.ui.object_select.probe = None;
             app.ui.object_select.hover = None;

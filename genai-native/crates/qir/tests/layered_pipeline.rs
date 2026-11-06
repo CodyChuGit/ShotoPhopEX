@@ -98,12 +98,10 @@ fn installed_benchmark() -> anyhow::Result<()> {
     let mut started = Instant::now();
     let root = std::env::var_os("QIR_COMFY_MODELS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models"));
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).to_path_buf());
     let device = Device::new_cuda(0)?;
     let pipeline = LayeredPipeline::load_on_device(root, device.clone())?;
-    let input = std::env::var_os("QIR_LAYERED_INPUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\photocraft-tests\bench\swap\gen\gen-tshirt.png"));
+    let input = std::env::var_os("QIR_LAYERED_INPUT").map(PathBuf::from).ok_or_else(|| anyhow::anyhow!("set QIR_LAYERED_INPUT to a test picture"))?;
     let picture = image::open(input)?.into_rgba8();
     let dimension = |key: &str, default: u32| -> anyhow::Result<u32> { Ok(std::env::var(key).ok().map(|v| v.parse()).transpose()?.unwrap_or(default)) };
     let picture = layered_resize::resize(&picture, dimension("QIR_LAYERED_WIDTH", 640)?, dimension("QIR_LAYERED_HEIGHT", 640)?);
@@ -169,7 +167,7 @@ fn installed_one_step_smoke_and_capture() -> anyhow::Result<()> {
     let started = Instant::now();
     let root = std::env::var_os("QIR_COMFY_MODELS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models"));
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).to_path_buf());
     let gpu = std::env::var("QIR_LAYERED_DEVICE").is_ok_and(|v| v == "cuda");
     let device = if gpu { Device::new_cuda(0)? } else { Device::Cpu };
     let option = |key: &str, default: usize| -> anyhow::Result<usize> { Ok(std::env::var(key).ok().map(|v| v.parse()).transpose()?.unwrap_or(default)) };

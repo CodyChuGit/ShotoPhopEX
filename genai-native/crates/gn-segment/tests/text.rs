@@ -7,7 +7,7 @@ use gn_segment::text::TextEncoder;
 fn checkpoint() -> PathBuf {
     std::env::var_os("GN_SAM31_CHECKPOINT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models\checkpoints\sam3.1_multiplex_fp16.safetensors"))
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join("checkpoints/sam3.1_multiplex_fp16.safetensors"))
 }
 
 #[test]
