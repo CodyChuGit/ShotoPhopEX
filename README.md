@@ -1,6 +1,7 @@
 <p align="center">
   💿 <a href="https://elasticstage.com/soundcloud/releases/whorehaus-ketamine-album"><b>Support me by buying my album</b></a>
   · or <a href="https://music.apple.com/us/artist/whorehaus/6817717768">listen to my album on Apple Music</a>
+  · or on <a href="https://open.spotify.com/album/2ONFHybxfXt6XBqiMP5YQB">Spotify</a>
 </p>
 
 <p align="center">
