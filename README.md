@@ -563,6 +563,8 @@ helps other people find it.
   Krea 2; the **Qwen** team at Alibaba for Qwen-Image, Qwen-Image-Edit and Qwen3-VL; the **MOSS**
   team (OpenMOSS) for MOSS-Image, plus lodestones for Kromoss; Meta for SAM 3.1, hustvl for
   ViTMatte, and every LoRA author listed in [Models](#-models).
+- **The Civitai community**, for their kindness and generosity: the workflows, LoRAs and know-how
+  shared there (AusBoss's outpaint, restore and inpaint work among them) shaped many of these tools.
 - **Our lord and savior Jensen Huang**, for CUDA. 🙏
 
 ## License
