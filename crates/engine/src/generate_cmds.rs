@@ -654,12 +654,22 @@ pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     Some(format!("<sks> {r} {t} {z}"))
 }
 
-/// The template `generate.angles` runs: under `auto` with the research opt-in and the native
-/// worker, the Qwen-Image-2.1 edit by instruction ([`angle_instruction`], about 6 s on the
-/// worker), else 2511 with the Multiple Angles LoRA on the same worker.
+/// The template `generate.angles` runs: 2511 with the Multiple Angles LoRA, which was trained on
+/// exactly these camera moves. Plain Qwen-Image-2.1 by instruction ([`angle_instruction`]) barely
+/// turned the camera on side views (README recording, 2026-11-06), so it is only the stand-in
+/// when the Models folder is there and its `loras/` lacks the LoRA (with the research opt-in).
 pub fn angles_template(s: &Session) -> &'static str {
-    native21_only(s, EDIT, false).unwrap_or(ANGLES_TEMPLATE)
+    let root = s.prefs().integrations.models_root();
+    let loras = std::path::Path::new(&root).join("loras");
+    let lacks_lora = !root.is_empty() && loras.is_dir() && !loras.join(ANGLES_LORA).is_file();
+    if lacks_lora && let Some(t) = native21_only(s, EDIT, false) {
+        return t;
+    }
+    ANGLES_TEMPLATE
 }
+
+/// The Multiple Angles LoRA file [`ANGLES_TEMPLATE`] loads (fal, Apache-2.0).
+pub const ANGLES_LORA: &str = "qwen-image-edit-2511-multiple-angles-lora.safetensors";
 
 /// The plain camera instruction the Qwen-Image-2.1 edit gets for a camera, which has no
 /// Multiple Angles LoRA: the camera named as moved ("Rotate the camera 90 degrees to the right
@@ -4998,7 +5008,20 @@ pub fn likely_auto(command: &str, quality: &str) -> &'static str {
 /// [`likely_auto`] in this session: the Qwen-Image-2.1 template where `auto` runs it on the
 /// native worker ([`native21_auto`]), else the first of the server's order.
 pub fn likely_auto_in(s: &Session, command: &str, quality: &str) -> &'static str {
-    native21_auto(s, command, false).unwrap_or_else(|| likely_auto(command, quality))
+    auto_shown(s, command, false).unwrap_or_else(|| likely_auto(command, quality))
+}
+
+/// What `auto` runs for `command` in this session where it is not the server's order: an expand
+/// through the Outpaint LoRA when [`outpaint_lora`] takes it (the 2.1 edit, or the Turbo
+/// template), else [`native21_auto`]. For the Auto line and `generate.models` only: a run plans
+/// the Outpaint route itself from the canvas sizes.
+fn auto_shown(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
+    if command == EXPAND
+        && let Some((t, ..)) = outpaint_lora(s, (1, 1), (1, 1))
+    {
+        return Some(t);
+    }
+    native21_auto(s, command, removal)
 }
 
 /// Seconds a run of `template` for a `width × height` area with `count` variations and
@@ -5064,7 +5087,7 @@ fn run_models(s: &mut Session, p: &Value) -> Result<Value> {
 fn native21_picks(s: &Session) -> Vec<(&'static str, &'static str)> {
     [("autoFill", FILL, false), ("autoExpand", EXPAND, false), ("autoEdit", EDIT, false), ("autoRemove", FILL, true)]
         .into_iter()
-        .filter_map(|(key, command, removal)| native21_auto(s, command, removal).map(|t| (key, t)))
+        .filter_map(|(key, command, removal)| auto_shown(s, command, removal).map(|t| (key, t)))
         .collect()
 }
 
