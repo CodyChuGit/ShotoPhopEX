@@ -35,6 +35,10 @@ env:
   # The kernels are built for this architecture and carry its PTX, so they also run on every
   # newer card: 86 covers the RTX 30, 40 and 50 series.
   CUDA_COMPUTE_CAP: "86"
+  # qir's own kernels get a cubin for each of RTX 30, 40 and 50 (sm_86, sm_89, sm_120): on an
+  # sm_86-only build a 40 or 50 card JITs sm_86 PTX, which has no FP8 MMA, and SageAttention2's
+  # kernels trap and reset the driver (v0.1.0, MOSS and Qwen-Image-2.1 on an RTX 5090).
+  QIR_CUDA_ARCHS: "86,89,120"
   CUDARC_CUDA_VERSION: "13030"
   CUTLASS_REF: v4.8.1
 
@@ -136,7 +140,7 @@ jobs:
           arch: x64
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
-          key: native-sm${{ env.CUDA_COMPUTE_CAP }}
+          key: native-sm${{ env.CUDA_COMPUTE_CAP }}-k${{ env.QIR_CUDA_ARCHS }}
       - name: Runtime folder (the CUDA libraries that ship beside the exe)
         shell: pwsh
         run: |
@@ -213,7 +217,7 @@ jobs:
           echo "CUTLASS_DIR=$RUNNER_TEMP/cutlass/include" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
-          key: native-sm${{ env.CUDA_COMPUTE_CAP }}
+          key: native-sm${{ env.CUDA_COMPUTE_CAP }}-k${{ env.QIR_CUDA_ARCHS }}
       - name: Build and package (tar.gz)
         run: DRIVER_LIB_DIR="$RUNNER_TEMP/cuda-link" packaging/linux/package-native.sh --cuda-lib "$CUDA_LIB"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

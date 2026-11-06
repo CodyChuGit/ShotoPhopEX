@@ -13,11 +13,22 @@
 
 #[cfg(any(feature = "convrot", feature = "fusednorm", feature = "sage", feature = "sage2", feature = "fp8", feature = "flash"))]
 fn nvcc() -> cc::Build {
-    let cap = std::env::var("CUDA_COMPUTE_CAP").unwrap_or_else(|_| "89".into());
+    let archs = kernel_archs();
     let mut b = cc::Build::new();
     // Never device-debug builds: a profile with `debug = 1` makes `cc` pass nvcc `-G`, which
     // strips every device optimisation and turns a 3 s denoise into a stall.
-    b.cuda(true).debug(false).opt_level(3).flag("-std=c++17").flag("--expt-relaxed-constexpr").flag(format!("-arch=sm_{cap}"));
+    b.cuda(true).debug(false).opt_level(3).flag("-std=c++17").flag("--expt-relaxed-constexpr");
+    if let [cap] = archs.as_slice() {
+        b.flag(format!("-arch=sm_{cap}"));
+    } else {
+        // One cubin per architecture (the driver loads the newest one the card runs), plus the
+        // newest one's PTX for cards after it.
+        for cap in &archs {
+            b.flag(format!("-gencode=arch=compute_{cap},code=sm_{cap}"));
+        }
+        let newest = archs.iter().max().expect("at least one architecture");
+        b.flag(format!("-gencode=arch=compute_{newest},code=compute_{newest}"));
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         // CUDA 13's CCCL under MSVC: the standard-conforming preprocessor; and the CRT the Rust
         // target links (static with `+crt-static`, dynamic otherwise) so every object agrees.
@@ -27,6 +38,25 @@ fn nvcc() -> cc::Build {
     b
 }
 
+/// The architectures our kernels are built for: `QIR_CUDA_ARCHS` (e.g. `86,89,120`, for a
+/// release that runs on RTX 30, 40 and 50 cards with each one's own instructions), else
+/// `CUDA_COMPUTE_CAP` alone (default 89). Kernels that need a newer architecture than the one
+/// a card loads (SageAttention2's FP8 MMA needs sm_89) are refused at run time
+/// (`sage2::attention_impl`), never launched.
+fn kernel_archs() -> Vec<u32> {
+    let list = std::env::var("QIR_CUDA_ARCHS").ok().filter(|v| !v.trim().is_empty());
+    let list = list.unwrap_or_else(|| std::env::var("CUDA_COMPUTE_CAP").unwrap_or_else(|_| "89".into()));
+    let mut archs: Vec<u32> = list
+        .split([',', ';', ' '])
+        .filter(|a| !a.trim().is_empty())
+        .map(|a| a.trim().parse().unwrap_or_else(|_| panic!("QIR_CUDA_ARCHS / CUDA_COMPUTE_CAP: `{a}` is not a compute capability such as 89")))
+        .collect();
+    archs.sort_unstable();
+    archs.dedup();
+    assert!(!archs.is_empty(), "QIR_CUDA_ARCHS names no architecture");
+    archs
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=kernels/convrot/int8_gemm.cu");
     println!("cargo:rerun-if-changed=kernels/convrot/quant_ops.cu");
@@ -34,6 +64,10 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/convrot/vae_conv.cu");
     println!("cargo:rerun-if-env-changed=CUTLASS_DIR");
     println!("cargo:rerun-if-env-changed=CUDA_COMPUTE_CAP");
+    println!("cargo:rerun-if-env-changed=QIR_CUDA_ARCHS");
+    // The architectures our kernels hold cubins for, so the engine knows which instructions
+    // the card it runs on actually got (`device::kernel_arch_for`).
+    println!("cargo:rustc-env=QIR_KERNEL_ARCHS={}", kernel_archs().iter().map(u32::to_string).collect::<Vec<_>>().join(","));
     // The architecture the kernels (ours and candle's PTX) were built for, so the engine can
     // refuse a card they cannot run on with a sentence (`device::check`).
     println!("cargo:rustc-env=QIR_COMPUTE_CAP={}", std::env::var("CUDA_COMPUTE_CAP").unwrap_or_else(|_| "89".into()));

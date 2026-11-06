@@ -177,13 +177,32 @@ pub fn attention_impl() -> Result<AttentionImpl> {
     static IMPL: OnceLock<std::result::Result<AttentionImpl, String>> = OnceLock::new();
     let r = IMPL.get_or_init(|| {
         let v = std::env::var("QIR_SAGE").ok();
-        let r = parse_attention_impl(v.as_deref()).map_err(|e| e.to_string());
+        let r = parse_attention_impl(v.as_deref())
+            .and_then(|a| fit_to_card(a, v.as_deref(), crate::device::probe().ok().map(|g| g.compute_cap), &crate::device::kernel_archs()));
+        let r = r.map_err(|e| e.to_string());
         if let Ok(a) = &r {
             tracing::info!(attention = ?a, qir_sage = ?v, "attention implementation");
         }
         r
     });
     r.clone().map_err(anyhow::Error::msg)
+}
+
+/// SageAttention2's FP8 P·V needs sm_89 instructions in the cubin the card loads. A build
+/// without them (v0.1.0's sm_86-only kernels, or an RTX 30 card) compiles those MMAs to a
+/// breakpoint, which hangs the GPU until Windows resets the driver: there the default falls
+/// back to SageAttention v1 (INT8, sm_80), and an explicit `QIR_SAGE=2` is an error.
+fn fit_to_card(a: AttentionImpl, requested: Option<&str>, compute_cap: Option<u32>, archs: &[u32]) -> Result<AttentionImpl> {
+    let AttentionImpl::Sage2(_) = a else { return Ok(a) };
+    let arch = compute_cap.and_then(|cc| crate::device::kernel_arch_for(archs, cc));
+    if compute_cap.is_none() || arch.is_some_and(|arch| arch >= 89) {
+        return Ok(a);
+    }
+    if requested.is_some_and(|v| !v.trim().is_empty()) {
+        anyhow::bail!("QIR_SAGE={requested:?}: SageAttention2 needs sm_89 kernels and this card loads the build's sm_{} ones", arch.unwrap_or(0));
+    }
+    tracing::info!(compute_cap, kernel_arch = arch, "SageAttention2 needs sm_89 kernels: SageAttention v1 instead");
+    Ok(AttentionImpl::Sage1)
 }
 
 /// Which attention operand a [`Sage2Qk`] is; fixes the per-thread scale layout
@@ -1348,4 +1367,24 @@ pub fn self_test() -> Result<Sage2Report> {
         }
     }
     Ok(rep)
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    #[test]
+    fn sage2_only_where_the_card_loads_sm89_kernels() {
+        let sa2 = AttentionImpl::Sage2(PvAccum::F16);
+        let release = [86, 89, 120];
+        // v0.1.0: sm_86 kernels only. An RTX 5090 falls back to v1 by default, and an explicit ask fails.
+        assert!(matches!(fit_to_card(sa2, None, Some(120), &[86]).unwrap(), AttentionImpl::Sage1));
+        assert!(fit_to_card(sa2, Some("2"), Some(120), &[86]).is_err());
+        // The multi-architecture release: RTX 40 and 50 keep SA2, RTX 30 falls back.
+        assert!(matches!(fit_to_card(sa2, None, Some(120), &release).unwrap(), AttentionImpl::Sage2(_)));
+        assert!(matches!(fit_to_card(sa2, None, Some(89), &release).unwrap(), AttentionImpl::Sage2(_)));
+        assert!(matches!(fit_to_card(sa2, None, Some(86), &release).unwrap(), AttentionImpl::Sage1));
+        // v1 is never changed.
+        assert!(matches!(fit_to_card(AttentionImpl::Sage1, None, Some(86), &[86]).unwrap(), AttentionImpl::Sage1));
+    }
 }

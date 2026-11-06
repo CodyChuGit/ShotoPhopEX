@@ -225,6 +225,28 @@ pub fn built_compute_cap() -> u32 {
     env!("QIR_COMPUTE_CAP").trim().parse().unwrap_or(89)
 }
 
+/// The architectures the engine's own kernels hold cubins for (`QIR_CUDA_ARCHS` at build time,
+/// else `CUDA_COMPUTE_CAP`), oldest first.
+pub fn kernel_archs() -> Vec<u32> {
+    parse_archs(env!("QIR_KERNEL_ARCHS"))
+}
+
+fn parse_archs(list: &str) -> Vec<u32> {
+    let mut archs: Vec<u32> = list.split(',').filter_map(|a| a.trim().parse().ok()).collect();
+    archs.sort_unstable();
+    archs
+}
+
+/// The architecture whose cubin the driver loads on a card of `compute_cap`: the newest built
+/// one it runs (a card runs cubins of its own major version up to its minor, and the newest
+/// PTX when no cubin fits, which only a newer card than every cubin can JIT).
+pub fn kernel_arch_for(archs: &[u32], compute_cap: u32) -> Option<u32> {
+    archs.iter().copied().filter(|&a| a <= compute_cap && a / 10 == compute_cap / 10).max().or_else(|| {
+        let newest = archs.iter().copied().max()?;
+        (newest <= compute_cap).then_some(newest)
+    })
+}
+
 /// The first CUDA card as the driver describes it, before any context exists.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gpu {
@@ -302,6 +324,20 @@ pub fn label(device: &Device) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_loads_the_newest_cubin_of_its_own_major_else_the_newest_ptx() {
+        let release = [86, 89, 120];
+        assert_eq!(kernel_arch_for(&release, 86), Some(86)); // RTX 30
+        assert_eq!(kernel_arch_for(&release, 89), Some(89)); // RTX 40
+        assert_eq!(kernel_arch_for(&release, 120), Some(120)); // RTX 50
+        assert_eq!(kernel_arch_for(&release, 121), Some(120));
+        assert_eq!(kernel_arch_for(&release, 75), None);
+        // v0.1.0's sm_86-only build: an RTX 5090 JITs the sm_86 PTX, so it has no sm_89 instructions.
+        assert_eq!(kernel_arch_for(&[86], 120), Some(86));
+        assert_eq!(kernel_arch_for(&[86], 89), Some(86));
+        assert_eq!(parse_archs("120,86, 89"), vec![86, 89, 120]);
+    }
 
     #[test]
     fn a_card_older_than_the_kernels_is_refused_with_its_name() {
