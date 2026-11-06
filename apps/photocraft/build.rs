@@ -9,6 +9,12 @@ fn main() {
     // Fork: the "Sp" tile (`assets/app-icon/sp/`) instead of upstream's kitsune.
     println!("cargo:rerun-if-changed=../../assets/app-icon/sp/sp.ico");
     println!("cargo:rerun-if-env-changed=PHOTOCRAFT_REQUIRE_WINRES");
+    // Fork: a Linux native build finds the CUDA libraries its release ships in `runtime/` beside
+    // the binary (packaging/linux/package-native.sh; the folder the engine's runtime preference
+    // falls back to, as on Windows) before the system's.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") && std::env::var_os("CARGO_FEATURE_NATIVE_DIFFUSION").is_some() {
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN/runtime");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
