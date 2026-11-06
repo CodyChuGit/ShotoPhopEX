@@ -37,7 +37,7 @@
 <p align="center">
   <img src="docs/images/genai/split-layers.gif" alt="Split into Layers on a street café photo: every person and object comes out on its own layer over a repainted background, and the Layers panel fills up as it works" width="100%">
   <br>
-  <sub><b>Split into Layers</b>: one click turned this café photo into 15 cut-out layers (six people, tables, chairs, a bicycle) over a repainted background. Recorded in the app on an RTX 5090; the 3-minute wait is sped up.</sub>
+  <sub><b>Split into Layers</b>: one click turns this café photo into a stack of cut-out layers (people, tables, chairs, a bicycle, a dog) over a repainted background, shown here hidden one by one. Recorded in the app on an RTX 5090; the 3-minute wait is sped up.</sub>
 </p>
 
 <br>
@@ -104,9 +104,9 @@ otherwise. The photos themselves were generated in the app, so no stock images a
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/genai/krea-fill.gif" alt="Generative Fill with Krea 2 AnyPaint on a beach photo: the Enhance wand writes the prompt, and the selection is repainted with an umbrella and a towel that blend into the sand" width="100%">
-      <b>Krea 2 AnyPaint fill.</b> Arbitrary-mask inpainting on Krea 2 Turbo, with the prompt
-      written for you from the picture by the Enhance wand.
+      <img src="docs/images/genai/krea-fill.gif" alt="Generative Fill with Krea 2 AnyPaint on a beach photo: a large lasso beside the woman is filled with a red and white striped parasol, taller than her, and a wooden lounger with a towel in its shade" width="100%">
+      <b>Krea 2 AnyPaint fill.</b> Lasso some empty sand, ask for a parasol and a lounger, and
+      Krea 2 paints them in at the right scale and light in 6.6 s.
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/genai/moss-turbo.gif" alt="The Generate panel on MOSS Turbo: a prompt for a neon sign is typed and the picture forms in about two seconds, readable lettering included" width="100%">
@@ -117,13 +117,13 @@ otherwise. The photos themselves were generated in the app, so no stock images a
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/genai/edit-clothing.gif" alt="A clothing edit: the jacket is selected, the Generate panel in Edit mode is asked to change it, and the person now wears a new jacket while everything else stays the same" width="100%">
-      <b>Clothing edits.</b> Select the jacket, say what it should be, and only the jacket changes:
-      face, pose and background stay put.
+      <b>Clothing edits.</b> Select by text "denim jacket", ask for black leather, and 7 s later only
+      the jacket has changed: face, hoodie and background stay put.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/genai/angles.gif" alt="Generative Angles: the same subject re-rendered from several camera directions and heights" width="100%">
-      <b>Generative Angles.</b> Orbit the camera around a subject after the fact: eight
-      directions, four heights, three distances.
+      <img src="docs/images/genai/angles.gif" alt="Generative Angles on a vintage rangefinder camera: the same camera re-rendered from the back, from a high angle and as a close-up" width="100%">
+      <b>Generative Angles.</b> Move the camera after the shot: a back view, a high angle, a
+      close-up, about 7 s each.
     </td>
   </tr>
 </table>
@@ -167,16 +167,16 @@ otherwise. The photos themselves were generated in the app, so no stock images a
 | **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best |
 | **MOSS Turbo** | The low-VRAM text to image: Kromoss with an 8-step DMD2 LoRA, Apache-2.0, strong lettering | Kromoss + DMD2 LoRA | **1.6 s** (1024×672) |
 | **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** |
-| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 1–4 s AnyPaint |
+| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP |
 | **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s |
 | **Remove · Generative Remove** | One stroke or a selection: the object is found, named and removed with its shadow; the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** (10.2 s from a lasso) |
-| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 (MOSS Edit Turbo on small cards) | **5.1 s** · 3.8 s MOSS Edit Turbo |
+| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 (MOSS Edit Turbo on small cards) | **5.1 s** (7.1 s with a text selection) · 3.8 s MOSS Edit Turbo |
 | **Generative Expand** | Grow the canvas and continue the scene, people included | Qwen-Image-2.1 + Outpaint LoRA | about 10 s at 1 MP · 32 s to 3.6 MP |
-| **Split into Layers** | Every subject on its own matted layer, nearest on top, over a repainted background; Rough, Medium or Fine detail | SAM 3.1 + ViTMatte + fill | 4.2 s for one subject · 3 min for 15 layers at 2 MP |
+| **Split into Layers** | Every subject on its own matted layer, nearest on top, over a repainted background; Rough, Medium or Fine detail | SAM 3.1 + ViTMatte + fill | 4.2 s for one subject · 3–3.5 min for a busy 2 MP scene |
 | **Clown Pass** | Everything in the picture on its own colour-coded, edge-matted layer, no fills | SAM 3.1 + ViTMatte | **9.5 s** (40 layers, 2 MP) |
 | **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** |
 | **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** |
-| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-Edit-2511 + Angles LoRA | 4.4 s |
+| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-2.1 edit (2511 Angles LoRA selectable) | 7.2 s |
 | **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
 | **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
