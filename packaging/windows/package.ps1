@@ -10,7 +10,7 @@
 
   The binaries link the C runtime statically (+crt-static), so neither the MSI nor the portable
   zip needs the Visual C++ redistributable. Signing is delegated to sign.ps1 (skipped with a
-  warning when no signing secrets are set).
+  warning when no signing secrets are set, and skipped entirely with -NoSign).
 
   Needs: Rust (MSVC toolchain + the target), the Windows SDK (rc.exe, signtool.exe),
   and WiX v5: dotnet tool install --global wix --version 5.0.2
@@ -34,7 +34,9 @@ param(
   [switch] $Native,
   [string] $Runtime,
   # Fork: the portable zip only, for a machine without WiX (the clean-profile check needs no MSI).
-  [switch] $NoMsi
+  [switch] $NoMsi,
+  # Fork: ShotoPhopEX ships unsigned; skip sign.ps1 (and its "secrets not set" warning) entirely.
+  [switch] $NoSign
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -110,7 +112,7 @@ Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 Copy-Item (Join-Path $Bin 'photocraft.exe'), (Join-Path $Bin 'photocraft-cli.exe') $Stage
 
-& (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'photocraft.exe') (Join-Path $Stage 'photocraft-cli.exe')
+if (-not $NoSign) { & (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'photocraft.exe') (Join-Path $Stage 'photocraft-cli.exe') }
 
 # ---- font notices for the MSI ------------------------------------------------------------------
 # The portable ZIP already carries these notices; stage the complete files before MSI creation too.
@@ -188,7 +190,7 @@ Invoke-Native 'MSI shortcut icon validation (ICE50)' {
 & (Join-Path $PSScriptRoot 'check-install-policy.ps1') -MsiPath $Msi
 # wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
 Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
-& (Join-Path $PSScriptRoot 'sign.ps1') $Msi
+if (-not $NoSign) { & (Join-Path $PSScriptRoot 'sign.ps1') $Msi }
 }
 
 # ---- portable zip ------------------------------------------------------------------------------

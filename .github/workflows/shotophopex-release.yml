@@ -5,6 +5,7 @@ name: ShotoPhopEX release
 #   Linux x86_64: photocraft-<v>-linux-x86_64.tar.gz
 # Compiling the CUDA kernels needs the toolkit and CUTLASS, not a GPU; the generative features
 # are smoke-tested on real hardware before the draft is published by hand. No model weights ship.
+# The Windows files ship unsigned (package.ps1 -NoSign): no code-signing certificate is used.
 #
 # A pushed tag vX.Y.Z builds that version and makes a draft release for it. A manual run builds
 # the branch it is started on and only uploads workflow artifacts, unless `draft` is ticked.
@@ -144,7 +145,7 @@ jobs:
           pwsh packaging/windows/runtime.ps1 -Cuda $bin
       - name: Build and package (MSI + portable zip)
         shell: pwsh
-        run: pwsh packaging/windows/package.ps1 -Arch x64 -Native
+        run: pwsh packaging/windows/package.ps1 -Arch x64 -Native -NoSign
       - name: The portable app starts on a PC without the CUDA Toolkit
         shell: pwsh
         run: |
