@@ -1,0 +1,265 @@
+//! Exact bf16 attention in one pass (kernels/flash/flash_fwd.cu, the FlashAttention-2
+//! algorithm): fp32 scores and softmax, no INT8 or FP8 operands. Krea 2's 8-step Turbo is
+//! sensitive to the quantized attention of SageAttention (17 of 28 pictures at ComfyUI's
+//! parity gate against 21 with exact attention, `benchmarks.md`), so its DiT blocks use this.
+//! Only compiled under the `flash` feature (which implies `cuda`).
+
+use std::ffi::c_void;
+
+use candle_core::backend::BackendStorage;
+use candle_core::cuda_backend::cudarc::driver::DevicePtr;
+use candle_core::{CpuStorage, CudaStorage, DType, Layout, Shape, Tensor};
+
+use crate::Result;
+
+/// The head dim the kernel takes.
+pub const HEAD_DIM: usize = 128;
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn qir_flash_fwd_bias(
+        o: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        b: i32,
+        h: i32,
+        kvh: i32,
+        s: i32,
+        skv: i32,
+        head_dim: i32,
+        strides: *const std::ffi::c_long,
+        scale: f32,
+        bias_row: i32,
+        bias_k0: i32,
+        bias_k1: i32,
+        bias: f32,
+        stream: *mut c_void,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn qir_layered_flash_fwd_bias(
+        o: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        b: i32,
+        h: i32,
+        kvh: i32,
+        s: i32,
+        skv: i32,
+        head_dim: i32,
+        strides: *const std::ffi::c_long,
+        scale: f32,
+        bias_row: i32,
+        bias_k0: i32,
+        bias_k1: i32,
+        bias: f32,
+        stream: *mut c_void,
+    ) -> i32;
+}
+
+/// A `(B, heads, rows, 128)` view's batch, head and row strides and its start, in elements:
+/// any view whose rows are dense (a BHSD tensor, or BSHD seen through `transpose(1, 2)`).
+fn bhs_strides(l: &Layout, what: &str) -> candle_core::Result<([std::ffi::c_long; 3], usize)> {
+    let st = l.stride();
+    if st.len() != 4 || st[3] != 1 {
+        candle_core::bail!("{what}: rows must be dense, got strides {st:?}");
+    }
+    Ok(([st[0] as std::ffi::c_long, st[1] as std::ffi::c_long, st[2] as std::ffi::c_long], l.start_offset()))
+}
+
+/// A constant added to the attention scores (before the softmax, in natural-log units) of the
+/// query rows from `rows_from` on for the keys in `keys`: `ln(b)` multiplies those keys'
+/// share of the attention by `b` before it is renormalised (a reference's pull on the target).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeyBias {
+    pub rows_from: usize,
+    pub keys: (usize, usize),
+    pub log_boost: f32,
+}
+
+struct Flash {
+    layered: bool,
+    scale: f32,
+    bias: Option<KeyBias>,
+}
+
+impl candle_core::CustomOp3 for Flash {
+    fn name(&self) -> &'static str {
+        "flash-attention"
+    }
+
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+        candle_core::bail!("flash-attention is CUDA-only")
+    }
+
+    fn cuda_fwd(
+        &self,
+        q: &CudaStorage,
+        q_l: &Layout,
+        k: &CudaStorage,
+        k_l: &Layout,
+        v: &CudaStorage,
+        v_l: &Layout,
+    ) -> candle_core::Result<(CudaStorage, Shape)> {
+        let dev = q.device().clone();
+        let (b, h, s, d) = q_l.shape().dims4()?;
+        let (kb, kvh, skv, kd) = k_l.shape().dims4()?;
+        if v_l.shape().dims4()? != (kb, kvh, skv, kd) || kb != b || kd != d || d != HEAD_DIM || kvh == 0 || h % kvh != 0 {
+            candle_core::bail!("flash-attention: q {:?}, k {:?}, v {:?} (head dim {HEAD_DIM}, H a multiple of KVH)", q_l.shape(), k_l.shape(), v_l.shape());
+        }
+        let (qst, qo) = bhs_strides(q_l, "flash q")?;
+        let (kst, ko) = bhs_strides(k_l, "flash k")?;
+        let (vst, vo) = bhs_strides(v_l, "flash v")?;
+        let strides = [qst[0], qst[1], qst[2], kst[0], kst[1], kst[2], vst[0], vst[1], vst[2]];
+        let (qo, ko, vo) = ((qo * 2) as u64, (ko * 2) as u64, (vo * 2) as u64);
+        let (qs, ks, vs) = (q.as_cuda_slice::<half::bf16>()?, k.as_cuda_slice::<half::bf16>()?, v.as_cuda_slice::<half::bf16>()?);
+        let stream = dev.cuda_stream();
+        let out = unsafe { dev.alloc::<half::bf16>(b * s * h * d)? };
+        {
+            let (qp, _gq) = qs.device_ptr(&stream);
+            let (kp, _gk) = ks.device_ptr(&stream);
+            let (vp, _gv) = vs.device_ptr(&stream);
+            let (op, _go) = out.device_ptr(&stream);
+            let (bias_row, bias_k0, bias_k1, bias) = match self.bias {
+                Some(kb) => (kb.rows_from as i32, kb.keys.0 as i32, kb.keys.1 as i32, kb.log_boost),
+                None => (0, 0, 0, 0.0),
+            };
+            let rc = unsafe {
+                let launch = if self.layered { qir_layered_flash_fwd_bias } else { qir_flash_fwd_bias };
+                launch(
+                    op as *mut c_void,
+                    (qp + qo) as *const c_void,
+                    (kp + ko) as *const c_void,
+                    (vp + vo) as *const c_void,
+                    b as i32,
+                    h as i32,
+                    kvh as i32,
+                    s as i32,
+                    skv as i32,
+                    d as i32,
+                    strides.as_ptr(),
+                    self.scale,
+                    bias_row,
+                    bias_k0,
+                    bias_k1,
+                    bias,
+                    stream.cu_stream() as *mut c_void,
+                )
+            };
+            if rc != 0 {
+                candle_core::bail!("flash-attention failed, rc={rc}");
+            }
+        }
+        Ok((CudaStorage::wrap_cuda_slice(out, dev), (b, s, h, d).into()))
+    }
+}
+
+/// `softmax(q kᵀ · scale) v` for `q (B, H, S, 128)`, `k`, `v (B, KVH, Skv, 128)` in bf16 (KV
+/// heads shared by `H / KVH` query heads each); the result is `(B, S, H, 128)`. The inputs may
+/// be views with dense rows (the BSHD projections through `transpose(1, 2)`): no copy is made.
+pub fn attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Result<Tensor> {
+    attention_biased(q, k, v, scale, None)
+}
+
+/// [`attention`] with a [`KeyBias`] on the scores.
+pub fn attention_biased(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, bias: Option<KeyBias>) -> Result<Tensor> {
+    anyhow::ensure!(q.dtype() == DType::BF16 && k.dtype() == DType::BF16 && v.dtype() == DType::BF16, "flash-attention takes bf16");
+    let dense_rows = |t: &Tensor| -> Result<Tensor> { Ok(if t.stride().last() == Some(&1) { t.clone() } else { t.contiguous()? }) };
+    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: false, scale, bias })?)
+}
+
+/// Layered-only shared-memory reuse; shared callers retain their original kernel.
+pub(crate) fn layered_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, bias: Option<KeyBias>) -> Result<Tensor> {
+    anyhow::ensure!(q.dtype() == DType::BF16 && k.dtype() == DType::BF16 && v.dtype() == DType::BF16, "Layered attention takes bf16");
+    let dense_rows = |t: &Tensor| -> Result<Tensor> { Ok(if t.stride().last() == Some(&1) { t.clone() } else { t.contiguous()? }) };
+    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: true, scale, bias })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::Device;
+
+    /// The kernel against the plain f32 attention, on a shape with a ragged tail and grouped
+    /// heads. Skipped without a CUDA device.
+    #[test]
+    fn flash_attention_is_the_plain_attention() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let (b, h, kvh, s, d) = (1, 6, 2, 333, HEAD_DIM);
+        // q as the projections leave it, BSHD, seen as BHSD through a transpose (strided rows).
+        let q = (Tensor::randn(0f32, 1.0, (b, s, h, d), &dev)? * 2.0)?.to_dtype(DType::BF16)?.transpose(1, 2)?;
+        let k = (Tensor::randn(0f32, 1.0, (b, kvh, s, d), &dev)? * 2.0)?.to_dtype(DType::BF16)?;
+        let v = Tensor::randn(0f32, 1.0, (b, kvh, s, d), &dev)?.to_dtype(DType::BF16)?;
+        let scale = 1.0 / (d as f32).sqrt();
+        let got = attention(&q, &k, &v, scale)?.to_dtype(DType::F32)?; // (B,S,H,D)
+        let rep = |t: &Tensor| -> Result<Tensor> { Ok(t.unsqueeze(2)?.broadcast_as((b, kvh, h / kvh, s, d))?.reshape((b, h, s, d))?.to_dtype(DType::F32)?) };
+        let (qf, kf, vf) = (q.contiguous()?.to_dtype(DType::F32)?, rep(&k)?, rep(&v)?);
+        let p = candle_nn::ops::softmax_last_dim(&(qf.matmul(&kf.t()?)? * f64::from(scale))?)?;
+        let want = p.matmul(&vf)?.transpose(1, 2)?; // (B,S,H,D)
+        let layered = layered_attention(&q, &k, &v, scale, None)?.to_dtype(DType::F32)?;
+        assert_eq!((&layered - &got)?.abs()?.max_all()?.to_scalar::<f32>()?, 0.0);
+        let err = (got - want)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+        eprintln!("flash attention: max abs error {err} against the f32 reference");
+        assert!(err < 0.02, "max abs error {err}");
+        Ok(())
+    }
+
+    /// The key bias against the plain attention with the same constant added to the scores of
+    /// the rows from `rows_from` on, for the keys in range (a ragged tail on both).
+    #[test]
+    fn the_key_bias_is_added_to_the_scores() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let (b, h, kvh, s, d) = (1, 4, 2, 301, HEAD_DIM);
+        let bias = KeyBias { rows_from: 150, keys: (37, 211), log_boost: 4f32.ln() };
+        let q = Tensor::randn(0f32, 1.0, (b, h, s, d), &dev)?.to_dtype(DType::BF16)?;
+        let k = Tensor::randn(0f32, 1.0, (b, kvh, s, d), &dev)?.to_dtype(DType::BF16)?;
+        let v = Tensor::randn(0f32, 1.0, (b, kvh, s, d), &dev)?.to_dtype(DType::BF16)?;
+        let scale = 1.0 / (d as f32).sqrt();
+        let got = attention_biased(&q, &k, &v, scale, Some(bias))?.to_dtype(DType::F32)?;
+        let rep = |t: &Tensor| -> Result<Tensor> { Ok(t.unsqueeze(2)?.broadcast_as((b, kvh, h / kvh, s, d))?.reshape((b, h, s, d))?.to_dtype(DType::F32)?) };
+        let (qf, kf, vf) = (q.to_dtype(DType::F32)?, rep(&k)?, rep(&v)?);
+        let mut add = vec![0f32; s * s];
+        for r in bias.rows_from..s {
+            for c in bias.keys.0..bias.keys.1 {
+                add[r * s + c] = bias.log_boost;
+            }
+        }
+        let add = Tensor::from_vec(add, (1, 1, s, s), &dev)?;
+        let p = candle_nn::ops::softmax_last_dim(&(qf.matmul(&kf.t()?)? * f64::from(scale))?.broadcast_add(&add)?)?;
+        let want = p.matmul(&vf)?.transpose(1, 2)?;
+        let layered = layered_attention(&q, &k, &v, scale, Some(bias))?.to_dtype(DType::F32)?;
+        assert_eq!((&layered - &got)?.abs()?.max_all()?.to_scalar::<f32>()?, 0.0);
+        let err = (got - want)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+        assert!(err < 0.02, "max abs error {err}");
+        Ok(())
+    }
+    /// Compare both exact kernels at Layered sequence lengths, including a masked ragged tail.
+    #[test]
+    #[ignore = "exclusive CUDA attention benchmark"]
+    fn layered_tiles_match_and_time() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        for s in [6027, 19467] {
+            let q = Tensor::randn(0f32, 1.0, (1, 24, s, HEAD_DIM), &dev)?.to_dtype(DType::BF16)?;
+            let k = Tensor::randn(0f32, 1.0, (1, 24, s, HEAD_DIM), &dev)?.to_dtype(DType::BF16)?;
+            let v = Tensor::randn(0f32, 1.0, (1, 24, s, HEAD_DIM), &dev)?.to_dtype(DType::BF16)?;
+            let bias = Some(KeyBias { rows_from: 0, keys: (9, 27), log_boost: f32::NEG_INFINITY });
+            let scale = 1.0 / (HEAD_DIM as f32).sqrt();
+            let old = attention_biased(&q, &k, &v, scale, bias)?;
+            let new = layered_attention(&q, &k, &v, scale, bias)?;
+            let err = (old.to_dtype(DType::F32)? - new.to_dtype(DType::F32)?)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+            eprintln!("Layered tiles s={s}: max abs {err}");
+            assert_eq!(err, 0.0);
+            for layered in [false, true, false, true] {
+                dev.synchronize()?;
+                let start = std::time::Instant::now();
+                for _ in 0..5 {
+                    let _ = q.apply_op3_no_bwd(&k, &v, &Flash { layered, scale, bias })?;
+                }
+                dev.synchronize()?;
+                eprintln!("Layered tiles s={s} layered={layered}: {:.3} ms", start.elapsed().as_secs_f64() * 200.0);
+            }
+        }
+        Ok(())
+    }
+}

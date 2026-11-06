@@ -1,0 +1,68 @@
+# Imported from umag/qwen-image-rs @ 60d100c (Apache-2.0; see NOTICE at the repository root):
+# the Phase 2 bring-up crate of genai-native. Its kernels move into gn-kernels, its blocks into
+# gn-blocks and gn-models piece by piece; this crate stays buildable at every step. It does not
+# opt into the workspace lints (upstream's code, upstream's rules) and carries its own licence.
+[package]
+name = "qwen-image-rs"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.98"
+license = "Apache-2.0"
+description = "Rust CUDA inference for Qwen-Image-2.1 (candle spine; imported into genai-native)"
+repository = "https://github.com/CodyChuGit/genai-native"
+publish = false
+
+[dependencies]
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+# Without `esaxx_fast`: esaxx-rs compiles its C++ with the static CRT whatever the target, which
+# cannot link beside the dynamic-CRT CUDA objects on Windows (only Unigram training uses it).
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+safetensors = "0.8"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+image = "0.25"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+candle-flash-attn = { version = "0.11", optional = true }
+half = "2"
+# ComfyUI's fp8_scaled repacks are rewritten as bf16 (src/convert.rs): the e4m3 decode and a
+# read-only map of the source file.
+float8 = "0.7"
+memmap2 = "0.9"
+# The INT8 cache's free-space guard (src/int8_cache.rs).
+fs2 = "0.4"
+# Only for its `cudnn` module (feature `cudnn`); unifies with candle's cudarc 0.19.
+# Deliberately NOT candle-core/cudnn: candle's own cuDNN conv uses default math
+# (FP32 SIMT kernels for bf16) and is slower than its im2col path.
+cudarc = { version = "0.19", optional = true, default-features = false, features = ["cudnn"] }
+
+[build-dependencies]
+cc = { version = "1", optional = true }
+
+[features]
+default = []
+# CUDA path — only builds on the WSL 4090 host (needs CUDA toolkit + a GPU).
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+# cuDNN conv2d for the VAE (tensor-core math; src/cudnn_conv.rs). Needs libcudnn
+# (the NVIDIA cuDNN 9 runtime; QIR_CUDNN_LIB).
+cudnn = ["cuda", "dep:cudarc"]
+# FlashAttention-2 kernels (Ada/Ampere/Hopper only). ~19 min first build.
+flash-attn = ["cuda", "dep:candle-flash-attn"]
+# ConvRot INT8 W8A8: compiles kernels/convrot/*.cu (needs CUTLASS_DIR).
+convrot = ["cuda", "dep:cc"]
+# SageAttention INT8-QK / FP16-PV attention: compiles vendored kernels/sage/*.cu.
+sage = ["cuda", "dep:cc"]
+# SageAttention2 (sm89): INT8-QK per-thread + K smoothing, FP8-PV. Adds
+# kernels/sage/sage2_ffi.cu; runtime QIR_SAGE=1|2|2f32 picks v1 / SA2 (default 2).
+sage2 = ["sage"]
+# Fused LayerNorm+AdaLN kernel: compiles kernels/fusednorm/*.cu.
+fusednorm = ["cuda", "dep:cc"]
+# FP8 e4m3 linears for ComfyUI's fp8_scaled repacks (src/fp8.rs): compiles kernels/fp8/*.cu;
+# the GEMM is cuBLASLt's (through candle's cudarc).
+fp8 = ["cuda", "dep:cc"]
+# Exact bf16 attention in one pass (src/flash.rs): compiles kernels/flash/*.cu.
+flash = ["cuda", "dep:cc"]
