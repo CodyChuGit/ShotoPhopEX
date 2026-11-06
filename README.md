@@ -37,7 +37,7 @@
 <p align="center">
   <img src="docs/images/genai/split-layers.gif" alt="Split into Layers on a street café photo: every person and object comes out on its own layer over a repainted background, and the Layers panel fills up as it works" width="100%">
   <br>
-  <sub><b>Split into Layers</b>: one click turns this café photo into a stack of cut-out layers (people, tables, chairs, a bicycle, a dog) over a repainted background, shown here hidden one by one. Recorded in the app on an RTX 5090; the 3-minute wait is sped up.</sub>
+  <sub><b>Split into Layers</b>: one click turns this café photo into a stack of cut-out layers (people, tables, chairs, a bicycle, a dog) over a repainted background, shown here hidden one by one. In this run the man on the left could not be cleared and stays in the background. Recorded in the app on an RTX 5090; the 2.6-minute wait is sped up.</sub>
 </p>
 
 <br>
@@ -284,10 +284,10 @@ Grow the canvas and the scene continues, people included, with an outpainting Lo
 ### Generative Angles
 
 <p align="center">
-  <img src="docs/images/genai/angles.gif" alt="Generative Angles on a vintage rangefinder camera: the same camera re-rendered from the back, from a high angle and as a close-up" width="100%">
+  <img src="docs/images/genai/angles.gif" alt="Generative Angles on a vintage rangefinder camera: the same camera re-rendered from its left side, from a high angle and as a close-up" width="100%">
 </p>
 
-Move the camera after the shot: a back view, a high angle, a close-up. **About 7&nbsp;s each.**
+Move the camera after the shot: a side view, a high angle, a close-up, with the Multiple Angles LoRA on Qwen-Image-Edit-2511. **About 10&nbsp;s each.**
 
 ### Text to image with MOSS Turbo
 
@@ -345,7 +345,7 @@ One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to 
 | **Clown Pass** | Everything in the picture on its own colour-coded, edge-matted layer, no fills | SAM 3.1 + ViTMatte | **9.5 s** (40 layers, 2 MP) |
 | **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** |
 | **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** |
-| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-2.1 edit (2511 Angles LoRA selectable) | 7.2 s |
+| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-Edit-2511 + Multiple Angles LoRA | 10.3 s |
 | **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
 | **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
