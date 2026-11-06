@@ -19,6 +19,17 @@ pub const APP_NAME: &str = "ShotoPhopEX";
 /// The upstream name that [`brand`] replaces in UI strings.
 pub const UPSTREAM_NAME: &str = "PhotoCraft";
 
+/// The upstream PhotoCraft release this build is based on (storytold/photocraft), shown beside
+/// our own version in About and the release notes. ShotoPhopEX keeps its own version line in
+/// [`VERSION`]; this records which upstream release was last merged. Update it in every upstream
+/// merge PR.
+pub const UPSTREAM_VERSION: &str = "0.20.2";
+
+/// `PhotoCraft 0.20.2`: the upstream base, for About and the release notes.
+pub fn upstream_base() -> String {
+    format!("{UPSTREAM_NAME} {UPSTREAM_VERSION}")
+}
+
 /// `text` with the upstream product name replaced by [`APP_NAME`] (no allocation when absent).
 pub fn brand(text: &str) -> std::borrow::Cow<'_, str> {
     if text.contains(UPSTREAM_NAME) { text.replace(UPSTREAM_NAME, APP_NAME).into() } else { text.into() }
@@ -75,6 +86,14 @@ mod tests {
         assert_eq!(format_long("1.2.3", Some("abc"), None), "1.2.3 (abc)");
         assert_eq!(format_long("1.2.3", None, Some("2026-10-01")), "1.2.3 (2026-10-01)");
         assert_eq!(format_long("1.2.3-rc.1", None, None), "1.2.3-rc.1 (dev build)");
+    }
+
+    #[test]
+    fn upstream_version_is_a_plain_release() {
+        let parts: Vec<&str> = UPSTREAM_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "{UPSTREAM_VERSION}");
+        assert!(parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())), "{UPSTREAM_VERSION}");
+        assert_eq!(upstream_base(), format!("PhotoCraft {UPSTREAM_VERSION}"));
     }
 
     #[test]
