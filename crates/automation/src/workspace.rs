@@ -492,13 +492,19 @@ fn preferences_may_grant_ambient_paths(id: &str, params: &Value) -> bool {
     direct || batch
 }
 
-/// Does setting `path` to `value` choose the folder the Generations panel saves into
-/// (`integrations.saveResultsDir`, directly or inside the whole `integrations` section)?
+/// The AI Integrations preferences that name host folders: where the Generations panel saves
+/// (`saveResultsDir`), the native worker's runtime folders (`runtimePath`: put on the worker's
+/// `PATH`, so its CUDA DLLs load from there) and its model root (`modelsPath`: checkpoints and
+/// LoRAs are read from there, and Get AI Models writes into it).
+const INTEGRATIONS_FOLDERS: [&str; 3] = ["saveResultsDir", "runtimePath", "modelsPath"];
+
+/// Does setting `path` to `value` choose one of [`INTEGRATIONS_FOLDERS`], directly or inside the
+/// whole `integrations` section?
 fn sets_save_folder(path: &str, value: Option<&Value>) -> bool {
     let norm: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
     match norm.as_slice() {
-        ["integrations", "saveResultsDir"] => true,
-        ["integrations"] => value.and_then(|v| v.get("saveResultsDir")).is_some(),
+        ["integrations", key, ..] => INTEGRATIONS_FOLDERS.contains(key),
+        ["integrations"] => value.is_none_or(|v| !v.is_object() || INTEGRATIONS_FOLDERS.iter().any(|k| v.get(k).is_some())),
         _ => false,
     }
 }
