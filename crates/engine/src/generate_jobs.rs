@@ -365,13 +365,13 @@ impl GenerationStore {
     /// Full path of a record's result file `index`.
     pub fn result_path(&self, id: u64, index: usize) -> Option<PathBuf> {
         let r = self.get(id)?.result.as_ref()?;
-        Some(self.dir.as_ref()?.join(r.files.get(index)?))
+        Some(self.dir.as_ref()?.join(library_file(r.files.get(index)?)?))
     }
 
     /// Full path of a record's thumbnail.
     pub fn thumbnail_path(&self, id: u64) -> Option<PathBuf> {
         let r = self.get(id)?.result.as_ref().filter(|r| !r.thumbnail.is_empty())?;
-        Some(self.dir.as_ref()?.join(&r.thumbnail))
+        Some(self.dir.as_ref()?.join(library_file(&r.thumbnail)?))
     }
 
     /// The record whose result includes layer `layer` of document `doc` (this process).
@@ -640,7 +640,7 @@ impl GenerationStore {
         self.removed.insert(id);
         self.dirty = true;
         if let (Some(dir), Some(res)) = (&self.dir, &r.result) {
-            for f in res.files.iter().chain(std::iter::once(&res.thumbnail)).filter(|f| !f.is_empty()) {
+            for f in res.files.iter().chain(std::iter::once(&res.thumbnail)).filter_map(|f| library_file(f)) {
                 let _ = std::fs::remove_file(dir.join(f));
             }
         }
@@ -1326,3 +1326,27 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "generate_jobs_tests.rs"]
 mod tests;
+
+/// A file name from the library's index as a path inside the library folder: a plain name, or
+/// names under the library's own subfolders, never absolute and never `..`. The index is a file
+/// on disk (and in a synced or portable folder someone else may write), so a record must not be
+/// able to point the library at, and later delete, a file anywhere else.
+fn library_file(name: &str) -> Option<&std::path::Path> {
+    use std::path::Component;
+    let path = std::path::Path::new(name);
+    let plain = !name.is_empty() && !name.contains([':', '\\']) && path.components().all(|c| matches!(c, Component::Normal(_)));
+    plain.then_some(path)
+}
+
+#[cfg(test)]
+mod library_file_tests {
+    use super::library_file;
+
+    #[test]
+    fn only_names_inside_the_library_are_used() {
+        assert!(library_file("results/7-0.png").is_some() && library_file("thumbs/7.png").is_some());
+        for bad in ["", "../secret.txt", "results/../../x", "/etc/passwd", "C:\\Windows\\x.dll", "C:x", "\\\\server\\share\\x"] {
+            assert!(library_file(bad).is_none(), "{bad}");
+        }
+    }
+}

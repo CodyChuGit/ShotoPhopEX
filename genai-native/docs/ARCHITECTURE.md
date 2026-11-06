@@ -1,8 +1,7 @@
 # Architecture
 
-The authoritative plan is `docs/comfy/plan-native-engine.md` in the PhotoshopEX repository
-(§3 for the picture, §3.2 for the layers, §3.4 for the process model, §3.5 for platforms). This
-file restates the contracts a contributor needs while working here.
+The contracts a contributor needs while working on the native engine. The editor side is in
+[`docs/comfy/architecture.md`](../../docs/comfy/architecture.md).
 
 ## Five one-way layers
 

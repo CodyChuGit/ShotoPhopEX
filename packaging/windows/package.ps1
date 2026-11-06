@@ -16,11 +16,11 @@
   and WiX v5: dotnet tool install --global wix --version 5.0.2
              wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
 
-  Fork: -Native builds with the native engine (`native-diffusion`: needs nvcc and the MSVC
-  environment of docs/comfy/bench/scripts/build-native.cmd) and puts the runtime folder that
+  Fork: -Native builds with the native engine (`native-diffusion`: needs nvcc, CUTLASS and the
+  MSVC environment of the README's Install section) and puts the runtime folder that
   runtime.ps1 assembled (-Runtime, default dist\runtime) beside the exes in the portable zip as
-  runtime\, where the app looks when Integrations › Runtime folders is empty. The MSI does not
-  carry it yet. No model weights ship either way.
+  runtime\, where the app looks when Integrations › Runtime folders is empty; the MSI installs
+  the same folder. No model weights ship either way.
 
 .EXAMPLE
   pwsh packaging/windows/package.ps1 -Arch x64
@@ -163,18 +163,21 @@ function New-InstallerArt([string] $IconPng, [string] $BannerOut, [string] $Dial
 }
 $Banner = Join-Path $Stage 'installer-banner.bmp'
 $Dialog = Join-Path $Stage 'installer-dialog.bmp'
-New-InstallerArt (Join-Path $Root 'assets\app-icon\hicolor\256x256\apps\ai.storyteller.photocraft.png') $Banner $Dialog
+# Fork: the ShotoPhopEX "Sp" tile, the same icon the exe embeds (apps/photocraft/build.rs).
+New-InstallerArt (Join-Path $Root 'assets\app-icon\sp\sp-256.png') $Banner $Dialog
 
 $Msi = Join-Path $Dist "photocraft-$Version-windows-$Arch.msi"
+$RuntimeDefine = if ($Native) { @('-d', "RuntimeDir=$Runtime") } else { @() }
 & (Join-Path $PSScriptRoot 'check-icons.ps1')
 if (-not $NoMsi) {
 Invoke-Native 'wix build' {
   wix build (Join-Path $PSScriptRoot 'photocraft.wxs') -arch $Arch `
     -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
     -culture en-US -loc (Join-Path $PSScriptRoot 'photocraft.en-us.wxl') `
-    -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\photocraft.ico')" `
+    -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\sp\sp.ico')" `
     -d "BannerBmp=$Banner" -d "DialogBmp=$Dialog" `
     -d "DocsDir=$Docs" -d "HasCraftFontLicences=$HasCraftFontLicences" `
+    @RuntimeDefine `
     -o $Msi
 }
 Invoke-Native 'MSI shortcut icon validation (ICE50)' {
@@ -209,8 +212,9 @@ if ($env:CRAFT_FONTS_DIR) {
 # files go to PhotoCraftData\ next to the exe instead of %APPDATA% (#228; see app_dirs.rs).
 Copy-Item (Join-Path $PSScriptRoot 'portable.txt') $Portable
 if ($Native) { Copy-Item -Recurse $Runtime (Join-Path $Portable 'runtime') }
-$Suffix = if ($Native) { '-native' } else { '' }
-$Zip = Join-Path $Dist "photocraft-$Version-windows-$Arch$Suffix-portable.zip"
+# Fork: no "-native" in the name. The in-app updater (craft-update) only reads
+# <app>-<version>-<os>-<arch>[-portable].<ext>, and every ShotoPhopEX release is the native build.
+$Zip = Join-Path $Dist "photocraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 # The archive holds the files themselves. `-Path <folder>` puts the folder *in* the archive, so
 # photocraft.exe came out one level down and portable mode needs portable.txt beside the exe
