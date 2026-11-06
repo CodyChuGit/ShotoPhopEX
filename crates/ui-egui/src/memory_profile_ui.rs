@@ -32,6 +32,7 @@ pub fn check_at_launch(app: &mut PhotocraftApp) -> Option<Profile> {
     } else {
         lines.push(tl!("Models that may need more memory are marked “may not fit”. Change it in Preferences › AI Integrations › Memory profile.").to_string());
     }
+    lines.push(tl!("Help › Get AI Models… downloads the models for this profile.").to_string());
     if matches!(p, Profile::Gb8 | Profile::Mac8) {
         lines.push(tl!("Image generation needs a smaller model that isn't ready yet; selection tools work.").to_string());
     }
