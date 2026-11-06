@@ -1,14 +1,12 @@
 //! The CLIP tokenizer assembled from ComfyUI's `sd1_tokenizer` gives the same ids as
 //! the SAM 3.1 model folder's tokenizer.json (skipped when either is absent).
 
-use std::path::Path;
-
 use gn_segment::text::ClipTokenizer;
 
 #[test]
 fn the_assembled_clip_tokenizer_matches_the_tokenizer_json() -> anyhow::Result<()> {
-    let dir = Path::new(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\comfy\sd1_tokenizer");
-    let json = Path::new(r"C:\Users\5090\Documents\_eval\native-models\sam3.1\tokenizer.json");
+    let dir = &std::path::Path::new(&std::env::var_os("COMFY_DIR").unwrap_or_default()).join("comfy/sd1_tokenizer");
+    let json = &std::path::Path::new(&std::env::var_os("NATIVE_MODELS").unwrap_or_default()).join("sam3.1/tokenizer.json");
     if !dir.is_dir() || !json.is_file() {
         return Ok(());
     }

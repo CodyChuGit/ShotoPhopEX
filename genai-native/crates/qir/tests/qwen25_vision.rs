@@ -45,7 +45,7 @@ fn comfy_small_preprocessing() -> anyhow::Result<()> {
 fn comfy_cpu_vision_parity() -> anyhow::Result<()> {
     let models = std::env::var_os("QIR_COMFY_MODELS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:/Users/5090/ComfyUI/ComfyUI_windows_portable/ComfyUI/models"));
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).to_path_buf());
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target-qwen25-vision/fixtures");
     let model = Qwen25Vision::from_file(models.join("text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"))?;
     let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("metadata.json"))?)?;

@@ -19,7 +19,7 @@ fn compare(label: &str, actual: &Tensor, expected: &Tensor) -> anyhow::Result<()
 fn parity(name: &str, variable: &str, channels: usize) -> anyhow::Result<()> {
     let path = std::env::var_os(variable)
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models\vae").join(format!("{name}.safetensors")));
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join("vae").join(format!("{name}.safetensors")));
     if !path.is_file() {
         eprintln!("Skipping {name}: checkpoint absent: {}", path.display());
         return Ok(());

@@ -493,7 +493,7 @@ mod tests {
     /// none unknown. Skipped elsewhere.
     #[test]
     fn the_local_comfyui_models_are_all_identified() {
-        let root = Path::new(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models");
+        let root = &std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).to_path_buf();
         if !root.is_dir() {
             return;
         }

@@ -14,7 +14,7 @@ use candle_core::{DType, Device};
 fn chat_head_loads() {
     let file = std::env::var_os("QIR_Q8_BENCH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Users\5090\ComfyUI\ComfyUI_windows_portable\ComfyUI\models\text_encoders\qwen3vl_8b_bf16.safetensors"));
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("COMFY_MODELS").unwrap_or_default()).join("text_encoders/qwen3vl_8b_bf16.safetensors"));
     if !file.is_file() {
         return;
     }
