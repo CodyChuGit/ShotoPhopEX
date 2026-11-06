@@ -1,10 +1,8 @@
 # genai-native
 
-The native generative engine for [PhotoshopEX](https://github.com/CodyChuGit/comfy-photocraft)
-(branch `photoshopex`): one executable, no Python, the models the editor cares about running
+The native generative engine for [ShotoPhopEX](../README.md): one executable, no Python, the models the editor cares about running
 in-process on the GPU, built to
-[`docs/comfy/plan-native-engine.md`](https://github.com/CodyChuGit/comfy-photocraft/blob/photoshopex/docs/comfy/plan-native-engine.md)
-in that repository. Windows and Linux first, macOS as a later kernel backend.
+[`docs/comfy/plan-native-engine.md`](../docs/comfy/plan-native-engine.md). Windows and Linux first, macOS as a later kernel backend.
 
 **Bring your own models.** This repository ships no weights and reads whatever you have: official
 safetensors, ComfyUI's repacks, GGUF.

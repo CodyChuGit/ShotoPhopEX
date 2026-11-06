@@ -8,12 +8,12 @@ nobody has to rediscover them.
 
 ```text
 upstream  https://github.com/storytold/photocraft.git          (read-only; their main)
-origin    https://github.com/CodyChuGit/comfy-photocraft.git   (the fork; our branches)
+origin    https://github.com/CodyChuGit/ShotoPhopEX.git        (the fork; our branches)
 ```
 
 - `main` on the fork mirrors upstream `main`; never commit to it directly.
-- Feature work happens on `comfy-photocraft` (the integration branch) and short-lived topic
-  branches off it. Rebase or merge upstream `main` into `comfy-photocraft` at least weekly;
+- Feature work happens on `photoshopex` (the integration branch) and short-lived topic
+  branches off it. Merge upstream releases into `photoshopex` by PR;
   upstream moves fast (642 commits by 2026-10-08, several PRs a day).
 - Keep every `Cargo.toml` valid at all times and use a separate `CARGO_TARGET_DIR` per parallel
   agent (upstream `AGENTS.md` §6).

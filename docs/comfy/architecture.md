@@ -6,8 +6,8 @@ WebSocket transport, sidecar, graph templates and backend preferences have been 
 The egui shell, CLI, control channel and MCP dispatch engine commands. Generative commands
 build a backend-independent request from the composite, selection and prompt, then
 `crates/genai/src/native.rs` sends a gn-engine `RunRequest` and raw picture, mask and reference
-blobs to `photocraft --engine`. The worker comes from the pinned, separate `genai-native`
-repository; this change does not modify it.
+blobs to `photocraft --engine`. The worker's crates live in [`genai-native/`](../../genai-native/)
+(their own Cargo workspace, used by path).
 
 The worker manages model loading and residency. `generate.engine.status`, `start`, `restart`,
 `purge` and `stop` address only that worker. Purge unloads models without starting a worker.

@@ -5,7 +5,7 @@ order: 30
 verified: 0.8.2
 ---
 
-Open **Help › Report an Issue…**. It takes you to the [ShotoPhopEX issue tracker](https://github.com/CodyChuGit/comfy-photocraft/issues) on GitHub.
+Open **Help › Report an Issue…**. It takes you to the [ShotoPhopEX issue tracker](https://github.com/CodyChuGit/ShotoPhopEX/issues) on GitHub.
 
 ## What to include
 
