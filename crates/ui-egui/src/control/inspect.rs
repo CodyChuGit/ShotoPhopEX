@@ -143,6 +143,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         o.insert("hub".into(), crate::generate_hub::inspect(app, ctx));
         o.insert("angles".into(), crate::angles_ui::inspect(app));
         o.insert("appIcon".into(), crate::app_icon_ui::inspect(app));
+        o.insert("getModels".into(), crate::get_models_ui::inspect(app));
         o.insert("objectSelect".into(), crate::object_select::inspect(app));
     }
     v
