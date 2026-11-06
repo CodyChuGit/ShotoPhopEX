@@ -552,7 +552,20 @@ Issues and pull requests are welcome on
 [`docs/`](docs/) and [`docs/comfy/`](docs/comfy/). If ShotoPhopEX saves you a subscription, a ⭐
 helps other people find it.
 
-## License and credits
+## 🙏 Credits
+
+- **[ArtCraft](https://github.com/storytold/photocraft) and the PhotoCraft contributors**, full credit.
+  The whole editor is theirs: ShotoPhopEX is a branch of PhotoCraft that pulls in every upstream
+  release as it ships, so their fixes and features land here too. The generative layer is the only
+  part this fork adds.
+- **The model teams**, full credit for the weights everything runs on: the **Stable Diffusion**
+  community, whose open ecosystem (and ComfyUI's folder layout) this all grows from; **Krea** for
+  Krea 2; the **Qwen** team at Alibaba for Qwen-Image, Qwen-Image-Edit and Qwen3-VL; the **MOSS**
+  team (OpenMOSS) for MOSS-Image, plus lodestones for Kromoss; Meta for SAM 3.1, hustvl for
+  ViTMatte, and every LoRA author listed in [Models](#-models).
+- **Our lord and savior Jensen Huang**, for CUDA. 🙏
+
+## License
 
 ShotoPhopEX is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
 option, like upstream. Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, and the
