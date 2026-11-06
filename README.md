@@ -23,11 +23,11 @@
 
 <p align="center">
   <a href="#-at-a-glance">At a glance</a> ·
+  <a href="#-install">Install</a> ·
+  <a href="#-install-with-an-agent">Agent install</a> ·
   <a href="#-features">Features</a> ·
   <a href="#-benchmarks">Benchmarks</a> ·
   <a href="#-will-it-run-on-my-card">Your GPU</a> ·
-  <a href="#-install">Install</a> ·
-  <a href="#-install-with-an-agent">Agent install</a> ·
   <a href="#-models">Models</a> ·
   <a href="#-faq">FAQ</a>
 </p>
@@ -63,6 +63,104 @@ its own masked layer, so the original pixels never change.
 - ⚡ **Fast.** Our own int8 kernels, resident encoders and merged LoRAs.
 - 🔒 **Local and private.** One executable plus NVIDIA's libraries. Nothing leaves your PC.
 - 🤖 **Agent-ready.** Every action is a command, so the UI, the CLI and an MCP server drive the same 500+ commands.
+
+## 🚀 Install
+
+> [!IMPORTANT]
+> **There is no one-click download yet.** No release has been published, so today the app is
+> built from source on Windows. Everything is in this one repository: the editor, and the
+> native generative engine in [`genai-native/`](genai-native/).
+
+### What you need
+
+| | |
+|---|---|
+| **GPU** | NVIDIA RTX with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
+| **OS** | Windows 10 or 11, x64 |
+| **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
+| **Build tools** | Git, Rust (rustup, MSVC), Visual Studio 2022 Build Tools (C++), CUDA Toolkit 13, the CUTLASS headers |
+
+### Steps
+
+**1. Install the tools** (PowerShell, once):
+
+```powershell
+winget install Git.Git Rustlang.Rustup Nvidia.CUDA
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+git clone --depth 1 https://github.com/NVIDIA/cutlass C:\src\cutlass
+```
+
+**2. Build** (from an "x64 Native Tools Command Prompt for VS 2022"):
+
+```bat
+git clone https://github.com/CodyChuGit/ShotoPhopEX
+cd ShotoPhopEX
+set CUDA_COMPUTE_CAP=120
+set CUTLASS_DIR=C:\src\cutlass\include
+set NVCC_APPEND_FLAGS=-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17
+set CUDARC_CUDA_VERSION=13030
+cargo build --release -p photocraft -p photocraft-cli --features native-diffusion
+```
+
+`CUDA_COMPUTE_CAP` is 120 for the RTX 50 series, 89 for the 40 series and 86 for the 30 series.
+`CUDARC_CUDA_VERSION=13030` is the newest CUDA API level the bindings know; keep it for any CUDA 13 toolkit.
+The first build takes a while, because it compiles the CUDA kernels too.
+
+**3. Get the models** into one folder in ComfyUI's layout (the [model table](#-models) lists every
+file). If you already have ComfyUI, its `models` folder works as it is.
+
+**4. Run it.** Start `target\release\photocraft.exe`, open **Edit › Preferences › AI
+Integrations**, set **Models folder** and **Native runtime folders** (your CUDA Toolkit's
+`bin\x64`), then press **Generate**.
+
+<details>
+<summary><b>Make a portable folder</b> to copy to another PC</summary>
+
+```powershell
+pwsh packaging/windows/runtime.ps1 -Cuda "$env:CUDA_PATH\bin\x64"
+pwsh packaging/windows/package.ps1 -Arch x64 -Native -NoMsi -SkipBuild
+```
+
+</details>
+
+## 🤖 Install with an agent
+
+Open a coding agent (Claude Code, Codex, or any agent with a terminal) in an empty folder on the
+Windows PC and paste this:
+
+```text
+Install ShotoPhopEX (https://github.com/CodyChuGit/ShotoPhopEX) on this
+Windows PC and get its generative features working. Follow the README's "Install" and
+"Models" sections exactly. Work in this order and stop to ask me if a step fails:
+
+1. Run nvidia-smi and tell me the GPU, its memory and the driver. Stop if there is no NVIDIA GPU.
+2. Check for Git, rustup (MSVC toolchain), Visual Studio 2022 Build Tools with the C++ workload,
+   the CUDA Toolkit 13 and the CUTLASS headers. Install whatever is missing with winget, as the
+   README shows. Ask me before installing anything.
+3. Clone the repository and build photocraft and photocraft-cli with
+   --features native-diffusion from a VS 2022 x64 developer environment, setting CUDA_COMPUTE_CAP
+   for this GPU, CUTLASS_DIR, NVCC_APPEND_FLAGS and CUDARC_CUDA_VERSION as the README shows.
+4. Ask me where the models folder should go. Create the ComfyUI layout in it and download the
+   models the README lists for this card's memory (the full defaults on 24 GB or more, the MOSS
+   set on 12-16 GB) from Hugging Face. Skip files already there. If a repository is gated, tell
+   me which licence to accept and wait.
+5. Check every downloaded file's size against Hugging Face and list what you installed.
+6. Start target\release\photocraft.exe and tell me to set Edit > Preferences > AI Integrations >
+   Models folder and Native runtime folders (the CUDA Toolkit's bin\x64).
+7. When I say it is set, run one generation through photocraft-cli (see
+   `photocraft-cli run --help`) and report how long it took.
+```
+
+The agent can drive the app afterwards too, because every generative action is a command:
+
+```sh
+photocraft-cli run street.jpg \
+  --cmd select.byText  --params '{"prompt":"the parked car"}' \
+  --cmd generate.fill  --params '{"prompt":"a red vintage bicycle leaning on the wall"}' \
+  --out street-bicycle.png
+
+photocraft-cli mcp   # expose all 500+ commands, generative ones included, to an MCP agent
+```
 
 ## ✨ Features
 
@@ -268,104 +366,6 @@ A **memory check at first launch** reads your card's memory and picks these defa
 bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
 Integrations › Memory profile** lets you choose another.
 Nothing is ever locked: every model is bring-your-own and selectable on any card.
-
-## 🚀 Install
-
-> [!IMPORTANT]
-> **There is no one-click download yet.** No release has been published, so today the app is
-> built from source on Windows. Everything is in this one repository: the editor, and the
-> native generative engine in [`genai-native/`](genai-native/).
-
-### What you need
-
-| | |
-|---|---|
-| **GPU** | NVIDIA RTX with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
-| **OS** | Windows 10 or 11, x64 |
-| **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
-| **Build tools** | Git, Rust (rustup, MSVC), Visual Studio 2022 Build Tools (C++), CUDA Toolkit 13, the CUTLASS headers |
-
-### Steps
-
-**1. Install the tools** (PowerShell, once):
-
-```powershell
-winget install Git.Git Rustlang.Rustup Nvidia.CUDA
-winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-git clone --depth 1 https://github.com/NVIDIA/cutlass C:\src\cutlass
-```
-
-**2. Build** (from an "x64 Native Tools Command Prompt for VS 2022"):
-
-```bat
-git clone https://github.com/CodyChuGit/ShotoPhopEX
-cd ShotoPhopEX
-set CUDA_COMPUTE_CAP=120
-set CUTLASS_DIR=C:\src\cutlass\include
-set NVCC_APPEND_FLAGS=-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17
-set CUDARC_CUDA_VERSION=13030
-cargo build --release -p photocraft -p photocraft-cli --features native-diffusion
-```
-
-`CUDA_COMPUTE_CAP` is 120 for the RTX 50 series, 89 for the 40 series and 86 for the 30 series.
-`CUDARC_CUDA_VERSION=13030` is the newest CUDA API level the bindings know; keep it for any CUDA 13 toolkit.
-The first build takes a while, because it compiles the CUDA kernels too.
-
-**3. Get the models** into one folder in ComfyUI's layout (the [model table](#-models) lists every
-file). If you already have ComfyUI, its `models` folder works as it is.
-
-**4. Run it.** Start `target\release\photocraft.exe`, open **Edit › Preferences › AI
-Integrations**, set **Models folder** and **Native runtime folders** (your CUDA Toolkit's
-`bin\x64`), then press **Generate**.
-
-<details>
-<summary><b>Make a portable folder</b> to copy to another PC</summary>
-
-```powershell
-pwsh packaging/windows/runtime.ps1 -Cuda "$env:CUDA_PATH\bin\x64"
-pwsh packaging/windows/package.ps1 -Arch x64 -Native -NoMsi -SkipBuild
-```
-
-</details>
-
-## 🤖 Install with an agent
-
-Open a coding agent (Claude Code, Codex, or any agent with a terminal) in an empty folder on the
-Windows PC and paste this:
-
-```text
-Install ShotoPhopEX (https://github.com/CodyChuGit/ShotoPhopEX) on this
-Windows PC and get its generative features working. Follow the README's "Install" and
-"Models" sections exactly. Work in this order and stop to ask me if a step fails:
-
-1. Run nvidia-smi and tell me the GPU, its memory and the driver. Stop if there is no NVIDIA GPU.
-2. Check for Git, rustup (MSVC toolchain), Visual Studio 2022 Build Tools with the C++ workload,
-   the CUDA Toolkit 13 and the CUTLASS headers. Install whatever is missing with winget, as the
-   README shows. Ask me before installing anything.
-3. Clone the repository and build photocraft and photocraft-cli with
-   --features native-diffusion from a VS 2022 x64 developer environment, setting CUDA_COMPUTE_CAP
-   for this GPU, CUTLASS_DIR, NVCC_APPEND_FLAGS and CUDARC_CUDA_VERSION as the README shows.
-4. Ask me where the models folder should go. Create the ComfyUI layout in it and download the
-   models the README lists for this card's memory (the full defaults on 24 GB or more, the MOSS
-   set on 12-16 GB) from Hugging Face. Skip files already there. If a repository is gated, tell
-   me which licence to accept and wait.
-5. Check every downloaded file's size against Hugging Face and list what you installed.
-6. Start target\release\photocraft.exe and tell me to set Edit > Preferences > AI Integrations >
-   Models folder and Native runtime folders (the CUDA Toolkit's bin\x64).
-7. When I say it is set, run one generation through photocraft-cli (see
-   `photocraft-cli run --help`) and report how long it took.
-```
-
-The agent can drive the app afterwards too, because every generative action is a command:
-
-```sh
-photocraft-cli run street.jpg \
-  --cmd select.byText  --params '{"prompt":"the parked car"}' \
-  --cmd generate.fill  --params '{"prompt":"a red vintage bicycle leaning on the wall"}' \
-  --out street-bicycle.png
-
-photocraft-cli mcp   # expose all 500+ commands, generative ones included, to an MCP agent
-```
 
 ## 🧠 Models
 
