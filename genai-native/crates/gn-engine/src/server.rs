@@ -112,14 +112,20 @@ pub fn serve_with(listener: &TcpListener, token: &str, engine: &mut dyn Engine, 
             let stream = stream?;
             let (engine, quit, token) = (&engine, &quit, token);
             scope.spawn(move || {
+                // The greeting comes first, before the engine is taken: a peer that never shows
+                // the token cannot hold the engine away from the editor, nor make it allocate.
+                let stream = match greet(stream, token) {
+                    Ok(Some(stream)) => stream,
+                    Ok(None) | Err(_) => return,
+                };
                 let Ok(mut guard) = engine.try_lock() else {
-                    let _ = refuse(stream, "another client is connected to this engine");
+                    let _ =
+                        write_json(&mut &stream, &Reply::Error { kind: ErrorKind::BadRequest, message: "another client is connected to this engine".into() });
                     return;
                 };
-                let ended = match serve_connection(stream, token, *guard) {
+                let ended = match serve_connection(stream, *guard) {
                     Ok(Ended::Quit) => true,
                     Ok(Ended::Left) => !stay,
-                    Ok(Ended::Refused) => false,
                     Err(e) => {
                         eprintln!("gn-engine: connection ended: {e}");
                         true
@@ -137,13 +143,28 @@ pub fn serve_with(listener: &TcpListener, token: &str, engine: &mut dyn Engine, 
     })
 }
 
-/// Answer a connection we cannot serve with one error and close it.
-fn refuse(stream: TcpStream, why: &str) -> std::io::Result<()> {
-    let mut stream = stream;
-    // Read (and ignore) the Hello so the peer's write completes, then say why.
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-    let _ = protocol::read_message::<Request>(&mut stream);
-    write_json(&mut stream, &Reply::Error { kind: ErrorKind::BadRequest, message: why.to_string() })
+/// How long a new connection has to greet before it is dropped.
+const GREETING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Read and check a connection's `Hello`. `Some(stream)` when it carries this protocol's version
+/// and the token (the stream is then ready to be answered); `None` after telling the peer why not.
+fn greet(stream: TcpStream, token: &str) -> std::io::Result<Option<TcpStream>> {
+    stream.set_read_timeout(Some(GREETING_TIMEOUT))?;
+    let mut reader = &stream;
+    let hello = protocol::read_greeting::<Request>(&mut reader);
+    let refusal = match hello {
+        Ok(Some(Request::Hello { version, token: t })) if version == protocol::VERSION && protocol::same_secret(&t, token) => {
+            stream.set_read_timeout(None)?;
+            return Ok(Some(stream));
+        }
+        Ok(Some(Request::Hello { version, .. })) if version != protocol::VERSION => {
+            format!("protocol version {version}, this engine speaks {}", protocol::VERSION)
+        }
+        Ok(None) => return Ok(None),
+        Ok(Some(_)) | Err(_) => "the first message must be Hello with the token".to_string(),
+    };
+    let _ = write_json(&mut &stream, &Reply::Error { kind: ErrorKind::BadRequest, message: refusal });
+    Ok(None)
 }
 
 /// How a connection ended.
@@ -152,36 +173,14 @@ enum Ended {
     Quit,
     /// The greeted client hung up (or its process died).
     Left,
-    /// Never greeted (wrong token or version): the worker carries on.
-    Refused,
 }
 
-/// One connection.
-fn serve_connection(stream: TcpStream, token: &str, engine: &mut dyn Engine) -> std::io::Result<Ended> {
+/// One greeted connection.
+fn serve_connection(stream: TcpStream, engine: &mut dyn Engine) -> std::io::Result<Ended> {
     stream.set_nodelay(true)?;
     let mut reader = stream.try_clone()?;
     let writer = Arc::new(Mutex::new(stream));
-    // Handshake, on this thread.
-    let hello: Framed<Request> = match protocol::read_message(&mut reader)? {
-        Some(f) => f,
-        None => return Ok(Ended::Refused),
-    };
-    match hello.message {
-        Request::Hello { version, token: t } if version == protocol::VERSION && t == token => {
-            send(&writer, &Reply::Hello { version: protocol::VERSION, engine: engine.name() })?;
-        }
-        Request::Hello { version, .. } if version != protocol::VERSION => {
-            send(
-                &writer,
-                &Reply::Error { kind: ErrorKind::BadRequest, message: format!("protocol version {version}, this engine speaks {}", protocol::VERSION) },
-            )?;
-            return Ok(Ended::Refused);
-        }
-        _ => {
-            send(&writer, &Reply::Error { kind: ErrorKind::BadRequest, message: "the first message must be Hello with the token".into() })?;
-            return Ok(Ended::Refused);
-        }
-    }
+    send(&writer, &Reply::Hello { version: protocol::VERSION, engine: engine.name() })?;
     // Reader thread: every message into a channel; a Cancel also flips the flag at once.
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<Framed<Request>>();

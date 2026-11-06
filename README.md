@@ -332,8 +332,7 @@ cache). ComfyUI ran with `--fast fp8_matrix_mult`.
 Measured on an RTX 5090 (32 GB, Windows 11) on 2026-10-28 and 29. Remove Background has since
 moved to SAM 3.1 + ViTMatte (0.45 s). Split into Layers, Clown Pass and the MOSS Turbo routes have
 no ComfyUI graph to compare against, so they are listed in [Every feature](#every-feature) only. No RTX
-3090 numbers exist yet, so none are shown. Every run, its script and the raw reading are in
-[`docs/comfy/benchmarks.md`](docs/comfy/benchmarks.md).
+3090 numbers exist yet, so none are shown.
 
 <details>
 <summary><b>What makes it fast</b></summary>
@@ -441,10 +440,6 @@ catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comf
 | 3 | **Apple Silicon** (in parallel with 1 and 2): an MLX rewrite, MOSS first, the larger models as 16 GB+ Macs allow | the MOSS stack |
 | 4 | **Style tuning**: LoRA and checkpoint tuning for better photoreal, anime and illustration output | every route's LoRA loading |
 | 5 | **Live paint**: generation that follows your brush in real time, locally | the live preview path, Krea 2 / MOSS Turbo |
-
-The detailed plans: [`docs/comfy/roadmap.md`](docs/comfy/roadmap.md),
-[`docs/comfy/goals/rust-rebuild.md`](docs/comfy/goals/rust-rebuild.md) and
-[`docs/comfy/plan-native-engine.md`](docs/comfy/plan-native-engine.md).
 
 ## 🏗️ How it works
 
