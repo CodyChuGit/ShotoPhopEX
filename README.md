@@ -418,6 +418,16 @@ catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comf
 - [ ] **RTX 3090 / 4090 benchmarks**, and 4-bit weights for 16 GB cards
 - [ ] **Mac** (MLX, 16 GB unified memory) on the MOSS stack
 
+**What's next**
+
+| Step | What | Built on |
+|---|---|---|
+| 1 | **ControlNet**, native in Rust, with its own panel: guide a picture by pose, depth, edges or lines | [Qwen-Image-2.1 Fun ControlNet Union](https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union) |
+| 2 | **Pose posing**: drag a 3D armature (or hands, or several figures) into place instead of hunting for a pose image; the armature is only a front end, and ControlNet does the generating | step 1 |
+| 3 | **Apple Silicon** (in parallel with 1 and 2): an MLX rewrite, MOSS first, the larger models as 16 GB+ Macs allow | the MOSS stack |
+| 4 | **Style tuning**: LoRA and checkpoint tuning for better photoreal, anime and illustration output | every route's LoRA loading |
+| 5 | **Live paint**: generation that follows your brush in real time, locally | the live preview path, Krea 2 / MOSS Turbo |
+
 The detailed plans: [`docs/comfy/roadmap.md`](docs/comfy/roadmap.md),
 [`docs/comfy/goals/rust-rebuild.md`](docs/comfy/goals/rust-rebuild.md) and
 [`docs/comfy/plan-native-engine.md`](docs/comfy/plan-native-engine.md).
