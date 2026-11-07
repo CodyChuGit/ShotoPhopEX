@@ -78,8 +78,9 @@ pub struct PerceptionEngine {
     /// The directory holding one subdirectory per model (`sam3.1/`), or a ComfyUI `models` folder.
     models_root: PathBuf,
     device: Device,
-    /// SAM 3.1 on candle in f16 on CUDA (`--sam-precision f16`): 1.9x the speed of f32, every
-    /// mask at IoU >= 0.993 against ComfyUI's own f32 node (gn-segment F16.md). f32 otherwise.
+    /// SAM 3.1 on candle in f16 on a GPU (`--sam-precision f16`): on CUDA 1.9x the speed of f32,
+    /// every mask at IoU >= 0.993 against ComfyUI's own f32 node (gn-segment F16.md); on Metal half
+    /// the memory. f32 otherwise.
     half: bool,
     sam: Option<Model>,
     /// SAM 3.1's checkpoint as read (1.6 GB of host memory), kept when the model gives the
@@ -183,7 +184,7 @@ impl PerceptionEngine {
         })
     }
 
-    /// SAM 3.1's compute precision on CUDA: f16 when `half`, else f32 (the CPU is always f32).
+    /// SAM 3.1's compute precision on a GPU: f16 when `half`, else f32 (the CPU is always f32).
     pub fn with_half(mut self, half: bool) -> Self {
         self.half = half;
         self
@@ -202,7 +203,9 @@ impl PerceptionEngine {
             progress(0.0, "Loading SAM 3.1");
             let device = self.candle_device()?;
             let t0 = Instant::now();
-            let dtype = if self.half && device.is_cuda() { candle_core::DType::F16 } else { candle_core::DType::F32 };
+            // f16 on a GPU when asked: 1.9x the speed of f32 on CUDA; on Metal no faster, but half
+            // the memory (1.6 GB against 3.2 GB beside the diffusion models on a 16 GB Mac).
+            let dtype = if self.half && !device.is_cpu() { candle_core::DType::F16 } else { candle_core::DType::F32 };
             if self.checkpoint.is_none() {
                 self.checkpoint = Some(gn_segment::weights::Checkpoint::open(&checkpoint).and_then(|c| c.with_compute_dtype(dtype)).map_err(candle_error)?);
             }
@@ -210,6 +213,11 @@ impl PerceptionEngine {
             let mut sam = gn_segment::sam::Sam31::from_checkpoint(ck, &device).map_err(candle_error)?;
             sam.set_tokenizer(&tokenizer).map_err(candle_error)?;
             eprintln!("gn-perception: SAM 3.1 on candle in {dtype:?} ({}) loaded in {:.1} s", checkpoint.display(), t0.elapsed().as_secs_f32());
+            // On a Mac the host copy is the same memory as the device's, a second 1.6 GB: a reload
+            // reads the file again (about a second) instead.
+            if device.is_metal() {
+                self.checkpoint = None;
+            }
             self.sam = Some(Model::Candle(Box::new(sam)));
         }
         if self.sam.is_some() {
