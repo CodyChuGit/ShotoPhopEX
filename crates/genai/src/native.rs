@@ -600,10 +600,16 @@ impl GenerativeBackend for NativeBackend {
 /// subfolder per model). Empty preferences give no flags, and the worker serves the fake engine.
 pub fn worker_args(runtime_path: &str, models_path: &str) -> Vec<String> {
     let (r, m) = (runtime_path.trim(), models_path.trim());
-    if r.is_empty() || m.is_empty() {
+    // A Mac runs its models on MLX: the model root alone is enough there (no CUDA runtime).
+    if m.is_empty() || (r.is_empty() && !cfg!(target_os = "macos")) {
         return Vec::new();
     }
-    vec!["--runtime".into(), r.to_string(), "--models".into(), m.to_string()]
+    let mut args = Vec::new();
+    if !r.is_empty() {
+        args.extend(["--runtime".into(), r.to_string()]);
+    }
+    args.extend(["--models".into(), m.to_string()]);
+    args
 }
 
 /// The runtime folders of the preference (`;`-separated), as directories for the worker's `PATH`.
@@ -631,6 +637,11 @@ fn engines_for(args: &[String]) -> Vec<Box<dyn gn_engine::Engine>> {
             eprintln!("--engine: {why}");
             engines.push(Box::new(Refused(why)));
         }
+    }
+    // The Mac build: MOSS-Image on MLX, nothing to check before it starts.
+    #[cfg(all(feature = "native-mlx", not(feature = "native-diffusion")))]
+    if let Some(d) = gn_diffusion::from_args(args) {
+        engines.push(Box::new(d));
     }
     if let Some(p) = gn_perception::engine::from_args(args) {
         engines.push(Box::new(p));

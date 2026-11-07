@@ -148,7 +148,10 @@ pub fn need_gb(template: &str) -> Option<f32> {
 
 /// The picker's `may not fit` badge: the template needs more than the profile's budget.
 pub fn may_not_fit(p: Option<Profile>, template: &str) -> bool {
-    match (p, need_gb(template)) {
+    // On a Mac MOSS runs on MLX: the 8-bit encoder, then the 8-bit DiT, 7.6 GB at the peak
+    // (gn-mlx, measured on a 16 GB M1 Air, 2026-11-07).
+    let need = if matches!(p, Some(Profile::Mac16 | Profile::Mac8)) && template.starts_with("moss") { Some(8.0) } else { need_gb(template) };
+    match (p, need) {
         (Some(p), Some(need)) => need > p.budget_gb(),
         _ => false,
     }

@@ -1248,6 +1248,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gn-engine",
+ "gn-mlx",
  "image",
  "qwen-image-rs",
  "serde_json",

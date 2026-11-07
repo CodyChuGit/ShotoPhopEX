@@ -14,6 +14,9 @@ workspace = true
 # The CUDA build with every kernel (needs nvcc, CUTLASS and the recipe in PhotoshopEX's
 # dev-environment-windows.md). Without it the crate compiles against CPU candle: the engine
 # answers, its tests run, pictures would take minutes.
+# MOSS-Image on Apple's MLX (macOS on Apple Silicon): the moss-image/* templates run through
+# gn-mlx instead of qwen-image-rs's candle pipeline.
+mlx = ["dep:gn-mlx"]
 cuda = ["qwen-image-rs/cuda", "qwen-image-rs/convrot", "qwen-image-rs/sage", "qwen-image-rs/sage2", "qwen-image-rs/fusednorm", "qwen-image-rs/fp8", "qwen-image-rs/flash"]
 
 [dependencies]
@@ -21,6 +24,7 @@ anyhow = "1"
 serde_json = { workspace = true }
 gn-engine = { path = "../gn-engine", version = "0.1.0" }
 qwen-image-rs = { path = "../qir", version = "0.0.0" }
+gn-mlx = { path = "../gn-mlx", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
