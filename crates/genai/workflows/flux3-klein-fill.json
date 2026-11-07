@@ -1,0 +1,45 @@
+{
+  "meta": {
+    "id": "flux3-klein/fill",
+    "name": "Generative Fill (FLUX 3 Image Klein, Mac)",
+    "family": "flux3-klein",
+    "task": "fill",
+    "license": "community",
+    "licenseNote": "FLUX 3 Image Klein (Black Forest Labs) under its own flux-3-image-klein license; the MLX files are mflux-community's conversion (same licence). Bring your own files; Get AI Models offers them on a Mac.",
+    "needsImage": true,
+    "needsMask": true,
+    "defaults": {
+      "steps": 16,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "mlx/flux-3-image-klein-q4/transformer",
+        "default": "0.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "mlx/flux-3-image-klein-q4/text_encoder",
+        "default": "0.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "flux2-vae_small.safetensors"
+      }
+    ],
+    "notes": "Runs natively on a Mac (genai-native gn-diffusion flux3-klein/fill on gn-mlx, MLX): Klein sees the crop with the selection flat grey as its reference, samples from noise, and after every step the area outside the selection is set back to the crop's own latent noised to that step's time (the last step leaves it exact); the editor masks the result to the selection. q4 on a 16 GB M1 Air at 512²: about 190 s.",
+    "creator": "Black Forest Labs · mflux-community",
+    "description": "Repaints the selection on the Mac's GPU and keeps the rest",
+    "badges": [],
+    "estimatedSeconds": {
+      "base": 20,
+      "perMegapixel": 650
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": []
+  }
+}
