@@ -14,6 +14,8 @@ pub mod dit;
 #[cfg(target_os = "macos")]
 pub mod nn;
 #[cfg(target_os = "macos")]
+pub mod pipeline;
+#[cfg(target_os = "macos")]
 pub mod text;
 #[cfg(target_os = "macos")]
 pub mod vae;
