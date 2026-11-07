@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="ShotoPhopEX" src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png" width="120">
+  <img alt="ShotoPhopEX" src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png" width="120" height="120">
 </p>
 
 <h1 align="center">ShotoPhopEX</h1>
