@@ -569,6 +569,14 @@ mod tests {
             if matches!(p, Profile::Gb8 | Profile::Mac8) {
                 continue; // no image model fits yet
             }
+            if p == Profile::Mac16 {
+                // MLX runs MOSS Turbo as MOSS-Image-SFT with the 4-step LoRA (gn-diffusion's
+                // mlx_recipe), not the template's Kromoss files.
+                for f in ["moss_image_sft_int8_convrot.safetensors", "moss_image_sft_4step_v2.0.safetensors", "adapter_model.safetensors", "qwen3.5_9b_int8_convrot.safetensors"] {
+                    assert!(files.contains(&f), "mac16's pack lacks {f}");
+                }
+                continue;
+            }
             for slot in &image.meta.models {
                 let name = slot.default.rsplit('/').next().unwrap();
                 assert!(files.contains(&name), "{}'s pack lacks {} for {}", p.name(), slot.default, image.meta.id);

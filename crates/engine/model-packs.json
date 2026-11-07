@@ -164,6 +164,15 @@
    "url": "https://huggingface.co/lodestones/Kromoss/resolve/main/8-steps-dmd2-lora.safetensors"
   },
   {
+   "id": "moss-sft-4step",
+   "name": "MOSS Turbo 4-step (Mac)",
+   "folder": "loras",
+   "file": "moss_image_sft_4step_v2.0.safetensors",
+   "bytes": 1189176752,
+   "sha256": "154c7f1455c3bf9925945c2f1ea2e4f09d0d0c67256081384a094b2b585f913f",
+   "url": "https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps/resolve/main/moss_image_sft_4step_v2.0.safetensors"
+  },
+  {
    "id": "moss-edit",
    "name": "MOSS Edit adapter",
    "folder": "loras/moss-image-edit",
@@ -377,13 +386,33 @@
    "description": "MOSS Turbo for images and MOSS Edit Turbo for edits, with SAM 3.1 and ViTMatte for selections.",
    "profiles": [
     "16gb",
-    "12gb",
-    "mac16"
+    "12gb"
    ],
    "files": [
     "kromoss-dit",
     "kromoss-dmd2",
     "moss-sft-dit",
+    "qwen35-9b",
+    "qwen35-tokenizer",
+    "flux2-vae",
+    "moss-edit",
+    "moss-edit-config",
+    "sam31",
+    "sam31-tokenizer",
+    "vitmatte",
+    "vitmatte-config"
+   ]
+  },
+  {
+   "id": "mac",
+   "name": "Mac pack",
+   "description": "MOSS Turbo for images and MOSS Edit for edits on Apple's MLX, with SAM 3.1 and ViTMatte for selections.",
+   "profiles": [
+    "mac16"
+   ],
+   "files": [
+    "moss-sft-dit",
+    "moss-sft-4step",
     "qwen35-9b",
     "qwen35-tokenizer",
     "flux2-vae",
