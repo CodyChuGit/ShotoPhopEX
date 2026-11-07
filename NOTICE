@@ -1,3 +1,21 @@
+ShotoPhopEX
+Copyright (c) 2026 Cody Chu (https://github.com/CodyChuGit) and the ShotoPhopEX contributors.
+https://github.com/CodyChuGit/ShotoPhopEX
+
+ShotoPhopEX is a fork of PhotoCraft (https://github.com/storytold/photocraft). Its generative
+tools, the native engine in genai-native/, and all other changes and additions made in this
+repository are by Cody Chu and the ShotoPhopEX contributors, licensed under the MIT License or
+the Apache License, Version 2.0, at your option (LICENSE-MIT, LICENSE-APACHE).
+
+If you fork, copy, modify or redistribute this code, in source or binary form, you must keep
+this NOTICE file and the copyright lines in LICENSE-MIT, as both licences require. Please also
+credit "ShotoPhopEX by Cody Chu" with a link to https://github.com/CodyChuGit/ShotoPhopEX in
+your README or About screen.
+
+The upstream PhotoCraft notice below still applies and must be kept as well.
+
+------------------------------------------------------------------------------------------------
+
 PhotoCraft
 Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option

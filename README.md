@@ -692,9 +692,16 @@ helps other people find it.
 ## License
 
 ShotoPhopEX is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
-option, like upstream. Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, and the
-ShotoPhopEX contributors. Required notices are in [NOTICE](NOTICE); bundled fonts, icons and
-images keep their own licences, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
+option, like upstream. Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, and
+Copyright (c) 2026 [Cody Chu](https://github.com/CodyChuGit) and the ShotoPhopEX contributors.
+Required notices are in [NOTICE](NOTICE); bundled fonts, icons and images keep their own
+licences, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
+
+**Forking or reusing this code?** You're welcome to, under either licence. Both licences require
+you to keep the copyright lines in [LICENSE-MIT](LICENSE-MIT) and the [NOTICE](NOTICE) file
+with every copy, in source or binary form. Please also credit
+**ShotoPhopEX by Cody Chu** with a link to <https://github.com/CodyChuGit/ShotoPhopEX> in your
+README or About screen.
 
 Built on [PhotoCraft](https://github.com/storytold/photocraft) by the ArtCraft team. This fork is
 not made or endorsed by them, and per [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt)
