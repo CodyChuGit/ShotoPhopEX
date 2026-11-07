@@ -68,6 +68,9 @@ pub struct Request {
     pub seed: u64,
     /// MOSS Edit's pictures, the one being edited first; none for text to image.
     pub references: Vec<RefPicture>,
+    /// Fill's area on the first reference, its size: white is painted, black kept
+    /// (FLUX 3 Image Klein only).
+    pub mask: Option<RefPicture>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

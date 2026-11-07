@@ -121,6 +121,36 @@ fn fit(w: usize, h: usize, pixels: usize) -> (usize, usize) {
     (side(w), side(h))
 }
 
+/// `r` with the mask's white made flat grey (#808080), blended by the mask's value; the mask at
+/// another size is resized to the picture's.
+fn greyed(r: &RefPicture, m: &RefPicture) -> Result<RefPicture> {
+    let mask =
+        image::RgbaImage::from_raw(u32::try_from(m.width)?, u32::try_from(m.height)?, m.rgba.clone()).context("the mask's pixels do not match its size")?;
+    let mask = if (m.width, m.height) == (r.width, r.height) {
+        mask
+    } else {
+        image::imageops::resize(&mask, u32::try_from(r.width)?, u32::try_from(r.height)?, image::imageops::FilterType::Triangle)
+    };
+    let mut rgba = r.rgba.clone();
+    for (px, mp) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(mask.pixels()) {
+        let a = f32::from(mp.0[0]) / 255.0;
+        for c in px.iter_mut().take(3) {
+            *c = (f32::from(*c) * (1.0 - a) + 128.0 * a).round() as u8;
+        }
+    }
+    Ok(RefPicture { width: r.width, height: r.height, rgba })
+}
+
+/// A fill mask on the latent grid `(lh·lw, 1)` f32 in 0..1 (1 is painted): averaged over each
+/// latent pixel's 16×16 and doubled, so an edge pixel the mask touches is painted too.
+fn mask_tokens(m: &RefPicture, lw: usize, lh: usize) -> Result<Array> {
+    let img =
+        image::RgbaImage::from_raw(u32::try_from(m.width)?, u32::try_from(m.height)?, m.rgba.clone()).context("the mask's pixels do not match its size")?;
+    let small = image::imageops::resize(&img, u32::try_from(lw)?, u32::try_from(lh)?, image::imageops::FilterType::Triangle);
+    let v: Vec<f32> = small.pixels().map(|p| (f32::from(p.0[0]) / 255.0 * 2.0).min(1.0)).collect();
+    Ok(Array::from_slice(&v, &crate::nn::shape(&[lh * lw, 1])?))
+}
+
 /// One pass's tokens.
 fn tokens<'a>(x: &'a Array, image_ids: &'a [[f32; 4]], cond: Option<(&'a Array, &'a [[f32; 4]])>, text: &'a (Array, Vec<[f32; 4]>)) -> Tokens<'a> {
     Tokens { image: x, image_ids, cond, text: &text.0, text_ids: &text.1 }
@@ -263,9 +293,18 @@ impl KleinMlx {
         let t0 = Instant::now();
         let mut cond_tokens = Vec::new();
         let mut cond_ids: Vec<[f32; 4]> = Vec::new();
+        // Fill: the picture's own latent (the area kept), and the picture the model sees with the
+        // area flat grey (shown the area as it was, Klein paints it back).
+        let mut original = None;
         for (i, r) in req.references.iter().enumerate() {
             let (rw, rh) = if i == 0 { (w, h) } else { fit(r.width, r.height, REFERENCE_PIXELS) };
-            cond_tokens.push(self.reference(r, rw, rh)?);
+            match (&req.mask, i) {
+                (Some(m), 0) => {
+                    original = Some(self.reference(r, rw, rh)?);
+                    cond_tokens.push(self.reference(&greyed(r, m)?, rw, rh)?);
+                }
+                _ => cond_tokens.push(self.reference(r, rw, rh)?),
+            }
             cond_ids.extend(grid_ids(rh / SCALE, rw / SCALE, -(1.0 + i as f32)));
         }
         let cond = if cond_tokens.is_empty() { None } else { Some(mlx_rs::ops::concatenate(&cond_tokens, 0)?) };
@@ -277,6 +316,15 @@ impl KleinMlx {
         let noise = qwen_image_rs::comfy::torch_randn(req.seed, lh * lw * CHANNELS).map_err(anyhow::Error::msg)?;
         let noise: Vec<f32> = noise.iter().map(|&v| dit::bf16_round(v)).collect();
         let mut x = Array::from_slice(&noise, &crate::nn::shape(&[lh * lw, CHANNELS])?);
+        // Fill: outside the mask the picture's own latent, noised to each step's time, is put
+        // back after every step (the last step leaves it exact); inside, the model paints.
+        let keep = match &req.mask {
+            Some(m) => {
+                let z0 = original.as_ref().context("a fill needs its picture")?.as_dtype(Dtype::Float32)?;
+                Some((z0, mask_tokens(m, lw, lh)?, x.clone()))
+            }
+            None => None,
+        };
         let texts: Vec<(Array, Vec<[f32; 4]>)> = enc.iter().map(|e| (e.clone(), text_ids(e.shape()[0] as usize))).collect();
 
         let steps = if req.steps == 0 { if flow_map { 16 } else { 50 } } else { req.steps };
@@ -299,6 +347,10 @@ impl KleinMlx {
                 _ => v,
             };
             x = x.add(v.multiply(Array::from_f32(t1 - t))?)?;
+            if let Some((z0, m, eps)) = &keep {
+                let known = z0.multiply(Array::from_f32(1.0 - t1))?.add(eps.multiply(Array::from_f32(t1))?)?;
+                x = x.multiply(m)?.add(known.multiply(Array::from_f32(1.0).subtract(m)?)?)?;
+            }
             x.eval()?;
             progress(i + 1, steps);
         }

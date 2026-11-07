@@ -73,6 +73,7 @@ fn main() -> anyhow::Result<()> {
             guidance: std::env::var("MOSS_CFG").ok().and_then(|v| v.parse().ok()).unwrap_or(if kind == "edit-full" { 4.0 } else { 1.0 }),
             seed,
             references: references.clone(),
+            mask: None,
         };
         let t0 = Instant::now();
         let mut last = Instant::now();
