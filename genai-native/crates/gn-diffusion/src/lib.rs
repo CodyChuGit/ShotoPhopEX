@@ -1479,6 +1479,15 @@ impl Engine for DiffusionEngine {
         self.resident = Resident::None;
         self.loras.clear();
         self.tiny = None;
+        #[cfg(feature = "mlx")]
+        let _ = gn_mlx::nn::release_cache();
+    }
+
+    /// On a Mac (MLX) the models and the perception engine's SAM share one memory: the diffusion
+    /// model gives it up when SAM runs (reloaded from the converted cache in a few seconds after),
+    /// where holding both pushed a 16 GB Mac into gigabytes of swap. On CUDA it stays.
+    fn yields(&self) -> bool {
+        cfg!(feature = "mlx")
     }
 
     fn index(&mut self, dir: &str) -> Value {
