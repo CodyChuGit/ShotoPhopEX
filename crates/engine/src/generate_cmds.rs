@@ -3975,10 +3975,11 @@ pub(crate) const OUTPAINT_LORA_WIDE: &str = "qwen-image-2.1-outpaint.safetensors
 /// paving; Cody's PC, in the app, 2026-11-03), so the other qualities keep 25 steps.
 pub(crate) const OUTPAINT_TURBO_LORA: &str = "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors";
 pub(crate) const OUTPAINT_TURBO_TEMPLATE: &str = "qwen-2.1/outpaint-turbo";
-/// The Mac's expand: AusBoss's Outpaint LoRA for FLUX 3 Image Klein on Klein's edit (the
-/// worker's MLX route), the request at about 768² (an M1 Air took 6 min at 768×512).
+/// The Mac's expand: AusBoss's Outpaint LoRA for FLUX 3 Image Klein on Klein's fill (the
+/// worker's MLX route), the new area as the mask, so the picture is kept exactly and the model
+/// reads it at half the side; the request at about 768². An M1 Air took 309 s at 768×512 as
+/// an edit of the whole canvas, 187 s as this fill, the seam the same.
 pub(crate) const KLEIN_OUTPAINT_LORA: &str = "flux-3-image-klein-outpaint.safetensors";
-pub(crate) const KLEIN_EDIT_TEMPLATE: &str = "flux3-klein/edit";
 const KLEIN_OUTPAINT_PIXELS: u64 = 589_824;
 /// The 2.1 edit the plain Outpaint LoRA runs on.
 const OUTPAINT_EDIT_TEMPLATE: &str = "qwen-2.1/edit";
@@ -4013,8 +4014,8 @@ fn outpaint_lora(s: &Session, (ow, oh): (u32, u32), (nw, nh): (u32, u32)) -> Opt
             return Some(route);
         }
     }
-    // A Mac: FLUX 3 Image Klein's edit with AusBoss's Klein Outpaint LoRA, at Klein's edit size.
-    (cfg!(target_os = "macos") && has(KLEIN_OUTPAINT_LORA)).then_some((KLEIN_EDIT_TEMPLATE, Some(KLEIN_OUTPAINT_LORA), KLEIN_OUTPAINT_PIXELS))
+    // A Mac: FLUX 3 Image Klein's fill with AusBoss's Klein Outpaint LoRA, at Klein's edit size.
+    (cfg!(target_os = "macos") && has(KLEIN_OUTPAINT_LORA)).then_some((KLEIN_FILL_TEMPLATE, Some(KLEIN_OUTPAINT_LORA), KLEIN_OUTPAINT_PIXELS))
 }
 
 /// The route through the Outpaint LoRA files `has` finds: the six-step Turbo template when `fast`
@@ -4113,7 +4114,12 @@ fn plan_expand(s: &Session, p: &Value) -> Result<ExpandPlan> {
     let lora = if auto { outpaint_lora(s, (ow, oh), (nw, nh)) } else { None };
     let Common { template, prompt, negative, seed, steps, guidance, models, name } = match lora {
         Some((t, ..)) => {
-            plan_common(s, EXPAND, &q, t, if t == OUTPAINT_EDIT_TEMPLATE || t == KLEIN_EDIT_TEMPLATE { Task::Edit } else { Task::Expand }, &default_model)?
+            let task = match t {
+                OUTPAINT_EDIT_TEMPLATE => Task::Edit,
+                KLEIN_FILL_TEMPLATE => Task::Fill,
+                _ => Task::Expand,
+            };
+            plan_common(s, EXPAND, &q, t, task, &default_model)?
         }
         None => plan_common(s, EXPAND, &q, if auto { DEFAULT_EXPAND_TEMPLATE } else { &requested }, Task::Expand, &default_model)?,
     };
