@@ -34,9 +34,11 @@ const SCALE: usize = 16;
 /// pixels (768²; qir's 1 MP took 16 passes of 35 s on an M1 Air, past the editor's deadline).
 const EDIT_PIXELS: usize = 768 * 768;
 
-/// An edit's output size: the picture's aspect at about `pixels`, sides multiples of 16.
+/// An edit's output size: the picture's aspect at about `pixels`, never larger than the picture
+/// (its references are never enlarged, and an output above them lost the scene), sides multiples
+/// of 16.
 fn edit_size(w: usize, h: usize, pixels: usize) -> (usize, usize) {
-    let scale = (pixels as f64 / (w.max(1) * h.max(1)) as f64).sqrt();
+    let scale = (pixels as f64 / (w.max(1) * h.max(1)) as f64).sqrt().min(1.0);
     let side = |v: usize| (((v as f64 * scale / 16.0).round() as usize) * 16).max(16);
     (side(w), side(h))
 }
@@ -326,7 +328,12 @@ mod tests {
     #[test]
     fn edit_sizes_keep_the_aspect() {
         assert_eq!(super::edit_size(1024, 1024, super::EDIT_PIXELS), (768, 768));
+        assert_eq!(super::edit_size(512, 512, super::EDIT_PIXELS), (512, 512));
+        assert_eq!(super::edit_size(500, 300, super::EDIT_PIXELS), (496, 304));
         assert_eq!(super::edit_size(4000, 3000, super::EDIT_PIXELS), (880, 672));
         assert_eq!(super::edit_size(0, 0, super::EDIT_PIXELS), (16, 16));
+        // The references at the output's long edge never exceed the picture's.
+        let (w, h) = super::edit_size(512, 512, super::EDIT_PIXELS);
+        assert_eq!(super::reference_size(512, 512, w.max(h).clamp(super::LOW_VRAM_REFERENCE_EDGE, super::REFERENCE_EDGE)), (w, h));
     }
 }
