@@ -248,3 +248,15 @@ fn cleaning_and_the_place_in_words() {
     assert_eq!(place_in_words(Rect::new(10, 10, 290, 290), canvas), "whole");
     assert_eq!(place_in_words(Rect::new(10, 10, 50, 50), Rect::new(0, 0, 0, 0)), "lower-right part", "an empty canvas never divides by zero");
 }
+
+#[test]
+fn a_text_only_prompt_writer_rewrites_an_edit_from_its_words() {
+    // A Mac's worker refuses a chat with a picture: the edit is asked again without it.
+    let fake = FakeNative::start_with(Options { text_only: true, ..Default::default() }).unwrap();
+    let mut s = session(&fake.url);
+    let r = s.execute(ENHANCE, json!({"prompt": "make the duck blue", "task": "edit", "seed": 7})).unwrap();
+    assert_eq!(r["prompt"], "Enhanced: make the duck blue");
+    let st = fake.state();
+    assert_eq!(st.runs.len(), 2, "refused with the picture, answered without");
+    assert!(!system_prompt(&st.runs[1].request).contains("You can see the image."));
+}

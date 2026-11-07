@@ -502,7 +502,30 @@ pub(crate) fn list_things(backend: &dyn GenerativeBackend, picture: &Rgba8, k: u
     out
 }
 
+/// What a prompt writer that reads text only says when shown a picture (genai-native's
+/// gn-diffusion on a Mac: MOSS's Qwen3.5-9B on MLX, its vision tower not ported).
+const TEXT_ONLY: &str = "reads text only";
+
 pub(crate) fn enhance_prompt(
+    backend: &dyn GenerativeBackend,
+    kind: EnhanceKind,
+    prompt: &str,
+    image: Option<&Rgba8>,
+    place: Option<&str>,
+    seed: u64,
+    progress: &JobProgress,
+) -> std::result::Result<Option<String>, photocraft_genai::Error> {
+    match enhance_once(backend, kind, prompt, image, place, seed, progress) {
+        // Refused for its picture: an edit or a fill is rewritten from its words alone; the
+        // kinds that must see the picture stay refused.
+        Err(photocraft_genai::Error::Server(why)) if why.contains(TEXT_ONLY) && image.is_some() && matches!(kind, EnhanceKind::Edit | EnhanceKind::Fill) => {
+            enhance_once(backend, kind, prompt, None, place, seed, progress)
+        }
+        r => r,
+    }
+}
+
+fn enhance_once(
     backend: &dyn GenerativeBackend,
     kind: EnhanceKind,
     prompt: &str,

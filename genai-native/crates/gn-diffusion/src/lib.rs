@@ -489,6 +489,22 @@ impl DiffusionEngine {
             None => None,
         };
         let system = req.params.get("system").and_then(Value::as_str).unwrap_or_default().to_string();
+        // A Mac answers on MOSS's own Qwen3.5-9B encoder, greedy, from the text alone (its
+        // vision tower is not ported): a request that shows a picture is refused.
+        #[cfg(feature = "mlx")]
+        {
+            if image.is_some() {
+                return Err(EngineError::new(ErrorKind::Unsupported, "the Mac's prompt writer reads text only (no picture)"));
+            }
+            self.ensure_loaded(Family::Moss(MossVariant::Sft), progress)?;
+            progress(0.5, "Thinking");
+            let Resident::Mlx(m) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no MLX pipeline")) };
+            let stop = || cancel.load(Ordering::SeqCst);
+            let reply = m.chat(&system, &req.prompt, ChatOptions::default().max_new, &stop).map_err(|e| EngineError::new(kind_of(&e), format!("{e:#}")))?;
+            progress(1.0, "Done");
+            return Ok((DoneInfo { images: Vec::new(), texts: vec![reply], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
+        }
+        #[cfg_attr(feature = "mlx", allow(unreachable_code))]
         let on_krea2 = chat_on_krea2(&req.params)?;
         self.ensure_loaded(if on_krea2 { Family::Krea2 } else { Family::QwenImage21 }, progress)?;
         progress(0.5, "Thinking");
@@ -636,6 +652,11 @@ impl DiffusionEngine {
                 #[cfg(feature = "mlx")]
                 if t.starts_with("moss-image/") {
                     return self.mlx_recipe(t).is_ok();
+                }
+                // A Mac's prompt writer is MOSS's own encoder ([`Self::chat`]).
+                #[cfg(feature = "mlx")]
+                if *f == Family::QwenImage21 && t.starts_with("enhance/") {
+                    return self.has_family(Family::Moss(MossVariant::Sft));
                 }
                 (if *f == Family::Edit2511 { edit2511 } else { self.has_family(*f) })
                     && (*f != Family::Edit2511
