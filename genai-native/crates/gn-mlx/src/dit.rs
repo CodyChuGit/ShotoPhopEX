@@ -192,7 +192,8 @@ struct Block {
     adapters: [Adapters; 4],
 }
 
-/// LoRA pairs on one linear, `(A (r, in), B·scale (out, r))` f32: `y += (x Aᵀ) Bᵀ`, in f32.
+/// LoRA pairs on one linear, `(A (r, in), B·scale·LORA_B_SCALE (out, r))` f16: `y += (x Aᵀ) Bᵀ /
+/// LORA_B_SCALE`, the sum in f32.
 #[derive(Default)]
 struct Adapters(Vec<(Array, Array)>);
 
@@ -201,16 +202,19 @@ impl Adapters {
         if self.0.is_empty() {
             return Ok(y);
         }
-        let x32 = x.as_dtype(Dtype::Float32)?;
+        // In f16 (Metal accumulates in f32; B's scale keeps the product well inside f16), added
+        // to the output in f32.
+        let x16 = x.as_dtype(Dtype::Float16)?;
         let mut d: Option<Array> = None;
         for (a, b) in &self.0 {
-            let t = x32.matmul(a.t())?.matmul(b.t())?;
+            let t = x16.matmul(a.t())?.matmul(b.t())?.as_dtype(Dtype::Float32)?;
             d = Some(match d {
                 Some(s) => s.add(&t)?,
                 None => t,
             });
         }
         let Some(d) = d else { return Ok(y) };
+        let d = d.multiply(Array::from_f32(1.0 / crate::convert::LORA_B_SCALE))?;
         Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?)
     }
 }
@@ -333,9 +337,9 @@ impl MossDit {
                     for j in 0..3 {
                         let mut cols_b = Vec::with_capacity(parts.len());
                         for (k, (pj, (_, b))) in parts.iter().enumerate() {
-                            cols_b.push(if *pj == j { b.clone() } else { Array::zeros::<f32>(&[dim_, ranks[k]])? });
+                            cols_b.push(if *pj == j { b.clone() } else { Array::zeros::<f32>(&[dim_, ranks[k]])?.as_dtype(Dtype::Float16)? });
                         }
-                        rows_b.push(if cols_b.is_empty() { Array::zeros::<f32>(&[dim_, total])? } else { ops::concatenate(&cols_b, 1)? });
+                        rows_b.push(if cols_b.is_empty() { Array::zeros::<f32>(&[dim_, total])?.as_dtype(Dtype::Float16)? } else { ops::concatenate(&cols_b, 1)? });
                     }
                     let b = ops::concatenate(&rows_b, 0)?;
                     mlx_rs::transforms::eval([&a, &b])?;

@@ -4,7 +4,7 @@
 //! `cargo run --release -p gn-mlx --example moss -- <models dir> <out dir> <seed> <size>... -- <prompt>`
 //! writes `<out dir>/moss-<size>-<seed>.png` for each square size (a size may repeat: the
 //! second is warm; with `MOSS_EDIT=<picture.png>` it edits that picture and a size of 0 keeps
-//! its aspect at about 1 MP). Converted weights are cached in `<models dir>/mlx_cache`. Each
+//! its aspect at about 1 MP). Converted weights are cached in `<models dir>/.qir-cache/mlx` (where the app's worker keeps them). Each
 //! picture's timings go to stdout; the first is cold (the encoder and the DiT loaded), the rest
 //! warm (the DiT resident, the prompt encoded).
 
@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     let (models, out, seed) = (PathBuf::from(models), PathBuf::from(out), seed.parse::<u64>()?);
     std::fs::create_dir_all(&out)?;
     let t0 = Instant::now();
-    let mut moss = MossMlx::new(&models, &models.join("mlx_cache"))?;
+    let mut moss = MossMlx::new(&models, &models.join(".qir-cache").join("mlx"))?;
     // `MOSS_DIT=f16|q4`: the DiT unquantized (10 GB, the reference) or 4-bit (3 GB); 8-bit else.
     let precision = match std::env::var("MOSS_DIT").as_deref() {
         Ok("f16") => Precision::F16,

@@ -2,9 +2,8 @@
 //! conventions (torch's CPU noise for the seed, Euler steps on the shift-5 schedule snapped to
 //! the training grid, CFG whose negative branch is the empty prompt, block 22 skipped unless
 //! editing; an edit's pictures resized and encoded by the FLUX.2 encoder, run once through the
-//! DiT at t = 0 and attended at every step) under a 16 GB Mac's memory rule: the encoder
-//! (8-bit) loads, encodes and goes before the DiT (8-bit, its LoRAs unmerged) loads; the DiT and
-//! the VAE then stay for the next picture. Converted weights are cached as MLX safetensors
+//! DiT at t = 0 and attended at every step) within a 16 GB Mac's memory: the encoder (6-bit) is
+//! streamed a layer at a time beside the resident DiT (8-bit, its LoRAs unmerged) and VAE. Converted weights are cached as MLX safetensors
 //! (`cache_dir`), so only the first load of a model reads the ComfyUI files.
 
 use std::path::{Path, PathBuf};
@@ -13,7 +12,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use mlx_rs::{Array, Dtype};
 use qwen_image_rs::moss::dit::{sigmas, MossConfig};
-use qwen_image_rs::moss::pipeline::{edit_size, find_files, reference_size, MossFiles, Variant, LOW_VRAM_REFERENCE_EDGE, SHIFT, UNCOND_SKIP};
+use qwen_image_rs::moss::pipeline::{find_files, reference_size, MossFiles, Variant, LOW_VRAM_REFERENCE_EDGE, REFERENCE_EDGE, SHIFT, UNCOND_SKIP};
 use qwen_image_rs::moss::text::{template, TextConfig};
 use qwen_image_rs::pipeline::Cancelled;
 use tokenizers::Tokenizer;
@@ -26,8 +25,22 @@ use crate::vae::{self, Flux2Decoder, Flux2Encoder};
 
 /// The run dtype of every model.
 const DTYPE: Dtype = Dtype::Float16;
+/// The text encoder's: 6-bit (5.6 GB; cos 0.9988 to f16 over 8 layers, 8-bit 0.99993 at 7.4 GB,
+/// 4-bit 0.978). 8-bit pushed a 16 GB Mac with a desktop and the editor open into swap.
+const TEXT_PRECISION: Precision = Precision::Q6;
 /// Pixels per latent pixel.
 const SCALE: usize = 16;
+/// An edit's output when the request names no size: the picture's aspect at about this many
+/// pixels (768²; qir's 1 MP took 16 passes of 35 s on an M1 Air, past the editor's deadline).
+const EDIT_PIXELS: usize = 768 * 768;
+
+/// An edit's output size: the picture's aspect at about `pixels`, sides multiples of 16.
+fn edit_size(w: usize, h: usize, pixels: usize) -> (usize, usize) {
+    let scale = (pixels as f64 / (w.max(1) * h.max(1)) as f64).sqrt();
+    let side = |v: usize| (((v as f64 * scale / 16.0).round() as usize) * 16).max(16);
+    (side(w), side(h))
+}
+
 /// MOSS Edit takes at most this many pictures.
 const MAX_REFERENCES: usize = 4;
 
@@ -167,18 +180,16 @@ impl MossMlx {
     fn encode(&mut self, prompts: &[&str], cancel: &dyn Fn() -> bool) -> Result<Vec<Array>> {
         let missing: Vec<&str> = prompts.iter().copied().filter(|p| !self.encoded.iter().any(|(q, _)| q == p)).collect();
         if !missing.is_empty() {
-            // The DiT goes first: the two never share the memory.
-            self.dit = None;
-            mlx_rs::memory::clear_cache()?;
+            // Streamed a layer at a time (its peak one layer and the embedding table, about 1.2
+            // GB), so the DiT stays: holding the whole encoder (5.6 GB at 6-bit) beside it put a
+            // 16 GB Mac into swap, and dropping the DiT for it cost a reload per prompt.
             let cfg = TextConfig::qwen35_9b();
             let text = self.shared.text.clone();
-            let name = format!("{}.{}.safetensors", Self::stem(&text), Precision::Q8.tag());
-            // The INT8 embedding table is read from the file each time (it is not converted).
-            let w = qwen_image_rs::moss::weights::Weights::open(&text, &candle_core::Device::Cpu, candle_core::DType::F32, false)?;
-            let embed = w.prequantized("model.language_model.embed_tokens")?;
-            drop(w);
-            let params = self.cached(&name, || Ok(crate::text::convert(&text, &cfg, DTYPE, Precision::Q8)?.params))?;
-            let te = Qwen35Text::load(&cfg, crate::text::TextWeights { params, embed }, DTYPE)?;
+            let dir = self.cache_dir.join(format!("{}.{}", Self::stem(&text), TEXT_PRECISION.tag()));
+            if !dir.join("base.safetensors").is_file() {
+                crate::text::convert_streamed(&text, &cfg, DTYPE, TEXT_PRECISION, &dir)?;
+            }
+            let te = Qwen35Text::streamed(&cfg, crate::text::embedding(&text, &cfg)?, &dir, DTYPE)?;
             for p in missing {
                 if cancel() {
                     return Err(Cancelled.into());
@@ -248,7 +259,7 @@ impl MossMlx {
         anyhow::ensure!(req.guidance.is_finite(), "guidance {}", req.guidance);
         anyhow::ensure!(req.references.len() <= MAX_REFERENCES, "MOSS Edit takes at most {MAX_REFERENCES} pictures ({} given)", req.references.len());
         let (w, h) = match req.references.first() {
-            Some(p) if req.width == 0 || req.height == 0 => edit_size(p.width, p.height),
+            Some(p) if req.width == 0 || req.height == 0 => edit_size(p.width, p.height, EDIT_PIXELS),
             _ => (req.width, req.height),
         };
         anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(SCALE) && h.is_multiple_of(SCALE), "the picture's sides must be positive multiples of {SCALE} ({w}x{h} asked)");
@@ -264,7 +275,10 @@ impl MossMlx {
         check()?;
 
         let t0 = Instant::now();
-        let latents = req.references.iter().map(|r| self.reference_latent(r, LOW_VRAM_REFERENCE_EDGE)).collect::<Result<Vec<_>>>()?;
+        // The references at the output's scale (long edge 512..1024): at 512 under a 768 output the
+        // edit kept only the subject (the rest of the picture was lost).
+        let edge = w.max(h).clamp(LOW_VRAM_REFERENCE_EDGE, REFERENCE_EDGE);
+        let latents = req.references.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
         let dit = self.dit(variant, loras)?;
         let refs = if latents.is_empty() { None } else { Some(dit.prepare_references(&latents)?) };
         // The edit's negative branch skips no block (the official edit sampler).
@@ -304,5 +318,15 @@ impl MossMlx {
         timings.decode_s = t0.elapsed().as_secs_f32();
         mlx_rs::memory::clear_cache()?;
         Ok(Picture { width: pw, height: ph, rgba, timings })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn edit_sizes_keep_the_aspect() {
+        assert_eq!(super::edit_size(1024, 1024, super::EDIT_PIXELS), (768, 768));
+        assert_eq!(super::edit_size(4000, 3000, super::EDIT_PIXELS), (880, 672));
+        assert_eq!(super::edit_size(0, 0, super::EDIT_PIXELS), (16, 16));
     }
 }

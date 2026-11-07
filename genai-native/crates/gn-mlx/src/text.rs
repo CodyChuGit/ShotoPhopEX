@@ -35,6 +35,37 @@ pub fn convert(path: &Path, cfg: &TextConfig, dtype: Dtype, precision: Precision
     let mut c = Converter::new(&w, dtype, precision)?;
     c.tensor_f32(&format!("{P}.norm.weight"))?;
     for i in 0..cfg.layers {
+        convert_layer(&mut c, cfg, i)?;
+    }
+    Ok(TextWeights { params: c.out, embed })
+}
+
+/// [`convert`] one layer at a time into `dir`: `base.safetensors` (the final norm) and
+/// `layer-{i}.safetensors`, each written as soon as it is converted (so at most one layer is in
+/// memory); the encoder then streams them ([`Qwen35Text::streamed`]).
+pub fn convert_streamed(path: &Path, cfg: &TextConfig, dtype: Dtype, precision: Precision, dir: &Path) -> Result<()> {
+    let w = Weights::open(path, &candle_core::Device::Cpu, candle_core::DType::F32, false)?;
+    let mut c = Converter::new(&w, dtype, precision)?;
+    for i in 0..cfg.layers {
+        convert_layer(&mut c, cfg, i)?;
+        crate::convert::save(&std::mem::take(&mut c.out), &dir.join(format!("layer-{i}.safetensors")))?;
+        mlx_rs::memory::clear_cache()?;
+    }
+    c.tensor_f32(&format!("{P}.norm.weight"))?;
+    // Last: a folder with its base holds every layer.
+    crate::convert::save(&c.out, &dir.join("base.safetensors"))
+}
+
+/// The encoder's INT8 embedding table, as the file has it.
+pub fn embedding(path: &Path, cfg: &TextConfig) -> Result<Prequantized> {
+    let w = Weights::open(path, &candle_core::Device::Cpu, candle_core::DType::F32, false)?;
+    let embed = w.prequantized(&format!("{P}.embed_tokens")).context("the encoder's INT8 embedding table")?;
+    anyhow::ensure!(embed.in_features == cfg.hidden, "embedding width {} (expected {})", embed.in_features, cfg.hidden);
+    Ok(embed)
+}
+
+fn convert_layer(c: &mut Converter, cfg: &TextConfig, i: usize) -> Result<()> {
+    {
         let l = format!("{P}.layers.{i}");
         for n in ["input_layernorm", "post_attention_layernorm"] {
             c.tensor_f32(&format!("{l}.{n}.weight"))?;
@@ -60,7 +91,7 @@ pub fn convert(path: &Path, cfg: &TextConfig, dtype: Dtype, precision: Precision
             }
         }
     }
-    Ok(TextWeights { params: c.out, embed })
+    Ok(())
 }
 
 fn is_full_attention(cfg: &TextConfig, layer: usize) -> bool {
@@ -129,49 +160,62 @@ pub struct Qwen35Text {
     embed: Prequantized,
     layers: Vec<Layer>,
     norm: Norm1p,
+    /// [`Self::streamed`]'s folder of layers.
+    stream: Option<std::path::PathBuf>,
+}
+
+impl Layer {
+    fn load(p: &Params, cfg: &TextConfig, i: usize) -> Result<Self> {
+        let l = format!("{P}.layers.{i}");
+        let lin = |n: &str| Linear::load(p, &format!("{l}.{n}"));
+        let mixer = if is_full_attention(cfg, i) {
+            Mixer::Full(GatedAttention {
+                q: lin("self_attn.q_proj")?,
+                k: lin("self_attn.k_proj")?,
+                v: lin("self_attn.v_proj")?,
+                o: lin("self_attn.o_proj")?,
+                q_norm: Norm1p::load(p, &format!("{l}.self_attn.q_norm.weight"))?,
+                k_norm: Norm1p::load(p, &format!("{l}.self_attn.k_norm.weight"))?,
+            })
+        } else {
+            let a = format!("{l}.linear_attn");
+            let conv = get(p, &format!("{a}.conv1d.weight"))?;
+            let conv = conv.reshape(&[conv.shape()[0], dim(cfg.conv_kernel)?])?;
+            Mixer::Linear(DeltaNet {
+                qkv: lin("linear_attn.in_proj_qkv")?,
+                z: lin("linear_attn.in_proj_z")?,
+                b: lin("linear_attn.in_proj_b")?,
+                a: lin("linear_attn.in_proj_a")?,
+                out: lin("linear_attn.out_proj")?,
+                conv,
+                decay: get(p, &format!("{a}.A_log"))?.exp()?.negative()?,
+                dt_bias: get(p, &format!("{a}.dt_bias"))?,
+                norm: get(p, &format!("{a}.norm.weight"))?,
+            })
+        };
+        Ok(Layer {
+            input_norm: Norm1p::load(p, &format!("{l}.input_layernorm.weight"))?,
+            post_norm: Norm1p::load(p, &format!("{l}.post_attention_layernorm.weight"))?,
+            mixer,
+            mlp: Mlp { gate: lin("mlp.gate_proj")?, up: lin("mlp.up_proj")?, down: lin("mlp.down_proj")? },
+        })
+    }
 }
 
 impl Qwen35Text {
     pub fn load(cfg: &TextConfig, w: TextWeights, dtype: Dtype) -> Result<Self> {
         let p = &w.params;
-        let mut layers = Vec::with_capacity(cfg.layers);
-        for i in 0..cfg.layers {
-            let l = format!("{P}.layers.{i}");
-            let lin = |n: &str| Linear::load(p, &format!("{l}.{n}"));
-            let mixer = if is_full_attention(cfg, i) {
-                Mixer::Full(GatedAttention {
-                    q: lin("self_attn.q_proj")?,
-                    k: lin("self_attn.k_proj")?,
-                    v: lin("self_attn.v_proj")?,
-                    o: lin("self_attn.o_proj")?,
-                    q_norm: Norm1p::load(p, &format!("{l}.self_attn.q_norm.weight"))?,
-                    k_norm: Norm1p::load(p, &format!("{l}.self_attn.k_norm.weight"))?,
-                })
-            } else {
-                let a = format!("{l}.linear_attn");
-                let conv = get(p, &format!("{a}.conv1d.weight"))?;
-                let conv = conv.reshape(&[conv.shape()[0], dim(cfg.conv_kernel)?])?;
-                Mixer::Linear(DeltaNet {
-                    qkv: lin("linear_attn.in_proj_qkv")?,
-                    z: lin("linear_attn.in_proj_z")?,
-                    b: lin("linear_attn.in_proj_b")?,
-                    a: lin("linear_attn.in_proj_a")?,
-                    out: lin("linear_attn.out_proj")?,
-                    conv,
-                    decay: get(p, &format!("{a}.A_log"))?.exp()?.negative()?,
-                    dt_bias: get(p, &format!("{a}.dt_bias"))?,
-                    norm: get(p, &format!("{a}.norm.weight"))?,
-                })
-            };
-            layers.push(Layer {
-                input_norm: Norm1p::load(p, &format!("{l}.input_layernorm.weight"))?,
-                post_norm: Norm1p::load(p, &format!("{l}.post_attention_layernorm.weight"))?,
-                mixer,
-                mlp: Mlp { gate: lin("mlp.gate_proj")?, up: lin("mlp.up_proj")?, down: lin("mlp.down_proj")? },
-            });
-        }
+        let layers = (0..cfg.layers).map(|i| Layer::load(p, cfg, i)).collect::<Result<_>>()?;
         let norm = Norm1p::load(p, &format!("{P}.norm.weight"))?;
-        Ok(Self { cfg: cfg.clone(), dtype, embed: w.embed, layers, norm })
+        Ok(Self { cfg: cfg.clone(), dtype, embed: w.embed, layers, norm, stream: None })
+    }
+
+    /// The encoder streamed from [`convert_streamed`]'s `dir`: each layer read just before it runs
+    /// and dropped after, so it holds one layer (about 180 MB) rather than all of them.
+    pub fn streamed(cfg: &TextConfig, embed: Prequantized, dir: &Path, dtype: Dtype) -> Result<Self> {
+        let base = crate::convert::load(&dir.join("base.safetensors"))?;
+        let norm = Norm1p::load(&base, &format!("{P}.norm.weight"))?;
+        Ok(Self { cfg: cfg.clone(), dtype, embed, layers: Vec::new(), norm, stream: Some(dir.to_path_buf()) })
     }
 
     /// The last hidden state `(tokens, hidden)` f32.
@@ -181,7 +225,15 @@ impl Qwen35Text {
         let dt = self.dtype;
         let mut x = from_candle(&self.embed.gather_cpu(ids)?)?;
         let (cos, sin) = self.rope(ids.len())?;
-        for layer in &self.layers {
+        for i in 0..self.cfg.layers {
+            let streamed;
+            let layer = match &self.stream {
+                Some(dir) => {
+                    streamed = Layer::load(&crate::convert::load(&dir.join(format!("layer-{i}.safetensors")))?, &self.cfg, i)?;
+                    &streamed
+                }
+                None => self.layers.get(i).context("a layer went missing")?,
+            };
             let h = layer.input_norm.forward(&x, eps)?.as_dtype(dt)?;
             let h = match &layer.mixer {
                 Mixer::Full(a) => self.full_attention(a, &h, &cos, &sin)?,

@@ -18,9 +18,16 @@ pub fn get(p: &Params, name: &str) -> Result<Array> {
     p.get(name).cloned().with_context(|| format!("missing weight {name}"))
 }
 
-/// Cap MLX's cache of freed buffers (by default it may grow to the whole memory limit, and on a
-/// 16 GB Mac that pushes the system into swap).
+/// Before the first GPU work: inside an app bundle, MLX's kernels from
+/// `Contents/Resources/mlx.metallib` (MLX looks beside the executable, then in the path the
+/// build compiled in, under the builder's home); and MLX's cache of freed buffers capped (by
+/// default it may grow to the whole memory limit, and on a 16 GB Mac that pushes the system into
+/// swap).
 pub fn limit_cache() -> Result<()> {
+    let bundled = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("../Resources/mlx.metallib"))).filter(|p| p.is_file());
+    if let Some(path) = bundled {
+        mlx_rs::metal::set_metallib_path(path.to_string_lossy())?;
+    }
     mlx_rs::memory::set_cache_limit(1 << 30)?;
     Ok(())
 }

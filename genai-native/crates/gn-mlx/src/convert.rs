@@ -24,6 +24,9 @@ pub enum Precision {
     Q4,
     /// MLX 8-bit, group 64.
     Q8,
+    /// MLX 6-bit and 5-bit, group 64.
+    Q6,
+    Q5,
 }
 
 impl Precision {
@@ -32,6 +35,8 @@ impl Precision {
             Self::F16 => "f16",
             Self::Q4 => "q4g64",
             Self::Q8 => "q8g64",
+            Self::Q6 => "q6g64",
+            Self::Q5 => "q5g64",
         }
     }
 
@@ -41,9 +46,15 @@ impl Precision {
             Self::F16 => None,
             Self::Q4 => Some(4),
             Self::Q8 => Some(8),
+            Self::Q6 => Some(6),
+            Self::Q5 => Some(5),
         }
     }
 }
+
+/// What a LoRA's `B` is held multiplied by (in f16, a few-step LoRA's `B` is mostly below f16's
+/// smallest normal number, 6e-5); the delta is divided by it in f32.
+pub const LORA_B_SCALE: f32 = 4096.0;
 
 /// A LoRA merged into the weights at load: `W + strength·α/r·B A`.
 pub struct Lora {
@@ -61,12 +72,14 @@ impl Lora {
         self.file.entries.keys().map(String::as_str)
     }
 
-    /// `module`'s pair `(A (r, in), B·strength·α/r (out, r))` f32, if the file adapts it.
+    /// `module`'s pair `(A (r, in), B·strength·α/r·`[`LORA_B_SCALE`]` (out, r))` f16, if the file
+    /// adapts it (B is scaled up so its small values stay normal f16 numbers).
     pub fn pair(&self, module: &str) -> Result<Option<(Array, Array)>> {
         let Some(e) = self.file.entries.get(module) else { return Ok(None) };
         let r = e.a.dim(0)?;
-        let scale = self.strength * e.alpha / r.max(1) as f32;
-        let (a, b) = (from_candle(&e.a)?, from_candle(&e.b)?.multiply(Array::from_f32(scale))?);
+        let scale = self.strength * e.alpha / r.max(1) as f32 * LORA_B_SCALE;
+        let a = from_candle(&e.a)?.as_dtype(Dtype::Float16)?;
+        let b = from_candle(&e.b)?.multiply(Array::from_f32(scale))?.as_dtype(Dtype::Float16)?;
         mlx_rs::transforms::eval([&a, &b])?;
         Ok(Some((a, b)))
     }

@@ -175,7 +175,7 @@ mod run {
         println!("qir CPU f32, {layers} layers: {:.1} s", t0.elapsed().as_secs_f64());
         drop(reference);
         drop(w);
-        for precision in [Precision::F16, Precision::Q8, Precision::Q4] {
+        for precision in [Precision::F16, Precision::Q8, Precision::Q6, Precision::Q5, Precision::Q4] {
             let label = precision.tag();
             let model = gn_mlx::text::Qwen35Text::load(&cfg, gn_mlx::text::convert(&path, &cfg, Dtype::Float16, precision)?, Dtype::Float16)?;
             to_vec(&model.forward(&ids)?)?;
