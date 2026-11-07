@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>The layered image editor with a generative AI studio inside it.</b><br>
-  Fill, Expand, Remove, Edit, Split into Layers and text to image, on open-weight models,<br>
+  Fill, Expand, Remove, Edit, Split into Layers and text-to-image, on open-weight models,<br>
   running on your own GPU. Written in Rust. No cloud, no account, no credits, no Python, no ComfyUI.
 </p>
 
