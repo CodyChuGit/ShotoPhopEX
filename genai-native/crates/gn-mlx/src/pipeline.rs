@@ -100,6 +100,9 @@ pub struct LoraSpec {
 /// The DiT held: its variant and precision.
 type DitKey = (Variant, Precision);
 
+/// The share of an edit's steps that run with guidance (the rest the prompt alone, one pass).
+const EDIT_CFG_SHARE: f32 = 0.5;
+
 pub struct MossMlx {
     root: PathBuf,
     /// The encoder, VAE and tokenizer (shared by every variant).
@@ -342,7 +345,10 @@ impl MossMlx {
             let t_step = Instant::now();
             let (s0, s1) = (sig[i], sig[i + 1]);
             let pos = dit.forward(&x, s0 * 1000.0, &enc[0], &[], refs.as_ref())?;
-            let v = match enc.get(1) {
+            // An edit's guidance on its first half only (EDIT_CFG_SHARE): the later steps refine
+            // what the early ones decided.
+            let guided = refs.is_none() || (i as f32) < (n as f32 * EDIT_CFG_SHARE).ceil();
+            let v = match enc.get(1).filter(|_| guided) {
                 Some(neg) => {
                     let neg = dit.forward(&x, s0 * 1000.0, neg, skip, refs.as_ref())?;
                     neg.add(pos.subtract(&neg)?.multiply(Array::from_f32(req.guidance))?)?
