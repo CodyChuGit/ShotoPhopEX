@@ -7,7 +7,7 @@
 //!    everything in `<exe dir>/PhotoCraftData`, so a portable copy on a USB stick leaves nothing in
 //!    `%APPDATA%`. The Windows portable zip ships with `portable.txt`; the MSI doesn't. If that
 //!    folder can't be written (read-only medium, Program Files), the app warns and falls back.
-//! 3. The platform convention: macOS `~/Library/Application Support/Photocraft`, Windows
+//! 3. The platform convention: macOS `~/Library/Application Support/ShotoPhopEX`, Windows
 //!    `%APPDATA%\Photocraft`, Linux `$XDG_CONFIG_HOME/photocraft` or `~/.config/photocraft`.
 //!
 //! One exception: the platform convention keeps crash-recovery autosaves out of what is synced
@@ -85,7 +85,7 @@ pub fn recovery_dir() -> Option<PathBuf> {
 ///   `~/.local/state/photocraft/Recovery`, where the XDG Base Directory spec puts state that
 ///   should outlive a restart but isn't configuration; dotfile managers and config sync often copy
 ///   `~/.config` whole. As the spec asks, a relative `XDG_STATE_HOME` is ignored.
-/// - macOS: `~/Library/Application Support/Photocraft/Recovery` as before. Apple's guidelines put
+/// - macOS: `~/Library/Application Support/ShotoPhopEX/Recovery` as before. Apple's guidelines put
 ///   app-created data that can't be regenerated there; `~/Library/Caches` may be purged by the
 ///   system.
 ///
@@ -478,7 +478,8 @@ pub fn resolve(env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -
 pub fn platform_dir(env: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let home = env("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
     if cfg!(target_os = "macos") {
-        return home.map(|h| h.join("Library/Application Support/Photocraft"));
+        // ShotoPhopEX on a Mac: its own bundle id and settings, beside an installed PhotoCraft.
+        return home.map(|h| h.join("Library/Application Support/ShotoPhopEX"));
     }
     if cfg!(windows) {
         return env("APPDATA").filter(|a| !a.is_empty()).map(|a| PathBuf::from(a).join("Photocraft"));

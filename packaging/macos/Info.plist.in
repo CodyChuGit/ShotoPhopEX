@@ -43,7 +43,7 @@
   <key>CFBundleExecutable</key>
   <string>PhotoCraft</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.storyteller.photocraft</string>
+  <string>com.codychugit.shotophopex</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
