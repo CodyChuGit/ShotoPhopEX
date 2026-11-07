@@ -23,9 +23,9 @@ pub const UPSTREAM_NAME: &str = "PhotoCraft";
 /// our own version in About and the release notes. ShotoPhopEX keeps its own version line in
 /// [`VERSION`]; this records which upstream release was last merged. Update it in every upstream
 /// merge PR.
-pub const UPSTREAM_VERSION: &str = "0.20.2";
+pub const UPSTREAM_VERSION: &str = "0.21.0";
 
-/// `PhotoCraft 0.20.2`: the upstream base, for About and the release notes.
+/// `PhotoCraft 0.21.0`: the upstream base, for About and the release notes.
 pub fn upstream_base() -> String {
     format!("{UPSTREAM_NAME} {UPSTREAM_VERSION}")
 }

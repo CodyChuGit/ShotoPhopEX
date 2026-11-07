@@ -4865,25 +4865,8 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                         matted = true;
                     }
                 }
-                let (content, found) = crate::select_ml_cmds::coverage_bounds(&cov, area);
-                if found > 0 && !matted {
-                    let wv = w as usize;
-                    let reader = |r: Rect| -> Vec<f32> {
-                        let mut v = Vec::with_capacity(r.width() as usize * r.height() as usize);
-                        for y in r.y0..r.y1 {
-                            for x in r.x0..r.x1 {
-                                let inside = x >= area.x0 && x < area.x1 && y >= area.y0 && y < area.y1;
-                                v.push(if inside { cov.get((y - area.y0) as usize * wv + (x - area.x0) as usize).copied().unwrap_or(0.0) } else { 0.0 });
-                            }
-                        }
-                        v
-                    };
-                    let refined = crate::smartselect_cmds::with_doc_sampler(doc, Some(id), all_layers, |smp, d| {
-                        photocraft_algo::matting::refine_mask(smp, &reader, content, d.bounds(), &crate::cutout_cmds::REFINE)
-                    });
-                    if let Some(reg) = refined {
-                        cov = photocraft_algo::matting::region_reader(&reg)(area);
-                    }
+                if !matted {
+                    cov = crate::select_ml_cmds::refine_coverage(doc, Some(id), all_layers, cov, area);
                 }
             }
             if let Some(own) = own_alpha {
