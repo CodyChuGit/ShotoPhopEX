@@ -213,6 +213,32 @@ impl MossMlx {
         prompts.iter().map(|p| self.encoded.iter().find(|(q, _)| q == p).map(|(_, h)| h.clone()).context("an encoding went missing")).collect()
     }
 
+    /// A text answer from the encoder's own language model (Qwen3.5-9B, no picture): `system`
+    /// and `prompt` as a chat with thinking off, greedy, at most `max_tokens`. The DiT is dropped
+    /// first (the encoder held whole beside it does not fit 16 GB) and loaded again by the next
+    /// picture; the encoder is dropped after.
+    pub fn chat(&mut self, system: &str, prompt: &str, max_tokens: usize, cancel: &dyn Fn() -> bool) -> Result<String> {
+        self.dit = None;
+        mlx_rs::memory::clear_cache()?;
+        let cfg = TextConfig::qwen35_9b();
+        let text = self.shared.text.clone();
+        let dir = self.cache_dir.join(format!("{}.{}", Self::stem(&text), TEXT_PRECISION.tag()));
+        if !dir.join("base.safetensors").is_file() {
+            crate::text::convert_streamed(&text, &cfg, DTYPE, TEXT_PRECISION, &dir)?;
+        }
+        let head = crate::text::lm_head(&text, DTYPE, TEXT_PRECISION, &dir.join("lm_head.safetensors"))?;
+        let te = Qwen35Text::resident(&cfg, crate::text::embedding(&text, &cfg)?, &dir, DTYPE)?;
+        let chat = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
+        let ids = self.tok.encode(chat, false).map_err(|e| anyhow::anyhow!("encode chat: {e}"))?.get_ids().to_vec();
+        let stop: Vec<u32> = ["<|im_end|>", "<|endoftext|>"].iter().filter_map(|t| self.tok.token_to_id(t)).collect();
+        let out = te.generate(&head, &ids, max_tokens, &stop, cancel);
+        drop(te);
+        drop(head);
+        mlx_rs::memory::clear_cache()?;
+        let answer = self.tok.decode(&out?, true).map_err(|e| anyhow::anyhow!("decode answer: {e}"))?;
+        Ok(answer.trim().to_string())
+    }
+
     /// `variant`'s DiT with `loras` on it (unmerged), loaded unless it is the one held; one
     /// converted cache per variant and precision, whatever the LoRAs.
     fn dit(&mut self, variant: Variant, loras: &[LoraSpec]) -> Result<&MossDit> {
