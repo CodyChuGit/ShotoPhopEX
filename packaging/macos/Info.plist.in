@@ -65,7 +65,7 @@
   <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. Big Sur is the first release on
        Apple silicon and has the Metal feature set wgpu targets. -->
   <key>LSMinimumSystemVersion</key>
-  <string>11.0</string>
+  <string>14.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key>
