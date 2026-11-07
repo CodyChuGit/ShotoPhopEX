@@ -207,13 +207,17 @@ impl Block {
         let split = |t: Array| -> Result<Array> { Ok(t.reshape(&[n, h, hd])?) };
         let q = rope.apply(&rms(&split(self.q.forward(&y)?)?, &self.norm_q)?)?.as_dtype(dt)?;
         let k = rope.apply(&rms(&split(self.k.forward(&y)?)?, &self.norm_k)?)?.as_dtype(dt)?;
-        let v = split(self.v.forward(&y)?)?.multiply(Array::from_f32(1.0 / V_HEADROOM).as_dtype(dt)?)?;
+        // The headroom divides the input, not the output: in f16 the output itself overflows
+        // (3e4..3e5 in the bf16 reference). These linears have no bias, so it is exact.
+        let v = split(self.v.forward(&y.multiply(Array::from_f32(1.0 / V_HEADROOM).as_dtype(dt)?)?)?)?;
         let att = attention(&q, &k, &v)?;
         let a = self.out.forward(&att)?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(V_HEADROOM))?;
-        let gu = self.ff_in.forward(&y)?;
+        let gu = self.ff_in.forward(&y.multiply(Array::from_f32(1.0 / FF_HEADROOM).as_dtype(dt)?)?)?;
         let f = gu.shape()[1] as usize / 2;
-        let up = cols(&gu, f, 2 * f)?.multiply(Array::from_f32(1.0 / FF_HEADROOM).as_dtype(dt)?)?;
-        let hid = mlx_rs::nn::silu(cols(&gu, 0, f)?)?.multiply(&up)?;
+        // The gate back to its scale in f32; the up half stays FF_HEADROOM times smaller.
+        let gate = cols(&gu, 0, f)?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(FF_HEADROOM))?;
+        let up = cols(&gu, f, 2 * f)?.as_dtype(Dtype::Float32)?;
+        let hid = mlx_rs::nn::silu(gate)?.multiply(&up)?.as_dtype(dt)?;
         let ff = self.ff_out.forward(&hid)?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(FF_HEADROOM))?;
         Ok(x.add(a.add(&ff)?.multiply(&m.gate)?)?)
     }
@@ -373,7 +377,14 @@ impl KleinDit {
     /// changes their modulation.
     pub fn prepare(&self, tok: &Tokens) -> Result<Prepared> {
         let dt = self.dtype;
-        let text = self.context.forward(&tok.text.as_dtype(dt)?)?.as_dtype(Dtype::Float32)?;
+        // The encoder's hidden states reach past f16 (they came out inf in f16): scaled into
+        // range by a power of two on the way in (the projection has no bias, so it is exact) and
+        // back in f32.
+        let peak = tok.text.as_dtype(Dtype::Float32)?.abs()?.max(None)?;
+        peak.eval()?;
+        let peak = peak.item_exact::<f32>();
+        let k = if peak.is_finite() && peak > 4096.0 { 2f32.powi(-((peak / 4096.0).log2().ceil() as i32)) } else { 1.0 };
+        let text = self.context.forward(&tok.text.multiply(Array::from_f32(k))?.as_dtype(dt)?)?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(1.0 / k))?;
         let (cond, rope_cond) = match tok.cond {
             Some((c, ids)) => (Some(self.x_cond.forward(&c.as_dtype(dt)?)?.as_dtype(Dtype::Float32)?), Some(Rope::new(ids)?)),
             None => (None, None),
