@@ -7,6 +7,9 @@
 //! - `dit [layers]`: one forward of a cut-down DiT (its first `layers` blocks, default 4: qir's
 //!   f32 reference of all 42 needs 20 GB) at 256x256, MLX f16 and 4-bit, without and with the
 //!   LoRA.
+//! - `text [layers]`: the encoder's hidden state for a fixed prompt, its first `layers` layers
+//!   (default 4: three DeltaNet, one full attention), MLX f16, 8-bit and 4-bit; then the whole
+//!   encoder in 8-bit on MLX alone (time, memory).
 
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
@@ -33,6 +36,9 @@ mod run {
     use qwen_image_rs::moss::weights::Weights;
 
     const DIT: &str = "diffusion_models/kromoss_int8_convrot.safetensors";
+    const TEXT: &str = "text_encoders/qwen3.5_9b_int8_convrot.safetensors";
+    const TOKENIZER: &str = "text_encoders/qwen35_tokenizer/tokenizer.json";
+    pub const PROMPT: &str = "a red apple, a yellow rubber duck and a white mug on a wooden table";
     const LORA: &str = "loras/kromoss-8-steps-dmd2-lora.safetensors";
 
     pub fn main() -> Result<()> {
@@ -43,6 +49,7 @@ mod run {
         let models = PathBuf::from(models);
         match check.as_str() {
             "load" => load(&models),
+            "text" => text_check(&models, args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(4)),
             "dit" => dit_check(&models, args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(4)),
             other => anyhow::bail!("unknown check {other}"),
         }
@@ -139,6 +146,49 @@ mod run {
                 );
             }
         }
+        Ok(())
+    }
+
+    fn text_check(models: &Path, layers: usize) -> Result<()> {
+        use qwen_image_rs::moss::text::{self as qtext, TextConfig};
+        let tok = tokenizers::Tokenizer::from_file(models.join(TOKENIZER)).map_err(|e| anyhow::anyhow!("tokenizer: {e}"))?;
+        let ids = tok.encode(qtext::template(PROMPT), false).map_err(|e| anyhow::anyhow!("encode: {e}"))?.get_ids().to_vec();
+        println!("prompt: {} tokens", ids.len());
+        let path = models.join(TEXT);
+        let cfg = TextConfig { layers, ..TextConfig::qwen35_9b() };
+        let t0 = Instant::now();
+        let w = Weights::open(&path, &Device::Cpu, DType::F32, false)?;
+        let reference = qtext::Qwen35Text::load(&cfg, &w)?;
+        let want = reference.forward(&ids)?.flatten_all()?.to_vec1::<f32>()?;
+        println!("qir CPU f32, {layers} layers: {:.1} s", t0.elapsed().as_secs_f64());
+        drop(reference);
+        drop(w);
+        for precision in [Precision::F16, Precision::Q8, Precision::Q4] {
+            let label = precision.tag();
+            let model = gn_mlx::text::Qwen35Text::load(&cfg, gn_mlx::text::convert(&path, &cfg, Dtype::Float16, precision)?, Dtype::Float16)?;
+            to_vec(&model.forward(&ids)?)?;
+            let t0 = Instant::now();
+            let got = to_vec(&model.forward(&ids)?)?;
+            let (cos, max) = compare(&got, &want)?;
+            println!(
+                "MLX {label}: cosine {cos:.6}, max abs {max:.4} (|h| max {:.1}), finite {}, warm encode {:.3} s",
+                want.iter().fold(0f32, |m, v| m.max(v.abs())),
+                got.iter().all(|v| v.is_finite()),
+                t0.elapsed().as_secs_f64()
+            );
+        }
+        mlx_rs::memory::clear_cache()?;
+        mlx_rs::memory::reset_peak_memory()?;
+        let full = TextConfig::qwen35_9b();
+        let t0 = Instant::now();
+        let model = gn_mlx::text::Qwen35Text::load(&full, gn_mlx::text::convert(&path, &full, Dtype::Float16, Precision::Q8)?, Dtype::Float16)?;
+        println!("whole encoder to 8-bit: {:.1} s; {}", t0.elapsed().as_secs_f64(), mem());
+        let t0 = Instant::now();
+        let h = to_vec(&model.forward(&ids)?)?;
+        println!("whole encoder, cold encode: {:.3} s, finite {}", t0.elapsed().as_secs_f64(), h.iter().all(|v| v.is_finite()));
+        let t0 = Instant::now();
+        to_vec(&model.forward(&ids)?)?;
+        println!("whole encoder, warm encode: {:.3} s; {}", t0.elapsed().as_secs_f64(), mem());
         Ok(())
     }
 }

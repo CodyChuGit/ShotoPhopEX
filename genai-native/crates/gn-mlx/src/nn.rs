@@ -11,9 +11,8 @@ use mlx_rs::{ops, Array, Dtype};
 /// `{m}.scales` and `{m}.biases`), `{m}.bias`, norms.
 pub type Params = HashMap<String, Array>;
 
-/// MLX's 4-bit quantization: group size and bits.
+/// MLX's quantization group size.
 pub const GROUP: i32 = 64;
-pub const BITS: i32 = 4;
 
 pub fn get(p: &Params, name: &str) -> Result<Array> {
     p.get(name).cloned().with_context(|| format!("missing weight {name}"))
@@ -60,7 +59,7 @@ pub fn from_candle(t: &candle_core::Tensor) -> Result<Array> {
 /// A linear: `x Wᵀ + b`, the weight dense (`(out, in)`) or 4-bit.
 pub enum Linear {
     Dense { w: Array, b: Option<Array> },
-    Quant { w: Array, scales: Array, biases: Array, b: Option<Array> },
+    Quant { w: Array, scales: Array, biases: Array, b: Option<Array>, bits: i32 },
 }
 
 impl Linear {
@@ -68,7 +67,13 @@ impl Linear {
         let w = get(p, &format!("{m}.weight"))?;
         let b = p.get(&format!("{m}.bias")).cloned();
         Ok(match (p.get(&format!("{m}.scales")), p.get(&format!("{m}.biases"))) {
-            (Some(s), Some(z)) => Self::Quant { w, scales: s.clone(), biases: z.clone(), b },
+            (Some(s), Some(z)) => {
+                // The bits from the shapes: `in = groups·GROUP` inputs packed into 32-bit words.
+                let k = s.shape().last().copied().unwrap_or(0) * GROUP;
+                let words = w.shape().last().copied().unwrap_or(0);
+                anyhow::ensure!(k > 0 && (words * 32) % k == 0, "{m}: quantized shapes {:?} and {:?}", w.shape(), s.shape());
+                Self::Quant { w, scales: s.clone(), biases: z.clone(), b, bits: words * 32 / k }
+            }
             _ => Self::Dense { w, b },
         })
     }
@@ -76,7 +81,7 @@ impl Linear {
     pub fn forward(&self, x: &Array) -> Result<Array> {
         let (y, b) = match self {
             Self::Dense { w, b } => (x.matmul(w.t())?, b),
-            Self::Quant { w, scales, biases, b } => (ops::quantized_matmul(x, w, scales, biases, true, GROUP, BITS)?, b),
+            Self::Quant { w, scales, biases, b, bits } => (ops::quantized_matmul(x, w, scales, biases, true, GROUP, *bits)?, b),
         };
         Ok(match b {
             Some(b) => y.add(b)?,

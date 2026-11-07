@@ -13,7 +13,7 @@ use qwen_image_rs::lora::LoraFile;
 use qwen_image_rs::model::rotation::{regular_hadamard_256, GROUP as ROT_GROUP};
 use qwen_image_rs::moss::weights::Weights;
 
-use crate::nn::{dim, from_candle, Params, BITS, GROUP};
+use crate::nn::{dim, from_candle, Params, GROUP};
 
 /// How the large linears are held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +22,8 @@ pub enum Precision {
     F16,
     /// MLX 4-bit, group 64, f16 scales and biases.
     Q4,
+    /// MLX 8-bit, group 64.
+    Q8,
 }
 
 impl Precision {
@@ -29,6 +31,16 @@ impl Precision {
         match self {
             Self::F16 => "f16",
             Self::Q4 => "q4g64",
+            Self::Q8 => "q8g64",
+        }
+    }
+
+    /// The bits of a quantized linear (`None`: dense).
+    pub fn bits(self) -> Option<i32> {
+        match self {
+            Self::F16 => None,
+            Self::Q4 => Some(4),
+            Self::Q8 => Some(8),
         }
     }
 }
@@ -128,8 +140,8 @@ impl<'a> Converter<'a> {
         };
         let w = w.as_dtype(self.dtype)?;
         let k = *w.shape().last().unwrap_or(&0);
-        if quantize && self.precision == Precision::Q4 && k % GROUP == 0 {
-            let (q, s, z) = ops::quantize(&w, GROUP, BITS)?;
+        if let (true, Some(bits), 0) = (quantize, self.precision.bits(), k % GROUP) {
+            let (q, s, z) = ops::quantize(&w, GROUP, bits)?;
             mlx_rs::transforms::eval([&q, &s, &z])?;
             self.out.insert(format!("{module}.weight"), q);
             self.out.insert(format!("{module}.scales"), s);

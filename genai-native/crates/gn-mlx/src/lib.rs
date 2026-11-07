@@ -13,3 +13,5 @@ pub mod convert;
 pub mod dit;
 #[cfg(target_os = "macos")]
 pub mod nn;
+#[cfg(target_os = "macos")]
+pub mod text;
