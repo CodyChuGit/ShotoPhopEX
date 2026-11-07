@@ -61,6 +61,16 @@ impl Lora {
         self.file.entries.keys().map(String::as_str)
     }
 
+    /// `module`'s pair `(A (r, in), B·strength·α/r (out, r))` f32, if the file adapts it.
+    pub fn pair(&self, module: &str) -> Result<Option<(Array, Array)>> {
+        let Some(e) = self.file.entries.get(module) else { return Ok(None) };
+        let r = e.a.dim(0)?;
+        let scale = self.strength * e.alpha / r.max(1) as f32;
+        let (a, b) = (from_candle(&e.a)?, from_candle(&e.b)?.multiply(Array::from_f32(scale))?);
+        mlx_rs::transforms::eval([&a, &b])?;
+        Ok(Some((a, b)))
+    }
+
     /// `module`'s delta `(out, in)` f32, if the file adapts it.
     pub fn delta(&self, module: &str) -> Result<Option<Array>> {
         let Some(e) = self.file.entries.get(module) else { return Ok(None) };

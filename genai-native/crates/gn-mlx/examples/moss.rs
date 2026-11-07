@@ -35,15 +35,28 @@ fn main() -> anyhow::Result<()> {
         _ => Precision::Q8,
     };
     moss.set_dit_precision(precision);
-    let dmd2 = LoraSpec { path: models.join("loras/kromoss-8-steps-dmd2-lora.safetensors"), strength: 1.0 };
+    // `MOSS_TURBO_LORA=<path>`: another few-step LoRA in place of Kromoss' DMD2.
+    let turbo = std::env::var("MOSS_TURBO_LORA").map_or_else(|_| models.join("loras/kromoss-8-steps-dmd2-lora.safetensors"), PathBuf::from);
+    let dmd2 = LoraSpec { path: turbo, strength: 1.0 };
     let (variant, loras, references, kind) = match std::env::var("MOSS_EDIT") {
         Ok(picture) => {
             let img = image::open(&picture)?.to_rgba8();
             let r = RefPicture { width: img.width() as usize, height: img.height() as usize, rgba: img.into_raw() };
-            let edit = LoraSpec { path: models.join("loras/moss-image-edit/adapter_model.safetensors"), strength: 1.0 };
+            // `MOSS_EDIT_LORA=<path>`: another edit LoRA in place of chinoll's.
+            let edit_path = std::env::var("MOSS_EDIT_LORA").map_or_else(|_| models.join("loras/moss-image-edit/adapter_model.safetensors"), PathBuf::from);
+            let edit = LoraSpec { path: edit_path, strength: 1.0 };
             // `MOSS_EDIT_FULL=1`: MOSS Edit alone (30 steps, CFG 4), not the turbo.
-            if std::env::var("MOSS_EDIT_FULL").is_ok_and(|v| v == "1") { (Variant::Sft, vec![edit], vec![r], "edit-full") } else { (Variant::Sft, vec![edit, dmd2], vec![r], "edit") }
+            // `MOSS_TURBO_LORA=none`: the edit LoRA alone at the turbo's 8 steps, CFG 1.
+            if std::env::var("MOSS_EDIT_FULL").is_ok_and(|v| v == "1") {
+                (Variant::Sft, vec![edit], vec![r], "edit-full")
+            } else if std::env::var("MOSS_TURBO_LORA").is_ok_and(|v| v == "none") {
+                (Variant::Sft, vec![edit], vec![r], "edit")
+            } else {
+                (Variant::Sft, vec![edit, dmd2], vec![r], "edit")
+            }
         }
+        // `MOSS_VARIANT=sft`: MOSS-Image-SFT in place of Kromoss.
+        Err(_) if std::env::var("MOSS_VARIANT").is_ok_and(|v| v == "sft") => (Variant::Sft, vec![dmd2], Vec::new(), "moss-sft"),
         Err(_) => (Variant::Kromoss, vec![dmd2], Vec::new(), "moss"),
     };
     let tag = if precision == Precision::Q8 { String::new() } else { format!("-{}", precision.tag()) };
@@ -55,8 +68,9 @@ fn main() -> anyhow::Result<()> {
             negative: String::new(),
             width: size,
             height: size,
-            steps: if kind == "edit-full" { 30 } else { 8 },
-            guidance: if kind == "edit-full" { 4.0 } else { 1.0 },
+            // `MOSS_STEPS` / `MOSS_CFG` override the template's.
+            steps: std::env::var("MOSS_STEPS").ok().and_then(|v| v.parse().ok()).unwrap_or(if kind == "edit-full" { 30 } else { 8 }),
+            guidance: std::env::var("MOSS_CFG").ok().and_then(|v| v.parse().ok()).unwrap_or(if kind == "edit-full" { 4.0 } else { 1.0 }),
             seed,
             references: references.clone(),
         };

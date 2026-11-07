@@ -3,9 +3,9 @@
 //! the training grid, CFG whose negative branch is the empty prompt, block 22 skipped unless
 //! editing; an edit's pictures resized and encoded by the FLUX.2 encoder, run once through the
 //! DiT at t = 0 and attended at every step) under a 16 GB Mac's memory rule: the encoder
-//! (8-bit) loads, encodes and goes before the DiT (8-bit, its LoRAs merged) loads; the DiT and
+//! (8-bit) loads, encodes and goes before the DiT (8-bit, its LoRAs unmerged) loads; the DiT and
 //! the VAE then stay for the next picture. Converted weights are cached as MLX safetensors
-//! (`cache_dir`), so only the first load of a model (and LoRA set) reads the ComfyUI files.
+//! (`cache_dir`), so only the first load of a model reads the ComfyUI files.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -72,15 +72,15 @@ pub struct Picture {
     pub timings: Timings,
 }
 
-/// A LoRA merged into the DiT at load.
+/// A LoRA on the DiT (applied unmerged).
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoraSpec {
     pub path: PathBuf,
     pub strength: f32,
 }
 
-/// The DiT held: its variant, merged LoRAs and precision.
-type DitKey = (Variant, Vec<LoraSpec>, Precision);
+/// The DiT held: its variant and precision.
+type DitKey = (Variant, Precision);
 
 pub struct MossMlx {
     root: PathBuf,
@@ -91,6 +91,8 @@ pub struct MossMlx {
     vae: Flux2Decoder,
     encoder: Option<Flux2Encoder>,
     dit: Option<(DitKey, MossDit)>,
+    /// The LoRAs on the held DiT.
+    dit_loras: Vec<LoraSpec>,
     dit_precision: Precision,
     /// The last prompts' encodings.
     encoded: Vec<(String, Array)>,
@@ -117,6 +119,7 @@ impl MossMlx {
             vae,
             encoder,
             dit: None,
+            dit_loras: Vec::new(),
             dit_precision: Precision::Q8,
             encoded: Vec::new(),
         })
@@ -194,24 +197,29 @@ impl MossMlx {
         prompts.iter().map(|p| self.encoded.iter().find(|(q, _)| q == p).map(|(_, h)| h.clone()).context("an encoding went missing")).collect()
     }
 
-    /// `variant`'s DiT with `loras` merged, loaded unless it is the one held.
+    /// `variant`'s DiT with `loras` on it (unmerged), loaded unless it is the one held; one
+    /// converted cache per variant and precision, whatever the LoRAs.
     fn dit(&mut self, variant: Variant, loras: &[LoraSpec]) -> Result<&MossDit> {
-        let key: DitKey = (variant, loras.to_vec(), self.dit_precision);
+        let key: DitKey = (variant, self.dit_precision);
         if self.dit.as_ref().is_none_or(|(k, _)| *k != key) {
             self.dit = None;
+            self.dit_loras.clear();
             mlx_rs::memory::clear_cache()?;
             let files = find_files(&self.root, variant).with_context(|| format!("MOSS-Image's {variant:?} files under {}", self.root.display()))?;
             let cfg = MossConfig::default();
             let precision = self.dit_precision;
-            let lora_tag: String = loras.iter().map(|l| format!(".{}@{}", Self::stem(&l.path), l.strength)).collect();
-            let name = format!("{}{lora_tag}.{}.safetensors", Self::stem(&files.dit), precision.tag());
-            let params = self.cached(&name, || {
-                let opened = loras.iter().map(|l| Lora::open(&l.path, l.strength)).collect::<Result<Vec<_>>>()?;
-                crate::dit::convert(&files.dit, &cfg, DTYPE, precision, &opened)
-            })?;
+            let name = format!("{}.{}.safetensors", Self::stem(&files.dit), precision.tag());
+            let params = self.cached(&name, || crate::dit::convert(&files.dit, &cfg, DTYPE, precision, &[]))?;
             self.dit = Some((key, MossDit::load(&cfg, &params, DTYPE)?));
         }
-        self.dit.as_ref().map(|(_, d)| d).context("the DiT did not load")
+        let Some((_, dit)) = self.dit.as_mut() else { anyhow::bail!("the DiT did not load") };
+        if self.dit_loras != loras {
+            let opened = loras.iter().map(|l| Lora::open(&l.path, l.strength)).collect::<Result<Vec<_>>>()?;
+            let matched = dit.set_loras(&opened)?;
+            anyhow::ensure!(loras.is_empty() || matched > 0, "none of the LoRAs' modules is MOSS-Image's (a file for another model?)");
+            self.dit_loras = loras.to_vec();
+        }
+        Ok(dit)
     }
 
     /// A picture as MOSS Edit takes it: its long edge at most `edge` (Lanczos, never enlarged,

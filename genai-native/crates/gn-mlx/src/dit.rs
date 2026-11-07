@@ -187,6 +187,32 @@ struct Block {
     o: Linear,
     up_gate: Linear,
     down: Linear,
+    /// LoRAs applied unmerged (`qkv`, `o`, `up_gate`, `down`): a few-step LoRA's delta is
+    /// below the rounding of the f16 or quantized weight it would be merged into.
+    adapters: [Adapters; 4],
+}
+
+/// LoRA pairs on one linear, `(A (r, in), B·scale (out, r))` f32: `y += (x Aᵀ) Bᵀ`, in f32.
+#[derive(Default)]
+struct Adapters(Vec<(Array, Array)>);
+
+impl Adapters {
+    fn apply(&self, x: &Array, y: Array) -> Result<Array> {
+        if self.0.is_empty() {
+            return Ok(y);
+        }
+        let x32 = x.as_dtype(Dtype::Float32)?;
+        let mut d: Option<Array> = None;
+        for (a, b) in &self.0 {
+            let t = x32.matmul(a.t())?.matmul(b.t())?;
+            d = Some(match d {
+                Some(s) => s.add(&t)?,
+                None => t,
+            });
+        }
+        let Some(d) = d else { return Ok(y) };
+        Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?)
+    }
 }
 
 impl Block {
@@ -202,6 +228,7 @@ impl Block {
             o: l("o")?,
             up_gate: l("ffn_up_gate")?,
             down: l("ffn_down")?,
+            adapters: Default::default(),
         })
     }
 
@@ -213,20 +240,20 @@ impl Block {
         let [shift_a, scale_a, gate_a, shift_f, scale_f, gate_f] = m;
         let modulate = |y: Array, scale: &Array, shift: &Array| -> Result<Array> { Ok(y.add(y.multiply(scale)?)?.add(shift)?.as_dtype(dt)?) };
         let y = modulate(rms(x, &self.norm1)?, scale_a, shift_a)?;
-        let [q, k, v] = split_qkv(&self.qkv.forward(&y)?, d, heads)?;
+        let [q, k, v] = split_qkv(&self.adapters[0].apply(&y, self.qkv.forward(&y)?)?, d, heads)?;
         let q = rope.apply(&rms(&q, &self.q_norm)?.as_dtype(dt)?)?;
         let k = rope.apply(&rms(&k, &self.k_norm)?.as_dtype(dt)?)?;
         let att = match refs {
             Some(r) => attention(&q, &ops::concatenate(&[&k, &r.k], 0)?, &ops::concatenate(&[&v, &r.v], 0)?)?,
             None => attention(&q, &k, &v)?,
         };
-        let a = self.o.forward(&att)?;
+        let a = self.adapters[1].apply(&att, self.o.forward(&att)?)?;
         let x = x.add(a.multiply(gate_a)?)?;
         let y = modulate(rms(&x, &self.norm2)?, scale_f, shift_f)?;
-        let hg = self.up_gate.forward(&y)?;
+        let hg = self.adapters[2].apply(&y, self.up_gate.forward(&y)?)?;
         let f = hg.shape()[1] as usize / 2;
         let h = situ(&cols(&hg, 0, f)?, &cols(&hg, f, 2 * f)?)?;
-        Ok((x.add(self.down.forward(&h)?.multiply(gate_f)?)?, RefLayer { k, v }))
+        Ok((x.add(self.adapters[3].apply(&h, self.down.forward(&h)?)?.multiply(gate_f)?)?, RefLayer { k, v }))
     }
 }
 
@@ -278,6 +305,52 @@ impl MossDit {
 
     pub fn config(&self) -> &MossConfig {
         &self.cfg
+    }
+
+    /// Put `loras` on the blocks, unmerged (an empty list takes them off). A file's separate
+    /// `proj.q`, `proj.k`, `proj.v` adapters become one on the stacked `qkv`: their `A`s
+    /// stacked, their `B`s block-diagonal. Returns how many modules matched.
+    pub fn set_loras(&mut self, loras: &[Lora]) -> Result<usize> {
+        let dim_ = dim(self.cfg.dim)?;
+        let mut matched = 0;
+        for (i, block) in self.layers.iter_mut().enumerate() {
+            let p = format!("layers.{i}");
+            let mut adapters: [Adapters; 4] = Default::default();
+            for l in loras {
+                if let Some(pair) = l.pair(&format!("{p}.proj.qkv"))? {
+                    adapters[0].0.push(pair);
+                    matched += 1;
+                }
+                let parts: Vec<(usize, (Array, Array))> =
+                    ["q", "k", "v"].iter().enumerate().filter_map(|(j, n)| l.pair(&format!("{p}.proj.{n}")).transpose().map(|r| r.map(|pr| (j, pr)))).collect::<Result<_>>()?;
+                if !parts.is_empty() {
+                    matched += parts.len();
+                    let a = ops::concatenate(&parts.iter().map(|(_, (a, _))| a.clone()).collect::<Vec<_>>(), 0)?;
+                    // B (3·dim, Σr): each part's B in its rows and its own columns.
+                    let ranks: Vec<i32> = parts.iter().map(|(_, (a, _))| a.shape()[0]).collect();
+                    let total: i32 = ranks.iter().sum();
+                    let mut rows_b = Vec::with_capacity(3);
+                    for j in 0..3 {
+                        let mut cols_b = Vec::with_capacity(parts.len());
+                        for (k, (pj, (_, b))) in parts.iter().enumerate() {
+                            cols_b.push(if *pj == j { b.clone() } else { Array::zeros::<f32>(&[dim_, ranks[k]])? });
+                        }
+                        rows_b.push(if cols_b.is_empty() { Array::zeros::<f32>(&[dim_, total])? } else { ops::concatenate(&cols_b, 1)? });
+                    }
+                    let b = ops::concatenate(&rows_b, 0)?;
+                    mlx_rs::transforms::eval([&a, &b])?;
+                    adapters[0].0.push((a, b));
+                }
+                for (slot, n) in [(1, "o"), (2, "ffn_up_gate"), (3, "ffn_down")] {
+                    if let Some(pair) = l.pair(&format!("{p}.proj.{n}"))? {
+                        adapters[slot].0.push(pair);
+                        matched += 1;
+                    }
+                }
+            }
+            block.adapters = adapters;
+        }
+        Ok(matched)
     }
 
     /// qir's `[sin | cos]` rows `(h·w + text_len, head_dim)` f32: the image tokens (frame 0,

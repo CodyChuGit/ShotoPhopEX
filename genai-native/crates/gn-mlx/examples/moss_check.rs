@@ -281,8 +281,10 @@ mod run {
         drop(w8);
         let loras = vec![Lora::open(&models.join(EDIT_LORA), 1.0)?, Lora::open(&models.join(LORA), 1.0)?];
         for precision in [Precision::F16, Precision::Q8] {
-            let p = dit::convert(&sft, &cfg, Dtype::Float16, precision, &loras)?;
-            let model = MossDit::load(&cfg, &p, Dtype::Float16)?;
+            // The LoRAs unmerged, as the pipeline runs them.
+            let p = dit::convert(&sft, &cfg, Dtype::Float16, precision, &[])?;
+            let mut model = MossDit::load(&cfg, &p, Dtype::Float16)?;
+            model.set_loras(&loras)?;
             let refs = model.prepare_references(&[from_candle(&latent)?])?;
             let got = to_vec(&model.forward(&from_candle(&x)?, t, &from_candle(&ctx)?, &[], Some(&refs))?)?;
             let (cos, max) = compare(&got, &want)?;
