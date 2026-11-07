@@ -227,7 +227,11 @@ impl MossMlx {
             crate::text::convert_streamed(&text, &cfg, DTYPE, TEXT_PRECISION, &dir)?;
         }
         let head = crate::text::lm_head(&text, DTYPE, TEXT_PRECISION, &dir.join("lm_head.safetensors"))?;
+        let t_load = Instant::now();
         let te = Qwen35Text::resident(&cfg, crate::text::embedding(&text, &cfg)?, &dir, DTYPE)?;
+        if crate::profile::enabled() {
+            eprintln!("profile: chat load layers + embedding + lm_head {:.0} ms", t_load.elapsed().as_secs_f64() * 1000.0);
+        }
         let chat = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
         let ids = self.tok.encode(chat, false).map_err(|e| anyhow::anyhow!("encode chat: {e}"))?.get_ids().to_vec();
         let stop: Vec<u32> = ["<|im_end|>", "<|endoftext|>"].iter().filter_map(|t| self.tok.token_to_id(t)).collect();
@@ -332,8 +336,10 @@ impl MossMlx {
         let n = sig.len().saturating_sub(1);
         progress(0, n);
         let t0 = Instant::now();
+        crate::profile::start();
         for i in 0..n {
             check()?;
+            let t_step = Instant::now();
             let (s0, s1) = (sig[i], sig[i + 1]);
             let pos = dit.forward(&x, s0 * 1000.0, &enc[0], &[], refs.as_ref())?;
             let v = match enc.get(1) {
@@ -345,9 +351,21 @@ impl MossMlx {
             };
             x = x.add(v.multiply(Array::from_f32(s1 - s0))?)?;
             x.eval()?;
+            if crate::profile::enabled() {
+                eprintln!(
+                    "profile: MOSS step {} of {n}: {:.0} ms ({} pass{})",
+                    i + 1,
+                    t_step.elapsed().as_secs_f64() * 1000.0,
+                    enc.len(),
+                    if enc.len() > 1 { "es" } else { "" }
+                );
+            }
             progress(i + 1, n);
         }
         timings.steps_s = t0.elapsed().as_secs_f32();
+        for (k, (ms, calls)) in crate::profile::finish() {
+            eprintln!("profile: MOSS stage {k:<32} {ms:>9.0} ms  {calls:>6} calls");
+        }
         drop(refs);
 
         check()?;

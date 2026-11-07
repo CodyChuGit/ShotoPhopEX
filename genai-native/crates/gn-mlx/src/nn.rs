@@ -94,8 +94,18 @@ impl Linear {
 
     pub fn forward(&self, x: &Array) -> Result<Array> {
         let (y, b) = match self {
-            Self::Dense { w, b } => (x.matmul(w.t())?, b),
-            Self::Quant { w, scales, biases, b, bits } => (ops::quantized_matmul(x, w, scales, biases, true, GROUP, *bits)?, b),
+            Self::Dense { w, b } => {
+                if crate::profile::enabled() {
+                    crate::profile::record(&format!("dtype: dense matmul input {:?} weight {:?}", x.dtype(), w.dtype()), 0.0);
+                }
+                (x.matmul(w.t())?, b)
+            }
+            Self::Quant { w, scales, biases, b, bits } => {
+                if crate::profile::enabled() {
+                    crate::profile::record(&format!("dtype: q{bits} matmul input {:?}", x.dtype()), 0.0);
+                }
+                (ops::quantized_matmul(x, w, scales, biases, true, GROUP, *bits)?, b)
+            }
         };
         Ok(match b {
             Some(b) => y.add(b)?,

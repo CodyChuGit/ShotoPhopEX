@@ -223,7 +223,7 @@ impl Adapters {
             });
         }
         let Some(d) = d else { return Ok(y) };
-        Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?)
+        crate::profile::stage("lora", || Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?))
     }
 }
 
@@ -251,21 +251,27 @@ impl Block {
         let d = x.shape()[1] as usize;
         let [shift_a, scale_a, gate_a, shift_f, scale_f, gate_f] = m;
         let modulate = |y: Array, scale: &Array, shift: &Array| -> Result<Array> { Ok(y.add(y.multiply(scale)?)?.add(shift)?.as_dtype(dt)?) };
-        let y = modulate(rms(x, &self.norm1)?, scale_a, shift_a)?;
-        let [q, k, v] = split_qkv(&self.adapters[0].apply(&y, self.qkv.forward(&y)?)?, d, heads)?;
-        let q = rope.apply(&rms(&q, &self.q_norm)?.as_dtype(dt)?)?;
-        let k = rope.apply(&rms(&k, &self.k_norm)?.as_dtype(dt)?)?;
-        let att = match refs {
-            Some(r) => attention(&q, &ops::concatenate(&[&k, &r.k], 0)?, &ops::concatenate(&[&v, &r.v], 0)?)?,
-            None => attention(&q, &k, &v)?,
-        };
-        let a = self.adapters[1].apply(&att, self.o.forward(&att)?)?;
-        let x = x.add(a.multiply(gate_a)?)?;
-        let y = modulate(rms(&x, &self.norm2)?, scale_f, shift_f)?;
-        let hg = self.adapters[2].apply(&y, self.up_gate.forward(&y)?)?;
+        use crate::profile::stage;
+        let y = stage("norm+modulate", || modulate(rms(x, &self.norm1)?, scale_a, shift_a))?;
+        let qkv = stage("linear qkv", || self.qkv.forward(&y))?;
+        let [q, k, v] = split_qkv(&self.adapters[0].apply(&y, qkv)?, d, heads)?;
+        let q = stage("qk norm+rope", || rope.apply(&rms(&q, &self.q_norm)?.as_dtype(dt)?))?;
+        let k = stage("qk norm+rope", || rope.apply(&rms(&k, &self.k_norm)?.as_dtype(dt)?))?;
+        let att = stage("attention (sdpa)", || match refs {
+            Some(r) => attention(&q, &ops::concatenate(&[&k, &r.k], 0)?, &ops::concatenate(&[&v, &r.v], 0)?),
+            None => attention(&q, &k, &v),
+        })?;
+        let o = stage("linear o", || self.o.forward(&att))?;
+        let a = self.adapters[1].apply(&att, o)?;
+        let x = stage("residual+gate", || Ok(x.add(a.multiply(gate_a)?)?))?;
+        let y = stage("norm+modulate", || modulate(rms(&x, &self.norm2)?, scale_f, shift_f))?;
+        let hg = stage("linear up_gate", || self.up_gate.forward(&y))?;
+        let hg = self.adapters[2].apply(&y, hg)?;
         let f = hg.shape()[1] as usize / 2;
-        let h = situ(&cols(&hg, 0, f)?, &cols(&hg, f, 2 * f)?)?;
-        Ok((x.add(self.adapters[3].apply(&h, self.down.forward(&h)?)?.multiply(gate_f)?)?, RefLayer { k, v }))
+        let h = stage("situ", || situ(&cols(&hg, 0, f)?, &cols(&hg, f, 2 * f)?))?;
+        let dn = stage("linear down", || self.down.forward(&h))?;
+        let dn = self.adapters[3].apply(&h, dn)?;
+        Ok((stage("residual+gate", || Ok(x.add(dn.multiply(gate_f)?)?))?, RefLayer { k, v }))
     }
 }
 
@@ -468,7 +474,13 @@ impl MossDit {
         let n = h * w;
         let l = ctx.shape()[0] as usize;
         let dt = self.dtype;
+        let t_rope = std::time::Instant::now();
         let rope = Rope::new(&self.rope_table(h, w, l)?, self.cfg.head_dim(), dt)?;
+        if crate::profile::enabled() {
+            rope.cos.eval()?;
+            rope.sin.eval()?;
+            crate::profile::record("host rope table (+upload)", t_rope.elapsed().as_secs_f64() * 1000.0);
+        }
         let video = self.video_embedder.forward(&x.reshape(&[c, dim(n)?])?.t().as_dtype(dt)?)?;
         let mut text = self.text_proj.forward(&ctx.as_dtype(dt)?)?.as_dtype(Dtype::Float32)?;
         let text_rope = rope.rows(n, n + l)?;
@@ -476,7 +488,7 @@ impl MossDit {
             text = b.forward(&text, &text_rope, self.cfg.heads, dt)?;
         }
         let (m, head) = self.modulation(timestep)?;
-        let mut tokens = ops::concatenate(&[video.as_dtype(Dtype::Float32)?, text], 0)?;
+        let mut tokens = crate::profile::stage("embed+text blocks+modulation", || Ok(ops::concatenate(&[video.as_dtype(Dtype::Float32)?, text], 0)?))?;
         for (i, layer) in self.layers.iter().enumerate() {
             if !skip.contains(&i) {
                 tokens = layer.forward(&tokens, &rope, &m, self.cfg.heads, dt, refs.map(|r| &r.layers[i]))?.0;
@@ -484,7 +496,7 @@ impl MossDit {
         }
         let y = rms(&rows(&tokens, 0, n)?, &self.final_norm)?;
         let y = y.add(y.multiply(&head[1])?)?.add(&head[0])?.as_dtype(dt)?;
-        let y = self.final_linear.forward(&y)?.as_dtype(Dtype::Float32)?; // (n, channels)
+        let y = crate::profile::stage("head", || Ok(self.final_linear.forward(&y)?.as_dtype(Dtype::Float32)?))?; // (n, channels)
         Ok(y.t().reshape(&[1, c, dim(h)?, dim(w)?])?)
     }
 }

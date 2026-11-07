@@ -241,6 +241,8 @@ impl Qwen35Text {
         let mut states: Vec<State> = (0..self.cfg.layers).map(|_| State::default()).collect();
         let mut out = Vec::new();
         let (mut next, mut pos) = (ids.to_vec(), 0);
+        let t_all = std::time::Instant::now();
+        let mut prefill_ms = 0.0;
         while out.len() < max_new {
             if cancel() {
                 return Err(qwen_image_rs::pipeline::Cancelled.into());
@@ -250,12 +252,24 @@ impl Qwen35Text {
             let last = h.try_index(h.shape()[0] - 1..)?.as_dtype(self.dtype)?;
             let token = ops::indexing::argmax_axis(&head.forward(&last)?, -1, None)?.as_dtype(Dtype::Uint32)?;
             token.eval()?;
+            if pos == ids.len() {
+                prefill_ms = t_all.elapsed().as_secs_f64() * 1000.0;
+            }
             let t = token.as_slice::<u32>().first().copied().context("no token")?;
             if stop.contains(&t) {
                 break;
             }
             out.push(t);
             next = vec![t];
+        }
+        if crate::profile::enabled() {
+            let decode = t_all.elapsed().as_secs_f64() * 1000.0 - prefill_ms;
+            eprintln!(
+                "profile: chat prefill {} tokens {prefill_ms:.0} ms; decode {} tokens {decode:.0} ms ({:.0} ms/token)",
+                ids.len(),
+                out.len(),
+                decode / out.len().max(1) as f64
+            );
         }
         Ok(out)
     }

@@ -52,7 +52,7 @@ impl Adapters {
             });
         }
         let Some(d) = d else { return Ok(y) };
-        Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?)
+        crate::profile::stage("klein lora", || Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?))
     }
 }
 
@@ -68,7 +68,8 @@ impl Lin {
     }
 
     fn forward(&self, x: &Array) -> Result<Array> {
-        self.adapters.apply(x, self.base.forward(x)?)
+        let y = crate::profile::stage("klein linear", || self.base.forward(x))?;
+        self.adapters.apply(x, y)
     }
 
     /// Put `loras`' pairs for `module` (mflux's name) on this linear; how many matched.
@@ -203,23 +204,26 @@ impl Block {
         let n = x.shape()[0];
         let h = dim(HEADS)?;
         let hd = dim(HEAD_DIM)?;
-        let y = modulate(x, &m.shift, &m.scale)?.as_dtype(dt)?;
+        use crate::profile::stage;
+        let y = stage("klein norm+modulate", || Ok(modulate(x, &m.shift, &m.scale)?.as_dtype(dt)?))?;
         let split = |t: Array| -> Result<Array> { Ok(t.reshape(&[n, h, hd])?) };
-        let q = rope.apply(&rms(&split(self.q.forward(&y)?)?, &self.norm_q)?)?.as_dtype(dt)?;
-        let k = rope.apply(&rms(&split(self.k.forward(&y)?)?, &self.norm_k)?)?.as_dtype(dt)?;
+        let q = self.q.forward(&y)?;
+        let q = stage("klein qk norm+rope", || Ok(rope.apply(&rms(&split(q)?, &self.norm_q)?)?.as_dtype(dt)?))?;
+        let k = self.k.forward(&y)?;
+        let k = stage("klein qk norm+rope", || Ok(rope.apply(&rms(&split(k)?, &self.norm_k)?)?.as_dtype(dt)?))?;
         // The headroom divides the input, not the output: in f16 the output itself overflows
         // (3e4..3e5 in the bf16 reference). These linears have no bias, so it is exact.
         let v = split(self.v.forward(&y.multiply(Array::from_f32(1.0 / V_HEADROOM).as_dtype(dt)?)?)?)?;
-        let att = attention(&q, &k, &v)?;
+        let att = stage("klein attention (sdpa)", || attention(&q, &k, &v))?;
         let a = self.out.forward(&att)?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(V_HEADROOM))?;
         let gu = self.ff_in.forward(&y.multiply(Array::from_f32(1.0 / FF_HEADROOM).as_dtype(dt)?)?)?;
         let f = gu.shape()[1] as usize / 2;
         // The gate back to its scale in f32; the up half stays FF_HEADROOM times smaller.
         let gate = cols(&gu, 0, f)?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(FF_HEADROOM))?;
         let up = cols(&gu, f, 2 * f)?.as_dtype(Dtype::Float32)?;
-        let hid = mlx_rs::nn::silu(gate)?.multiply(&up)?.as_dtype(dt)?;
+        let hid = stage("klein silu-gate", || Ok(mlx_rs::nn::silu(gate)?.multiply(&up)?.as_dtype(dt)?))?;
         let ff = self.ff_out.forward(&hid)?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(FF_HEADROOM))?;
-        Ok(x.add(a.add(&ff)?.multiply(&m.gate)?)?)
+        stage("klein residual+gate", || Ok(x.add(a.add(&ff)?.multiply(&m.gate)?)?))
     }
 }
 

@@ -334,8 +334,10 @@ impl KleinMlx {
         let preps = texts.iter().map(|t| dit.prepare(&tokens(&x, &image_ids, cond_ref, t))).collect::<Result<Vec<_>>>()?;
         progress(0, steps);
         let t0 = Instant::now();
+        crate::profile::start();
         for i in 0..steps {
             check()?;
+            let t_step = Instant::now();
             let (t, t1) = (sched[i], sched[i + 1]);
             let target = flow_map.then_some(t1);
             let v = dit.forward(&tokens(&x, &image_ids, cond_ref, &texts[0]), &preps[0], t, target)?;
@@ -352,9 +354,15 @@ impl KleinMlx {
                 x = x.multiply(m)?.add(known.multiply(Array::from_f32(1.0).subtract(m)?)?)?;
             }
             x.eval()?;
+            if crate::profile::enabled() {
+                eprintln!("profile: Klein step {} of {steps}: {:.0} ms", i + 1, t_step.elapsed().as_secs_f64() * 1000.0);
+            }
             progress(i + 1, steps);
         }
         timings.steps_s = t0.elapsed().as_secs_f32();
+        for (k, (ms, calls)) in crate::profile::finish() {
+            eprintln!("profile: Klein stage {k:<32} {ms:>9.0} ms  {calls:>6} calls");
+        }
 
         check()?;
         let t0 = Instant::now();
