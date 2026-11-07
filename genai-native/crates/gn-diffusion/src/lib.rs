@@ -135,9 +135,11 @@ pub const TEMPLATE_MOSS_EDIT_TURBO: &str = "moss-image/edit-turbo";
 /// The adapter as its repo names it, in its own folder; or renamed to a file of its own.
 pub const MOSS_EDIT_LORAS: [&str; 2] = ["moss-image-edit/adapter_model.safetensors", "moss_image_edit_lora.safetensors"];
 pub const MOSS_EDIT_STEPS: u32 = 30;
-/// FLUX 3 Image Klein on MLX (macOS; mflux-community's pre-quantized files): an edit by
+/// FLUX 3 Image Klein on MLX (macOS; mflux-community's pre-quantized files): text to image
+/// (the Mac's quality pick next to MOSS Turbo), an edit by
 /// instruction (and, with AusBoss's outpaint LoRA in the request, the editor's Expand), and a
 /// fill that paints only inside the mask.
+pub const TEMPLATE_KLEIN_IMAGE: &str = "flux3-klein/image";
 pub const TEMPLATE_KLEIN_EDIT: &str = "flux3-klein/edit";
 pub const TEMPLATE_KLEIN_FILL: &str = "flux3-klein/fill";
 /// Klein's folders under the model root, the first found wins (q4 first: on an M1 it is as fast
@@ -160,7 +162,8 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 35] = [
+pub const TEMPLATES: [(&str, &str, Family); 36] = [
+    (TEMPLATE_KLEIN_IMAGE, "image", Family::Klein),
     (TEMPLATE_KLEIN_EDIT, "edit", Family::Klein),
     (TEMPLATE_KLEIN_FILL, "fill", Family::Klein),
     (TEMPLATE_MOSS_EDIT, "edit", Family::Moss(MossVariant::Sft)),
@@ -1343,7 +1346,7 @@ impl Engine for DiffusionEngine {
             }
             #[cfg(feature = "mlx")]
             if matches!(self.resident, Resident::Klein(_)) {
-                return self.run_klein(req, references, task, progress, cancel);
+                return self.run_klein(req, references, (width, height), task, progress, cancel);
             }
             // A Krea 2 edit runs with its edit LoRA first (unless the request names it) and the
             // card's `ref_boost` unless the request gives one.
@@ -1492,13 +1495,15 @@ fn cuda_default_guidance(template: &str) -> Option<f32> {
 
 #[cfg(feature = "mlx")]
 impl DiffusionEngine {
-    /// A Klein request: an edit with its pictures (the outpaint LoRA rides in the request's
-    /// LoRAs for an expand), or a fill whose second picture is the mask. The size follows the
-    /// first picture (at most 768², as Klein sizes an edit).
+    /// A Klein request: an image at `size` from the prompt alone, an edit with its pictures (the
+    /// outpaint LoRA rides in the request's LoRAs for an expand), or a fill whose second picture
+    /// is the mask. With pictures the size follows the first one (at most 768², as Klein sizes an
+    /// edit) and `size` is (0, 0).
     fn run_klein(
         &mut self,
         req: &RunRequest,
         mut references: Vec<RefImage>,
+        size: (usize, usize),
         task: &str,
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
@@ -1529,8 +1534,8 @@ impl DiffusionEngine {
         let ask = gn_mlx::pipeline::Request {
             prompt: req.prompt.clone(),
             negative: req.negative.clone(),
-            width: 0,
-            height: 0,
+            width: size.0,
+            height: size.1,
             steps: req.steps as usize,
             guidance: if req.guidance > 0.0 { req.guidance } else { 1.0 },
             seed: req.seed,
