@@ -53,6 +53,8 @@ pub const AUTO_FILL_ORDER: &[&str] = &["qwen-edit-2511/fill-lightning-8", DEFAUL
 pub const FAST_FILL_ORDER: &[&str] = &["qwen-edit-2511/fill-lightning-4", "qwen-edit-2511/fill-lightning-8", DEFAULT_FILL_TEMPLATE];
 /// `auto` under Quality `best`: the full-step base template only.
 pub const BEST_FILL_ORDER: &[&str] = &[DEFAULT_FILL_TEMPLATE];
+/// The Mac's fill (FLUX 3 Image Klein on MLX), picked by the Mac memory profiles.
+pub const KLEIN_FILL_TEMPLATE: &str = "flux3-klein/fill";
 pub const BEST_EXPAND_ORDER: &[&str] = &[DEFAULT_EXPAND_TEMPLATE];
 /// The same for Generative Expand, whose templates show the model only the picture as a
 /// reference while the padded canvas is the sampling latent.
@@ -717,6 +719,12 @@ pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option
     {
         return Some(t);
     }
+    if command == FILL
+        && let Some(t) = crate::memory_profile::fill_template(crate::memory_profile::active(s))
+        && loras::runs_native(s, t)
+    {
+        return Some(t);
+    }
     native21_only(s, command, removal)
 }
 
@@ -756,6 +764,8 @@ pub(crate) fn native_fill_order(prompt: &str, enhance: bool) -> &'static [&'stat
 /// The crop a removal on Qwen-Image-2.1 goes out at when `maxPixels` is left at the default:
 /// 0.75 MP, the size the 2.1 removal runs were measured at (1 MP is 2511's).
 const NATIVE21_REMOVAL_PIXELS: u64 = 786_432;
+/// The same for Klein on a Mac: 512², where a fill takes about 200 s on a 16 GB M1.
+const KLEIN_REMOVAL_PIXELS: u64 = 262_144;
 
 pub(crate) const DEFAULT_EDIT_TEMPLATE: &str = "qwen-edit-2511/edit";
 /// What `auto` tries for an edit, fastest permissive tier first.
@@ -1602,7 +1612,7 @@ fn removal_job(
         (true, Some(t)) => {
             auto = false;
             if tuning.max_pixels == MAX_FILL_REQUEST_PIXELS {
-                tuning.max_pixels = NATIVE21_REMOVAL_PIXELS;
+                tuning.max_pixels = if t == KLEIN_FILL_TEMPLATE { KLEIN_REMOVAL_PIXELS } else { NATIVE21_REMOVAL_PIXELS };
             }
             t.to_string()
         }
@@ -3828,7 +3838,13 @@ fn run_fill(s: &mut Session, p: &Value) -> Result<Value> {
         command: if as_edit { EDIT } else { FILL },
         template_id: template.meta.id.clone(),
         auto,
-        auto_order: if template.meta.id == NATIVE21_FILL { native_fill_order(&prompt, enhance) } else { auto_order(FILL, quality(s)) },
+        auto_order: if template.meta.id == NATIVE21_FILL {
+            native_fill_order(&prompt, enhance)
+        } else if template.meta.id == KLEIN_FILL_TEMPLATE {
+            &[KLEIN_FILL_TEMPLATE]
+        } else {
+            auto_order(FILL, quality(s))
+        },
         prompt,
         negative,
         seed,
@@ -3936,6 +3952,11 @@ pub(crate) const OUTPAINT_LORA_WIDE: &str = "qwen-image-2.1-outpaint.safetensors
 /// paving; Cody's PC, in the app, 2026-11-03), so the other qualities keep 25 steps.
 pub(crate) const OUTPAINT_TURBO_LORA: &str = "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors";
 pub(crate) const OUTPAINT_TURBO_TEMPLATE: &str = "qwen-2.1/outpaint-turbo";
+/// The Mac's expand: AusBoss's Outpaint LoRA for FLUX 3 Image Klein on Klein's edit (the
+/// worker's MLX route), the request at about 768² (an M1 Air took 6 min at 768×512).
+pub(crate) const KLEIN_OUTPAINT_LORA: &str = "flux-3-image-klein-outpaint.safetensors";
+pub(crate) const KLEIN_EDIT_TEMPLATE: &str = "flux3-klein/edit";
+const KLEIN_OUTPAINT_PIXELS: u64 = 589_824;
 /// The 2.1 edit the plain Outpaint LoRA runs on.
 const OUTPAINT_EDIT_TEMPLATE: &str = "qwen-2.1/edit";
 /// The picture's share of the grown canvas below which the v1 file goes first.
@@ -3958,15 +3979,19 @@ pub(crate) const OUTPAINT_INSTRUCTION: &str =
 type OutpaintRoute = (&'static str, Option<&'static str>, u64);
 
 fn outpaint_lora(s: &Session, (ow, oh): (u32, u32), (nw, nh): (u32, u32)) -> Option<OutpaintRoute> {
-    if !(s.prefs().integrations.allow_research_models && loras::runs_native(s, "qwen-2.1/edit")) {
-        return None;
-    }
     let root = s.prefs().integrations.models_root();
-    if root.is_empty() {
+    if root.is_empty() || !loras::runs_native(s, "qwen-2.1/edit") {
         return None;
     }
-    let share = (f64::from(ow) * f64::from(oh)) / (f64::from(nw) * f64::from(nh)).max(1.0);
-    pick_outpaint_lora(|f| std::path::Path::new(&root).join("loras").join(f).is_file(), share, quality(s) == "fast")
+    let has = |f: &str| std::path::Path::new(&root).join("loras").join(f).is_file();
+    if s.prefs().integrations.allow_research_models {
+        let share = (f64::from(ow) * f64::from(oh)) / (f64::from(nw) * f64::from(nh)).max(1.0);
+        if let Some(route) = pick_outpaint_lora(has, share, quality(s) == "fast") {
+            return Some(route);
+        }
+    }
+    // A Mac: FLUX 3 Image Klein's edit with AusBoss's Klein Outpaint LoRA, at Klein's edit size.
+    (cfg!(target_os = "macos") && has(KLEIN_OUTPAINT_LORA)).then_some((KLEIN_EDIT_TEMPLATE, Some(KLEIN_OUTPAINT_LORA), KLEIN_OUTPAINT_PIXELS))
 }
 
 /// The route through the Outpaint LoRA files `has` finds: the six-step Turbo template when `fast`
@@ -4064,7 +4089,9 @@ fn plan_expand(s: &Session, p: &Value) -> Result<ExpandPlan> {
     }
     let lora = if auto { outpaint_lora(s, (ow, oh), (nw, nh)) } else { None };
     let Common { template, prompt, negative, seed, steps, guidance, models, name } = match lora {
-        Some((t, ..)) => plan_common(s, EXPAND, &q, t, if t == OUTPAINT_EDIT_TEMPLATE { Task::Edit } else { Task::Expand }, &default_model)?,
+        Some((t, ..)) => {
+            plan_common(s, EXPAND, &q, t, if t == OUTPAINT_EDIT_TEMPLATE || t == KLEIN_EDIT_TEMPLATE { Task::Edit } else { Task::Expand }, &default_model)?
+        }
         None => plan_common(s, EXPAND, &q, if auto { DEFAULT_EXPAND_TEMPLATE } else { &requested }, Task::Expand, &default_model)?,
     };
     if lora.is_some() {
@@ -4095,7 +4122,12 @@ fn plan_expand(s: &Session, p: &Value) -> Result<ExpandPlan> {
     }
     let name = name.unwrap_or_else(|| "Generative Expand".to_string());
     let tuning = match lora {
-        Some((_, file, max_pixels)) => Tuning { loras: file.map(|f| (f.to_string(), 1.0)).into_iter().collect(), max_pixels, ..Tuning::default() },
+        // Klein's Outpaint LoRA at 1.5, as AusBoss's Klein workflow runs it; the Qwen files at 1.
+        Some((_, file, max_pixels)) => Tuning {
+            loras: file.map(|f| (f.to_string(), if f == KLEIN_OUTPAINT_LORA { 1.5 } else { 1.0 })).into_iter().collect(),
+            max_pixels,
+            ..Tuning::default()
+        },
         None => Tuning::default(),
     };
     let outpaint = lora.map(|_| if blank { String::new() } else { p.get("prompt").and_then(Value::as_str).unwrap_or_default().trim().to_string() });
