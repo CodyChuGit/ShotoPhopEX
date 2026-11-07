@@ -12,6 +12,10 @@ pub mod convert;
 #[cfg(target_os = "macos")]
 pub mod dit;
 #[cfg(target_os = "macos")]
+pub mod klein;
+#[cfg(target_os = "macos")]
+pub mod klein;
+#[cfg(target_os = "macos")]
 pub mod nn;
 #[cfg(target_os = "macos")]
 pub mod pipeline;
