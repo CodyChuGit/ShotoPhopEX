@@ -1,6 +1,8 @@
 //! Help › Get AI Models…: the memory profile's model pack (`models.packs`), one Download button
 //! (`models.get`, a background job), its progress, and Cancel. Downloads resume after a cancel
 //! or a crash; a Hugging Face token is asked for only when a file needs it and is never saved.
+//! The licences of the files a run would fetch are listed with their links, and Download stays
+//! off until they are accepted (`models.get` refuses without `acceptLicenses`).
 
 use egui::RichText;
 use photocraft_engine::jobs::JobId;
@@ -21,6 +23,8 @@ pub struct GetModelsUi {
     pub extras: Vec<String>,
     /// Typed for gated files; kept in memory only.
     pub token: String,
+    /// The licences shown were accepted (reset each time the window opens).
+    pub accepted: bool,
     pub job: Option<JobId>,
     pub error: Option<String>,
     pub done: Option<String>,
@@ -37,6 +41,7 @@ fn refresh(app: &mut PhotocraftApp) {
 pub fn open(app: &mut PhotocraftApp) {
     app.ui.get_models.open = true;
     app.ui.get_models.error = None;
+    app.ui.get_models.accepted = false;
     if app.ui.get_models.job.is_none() {
         app.ui.get_models.done = None;
     }
@@ -63,7 +68,7 @@ fn gb(b: u64) -> String {
 fn start(app: &mut PhotocraftApp) {
     let g = &app.ui.get_models;
     let pack = g.info.as_ref().and_then(|i| i["pack"]["id"].as_str()).map(str::to_string);
-    let mut p = json!({"pack": pack, "extras": g.extras});
+    let mut p = json!({"pack": pack, "extras": g.extras, "acceptLicenses": g.accepted});
     if !g.token.trim().is_empty() {
         p["token"] = json!(g.token.trim());
     }
@@ -119,6 +124,50 @@ fn poll(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
+/// The licences of what a run would fetch: the missing files of the pack and the ticked extras,
+/// and NVIDIA's libraries when they are needed.
+fn licences_to_accept(info: &Value, extras: &[String]) -> Vec<Value> {
+    let mut ids: Vec<&str> = info["pack"]["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            info["extras"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|e| extras.iter().any(|x| Some(x.as_str()) == e["id"].as_str()))
+                .flat_map(|e| e["files"].as_array().into_iter().flatten()),
+        )
+        .filter(|f| f["installed"] == false)
+        .filter_map(|f| f["license"].as_str())
+        .collect();
+    if info["runtime"]["needed"] == true
+        && let Some(l) = info["runtime"]["license"].as_str()
+    {
+        ids.push(l);
+    }
+    info["licenses"].as_array().into_iter().flatten().filter(|l| l["id"].as_str().is_some_and(|id| ids.contains(&id))).cloned().collect()
+}
+
+fn licence_rows(ui: &mut egui::Ui, t: &Tokens, licences: &[Value]) {
+    for l in licences {
+        let commercial = match l["commercial"].as_str() {
+            Some("yes") => tl!("commercial use allowed"),
+            Some("conditional") => tl!("commercial use with conditions"),
+            Some("no") => tl!("no commercial use"),
+            _ => tl!("terms unclear"),
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.hyperlink_to(l["name"].as_str().unwrap_or_default(), l["url"].as_str().unwrap_or_default());
+            let color = if l["commercial"] == "yes" { t.text_dim } else { t.warning };
+            ui.label(RichText::new(commercial).small().color(color));
+        })
+        .response
+        .on_hover_text(l["summary"].as_str().unwrap_or_default());
+    }
+}
+
 fn file_rows(ui: &mut egui::Ui, t: &Tokens, files: &[Value]) {
     for f in files {
         ui.horizontal(|ui| {
@@ -153,6 +202,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut cancel = false;
     let mut extras = app.ui.get_models.extras.clone();
     let mut token = app.ui.get_models.token.clone();
+    let mut accepted = app.ui.get_models.accepted;
+    let licences = licences_to_accept(&info, &extras);
     let pack = &info["pack"];
     let pack_files = pack["files"].as_array().cloned().unwrap_or_default();
     let any_gated = pack_files
@@ -225,6 +276,19 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 .color(t.text_dim),
             );
         }
+        if !licences.is_empty() {
+            ui.add_space(4.0);
+            ui.label(RichText::new(tl!("Licences")).color(t.text_dim));
+            licence_rows(ui, &t, &licences);
+            ui.label(
+                RichText::new(tl!(
+                    "Model weights are not part of ShotoPhopEX and are not covered by its licence. Each file is downloaded from its publisher's page and is yours to use only under its own licence. This list is a summary, not legal advice."
+                ))
+                .small()
+                .color(t.text_dim),
+            );
+            ui.add_enabled_ui(!running, |ui| crate::widgets::checkbox(ui, &mut accepted, tl!("I have read these licences and accept them for the files I download")));
+        }
         let root = info["modelsRoot"].as_str().unwrap_or_default();
         ui.label(RichText::new(crate::i18n::fmt(tl!("Saved to {folder}"), &[("folder", root)])).small().color(t.text_dim));
         ui.separator();
@@ -247,7 +311,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.label(RichText::new(tl!("Everything for this profile is installed.")).color(t.accent));
         } else {
             let label = crate::i18n::fmt(tl!("Download {size}"), &[("size", &gb(missing))]);
-            if crate::widgets::primary_button(ui, &label, 140.0).clicked() {
+            let ready = accepted || licences.is_empty();
+            if ui.add_enabled_ui(ready, |ui| crate::widgets::primary_button(ui, &label, 140.0)).inner.clicked() && ready {
                 go = true;
             }
         }
@@ -260,6 +325,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     });
     app.ui.get_models.extras = extras;
     app.ui.get_models.token = token;
+    app.ui.get_models.accepted = accepted;
     // Closing the window leaves a running download going (the status bar shows it).
     app.ui.get_models.open = open;
     if cancel && let Some(id) = app.ui.get_models.job {
@@ -273,5 +339,5 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
 /// `ui.inspect.getModels`.
 pub fn inspect(app: &PhotocraftApp) -> Value {
     let g = &app.ui.get_models;
-    json!({"open": g.open, "job": g.job.map(|j| j.0), "error": g.error, "done": g.done, "extras": g.extras})
+    json!({"open": g.open, "job": g.job.map(|j| j.0), "error": g.error, "done": g.done, "extras": g.extras, "accepted": g.accepted})
 }

@@ -19,13 +19,20 @@
     CUDA runtime, cuBLAS, cuBLASLt, cuRAND   NVIDIA CUDA Toolkit EULA, Attachment A (redistributable)
 
 .EXAMPLE
-  pwsh packaging/windows/runtime.ps1 -Cuda "$env:CUDA_PATH\bin\x64"
+  pwsh packaging/windows/runtime.ps1 -Cuda "$env:CUDA_PATH\bin\x64" -Eula "$env:CUDA_PATH\NVIDIA-CUDA-EULA.txt"
 #>
 param(
   [Parameter(Mandatory)] [string] $Cuda,
-  [string] $Out
+  [string] $Out,
+  # NVIDIA's EULA as it ships in the redistributable archive (its LICENSE file), copied into the
+  # folder as NVIDIA-CUDA-EULA.txt: it carries the third-party notices (Attachment B) for these
+  # libraries. Default: the toolkit's own EULA.txt ($env:CUDA_PATH); a runtime folder without an
+  # EULA is not assembled.
+  [string] $Eula
 )
 $ErrorActionPreference = 'Stop'
+if (-not $Eula -and $env:CUDA_PATH) { $Eula = Join-Path $env:CUDA_PATH 'EULA.txt' }
+if (-not $Eula -or -not (Test-Path -LiteralPath $Eula -PathType Leaf)) { throw "no NVIDIA CUDA EULA at '$Eula' (pass -Eula <file>)" }
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $Out) { $Out = Join-Path $Root 'dist\runtime' }
 
@@ -45,9 +52,13 @@ foreach ($c in $Components) {
 
 Remove-Item -Recurse -Force $Out -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
+Copy-Item -LiteralPath $Eula (Join-Path $Out 'NVIDIA-CUDA-EULA.txt')
 $notice = @(
-  'Third-party libraries in this folder, loaded by PhotoCraft''s native engine (photocraft.exe --engine).',
-  'Each is redistributed under its own licence; none is covered by PhotoCraft''s MIT OR Apache-2.0 licence.',
+  'Third-party libraries in this folder, loaded by ShotoPhopEX''s native engine (photocraft.exe --engine).',
+  'They are NVIDIA''s proprietary software, redistributed unmodified as distributable components',
+  '(Attachment A) of the NVIDIA CUDA Toolkit End User License Agreement, in NVIDIA-CUDA-EULA.txt',
+  'and at https://docs.nvidia.com/cuda/eula/index.html. They are not covered by ShotoPhopEX''s',
+  'MIT OR Apache-2.0 licence, and no right to them is granted by it. Copyright (c) NVIDIA Corporation.',
   ''
 )
 $total = 0

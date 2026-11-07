@@ -16,9 +16,11 @@
 # Run from the extracted folder (bin/photocraft), or install for the current user with
 # ./install.sh (into ~/.local) or for everyone with sudo ./install.sh /usr/local.
 #
-# Usage: packaging/linux/package-native.sh --cuda-lib <dir> [--skip-build]
-#   --cuda-lib   the folder holding libcudart.so.13, libcublas.so.13, libcublasLt.so.13 and
-#                libcurand.so.10 (a CUDA Toolkit's lib64, or the nvidia-* wheels' cu13/lib)
+# Usage: packaging/linux/package-native.sh --cuda-lib <dir> --nvidia-eula <file> [--skip-build]
+#   --cuda-lib     the folder holding libcudart.so.13, libcublas.so.13, libcublasLt.so.13 and
+#                  libcurand.so.10 (a CUDA Toolkit's lib64, or the nvidia-* wheels' cu13/lib)
+#   --nvidia-eula  NVIDIA's CUDA EULA as it came with those libraries (the toolkit's EULA.txt, or
+#                  the nvidia-cuda-runtime wheel's License.txt); shipped as runtime/NVIDIA-CUDA-EULA.txt
 #
 # Needs: the build environment of the README's Linux section (CUDA_COMPUTE_CAP, CUTLASS_DIR,
 # CUDARC_CUDA_VERSION, nvcc on PATH).
@@ -30,15 +32,18 @@ APP_ID=ai.storyteller.photocraft
 
 SKIP_BUILD=0
 CUDA_LIB=""
+NVIDIA_EULA=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --cuda-lib) CUDA_LIB="$2"; shift 2 ;;
+    --nvidia-eula) NVIDIA_EULA="$2"; shift 2 ;;
     -h | --help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 [[ -n "$CUDA_LIB" ]] || { echo "error: --cuda-lib is required" >&2; exit 2; }
+[[ -f "$NVIDIA_EULA" ]] || { echo "error: --nvidia-eula <file> is required (NVIDIA's CUDA EULA ships with its libraries)" >&2; exit 2; }
 LIBS=(libcudart.so.13 libcublas.so.13 libcublasLt.so.13 libcurand.so.10)
 for l in "${LIBS[@]}"; do
   [[ -f "$CUDA_LIB/$l" ]] || { echo "error: $l is not in $CUDA_LIB" >&2; exit 1; }
@@ -58,17 +63,25 @@ mkdir -p "$STAGE/bin/runtime" "$STAGE/share/applications" "$STAGE/share/mime/pac
   "$STAGE/share/icons/hicolor/128x128/apps" "$STAGE/share/icons/hicolor/256x256/apps" "$STAGE/share/doc/photocraft"
 install -m 755 "$BIN/photocraft" "$BIN/photocraft-cli" "$STAGE/bin/"
 for l in "${LIBS[@]}"; do install -m 644 "$CUDA_LIB/$l" "$STAGE/bin/runtime/"; done
+install -m 644 "$NVIDIA_EULA" "$STAGE/bin/runtime/NVIDIA-CUDA-EULA.txt"
 cat > "$STAGE/bin/runtime/THIRD_PARTY.txt" <<'EOF'
 Third-party libraries in this folder, loaded by ShotoPhopEX's native engine (photocraft --engine).
-Each is redistributed under its own licence; none is covered by ShotoPhopEX's MIT OR Apache-2.0 licence.
+They are NVIDIA's proprietary software, redistributed unmodified as distributable components
+(Attachment A) of the NVIDIA CUDA Toolkit End User License Agreement, in NVIDIA-CUDA-EULA.txt
+and at https://docs.nvidia.com/cuda/eula/index.html. They are not covered by ShotoPhopEX's
+MIT OR Apache-2.0 licence, and no right to them is granted by it. Copyright (c) NVIDIA Corporation.
 
-CUDA runtime libraries: NVIDIA CUDA Toolkit EULA, Attachment A (redistributable)
-  libcudart.so.13, libcublas.so.13, libcublasLt.so.13, libcurand.so.10
+CUDA runtime libraries: libcudart.so.13, libcublas.so.13, libcublasLt.so.13, libcurand.so.10
 EOF
 install -m 644 "$LINUX/$APP_ID.desktop" "$STAGE/share/applications/$APP_ID.desktop"
 install -m 644 "$LINUX/$APP_ID.mime.xml" "$STAGE/share/mime/packages/$APP_ID.xml"
 install -m 644 "$ROOT/assets/app-icon/sp/sp-128.png" "$STAGE/share/icons/hicolor/128x128/apps/$APP_ID.png"
 install -m 644 "$ROOT/assets/app-icon/sp/sp-256.png" "$STAGE/share/icons/hicolor/256x256/apps/$APP_ID.png"
+# Every shipped crate's licence files, the fonts, icons, CUTLASS and the native engine's notices,
+# and the SPDX SBOM of the same crate set beside the release file.
+python3 -I "$ROOT/packaging/third_party_notices.py" --target x86_64-unknown-linux-gnu \
+  --features photocraft/native-diffusion,photocraft-cli/native-diffusion --version "$VERSION" \
+  --out "$STAGE/share/doc/photocraft/THIRD_PARTY_NOTICES.txt" --spdx "$DIST/$BASENAME.spdx.json"
 for f in README.md LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md; do
   if [[ -f "$ROOT/$f" ]]; then install -m 644 "$ROOT/$f" "$STAGE/share/doc/photocraft/"; fi
 done

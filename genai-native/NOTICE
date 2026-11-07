@@ -1,25 +1,38 @@
 genai-native
-Copyright (c) 2026 Cody Chu
+Part of ShotoPhopEX (https://github.com/CodyChuGit/ShotoPhopEX).
 
-Licensed under either of the MIT licence or the Apache License, Version 2.0, at your option,
-for the code written here: crates/gn-engine, gn-harness, gn-perception, gn-weights and tools/.
+Copyright (c) 2026 Cody Chu and other ShotoPhopEX contributors, for the code written here:
+crates/gn-diffusion, gn-engine, gn-harness, gn-perception, gn-segment, gn-weights, fuzz/, and
+Cody Chu's changes to crates/qir. Licensed under either of the MIT licence or the Apache License,
+Version 2.0, at your option (LICENSE-MIT, LICENSE-APACHE), except crates/qir, below.
 
 Ported or vendored code keeps its origin here (file, upstream repository, commit, licence):
 
-- crates/qir: umag/qwen-image-rs (Sergey "umag", Copyright 2026), imported at commit 60d100c
-  with its history, Apache License 2.0 (crates/qir/LICENSE, crates/qir/NOTICE). It is the
-  Phase 2 bring-up of the native engine; its kernels and blocks move into gn-kernels, gn-blocks
-  and gn-models over time and keep this attribution. It contains no model weights. Within it:
+- crates/qir: umag/qwen-image-rs (Copyright 2026 Sergey "umag"), imported at commit 60d100c,
+  Apache License 2.0 only (crates/qir/LICENSE, crates/qir/NOTICE). crates/qir as a whole,
+  including the changes made here, is distributed under the Apache License 2.0; it is not offered
+  under MIT. Its kernels and blocks may move into other crates over time and keep this
+  attribution and licence. It contains no model weights. Within it:
   - SageAttention (thu-ml), Apache License 2.0, vendored under crates/qir/kernels/sage/vendor/
-    (torch bindings stripped, one marked LOCAL PATCH); its sub-headers carry FlashInfer, vLLM and
-    NVIDIA Apache-2.0 notices.
-  - crates/qir/kernels/convrot/convrot_int8_gemm.cu: SGLang's ConvRot kernel, Apache License 2.0,
-    kept as a reference, not compiled.
-  - NVIDIA CUTLASS (BSD-3-Clause) is used at build time, not vendored (`CUTLASS_DIR`).
-  - cuDNN, the CUDA runtime and driver libraries are NVIDIA's, loaded at run time; their licence
-    texts belong in THIRD_PARTY/ of any package that redistributes them.
+    (torch bindings stripped, one marked LOCAL PATCH); its sub-headers carry FlashInfer, vLLM,
+    FasterTransformer and NVIDIA Apache-2.0 notices, kept in place.
+  - crates/qir/kernels/convrot/convrot_int8_gemm.cu: SGLang's ConvRot kernel, Apache License
+    2.0, kept as a reference, not compiled.
+  - NVIDIA CUTLASS (BSD-3-Clause) is used at build time (headers, `CUTLASS_DIR`), not vendored;
+    the CUTLASS templates compiled into the kernels carry its BSD-3-Clause notice, reproduced in
+    THIRD_PARTY_NOTICES.txt in each release package.
+  - The CUDA runtime, cuBLAS, cuBLASLt and cuRAND are NVIDIA's, loaded at run time and shipped
+    in the release packages' runtime/ folder under the NVIDIA CUDA Toolkit EULA; their notices
+    are in runtime/THIRD_PARTY.txt and THIRD_PARTY_NOTICES.txt.
   - candle (Hugging Face), MIT OR Apache-2.0, the tensor spine.
   - The ConvRot W8A8 scheme follows pytorch/ao's group-wise Regular Hadamard rotation.
+
+- The model code (Qwen-Image-2.1, Krea 2, MOSS, the Wan 2.1 VAE, SAM 3.1, ViTMatte) is described
+  in its source comments as reimplementations of each published architecture, written against the
+  reference implementations named there (diffusers and transformers, Apache-2.0; ComfyUI,
+  GPL-3.0; stable-diffusion.cpp, MIT; the model authors' own code). No file from those projects
+  is copied here; where a source comment names one, it names the reference that was read. See
+  docs/compliance/UNRESOLVED_RISKS.md for the review this still needs.
 
 - crates/gn-perception and crates/gn-segment run SAM 3.1 on candle from the user's own checkpoint
   (Meta's SAM License), which is never shipped.

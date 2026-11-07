@@ -15,6 +15,12 @@
 //!
 //! `models.packs` lists what the current profile's pack holds and what is missing; `models.get`
 //! downloads it as a background job (`jobs.cancel` stops it; a later run resumes).
+//!
+//! Every file and runtime archive names its licence (`licenses` in the manifest). Weights are
+//! never bundled or re-hosted, but several sources (Krea, Meta, Black Forest Labs) ask people to
+//! accept their licence on Hugging Face, and the repacks downloaded here don't, so `models.get`
+//! downloads nothing until the caller passes `"acceptLicenses": true` after showing the licences
+//! of what it is about to fetch (Get AI Models does, with a tick box).
 
 use crate::commands::CommandSpec;
 use crate::memory_profile::{self, Profile};
@@ -40,6 +46,9 @@ pub struct ModelFile {
     pub bytes: u64,
     pub sha256: String,
     pub url: String,
+    /// The id of its licence in [`Manifest::licenses`].
+    #[serde(default)]
+    pub license: String,
     /// The page asks for a sign-in (and its licence accepted) before it serves the file.
     #[serde(default)]
     pub gated: bool,
@@ -56,6 +65,25 @@ pub struct RuntimeArchive {
     pub sha256: String,
     /// Paths inside the archive, copied flat into the runtime folder.
     pub libraries: Vec<String>,
+    /// The id of its licence in [`Manifest::licenses`].
+    #[serde(default)]
+    pub license: String,
+}
+
+/// A licence model files are under, summarised for people choosing what to download. The
+/// summary is a pointer, not legal advice: `url` is the text that applies.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct License {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    /// `yes`, `conditional`, `no` or `unknown`.
+    pub commercial: String,
+    pub summary: String,
+    /// The licensor's own download page asks people to accept the licence first.
+    #[serde(default)]
+    pub source_gated: bool,
 }
 
 /// A set of files (a profile's pack, or an extra).
@@ -75,6 +103,8 @@ pub struct Pack {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
+    #[serde(default)]
+    pub licenses: Vec<License>,
     pub files: Vec<ModelFile>,
     #[serde(default)]
     pub runtime: Vec<RuntimeArchive>,
@@ -95,6 +125,19 @@ impl Manifest {
     pub fn pack(&self, id: &str) -> Option<&Pack> {
         self.packs.iter().chain(&self.extras).find(|p| p.id == id)
     }
+    pub fn license(&self, id: &str) -> Option<&License> {
+        self.licenses.iter().find(|l| l.id == id)
+    }
+}
+
+/// The licences of `ids` (licence ids, duplicates allowed), once each, in manifest order.
+fn licenses_json<'a>(m: &Manifest, ids: impl IntoIterator<Item = &'a str>) -> Vec<Value> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    m.licenses
+        .iter()
+        .filter(|l| ids.contains(&l.id.as_str()))
+        .map(|l| json!({"id": l.id, "name": l.name, "url": l.url, "commercial": l.commercial, "summary": l.summary, "sourceGated": l.source_gated}))
+        .collect()
 }
 
 /// The built-in manifest.
@@ -172,7 +215,7 @@ fn wanted(m: &Manifest, pack: &Pack, extras: &[String]) -> Vec<String> {
 
 fn file_json(root: Option<&std::path::Path>, f: &ModelFile) -> Value {
     json!({
-        "id": f.id, "name": f.name, "folder": f.folder, "file": f.file, "bytes": f.bytes, "gated": f.gated,
+        "id": f.id, "name": f.name, "folder": f.folder, "file": f.file, "bytes": f.bytes, "gated": f.gated, "license": f.license, "url": f.url,
         "installed": root.is_some_and(|r| installed(r, f)),
     })
 }
@@ -192,6 +235,15 @@ fn run_packs(s: &mut Session, _p: &Value) -> Result<Value> {
     // The other packs and the add-ons; the profile's own pack is not offered twice.
     let extras: Vec<Value> = m.extras.iter().filter(|e| e.id != pack.id).map(|e| pack_json(m, root.as_deref(), e)).collect();
     let runtime_bytes: u64 = m.runtime.iter().map(|r| r.bytes).sum();
+    // Every licence the offered files and archives are under (the window shows the ones a run
+    // would fetch; each file and archive names its own).
+    let offered = std::iter::once(pack)
+        .chain(m.extras.iter().filter(|e| e.id != pack.id))
+        .flat_map(|p| p.files.iter())
+        .filter_map(|id| m.file(id))
+        .map(|f| f.license.as_str())
+        .chain(m.runtime.iter().map(|r| r.license.as_str()));
+    let licenses = licenses_json(m, offered);
     Ok(json!({
         "profile": profile.map(Profile::name),
         "profileLabel": profile.map(Profile::label),
@@ -199,7 +251,8 @@ fn run_packs(s: &mut Session, _p: &Value) -> Result<Value> {
         "extras": extras,
         "modelsRoot": root.map(|r| r.to_string_lossy().into_owned()),
         "modelsRootSet": !s.prefs().integrations.models_root().is_empty(),
-        "runtime": {"needed": runtime_needed(s) && !m.runtime.is_empty(), "bytes": runtime_bytes},
+        "runtime": {"needed": runtime_needed(s) && !m.runtime.is_empty(), "bytes": runtime_bytes, "license": m.runtime.first().map(|r| r.license.as_str())},
+        "licenses": licenses,
     }))
 }
 
@@ -243,6 +296,16 @@ fn run_get(s: &mut Session, p: &Value) -> Result<Value> {
         let files: Vec<ModelFile> = wanted(m, pack, &extras).iter().filter_map(|id| m.file(id)).filter(|f| !installed(&root, f)).cloned().collect();
         let want_runtime = p.get("runtime").and_then(Value::as_bool).unwrap_or(true) && runtime_needed(s) && !m.runtime.is_empty();
         let runtime = if want_runtime { default_runtime_root().map(|r| (r, m.runtime.clone())) } else { None };
+        // The licences of what this run fetches must have been shown and accepted.
+        let fetched = files.iter().map(|f| f.license.as_str()).chain(runtime.iter().flat_map(|(_, a)| a.iter().map(|r| r.license.as_str())));
+        let needed = licenses_json(m, fetched);
+        if !needed.is_empty() && p.get("acceptLicenses").and_then(Value::as_bool) != Some(true) {
+            let names: Vec<&str> = needed.iter().filter_map(|l| l["name"].as_str()).collect();
+            return Err(bad(&format!(
+                "these downloads are under their own licences ({}): show them (models.packs lists each with its link) and pass \"acceptLicenses\": true",
+                names.join("; ")
+            )));
+        }
         let plan = Plan { root, files, runtime, token, set_models_path: s.prefs().integrations.models_root().is_empty() };
         let label = format!("Get Models: {}", pack.name);
         crate::jobs::run(s, &label, false, move |ctx| download_all(&plan, ctx).map(|r| (plan, r)), apply_downloads)
@@ -507,7 +570,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Model Packs",
             menu: &[],
             shortcut: None,
-            params: r#"{} → {profile,profileLabel,pack:{id,name,description,files:[{id,name,folder,file,bytes,gated,installed}],bytes,missingBytes},extras:[pack…],modelsRoot,modelsRootSet,runtime:{needed,bytes}} (the memory profile's model pack and what is installed; a file counts as installed at its full size)"#,
+            params: r#"{} → {profile,profileLabel,pack:{id,name,description,files:[{id,name,folder,file,bytes,gated,license,url,installed}],bytes,missingBytes},extras:[pack…],modelsRoot,modelsRootSet,runtime:{needed,bytes,license},licenses:[{id,name,url,commercial,summary,sourceGated}]} (the memory profile's model pack and what is installed; a file counts as installed at its full size)"#,
             enabled: always,
             run: run_packs,
             journal: false,
@@ -517,7 +580,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Get Models",
             menu: &[],
             shortcut: None,
-            params: r#"{"pack"?:id (default: the memory profile's),"extras"?:[id],"runtime"?:bool=true (NVIDIA's CUDA libraries when no runtime folder is set, Windows),"token"?:"hf_…" (for gated models; used once, never saved)} → {downloaded:[id],modelsRoot,runtimePath} (a background job: downloads the missing files into the Models folder, or Documents/ShotoPhopEX/models when none is set (then set), resuming partial downloads and checking each file's SHA-256; jobs.cancel stops it)"#,
+            params: r#"{"pack"?:id (default: the memory profile's),"extras"?:[id],"runtime"?:bool=true (NVIDIA's CUDA libraries when no runtime folder is set, Windows),"token"?:"hf_…" (for gated models; used once, never saved),"acceptLicenses":bool (required true when anything is fetched: the caller has shown the licences of the files and archives it fetches)} → {downloaded:[id],modelsRoot,runtimePath} (a background job: downloads the missing files into the Models folder, or Documents/ShotoPhopEX/models when none is set (then set), resuming partial downloads and checking each file's SHA-256; jobs.cancel stops it)"#,
             enabled: native_only,
             run: run_get,
             journal: false,
@@ -544,6 +607,12 @@ mod tests {
                 f.id
             );
             assert_eq!(m.files.iter().filter(|g| g.id == f.id).count(), 1, "{} is listed once", f.id);
+            assert!(m.license(&f.license).is_some(), "{} names a licence in `licenses`", f.id);
+        }
+        for l in &m.licenses {
+            assert!(l.url.starts_with("https://") && !l.name.is_empty() && !l.summary.is_empty(), "licence {}", l.id);
+            assert!(["yes", "conditional", "no", "unknown"].contains(&l.commercial.as_str()), "licence {}: commercial", l.id);
+            assert_eq!(m.licenses.iter().filter(|k| k.id == l.id).count(), 1, "licence {} is listed once", l.id);
         }
         for p in m.packs.iter().chain(&m.extras) {
             for id in &p.files {
@@ -552,6 +621,7 @@ mod tests {
         }
         for r in &m.runtime {
             assert!(r.url.starts_with("https://") && r.sha256.len() == 64 && !r.libraries.is_empty(), "{}", r.id);
+            assert!(m.license(&r.license).is_some(), "{} names a licence", r.id);
         }
         // Every profile has a pack.
         for p in Profile::ALL {
@@ -601,6 +671,7 @@ mod tests {
             bytes: 3,
             sha256: "0".repeat(64),
             url: "https://example.invalid/x".into(),
+            license: "apache-2.0".into(),
             gated: false,
         };
         assert!(!installed(&dir, &f));
@@ -643,5 +714,28 @@ mod tests {
         assert!(run_get(&mut s, &json!({"pack": "nope"})).is_err());
         assert!(run_get(&mut s, &json!({"extras": ["nope"]})).is_err());
         assert!(run_get(&mut s, &json!({"token": "hf_a b"})).is_err());
+    }
+
+    #[test]
+    fn get_downloads_nothing_until_the_licences_are_accepted() {
+        let mut s = Session::new();
+        s.edit_prefs(|p| p.integrations.models_path = std::env::temp_dir().join("pc-no-such-models-lic").to_string_lossy().into_owned());
+        for p in [json!({}), json!({"acceptLicenses": false}), json!({"acceptLicenses": "yes"})] {
+            let e = run_get(&mut s, &p).unwrap_err().to_string();
+            assert!(e.contains("acceptLicenses") && e.contains("Licen"), "{e}");
+        }
+    }
+
+    #[test]
+    fn packs_list_the_licences_of_what_they_offer() {
+        let mut s = Session::new();
+        let v = run_packs(&mut s, &json!({})).unwrap();
+        let ids: Vec<&str> = v["licenses"].as_array().unwrap().iter().filter_map(|l| l["id"].as_str()).collect();
+        for f in v["pack"]["files"].as_array().unwrap() {
+            assert!(ids.contains(&f["license"].as_str().unwrap()), "{f}");
+        }
+        // The default (24 GB+) pack holds Qwen-Image-2.1, which is research-only.
+        let q = manifest().file("qwen21-dit").unwrap();
+        assert_eq!(manifest().license(&q.license).unwrap().commercial, "no");
     }
 }

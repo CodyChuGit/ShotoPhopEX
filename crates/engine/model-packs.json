@@ -1,5 +1,87 @@
 {
- "_about": "Get AI Models (crates/engine/src/model_packs.rs). Sizes and SHA-256 checked on 2026-11-06 against the files on the owner's PC and Hugging Face's LFS hashes; every file is public. Nothing is re-hosted: each URL is the author's own page or Comfy-Org's repack.",
+ "_about": "Get AI Models (crates/engine/src/model_packs.rs). Sizes and SHA-256 checked on 2026-11-06 against the files on the owner's PC and Hugging Face's LFS hashes; every file is public. Nothing is re-hosted: each URL is the author's own page or Comfy-Org's repack. Licences (licenses[], each file's license) were read from each source page on 2026-11-07 (docs/compliance/MODEL_LICENSES.md); they are a summary, not legal advice.",
+ "licenses": [
+  {
+   "id": "apache-2.0",
+   "name": "Apache License 2.0",
+   "url": "https://www.apache.org/licenses/LICENSE-2.0",
+   "commercial": "yes",
+   "sourceGated": false,
+   "summary": "Permissive: use, modify and redistribute, including commercially; keep the licence and notices."
+  },
+  {
+   "id": "krea-2-community",
+   "name": "Krea 2 Community License",
+   "url": "https://www.krea.ai/krea-2-licensing",
+   "commercial": "conditional",
+   "sourceGated": true,
+   "summary": "Commercial use only below US$1M annual revenue; the Krea 2 Use Policy applies. Krea's own repos ask you to accept it on Hugging Face."
+  },
+  {
+   "id": "qwen-research",
+   "name": "Qwen Research License",
+   "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+   "commercial": "no",
+   "sourceGated": false,
+   "summary": "Research and evaluation only; any commercial use needs a separate licence from Alibaba Cloud."
+  },
+  {
+   "id": "sam-license",
+   "name": "SAM License (Meta)",
+   "url": "https://github.com/facebookresearch/sam3/blob/main/LICENSE",
+   "commercial": "yes",
+   "sourceGated": true,
+   "summary": "Royalty-free, commercial use allowed; no military, weapons, ITAR or other trade-control-restricted uses; pass the licence on when redistributing. Meta's own repo asks you to accept it on Hugging Face."
+  },
+  {
+   "id": "krea2-identity-edit-v2",
+   "name": "Krea 2 Identity Edit v2 License (conradlocke)",
+   "url": "https://huggingface.co/conradlocke/krea2-identity-edit/blob/main/LICENSE_V2.md",
+   "commercial": "no",
+   "sourceGated": false,
+   "summary": "Free for non-commercial use; commercial use needs a licence from the author. The Krea 2 Community License also applies."
+  },
+  {
+   "id": "unstated",
+   "name": "No licence stated",
+   "url": "https://huggingface.co/chinoll/Moss-Image-Edit",
+   "commercial": "unknown",
+   "sourceGated": false,
+   "summary": "The author's page states no licence for these weights (the project's code is GPLv3). Without a licence, no use is clearly permitted: check with the author."
+  },
+  {
+   "id": "openai-clip-tokenizer",
+   "name": "CLIP tokenizer (OpenAI)",
+   "url": "https://huggingface.co/openai/clip-vit-large-patch14",
+   "commercial": "unknown",
+   "sourceGated": false,
+   "summary": "Tokenizer vocabulary only. The Hugging Face page states no licence; OpenAI's CLIP code is MIT. The model card calls deployed use out of scope."
+  },
+  {
+   "id": "qwen-tokenizer",
+   "name": "Qwen tokenizer files (Apache-2.0)",
+   "url": "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct",
+   "commercial": "yes",
+   "sourceGated": false,
+   "summary": "Qwen2.5-VL's tokenizer, Apache-2.0 at Qwen; two of the files are fetched from the ComfyUI repository, which is GPL-3.0."
+  },
+  {
+   "id": "flux-kommunity",
+   "name": "FLUX Kommunity License v1.0 (Black Forest Labs)",
+   "url": "https://huggingface.co/black-forest-labs/flux-3-image-klein",
+   "commercial": "conditional",
+   "sourceGated": true,
+   "summary": "Non-commercial use and limited commercial use; production use above BFL's threshold needs a paid licence. BFL's repo asks you to accept it on Hugging Face."
+  },
+  {
+   "id": "nvidia-cuda-eula",
+   "name": "NVIDIA CUDA Toolkit EULA",
+   "url": "https://docs.nvidia.com/cuda/eula/index.html",
+   "commercial": "yes",
+   "sourceGated": false,
+   "summary": "NVIDIA's proprietary licence for the CUDA runtime, cuBLAS and cuRAND libraries; not open source. Downloaded from NVIDIA."
+  }
+ ],
  "files": [
   {
    "id": "krea2-dit",
@@ -8,7 +90,8 @@
    "file": "krea2_turbo_fp8_scaled.safetensors",
    "bytes": 13141730784,
    "sha256": "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1",
-   "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_fp8_scaled.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_fp8_scaled.safetensors",
+   "license": "krea-2-community"
   },
   {
    "id": "qwen21-dit",
@@ -17,7 +100,8 @@
    "file": "qwen_image_2.1_bf16.safetensors",
    "bytes": 14230280616,
    "sha256": "89f4158d066cc33906a199fca85634f766892dd78f49b6698dabf187ac86c4bc",
-   "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_bf16.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_bf16.safetensors",
+   "license": "qwen-research"
   },
   {
    "id": "kromoss-dit",
@@ -26,7 +110,8 @@
    "file": "kromoss_int8_convrot.safetensors",
    "bytes": 5413698958,
    "sha256": "cacff0dd25cd2cf531e1f5ddae7872c3d57a54dbf66f1a1279f2f118514e7905",
-   "url": "https://huggingface.co/lodestones/Kromoss/resolve/main/diffusion_models/kromoss_int8_convrot.safetensors"
+   "url": "https://huggingface.co/lodestones/Kromoss/resolve/main/diffusion_models/kromoss_int8_convrot.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "moss-sft-dit",
@@ -35,7 +120,8 @@
    "file": "moss_image_sft_int8_convrot.safetensors",
    "bytes": 5413698958,
    "sha256": "b4d1475bc7eeffd7b809e82ea13a1fba1fb85c4e18365af3813722faa5c0fe4f",
-   "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/diffusion_models/moss_image_sft_int8_convrot.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/diffusion_models/moss_image_sft_int8_convrot.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "qwen2511-dit",
@@ -44,7 +130,8 @@
    "file": "qwen_image_edit_2511_fp8mixed.safetensors",
    "bytes": 20533762817,
    "sha256": "c9fdc158e46d3b61ef75f21ae866ca2fe808bf4a53643120d1c1e87c19280a4e",
-   "url": "https://huggingface.co/Comfy-Org/Qwen-Image-Edit/resolve/main/split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Qwen-Image-Edit/resolve/main/split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "qwen3vl-4b",
@@ -53,7 +140,8 @@
    "file": "qwen3vl_4b_fp8_scaled.safetensors",
    "bytes": 5242467968,
    "sha256": "54bd5144df0bbc25dd6ccadfcb826b521445a1b06ae5a42570bdd2974ca87094",
-   "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "qwen3vl-8b",
@@ -62,7 +150,8 @@
    "file": "qwen3vl_8b_bf16.safetensors",
    "bytes": 17534334616,
    "sha256": "68bdc82bc1b66851162ae656225e7e2068166b603db19bd5d5a3b90eb12669a9",
-   "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_bf16.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_bf16.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "qwen35-9b",
@@ -71,7 +160,8 @@
    "file": "qwen3.5_9b_int8_convrot.safetensors",
    "bytes": 9748121532,
    "sha256": "32e3787472f708fa5f83624acbf5ef23f7fc89c439e05065ea57cfe5a97f025a",
-   "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/text_encoders/qwen3.5_9b_int8_convrot.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/text_encoders/qwen3.5_9b_int8_convrot.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "qwen35-tokenizer",
@@ -80,7 +170,8 @@
    "file": "tokenizer.json",
    "bytes": 19989325,
    "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
-   "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/resolve/main/tokenizer/tokenizer.json"
+   "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/resolve/main/tokenizer/tokenizer.json",
+   "license": "apache-2.0"
   },
   {
    "id": "qwen25vl-7b",
@@ -89,7 +180,8 @@
    "file": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
    "bytes": 9384670680,
    "sha256": "cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4",
-   "url": "https://huggingface.co/Comfy-Org/Qwen-Image/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Qwen-Image/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "wan-vae",
@@ -98,7 +190,8 @@
    "file": "wan_2.1_vae.safetensors",
    "bytes": 253815318,
    "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b",
-   "url": "https://huggingface.co/Comfy-Org/Wan-2.1/resolve/main/split_files/vae/wan_2.1_vae.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Wan-2.1/resolve/main/split_files/vae/wan_2.1_vae.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "qwen-vae",
@@ -107,7 +200,8 @@
    "file": "qwen_image_vae.safetensors",
    "bytes": 253806246,
    "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
-   "url": "https://huggingface.co/Comfy-Org/Qwen-Image/resolve/main/split_files/vae/qwen_image_vae.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Qwen-Image/resolve/main/split_files/vae/qwen_image_vae.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "qwen21-vae",
@@ -116,7 +210,8 @@
    "file": "qwen_image_2.1_vae_bf16.safetensors",
    "bytes": 675509688,
    "sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
-   "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors",
+   "license": "qwen-research"
   },
   {
    "id": "flux2-vae",
@@ -125,7 +220,8 @@
    "file": "flux2-vae_small.safetensors",
    "bytes": 249521340,
    "sha256": "d8d52ba036475f5fb07c8b435e176d3d97ebfa82f0d1a1c317f9cc1e25bd013b",
-   "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/vae/flux2-vae_small.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/vae/flux2-vae_small.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "anypaint",
@@ -134,7 +230,8 @@
    "file": "krea2_anypaint_rank32.safetensors",
    "bytes": 228587752,
    "sha256": "3a7d09f6b27f8ead160d340f2f59c11f4ee635c4a1ee87ffd8b1b9f9ba412f7a",
-   "url": "https://huggingface.co/yijunwang2/krea2-anypaint/resolve/main/krea2_anypaint_rank32.safetensors"
+   "url": "https://huggingface.co/yijunwang2/krea2-anypaint/resolve/main/krea2_anypaint_rank32.safetensors",
+   "license": "krea-2-community"
   },
   {
    "id": "krea2-edit",
@@ -143,7 +240,8 @@
    "file": "krea2_general_edit_v2.safetensors",
    "bytes": 1828285656,
    "sha256": "fb5315477444c8df6dea2ad347a852bd90e97ab0f9109f4100a39714a7a09356",
-   "url": "https://huggingface.co/conradlocke/krea2-identity-edit/resolve/main/krea2_general_edit_v2.safetensors"
+   "url": "https://huggingface.co/conradlocke/krea2-identity-edit/resolve/main/krea2_general_edit_v2.safetensors",
+   "license": "krea2-identity-edit-v2"
   },
   {
    "id": "krea2-style",
@@ -152,7 +250,8 @@
    "file": "krea2_style_reference.safetensors",
    "bytes": 457111760,
    "sha256": "f50df5a9e62e4be8aa926a63dd5bb1a64770c4004f763c1208007ae13daa82b8",
-   "url": "https://huggingface.co/ostris/krea2_turbo_style_reference/resolve/main/krea2_style_reference.safetensors"
+   "url": "https://huggingface.co/ostris/krea2_turbo_style_reference/resolve/main/krea2_style_reference.safetensors",
+   "license": "krea-2-community"
   },
   {
    "id": "kromoss-dmd2",
@@ -161,7 +260,8 @@
    "file": "kromoss-8-steps-dmd2-lora.safetensors",
    "bytes": 1189176800,
    "sha256": "7683fe1fb51f73f5d690f24dd6b7f46f31ab9a9873729a854ac5c9a420ffe6f2",
-   "url": "https://huggingface.co/lodestones/Kromoss/resolve/main/8-steps-dmd2-lora.safetensors"
+   "url": "https://huggingface.co/lodestones/Kromoss/resolve/main/8-steps-dmd2-lora.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "moss-edit",
@@ -170,7 +270,8 @@
    "file": "adapter_model.safetensors",
    "bytes": 297382216,
    "sha256": "17a48b8c605dcffdedb92a2b887d18cf316505be90802717669fb6556098dcdf",
-   "url": "https://huggingface.co/chinoll/Moss-Image-Edit/resolve/main/adapter_model.safetensors"
+   "url": "https://huggingface.co/chinoll/Moss-Image-Edit/resolve/main/adapter_model.safetensors",
+   "license": "unstated"
   },
   {
    "id": "moss-edit-config",
@@ -179,7 +280,8 @@
    "file": "adapter_config.json",
    "bytes": 53712,
    "sha256": "b6b471cf7bc77b0874af03be618f8a06b6997d92b35de12c47a06b292ade2669",
-   "url": "https://huggingface.co/chinoll/Moss-Image-Edit/resolve/main/adapter_config.json"
+   "url": "https://huggingface.co/chinoll/Moss-Image-Edit/resolve/main/adapter_config.json",
+   "license": "unstated"
   },
   {
    "id": "angles",
@@ -188,7 +290,8 @@
    "file": "qwen-image-edit-2511-multiple-angles-lora.safetensors",
    "bytes": 295140688,
    "sha256": "42426ded4e25fd22879d9e198b857556445ef4ca56e8da3246d0345155bb6765",
-   "url": "https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA/resolve/main/qwen-image-edit-2511-multiple-angles-lora.safetensors"
+   "url": "https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA/resolve/main/qwen-image-edit-2511-multiple-angles-lora.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "lightning4",
@@ -197,7 +300,8 @@
    "file": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
    "bytes": 849608296,
    "sha256": "22226e8d05d354bb356627d428809f5afd7819399b077238a2b70a82883a904f",
-   "url": "https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+   "url": "https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "lightning8",
@@ -206,7 +310,8 @@
    "file": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
    "bytes": 849608296,
    "sha256": "a9e81a58a78f260f67b337a6f615e8fa4cd3bc79847c77b7d61a581b789b1ba8",
-   "url": "https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
+   "url": "https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "remover",
@@ -215,7 +320,8 @@
    "file": "Qwen-Image-Edit-2511-Object-Remover-v2-9200.safetensors",
    "bytes": 236117048,
    "sha256": "9ae08a16fef8452c1507eb3180fcd5c3f9a13fb6288094746433836c0f109883",
-   "url": "https://huggingface.co/prithivMLmods/QIE-2511-Object-Remover-v2/resolve/main/Qwen-Image-Edit-2511-Object-Remover-v2-9200.safetensors"
+   "url": "https://huggingface.co/prithivMLmods/QIE-2511-Object-Remover-v2/resolve/main/Qwen-Image-Edit-2511-Object-Remover-v2-9200.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "outpaint-v2",
@@ -224,7 +330,8 @@
    "file": "qwen-image-2.1-outpaint-v2.safetensors",
    "bytes": 159436576,
    "sha256": "3611a5ccae5f790405eeacf1dfb2c89285c1e4f2987b9abc88cd0161a60eca28",
-   "url": "https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA/resolve/main/qwen-image-2.1-outpaint-v2.safetensors"
+   "url": "https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA/resolve/main/qwen-image-2.1-outpaint-v2.safetensors",
+   "license": "qwen-research"
   },
   {
    "id": "outpaint-wide",
@@ -233,7 +340,8 @@
    "file": "qwen-image-2.1-outpaint.safetensors",
    "bytes": 159436576,
    "sha256": "201ab351b54c3e5d208c91a129011e7e490efdd13e40d89befc4c1f0ca7eb177",
-   "url": "https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA/resolve/main/qwen-image-2.1-outpaint.safetensors"
+   "url": "https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA/resolve/main/qwen-image-2.1-outpaint.safetensors",
+   "license": "qwen-research"
   },
   {
    "id": "viggle-turbo",
@@ -242,7 +350,8 @@
    "file": "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
    "bytes": 679604800,
    "sha256": "0c98591700346f9777051d4e6fa29aa94519abec0d85b1f1f672a2a3db8c94b3",
-   "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors"
+   "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
+   "license": "qwen-research"
   },
   {
    "id": "sam31",
@@ -251,7 +360,8 @@
    "file": "sam3.1_multiplex_fp16.safetensors",
    "bytes": 1745546848,
    "sha256": "9ba99c92703c2e8b4f47de2d34a539bb8e18923049e238b780d70dbe6368eb03",
-   "url": "https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors"
+   "url": "https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors",
+   "license": "sam-license"
   },
   {
    "id": "vitmatte",
@@ -260,7 +370,8 @@
    "file": "model.safetensors",
    "bytes": 386782180,
    "sha256": "d63549276509574d2713f5c64e8bf3706770aa84857cc9400127291a3342d0bd",
-   "url": "https://huggingface.co/hustvl/vitmatte-base-composition-1k/resolve/refs%2Fpr%2F3/model.safetensors"
+   "url": "https://huggingface.co/hustvl/vitmatte-base-composition-1k/resolve/refs%2Fpr%2F3/model.safetensors",
+   "license": "apache-2.0"
   },
   {
    "id": "vitmatte-config",
@@ -269,7 +380,8 @@
    "file": "config.json",
    "bytes": 783,
    "sha256": "67d70e8cbd850adfde5714af6e1b4078cd266b8867a362cdf6023f1f9e045634",
-   "url": "https://huggingface.co/hustvl/vitmatte-base-composition-1k/resolve/main/config.json"
+   "url": "https://huggingface.co/hustvl/vitmatte-base-composition-1k/resolve/main/config.json",
+   "license": "apache-2.0"
   },
   {
    "id": "sam31-tokenizer",
@@ -278,7 +390,8 @@
    "file": "tokenizer.json",
    "bytes": 2224003,
    "sha256": "a83e0809aa4c3af7208b2df632a7a69668c6d48775b3c3fe4e1b1199d1f8b8f4",
-   "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/32bd64288804d66eefd0ccbe215aa642df71cc41/tokenizer.json"
+   "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/32bd64288804d66eefd0ccbe215aa642df71cc41/tokenizer.json",
+   "license": "openai-clip-tokenizer"
   },
   {
    "id": "qwen25-tokenizer-vocab",
@@ -287,7 +400,8 @@
    "file": "vocab.json",
    "bytes": 2776833,
    "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
-   "url": "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct/resolve/cc594898137f460bfe9f0759e9844b3ce807cfb5/vocab.json"
+   "url": "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct/resolve/cc594898137f460bfe9f0759e9844b3ce807cfb5/vocab.json",
+   "license": "qwen-tokenizer"
   },
   {
    "id": "qwen25-tokenizer-merges",
@@ -296,7 +410,8 @@
    "file": "merges.txt",
    "bytes": 1671853,
    "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
-   "url": "https://raw.githubusercontent.com/comfyanonymous/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy/text_encoders/qwen25_tokenizer/merges.txt"
+   "url": "https://raw.githubusercontent.com/comfyanonymous/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy/text_encoders/qwen25_tokenizer/merges.txt",
+   "license": "qwen-tokenizer"
   },
   {
    "id": "qwen25-tokenizer-config",
@@ -305,7 +420,8 @@
    "file": "tokenizer_config.json",
    "bytes": 8018,
    "sha256": "49292bd4a58a43382bf01311bc3ed7a151a7f16fe07d155e900ea1af281555db",
-   "url": "https://raw.githubusercontent.com/comfyanonymous/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy/text_encoders/qwen25_tokenizer/tokenizer_config.json"
+   "url": "https://raw.githubusercontent.com/comfyanonymous/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy/text_encoders/qwen25_tokenizer/tokenizer_config.json",
+   "license": "qwen-tokenizer"
   }
  ],
  "runtime": [
@@ -317,7 +433,8 @@
    "sha256": "621a70c4778287b1abf8c27c61b841d797fda2aeff01033374dd19624bcfa249",
    "libraries": [
     "cuda_cudart-windows-x86_64-13.4.92-archive/bin/x64/cudart64_13.dll"
-   ]
+   ],
+   "license": "nvidia-cuda-eula"
   },
   {
    "id": "cublas",
@@ -328,7 +445,8 @@
    "libraries": [
     "libcublas-windows-x86_64-13.8.0.4-archive/bin/x64/cublas64_13.dll",
     "libcublas-windows-x86_64-13.8.0.4-archive/bin/x64/cublasLt64_13.dll"
-   ]
+   ],
+   "license": "nvidia-cuda-eula"
   },
   {
    "id": "curand",
@@ -338,7 +456,8 @@
    "sha256": "5f15b55cb83938b36a1f01aa9fb32715984e8495c2217081387a0c8ca836ff62",
    "libraries": [
     "libcurand-windows-x86_64-10.4.4.72-archive/bin/x64/curand64_10.dll"
-   ]
+   ],
+   "license": "nvidia-cuda-eula"
   }
  ],
  "packs": [

@@ -42,8 +42,8 @@ fn main() {
     res.set_icon("../../assets/app-icon/sp/sp.ico")
         .set("ProductName", "ShotoPhopEX")
         .set("FileDescription", "ShotoPhopEX image editor")
-        .set("CompanyName", "Learning Machines LLC")
-        .set("LegalCopyright", "Copyright (c) the PhotoCraft authors. MIT OR Apache-2.0.")
+        .set("CompanyName", "ShotoPhopEX contributors")
+        .set("LegalCopyright", "Copyright (c) the PhotoCraft authors and the ShotoPhopEX contributors. MIT OR Apache-2.0.")
         .set("OriginalFilename", "photocraft.exe")
         .set("InternalName", "photocraft");
     if let Err(e) = res.compile() {

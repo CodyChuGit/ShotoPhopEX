@@ -1,18 +1,66 @@
 ShotoPhopEX
-Copyright (c) 2026 Cody Chu (https://github.com/CodyChuGit) and the ShotoPhopEX contributors.
 https://github.com/CodyChuGit/ShotoPhopEX
 
-ShotoPhopEX is a fork of PhotoCraft (https://github.com/storytold/photocraft). Its generative
-tools, the native engine in genai-native/, and all other changes and additions made in this
-repository are by Cody Chu and the ShotoPhopEX contributors, licensed under the MIT License or
-the Apache License, Version 2.0, at your option (LICENSE-MIT, LICENSE-APACHE).
+ShotoPhopEX is an independent fork of PhotoCraft (https://github.com/storytold/photocraft). It is
+not an official PhotoCraft or ArtCraft release and is not made, sponsored or endorsed by the
+ArtCraft Team.
 
-If you fork, copy, modify or redistribute this code, in source or binary form, you must keep
-this NOTICE file and the copyright lines in LICENSE-MIT, as both licences require. Please also
-credit "ShotoPhopEX by Cody Chu" with a link to https://github.com/CodyChuGit/ShotoPhopEX in
-your README or About screen.
+Copyright
 
-The upstream PhotoCraft notice below still applies and must be kept as well.
+- The PhotoCraft authors keep the copyright in PhotoCraft's code and assets; their notice is
+  below, unchanged.
+- Portions Copyright (c) 2026 Cody Chu (https://github.com/CodyChuGit), in his own contributions
+  to this fork (chiefly the generative features: crates/genai, the generate* commands and
+  panels, and genai-native/).
+- Other contributors to this fork keep the copyright in their own contributions.
+- Third-party code and assets keep their own copyright notices and licences: below, in
+  ATTRIBUTION.md, in genai-native/NOTICE, and in THIRD_PARTY_NOTICES.txt in each release package.
+
+Licence
+
+Except where a file or directory says otherwise, this repository is licensed under the MIT
+License or the Apache License, Version 2.0, at your option (LICENSE-MIT, LICENSE-APACHE).
+Exceptions include genai-native/crates/qir, which is Apache-2.0 only (it is built on
+umag/qwen-image-rs; see genai-native/NOTICE), and the third-party material listed below and in
+ATTRIBUTION.md.
+
+What the licences ask of people who redistribute this work (a summary, not legal advice; the
+licence texts govern):
+
+- MIT: include the copyright notice and the permission notice in all copies or substantial
+  portions of the software.
+- Apache-2.0, section 4: give recipients a copy of the licence; mark files you have modified;
+  keep the copyright, patent, trademark and attribution notices of the source form; and, because
+  this work includes a NOTICE file, include a readable copy of the attribution notices in it that
+  pertain to your derivative work (in a NOTICE file, in your source or documentation, or in a
+  display the work generates), leaving out notices that do not pertain to any part of it.
+- Third-party components, NVIDIA's CUDA libraries in the release packages and AI model weights
+  (which are not part of this repository) are under their own terms.
+
+Public attribution to ShotoPhopEX by Cody Chu, with a link to
+https://github.com/CodyChuGit/ShotoPhopEX, is appreciated but is not an additional license
+requirement.
+
+Additions to the third-party list below, for this fork's builds
+
+egui default fonts, embedded by crates/ui-egui/build.rs from epaint_default_fonts
+(https://github.com/storytold/egui/tree/6d518fc799681571963842f95b55a6b68431b15a/crates/epaint_default_fonts/fonts):
+Hack Regular (MIT, with the Bitstream Vera licence for the parts derived from it; Hack-Regular.txt),
+Noto Emoji Regular (SIL Open Font License 1.1; OFL.txt) and Ubuntu Light (Ubuntu Font Licence
+1.0; UFL.txt). Their licence texts are reproduced in THIRD_PARTY_NOTICES.txt in each release
+package.
+
+The JPEG encoder (the jpeg-encoder crate) is licensed (MIT OR Apache-2.0) AND IJG, the
+Independent JPEG Group's licence, which asks for this statement: this software is based in part
+on the work of the Independent JPEG Group.
+
+ShotoPhopEX release builds are made without craft-fonts (CRAFT_FONTS_DIR is not set), so they do
+not embed the craft-fonts typefaces named below.
+
+The native engine (genai-native/) includes code under its own notices; see genai-native/NOTICE.
+The Windows and Linux release packages carry NVIDIA's CUDA runtime, cuBLAS, cuBLASLt and cuRAND
+libraries in runtime/, redistributed under the NVIDIA CUDA Toolkit End User License Agreement
+(https://docs.nvidia.com/cuda/eula/index.html); they are not covered by the licences above.
 
 ------------------------------------------------------------------------------------------------
 

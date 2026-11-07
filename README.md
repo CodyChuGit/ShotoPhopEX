@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
+  <img alt="Rust and CUDA" src="https://img.shields.io/badge/Rust-%2B%20CUDA%20kernels-b7410e?style=flat-square&logo=rust">
   <img alt="Runs locally on NVIDIA RTX" src="https://img.shields.io/badge/runs%20on-NVIDIA%20RTX-76b900?style=flat-square&logo=nvidia&logoColor=white">
   <img alt="12 GB cards supported with MOSS" src="https://img.shields.io/badge/from-12%20GB%20VRAM-76b900?style=flat-square&logo=nvidia&logoColor=white">
   <img alt="No Python" src="https://img.shields.io/badge/Python-none-3a3a3a?style=flat-square&logo=python&logoColor=white">
@@ -63,11 +63,14 @@ its own masked layer, so the original pixels never change.
 | **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([benchmarks](#-benchmarks)) |
 | **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, SAM 3.1), in ComfyUI's folder layout |
 | **Status** | Beta, v0.1.0, the first release. Downloads for Windows and Linux ([install](#-install)) |
-| **Licence** | MIT or Apache-2.0. Each model keeps its own licence |
+| **Licence** | MIT or Apache-2.0 (the native engine's `qir` crate is Apache-2.0 only). Each model keeps its own licence |
 
 - 🎨 **The tools artists use.** Start from a selection and a prompt; the app picks the model.
 - ⚡ **Fast.** Our own int8 kernels, resident encoders and merged LoRAs.
-- 🔒 **Local and private.** One executable plus NVIDIA's libraries. Nothing leaves your PC.
+- 🔒 **Local.** Image editing and AI inference run on your own computer, and your images are not
+  uploaded. The app goes online only to download the models and CUDA libraries you ask for and to
+  check GitHub for updates (Preferences › General › Automatically Check for Updates turns that
+  off); see the [FAQ](#-faq).
 - 🤖 **Agent-ready.** Every action is a command, so the UI, the CLI and an MCP server drive the same 500+ commands.
 
 ## 🚀 Install
@@ -91,8 +94,12 @@ Get-FileHash .\photocraft-0.1.0-windows-x64.msi   # Windows (PowerShell)
 sha256sum -c SHA256SUMS --ignore-missing          # Linux, in the folder with both files
 ```
 
-**SmartScreen.** The Windows files are not code-signed, so on first run Windows shows
-**"Windows protected your PC"**. Click **More info**, then **Run anyway**. It only asks once per file.
+**SmartScreen.** The Windows files are not code-signed, so Windows shows **"Windows protected
+your PC"** on first run. The warning means Windows cannot confirm who published the file; it does
+not mean the file was checked and found safe. Download only from the
+[release page](https://github.com/CodyChuGit/ShotoPhopEX/releases), compare the file's SHA-256
+with `SHA256SUMS` (above), and only then click **More info › Run anyway**. Note that `SHA256SUMS`
+comes from the same release page, so it catches a damaged download, not a compromised release.
 
 ### What you need
 
@@ -401,7 +408,10 @@ cache). ComfyUI ran with `--fast fp8_matrix_mult`.
 | Generative Upscale 2× | **24.2 s** | 44.1 s | 1.82× |
 | MOSS-Image (1024², 50 steps) | 11.0 s | 10.8 s | 0.98× |
 
-Measured on an RTX 5090 (32 GB, Windows 11) on 2026-10-28 and 29. Remove Background has since
+Measured on an RTX 5090 (32 GB, Windows 11) on 2026-10-28 and 29, on one machine, by the
+project itself; the ComfyUI version and NVIDIA driver were not recorded, so treat these as
+indicative, not as an independent benchmark. Your numbers will differ with other cards, drivers
+and settings. Remove Background has since
 moved to SAM 3.1 + ViTMatte (0.45 s). Split into Layers, Clown Pass and the MOSS Turbo routes have
 no ComfyUI graph to compare against, so they are listed in [Every feature](#every-feature) only. No RTX
 3090 numbers exist yet, so none are shown.
@@ -482,11 +492,18 @@ ComfyUI's layout. Most files come from the Comfy-Org repacks on Hugging Face.
 | `loras/` | `krea2_style_reference.safetensors` | `ostris/krea2_turbo_style_reference` | Krea 2 style reference |
 | `vae_approx/` | `taew2_1.safetensors`, `taeqi2_1.safetensors` | madebyollin (MIT) | Sharp live previews |
 
-**Licences matter.** Qwen-Image-2.1 and its LoRAs are under the Qwen Research License (research
-and evaluation; commercial use needs Alibaba's agreement). Krea 2, its LoRAs and SAM 3.1 are
-under their own community licences. Kromoss, MOSS-Image, Qwen-Image-Edit-2511 and the Lightning
-and Angles LoRAs are Apache-2.0; ViTMatte is MIT; check the MOSS Edit adapter's own card. The full
-catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comfy/models.md).
+**Licences matter.** Model weights are not part of ShotoPhopEX and are not covered by its
+licence. Qwen-Image-2.1, its VAE and its Outpaint, Restore and Viggle LoRAs are under the Qwen
+Research License (non-commercial; commercial use needs a licence from Alibaba). Krea 2 and its
+AnyPaint and style LoRAs are under the Krea 2 Community License (commercial use only below US$1M
+annual revenue, plus Krea's use policy); the Krea 2 General Edit LoRA adds its author's own
+non-commercial licence. SAM 3.1 is under Meta's SAM License (commercial use allowed; no military,
+weapons or trade-control-restricted uses). Kromoss, MOSS-Image, Qwen-Image-Edit-2511, the
+Lightning, Angles and Object Remover LoRAs and ViTMatte are Apache-2.0. The MOSS Edit adapter
+states no licence at all. **Get AI Models** lists the licence of every file it is about to
+download, with a link, and downloads only after you accept them. Details and sources:
+[`docs/compliance/MODEL_LICENSES.md`](docs/compliance/MODEL_LICENSES.md); sizes, hashes and VRAM:
+[`docs/comfy/models.md`](docs/comfy/models.md).
 
 ## 🗺️ Roadmap
 
@@ -597,8 +614,23 @@ The full feature list, file formats and platform notes are in upstream's
 <details>
 <summary><b>Does anything go to the cloud?</b></summary>
 
-No. The models run in a worker process on your own GPU, read from your own folder. There is no
-account, no telemetry for generations and no credit counter.
+Your images don't. Image editing and AI inference run locally on your device: the models run in
+a worker process on your own GPU, read from your own folder, and images are not uploaded for
+inference. There is no account, no telemetry, no crash reporting and no credit counter.
+
+The app does use the network for a few things you can see:
+
+- **Get AI Models** downloads model files from Hugging Face and, on Windows, NVIDIA's CUDA
+  libraries from NVIDIA, when you press Download (a Hugging Face token, if you type one, is sent
+  only to Hugging Face and never saved).
+- **Update check**: at launch it asks GitHub for the latest ShotoPhopEX release (Preferences ›
+  General › Automatically Check for Updates turns it off); installing an update downloads it from GitHub.
+- Things you start yourself: downloading an app icon from a URL, printing to a network printer,
+  opening links in your browser.
+- **Agent control** (`--control`, MCP) listens only on `127.0.0.1` and needs a token; it is off
+  unless you start it.
+
+Each of those requests reveals your IP address to the server it goes to, as any download does.
 
 </details>
 
@@ -622,7 +654,8 @@ selection, which peak at about 12 GiB. The larger models stay selectable; they m
 <summary><b>Can I use my own models and LoRAs?</b></summary>
 
 Yes. Every model is bring-your-own, and every route accepts LoRAs from your `loras` folder. The
-app never locks a model behind a licence switch; you are responsible for each model's own licence.
+app never locks a model behind a licence switch; you are responsible for each model's own licence
+(Get AI Models shows them before it downloads anything).
 
 </details>
 
@@ -692,20 +725,26 @@ helps other people find it.
 ## License
 
 ShotoPhopEX is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
-option, like upstream. Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, and
-Copyright (c) 2026 [Cody Chu](https://github.com/CodyChuGit) and the ShotoPhopEX contributors.
+option, like upstream (the native engine's `qir` crate is Apache-2.0 only). The PhotoCraft code
+is Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors; this fork's additions are
+Copyright (c) 2026 [Cody Chu](https://github.com/CodyChuGit) and the other ShotoPhopEX
+contributors, each in their own contributions.
 Required notices are in [NOTICE](NOTICE); bundled fonts, icons and images keep their own
 licences, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
 
-**Forking or reusing this code?** You're welcome to, under either licence. Both licences require
-you to keep the copyright lines in [LICENSE-MIT](LICENSE-MIT) and the [NOTICE](NOTICE) file
-with every copy, in source or binary form. Please also credit
-**ShotoPhopEX by Cody Chu** with a link to <https://github.com/CodyChuGit/ShotoPhopEX> in your
-README or About screen.
+**Forking or reusing this code?** You're welcome to, commercially or not, under either licence.
+Under MIT, keep the copyright and permission notice; under Apache-2.0, keep the licence, mark the
+files you change, and carry over the notices in [NOTICE](NOTICE) that apply to what you
+distribute. Third-party parts, the NVIDIA libraries in the release packages and the model weights
+have their own terms. Public attribution to ShotoPhopEX by Cody Chu, with a link to
+<https://github.com/CodyChuGit/ShotoPhopEX>, is appreciated but is not an additional license
+requirement. The compliance notes are in [`docs/compliance/`](docs/compliance/).
 
-Built on [PhotoCraft](https://github.com/storytold/photocraft) by the ArtCraft team. This fork is
-not made or endorsed by them, and per [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt)
-it does not use the ArtCraft name or logos as its own. Thanks to the authors of every open model
+Built on [PhotoCraft](https://github.com/storytold/photocraft) by the ArtCraft team. ShotoPhopEX
+is an independent fork, not an official PhotoCraft release, and is not made or endorsed by them.
+Per [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt) it does not use the ArtCraft
+logos; the Windows installer still uses upstream's install folder and publisher name for
+compatibility, which is under review ([`docs/compliance/UNRESOLVED_RISKS.md`](docs/compliance/UNRESOLVED_RISKS.md)). Thanks to the authors of every open model
 and LoRA listed in [Models](#-models).
 
 Model weights are not part of this repository and keep their own licences. Every artwork shown in
