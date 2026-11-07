@@ -286,6 +286,19 @@ impl Model {
     }
 }
 
+/// Text-detection refinement passes when the request names none: 2 (ComfyUI's), except on Metal,
+/// where each pass re-runs the vision trunk on a crop (about 10 s on a 16 GB M1). There a picture
+/// no larger than 1.5x SAM's 1008 px input gets none: on a 512² picture the masks without it were
+/// at IoU >= 0.998 against two passes, the prompt 6.5 s instead of 25–35 s (2026-11-07). Larger
+/// pictures keep one pass for edge detail at their own resolution.
+fn default_refine(device: &Device, w: u32, h: u32) -> usize {
+    match device {
+        Device::Metal if w.max(h) <= 1512 => 0,
+        Device::Metal => 1,
+        _ => 2,
+    }
+}
+
 /// FNV-1a over the picture bytes and its size: the embedding cache key.
 fn content_hash(bytes: &[u8], w: u32, h: u32) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -403,7 +416,7 @@ impl Engine for PerceptionEngine {
         let opts = Options {
             threshold: num(&req.params, "threshold").unwrap_or(0.5),
             max_detections: num(&req.params, "maxDetections").map_or(1, |m| m.max(1.0) as usize),
-            refine_iterations: num(&req.params, "refineIterations").map_or(2, |r| r.max(0.0) as usize),
+            refine_iterations: num(&req.params, "refineIterations").map_or_else(|| default_refine(&self.device, w, h), |r| r.max(0.0) as usize),
             soft: num(&req.params, "softEdge").map_or(0.0, |t| t.clamp(0.0, 64.0)),
             candidate: num(&req.params, "candidate").filter(|c| *c >= 0.0).map(|c| c as usize),
         };
@@ -612,7 +625,8 @@ mod tests {
 
     #[test]
     fn flags_make_an_engine_only_when_both_directories_are_given() {
-        assert!(from_args(&["--models".into(), "m".into()]).is_none());
+        // A Mac needs no runtime folder (Metal is part of the system).
+        assert_eq!(from_args(&["--models".into(), "m".into()]).is_some(), cfg!(target_os = "macos"));
         assert!(from_args(&["--runtime".into(), "a;b".into()]).is_none());
         let e = from_args(&[
             "--token".into(),
@@ -631,6 +645,13 @@ mod tests {
         assert!(!e.half);
         let half = from_args(&["--runtime".into(), "r".into(), "--models".into(), "m".into(), "--sam-precision".into(), "F16".into()]);
         assert!(half.is_some_and(|e| e.half));
+    }
+
+    #[test]
+    fn metal_refines_only_large_pictures() {
+        assert_eq!(default_refine(&Device::Metal, 512, 512), 0);
+        assert_eq!(default_refine(&Device::Metal, 4000, 3000), 1);
+        assert_eq!(default_refine(&Device::Cpu, 512, 512), 2);
     }
 
     #[test]
