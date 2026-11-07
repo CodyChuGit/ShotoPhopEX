@@ -52,10 +52,6 @@ impl Precision {
     }
 }
 
-/// What a LoRA's `B` is held multiplied by (in f16, a few-step LoRA's `B` is mostly below f16's
-/// smallest normal number, 6e-5); the delta is divided by it in f32.
-pub const LORA_B_SCALE: f32 = 4096.0;
-
 /// A LoRA merged into the weights at load: `W + strength·α/r·B A`.
 pub struct Lora {
     file: LoraFile,
@@ -72,16 +68,22 @@ impl Lora {
         self.file.entries.keys().map(String::as_str)
     }
 
-    /// `module`'s pair `(A (r, in), B·strength·α/r·`[`LORA_B_SCALE`]` (out, r))` f16, if the file
-    /// adapts it (B is scaled up so its small values stay normal f16 numbers).
-    pub fn pair(&self, module: &str) -> Result<Option<(Array, Array)>> {
+    /// `module`'s pair `(A (r, in), B·strength·α/r·k (out, r), 1/k)` with A and B in f16, if the
+    /// file adapts it. `k` is the power of two that brings B's largest value near 1: a few-step
+    /// LoRA's B is mostly below f16's smallest normal number (6e-5), and an edit LoRA's, scaled
+    /// by a fixed large factor, overflowed f16 in the product.
+    pub fn pair(&self, module: &str) -> Result<Option<(Array, Array, f32)>> {
         let Some(e) = self.file.entries.get(module) else { return Ok(None) };
         let r = e.a.dim(0)?;
-        let scale = self.strength * e.alpha / r.max(1) as f32 * LORA_B_SCALE;
+        let b = from_candle(&e.b)?.multiply(Array::from_f32(self.strength * e.alpha / r.max(1) as f32))?;
+        let peak = b.abs()?.max(None)?.as_dtype(Dtype::Float32)?;
+        peak.eval()?;
+        let peak = peak.item_exact::<f32>();
+        let k = pow2_scale(peak);
         let a = from_candle(&e.a)?.as_dtype(Dtype::Float16)?;
-        let b = from_candle(&e.b)?.multiply(Array::from_f32(scale))?.as_dtype(Dtype::Float16)?;
+        let b = b.multiply(Array::from_f32(k))?.as_dtype(Dtype::Float16)?;
         mlx_rs::transforms::eval([&a, &b])?;
-        Ok(Some((a, b)))
+        Ok(Some((a, b, 1.0 / k)))
     }
 
     /// `module`'s delta `(out, in)` f32, if the file adapts it.
@@ -91,6 +93,15 @@ impl Lora {
         let scale = self.strength * e.alpha / r.max(1) as f32;
         Ok(Some(from_candle(&e.b)?.matmul(&from_candle(&e.a)?)?.multiply(Array::from_f32(scale))?))
     }
+}
+
+/// The power of two that brings `peak` to at most 1 (and above 1/2), within 1/64..65536; 1 for a
+/// zero or non-finite peak.
+fn pow2_scale(peak: f32) -> f32 {
+    if !(peak.is_finite() && peak > 0.0) {
+        return 1.0;
+    }
+    2f32.powi(-(peak.log2().ceil() as i32)).clamp(1.0 / 64.0, 65536.0)
 }
 
 /// Reads one file's tensors into [`Params`].
@@ -197,4 +208,22 @@ pub fn load(path: &Path) -> Result<Params> {
     let p = Array::load_safetensors(path).with_context(|| format!("read {}", path.display()))?;
     mlx_rs::transforms::eval(p.values())?;
     Ok(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pow2_scale;
+
+    /// A few-step LoRA's tiny B is lifted, an edit LoRA's B is not blown past f16 (it was, at a
+    /// fixed 4096: black pictures).
+    #[test]
+    fn lora_b_scale_keeps_the_peak_near_one() {
+        for peak in [1e-4f32, 3e-3, 0.02, 0.5, 1.0, 3.0] {
+            let scaled = peak * pow2_scale(peak);
+            assert!(scaled <= 1.0 && scaled > 0.5, "{peak} -> {scaled}");
+        }
+        assert_eq!(pow2_scale(0.0), 1.0);
+        assert_eq!(pow2_scale(f32::NAN), 1.0);
+        assert_eq!(pow2_scale(1e-12), 65536.0);
+    }
 }

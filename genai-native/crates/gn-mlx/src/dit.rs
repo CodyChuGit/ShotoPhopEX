@@ -192,10 +192,10 @@ struct Block {
     adapters: [Adapters; 4],
 }
 
-/// LoRA pairs on one linear, `(A (r, in), B·scale·LORA_B_SCALE (out, r))` f16: `y += (x Aᵀ) Bᵀ /
-/// LORA_B_SCALE`, the sum in f32.
+/// LoRA pairs on one linear, `(A (r, in), B·scale·k (out, r), 1/k)` f16 ([`Lora::pair`]):
+/// `y += (x Aᵀ) Bᵀ / k`, the sum in f32.
 #[derive(Default)]
-struct Adapters(Vec<(Array, Array)>);
+struct Adapters(Vec<(Array, Array, f32)>);
 
 impl Adapters {
     fn apply(&self, x: &Array, y: Array) -> Result<Array> {
@@ -206,15 +206,14 @@ impl Adapters {
         // to the output in f32.
         let x16 = x.as_dtype(Dtype::Float16)?;
         let mut d: Option<Array> = None;
-        for (a, b) in &self.0 {
-            let t = x16.matmul(a.t())?.matmul(b.t())?.as_dtype(Dtype::Float32)?;
+        for (a, b, inv) in &self.0 {
+            let t = x16.matmul(a.t())?.matmul(b.t())?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(*inv))?;
             d = Some(match d {
                 Some(s) => s.add(&t)?,
                 None => t,
             });
         }
         let Some(d) = d else { return Ok(y) };
-        let d = d.multiply(Array::from_f32(1.0 / crate::convert::LORA_B_SCALE))?;
         Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?)
     }
 }
@@ -312,10 +311,9 @@ impl MossDit {
     }
 
     /// Put `loras` on the blocks, unmerged (an empty list takes them off). A file's separate
-    /// `proj.q`, `proj.k`, `proj.v` adapters become one on the stacked `qkv`: their `A`s
-    /// stacked, their `B`s block-diagonal. Returns how many modules matched.
+    /// `proj.q`, `proj.k`, `proj.v` adapters each go on the stacked `qkv`, their `B`s padded to
+    /// their rows. Returns how many modules matched.
     pub fn set_loras(&mut self, loras: &[Lora]) -> Result<usize> {
-        let dim_ = dim(self.cfg.dim)?;
         let mut matched = 0;
         for (i, block) in self.layers.iter_mut().enumerate() {
             let p = format!("layers.{i}");
@@ -325,25 +323,24 @@ impl MossDit {
                     adapters[0].0.push(pair);
                     matched += 1;
                 }
-                let parts: Vec<(usize, (Array, Array))> =
-                    ["q", "k", "v"].iter().enumerate().filter_map(|(j, n)| l.pair(&format!("{p}.proj.{n}")).transpose().map(|r| r.map(|pr| (j, pr)))).collect::<Result<_>>()?;
-                if !parts.is_empty() {
-                    matched += parts.len();
-                    let a = ops::concatenate(&parts.iter().map(|(_, (a, _))| a.clone()).collect::<Vec<_>>(), 0)?;
-                    // B (3·dim, Σr): each part's B in its rows and its own columns.
-                    let ranks: Vec<i32> = parts.iter().map(|(_, (a, _))| a.shape()[0]).collect();
-                    let total: i32 = ranks.iter().sum();
-                    let mut rows_b = Vec::with_capacity(3);
-                    for j in 0..3 {
-                        let mut cols_b = Vec::with_capacity(parts.len());
-                        for (k, (pj, (_, b))) in parts.iter().enumerate() {
-                            cols_b.push(if *pj == j { b.clone() } else { Array::zeros::<f32>(&[dim_, ranks[k]])?.as_dtype(Dtype::Float16)? });
-                        }
-                        rows_b.push(if cols_b.is_empty() { Array::zeros::<f32>(&[dim_, total])?.as_dtype(Dtype::Float16)? } else { ops::concatenate(&cols_b, 1)? });
+                // q, k and v each as its own pair on the stacked qkv: B padded with zero rows to
+                // its third of the output (each keeps its own scale).
+                for (j, n) in ["q", "k", "v"].iter().enumerate() {
+                    let Some((a, b, inv)) = l.pair(&format!("{p}.proj.{n}"))? else { continue };
+                    matched += 1;
+                    let r = b.shape()[1];
+                    let zeros = |rows: usize| -> Result<Array> { Ok(Array::zeros::<f32>(&[dim(rows)?, r])?.as_dtype(Dtype::Float16)?) };
+                    let mut parts = Vec::with_capacity(3);
+                    if j > 0 {
+                        parts.push(zeros(j * self.cfg.dim)?);
                     }
-                    let b = ops::concatenate(&rows_b, 0)?;
-                    mlx_rs::transforms::eval([&a, &b])?;
-                    adapters[0].0.push((a, b));
+                    parts.push(b);
+                    if j < 2 {
+                        parts.push(zeros((2 - j) * self.cfg.dim)?);
+                    }
+                    let b = ops::concatenate(&parts, 0)?;
+                    b.eval()?;
+                    adapters[0].0.push((a, b, inv));
                 }
                 for (slot, n) in [(1, "o"), (2, "ffn_up_gate"), (3, "ffn_down")] {
                     if let Some(pair) = l.pair(&format!("{p}.proj.{n}"))? {
