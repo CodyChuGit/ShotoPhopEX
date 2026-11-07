@@ -37,7 +37,7 @@ fn no_marker_uses_the_platform_dir() {
     assert!(!exe.join(PORTABLE_DATA_DIR).exists(), "no portable folder without a marker");
     // The convention per platform.
     if cfg!(target_os = "macos") {
-        assert_eq!(dir, root.join("home/Library/Application Support/Photocraft"));
+        assert_eq!(dir, root.join("home/Library/Application Support/ShotoPhopEX"));
     } else if cfg!(windows) {
         assert_eq!(dir, root.join("appdata").join("Photocraft"));
     } else {
