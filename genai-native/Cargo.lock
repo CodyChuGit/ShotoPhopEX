@@ -1278,6 +1278,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "candle-core",
+ "candle-nn",
  "image",
  "mlx-rs",
  "qwen-image-rs",

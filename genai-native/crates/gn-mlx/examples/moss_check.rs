@@ -10,6 +10,8 @@
 //! - `text [layers]`: the encoder's hidden state for a fixed prompt, its first `layers` layers
 //!   (default 4: three DeltaNet, one full attention), MLX f16, 8-bit and 4-bit; then the whole
 //!   encoder in 8-bit on MLX alone (time, memory).
+//! - `vae`: the FLUX.2 small decoder on a fixed latent at 512x512, MLX f32 and f16 against qir
+//!   (PSNR); then a 1024x1024 decode on MLX (time, memory).
 
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
@@ -37,6 +39,7 @@ mod run {
 
     const DIT: &str = "diffusion_models/kromoss_int8_convrot.safetensors";
     const TEXT: &str = "text_encoders/qwen3.5_9b_int8_convrot.safetensors";
+    const VAE: &str = "vae/flux2-vae_small.safetensors";
     const TOKENIZER: &str = "text_encoders/qwen35_tokenizer/tokenizer.json";
     pub const PROMPT: &str = "a red apple, a yellow rubber duck and a white mug on a wooden table";
     const LORA: &str = "loras/kromoss-8-steps-dmd2-lora.safetensors";
@@ -47,8 +50,10 @@ mod run {
             anyhow::bail!("usage: moss_check <load|dit> <models dir> [layers]");
         };
         let models = PathBuf::from(models);
+        gn_mlx::nn::limit_cache()?;
         match check.as_str() {
             "load" => load(&models),
+            "vae" => vae_check(&models),
             "text" => text_check(&models, args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(4)),
             "dit" => dit_check(&models, args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(4)),
             other => anyhow::bail!("unknown check {other}"),
@@ -189,6 +194,39 @@ mod run {
         let t0 = Instant::now();
         to_vec(&model.forward(&ids)?)?;
         println!("whole encoder, warm encode: {:.3} s; {}", t0.elapsed().as_secs_f64(), mem());
+        Ok(())
+    }
+
+    fn vae_check(models: &Path) -> Result<()> {
+        use gn_mlx::nn::psnr;
+        use gn_mlx::vae::{self, Flux2Decoder};
+        let path = models.join(VAE);
+        let z = Tensor::from_vec(qwen_image_rs::comfy::torch_randn(3, 128 * 32 * 32).map_err(anyhow::Error::msg)?, (1, 128, 32, 32), &Device::Cpu)?;
+        let t0 = Instant::now();
+        let vb = candle_nn::VarBuilder::from_tensors(candle_core::safetensors::load(&path, &Device::Cpu)?, DType::F32, &Device::Cpu);
+        let want = qwen_image_rs::moss::vae::Flux2Decoder::load(vb)?.decode(&z)?.flatten_all()?.to_vec1::<f32>()?;
+        println!("qir CPU f32 decode 512x512: {:.1} s", t0.elapsed().as_secs_f64());
+        for dt in [Dtype::Float32, Dtype::Float16] {
+            let dec = Flux2Decoder::load(&vae::convert(&path, dt)?, dt)?;
+            let zm = from_candle(&z)?;
+            to_vec(&dec.decode(&zm)?)?;
+            let t0 = Instant::now();
+            let got = to_vec(&dec.decode(&zm)?)?;
+            let (cos, max) = compare(&got, &want)?;
+            println!("MLX {dt:?} 512x512: PSNR {:.1} dB, cosine {cos:.6}, max abs {max:.4}, warm decode {:.3} s", psnr(&got, &want)?, t0.elapsed().as_secs_f64());
+        }
+        for dt in [Dtype::Float32, Dtype::Float16] {
+            mlx_rs::memory::clear_cache()?;
+            mlx_rs::memory::reset_peak_memory()?;
+            let dec = Flux2Decoder::load(&vae::convert(&path, dt)?, dt)?;
+            let z = Array::from_slice(&qwen_image_rs::comfy::torch_randn(5, 128 * 64 * 64).map_err(anyhow::Error::msg)?, &[1, 128, 64, 64]);
+            let t0 = Instant::now();
+            to_vec(&dec.decode(&z)?)?;
+            println!("MLX {dt:?} 1024x1024 cold decode {:.2} s; {}", t0.elapsed().as_secs_f64(), mem());
+            let t0 = Instant::now();
+            to_vec(&dec.decode(&z)?)?;
+            println!("MLX {dt:?} 1024x1024 warm decode {:.2} s; {}", t0.elapsed().as_secs_f64(), mem());
+        }
         Ok(())
     }
 }

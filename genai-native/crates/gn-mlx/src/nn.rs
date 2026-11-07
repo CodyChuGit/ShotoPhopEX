@@ -18,6 +18,13 @@ pub fn get(p: &Params, name: &str) -> Result<Array> {
     p.get(name).cloned().with_context(|| format!("missing weight {name}"))
 }
 
+/// Cap MLX's cache of freed buffers (by default it may grow to the whole memory limit, and on a
+/// 16 GB Mac that pushes the system into swap).
+pub fn limit_cache() -> Result<()> {
+    mlx_rs::memory::set_cache_limit(1 << 30)?;
+    Ok(())
+}
+
 /// `usize` to MLX's `i32` dimensions.
 pub fn dim(v: usize) -> Result<i32> {
     i32::try_from(v).with_context(|| format!("dimension {v} too large"))
