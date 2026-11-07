@@ -684,7 +684,13 @@ mod tests {
         assert_eq!(offered, cfg!(target_os = "macos"));
         let klein = manifest().pack("flux3-klein-q8").unwrap();
         assert_eq!(klein.os, ["macos"]);
-        assert!(klein.files.iter().all(|id| manifest().file(id).is_some_and(|f| f.folder.starts_with("mlx/flux-3-image-klein-q8/"))));
+        assert!(
+            klein
+                .files
+                .iter()
+                .filter(|id| *id != "flux2-vae")
+                .all(|id| manifest().file(id).is_some_and(|f| f.folder.starts_with("mlx/flux-3-image-klein-q8/")))
+        );
         if !cfg!(target_os = "macos") {
             let err = run_get(&mut s, &json!({"extras": ["flux3-klein-q4"]})).unwrap_err();
             assert!(err.to_string().contains("does not run on this system"), "{err}");

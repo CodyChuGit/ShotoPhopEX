@@ -353,15 +353,6 @@
    "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q4/resolve/79c0034de040c460e9685bf0127f40af042a2abe/text_encoder/tokenizer.json"
   },
   {
-   "id": "flux3-klein-q4-vae-0",
-   "name": "FLUX 3 Image Klein 4-bit (VAE)",
-   "folder": "mlx/flux-3-image-klein-q4/vae",
-   "file": "0.safetensors",
-   "bytes": 165107888,
-   "sha256": "9c3376cde5b6f5166fbd4cead9d9e5d84f11702e2865149a2828378a14671b4b",
-   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q4/resolve/79c0034de040c460e9685bf0127f40af042a2abe/vae/0.safetensors"
-  },
-  {
    "id": "flux3-klein-q8-transformer-0",
    "name": "FLUX 3 Image Klein 8-bit (image model, part 1 of 3)",
    "folder": "mlx/flux-3-image-klein-q8/transformer",
@@ -414,15 +405,6 @@
    "bytes": 11422650,
    "sha256": "be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506",
    "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q8/resolve/7e46237dea3999a9792959f5e000aeb1b9f9e7df/text_encoder/tokenizer.json"
-  },
-  {
-   "id": "flux3-klein-q8-vae-0",
-   "name": "FLUX 3 Image Klein 8-bit (VAE)",
-   "folder": "mlx/flux-3-image-klein-q8/vae",
-   "file": "0.safetensors",
-   "bytes": 166156486,
-   "sha256": "94068882f83f537035d4353c19a8fa0d0b9d0294ee3ad8834ef5e1eecc960861",
-   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q8/resolve/7e46237dea3999a9792959f5e000aeb1b9f9e7df/vae/0.safetensors"
   }
  ],
  "runtime": [
@@ -631,7 +613,7 @@
     "flux3-klein-q4-transformer-1",
     "flux3-klein-q4-text-encoder-0",
     "flux3-klein-q4-text-encoder-tokenizer",
-    "flux3-klein-q4-vae-0"
+    "flux2-vae"
    ]
   },
   {
@@ -648,7 +630,7 @@
     "flux3-klein-q8-text-encoder-0",
     "flux3-klein-q8-text-encoder-1",
     "flux3-klein-q8-text-encoder-tokenizer",
-    "flux3-klein-q8-vae-0"
+    "flux2-vae"
    ]
   }
  ]
