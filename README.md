@@ -333,7 +333,6 @@ One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to 
 | Feature | What it does | Default model | Warm time, RTX 5090 |
 |---|---|---|---|
 | **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best |
-| **MOSS Turbo** | The low-VRAM text to image: Kromoss with an 8-step DMD2 LoRA, Apache-2.0, strong lettering | Kromoss + DMD2 LoRA | **1.6 s** (1024×672) |
 | **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** |
 | **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP |
 | **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s |
