@@ -20,7 +20,7 @@ fake-server = []
 # answers `select.*` requests ModelMissing).
 native-diffusion = ["dep:gn-diffusion", "gn-diffusion/cuda", "gn-perception/cuda"]
 # The Mac build of the native worker: MOSS-Image on Apple's MLX (gn-diffusion's `mlx`), no CUDA.
-native-mlx = ["dep:gn-diffusion", "gn-diffusion/mlx"]
+native-mlx = ["dep:gn-diffusion", "gn-diffusion/mlx", "gn-perception/metal"]
 
 [dependencies]
 photocraft-codecs = { workspace = true }

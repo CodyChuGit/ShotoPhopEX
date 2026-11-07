@@ -96,7 +96,13 @@ pub struct PerceptionEngine {
 
 impl PerceptionEngine {
     pub fn new(runtime_dirs: Vec<PathBuf>, models_root: PathBuf, cpu: bool) -> Self {
-        let device = if cpu { Device::Cpu } else { Device::Cuda { ordinal: 0 } };
+        let device = if cpu {
+            Device::Cpu
+        } else if cfg!(feature = "metal") {
+            Device::Metal
+        } else {
+            Device::Cuda { ordinal: 0 }
+        };
         PerceptionEngine {
             runtime_dirs,
             models_root,
@@ -136,10 +142,7 @@ impl PerceptionEngine {
         {
             if self.vitmatte.is_none() {
                 progress(0.0, "Loading ViTMatte");
-                let device = match self.device {
-                    Device::Cuda { ordinal } => candle_core::Device::new_cuda(ordinal as usize).map_err(|e| candle_error(e.into()))?,
-                    Device::Cpu => candle_core::Device::Cpu,
-                };
+                let device = self.candle_device()?;
                 self.vitmatte = Some(
                     gn_segment::vitmatte::VitMatte::load(self.models_root.join(VITMATTE_DIR), &device)
                         .map_err(|e| EngineError::new(ErrorKind::ModelMissing, format!("{e:#}")))?,
@@ -167,6 +170,19 @@ impl PerceptionEngine {
         Err(EngineError::new(ErrorKind::ModelMissing, "this build has no ViTMatte backend (built without `candle`)"))
     }
 
+    /// The candle device for `self.device`: Metal falls back to the CPU when it cannot open.
+    #[cfg(feature = "candle")]
+    fn candle_device(&self) -> Result<candle_core::Device, EngineError> {
+        Ok(match self.device {
+            Device::Cuda { ordinal } => candle_core::Device::new_cuda(ordinal as usize).map_err(|e| candle_error(e.into()))?,
+            Device::Metal => candle_core::Device::new_metal(0).unwrap_or_else(|e| {
+                eprintln!("gn-perception: Metal did not open ({e}); running on the CPU");
+                candle_core::Device::Cpu
+            }),
+            Device::Cpu => candle_core::Device::Cpu,
+        })
+    }
+
     /// SAM 3.1's compute precision on CUDA: f16 when `half`, else f32 (the CPU is always f32).
     pub fn with_half(mut self, half: bool) -> Self {
         self.half = half;
@@ -184,10 +200,7 @@ impl PerceptionEngine {
         #[cfg(feature = "candle")]
         if let Some((checkpoint, tokenizer)) = candle_files(&self.models_root).filter(|_| self.sam.is_none()) {
             progress(0.0, "Loading SAM 3.1");
-            let device = match self.device {
-                Device::Cuda { ordinal } => candle_core::Device::new_cuda(ordinal as usize).map_err(|e| candle_error(e.into()))?,
-                Device::Cpu => candle_core::Device::Cpu,
-            };
+            let device = self.candle_device()?;
             let t0 = Instant::now();
             let dtype = if self.half && device.is_cuda() { candle_core::DType::F16 } else { candle_core::DType::F32 };
             if self.checkpoint.is_none() {
@@ -348,6 +361,7 @@ impl Engine for PerceptionEngine {
             device: match self.device {
                 Device::Cuda { ordinal } => format!("cuda:{ordinal}"),
                 Device::Cpu => "cpu".into(),
+                Device::Metal => "metal".into(),
             },
             vram_total: None,
             vram_free: None,
@@ -526,8 +540,13 @@ pub fn from_args(args: &[String]) -> Option<PerceptionEngine> {
             _ => i += 1,
         }
     }
+    // `GN_PERCEPTION_CPU=1`: the CPU whatever the build has (to compare with the GPU).
+    if std::env::var("GN_PERCEPTION_CPU").is_ok_and(|v| v.trim() == "1") {
+        cpu = true;
+    }
     let models = models?;
-    if runtime.is_empty() {
+    // A Mac needs no runtime folder (no CUDA): candle runs on Metal or the CPU.
+    if runtime.is_empty() && !cfg!(target_os = "macos") {
         return None;
     }
     Some(PerceptionEngine::new(runtime, models, cpu).with_half(half))
