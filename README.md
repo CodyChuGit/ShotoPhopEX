@@ -106,23 +106,23 @@ sha256sum -c SHA256SUMS --ignore-missing          # Linux, in the folder with bo
 ### macOS (`.dmg`, Apple Silicon)
 
 `photocraft-<version>-macos-aarch64.dmg` runs on an Apple Silicon Mac (M1 or newer) with
-macOS 14 or newer; 16 GB of memory runs MOSS (Turbo images and Edit), the models running on the
-Mac's GPU through MLX. There is no Intel build.
+macOS 14 or newer; 16 GB of memory runs MOSS (Turbo images and Edit) and FLUX 3 Image Klein
+(Fill, Remove, Expand, Split into Layers), the models running on the Mac's GPU through MLX. There is no Intel build.
 
-1. Open the `.dmg` and drag **PhotoCraft** onto **Applications**.
+1. Open the `.dmg` and drag **ShotoPhopEX** onto **Applications**.
 2. Open it from Applications. The app is not notarized, so the first time macOS says
-   **"PhotoCraft" Not Opened: Apple could not verify "PhotoCraft" is free of malware that may harm
+   **"ShotoPhopEX" Not Opened: Apple could not verify "ShotoPhopEX" is free of malware that may harm
    your Mac or compromise your privacy.** Click **Done** (not Move to Trash).
 3. Open **System Settings › Privacy & Security**, scroll to **Security**, where it says
-   **"PhotoCraft" was blocked to protect your Mac.**, and click **Open Anyway**. Confirm with your
+   **"ShotoPhopEX" was blocked to protect your Mac.**, and click **Open Anyway**. Confirm with your
    password or Touch ID, then click **Open**. macOS asks this only once.
 4. If macOS instead says the app **"is damaged and can't be opened"**, clear the download flag
    in Terminal, then open it again:
    ```sh
-   xattr -dr com.apple.quarantine /Applications/PhotoCraft.app
+   xattr -dr com.apple.quarantine /Applications/ShotoPhopEX.app
    ```
 5. Get AI Models puts the models in `Documents/ShotoPhopEX/models`, so on first use macOS asks
-   **"PhotoCraft" would like to access files in your Documents folder.** Click **Allow**.
+   **"ShotoPhopEX" would like to access files in your Documents folder.** Click **Allow**.
 
 ### Windows installer (`.msi`)
 
