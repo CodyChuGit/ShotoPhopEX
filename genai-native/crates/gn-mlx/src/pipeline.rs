@@ -98,10 +98,11 @@ impl MossMlx {
     /// `name`'s converted weights from the cache, or `convert` then cached.
     fn cached(&self, name: &str, convert: impl FnOnce() -> Result<Params>) -> Result<Params> {
         let path = self.cache_dir.join(name);
-        if path.is_file() {
-            if let Ok(p) = convert::load(&path) {
-                return Ok(p);
-            }
+        // An unreadable cache is converted again.
+        if path.is_file()
+            && let Ok(p) = convert::load(&path)
+        {
+            return Ok(p);
         }
         let p = convert()?;
         convert::save(&p, &path)?;
