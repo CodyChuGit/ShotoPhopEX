@@ -19,14 +19,14 @@ const BN_EPS: f32 = 1e-4;
 const GROUPS: i32 = 32;
 const EPS: f32 = 1e-6;
 
-/// The decoder's tensors from the VAE file, in `dtype` (statistics in f32), convolution
-/// weights as MLX takes them `(out, kh, kw, in)`.
+/// The decoder's and encoder's tensors from the VAE file, in `dtype` (statistics in f32),
+/// convolution weights as MLX takes them `(out, kh, kw, in)`.
 pub fn convert(path: &Path, dtype: Dtype) -> Result<Params> {
     let file: HashMap<String, candle_core::Tensor> =
         candle_core::safetensors::load(path, &candle_core::Device::Cpu).with_context(|| format!("read {}", path.display()))?;
     let mut p = Params::new();
     for (name, t) in file {
-        if !(name.starts_with("decoder.") || name.starts_with("post_quant_conv.") || name.starts_with("bn.running_")) {
+        if !["decoder.", "encoder.", "post_quant_conv.", "quant_conv.", "bn.running_"].iter().any(|p| name.starts_with(p)) {
             continue;
         }
         let a = from_candle(&t)?;
@@ -245,6 +245,94 @@ impl Flux2Decoder {
         let x = self.conv_out.forward(&mlx_rs::nn::silu(self.norm_out.forward(&x)?)?)?;
         Ok(ops::clip(x.as_dtype(Dtype::Float32)?, (-1.0f32, 1.0f32))?.transpose_axes(&[0, 3, 1, 2])?)
     }
+}
+
+/// A down block's resnets and its stride-2 convolution's weight and bias (all but the last).
+type DownBlock = (Vec<Resnet>, Option<(Array, Array)>);
+
+/// The FLUX.2 VAE's encoder (diffusers' layout, as `qwen_image_rs::moss::vae::Flux2Encoder`
+/// reads it): a picture to the posterior's mean, 2×2-packed to 128 channels at 1/16 and
+/// batch-normalised, the space MOSS-Image samples in (MOSS Edit's references).
+pub struct Flux2Encoder {
+    bn_std: Array,
+    bn_mean: Array,
+    conv_in: Conv,
+    down: Vec<DownBlock>,
+    mid: (Resnet, Attention, Resnet),
+    norm_out: GroupNorm,
+    conv_out: Conv,
+    quant_conv: Conv,
+    dtype: Dtype,
+}
+
+impl Flux2Encoder {
+    pub fn load(p: &Params, dtype: Dtype) -> Result<Self> {
+        anyhow::ensure!(p.contains_key("quant_conv.weight"), "the VAE file has no top-level quant_conv: no FLUX.2 encoder (flux2-vae_small has one)");
+        let e = "encoder";
+        let mut down = Vec::new();
+        for i in 0.. {
+            let b = format!("{e}.down_blocks.{i}");
+            if !p.contains_key(&format!("{b}.resnets.0.conv1.weight")) {
+                break;
+            }
+            let resnets = (0..).map(|j| format!("{b}.resnets.{j}")).take_while(|r| p.contains_key(&format!("{r}.conv1.weight"))).map(|r| Resnet::load(p, &r)).collect::<Result<_>>()?;
+            let ds = format!("{b}.downsamplers.0.conv");
+            let downsample = if p.contains_key(&format!("{ds}.weight")) { Some((get(p, &format!("{ds}.weight"))?, get(p, &format!("{ds}.bias"))?)) } else { None };
+            down.push((resnets, downsample));
+        }
+        anyhow::ensure!(!down.is_empty(), "the VAE file has no encoder (encoder.down_blocks.*)");
+        let m = format!("{e}.mid_block");
+        Ok(Self {
+            bn_std: get(p, "bn.running_var")?.add(Array::from_f32(BN_EPS))?.sqrt()?.reshape(&[1, PACKED, 1, 1])?,
+            bn_mean: get(p, "bn.running_mean")?.reshape(&[1, PACKED, 1, 1])?,
+            conv_in: Conv::load(p, &format!("{e}.conv_in"))?,
+            down,
+            mid: (Resnet::load(p, &format!("{m}.resnets.0"))?, Attention::load(p, &format!("{m}.attentions.0"))?, Resnet::load(p, &format!("{m}.resnets.1"))?),
+            norm_out: GroupNorm::load(p, &format!("{e}.conv_norm_out"))?,
+            conv_out: Conv::load(p, &format!("{e}.conv_out"))?,
+            quant_conv: Conv::load(p, "quant_conv")?,
+            dtype,
+        })
+    }
+
+    /// RGB `(1, 3, H, W)` in [-1, 1] (sides multiples of 16) to the sampler's `(1, 128, H/16,
+    /// W/16)` f32.
+    pub fn encode(&self, img: &Array) -> Result<Array> {
+        let s = img.shape();
+        anyhow::ensure!(s.len() == 4 && s[1] == 3 && s[2] % 16 == 0 && s[3] % 16 == 0, "a picture of shape {s:?}: (1, 3, H, W), sides multiples of 16");
+        let mut x = self.conv_in.forward(&img.transpose_axes(&[0, 2, 3, 1])?.as_dtype(self.dtype)?)?;
+        for (resnets, downsample) in &self.down {
+            for r in resnets {
+                x = r.forward(&x)?;
+                x.eval()?;
+            }
+            if let Some((w, b)) = downsample {
+                // diffusers' Downsample2D: one zero row and column after, then stride 2.
+                let sh = x.shape();
+                let (n, h, wd, c) = (sh[0], sh[1], sh[2], sh[3]);
+                let x1 = ops::concatenate(&[&x, &Array::zeros::<f32>(&[n, h, 1, c])?.as_dtype(x.dtype())?], 2)?;
+                let x1 = ops::concatenate(&[&x1, &Array::zeros::<f32>(&[n, 1, wd + 1, c])?.as_dtype(x.dtype())?], 1)?;
+                x = ops::conv2d(&x1, w, (2, 2), (0, 0), None, None)?.add(b)?;
+                x.eval()?;
+            }
+        }
+        let x = self.mid.2.forward(&self.mid.1.forward(&self.mid.0.forward(&x)?)?)?;
+        let x = self.conv_out.forward(&mlx_rs::nn::silu(self.norm_out.forward(&x)?)?)?;
+        let moments = self.quant_conv.forward(&x)?.as_dtype(Dtype::Float32)?;
+        // The posterior's mode: its mean, the first half of the channels; packed `(c, dy, dx)`.
+        let z = crate::nn::cols(&moments, 0, LATENT as usize)?;
+        let sh = z.shape();
+        let (b, zh, zw) = (sh[0], sh[1], sh[2]);
+        let z = z.reshape(&[b, zh / 2, 2, zw / 2, 2, LATENT])?.transpose_axes(&[0, 5, 2, 4, 1, 3])?.reshape(&[b, PACKED, zh / 2, zw / 2])?;
+        Ok(z.subtract(&self.bn_mean)?.divide(&self.bn_std)?)
+    }
+}
+
+/// Straight RGBA8 `w × h` to RGB `(1, 3, h, w)` in [-1, 1] f32 (alpha dropped).
+pub fn from_rgba_u8(rgba: &[u8], w: usize, h: usize) -> Result<Array> {
+    anyhow::ensure!(rgba.len() == w * h * 4, "{} bytes for a {w}x{h} RGBA picture", rgba.len());
+    let rgb: Vec<f32> = rgba.as_chunks::<4>().0.iter().flat_map(|px| px.iter().take(3).map(|&v| f32::from(v) / 127.5 - 1.0)).collect();
+    Ok(Array::from_slice(&rgb, &crate::nn::shape(&[1, h, w, 3])?).transpose_axes(&[0, 3, 1, 2])?)
 }
 
 /// Nearest-neighbour ×2, channels last.

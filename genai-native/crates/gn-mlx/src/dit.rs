@@ -12,9 +12,10 @@ use crate::convert::{Converter, Lora, Precision};
 use crate::nn::{cols, dim, get, rows, scalar, shape, Linear, Params};
 
 /// Convert the DiT file to [`Params`]: the blocks' and the text refiner's linears quantized
-/// (when `precision` asks), the embedders, modulation and head dense; `lora` merged into the
-/// blocks. `layers` limits the blocks read (the checks' cut-down model).
-pub fn convert(path: &Path, cfg: &MossConfig, dtype: Dtype, precision: Precision, lora: Option<&Lora>) -> Result<Params> {
+/// (when `precision` asks), the embedders, modulation and head dense; `loras` merged into the
+/// blocks (their deltas summed). `cfg.layers` limits the blocks read (the checks' cut-down
+/// model).
+pub fn convert(path: &Path, cfg: &MossConfig, dtype: Dtype, precision: Precision, loras: &[Lora]) -> Result<Params> {
     let w = Weights::open(path, &candle_core::Device::Cpu, candle_core::DType::F32, false)?;
     let mut c = Converter::new(&w, dtype, precision)?;
     for m in ["video_embedder", "text_embedder.proj", "time_embedding.0", "time_embedding.2", "shared_block_modulation", "video_head_modulation", "final_linear_video"] {
@@ -30,7 +31,18 @@ pub fn convert(path: &Path, cfg: &MossConfig, dtype: Dtype, precision: Precision
             c.linear(&format!("{p}.{n}"), true, None)?;
         }
     }
-    let delta = |m: &str| -> Result<Option<Array>> { lora.map_or(Ok(None), |l| l.delta(m)) };
+    let delta = |m: &str| -> Result<Option<Array>> {
+        let mut sum: Option<Array> = None;
+        for l in loras {
+            if let Some(d) = l.delta(m)? {
+                sum = Some(match sum {
+                    Some(s) => s.add(&d)?,
+                    None => d,
+                });
+            }
+        }
+        Ok(sum)
+    };
     for i in 0..cfg.layers {
         let p = format!("layers.{i}");
         for n in ["norm1", "norm2", "q_norm", "k_norm"] {
@@ -193,8 +205,10 @@ impl Block {
         })
     }
 
-    /// `x (S, dim)` f32; `m` the six modulation rows `(1, dim)` f32.
-    fn forward(&self, x: &Array, rope: &Rope, m: &[Array; 6], heads: usize, dt: Dtype) -> Result<Array> {
+    /// `x (S, dim)` f32; `m` the six modulation rows `(1, dim)` f32; `refs` MOSS Edit's
+    /// cached keys and values, attended after the sequence's own. Also returns this block's
+    /// keys (normed, rotated) and values `(S, H, D)`, for a reference pass to keep.
+    fn forward(&self, x: &Array, rope: &Rope, m: &[Array; 6], heads: usize, dt: Dtype, refs: Option<&RefLayer>) -> Result<(Array, RefLayer)> {
         let d = x.shape()[1] as usize;
         let [shift_a, scale_a, gate_a, shift_f, scale_f, gate_f] = m;
         let modulate = |y: Array, scale: &Array, shift: &Array| -> Result<Array> { Ok(y.add(y.multiply(scale)?)?.add(shift)?.as_dtype(dt)?) };
@@ -202,14 +216,31 @@ impl Block {
         let [q, k, v] = split_qkv(&self.qkv.forward(&y)?, d, heads)?;
         let q = rope.apply(&rms(&q, &self.q_norm)?.as_dtype(dt)?)?;
         let k = rope.apply(&rms(&k, &self.k_norm)?.as_dtype(dt)?)?;
-        let a = self.o.forward(&attention(&q, &k, &v)?)?;
+        let att = match refs {
+            Some(r) => attention(&q, &ops::concatenate(&[&k, &r.k], 0)?, &ops::concatenate(&[&v, &r.v], 0)?)?,
+            None => attention(&q, &k, &v)?,
+        };
+        let a = self.o.forward(&att)?;
         let x = x.add(a.multiply(gate_a)?)?;
         let y = modulate(rms(&x, &self.norm2)?, scale_f, shift_f)?;
         let hg = self.up_gate.forward(&y)?;
         let f = hg.shape()[1] as usize / 2;
         let h = situ(&cols(&hg, 0, f)?, &cols(&hg, f, 2 * f)?)?;
-        Ok(x.add(self.down.forward(&h)?.multiply(gate_f)?)?)
+        Ok((x.add(self.down.forward(&h)?.multiply(gate_f)?)?, RefLayer { k, v }))
     }
+}
+
+/// One block's keys and values of MOSS Edit's references `(N, H, D)`.
+#[derive(Clone)]
+struct RefLayer {
+    k: Array,
+    v: Array,
+}
+
+/// MOSS Edit's references through every block, made once per edit: the reference branch runs
+/// at t = 0 and attends only to itself, so it is the same at every step and for both prompts.
+pub struct RefCache {
+    layers: Vec<RefLayer>,
 }
 
 pub struct MossDit {
@@ -272,6 +303,52 @@ impl MossDit {
         Ok(Array::from_slice(&out, &shape(&[h * w + text_len, 8 * nb])?))
     }
 
+    /// MOSS Edit's reference rows `[sin | cos]` `(h·w, head_dim)` f32 for reference `index`:
+    /// frame `index + 1`, text index 0, height and width centred on its own grid.
+    fn reference_rope(&self, h: usize, w: usize, index: usize) -> Result<Array> {
+        let nb = self.cfg.head_dim() / 8;
+        let bands: Vec<f32> = (0..nb).map(|i| 1.0 / self.cfg.rope_base.powf(i as f32 / nb as f32)).collect();
+        let mut out = Vec::with_capacity(h * w * 8 * nb);
+        let (ch, cw) = ((h as f32 - 1.0) / 2.0, (w as f32 - 1.0) / 2.0);
+        for y in 0..h {
+            for x in 0..w {
+                let pos = [(index + 1) as f32, 0.0, y as f32 - ch, x as f32 - cw];
+                let phase: Vec<f32> = pos.iter().flat_map(|p| bands.iter().map(move |b| p * b)).collect();
+                out.extend(phase.iter().map(|p| p.sin()));
+                out.extend(phase.iter().map(|p| p.cos()));
+            }
+        }
+        Ok(Array::from_slice(&out, &shape(&[h * w, 8 * nb])?))
+    }
+
+    /// Run MOSS Edit's references `(1, channels, h, w)` (the FLUX.2 encoder's latents, the
+    /// picture being edited first) through every block once, at t = 0, attending only to each
+    /// other; the blocks' keys and values for the sampling steps.
+    pub fn prepare_references(&self, refs: &[Array]) -> Result<RefCache> {
+        anyhow::ensure!(!refs.is_empty(), "an edit needs a reference");
+        let dt = self.dtype;
+        let mut tokens = Vec::with_capacity(refs.len());
+        let mut ropes = Vec::with_capacity(refs.len());
+        for (i, r) in refs.iter().enumerate() {
+            let s = r.shape();
+            anyhow::ensure!(s.len() == 4 && s[1] as usize == self.cfg.channels, "a reference of shape {s:?} (the model takes (1, {}, h, w))", self.cfg.channels);
+            let (c, h, w) = (s[1], s[2] as usize, s[3] as usize);
+            tokens.push(self.video_embedder.forward(&r.reshape(&[c, dim(h * w)?])?.t().as_dtype(dt)?)?.as_dtype(Dtype::Float32)?);
+            ropes.push(self.reference_rope(h, w, i)?);
+        }
+        let mut x = ops::concatenate(&tokens, 0)?;
+        let rope = Rope::new(&ops::concatenate(&ropes, 0)?, self.cfg.head_dim(), dt)?;
+        let (m, _) = self.modulation(0.0)?;
+        let mut layers = Vec::with_capacity(self.layers.len());
+        for layer in &self.layers {
+            let (next, kv) = layer.forward(&x, &rope, &m, self.cfg.heads, dt, None)?;
+            mlx_rs::transforms::eval([&next, &kv.k, &kv.v])?;
+            layers.push(kv);
+            x = next;
+        }
+        Ok(RefCache { layers })
+    }
+
     /// The six block rows and the two head rows `(1, dim)` f32 for `timestep`.
     fn modulation(&self, timestep: f32) -> Result<([Array; 6], [Array; 2])> {
         let half = self.cfg.freq_dim / 2;
@@ -293,8 +370,11 @@ impl MossDit {
 
     /// The velocity `(1, channels, h, w)` f32 for the latent `x (1, channels, h, w)` at
     /// `timestep` (σ·1000) and the encoder's hidden state `ctx (L, text_dim)`; the blocks in
-    /// `skip` are left out.
-    pub fn forward(&self, x: &Array, timestep: f32, ctx: &Array, skip: &[usize]) -> Result<Array> {
+    /// `skip` are left out; `refs` MOSS Edit's references, attended by every block.
+    pub fn forward(&self, x: &Array, timestep: f32, ctx: &Array, skip: &[usize], refs: Option<&RefCache>) -> Result<Array> {
+        if let Some(r) = refs {
+            anyhow::ensure!(r.layers.len() == self.layers.len(), "a reference cache of {} blocks for {}", r.layers.len(), self.layers.len());
+        }
         let s = x.shape();
         anyhow::ensure!(s.len() == 4 && s[1] as usize == self.cfg.channels, "a latent of shape {s:?} (the model takes (1, {}, h, w))", self.cfg.channels);
         let (c, h, w) = (s[1], s[2] as usize, s[3] as usize);
@@ -312,7 +392,7 @@ impl MossDit {
         let mut tokens = ops::concatenate(&[video.as_dtype(Dtype::Float32)?, text], 0)?;
         for (i, layer) in self.layers.iter().enumerate() {
             if !skip.contains(&i) {
-                tokens = layer.forward(&tokens, &rope, &m, self.cfg.heads, dt)?;
+                tokens = layer.forward(&tokens, &rope, &m, self.cfg.heads, dt, refs.map(|r| &r.layers[i]))?.0;
             }
         }
         let y = rms(&rows(&tokens, 0, n)?, &self.final_norm)?;

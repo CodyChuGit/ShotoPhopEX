@@ -10,6 +10,10 @@
 //! - `text [layers]`: the encoder's hidden state for a fixed prompt, its first `layers` layers
 //!   (default 4: three DeltaNet, one full attention), MLX f16, 8-bit and 4-bit; then the whole
 //!   encoder in 8-bit on MLX alone (time, memory).
+//! - `edit [layers]`: MOSS Edit's pieces: the FLUX.2 encoder on a synthetic picture (MLX f32
+//!   and f16 against qir), then a cut-down MOSS-Image-SFT DiT with the MOSS Edit and DMD2 LoRAs
+//!   attending to that picture's reference tokens (qir's `prepare_references` and
+//!   `forward_refs`), MLX f16 and 8-bit.
 //! - `vae`: the FLUX.2 small decoder on a fixed latent at 512x512, MLX f32 and f16 against qir
 //!   (PSNR); then a 1024x1024 decode on MLX (time, memory).
 
@@ -42,6 +46,8 @@ mod run {
     const VAE: &str = "vae/flux2-vae_small.safetensors";
     const TOKENIZER: &str = "text_encoders/qwen35_tokenizer/tokenizer.json";
     pub const PROMPT: &str = "a red apple, a yellow rubber duck and a white mug on a wooden table";
+    const SFT: &str = "diffusion_models/moss_image_sft_int8_convrot.safetensors";
+    const EDIT_LORA: &str = "loras/moss-image-edit/adapter_model.safetensors";
     const LORA: &str = "loras/kromoss-8-steps-dmd2-lora.safetensors";
 
     pub fn main() -> Result<()> {
@@ -54,6 +60,7 @@ mod run {
         match check.as_str() {
             "load" => load(&models),
             "vae" => vae_check(&models),
+            "edit" => edit_check(&models, args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(4)),
             "text" => text_check(&models, args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(4)),
             "dit" => dit_check(&models, args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(4)),
             other => anyhow::bail!("unknown check {other}"),
@@ -76,7 +83,7 @@ mod run {
         let cfg = MossConfig::default();
         let t0 = Instant::now();
         let lora = Lora::open(&models.join(LORA), 1.0)?;
-        let p = dit::convert(&models.join(DIT), &cfg, Dtype::Float16, Precision::Q4, Some(&lora))?;
+        let p = dit::convert(&models.join(DIT), &cfg, Dtype::Float16, Precision::Q4, &[lora])?;
         let bytes: usize = p.values().map(Array::nbytes).sum();
         println!("convert Kromoss + DMD2 to 4-bit: {:.1} s, {} arrays, {:.2} GB; {}", t0.elapsed().as_secs_f64(), p.len(), gb(bytes), mem());
         let cache = models.join("mlx_cache").join("kromoss_int8_convrot.dmd2-1.q4g64.safetensors");
@@ -132,15 +139,15 @@ mod run {
             }
             drop(reference);
             drop(w);
-            let lora = if with_lora { Some(Lora::open(&models.join(LORA), strength)?) } else { None };
+            let lora = if with_lora { vec![Lora::open(&models.join(LORA), strength)?] } else { Vec::new() };
             for precision in [Precision::F16, Precision::Q4] {
-                let p = dit::convert(&path, &cfg, Dtype::Float16, precision, lora.as_ref())?;
+                let p = dit::convert(&path, &cfg, Dtype::Float16, precision, &lora)?;
                 let model = MossDit::load(&cfg, &p, Dtype::Float16)?;
                 let (xm, cm) = (from_candle(&x)?, from_candle(&ctx)?);
-                let v = model.forward(&xm, t, &cm, &[])?;
+                let v = model.forward(&xm, t, &cm, &[], None)?;
                 v.eval()?;
                 let t0 = Instant::now();
-                let got = to_vec(&model.forward(&xm, t, &cm, &[])?)?;
+                let got = to_vec(&model.forward(&xm, t, &cm, &[], None)?)?;
                 let (cos, max) = compare(&got, &want)?;
                 let finite = got.iter().all(|v| v.is_finite());
                 println!(
@@ -226,6 +233,60 @@ mod run {
             let t0 = Instant::now();
             to_vec(&dec.decode(&z)?)?;
             println!("MLX {dt:?} 1024x1024 warm decode {:.2} s; {}", t0.elapsed().as_secs_f64(), mem());
+        }
+        Ok(())
+    }
+
+    fn edit_check(models: &Path, layers: usize) -> Result<()> {
+        use gn_mlx::vae::{self, Flux2Encoder};
+        // A synthetic 256x256 picture: gradients and a disc.
+        let (w, h) = (256usize, 256usize);
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let disc = ((x as f32 - 150.0).powi(2) + (y as f32 - 110.0).powi(2)) < 60.0f32.powi(2);
+                rgba.extend([if disc { 220 } else { (x * 255 / w) as u8 }, (y * 255 / h) as u8, if disc { 40 } else { 128 }, 255]);
+            }
+        }
+        let path = models.join(VAE);
+        let vb = candle_nn::VarBuilder::from_tensors(candle_core::safetensors::load(&path, &Device::Cpu)?, DType::F32, &Device::Cpu);
+        let qenc = qwen_image_rs::moss::vae::Flux2Encoder::load(vb)?;
+        let qimg = qwen_image_rs::moss::vae::from_rgba_u8(&rgba, w, h, &Device::Cpu)?;
+        let latent = qenc.encode(&qimg)?; // (1, 128, 16, 16)
+        let want = latent.flatten_all()?.to_vec1::<f32>()?;
+        for dt in [Dtype::Float32, Dtype::Float16] {
+            let enc = Flux2Encoder::load(&vae::convert(&path, dt)?, dt)?;
+            let got = to_vec(&enc.encode(&vae::from_rgba_u8(&rgba, w, h)?)?)?;
+            let (cos, max) = compare(&got, &want)?;
+            println!("encoder MLX {dt:?}: cosine {cos:.6}, max abs {max:.4} (|z| max {:.2})", want.iter().fold(0f32, |m, v| m.max(v.abs())));
+        }
+        // The DiT with the edit's two LoRAs, attending to the picture.
+        let cfg = MossConfig { layers, ..MossConfig::default() };
+        let (x, ctx) = inputs()?;
+        let t = 500.0;
+        let sft = models.join(SFT);
+        let t0 = Instant::now();
+        let w8 = Weights::open(&sft, &Device::Cpu, DType::F32, false)?;
+        let reference = qwen_image_rs::moss::dit::MossDit::load(&cfg, &w8)?;
+        let files = [models.join(EDIT_LORA), models.join(LORA)].map(|p| LoraFile::load(&p, &Device::Cpu, DType::F32).map(|f| (Arc::new(f), 1.0f32)));
+        let [a, b] = files;
+        reference.set_loras(&LoraStack { layers: vec![a?, b?] })?;
+        let cache = reference.prepare_references(std::slice::from_ref(&latent))?;
+        let want = reference.forward_refs(&x, t, &ctx, &[], Some(&cache))?.flatten_all()?.to_vec1::<f32>()?;
+        let plain = reference.forward(&x, t, &ctx, &[])?.flatten_all()?.to_vec1::<f32>()?;
+        let (cos, max) = compare(&plain, &want)?;
+        println!("qir CPU f32, SFT {layers} blocks + edit + DMD2: {:.1} s; the reference's effect: cosine {cos:.6} to none, max abs {max:.3}", t0.elapsed().as_secs_f64());
+        drop(cache);
+        drop(reference);
+        drop(w8);
+        let loras = vec![Lora::open(&models.join(EDIT_LORA), 1.0)?, Lora::open(&models.join(LORA), 1.0)?];
+        for precision in [Precision::F16, Precision::Q8] {
+            let p = dit::convert(&sft, &cfg, Dtype::Float16, precision, &loras)?;
+            let model = MossDit::load(&cfg, &p, Dtype::Float16)?;
+            let refs = model.prepare_references(&[from_candle(&latent)?])?;
+            let got = to_vec(&model.forward(&from_candle(&x)?, t, &from_candle(&ctx)?, &[], Some(&refs))?)?;
+            let (cos, max) = compare(&got, &want)?;
+            println!("MLX {}: cosine {cos:.6}, max abs {max:.4} (|v| max {:.3}), finite {}", precision.tag(), want.iter().fold(0f32, |m, v| m.max(v.abs())), got.iter().all(|v| v.is_finite()));
         }
         Ok(())
     }
