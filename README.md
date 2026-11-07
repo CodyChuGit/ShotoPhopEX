@@ -475,10 +475,10 @@ It is tuned on an M1 MacBook Air with 16 GB. Expect minutes where an RTX card ta
 
 | Feature | On a Mac | About how long, M1 Air 16 GB |
 |---|---|---|
-| **Generate Image** | MOSS Turbo; FLUX 3 Image Klein for higher quality | 40 s at 512² · Klein about 100 s at 512² |
-| **Generative Edit** | MOSS Edit; Klein Edit selectable | being timed |
-| **Generative Fill · Remove** | Klein | about 3.5 min |
-| **Generative Expand** | Klein + Outpaint LoRA | about 6.5 min |
+| **Generate Image** | MOSS Turbo; FLUX 3 Image Klein for higher quality | about 35 s at 512² · Klein about 100 s at 512² |
+| **Generative Edit** | MOSS Edit; Klein Edit selectable | about 1.75 min at 512² |
+| **Generative Fill · Remove** | Klein | about 2.5 min at 512² |
+| **Generative Expand** | Klein + Outpaint LoRA | about 3.5 min (512² to 768×512) |
 | **Split into Layers** | SAM 3.1 + ViTMatte + Klein fill | about 5.5 min |
 | **Clown Pass** | SAM 3.1 + ViTMatte | about 3.3 min |
 | **Select Subject / by text / by point** | SAM 3.1 | 1 s for a click · about 18 s by text |
