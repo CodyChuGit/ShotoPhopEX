@@ -18,7 +18,9 @@ fake-server = []
 # toolkit to build (the README's Install section). With it, SAM 3.1 runs on candle on the
 # GPU from its checkpoint (Rust rebuild R1); a build without it has no SAM 3.1 backend (the worker
 # answers `select.*` requests ModelMissing).
-native-diffusion = ["dep:gn-diffusion", "gn-perception/cuda"]
+native-diffusion = ["dep:gn-diffusion", "gn-diffusion/cuda", "gn-perception/cuda"]
+# The Mac build of the native worker: MOSS-Image on Apple's MLX (gn-diffusion's `mlx`), no CUDA.
+native-mlx = ["dep:gn-diffusion", "gn-diffusion/mlx", "gn-perception/metal"]
 
 [dependencies]
 photocraft-codecs = { workspace = true }
@@ -36,7 +38,7 @@ getrandom = { workspace = true }
 # the worker's `PATH`.
 gn-engine = { path = "../../genai-native/crates/gn-engine" }
 gn-perception = { path = "../../genai-native/crates/gn-perception", default-features = false, features = ["engine"] }
-gn-diffusion = { path = "../../genai-native/crates/gn-diffusion", features = ["cuda"], optional = true }
+gn-diffusion = { path = "../../genai-native/crates/gn-diffusion", optional = true }
 # The worker's log: the engines speak `tracing`; with `RUST_LOG` set the worker writes their
 # phase timings (load, encode, sampling, decode) to its stderr.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }

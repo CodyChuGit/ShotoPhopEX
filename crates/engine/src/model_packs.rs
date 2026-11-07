@@ -69,7 +69,18 @@ pub struct Pack {
     /// The memory profiles this pack is for (empty for an extra).
     #[serde(default)]
     pub profiles: Vec<String>,
+    /// The systems it runs on, as `std::env::consts::OS` names them (empty for all): the MLX
+    /// models are `["macos"]`.
+    #[serde(default)]
+    pub os: Vec<String>,
     pub files: Vec<String>,
+}
+
+impl Pack {
+    /// Whether this system can run the pack.
+    pub fn runs_here(&self) -> bool {
+        self.os.is_empty() || self.os.iter().any(|o| o == std::env::consts::OS)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -190,7 +201,7 @@ fn run_packs(s: &mut Session, _p: &Value) -> Result<Value> {
     let root = target_root(s);
     let pack = m.pack_for(profile).ok_or_else(|| EngineError::Other("no model pack is defined".into()))?;
     // The other packs and the add-ons; the profile's own pack is not offered twice.
-    let extras: Vec<Value> = m.extras.iter().filter(|e| e.id != pack.id).map(|e| pack_json(m, root.as_deref(), e)).collect();
+    let extras: Vec<Value> = m.extras.iter().filter(|e| e.id != pack.id && e.runs_here()).map(|e| pack_json(m, root.as_deref(), e)).collect();
     let runtime_bytes: u64 = m.runtime.iter().map(|r| r.bytes).sum();
     Ok(json!({
         "profile": profile.map(Profile::name),
@@ -234,6 +245,9 @@ fn run_get(s: &mut Session, p: &Value) -> Result<Value> {
         };
         if let Some(e) = extras.iter().find(|e| m.pack(e).is_none()) {
             return Err(bad(&format!("unknown extra `{e}`")));
+        }
+        if let Some(e) = extras.iter().find(|e| m.pack(e).is_some_and(|p| !p.runs_here())) {
+            return Err(bad(&format!("`{e}` does not run on this system")));
         }
         let token = p.get("token").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
         if token.as_deref().is_some_and(|t| t.len() > 512 || t.chars().any(|c| c.is_control() || c.is_whitespace())) {
@@ -553,6 +567,9 @@ mod tests {
         for r in &m.runtime {
             assert!(r.url.starts_with("https://") && r.sha256.len() == 64 && !r.libraries.is_empty(), "{}", r.id);
         }
+        for p in m.packs.iter().chain(&m.extras) {
+            assert!(p.os.iter().all(|o| ["windows", "linux", "macos"].contains(&o.as_str())), "pack {} names an unknown system", p.id);
+        }
         // Every profile has a pack.
         for p in Profile::ALL {
             assert!(m.packs.iter().any(|k| k.profiles.iter().any(|x| x == p.name())), "no pack for {}", p.name());
@@ -568,6 +585,19 @@ mod tests {
             let image = photocraft_genai::template::find(memory_profile::image_template(Some(p))).unwrap();
             if matches!(p, Profile::Gb8 | Profile::Mac8) {
                 continue; // no image model fits yet
+            }
+            if p == Profile::Mac16 {
+                // MLX runs MOSS Turbo as MOSS-Image-SFT with the 4-step LoRA (gn-diffusion's
+                // mlx_recipe), not the template's Kromoss files.
+                for f in [
+                    "moss_image_sft_int8_convrot.safetensors",
+                    "moss_image_sft_4step_v2.0.safetensors",
+                    "adapter_model.safetensors",
+                    "qwen3.5_9b_int8_convrot.safetensors",
+                ] {
+                    assert!(files.contains(&f), "mac16's pack lacks {f}");
+                }
+                continue;
             }
             for slot in &image.meta.models {
                 let name = slot.default.rsplit('/').next().unwrap();
@@ -643,5 +673,27 @@ mod tests {
         assert!(run_get(&mut s, &json!({"pack": "nope"})).is_err());
         assert!(run_get(&mut s, &json!({"extras": ["nope"]})).is_err());
         assert!(run_get(&mut s, &json!({"token": "hf_a b"})).is_err());
+    }
+
+    #[test]
+    fn mac_only_extras_are_offered_only_on_a_mac() {
+        let mut s = Session::new();
+        s.edit_prefs(|p| p.integrations.models_path = std::env::temp_dir().join("pc-no-such-models").to_string_lossy().into_owned());
+        let v = run_packs(&mut s, &json!({})).unwrap();
+        let offered = v["extras"].as_array().unwrap().iter().any(|e| e["id"] == "flux3-klein-q4");
+        assert_eq!(offered, cfg!(target_os = "macos"));
+        let klein = manifest().pack("flux3-klein-q8").unwrap();
+        assert_eq!(klein.os, ["macos"]);
+        assert!(
+            klein
+                .files
+                .iter()
+                .filter(|id| *id != "flux2-vae")
+                .all(|id| manifest().file(id).is_some_and(|f| f.folder.starts_with("mlx/flux-3-image-klein-q8/")))
+        );
+        if !cfg!(target_os = "macos") {
+            let err = run_get(&mut s, &json!({"extras": ["flux3-klein-q4"]})).unwrap_err();
+            assert!(err.to_string().contains("does not run on this system"), "{err}");
+        }
     }
 }

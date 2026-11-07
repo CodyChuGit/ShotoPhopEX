@@ -96,7 +96,13 @@ pub struct PerceptionEngine {
 
 impl PerceptionEngine {
     pub fn new(runtime_dirs: Vec<PathBuf>, models_root: PathBuf, cpu: bool) -> Self {
-        let device = if cpu { Device::Cpu } else { Device::Cuda { ordinal: 0 } };
+        let device = if cpu {
+            Device::Cpu
+        } else if cfg!(feature = "metal") {
+            Device::Metal
+        } else {
+            Device::Cuda { ordinal: 0 }
+        };
         PerceptionEngine {
             runtime_dirs,
             models_root,
@@ -136,10 +142,7 @@ impl PerceptionEngine {
         {
             if self.vitmatte.is_none() {
                 progress(0.0, "Loading ViTMatte");
-                let device = match self.device {
-                    Device::Cuda { ordinal } => candle_core::Device::new_cuda(ordinal as usize).map_err(|e| candle_error(e.into()))?,
-                    Device::Cpu => candle_core::Device::Cpu,
-                };
+                let device = self.candle_device()?;
                 self.vitmatte = Some(
                     gn_segment::vitmatte::VitMatte::load(self.models_root.join(VITMATTE_DIR), &device)
                         .map_err(|e| EngineError::new(ErrorKind::ModelMissing, format!("{e:#}")))?,
@@ -167,6 +170,19 @@ impl PerceptionEngine {
         Err(EngineError::new(ErrorKind::ModelMissing, "this build has no ViTMatte backend (built without `candle`)"))
     }
 
+    /// The candle device for `self.device`: Metal falls back to the CPU when it cannot open.
+    #[cfg(feature = "candle")]
+    fn candle_device(&self) -> Result<candle_core::Device, EngineError> {
+        Ok(match self.device {
+            Device::Cuda { ordinal } => candle_core::Device::new_cuda(ordinal as usize).map_err(|e| candle_error(e.into()))?,
+            Device::Metal => candle_core::Device::new_metal(0).unwrap_or_else(|e| {
+                eprintln!("gn-perception: Metal did not open ({e}); running on the CPU");
+                candle_core::Device::Cpu
+            }),
+            Device::Cpu => candle_core::Device::Cpu,
+        })
+    }
+
     /// SAM 3.1's compute precision on CUDA: f16 when `half`, else f32 (the CPU is always f32).
     pub fn with_half(mut self, half: bool) -> Self {
         self.half = half;
@@ -184,10 +200,7 @@ impl PerceptionEngine {
         #[cfg(feature = "candle")]
         if let Some((checkpoint, tokenizer)) = candle_files(&self.models_root).filter(|_| self.sam.is_none()) {
             progress(0.0, "Loading SAM 3.1");
-            let device = match self.device {
-                Device::Cuda { ordinal } => candle_core::Device::new_cuda(ordinal as usize).map_err(|e| candle_error(e.into()))?,
-                Device::Cpu => candle_core::Device::Cpu,
-            };
+            let device = self.candle_device()?;
             let t0 = Instant::now();
             let dtype = if self.half && device.is_cuda() { candle_core::DType::F16 } else { candle_core::DType::F32 };
             if self.checkpoint.is_none() {
@@ -273,6 +286,19 @@ impl Model {
     }
 }
 
+/// Text-detection refinement passes when the request names none: 2 (ComfyUI's), except on Metal,
+/// where each pass re-runs the vision trunk on a crop (about 10 s on a 16 GB M1). There a picture
+/// no larger than 1.5x SAM's 1008 px input gets none: on a 512² picture the masks without it were
+/// at IoU >= 0.998 against two passes, the prompt 6.5 s instead of 25–35 s (2026-11-07). Larger
+/// pictures keep one pass for edge detail at their own resolution.
+fn default_refine(device: &Device, w: u32, h: u32) -> usize {
+    match device {
+        Device::Metal if w.max(h) <= 1512 => 0,
+        Device::Metal => 1,
+        _ => 2,
+    }
+}
+
 /// FNV-1a over the picture bytes and its size: the embedding cache key.
 fn content_hash(bytes: &[u8], w: u32, h: u32) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -348,6 +374,7 @@ impl Engine for PerceptionEngine {
             device: match self.device {
                 Device::Cuda { ordinal } => format!("cuda:{ordinal}"),
                 Device::Cpu => "cpu".into(),
+                Device::Metal => "metal".into(),
             },
             vram_total: None,
             vram_free: None,
@@ -389,7 +416,7 @@ impl Engine for PerceptionEngine {
         let opts = Options {
             threshold: num(&req.params, "threshold").unwrap_or(0.5),
             max_detections: num(&req.params, "maxDetections").map_or(1, |m| m.max(1.0) as usize),
-            refine_iterations: num(&req.params, "refineIterations").map_or(2, |r| r.max(0.0) as usize),
+            refine_iterations: num(&req.params, "refineIterations").map_or_else(|| default_refine(&self.device, w, h), |r| r.max(0.0) as usize),
             soft: num(&req.params, "softEdge").map_or(0.0, |t| t.clamp(0.0, 64.0)),
             candidate: num(&req.params, "candidate").filter(|c| *c >= 0.0).map(|c| c as usize),
         };
@@ -526,8 +553,13 @@ pub fn from_args(args: &[String]) -> Option<PerceptionEngine> {
             _ => i += 1,
         }
     }
+    // `GN_PERCEPTION_CPU=1`: the CPU whatever the build has (to compare with the GPU).
+    if std::env::var("GN_PERCEPTION_CPU").is_ok_and(|v| v.trim() == "1") {
+        cpu = true;
+    }
     let models = models?;
-    if runtime.is_empty() {
+    // A Mac needs no runtime folder (no CUDA): candle runs on Metal or the CPU.
+    if runtime.is_empty() && !cfg!(target_os = "macos") {
         return None;
     }
     Some(PerceptionEngine::new(runtime, models, cpu).with_half(half))
@@ -593,7 +625,8 @@ mod tests {
 
     #[test]
     fn flags_make_an_engine_only_when_both_directories_are_given() {
-        assert!(from_args(&["--models".into(), "m".into()]).is_none());
+        // A Mac needs no runtime folder (Metal is part of the system).
+        assert_eq!(from_args(&["--models".into(), "m".into()]).is_some(), cfg!(target_os = "macos"));
         assert!(from_args(&["--runtime".into(), "a;b".into()]).is_none());
         let e = from_args(&[
             "--token".into(),
@@ -612,6 +645,13 @@ mod tests {
         assert!(!e.half);
         let half = from_args(&["--runtime".into(), "r".into(), "--models".into(), "m".into(), "--sam-precision".into(), "F16".into()]);
         assert!(half.is_some_and(|e| e.half));
+    }
+
+    #[test]
+    fn metal_refines_only_large_pictures() {
+        assert_eq!(default_refine(&Device::Metal, 512, 512), 0);
+        assert_eq!(default_refine(&Device::Metal, 4000, 3000), 1);
+        assert_eq!(default_refine(&Device::Cpu, 512, 512), 2);
     }
 
     #[test]

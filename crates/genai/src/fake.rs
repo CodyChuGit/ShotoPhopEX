@@ -20,6 +20,8 @@ pub struct Options {
     pub missing_files: Vec<String>,
     pub matte: Option<[f32; 4]>,
     pub enhanced_text: Option<String>,
+    /// A chat that shows a picture is refused, as a Mac's prompt writer refuses one.
+    pub text_only: bool,
     /// The card's free memory as the health reports it (none: a card it cannot tell about).
     pub vram_free: Option<u64>,
     /// Answer a `batch` request with one picture, as a worker without batches would.
@@ -61,6 +63,7 @@ impl Default for Options {
             missing_files: Vec::new(),
             matte: None,
             enhanced_text: None,
+            text_only: false,
             vram_free: None,
             no_batch: false,
             templates_only: false,
@@ -285,6 +288,9 @@ impl Engine for FakeEngine {
                 _ => "warm".into(),
             };
             return Ok((DoneInfo { images: Vec::new(), texts: vec![text], seed: req.seed, elapsed_ms: 0 }, Vec::new()));
+        }
+        if req.task == "text" && self.options.text_only && req.image.is_some() {
+            return Err(EngineError::new(ErrorKind::Unsupported, "the Mac's prompt writer reads text only (no picture)"));
         }
         if req.task == "text" {
             let prompt = req.prompt.rsplit("Instruction: ").next().unwrap_or(&req.prompt).rsplit("Idea: ").next().unwrap_or(&req.prompt);

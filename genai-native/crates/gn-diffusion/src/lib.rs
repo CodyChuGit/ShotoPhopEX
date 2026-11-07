@@ -124,6 +124,9 @@ pub const MOSS_GUIDANCE: f32 = 3.0;
 pub const TEMPLATE_MOSS_TURBO: &str = "moss-image/turbo";
 pub const MOSS_TURBO_LORA: &str = "kromoss-8-steps-dmd2-lora.safetensors";
 pub const MOSS_TURBO_STEPS: u32 = 8;
+/// akhaliq's MOSS-Image-SFT 4-step LoRA (Apache-2.0; stock Euler, 4 steps, CFG 1): MOSS Turbo
+/// on MLX when it is installed.
+pub const MOSS_SFT_4STEP_LORA: &str = "moss_image_sft_4step_v2.0.safetensors";
 /// MOSS Edit (chinoll/Moss-Image-Edit, a rank-64 LoRA on MOSS-Image-SFT; its code GPLv3, the
 /// weights unlicensed): the picture as reference tokens at t = 0. 30 steps at CFG 4 (its
 /// workflow's), and a turbo with Kromoss' 8-step LoRA stacked on it at CFG 1.
@@ -132,6 +135,18 @@ pub const TEMPLATE_MOSS_EDIT_TURBO: &str = "moss-image/edit-turbo";
 /// The adapter as its repo names it, in its own folder; or renamed to a file of its own.
 pub const MOSS_EDIT_LORAS: [&str; 2] = ["moss-image-edit/adapter_model.safetensors", "moss_image_edit_lora.safetensors"];
 pub const MOSS_EDIT_STEPS: u32 = 30;
+/// FLUX 3 Image Klein on MLX (macOS; mflux-community's pre-quantized files): text to image
+/// (the Mac's quality pick next to MOSS Turbo), an edit by
+/// instruction (and, with AusBoss's outpaint LoRA in the request, the editor's Expand), and a
+/// fill that paints only inside the mask.
+pub const TEMPLATE_KLEIN_IMAGE: &str = "flux3-klein/image";
+pub const TEMPLATE_KLEIN_EDIT: &str = "flux3-klein/edit";
+pub const TEMPLATE_KLEIN_FILL: &str = "flux3-klein/fill";
+/// Klein's folders under the model root, the first found wins (q4 first: on an M1 it is as fast
+/// as q8 and half the memory).
+pub const KLEIN_DIRS: [&str; 2] = ["mlx/flux-3-image-klein-q4", "mlx/flux-3-image-klein-q8"];
+/// The FLUX.2 VAE Klein decodes with (MOSS's file).
+pub const KLEIN_VAE: &str = "vae/flux2-vae_small.safetensors";
 pub const MOSS_EDIT_GUIDANCE: f32 = 4.0;
 
 /// The model families served, one resident at a time.
@@ -142,10 +157,15 @@ pub enum Family {
     Layered,
     Edit2511,
     Moss(MossVariant),
+    /// FLUX 3 Image Klein, MLX only.
+    Klein,
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 33] = [
+pub const TEMPLATES: [(&str, &str, Family); 36] = [
+    (TEMPLATE_KLEIN_IMAGE, "image", Family::Klein),
+    (TEMPLATE_KLEIN_EDIT, "edit", Family::Klein),
+    (TEMPLATE_KLEIN_FILL, "fill", Family::Klein),
     (TEMPLATE_MOSS_EDIT, "edit", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_EDIT_TURBO, "edit", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_TURBO, "image", Family::Moss(MossVariant::Kromoss)),
@@ -203,7 +223,15 @@ enum Resident {
     Krea2(Krea2Pipeline),
     Layered(LayeredPipeline),
     Edit2511(Edit2511Pipeline),
+    #[cfg_attr(feature = "mlx", allow(dead_code))]
     Moss(MossPipeline, MossVariant),
+    /// MOSS-Image on MLX (macOS): every variant through one pipeline, its DiT swapped per
+    /// request.
+    #[cfg(feature = "mlx")]
+    Mlx(Box<gn_mlx::pipeline::MossMlx>),
+    /// FLUX 3 Image Klein on MLX (macOS).
+    #[cfg(feature = "mlx")]
+    Klein(Box<gn_mlx::klein::KleinMlx>),
 }
 
 pub struct DiffusionEngine {
@@ -240,7 +268,7 @@ fn latent_space(f: Family) -> LatentSpace {
         Family::QwenImage21 => LatentSpace::QwenImage21,
         Family::Krea2 | Family::Edit2511 => LatentSpace::Wan21,
         Family::Layered => LatentSpace::Layered,
-        Family::Moss(_) => LatentSpace::Flux2,
+        Family::Moss(_) | Family::Klein => LatentSpace::Flux2,
     }
 }
 
@@ -382,6 +410,8 @@ impl DiffusionEngine {
             Resident::Layered(p) => p.device(),
             Resident::Edit2511(p) => p.device(),
             Resident::Moss(p, _) => p.device(),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) | Resident::Klein(_) => return,
             Resident::None => return,
         };
         if self.tiny.as_ref().is_some_and(|t| t.space() == space && t.on(dev)) {
@@ -421,6 +451,11 @@ impl DiffusionEngine {
         walk(&self.models_root.join(LORA_DIR), name, 2)
     }
 
+    /// Klein's folder under the model root ([`KLEIN_DIRS`], first found).
+    fn klein_dir(&self) -> Option<PathBuf> {
+        KLEIN_DIRS.iter().map(|d| self.models_root.join(d)).find(|d| d.join("transformer").is_dir() && d.join("text_encoder").is_dir())
+    }
+
     fn moss_edit_lora(&self) -> Option<PathBuf> {
         MOSS_EDIT_LORAS.iter().find_map(|n| self.template_lora(n))
     }
@@ -454,6 +489,22 @@ impl DiffusionEngine {
             None => None,
         };
         let system = req.params.get("system").and_then(Value::as_str).unwrap_or_default().to_string();
+        // A Mac answers on MOSS's own Qwen3.5-9B encoder, greedy, from the text alone (its
+        // vision tower is not ported): a request that shows a picture is refused.
+        #[cfg(feature = "mlx")]
+        {
+            if image.is_some() {
+                return Err(EngineError::new(ErrorKind::Unsupported, "the Mac's prompt writer reads text only (no picture)"));
+            }
+            self.ensure_loaded(Family::Moss(MossVariant::Sft), progress)?;
+            progress(0.5, "Thinking");
+            let Resident::Mlx(m) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no MLX pipeline")) };
+            let stop = || cancel.load(Ordering::SeqCst);
+            let reply = m.chat(&system, &req.prompt, ChatOptions::default().max_new, &stop).map_err(|e| EngineError::new(kind_of(&e), format!("{e:#}")))?;
+            progress(1.0, "Done");
+            return Ok((DoneInfo { images: Vec::new(), texts: vec![reply], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
+        }
+        #[cfg_attr(feature = "mlx", allow(unreachable_code))]
         let on_krea2 = chat_on_krea2(&req.params)?;
         self.ensure_loaded(if on_krea2 { Family::Krea2 } else { Family::QwenImage21 }, progress)?;
         progress(0.5, "Thinking");
@@ -483,6 +534,8 @@ impl DiffusionEngine {
             Resident::Layered(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Edit2511(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Moss(p, _) => qwen_image_rs::device::trim_pool(p.device()),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) | Resident::Klein(_) => {}
             Resident::None => {}
         }
     }
@@ -497,6 +550,8 @@ impl DiffusionEngine {
             Resident::Layered(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Edit2511(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Moss(p, _) => qwen_image_rs::device::bind_thread(p.device()),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) | Resident::Klein(_) => {}
             Resident::None => {}
         }
     }
@@ -513,6 +568,8 @@ impl DiffusionEngine {
             Resident::Krea2(p) => (p.device().clone(), p.dtype()),
             Resident::Edit2511(_) => (qwen_image_rs::edit2511_pipeline::cpu_device(), qwen_image_rs::edit2511_pipeline::adapter_dtype()),
             Resident::Moss(p, _) => (p.device().clone(), p.dtype()),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) | Resident::Klein(_) => return Err(EngineError::new(ErrorKind::Internal, "MLX applies its LoRAs itself")),
             Resident::Layered(_) | Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
         };
         let mut layers = Vec::with_capacity(asks.len());
@@ -579,6 +636,7 @@ impl DiffusionEngine {
             Family::Layered => self.layered_available(),
             Family::Edit2511 => self.edit2511_available(),
             Family::Moss(v) => moss::find_files(&self.models_root, v).is_some(),
+            Family::Klein => cfg!(feature = "mlx") && self.klein_dir().is_some() && self.models_root.join(KLEIN_VAE).is_file(),
         }
     }
 
@@ -591,6 +649,15 @@ impl DiffusionEngine {
         TEMPLATES
             .iter()
             .filter(|(t, _, f)| {
+                #[cfg(feature = "mlx")]
+                if t.starts_with("moss-image/") {
+                    return self.mlx_recipe(t).is_ok();
+                }
+                // A Mac's prompt writer is MOSS's own encoder ([`Self::chat`]).
+                #[cfg(feature = "mlx")]
+                if *f == Family::QwenImage21 && t.starts_with("enhance/") {
+                    return self.has_family(Family::Moss(MossVariant::Sft));
+                }
                 (if *f == Family::Edit2511 { edit2511 } else { self.has_family(*f) })
                     && (*f != Family::Edit2511
                         || edit2511_defaults(t).is_some_and(|(_, _, names)| names.iter().all(|n| self.models_root.join("loras").join(n).is_file())))
@@ -618,6 +685,10 @@ impl DiffusionEngine {
             | (Resident::Layered(_), Family::Layered)
             | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
             (Resident::Moss(_, held), Family::Moss(v)) if *held == v => return Ok(()),
+            #[cfg(feature = "mlx")]
+            (Resident::Mlx(_), Family::Moss(_)) => return Ok(()),
+            #[cfg(feature = "mlx")]
+            (Resident::Klein(_), Family::Klein) => return Ok(()),
             (Resident::None, _) => {}
             _ => {
                 progress(0.0, "Unloading the other models");
@@ -691,6 +762,20 @@ impl DiffusionEngine {
                 report(0.0, "Loading Qwen-Image-Layered");
                 Resident::Layered(LayeredPipeline::load(&self.models_root).map_err(err)?)
             }
+            #[cfg(feature = "mlx")]
+            Family::Klein => {
+                report(0.5, "Loading the VAE");
+                Resident::Klein(Box::new(gn_mlx::klein::KleinMlx::new(&self.models_root.join(KLEIN_VAE)).map_err(err)?))
+            }
+            #[cfg(not(feature = "mlx"))]
+            Family::Klein => return Err(EngineError::new(ErrorKind::Unsupported, "FLUX 3 Image Klein runs on a Mac (MLX) only")),
+            #[cfg(feature = "mlx")]
+            Family::Moss(_) => {
+                report(0.5, "Loading the VAE");
+                let cache = self.models_root.join(CACHE_DIR).join("mlx");
+                Resident::Mlx(Box::new(gn_mlx::pipeline::MossMlx::new(&self.models_root, &cache).map_err(err)?))
+            }
+            #[cfg(not(feature = "mlx"))]
             Family::Moss(v) => {
                 let Some(files) = moss::find_files(&self.models_root, v) else {
                     return Err(EngineError::new(
@@ -1083,12 +1168,17 @@ impl Engine for DiffusionEngine {
             Resident::Layered(p) => (vec!["qwen-image-layered".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Edit2511(p) => (vec!["qwen-image-edit-2511".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Moss(p, _) => (vec!["moss-image".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) => (vec!["moss-image".to_string()], false, None),
+            #[cfg(feature = "mlx")]
+            Resident::Klein(_) => (vec!["flux3-klein".to_string()], false, None),
         };
         // The card's name where the driver gave one; the free memory only while a pipeline
         // holds the context (asking without one would create it).
         let device = match (&self.gpu, cuda) {
             (Some(g), true) => g.name.clone(),
             (None, true) => "cuda:0".into(),
+            (_, false) if cfg!(feature = "mlx") => "Apple GPU (MLX)".into(),
             (_, false) => "cpu".into(),
         };
         let detail = self.refused.clone().or_else(|| self.last_error.clone()).unwrap_or_default();
@@ -1252,6 +1342,8 @@ impl Engine for DiffusionEngine {
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => MOSS_TURBO_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
             Family::Moss(_) => MOSS_STEPS,
+            // Klein's own (its checkpoint's 16).
+            Family::Klein => 0,
         };
         let default_guidance = match family {
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => 1.0,
@@ -1269,6 +1361,14 @@ impl Engine for DiffusionEngine {
                 None if references.is_empty() => (side(req.width), side(req.height)),
                 None => (0, 0),
             };
+            #[cfg(feature = "mlx")]
+            if matches!(self.resident, Resident::Mlx(_)) {
+                return self.run_mlx(req, references, (width, height), progress, cancel);
+            }
+            #[cfg(feature = "mlx")]
+            if matches!(self.resident, Resident::Klein(_)) {
+                return self.run_klein(req, references, (width, height), task, progress, cancel);
+            }
             // A Krea 2 edit runs with its edit LoRA first (unless the request names it) and the
             // card's `ref_boost` unless the request gives one.
             let krea2_edit = req.model == TEMPLATE_KREA2_EDIT;
@@ -1343,6 +1443,8 @@ impl Engine for DiffusionEngine {
                 }
                 (Resident::Krea2(p), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                #[cfg(feature = "mlx")]
+                (Resident::Mlx(_) | Resident::Klein(_), _) => Err(EngineError::new(ErrorKind::Internal, "MLX runs before the LoRA stack")),
                 (Resident::Edit2511(_) | Resident::Layered(_) | Resident::None, _) => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
             };
             log_previews(mode, &viewer);
@@ -1387,6 +1489,184 @@ impl Engine for DiffusionEngine {
             "snapshot": self.snapshot_dir().to_string_lossy(),
             "krea2": self.krea2_dir().to_string_lossy(),
         })
+    }
+}
+
+/// The steps the CUDA route's MOSS templates default to (the editor sends them as given).
+#[cfg(feature = "mlx")]
+fn cuda_default_steps(template: &str) -> Option<u32> {
+    match template {
+        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(MOSS_TURBO_STEPS),
+        TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_STEPS),
+        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
+        _ => None,
+    }
+}
+
+/// The CFG the CUDA route's MOSS templates default to.
+#[cfg(feature = "mlx")]
+fn cuda_default_guidance(template: &str) -> Option<f32> {
+    match template {
+        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(1.0),
+        TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_GUIDANCE),
+        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE => Some(MOSS_GUIDANCE),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "mlx")]
+impl DiffusionEngine {
+    /// A Klein request: an image at `size` from the prompt alone, an edit with its pictures (the
+    /// outpaint LoRA rides in the request's LoRAs for an expand), or a fill whose second picture
+    /// is the mask. With pictures the size follows the first one (at most 768², as Klein sizes an
+    /// edit) and `size` is (0, 0).
+    fn run_klein(
+        &mut self,
+        req: &RunRequest,
+        mut references: Vec<RefImage>,
+        size: (usize, usize),
+        task: &str,
+        progress: &mut dyn FnMut(f32, &str),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<Picture>, EngineError> {
+        let dir = self.klein_dir().ok_or_else(|| {
+            EngineError::new(ErrorKind::ModelMissing, format!("FLUX 3 Image Klein is not in {} ({})", self.models_root.display(), KLEIN_DIRS.join(" or ")))
+        })?;
+        let mut loras = Vec::new();
+        for (file, strength) in lora_asks(&req.params)? {
+            let path = self.lora_path(&file)?;
+            if !path.is_file() {
+                return Err(EngineError::new(
+                    ErrorKind::ModelMissing,
+                    format!("LoRA {file} is not installed (looked in {})", self.models_root.join(LORA_DIR).display()),
+                ));
+            }
+            loras.push(gn_mlx::pipeline::LoraSpec { path, strength });
+        }
+        let pic = |r: RefImage| gn_mlx::pipeline::RefPicture { width: r.width, height: r.height, rgba: r.rgba };
+        let mask = if task == "fill" {
+            if references.len() != 2 {
+                return Err(EngineError::new(ErrorKind::BadRequest, "a fill takes the picture and its mask"));
+            }
+            references.pop().map(pic)
+        } else {
+            None
+        };
+        let ask = gn_mlx::pipeline::Request {
+            prompt: req.prompt.clone(),
+            negative: req.negative.clone(),
+            width: size.0,
+            height: size.1,
+            steps: req.steps as usize,
+            guidance: if req.guidance > 0.0 { req.guidance } else { 1.0 },
+            seed: req.seed,
+            references: references.into_iter().map(pic).collect(),
+            mask,
+        };
+        let Resident::Klein(k) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no Klein pipeline")) };
+        let stop = || cancel.load(Ordering::SeqCst);
+        let mut step = |i: usize, n: usize| progress(0.3 + 0.65 * i as f32 / n.max(1) as f32, if i == 0 { "Loading the models" } else { "Sampling" });
+        let p = k.generate(&dir, &loras, &ask, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
+        let t = p.timings;
+        eprintln!(
+            "gn-diffusion: {} on MLX ({} steps, {}x{}, {} LoRAs): load {:.1} s, encode {:.1} s, steps {:.1} s, decode {:.1} s",
+            req.model,
+            ask.steps,
+            p.width,
+            p.height,
+            loras.len(),
+            t.load_s,
+            t.encode_s,
+            t.steps_s,
+            t.decode_s
+        );
+        let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+        Ok(vec![Picture { width: n(p.width), height: n(p.height), rgba: p.rgba, timings: Default::default() }])
+    }
+
+    /// How MLX serves a MOSS template on this model root: the variant, the template's LoRAs
+    /// (full paths, strength 1), its steps and CFG. Measured on a 16 GB M1 Air (gn-mlx,
+    /// 2026-11-07): MOSS Turbo is MOSS-Image-SFT with akhaliq's Euler-native 4-step LoRA (1024²
+    /// in 144 s against Kromoss + DMD2's 311 s), Kromoss + DMD2 when that LoRA is missing; MOSS
+    /// Edit Turbo is the edit LoRA at 8 steps and CFG 4, because every CFG 1 stack (with the
+    /// Kromoss DMD2, lodestones' SFT DMD or the 4-step LoRA) leaves the picture unedited.
+    #[cfg(feature = "mlx")]
+    fn mlx_recipe(&self, template: &str) -> Result<(MossVariant, Vec<PathBuf>, u32, f32), EngineError> {
+        let has = |v: MossVariant| moss::find_files(&self.models_root, v).is_some();
+        let missing = |what: String| EngineError::new(ErrorKind::ModelMissing, format!("{what} is not in {}", self.models_root.display()));
+        let edit = || self.moss_edit_lora().ok_or_else(|| missing("the MOSS Edit LoRA (loras/moss-image-edit/adapter_model.safetensors)".into()));
+        let sft = || {
+            if has(MossVariant::Sft) {
+                Ok(MossVariant::Sft)
+            } else {
+                Err(missing("MOSS-Image-SFT (diffusion_models/moss_image_sft_int8_convrot.safetensors)".into()))
+            }
+        };
+        match template {
+            TEMPLATE_MOSS_TURBO => {
+                match (has(MossVariant::Sft), self.template_lora(MOSS_SFT_4STEP_LORA), has(MossVariant::Kromoss), self.template_lora(MOSS_TURBO_LORA)) {
+                    (true, Some(four), _, _) => Ok((MossVariant::Sft, vec![four], 4, 1.0)),
+                    (_, _, true, Some(dmd2)) => Ok((MossVariant::Kromoss, vec![dmd2], MOSS_TURBO_STEPS, 1.0)),
+                    _ => Err(missing(format!("MOSS Turbo (MOSS-Image-SFT with loras/{MOSS_SFT_4STEP_LORA}, or Kromoss with loras/{MOSS_TURBO_LORA})"))),
+                }
+            }
+            TEMPLATE_MOSS_EDIT_TURBO => Ok((sft()?, vec![edit()?], 8, MOSS_EDIT_GUIDANCE)),
+            TEMPLATE_MOSS_EDIT => Ok((sft()?, vec![edit()?], MOSS_EDIT_STEPS, MOSS_EDIT_GUIDANCE)),
+            TEMPLATE_MOSS => Ok((sft()?, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
+            TEMPLATE_MOSS_BASE if has(MossVariant::Base) => Ok((MossVariant::Base, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
+            t => Err(EngineError::new(ErrorKind::ModelMissing, format!("{t} is not served on MLX"))),
+        }
+    }
+
+    /// A MOSS request on MLX: the template's LoRAs and then the request's, applied unmerged to
+    /// the DiT the pipeline holds; no previews.
+    #[cfg(feature = "mlx")]
+    fn run_mlx(
+        &mut self,
+        req: &RunRequest,
+        references: Vec<RefImage>,
+        (width, height): (usize, usize),
+        progress: &mut dyn FnMut(f32, &str),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<Picture>, EngineError> {
+        let (variant, template_loras, steps, guidance) = self.mlx_recipe(&req.model)?;
+        let mut loras: Vec<gn_mlx::pipeline::LoraSpec> = template_loras.into_iter().map(|path| gn_mlx::pipeline::LoraSpec { path, strength: 1.0 }).collect();
+        for (file, strength) in lora_asks(&req.params)? {
+            let path = self.lora_path(&file)?;
+            if !path.is_file() {
+                return Err(EngineError::new(
+                    ErrorKind::ModelMissing,
+                    format!("LoRA {file} is not installed (looked in {})", self.models_root.join(LORA_DIR).display()),
+                ));
+            }
+            if !loras.iter().any(|l| l.path == path) {
+                loras.push(gn_mlx::pipeline::LoraSpec { path, strength });
+            }
+        }
+        let ask = gn_mlx::pipeline::Request {
+            prompt: req.prompt.clone(),
+            negative: req.negative.clone(),
+            width,
+            height,
+            // The editor sends the template's CUDA defaults (MOSS Turbo's 8 steps, Edit Turbo's
+            // 8 steps at CFG 1): those mean "the template's", which on MLX is the recipe's.
+            steps: if req.steps == 0 || cuda_default_steps(&req.model) == Some(req.steps) { steps } else { req.steps } as usize,
+            guidance: if req.guidance <= 0.0 || cuda_default_guidance(&req.model) == Some(req.guidance) { guidance } else { req.guidance },
+            seed: req.seed,
+            references: references.into_iter().map(|r| gn_mlx::pipeline::RefPicture { width: r.width, height: r.height, rgba: r.rgba }).collect(),
+            mask: None,
+        };
+        let Resident::Mlx(m) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no MLX pipeline")) };
+        let stop = || cancel.load(Ordering::SeqCst);
+        let mut step = |i: usize, n: usize| progress(0.3 + 0.65 * i as f32 / n.max(1) as f32, if i == 0 { "Loading the models" } else { "Sampling" });
+        let p = m.generate(variant, &loras, &ask, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
+        let t = p.timings;
+        eprintln!(
+            "gn-diffusion: {} on MLX ({variant:?}, {} steps, CFG {}, {}x{}): encode {:.1} s, DiT load + references {:.1} s, steps {:.1} s, decode {:.1} s",
+            req.model, ask.steps, ask.guidance, p.width, p.height, t.encode_s, t.load_s, t.steps_s, t.decode_s
+        );
+        let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+        Ok(vec![Picture { width: n(p.width), height: n(p.height), rgba: p.rgba, timings: Default::default() }])
     }
 }
 

@@ -164,6 +164,15 @@
    "url": "https://huggingface.co/lodestones/Kromoss/resolve/main/8-steps-dmd2-lora.safetensors"
   },
   {
+   "id": "moss-sft-4step",
+   "name": "MOSS Turbo 4-step (Mac)",
+   "folder": "loras",
+   "file": "moss_image_sft_4step_v2.0.safetensors",
+   "bytes": 1189176752,
+   "sha256": "154c7f1455c3bf9925945c2f1ea2e4f09d0d0c67256081384a094b2b585f913f",
+   "url": "https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps/resolve/main/moss_image_sft_4step_v2.0.safetensors"
+  },
+  {
    "id": "moss-edit",
    "name": "MOSS Edit adapter",
    "folder": "loras/moss-image-edit",
@@ -306,6 +315,116 @@
    "bytes": 8018,
    "sha256": "49292bd4a58a43382bf01311bc3ed7a151a7f16fe07d155e900ea1af281555db",
    "url": "https://raw.githubusercontent.com/comfyanonymous/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy/text_encoders/qwen25_tokenizer/tokenizer_config.json"
+  },
+  {
+   "id": "flux3-klein-q4-transformer-0",
+   "name": "FLUX 3 Image Klein 4-bit (image model, part 1 of 2)",
+   "folder": "mlx/flux-3-image-klein-q4/transformer",
+   "file": "0.safetensors",
+   "bytes": 2144245413,
+   "sha256": "2960aeb9ae939b9a61e0e500586e649e60b79688ff94f5f8d3387a9dc274bbdf",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q4/resolve/79c0034de040c460e9685bf0127f40af042a2abe/transformer/0.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q4-transformer-1",
+   "name": "FLUX 3 Image Klein 4-bit (image model, part 2 of 2)",
+   "folder": "mlx/flux-3-image-klein-q4/transformer",
+   "file": "1.safetensors",
+   "bytes": 977011458,
+   "sha256": "82c98e6e30cd3acdfb7d975358db76206a9cee8f3de22ff725f9668bf8833880",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q4/resolve/79c0034de040c460e9685bf0127f40af042a2abe/transformer/1.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q4-text-encoder-0",
+   "name": "FLUX 3 Image Klein 4-bit (text encoder)",
+   "folder": "mlx/flux-3-image-klein-q4/text_encoder",
+   "file": "0.safetensors",
+   "bytes": 2035881396,
+   "sha256": "d6621c1001e0d81a0bb5a9405610fe78d3aff1658ded8a851ef2d4906c300e84",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q4/resolve/79c0034de040c460e9685bf0127f40af042a2abe/text_encoder/0.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q4-text-encoder-tokenizer",
+   "name": "FLUX 3 Image Klein 4-bit (tokenizer)",
+   "folder": "mlx/flux-3-image-klein-q4/text_encoder",
+   "file": "tokenizer.json",
+   "bytes": 11422650,
+   "sha256": "be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q4/resolve/79c0034de040c460e9685bf0127f40af042a2abe/text_encoder/tokenizer.json",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "klein-outpaint",
+   "name": "Klein Outpaint LoRA (Mac Expand)",
+   "folder": "loras",
+   "file": "flux-3-image-klein-outpaint.safetensors",
+   "bytes": 160697104,
+   "sha256": "25385da7f6bfac0c18513e52729dc29f96cda543f0d086df9e5dda3842dede83",
+   "url": "https://huggingface.co/ausboss/FLUX-3-Image-Klein-Outpaint-LoRA/resolve/8c3023547b760372d75918cec32a209d4691db40/flux-3-image-klein-outpaint.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q8-transformer-0",
+   "name": "FLUX 3 Image Klein 8-bit (image model, part 1 of 3)",
+   "folder": "mlx/flux-3-image-klein-q8/transformer",
+   "file": "0.safetensors",
+   "bytes": 2134962964,
+   "sha256": "35978e837374f61578ff7ab5cbb7084e24f2ff2fb03b5f2c11e007f1d34a7c4a",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q8/resolve/7e46237dea3999a9792959f5e000aeb1b9f9e7df/transformer/0.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q8-transformer-1",
+   "name": "FLUX 3 Image Klein 8-bit (image model, part 2 of 3)",
+   "folder": "mlx/flux-3-image-klein-q8/transformer",
+   "file": "1.safetensors",
+   "bytes": 2145827275,
+   "sha256": "c163baf4a4ab7ea8920a666557c8e711eb5077b8e5120a0c44af08ace7e4f1ee",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q8/resolve/7e46237dea3999a9792959f5e000aeb1b9f9e7df/transformer/1.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q8-transformer-2",
+   "name": "FLUX 3 Image Klein 8-bit (image model, part 3 of 3)",
+   "folder": "mlx/flux-3-image-klein-q8/transformer",
+   "file": "2.safetensors",
+   "bytes": 1614802516,
+   "sha256": "70c523328bec015552c712e803ff4982b712bf2876c368151b7dbde0eaa5026c",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q8/resolve/7e46237dea3999a9792959f5e000aeb1b9f9e7df/transformer/2.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q8-text-encoder-0",
+   "name": "FLUX 3 Image Klein 8-bit (text encoder, part 1 of 2)",
+   "folder": "mlx/flux-3-image-klein-q8/text_encoder",
+   "file": "0.safetensors",
+   "bytes": 2145931485,
+   "sha256": "600652856574e9f347866a481ab03ecf8a99086e7a84d0fcea5c1be339ea9032",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q8/resolve/7e46237dea3999a9792959f5e000aeb1b9f9e7df/text_encoder/0.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q8-text-encoder-1",
+   "name": "FLUX 3 Image Klein 8-bit (text encoder, part 2 of 2)",
+   "folder": "mlx/flux-3-image-klein-q8/text_encoder",
+   "file": "1.safetensors",
+   "bytes": 1699235116,
+   "sha256": "04fd5c383b8b41c3e0882c93d0def127370aa985847f24678945defdd6723707",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q8/resolve/7e46237dea3999a9792959f5e000aeb1b9f9e7df/text_encoder/1.safetensors",
+   "license": "flux-kommunity"
+  },
+  {
+   "id": "flux3-klein-q8-text-encoder-tokenizer",
+   "name": "FLUX 3 Image Klein 8-bit (tokenizer)",
+   "folder": "mlx/flux-3-image-klein-q8/text_encoder",
+   "file": "tokenizer.json",
+   "bytes": 11422650,
+   "sha256": "be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506",
+   "url": "https://huggingface.co/mflux-community/flux-3-image-klein-mflux-q8/resolve/7e46237dea3999a9792959f5e000aeb1b9f9e7df/text_encoder/tokenizer.json",
+   "license": "flux-kommunity"
   }
  ],
  "runtime": [
@@ -377,8 +496,7 @@
    "description": "MOSS Turbo for images and MOSS Edit Turbo for edits, with SAM 3.1 and ViTMatte for selections.",
    "profiles": [
     "16gb",
-    "12gb",
-    "mac16"
+    "12gb"
    ],
    "files": [
     "kromoss-dit",
@@ -393,6 +511,32 @@
     "sam31-tokenizer",
     "vitmatte",
     "vitmatte-config"
+   ]
+  },
+  {
+   "id": "mac",
+   "name": "Mac pack",
+   "description": "MOSS Turbo for images and MOSS Edit for edits, FLUX 3 Image Klein for Fill and Expand, all on Apple's MLX; SAM 3.1 and ViTMatte for selections.",
+   "profiles": [
+    "mac16"
+   ],
+   "files": [
+    "moss-sft-dit",
+    "moss-sft-4step",
+    "qwen35-9b",
+    "qwen35-tokenizer",
+    "flux2-vae",
+    "moss-edit",
+    "moss-edit-config",
+    "sam31",
+    "sam31-tokenizer",
+    "vitmatte",
+    "vitmatte-config",
+    "flux3-klein-q4-transformer-0",
+    "flux3-klein-q4-transformer-1",
+    "flux3-klein-q4-text-encoder-0",
+    "flux3-klein-q4-text-encoder-tokenizer",
+    "klein-outpaint"
    ]
   },
   {
@@ -480,6 +624,38 @@
    "files": [
     "krea2-edit",
     "krea2-style"
+   ]
+  },
+  {
+   "id": "flux3-klein-q4",
+   "name": "FLUX 3 Image Klein, 4-bit (Mac)",
+   "description": "Text-to-image and editing with up to 10 reference images, in MLX 4-bit (mflux's conversion). Smaller and quicker to download. Weights under the FLUX Kommunity License.",
+   "os": [
+    "macos"
+   ],
+   "files": [
+    "flux3-klein-q4-transformer-0",
+    "flux3-klein-q4-transformer-1",
+    "flux3-klein-q4-text-encoder-0",
+    "flux3-klein-q4-text-encoder-tokenizer",
+    "flux2-vae"
+   ]
+  },
+  {
+   "id": "flux3-klein-q8",
+   "name": "FLUX 3 Image Klein, 8-bit (Mac)",
+   "description": "Text-to-image and editing with up to 10 reference images, in MLX 8-bit (mflux's conversion). Closer to the original model; uses more memory. Weights under the FLUX Kommunity License.",
+   "os": [
+    "macos"
+   ],
+   "files": [
+    "flux3-klein-q8-transformer-0",
+    "flux3-klein-q8-transformer-1",
+    "flux3-klein-q8-transformer-2",
+    "flux3-klein-q8-text-encoder-0",
+    "flux3-klein-q8-text-encoder-1",
+    "flux3-klein-q8-text-encoder-tokenizer",
+    "flux2-vae"
    ]
   }
  ]

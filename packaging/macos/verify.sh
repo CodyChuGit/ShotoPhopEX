@@ -6,7 +6,7 @@
 #                                                    Developer ID signed with the hardened runtime,
 #                                                    timestamped and notarized
 #
-# Usage: packaging/macos/verify.sh [--arch universal|aarch64|x86_64]
+# Usage: packaging/macos/verify.sh [--arch aarch64]  (Apple Silicon only, as package.sh)
 #
 # With a real signing identity and notarization credentials in the environment (the same
 # MACOS_SIGN_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID that package.sh uses), every
@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 
-ARCH=universal
+ARCH=aarch64
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;

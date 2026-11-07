@@ -1,0 +1,29 @@
+[package]
+name = "gn-mlx"
+description = "MOSS-Image on Apple's MLX (macOS on Apple Silicon): qir's MOSS port re-run on the GPU in f16 and 4-bit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# Everything is macOS-only: elsewhere the crate is an empty library, so the workspace still
+# builds on Windows and Linux.
+[target.'cfg(target_os = "macos")'.dependencies]
+mlx-rs = "0.33"
+# qir reads the ComfyUI files (ConvRot INT8 dequantized on the CPU), the LoRA files, the
+# schedule and torch's noise; it is also the CPU reference the checks compare against.
+qwen-image-rs = { path = "../qir" }
+candle-core = "0.11"
+anyhow = "1"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+# MOSS Edit's pictures are resized as qir resizes them (Lanczos); the examples write PNGs.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# qir's VAE reference reads through a VarBuilder.
+candle-nn = "0.11"

@@ -1179,7 +1179,8 @@ impl Default for Integrations {
             default_image_template: "auto".into(),
             memory_profile: "auto".into(),
             detected_memory_profile: String::new(),
-            generative_timeout_secs: 600,
+            // A Mac's GPU (MLX) is several times slower than the cards the Windows build runs on.
+            generative_timeout_secs: if cfg!(target_os = "macos") { 1800 } else { 600 },
             allow_research_models: true,
             show_generative_bar: "auto".into(),
             enter_to_generate: false,
@@ -1218,8 +1219,9 @@ impl Integrations {
     }
 
     /// Whether the native worker can serve models: runtime folders and a model root.
+    /// A Mac runs its models on MLX and needs no runtime folder (no CUDA there).
     pub fn native_configured(&self) -> bool {
-        !self.runtime_folders().is_empty() && !self.models_root().is_empty()
+        (cfg!(target_os = "macos") || !self.runtime_folders().is_empty()) && !self.models_root().is_empty()
     }
 }
 

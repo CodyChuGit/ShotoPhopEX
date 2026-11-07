@@ -103,6 +103,27 @@ sha256sum -c SHA256SUMS --ignore-missing          # Linux, in the folder with bo
 | **OS** | Windows 10 or 11, x64, or Linux x86_64 (glibc 2.39 or newer, e.g. Ubuntu 24.04) |
 | **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
 
+### macOS (`.dmg`, Apple Silicon)
+
+`photocraft-<version>-macos-aarch64.dmg` runs on an Apple Silicon Mac (M1 or newer) with
+macOS 14 or newer; 16 GB of memory runs MOSS (Turbo images and Edit) and FLUX 3 Image Klein
+(Fill, Remove, Expand, Split into Layers), the models running on the Mac's GPU through MLX. There is no Intel build.
+
+1. Open the `.dmg` and drag **ShotoPhopEX** onto **Applications**.
+2. Open it from Applications. The app is not notarized, so the first time macOS says
+   **"ShotoPhopEX" Not Opened: Apple could not verify "ShotoPhopEX" is free of malware that may harm
+   your Mac or compromise your privacy.** Click **Done** (not Move to Trash).
+3. Open **System Settings › Privacy & Security**, scroll to **Security**, where it says
+   **"ShotoPhopEX" was blocked to protect your Mac.**, and click **Open Anyway**. Confirm with your
+   password or Touch ID, then click **Open**. macOS asks this only once.
+4. If macOS instead says the app **"is damaged and can't be opened"**, clear the download flag
+   in Terminal, then open it again:
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/ShotoPhopEX.app
+   ```
+5. Get AI Models puts the models in `Documents/ShotoPhopEX/models`, so on first use macOS asks
+   **"ShotoPhopEX" would like to access files in your Documents folder.** Click **Allow**.
+
 ### Windows installer (`.msi`)
 
 1. Download `photocraft-0.1.0-windows-x64.msi` and open it.

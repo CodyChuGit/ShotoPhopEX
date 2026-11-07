@@ -1,0 +1,45 @@
+{
+  "meta": {
+    "id": "flux3-klein/edit",
+    "name": "Generative Edit (FLUX 3 Image Klein, Mac)",
+    "family": "flux3-klein",
+    "task": "edit",
+    "license": "community",
+    "licenseNote": "FLUX 3 Image Klein (Black Forest Labs) under its own flux-3-image-klein license; the MLX files are mflux-community's conversion (same licence). Bring your own files; Get AI Models offers them on a Mac.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 16,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "mlx/flux-3-image-klein-q4/transformer",
+        "default": "0.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "mlx/flux-3-image-klein-q4/text_encoder",
+        "default": "0.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "flux2-vae_small.safetensors"
+      }
+    ],
+    "notes": "Runs natively on a Mac (genai-native gn-diffusion flux3-klein/edit on gn-mlx, MLX): Klein's distilled 16-step flow map, the picture as its reference at about 768² (the output takes its aspect), LoRAs unmerged. With AusBoss's FLUX-3-Image-Klein-Outpaint-LoRA (loras/flux-3-image-klein-outpaint.safetensors) generate.expand sends the grey (#808080) padded canvas here with the LoRA at 1.5 and its instruction prompt. q4 on a 16 GB M1 Air at 512²: about 190 s.",
+    "creator": "Black Forest Labs · mflux-community",
+    "description": "Edits by instruction on the Mac's GPU: cleaner than MOSS Edit, slower",
+    "badges": [],
+    "estimatedSeconds": {
+      "base": 20,
+      "perMegapixel": 650
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
+  }
+}
