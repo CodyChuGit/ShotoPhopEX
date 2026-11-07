@@ -16,7 +16,7 @@ use mlx_rs::{Array, Dtype, fast, ops};
 
 use super::lora_names;
 use crate::convert::Lora;
-use crate::nn::{Linear, Params, cols, dim, get, rows, shape};
+use crate::nn::{Linear, Params, cols, dim, get, rows, scalar, shape};
 
 pub const HIDDEN: usize = 3072;
 pub const HEADS: usize = 24;
@@ -38,21 +38,19 @@ const FF_HEADROOM: f32 = 8.0;
 struct Adapters(Vec<(Array, Array, f32)>);
 
 impl Adapters {
+    /// `y + Σ (x Aᵀ) Bᵀ / k`, in f16: B's power-of-two scale keeps the product well inside f16,
+    /// and the delta at its true scale is added in `y`'s dtype.
     fn apply(&self, x: &Array, y: Array) -> Result<Array> {
         if self.0.is_empty() {
             return Ok(y);
         }
         let x16 = x.as_dtype(Dtype::Float16)?;
-        let mut d: Option<Array> = None;
+        let mut y = y;
         for (a, b, inv) in &self.0 {
-            let t = x16.matmul(a.t())?.matmul(b.t())?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(*inv))?;
-            d = Some(match d {
-                Some(s) => s.add(&t)?,
-                None => t,
-            });
+            let d = x16.matmul(a.t())?.matmul(b.t())?.multiply(scalar(*inv, Dtype::Float16)?)?;
+            y = y.add(d.as_dtype(y.dtype())?)?;
         }
-        let Some(d) = d else { return Ok(y) };
-        crate::profile::stage("klein lora", || Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?))
+        crate::profile::stage("klein lora", || Ok(y))
     }
 }
 

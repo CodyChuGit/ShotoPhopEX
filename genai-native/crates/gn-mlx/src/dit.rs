@@ -201,29 +201,49 @@ struct Block {
     adapters: [Adapters; 4],
 }
 
-/// LoRA pairs on one linear, `(A (r, in), B·scale·k (out, r), 1/k)` f16 ([`Lora::pair`]):
-/// `y += (x Aᵀ) Bᵀ / k`, the sum in f32.
+/// The LoRAs on one linear, unmerged. Each [`Adapter`] is one file's pair(s) on it.
 #[derive(Default)]
-struct Adapters(Vec<(Array, Array, f32)>);
+struct Adapters(Vec<Adapter>);
+
+/// One LoRA's pairs on a linear ([`Lora::pair`]): their `A`s stacked `(Σr, in)` f16, and for each
+/// pair in output order its rank, `B·k (out_j, r)` f16 and `1/k`. One pair covers the whole
+/// output; a file's separate q, k and v pairs on the stacked qkv cover its thirds.
+struct Adapter {
+    a: Array,
+    parts: Vec<(i32, Array, f32)>,
+}
+
+impl Adapter {
+    fn new(pairs: Vec<(Array, Array, f32)>) -> Result<Self> {
+        let a = ops::concatenate(&pairs.iter().map(|p| &p.0).collect::<Vec<_>>(), 0)?;
+        a.eval()?;
+        Ok(Self { a, parts: pairs.into_iter().map(|(a, b, inv)| (a.shape()[0], b, inv)).collect() })
+    }
+}
 
 impl Adapters {
+    /// `y + Σ (x Aᵀ) Bᵀ / k`, in f16: B's power-of-two scale keeps the product well inside f16,
+    /// and the delta at its true scale is added in `y`'s dtype (the rounding the f32 sum then
+    /// cast back to `y` had anyway).
     fn apply(&self, x: &Array, y: Array) -> Result<Array> {
         if self.0.is_empty() {
             return Ok(y);
         }
-        // In f16 (Metal accumulates in f32; B's scale keeps the product well inside f16), added
-        // to the output in f32.
         let x16 = x.as_dtype(Dtype::Float16)?;
-        let mut d: Option<Array> = None;
-        for (a, b, inv) in &self.0 {
-            let t = x16.matmul(a.t())?.matmul(b.t())?.as_dtype(Dtype::Float32)?.multiply(Array::from_f32(*inv))?;
-            d = Some(match d {
-                Some(s) => s.add(&t)?,
-                None => t,
-            });
+        let mut y = y;
+        for ad in &self.0 {
+            // One matmul for every pair's A, then each B into its own columns.
+            let t = x16.matmul(ad.a.t())?;
+            let mut off = 0;
+            let mut parts = Vec::with_capacity(ad.parts.len());
+            for (r, b, inv) in &ad.parts {
+                parts.push(cols(&t, off as usize, (off + r) as usize)?.matmul(b.t())?.multiply(scalar(*inv, Dtype::Float16)?)?);
+                off += r;
+            }
+            let d = if parts.len() == 1 { parts.remove(0) } else { ops::concatenate(&parts, 1)? };
+            y = y.add(d.as_dtype(y.dtype())?)?;
         }
-        let Some(d) = d else { return Ok(y) };
-        crate::profile::stage("lora", || Ok(y.as_dtype(Dtype::Float32)?.add(&d)?.as_dtype(y.dtype())?))
+        crate::profile::stage("lora", || Ok(y))
     }
 }
 
@@ -335,31 +355,35 @@ impl MossDit {
             let mut adapters: [Adapters; 4] = Default::default();
             for l in loras {
                 if let Some(pair) = l.pair(&format!("{p}.proj.qkv"))? {
-                    adapters[0].0.push(pair);
+                    adapters[0].0.push(Adapter::new(vec![pair])?);
                     matched += 1;
                 }
-                // q, k and v each as its own pair on the stacked qkv: B padded with zero rows to
-                // its third of the output (each keeps its own scale).
-                for (j, n) in ["q", "k", "v"].iter().enumerate() {
-                    let Some((a, b, inv)) = l.pair(&format!("{p}.proj.{n}"))? else { continue };
-                    matched += 1;
-                    let r = b.shape()[1];
-                    let zeros = |rows: usize| -> Result<Array> { Ok(Array::zeros::<f32>(&[dim(rows)?, r])?.as_dtype(Dtype::Float16)?) };
-                    let mut parts = Vec::with_capacity(3);
-                    if j > 0 {
-                        parts.push(zeros(j * self.cfg.dim)?);
-                    }
-                    parts.push(b);
-                    if j < 2 {
-                        parts.push(zeros((2 - j) * self.cfg.dim)?);
-                    }
-                    let b = ops::concatenate(&parts, 0)?;
-                    b.eval()?;
-                    adapters[0].0.push((a, b, inv));
+                // q, k and v each as its own pair on the stacked qkv, into its third (a missing
+                // one a rank-1 zero pair).
+                let qkv: Vec<Option<(Array, Array, f32)>> = ["q", "k", "v"].iter().map(|n| l.pair(&format!("{p}.proj.{n}"))).collect::<Result<_>>()?;
+                if qkv.iter().any(Option::is_some) {
+                    let cols_in = self.cfg.dim;
+                    let pairs = qkv
+                        .into_iter()
+                        .map(|pair| -> Result<(Array, Array, f32)> {
+                            Ok(match pair {
+                                Some(pair) => {
+                                    matched += 1;
+                                    pair
+                                }
+                                None => (
+                                    Array::zeros::<f32>(&[1, dim(cols_in)?])?.as_dtype(Dtype::Float16)?,
+                                    Array::zeros::<f32>(&[dim(self.cfg.dim)?, 1])?.as_dtype(Dtype::Float16)?,
+                                    1.0,
+                                ),
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    adapters[0].0.push(Adapter::new(pairs)?);
                 }
                 for (slot, n) in [(1, "o"), (2, "ffn_up_gate"), (3, "ffn_down")] {
                     if let Some(pair) = l.pair(&format!("{p}.proj.{n}"))? {
-                        adapters[slot].0.push(pair);
+                        adapters[slot].0.push(Adapter::new(vec![pair])?);
                         matched += 1;
                     }
                 }
