@@ -38,6 +38,8 @@ pub const MAX_REFERENCES: usize = 10;
 /// An edit's output when the request names no size: the first picture's aspect at about this
 /// many pixels, never larger than the picture.
 const EDIT_PIXELS: usize = 768 * 768;
+/// A fill's reference side as a share of the output's.
+const FILL_REFERENCE_SHARE: f32 = 0.5;
 /// Each further reference at most this many pixels (the reference's multi-reference cap).
 const REFERENCE_PIXELS: usize = 1024 * 1024;
 
@@ -301,7 +303,13 @@ impl KleinMlx {
             match (&req.mask, i) {
                 (Some(m), 0) => {
                     original = Some(self.reference(r, rw, rh)?);
-                    cond_tokens.push(self.reference(&greyed(r, m)?, rw, rh)?);
+                    // The greyed picture the model reads at FILL_REFERENCE_SHARE of the side:
+                    // outside the mask the picture's own latent is put back every step anyway.
+                    let side = |v: usize| (((v as f32 * FILL_REFERENCE_SHARE) / SCALE as f32).round() as usize * SCALE).max(SCALE);
+                    let (gw, gh) = (side(rw), side(rh));
+                    cond_tokens.push(self.reference(&greyed(r, m)?, gw, gh)?);
+                    cond_ids.extend(grid_ids(gh / SCALE, gw / SCALE, -1.0));
+                    continue;
                 }
                 _ => cond_tokens.push(self.reference(r, rw, rh)?),
             }
