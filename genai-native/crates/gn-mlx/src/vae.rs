@@ -8,9 +8,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use mlx_rs::ops::indexing::TryIndexOp;
-use mlx_rs::{fast, ops, Array, Dtype};
+use mlx_rs::{Array, Dtype, fast, ops};
 
-use crate::nn::{from_candle, get, Params};
+use crate::nn::{Params, from_candle, get};
 
 /// Packed latent channels and the decoder's (before the 2×2 packing).
 const PACKED: i32 = 128;
@@ -201,8 +201,13 @@ impl Flux2Decoder {
             if !p.contains_key(&format!("{b}.resnets.0.conv1.weight")) {
                 break;
             }
-            let resnets = (0..).map(|j| format!("{b}.resnets.{j}")).take_while(|r| p.contains_key(&format!("{r}.conv1.weight"))).map(|r| Resnet::load(p, &r)).collect::<Result<_>>()?;
-            let upsample = if p.contains_key(&format!("{b}.upsamplers.0.conv.weight")) { Some(Conv::load(p, &format!("{b}.upsamplers.0.conv"))?) } else { None };
+            let resnets = (0..)
+                .map(|j| format!("{b}.resnets.{j}"))
+                .take_while(|r| p.contains_key(&format!("{r}.conv1.weight")))
+                .map(|r| Resnet::load(p, &r))
+                .collect::<Result<_>>()?;
+            let upsample =
+                if p.contains_key(&format!("{b}.upsamplers.0.conv.weight")) { Some(Conv::load(p, &format!("{b}.upsamplers.0.conv"))?) } else { None };
             up.push(UpBlock { resnets, upsample });
         }
         anyhow::ensure!(!up.is_empty(), "the VAE file has no decoder up blocks");
@@ -275,9 +280,14 @@ impl Flux2Encoder {
             if !p.contains_key(&format!("{b}.resnets.0.conv1.weight")) {
                 break;
             }
-            let resnets = (0..).map(|j| format!("{b}.resnets.{j}")).take_while(|r| p.contains_key(&format!("{r}.conv1.weight"))).map(|r| Resnet::load(p, &r)).collect::<Result<_>>()?;
+            let resnets = (0..)
+                .map(|j| format!("{b}.resnets.{j}"))
+                .take_while(|r| p.contains_key(&format!("{r}.conv1.weight")))
+                .map(|r| Resnet::load(p, &r))
+                .collect::<Result<_>>()?;
             let ds = format!("{b}.downsamplers.0.conv");
-            let downsample = if p.contains_key(&format!("{ds}.weight")) { Some((get(p, &format!("{ds}.weight"))?, get(p, &format!("{ds}.bias"))?)) } else { None };
+            let downsample =
+                if p.contains_key(&format!("{ds}.weight")) { Some((get(p, &format!("{ds}.weight"))?, get(p, &format!("{ds}.bias"))?)) } else { None };
             down.push((resnets, downsample));
         }
         anyhow::ensure!(!down.is_empty(), "the VAE file has no encoder (encoder.down_blocks.*)");

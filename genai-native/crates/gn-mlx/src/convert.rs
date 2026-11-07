@@ -8,12 +8,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device};
-use mlx_rs::{ops, Array, Dtype};
+use mlx_rs::{Array, Dtype, ops};
 use qwen_image_rs::lora::LoraFile;
-use qwen_image_rs::model::rotation::{regular_hadamard_256, GROUP as ROT_GROUP};
+use qwen_image_rs::model::rotation::{GROUP as ROT_GROUP, regular_hadamard_256};
 use qwen_image_rs::moss::weights::Weights;
 
-use crate::nn::{dim, from_candle, Params, GROUP};
+use crate::nn::{GROUP, Params, dim, from_candle};
 
 /// How the large linears are held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

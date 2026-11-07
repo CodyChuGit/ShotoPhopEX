@@ -4,12 +4,12 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use mlx_rs::{fast, ops, Array, Dtype};
+use mlx_rs::{Array, Dtype, fast, ops};
 use qwen_image_rs::moss::dit::MossConfig;
 use qwen_image_rs::moss::weights::Weights;
 
 use crate::convert::{Converter, Lora, Precision};
-use crate::nn::{cols, dim, get, rows, scalar, shape, Linear, Params};
+use crate::nn::{Linear, Params, cols, dim, get, rows, scalar, shape};
 
 /// Convert the DiT file to [`Params`]: the blocks' and the text refiner's linears quantized
 /// (when `precision` asks), the embedders, modulation and head dense; `loras` merged into the
@@ -18,7 +18,15 @@ use crate::nn::{cols, dim, get, rows, scalar, shape, Linear, Params};
 pub fn convert(path: &Path, cfg: &MossConfig, dtype: Dtype, precision: Precision, loras: &[Lora]) -> Result<Params> {
     let w = Weights::open(path, &candle_core::Device::Cpu, candle_core::DType::F32, false)?;
     let mut c = Converter::new(&w, dtype, precision)?;
-    for m in ["video_embedder", "text_embedder.proj", "time_embedding.0", "time_embedding.2", "shared_block_modulation", "video_head_modulation", "final_linear_video"] {
+    for m in [
+        "video_embedder",
+        "text_embedder.proj",
+        "time_embedding.0",
+        "time_embedding.2",
+        "shared_block_modulation",
+        "video_head_modulation",
+        "final_linear_video",
+    ] {
         c.linear(m, false, None)?;
     }
     c.tensor("final_norm_video.weight")?;
@@ -60,7 +68,8 @@ pub fn convert(path: &Path, cfg: &MossConfig, dtype: Dtype, precision: Precision
         let split: Vec<Option<Array>> = ["q", "k", "v"].iter().map(|n| delta(&format!("{p}.proj.{n}"))).collect::<Result<_>>()?;
         if split.iter().any(Option::is_some) {
             let side = dim(cfg.dim)?;
-            let parts = split.into_iter().map(|d| -> Result<Array> { Ok(d.map_or_else(|| Array::zeros::<f32>(&[side, side]), Ok)?) }).collect::<Result<Vec<_>>>()?;
+            let parts =
+                split.into_iter().map(|d| -> Result<Array> { Ok(d.map_or_else(|| Array::zeros::<f32>(&[side, side]), Ok)?) }).collect::<Result<Vec<_>>>()?;
             let stacked = ops::concatenate(&parts, 0)?;
             d_qkv = Some(match d_qkv {
                 Some(d) => d.add(&stacked)?,
@@ -405,7 +414,11 @@ impl MossDit {
         let mut ropes = Vec::with_capacity(refs.len());
         for (i, r) in refs.iter().enumerate() {
             let s = r.shape();
-            anyhow::ensure!(s.len() == 4 && s[1] as usize == self.cfg.channels, "a reference of shape {s:?} (the model takes (1, {}, h, w))", self.cfg.channels);
+            anyhow::ensure!(
+                s.len() == 4 && s[1] as usize == self.cfg.channels,
+                "a reference of shape {s:?} (the model takes (1, {}, h, w))",
+                self.cfg.channels
+            );
             let (c, h, w) = (s[1], s[2] as usize, s[3] as usize);
             tokens.push(self.video_embedder.forward(&r.reshape(&[c, dim(h * w)?])?.t().as_dtype(dt)?)?.as_dtype(Dtype::Float32)?);
             ropes.push(self.reference_rope(h, w, i)?);

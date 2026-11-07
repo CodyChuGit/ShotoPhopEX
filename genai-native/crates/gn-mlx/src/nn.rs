@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use mlx_rs::ops::indexing::{Ellipsis, TryIndexOp};
-use mlx_rs::{ops, Array, Dtype};
+use mlx_rs::{Array, Dtype, ops};
 
 /// A model's weights by qir's tensor names: `{m}.weight` (dense, or the packed 4-bit words with
 /// `{m}.scales` and `{m}.biases`), `{m}.bias`, norms.

@@ -8,13 +8,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use mlx_rs::ops::indexing::TryIndexOp;
-use mlx_rs::{fast, ops, Array, Dtype};
+use mlx_rs::{Array, Dtype, fast, ops};
 use qwen_image_rs::comfy_int8::Prequantized;
 use qwen_image_rs::moss::text::TextConfig;
 use qwen_image_rs::moss::weights::Weights;
 
 use crate::convert::{Converter, Precision};
-use crate::nn::{cols, dim, from_candle, get, shape, Linear, Params};
+use crate::nn::{Linear, Params, cols, dim, from_candle, get, shape};
 
 const P: &str = "model.language_model";
 
@@ -291,14 +291,8 @@ impl Qwen35Text {
         // (1, H, S, D) f32, the KV heads shared by their query groups; causal.
         let heads_first = |t: &Array| -> Result<Array> { Ok(t.transpose_axes(&[1, 0, 2])?.expand_dims(0)?) };
         let scale = 1.0 / (c.head_dim as f32).sqrt();
-        let o = fast::scaled_dot_product_attention(
-            heads_first(&q)?,
-            heads_first(&k)?,
-            heads_first(&v)?,
-            scale,
-            fast::ScaledDotProductAttentionMask::Causal,
-            None,
-        )?;
+        let o =
+            fast::scaled_dot_product_attention(heads_first(&q)?, heads_first(&k)?, heads_first(&v)?, scale, fast::ScaledDotProductAttentionMask::Causal, None)?;
         let o = o.squeeze_axes(&[0])?.transpose_axes(&[1, 0, 2])?.reshape(&[s, h * hd])?.as_dtype(self.dtype)?;
         a.o.forward(&o.multiply(ops::sigmoid(&gate)?)?)
     }

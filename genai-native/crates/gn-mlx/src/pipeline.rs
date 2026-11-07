@@ -11,15 +11,15 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use mlx_rs::{Array, Dtype};
-use qwen_image_rs::moss::dit::{sigmas, MossConfig};
-use qwen_image_rs::moss::pipeline::{find_files, reference_size, MossFiles, Variant, LOW_VRAM_REFERENCE_EDGE, REFERENCE_EDGE, SHIFT, UNCOND_SKIP};
-use qwen_image_rs::moss::text::{template, TextConfig};
+use qwen_image_rs::moss::dit::{MossConfig, sigmas};
+use qwen_image_rs::moss::pipeline::{LOW_VRAM_REFERENCE_EDGE, MossFiles, REFERENCE_EDGE, SHIFT, UNCOND_SKIP, Variant, find_files, reference_size};
+use qwen_image_rs::moss::text::{TextConfig, template};
 use qwen_image_rs::pipeline::Cancelled;
 use tokenizers::Tokenizer;
 
 use crate::convert::{self, Lora, Precision};
 use crate::dit::MossDit;
-use crate::nn::{limit_cache, shape, Params};
+use crate::nn::{Params, limit_cache, shape};
 use crate::text::Qwen35Text;
 use crate::vae::{self, Flux2Decoder, Flux2Encoder};
 
@@ -240,8 +240,13 @@ impl MossMlx {
     fn reference_latent(&self, r: &RefPicture, edge: usize) -> Result<Array> {
         let enc = self.encoder.as_ref().context("the VAE file has no FLUX.2 encoder (Comfy-Org's flux2-vae_small has one)")?;
         let (w, h) = reference_size(r.width, r.height, edge);
-        let img = image::RgbaImage::from_raw(u32::try_from(r.width)?, u32::try_from(r.height)?, r.rgba.clone()).context("a picture's pixels do not match its size")?;
-        let img = if (w, h) == (r.width, r.height) { img } else { image::imageops::resize(&img, u32::try_from(w)?, u32::try_from(h)?, image::imageops::FilterType::Lanczos3) };
+        let img = image::RgbaImage::from_raw(u32::try_from(r.width)?, u32::try_from(r.height)?, r.rgba.clone())
+            .context("a picture's pixels do not match its size")?;
+        let img = if (w, h) == (r.width, r.height) {
+            img
+        } else {
+            image::imageops::resize(&img, u32::try_from(w)?, u32::try_from(h)?, image::imageops::FilterType::Lanczos3)
+        };
         let z = enc.encode(&vae::from_rgba_u8(img.as_raw(), w, h)?)?;
         z.eval()?;
         Ok(z)
@@ -264,7 +269,10 @@ impl MossMlx {
             Some(p) if req.width == 0 || req.height == 0 => edit_size(p.width, p.height, EDIT_PIXELS),
             _ => (req.width, req.height),
         };
-        anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(SCALE) && h.is_multiple_of(SCALE), "the picture's sides must be positive multiples of {SCALE} ({w}x{h} asked)");
+        anyhow::ensure!(
+            w > 0 && h > 0 && w.is_multiple_of(SCALE) && h.is_multiple_of(SCALE),
+            "the picture's sides must be positive multiples of {SCALE} ({w}x{h} asked)"
+        );
         anyhow::ensure!(w * h <= 2048 * 2048, "{w}x{h} is too large");
         let check = || -> Result<()> { if cancel() { Err(Cancelled.into()) } else { Ok(()) } };
         let mut timings = Timings::default();

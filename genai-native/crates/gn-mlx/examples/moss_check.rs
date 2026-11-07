@@ -72,11 +72,7 @@ mod run {
     }
 
     fn mem() -> String {
-        format!(
-            "MLX active {:.2} GB, peak {:.2} GB",
-            gb(mlx_rs::memory::active_memory().unwrap_or(0)),
-            gb(mlx_rs::memory::peak_memory().unwrap_or(0))
-        )
+        format!("MLX active {:.2} GB, peak {:.2} GB", gb(mlx_rs::memory::active_memory().unwrap_or(0)), gb(mlx_rs::memory::peak_memory().unwrap_or(0)))
     }
 
     fn load(models: &Path) -> Result<()> {
@@ -125,7 +121,10 @@ mod run {
                 let file = LoraFile::load(&models.join(LORA), &Device::Cpu, DType::F32)?;
                 let unmatched = reference.set_loras(&LoraStack { layers: vec![(Arc::new(file), strength)] })?;
                 // The cut-down model lacks the file's later blocks.
-                let foreign = unmatched.iter().filter(|m| !m.strip_prefix("layers.").and_then(|r| r.split('.').next()).and_then(|i| i.parse::<usize>().ok()).is_some_and(|i| i >= layers)).count();
+                let foreign = unmatched
+                    .iter()
+                    .filter(|m| !m.strip_prefix("layers.").and_then(|r| r.split('.').next()).and_then(|i| i.parse::<usize>().ok()).is_some_and(|i| i >= layers))
+                    .count();
                 anyhow::ensure!(foreign == 0, "{foreign} LoRA modules qir does not know");
             }
             let want = reference.forward(&x, t, &ctx, &[])?.flatten_all()?.to_vec1::<f32>()?;
@@ -220,7 +219,11 @@ mod run {
             let t0 = Instant::now();
             let got = to_vec(&dec.decode(&zm)?)?;
             let (cos, max) = compare(&got, &want)?;
-            println!("MLX {dt:?} 512x512: PSNR {:.1} dB, cosine {cos:.6}, max abs {max:.4}, warm decode {:.3} s", psnr(&got, &want)?, t0.elapsed().as_secs_f64());
+            println!(
+                "MLX {dt:?} 512x512: PSNR {:.1} dB, cosine {cos:.6}, max abs {max:.4}, warm decode {:.3} s",
+                psnr(&got, &want)?,
+                t0.elapsed().as_secs_f64()
+            );
         }
         for dt in [Dtype::Float32, Dtype::Float16] {
             mlx_rs::memory::clear_cache()?;
@@ -275,7 +278,10 @@ mod run {
         let want = reference.forward_refs(&x, t, &ctx, &[], Some(&cache))?.flatten_all()?.to_vec1::<f32>()?;
         let plain = reference.forward(&x, t, &ctx, &[])?.flatten_all()?.to_vec1::<f32>()?;
         let (cos, max) = compare(&plain, &want)?;
-        println!("qir CPU f32, SFT {layers} blocks + edit + DMD2: {:.1} s; the reference's effect: cosine {cos:.6} to none, max abs {max:.3}", t0.elapsed().as_secs_f64());
+        println!(
+            "qir CPU f32, SFT {layers} blocks + edit + DMD2: {:.1} s; the reference's effect: cosine {cos:.6} to none, max abs {max:.3}",
+            t0.elapsed().as_secs_f64()
+        );
         drop(cache);
         drop(reference);
         drop(w8);
@@ -288,7 +294,12 @@ mod run {
             let refs = model.prepare_references(&[from_candle(&latent)?])?;
             let got = to_vec(&model.forward(&from_candle(&x)?, t, &from_candle(&ctx)?, &[], Some(&refs))?)?;
             let (cos, max) = compare(&got, &want)?;
-            println!("MLX {}: cosine {cos:.6}, max abs {max:.4} (|v| max {:.3}), finite {}", precision.tag(), want.iter().fold(0f32, |m, v| m.max(v.abs())), got.iter().all(|v| v.is_finite()));
+            println!(
+                "MLX {}: cosine {cos:.6}, max abs {max:.4} (|v| max {:.3}), finite {}",
+                precision.tag(),
+                want.iter().fold(0f32, |m, v| m.max(v.abs())),
+                got.iter().all(|v| v.is_finite())
+            );
         }
         Ok(())
     }

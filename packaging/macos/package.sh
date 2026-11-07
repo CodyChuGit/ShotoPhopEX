@@ -126,7 +126,8 @@ cp "$WORK/bin/photocraft" "$APP/Contents/MacOS/PhotoCraft"
 cp "$WORK/bin/photocraft-cli" "$APP/Contents/MacOS/photocraft-cli"
 cp "$ROOT/assets/app-icon/photocraft.icns" "$APP/Contents/Resources/PhotoCraft.icns"
 # MLX's Metal kernels, built with mlx-sys (gn-mlx points MLX here at start-up).
-METALLIB="$(ls -t "$CARGO_TARGET_DIR/${TARGETS[0]}"/release/build/mlx-sys-*/out/build/lib/mlx.metallib 2>/dev/null | head -1)"
+# The newest one when several mlx-sys build directories exist (BSD stat: mtime, then path).
+METALLIB="$(find "$CARGO_TARGET_DIR/${TARGETS[0]}/release/build" -path '*/mlx-sys-*/out/build/lib/mlx.metallib' -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
 [[ -f "$METALLIB" ]] || { echo "error: no mlx.metallib under $CARGO_TARGET_DIR/${TARGETS[0]}/release/build (build with native-mlx)" >&2; exit 1; }
 cp "$METALLIB" "$APP/Contents/Resources/mlx.metallib"
 # Notices for the bundled font fallback, included before the bundle is signed.

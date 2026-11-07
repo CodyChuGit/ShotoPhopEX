@@ -1463,13 +1463,21 @@ impl DiffusionEngine {
         let has = |v: MossVariant| moss::find_files(&self.models_root, v).is_some();
         let missing = |what: String| EngineError::new(ErrorKind::ModelMissing, format!("{what} is not in {}", self.models_root.display()));
         let edit = || self.moss_edit_lora().ok_or_else(|| missing("the MOSS Edit LoRA (loras/moss-image-edit/adapter_model.safetensors)".into()));
-        let sft = || if has(MossVariant::Sft) { Ok(MossVariant::Sft) } else { Err(missing("MOSS-Image-SFT (diffusion_models/moss_image_sft_int8_convrot.safetensors)".into())) };
+        let sft = || {
+            if has(MossVariant::Sft) {
+                Ok(MossVariant::Sft)
+            } else {
+                Err(missing("MOSS-Image-SFT (diffusion_models/moss_image_sft_int8_convrot.safetensors)".into()))
+            }
+        };
         match template {
-            TEMPLATE_MOSS_TURBO => match (has(MossVariant::Sft), self.template_lora(MOSS_SFT_4STEP_LORA), has(MossVariant::Kromoss), self.template_lora(MOSS_TURBO_LORA)) {
-                (true, Some(four), _, _) => Ok((MossVariant::Sft, vec![four], 4, 1.0)),
-                (_, _, true, Some(dmd2)) => Ok((MossVariant::Kromoss, vec![dmd2], MOSS_TURBO_STEPS, 1.0)),
-                _ => Err(missing(format!("MOSS Turbo (MOSS-Image-SFT with loras/{MOSS_SFT_4STEP_LORA}, or Kromoss with loras/{MOSS_TURBO_LORA})"))),
-            },
+            TEMPLATE_MOSS_TURBO => {
+                match (has(MossVariant::Sft), self.template_lora(MOSS_SFT_4STEP_LORA), has(MossVariant::Kromoss), self.template_lora(MOSS_TURBO_LORA)) {
+                    (true, Some(four), _, _) => Ok((MossVariant::Sft, vec![four], 4, 1.0)),
+                    (_, _, true, Some(dmd2)) => Ok((MossVariant::Kromoss, vec![dmd2], MOSS_TURBO_STEPS, 1.0)),
+                    _ => Err(missing(format!("MOSS Turbo (MOSS-Image-SFT with loras/{MOSS_SFT_4STEP_LORA}, or Kromoss with loras/{MOSS_TURBO_LORA})"))),
+                }
+            }
             TEMPLATE_MOSS_EDIT_TURBO => Ok((sft()?, vec![edit()?], 8, MOSS_EDIT_GUIDANCE)),
             TEMPLATE_MOSS_EDIT => Ok((sft()?, vec![edit()?], MOSS_EDIT_STEPS, MOSS_EDIT_GUIDANCE)),
             TEMPLATE_MOSS => Ok((sft()?, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
@@ -1494,7 +1502,10 @@ impl DiffusionEngine {
         for (file, strength) in lora_asks(&req.params)? {
             let path = self.lora_path(&file)?;
             if !path.is_file() {
-                return Err(EngineError::new(ErrorKind::ModelMissing, format!("LoRA {file} is not installed (looked in {})", self.models_root.join(LORA_DIR).display())));
+                return Err(EngineError::new(
+                    ErrorKind::ModelMissing,
+                    format!("LoRA {file} is not installed (looked in {})", self.models_root.join(LORA_DIR).display()),
+                ));
             }
             if !loras.iter().any(|l| l.path == path) {
                 loras.push(gn_mlx::pipeline::LoraSpec { path, strength });

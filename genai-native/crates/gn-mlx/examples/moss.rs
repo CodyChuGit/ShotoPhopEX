@@ -103,7 +103,9 @@ fn main() -> anyhow::Result<()> {
             mlx_rs::memory::peak_memory().unwrap_or(0) as f64 / 1e9
         );
         let path = out.join(format!("{kind}-{size}-{seed}{tag}.png"));
-        image::RgbaImage::from_raw(pic.width as u32, pic.height as u32, pic.rgba).ok_or_else(|| anyhow::anyhow!("a picture's pixels do not match its size"))?.save(&path)?;
+        image::RgbaImage::from_raw(pic.width as u32, pic.height as u32, pic.rgba)
+            .ok_or_else(|| anyhow::anyhow!("a picture's pixels do not match its size"))?
+            .save(&path)?;
         println!("  wrote {}", path.display());
     }
     Ok(())
