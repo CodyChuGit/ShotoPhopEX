@@ -209,9 +209,10 @@ impl MossMlx {
             }
             drop(te);
             mlx_rs::memory::clear_cache()?;
-            // The last two (a prompt and its negative).
-            let extra = self.encoded.len().saturating_sub(2);
-            self.encoded.drain(..extra);
+            // This request's prompts (a prompt and its negative) and nothing else: keeping the
+            // last two by age dropped a negative this request needed when only its prompt was new
+            // (an image, an edit, an image, then an edit failed with "an encoding went missing").
+            self.encoded.retain(|(q, _)| prompts.contains(&q.as_str()));
         }
         prompts.iter().map(|p| self.encoded.iter().find(|(q, _)| q == p).map(|(_, h)| h.clone()).context("an encoding went missing")).collect()
     }
