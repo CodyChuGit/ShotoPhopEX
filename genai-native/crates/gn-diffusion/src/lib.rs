@@ -489,18 +489,25 @@ impl DiffusionEngine {
             None => None,
         };
         let system = req.params.get("system").and_then(Value::as_str).unwrap_or_default().to_string();
-        // A Mac answers on MOSS's own Qwen3.5-9B encoder, greedy, from the text alone (its
-        // vision tower is not ported): a request that shows a picture is refused.
+        // A Mac answers on MOSS's own Qwen3.5-9B encoder, greedy, the picture through its vision
+        // tower; an encoder file without the tower refuses a picture (the app then rewrites an
+        // edit or a fill from its words).
         #[cfg(feature = "mlx")]
         {
-            if image.is_some() {
-                return Err(EngineError::new(ErrorKind::Unsupported, "the Mac's prompt writer reads text only (no picture)"));
-            }
             self.ensure_loaded(Family::Moss(MossVariant::Sft), progress)?;
             progress(0.5, "Thinking");
             let Resident::Mlx(m) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no MLX pipeline")) };
+            if image.is_some() && !m.can_see() {
+                return Err(EngineError::new(
+                    ErrorKind::Unsupported,
+                    "the Mac's prompt writer reads text only (no picture): this encoder file has no vision tower",
+                ));
+            }
+            let picture = image.as_ref().map(|r| gn_mlx::pipeline::RefPicture { width: r.width, height: r.height, rgba: r.rgba.clone() });
             let stop = || cancel.load(Ordering::SeqCst);
-            let reply = m.chat(&system, &req.prompt, ChatOptions::default().max_new, &stop).map_err(|e| EngineError::new(kind_of(&e), format!("{e:#}")))?;
+            let reply = m
+                .chat(&system, &req.prompt, picture.as_ref(), ChatOptions::default().max_new, &stop)
+                .map_err(|e| EngineError::new(kind_of(&e), format!("{e:#}")))?;
             progress(1.0, "Done");
             return Ok((DoneInfo { images: Vec::new(), texts: vec![reply], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
         }
