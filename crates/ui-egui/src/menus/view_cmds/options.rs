@@ -47,13 +47,7 @@ pub(super) fn screen_mode_commands(
 /// maximized (zoomed) window instead: it fills the screen and leaves the system menu bar showing.
 /// Full Screen Mode is native full screen. `was_maximized` is whether the window was maximized
 /// in Standard, so that Standard gets the window back as it was.
-pub(super) fn screen_mode_commands_mac(
-    full_screen: bool,
-    maximized: bool,
-    was_maximized: bool,
-    from: &str,
-    next: &str,
-) -> (Vec<egui::ViewportCommand>, bool) {
+pub(super) fn screen_mode_commands_mac(full_screen: bool, maximized: bool, was_maximized: bool, from: &str, next: &str) -> (Vec<egui::ViewportCommand>, bool) {
     use egui::ViewportCommand::{Fullscreen, Maximized};
     // Leaving Standard: remember how the window was.
     let remember = if from == "standard" { maximized } else { was_maximized };
