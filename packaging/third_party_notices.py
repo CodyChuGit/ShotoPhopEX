@@ -82,7 +82,7 @@ NVIDIA = [
 
 
 def run(cmd):
-    return subprocess.run(cmd, cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    return subprocess.run(cmd, cwd=ROOT, check=True, capture_output=True, text=True, encoding="utf-8").stdout
 
 
 def shipped_crates(target, features):
