@@ -48,6 +48,47 @@ pub fn open(app: &mut PhotocraftApp) {
     refresh(app);
 }
 
+/// The generative commands that need models on this computer: from the UI, each opens this
+/// window instead while there are none (see [`intercept`]).
+const NEEDS_MODELS: &[&str] = &[
+    "generate.fill",
+    "generate.image",
+    "generate.expand",
+    "generate.edit",
+    "generate.similar",
+    "generate.removeBackground",
+    "generate.splitLayers",
+    "generate.clownPass",
+    "generate.angles",
+    "generate.upscale",
+    "select.byText",
+];
+
+/// Whether this computer has no AI models yet: no models folder, or none of its memory
+/// profile's pack in it. A folder with other models (an old ComfyUI install) counts as having
+/// models, so the window never nags someone who brought their own.
+pub fn has_no_models(app: &mut PhotocraftApp) -> bool {
+    if app.session.prefs().integrations.models_root().is_empty() {
+        return true;
+    }
+    let Ok(v) = app.session.execute(photocraft_engine::model_packs::PACKS, json!({})) else {
+        return false;
+    };
+    let root_exists = v["modelsRoot"].as_str().is_none_or(|r| std::path::Path::new(r).is_dir());
+    let files = v["pack"]["files"].as_array();
+    !root_exists || files.is_some_and(|f| !f.is_empty() && f.iter().all(|f| f["installed"] == false))
+}
+
+/// A click on a generative tool (menu, task bar, toolbar, Generate panel) before any models are
+/// downloaded opens Get AI Models instead of failing. Automation keeps the command's own error.
+pub fn intercept(app: &mut PhotocraftApp, id: &str) -> bool {
+    if app.automation_input || !NEEDS_MODELS.contains(&id) || !has_no_models(app) {
+        return false;
+    }
+    open(app);
+    true
+}
+
 pub fn menu(app: &mut PhotocraftApp, id: &str, _params: &Value) -> Option<Result<Value, String>> {
     (id == COMMAND).then(|| {
         open(app);

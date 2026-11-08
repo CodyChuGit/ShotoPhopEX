@@ -218,6 +218,11 @@ pub fn activate(app: &mut PhotocraftApp, ctx: &egui::Context, card: &Card) -> Re
     if card.target == Target::Soon {
         return Err(tl!("Not in this build yet").to_string());
     }
+    // No models on this computer yet: Get AI Models first, before asking for a picture.
+    if !app.automation_input && crate::get_models_ui::has_no_models(app) {
+        crate::get_models_ui::open(app);
+        return Ok(json!({"getModels": true}));
+    }
     if !card.create && app.session.active().is_none() {
         // The dialog answers on a later frame (`file_dialog`): the card carries on in `tick`
         // once the picture is open. No file dialog here: nothing will open, so nothing waits.

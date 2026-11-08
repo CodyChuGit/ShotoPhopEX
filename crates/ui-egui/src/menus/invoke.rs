@@ -50,6 +50,10 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
     if crate::discard_ui::intercept(app, id, &params) {
         return Ok(Value::Null);
     }
+    // A generative tool clicked before any models are downloaded: Get AI Models instead.
+    if crate::get_models_ui::intercept(app, id) {
+        return Ok(json!({"getModels": true}));
+    }
     let r = invoke_unguarded(app, ctx, id, params)?;
     // The palette's empty-query list (UI-217-7); opening the palette isn't a command to recall.
     if id != "edit.search" {

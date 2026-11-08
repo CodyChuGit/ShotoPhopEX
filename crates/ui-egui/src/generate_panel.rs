@@ -685,7 +685,12 @@ enum Action {
 fn apply(app: &mut PhotocraftApp, a: Action) {
     match a {
         Action::Generate => {
-            let _ = generate(app);
+            // Nothing to generate with yet: take them to Get AI Models.
+            if crate::get_models_ui::has_no_models(app) {
+                crate::get_models_ui::open(app);
+            } else {
+                let _ = generate(app);
+            }
         }
         Action::Cancel(j) => {
             crate::jobs_ui::cancel(app, j);
