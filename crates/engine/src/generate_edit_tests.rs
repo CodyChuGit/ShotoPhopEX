@@ -74,10 +74,13 @@ fn edit_re_renders_the_whole_canvas_into_a_layer_and_sends_no_mask() {
     let l = d.doc.layer(id).unwrap();
     assert_eq!(l.name, "Generative Edit: make the sky stormy");
     assert!(close(&l.surface().unwrap().read_region(Rect::new(1, 1, 2, 2)), FAKE_COLOR), "the result covers the canvas");
-    assert_eq!(mask_at(&s, id, 1, 1), 1.0, "no selection: everything shows");
-    assert_eq!(mask_at(&s, id, 62, 46), 1.0);
+    // No selection: what shows is the result's subject (Select Subject on it; the fake detector
+    // finds the middle half of the picture), the original around it.
+    assert_eq!(mask_at(&s, id, 32, 24), 1.0, "the subject shows");
+    assert_eq!(mask_at(&s, id, 1, 1), 0.0, "outside the subject the original shows");
+    assert_eq!(mask_at(&s, id, 62, 46), 0.0);
     let st = fake.state();
-    assert_eq!(st.pictures.len(), 1, "the picture alone, no mask upload");
+    assert!(st.runs.iter().skip(1).any(|r| r.request["task"] == "segment"), "the subject is found on the result");
     let g = &st.runs[0].request;
     assert!(g["mask"].is_null() && g["task"] == "edit", "an edit has no input mask");
     assert_eq!(g["params"]["models"]["lora"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
@@ -86,7 +89,8 @@ fn edit_re_renders_the_whole_canvas_into_a_layer_and_sends_no_mask() {
     drop(st);
     // A description is turned into an instruction.
     s.execute(EDIT, json!({"prompt": "a stormy sky", "seed": 4})).unwrap();
-    let g = &fake.state().runs[1].request;
+    let st = fake.state();
+    let g = &st.runs.iter().filter(|r| r.request["task"] == "edit").nth(1).expect("the second edit").request;
     assert_eq!(g["prompt"], "Change this image so that it shows a stormy sky, keeping everything else exactly as it is.");
 }
 
@@ -100,7 +104,7 @@ fn a_selection_confines_what_of_the_edit_shows() {
     assert_eq!(mask_at(&s, id, 62, 46), 0.0, "far outside");
     let band = mask_at(&s, id, 8, 16);
     assert!(band > 0.0 && band < 1.0, "a soft, dithered band around it: {band}");
-    assert_eq!(fake.state().pictures.len(), 1, "still no mask upload: the selection is the layer mask only");
+    assert!(fake.state().runs[0].request["mask"].is_null(), "still no mask upload: the selection is the layer mask only");
     let r = s.execute(EDIT, json!({"prompt": "turn the boat blue", "seed": 3, "edge": "hard"})).unwrap();
     let id = LayerId(r["layer"].as_u64().unwrap());
     assert_eq!(mask_at(&s, id, 8, 16), 0.0, "hard = exactly the selection");

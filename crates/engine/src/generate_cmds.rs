@@ -4630,6 +4630,10 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let label = name.clone();
     // `wholePicture` (Generative Angles): the selection does not confine the result.
     let whole = opt_bool(EDIT, p, "wholePicture", false)?;
+    // An edit re-renders the whole picture; what shows of it is its subject (Select Subject on
+    // the result), so a new thing (a Pikachu for the duck) sits in the untouched original. Not
+    // for Angles, whose camera move is the whole picture; no detector, no subject mask.
+    let finder = if whole { None } else { crate::select_ml_cmds::subject_finder(s, None).ok() };
     let job = FillJob {
         thinker: Arc::clone(&backend),
         backend,
@@ -4663,6 +4667,7 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
         move |doc, active, ctx| {
             // The whole canvas is re-rendered; a selection, when there is one, confines what
             // of it shows (the edit template takes no mask, see `fill_region`).
+            let selected = doc.selection.is_some() && !whole;
             let coverage: Vec<f32> = match doc.selection.as_ref().filter(|_| !whole) {
                 Some(sel) => {
                     let k = sel.channels().max(1);
@@ -4670,11 +4675,58 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 None => vec![1.0; rect.width() as usize * rect.height() as usize],
             };
-            fill_region(doc, active, ctx, job, rect, coverage, None)
+            let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
+            if let Some(finder) = finder.as_ref() {
+                for (id, ..) in &filled.0 {
+                    mask_to_subject(doc, *id, rect, selected, finder, ctx)?;
+                }
+            }
+            Ok(filled)
         },
         move |(made, w, h, request, template_id)| made_json(&made, w, h, request, &template_id),
     )
 }
+
+/// An edit result's layer mask from its subject: Select Subject's prompts on the result in turn,
+/// the first that finds anything, its instances joined. With a selection the subject joins the
+/// selection's mask (the selected area changes, and a new subject larger than it still shows
+/// whole); without one it is the mask. Nothing found: the mask stays as it was.
+fn mask_to_subject(doc: &mut Document, id: LayerId, rect: Rect, selected: bool, finder: &crate::select_ml_cmds::SubjectFinder, ctx: &JobCtx) -> Result<()> {
+    let layer = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    let surf = layer.surface().ok_or(EngineError::NoLayer(id))?;
+    let mut px = vec![[0u8; 4]; rect.width() as usize * rect.height() as usize];
+    surf.read_rgba8_into(rect, &mut px);
+    let picture: Vec<u8> = px.into_iter().flatten().collect();
+    let mut subject: Option<Vec<f32>> = None;
+    for prompt in crate::select_ml_cmds::SUBJECT_FALLBACKS.iter().take(2) {
+        ctx.check()?;
+        let found = finder.find_in(&picture, rect, prompt, SUBJECT_MASK_AT_MOST, ctx)?;
+        if found.is_empty() {
+            continue;
+        }
+        let mut joined = vec![0.0f32; picture.len() / 4];
+        for (cov, ..) in &found {
+            for (j, c) in joined.iter_mut().zip(cov) {
+                *j = j.max(*c);
+            }
+        }
+        subject = Some(joined);
+        break;
+    }
+    let Some(subject) = subject else { return Ok(()) };
+    let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+    let shown: Vec<f32> = match layer.mask.as_ref().filter(|_| selected) {
+        Some(m) => m.surface.read_region(rect).iter().zip(&subject).map(|(a, b)| a.max(*b)).collect(),
+        None => subject,
+    };
+    let mut surface = Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+    surface.write_region(rect, &shown);
+    layer.mask = Some(LayerMask { surface, enabled: true, linked: true, density: 1.0, feather: 0.0 });
+    Ok(())
+}
+
+/// How many subjects an edit result's mask may join.
+const SUBJECT_MASK_AT_MOST: usize = 3;
 
 /// `generate.angles`: the whole picture from another camera position, as Generative Edit runs it
 /// with the Multiple Angles template and the LoRA's words for `rotation`, `tilt` and `zoom`.

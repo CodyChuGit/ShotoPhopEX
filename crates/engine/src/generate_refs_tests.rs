@@ -52,7 +52,9 @@ fn an_edit_sends_its_layer_references_and_similar_sends_them_again() {
     let (mut s, base, hat) = session(&fake.url);
     let r = s.execute(EDIT, json!({"prompt": "put the hat from image 2 on the sky", "seed": 3, "references": [{"layer": hat.0}, {"layer": base.0}]})).unwrap();
     let up = uploads(&fake);
-    assert_eq!(up.len(), 3, "the picture and two references: {up:?}");
+    // Then the result, once per subject search, for its mask.
+    let finds = fake.state().runs.iter().filter(|r| r.request["task"] == "segment").count();
+    assert_eq!(up.len(), 3 + finds, "the picture and two references: {up:?}");
     assert_eq!(up[1].1, (20, 12), "the hat layer over its content bounds");
     {
         let st = fake.state();
@@ -64,8 +66,10 @@ fn an_edit_sends_its_layer_references_and_similar_sends_them_again() {
     // Similar resolves them again.
     s.execute(SIMILAR, json!({"layer": layer.0, "seed": 4})).unwrap();
     let st = fake.state();
-    assert_eq!(st.runs.len(), 2);
-    assert!(st.runs[1].request["references"].as_array().is_some_and(|r| r.len() == 2), "both references again");
+    // The edits, the subject searches on their results ("segment") left out.
+    let edits: Vec<_> = st.runs.iter().filter(|r| r.request["task"] != "segment").collect();
+    assert_eq!(edits.len(), 2);
+    assert!(edits[1].request["references"].as_array().is_some_and(|r| r.len() == 2), "both references again");
 }
 
 #[test]
@@ -625,9 +629,11 @@ fn image_variations_on_a_layer_and_references_from_files_and_generations() {
     s.execute(IMAGE, json!({"prompt": "a boat", "target": "layer", "references": [{"layer": hat.0}]})).unwrap();
     let job = s.generations.records().last().unwrap().id;
     let before = fake.state().pictures.len();
+    let finds_before = fake.state().runs.iter().filter(|r| r.request["task"] == "segment").count();
     s.execute(EDIT, json!({"prompt": "x", "references": [{"path": file.to_string_lossy()}, {"job": job}]})).unwrap();
     let up = uploads(&fake);
-    assert_eq!(up.len(), before + 3);
+    let finds = fake.state().runs.iter().filter(|r| r.request["task"] == "segment").count() - finds_before;
+    assert_eq!(up.len(), before + 3 + finds);
     assert_eq!(up[before + 1].1, (30, 20), "the file");
     assert_eq!(up[before + 2].1, (64, 48), "the stored result (the layer image over the canvas)");
     let e = s.execute(EDIT, json!({"prompt": "x", "references": [{"path": dir.join("nope.png").to_string_lossy()}]})).unwrap_err();
