@@ -11,6 +11,10 @@ use gn_segment::{
 use std::time::Instant;
 
 const PROMPTS: [&str; 3] = ["the rubber duck", "the mug", "the apple"];
+/// On the 512² duck picture: the duck, the mug, the apple, the table.
+const CLICKS: [[f32; 2]; 4] = [[200.0, 371.0], [360.0, 230.0], [117.0, 258.0], [256.0, 480.0]];
+/// Around the duck.
+const BOX: [f32; 4] = [118.0, 287.0, 282.0, 455.0];
 
 fn iou(a: &[f32], b: &[f32]) -> (f32, usize) {
     let (mut inter, mut uni) = (0usize, 0usize);
@@ -38,15 +42,32 @@ fn main() -> Result<()> {
             let frame = sam.encode(img.as_raw(), w, h)?;
             let mut m = Vec::new();
             for prompt in PROMPTS {
-                let (found, _) = sam.detect_text(&frame, prompt, &[], Options { refine_iterations: 0, ..Options::default() })?;
-                m.push(found.first().map(|f| f.mask.clone()).unwrap_or_default());
+                for refine in [0usize, 2] {
+                    let (found, _) = sam.detect_text(&frame, prompt, &[], Options { refine_iterations: refine, ..Options::default() })?;
+                    m.push(found.first().map(|f| f.mask.clone()).unwrap_or_default());
+                }
             }
+            // Clicks (Object Selection) and a box, where the masks come from the interactive heads.
+            for pt in CLICKS {
+                let (inst, _) = sam.segment_points(&frame, &[pt], &[], Options::default())?;
+                println!("{dt:?} click {pt:?}: bounds {:?} px {}", inst.bounds, inst.pixels);
+                m.push(inst.mask);
+            }
+            let (inst, _) = sam.segment_box(&frame, BOX, Options::default())?;
+            println!("{dt:?} box {BOX:?}: bounds {:?} px {}", inst.bounds, inst.pixels);
+            m.push(inst.mask);
             masks.push(m);
             // The model and its embedding go before the next dtype loads.
         }
-        for (i, prompt) in PROMPTS.iter().enumerate() {
+        let names: Vec<String> = PROMPTS
+            .iter()
+            .flat_map(|p| [format!("{p:?} refine 0"), format!("{p:?} refine 2")])
+            .chain(CLICKS.iter().map(|c| format!("click {c:?}")))
+            .chain(std::iter::once(format!("box {BOX:?}")))
+            .collect();
+        for (i, name) in names.iter().enumerate() {
             let (v, px) = iou(&masks[0][i], &masks[1][i]);
-            println!("{prompt:?}: f16 vs f32 IoU {v:.4} ({px} px)");
+            println!("{name}: f16 vs f32 IoU {v:.4} ({px} px)");
         }
         return Ok(());
     }
@@ -64,8 +85,14 @@ fn main() -> Result<()> {
         let mut first: Option<Vec<f32>> = None;
         for refine in [2usize, 1, 0] {
             let t = Instant::now();
+            if std::env::var_os("GN_SAM_PROFILE").is_some() {
+                gn_segment::profile::start();
+            }
             let (found, _) = sam.detect_text(&frame, prompt, &[], Options { refine_iterations: refine, ..Options::default() })?;
             let secs = t.elapsed().as_secs_f32();
+            if std::env::var_os("GN_SAM_PROFILE").is_some() {
+                println!("stages (ms) {:?}", gn_segment::profile::finish());
+            }
             let mask = found.first().map(|f| f.mask.clone()).unwrap_or_default();
             let v = first.as_ref().map_or(1.0, |m| iou(m, &mask).0);
             println!("{prompt:?} refine {refine}: {secs:.1} s, IoU vs refine 2 {v:.4}");
