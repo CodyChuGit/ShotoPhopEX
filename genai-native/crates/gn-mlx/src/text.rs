@@ -230,43 +230,75 @@ impl Qwen35Text {
 
     /// The last hidden state `(tokens, hidden)` f32.
     pub fn forward(&self, ids: &[u32]) -> Result<Array> {
-        self.run(ids, 0, None)
+        let p: Vec<f32> = (0..ids.len()).map(|i| i as f32).collect();
+        self.run(self.embed_ids(ids)?, &[p.clone(), p.clone(), p], None)
+    }
+
+    /// The embedding rows of `ids` `(n, hidden)` f32.
+    fn embed_ids(&self, ids: &[u32]) -> Result<Array> {
+        from_candle(&self.embed.gather_cpu(ids)?)
     }
 
     /// Greedy decoding after `ids` (a chat already templated): at most `max_new` tokens, ending
     /// at the first of `stop` (not returned). `head` is the language-model head ([`lm_head`]).
     /// The layers must be held ([`Self::resident`]).
-    pub fn generate(&self, head: &Linear, ids: &[u32], max_new: usize, stop: &[u32], cancel: &dyn Fn() -> bool) -> Result<Vec<u32>> {
+    /// With `image`, its merged rows replace the one `image_pad` token of `ids` (the template's
+    /// `<|vision_start|><|image_pad|><|vision_end|>`), placed with Qwen's multimodal RoPE
+    /// (`qwen_image_rs::model::text_encoder::mrope_positions`), as the Windows chat does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate(
+        &self,
+        head: &Linear,
+        ids: &[u32],
+        image: Option<(&crate::vision::VisionFeatures, u32)>,
+        max_new: usize,
+        stop: &[u32],
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Vec<u32>> {
         anyhow::ensure!(self.stream.is_none(), "generation needs the layers held (Qwen35Text::resident)");
         let mut states: Vec<State> = (0..self.cfg.layers).map(|_| State::default()).collect();
         let mut out = Vec::new();
-        let (mut next, mut pos) = (ids.to_vec(), 0);
+        // The prompt: its rows (the picture's spliced in) and their three-axis positions.
+        let (x, positions) = match image {
+            Some((f, pad)) => {
+                let at = ids.iter().position(|&t| t == pad).context("the chat has no image_pad token for the picture")?;
+                let n = f.rows * f.cols;
+                let rows = ops::concatenate(&[self.embed_ids(&ids[..at])?, f.merged.clone(), self.embed_ids(&ids[at + 1..])?], 0)?;
+                let seq = ids.len() - 1 + n;
+                (rows, qwen_image_rs::model::text_encoder::mrope_positions(&[(at, n)], &[(f.rows, f.cols)], seq))
+            }
+            None => {
+                let p: Vec<f32> = (0..ids.len()).map(|i| i as f32).collect();
+                (self.embed_ids(ids)?, [p.clone(), p.clone(), p])
+            }
+        };
+        let prompt_rows = x.shape()[0] as usize;
+        // After the prompt every axis moves on together from its largest position.
+        let mut next_pos = positions.iter().flat_map(|a| a.iter().copied()).fold(0.0f32, f32::max) + 1.0;
         let t_all = std::time::Instant::now();
-        let mut prefill_ms = 0.0;
+        let mut h = self.run(x, &positions, Some(&mut states))?;
+        let prefill_ms = t_all.elapsed().as_secs_f64() * 1000.0;
         while out.len() < max_new {
             if cancel() {
                 return Err(qwen_image_rs::pipeline::Cancelled.into());
             }
-            let h = self.run(&next, pos, Some(&mut states))?;
-            pos += next.len();
             let last = h.try_index(h.shape()[0] - 1..)?.as_dtype(self.dtype)?;
             let token = ops::indexing::argmax_axis(&head.forward(&last)?, -1, None)?.as_dtype(Dtype::Uint32)?;
             token.eval()?;
-            if pos == ids.len() {
-                prefill_ms = t_all.elapsed().as_secs_f64() * 1000.0;
-            }
             let t = token.as_slice::<u32>().first().copied().context("no token")?;
             if stop.contains(&t) {
                 break;
             }
             out.push(t);
-            next = vec![t];
+            let p = vec![next_pos];
+            next_pos += 1.0;
+            h = self.run(self.embed_ids(&[t])?, &[p.clone(), p.clone(), p], Some(&mut states))?;
         }
         if crate::profile::enabled() {
             let decode = t_all.elapsed().as_secs_f64() * 1000.0 - prefill_ms;
             eprintln!(
-                "profile: chat prefill {} tokens {prefill_ms:.0} ms; decode {} tokens {decode:.0} ms ({:.0} ms/token)",
-                ids.len(),
+                "profile: chat prefill {} rows {prefill_ms:.0} ms; decode {} tokens {decode:.0} ms ({:.0} ms/token)",
+                prompt_rows,
                 out.len(),
                 decode / out.len().max(1) as f64
             );
@@ -274,14 +306,14 @@ impl Qwen35Text {
         Ok(out)
     }
 
-    /// The layers over `ids` at positions `start..`, each layer's state carried in `states`
-    /// when given (decoding), the final norm applied.
-    fn run(&self, ids: &[u32], start: usize, mut states: Option<&mut [State]>) -> Result<Array> {
-        anyhow::ensure!(!ids.is_empty(), "no tokens to encode");
+    /// The layers over the rows `x (S, hidden)` f32 at the three-axis `positions`, each layer's
+    /// state carried in `states` when given (decoding), the final norm applied.
+    fn run(&self, x: Array, positions: &[Vec<f32>; 3], mut states: Option<&mut [State]>) -> Result<Array> {
+        anyhow::ensure!(x.shape()[0] > 0, "no tokens to encode");
         let eps = self.cfg.eps as f32;
         let dt = self.dtype;
-        let mut x = from_candle(&self.embed.gather_cpu(ids)?)?;
-        let (cos, sin) = self.rope(start, ids.len())?;
+        let mut x = x;
+        let (cos, sin) = self.rope(positions)?;
         for i in 0..self.cfg.layers {
             let streamed;
             let layer = match &self.stream {
@@ -308,16 +340,29 @@ impl Qwen35Text {
         self.norm.forward(&x, eps)
     }
 
-    /// cos/sin `(tokens, 1, rotary_dim)` f32 for positions `start..start + n` (each half
-    /// repeated).
-    fn rope(&self, start: usize, n: usize) -> Result<(Array, Array)> {
+    /// cos/sin `(tokens, 1, rotary_dim)` f32 for three-axis `positions` (each half repeated),
+    /// Qwen3.5's interleaved multimodal RoPE (`mrope_section [11, 11, 10]` over the 32 pairs):
+    /// pair `j` turns by the temporal position, except `j ≡ 1 (mod 3)` below 33 by the height and
+    /// `j ≡ 2 (mod 3)` below 30 by the width. Text has the three equal: plain 1D RoPE.
+    fn rope(&self, positions: &[Vec<f32>; 3]) -> Result<(Array, Array)> {
+        const SECTION: [usize; 3] = [11, 11, 10];
         let r = self.cfg.rotary_dim;
         let half = r / 2;
+        let n = positions[0].len();
         let inv: Vec<f32> = (0..half).map(|j| (1.0 / self.cfg.rope_theta.powf((2 * j) as f64 / r as f64)) as f32).collect();
+        let axis = |j: usize| -> usize {
+            if j < SECTION[1] * 3 && j % 3 == 1 {
+                1
+            } else if j < SECTION[2] * 3 && j % 3 == 2 {
+                2
+            } else {
+                0
+            }
+        };
         let mut angles = Vec::with_capacity(n * r);
-        for p in start..start + n {
+        for s in 0..n {
             for _ in 0..2 {
-                angles.extend(inv.iter().map(|f| p as f32 * f));
+                angles.extend(inv.iter().enumerate().map(|(j, f)| positions[axis(j)][s] * f));
             }
         }
         let a = Array::from_slice(&angles, &shape(&[n, 1, r])?);

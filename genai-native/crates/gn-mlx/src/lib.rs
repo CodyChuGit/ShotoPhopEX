@@ -23,3 +23,5 @@ pub mod profile;
 pub mod text;
 #[cfg(target_os = "macos")]
 pub mod vae;
+#[cfg(target_os = "macos")]
+pub mod vision;

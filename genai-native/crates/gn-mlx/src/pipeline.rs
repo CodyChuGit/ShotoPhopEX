@@ -216,11 +216,19 @@ impl MossMlx {
         prompts.iter().map(|p| self.encoded.iter().find(|(q, _)| q == p).map(|(_, h)| h.clone()).context("an encoding went missing")).collect()
     }
 
-    /// A text answer from the encoder's own language model (Qwen3.5-9B, no picture): `system`
-    /// and `prompt` as a chat with thinking off, greedy, at most `max_tokens`. The DiT is dropped
-    /// first (the encoder held whole beside it does not fit 16 GB) and loaded again by the next
-    /// picture; the encoder is dropped after.
-    pub fn chat(&mut self, system: &str, prompt: &str, max_tokens: usize, cancel: &dyn Fn() -> bool) -> Result<String> {
+    /// Whether the encoder file has Qwen3.5's vision tower (`model.visual`), so a chat can see a
+    /// picture ([`Self::chat`]); read from the file's header.
+    pub fn can_see(&self) -> bool {
+        safetensors_has(&self.shared.text, "model.visual.pos_embed.weight").unwrap_or(false)
+    }
+
+    /// A text answer from the encoder's own language model (Qwen3.5-9B): `system` and `prompt`
+    /// as a chat with thinking off, `image` in view when given (through its vision tower, the
+    /// picture's tokens spliced in as the Windows chat splices them), greedy, at most
+    /// `max_tokens`. The DiT is dropped first (the encoder held whole beside it does not fit 16
+    /// GB) and loaded again by the next picture; the tower runs and goes before the language
+    /// model loads, and the language model is dropped after.
+    pub fn chat(&mut self, system: &str, prompt: &str, image: Option<&RefPicture>, max_tokens: usize, cancel: &dyn Fn() -> bool) -> Result<String> {
         self.dit = None;
         mlx_rs::memory::clear_cache()?;
         let cfg = TextConfig::qwen35_9b();
@@ -229,16 +237,33 @@ impl MossMlx {
         if !dir.join("base.safetensors").is_file() {
             crate::text::convert_streamed(&text, &cfg, DTYPE, TEXT_PRECISION, &dir)?;
         }
+        let features = match image {
+            Some(r) => {
+                let path = dir.join("vision.f16.safetensors");
+                if !path.is_file() {
+                    crate::vision::convert(&text, &path)?;
+                }
+                let tower = crate::vision::VisionTower::load(&path)?;
+                let f = tower.forward(&r.rgba, r.width, r.height)?;
+                drop(tower);
+                mlx_rs::memory::clear_cache()?;
+                Some(f)
+            }
+            None => None,
+        };
         let head = crate::text::lm_head(&text, DTYPE, TEXT_PRECISION, &dir.join("lm_head.safetensors"))?;
         let t_load = Instant::now();
         let te = Qwen35Text::resident(&cfg, crate::text::embedding(&text, &cfg)?, &dir, DTYPE)?;
         if crate::profile::enabled() {
             eprintln!("profile: chat load layers + embedding + lm_head {:.0} ms", t_load.elapsed().as_secs_f64() * 1000.0);
         }
-        let chat = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
+        let vision = if features.is_some() { "<|vision_start|><|image_pad|><|vision_end|>" } else { "" };
+        let chat =
+            format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{vision}{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
         let ids = self.tok.encode(chat, false).map_err(|e| anyhow::anyhow!("encode chat: {e}"))?.get_ids().to_vec();
         let stop: Vec<u32> = ["<|im_end|>", "<|endoftext|>"].iter().filter_map(|t| self.tok.token_to_id(t)).collect();
-        let out = te.generate(&head, &ids, max_tokens, &stop, cancel);
+        let pad = self.tok.token_to_id("<|image_pad|>").context("the tokenizer has no <|image_pad|>")?;
+        let out = te.generate(&head, &ids, features.as_ref().map(|f| (f, pad)), max_tokens, &stop, cancel);
         drop(te);
         drop(head);
         mlx_rs::memory::clear_cache()?;
@@ -397,4 +422,18 @@ mod tests {
         let (w, h) = super::edit_size(512, 512, super::EDIT_PIXELS);
         assert_eq!(super::reference_size(512, 512, w.max(h).clamp(super::LOW_VRAM_REFERENCE_EDGE, super::REFERENCE_EDGE)), (w, h));
     }
+}
+
+/// Whether the safetensors file at `path` lists `name` (its header alone is read).
+fn safetensors_has(path: &Path, name: &str) -> Result<bool> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut len = [0u8; 8];
+    f.read_exact(&mut len)?;
+    let len = u64::from_le_bytes(len);
+    anyhow::ensure!(len <= 64 * 1024 * 1024, "a safetensors header of {len} bytes");
+    let mut header = vec![0u8; usize::try_from(len)?];
+    f.read_exact(&mut header)?;
+    let v: serde_json::Value = serde_json::from_slice(&header)?;
+    Ok(v.get(name).is_some())
 }
