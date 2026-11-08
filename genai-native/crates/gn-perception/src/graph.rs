@@ -8,6 +8,8 @@ pub enum Device {
     Cuda { ordinal: i32 },
     /// The CPU only.
     Cpu,
+    /// The Apple GPU through candle's Metal backend (macOS).
+    Metal,
 }
 
 /// The node's knobs.

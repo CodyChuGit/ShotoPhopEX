@@ -7,17 +7,18 @@
 <p align="center">
   <b>The layered image editor with a generative AI studio inside it.</b><br>
   Fill, Expand, Remove, Edit, Split into Layers and text-to-image, on open-weight models,<br>
-  running on your own GPU. Written in Rust. No cloud, no account, no credits, no Python, no ComfyUI.
+  running on your own NVIDIA GPU or Apple Silicon Mac. Written in Rust. No cloud, no account, no credits, no Python, no ComfyUI.
 </p>
 
 <p align="center">
-  <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
+  <img alt="Rust and CUDA" src="https://img.shields.io/badge/Rust-%2B%20CUDA%20kernels-b7410e?style=flat-square&logo=rust">
   <img alt="Runs locally on NVIDIA RTX" src="https://img.shields.io/badge/runs%20on-NVIDIA%20RTX-76b900?style=flat-square&logo=nvidia&logoColor=white">
   <img alt="12 GB cards supported with MOSS" src="https://img.shields.io/badge/from-12%20GB%20VRAM-76b900?style=flat-square&logo=nvidia&logoColor=white">
+  <img alt="Apple Silicon Macs with MLX" src="https://img.shields.io/badge/Mac-Apple%20Silicon%20(MLX)-555555?style=flat-square&logo=apple&logoColor=white">
   <img alt="No Python" src="https://img.shields.io/badge/Python-none-3a3a3a?style=flat-square&logo=python&logoColor=white">
   <img alt="Faster than ComfyUI" src="https://img.shields.io/badge/vs%20ComfyUI-faster%20on%2010%20of%2012-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: beta, v0.1.0" src="https://img.shields.io/badge/status-beta%20v0.1.0-d69e2e?style=flat-square">
+  <img alt="Status: beta, v0.1.1" src="https://img.shields.io/badge/status-beta%20v0.1.1-d69e2e?style=flat-square">
   <a href="https://github.com/CodyChuGit/ShotoPhopEX/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/CodyChuGit/ShotoPhopEX?style=flat-square&logo=github"></a>
 </p>
 
@@ -28,6 +29,7 @@
   <a href="#-features">Features</a> ·
   <a href="#-benchmarks">Benchmarks</a> ·
   <a href="#-will-it-run-on-my-card">Your GPU</a> ·
+  <a href="#-on-a-mac">Mac</a> ·
   <a href="#-models">Models</a> ·
   <a href="#-faq">FAQ</a>
 </p>
@@ -52,47 +54,55 @@
 
 ShotoPhopEX is a full layered photo editor (layers, masks, adjustment layers, type, vectors,
 brushes, real PSD files) with Photoshop-style generative tools built in. Every model runs on your
-own NVIDIA card through a native Rust engine with its own CUDA kernels, and every result lands on
-its own masked layer, so the original pixels never change.
+own machine through a native Rust engine: our own CUDA kernels on an NVIDIA card, Apple's MLX on
+an Apple Silicon Mac. Every result lands on its own masked layer, so the original pixels never change.
 
 | | |
 |---|---|
 | **What you get** | Generative Fill, Edit, Remove, Expand, Angles, Upscale, Split into Layers, Clown Pass, Select by text and text to image |
-| **Where it runs** | On your own NVIDIA RTX card, from 12 GB of VRAM, on Windows 10 or 11 and Linux |
+| **Where it runs** | On your own NVIDIA RTX card, from 12 GB of VRAM, on Windows 10 or 11 and Linux; on an Apple Silicon Mac with 16 GB ([Mac](#-on-a-mac)) |
 | **What it doesn't need** | No cloud, no account, no credits, no Python, no ComfyUI |
 | **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([benchmarks](#-benchmarks)) |
 | **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, SAM 3.1), in ComfyUI's folder layout |
-| **Status** | Beta, v0.1.0, the first release. Downloads for Windows and Linux ([install](#-install)) |
-| **Licence** | MIT or Apache-2.0. Each model keeps its own licence |
+| **Status** | Beta, v0.1.1. Downloads for Windows, Linux and Apple Silicon Macs ([install](#-install)) |
+| **Licence** | MIT or Apache-2.0 (the native engine's `qir` crate is Apache-2.0 only). Each model keeps its own licence |
 
 - 🎨 **The tools artists use.** Start from a selection and a prompt; the app picks the model.
 - ⚡ **Fast.** Our own int8 kernels, resident encoders and merged LoRAs.
-- 🔒 **Local and private.** One executable plus NVIDIA's libraries. Nothing leaves your PC.
+- 🔒 **Local.** One app, with NVIDIA's libraries on a PC or MLX built in on a Mac. Image editing and AI
+  inference run on your own computer, and your images are not uploaded. The app goes online only to
+  download the models and CUDA libraries you ask for and to check GitHub for updates (Preferences ›
+  General › Automatically Check for Updates turns that off); see the [FAQ](#-faq).
 - 🤖 **Agent-ready.** Every action is a command, so the UI, the CLI and an MCP server drive the same 500+ commands.
 
 ## 🚀 Install
 
-Download a build from the [**v0.1.0 release**](https://github.com/CodyChuGit/ShotoPhopEX/releases/latest).
+Download a build from the [**v0.1.1 release**](https://github.com/CodyChuGit/ShotoPhopEX/releases/latest).
 Pick one file; none of them includes models (you add those on first launch).
 
 | Download | For | Size |
 |---|---|---|
-| [`photocraft-0.1.0-windows-x64.msi`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.0/photocraft-0.1.0-windows-x64.msi) | **Windows installer**: Start menu entry, uninstalls from Settings | 490 MB |
-| [`photocraft-0.1.0-windows-x64-portable.zip`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.0/photocraft-0.1.0-windows-x64-portable.zip) | **Windows portable**: extract and run, nothing installed | 541 MB |
-| [`photocraft-0.1.0-linux-x86_64.tar.gz`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.0/photocraft-0.1.0-linux-x86_64.tar.gz) | **Linux**: run from the folder, or install with `install.sh` | 609 MB |
-| [`SHA256SUMS`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.0/SHA256SUMS) | Checksums for the three files above | |
+| [`photocraft-0.1.1-windows-x64.msi`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-windows-x64.msi) | **Windows installer**: Start menu entry, uninstalls from Settings | 490 MB |
+| [`photocraft-0.1.1-windows-x64-portable.zip`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-windows-x64-portable.zip) | **Windows portable**: extract and run, nothing installed | 541 MB |
+| [`photocraft-0.1.1-linux-x86_64.tar.gz`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-linux-x86_64.tar.gz) | **Linux**: run from the folder, or install with `install.sh` | 609 MB |
+| [`photocraft-0.1.1-macos-aarch64.dmg`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-macos-aarch64.dmg) | **Mac (Apple Silicon)**: drag to Applications | 118 MB |
+| [`SHA256SUMS`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/SHA256SUMS) | Checksums for the files above | |
 
 **Check the download (optional).** Compare the file's hash with its line in `SHA256SUMS`:
 
 ```powershell
-Get-FileHash .\photocraft-0.1.0-windows-x64.msi   # Windows (PowerShell)
+Get-FileHash .\photocraft-0.1.1-windows-x64.msi   # Windows (PowerShell)
 ```
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing          # Linux, in the folder with both files
 ```
 
-**SmartScreen.** The Windows files are not code-signed, so on first run Windows shows
-**"Windows protected your PC"**. Click **More info**, then **Run anyway**. It only asks once per file.
+**SmartScreen.** The Windows files are not code-signed, so Windows shows **"Windows protected
+your PC"** on first run. The warning means Windows cannot confirm who published the file; it does
+not mean the file was checked and found safe. Download only from the
+[release page](https://github.com/CodyChuGit/ShotoPhopEX/releases), compare the file's SHA-256
+with `SHA256SUMS` (above), and only then click **More info › Run anyway**. Note that `SHA256SUMS`
+comes from the same release page, so it catches a damaged download, not a compromised release.
 
 ### What you need
 
@@ -101,11 +111,35 @@ sha256sum -c SHA256SUMS --ignore-missing          # Linux, in the folder with bo
 | **GPU** | NVIDIA RTX 30, 40 or 50 series with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
 | **Driver** | NVIDIA driver 580 or newer (CUDA 13). Nothing else: the CUDA libraries the app needs ship with it. |
 | **OS** | Windows 10 or 11, x64, or Linux x86_64 (glibc 2.39 or newer, e.g. Ubuntu 24.04) |
-| **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set |
+| **Mac** | Apple Silicon (M1 or newer) with 16 GB, macOS 14 or newer. No NVIDIA card or driver needed; there is no Intel build |
+| **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set, about 25 GB for the Mac pack |
+
+### macOS (`.dmg`, Apple Silicon)
+
+`photocraft-0.1.1-macos-aarch64.dmg` (about 120 MB, MLX built in, nothing else to install)
+runs on an Apple Silicon Mac (M1 or newer) with macOS 14 or newer. It installs as **ShotoPhopEX**,
+with its own app id and settings, so it sits happily next to an official PhotoCraft. What runs on
+a Mac is in [On a Mac](#-on-a-mac).
+
+1. Open the `.dmg` and drag **ShotoPhopEX** onto **Applications**.
+2. Open it from Applications. The app is not signed or notarized, so the first time macOS says
+   **"ShotoPhopEX" Not Opened: Apple could not verify "ShotoPhopEX" is free of malware that may harm
+   your Mac or compromise your privacy.** Click **Done** (not Move to Trash).
+3. Open **System Settings › Privacy & Security**, scroll to **Security**, where it says
+   **"ShotoPhopEX" was blocked to protect your Mac.**, and click **Open Anyway**. Confirm with your
+   password or Touch ID, then click **Open**. macOS asks this only once.
+4. If macOS instead says the app **"is damaged and can't be opened"**, clear the download flag
+   in Terminal, then open it again:
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/ShotoPhopEX.app
+   ```
+5. Open **Help › Get AI Models…** and take the **Mac pack**. It puts the models in
+   `Documents/ShotoPhopEX/models`, so on first use macOS asks
+   **"ShotoPhopEX" would like to access files in your Documents folder.** Click **Allow**.
 
 ### Windows installer (`.msi`)
 
-1. Download `photocraft-0.1.0-windows-x64.msi` and open it.
+1. Download `photocraft-0.1.1-windows-x64.msi` and open it.
 2. If SmartScreen shows **"Windows protected your PC"**, click **More info › Run anyway**.
 3. Click through the wizard. It installs for your account only (no administrator needed) into
    `%LOCALAPPDATA%\Programs\ArtCraft\PhotoCraft`; tick **Install for all users** on the first
@@ -117,7 +151,7 @@ stay in `%APPDATA%\Photocraft` until you delete them.
 
 ### Portable zip (`-portable.zip`)
 
-1. Download `photocraft-0.1.0-windows-x64-portable.zip`.
+1. Download `photocraft-0.1.1-windows-x64-portable.zip`.
 2. Right-click it › **Properties**, tick **Unblock**, then **OK**. Otherwise Windows may block the
    app's files.
 3. Extract it anywhere (a USB drive works), for example `D:\ShotoPhopEX`.
@@ -139,12 +173,12 @@ folder**, leave **Native runtime folders** empty (the bundled `runtime` folder i
 
 ### Linux (`.tar.gz`)
 
-1. Download `photocraft-0.1.0-linux-x86_64.tar.gz` and extract it:
-   `tar -xzf photocraft-0.1.0-linux-x86_64.tar.gz`
-2. Run it from the folder with `./photocraft-0.1.0-linux-x86_64/bin/photocraft`, or install it
+1. Download `photocraft-0.1.1-linux-x86_64.tar.gz` and extract it:
+   `tar -xzf photocraft-0.1.1-linux-x86_64.tar.gz`
+2. Run it from the folder with `./photocraft-0.1.1-linux-x86_64/bin/photocraft`, or install it
    with its menu entry and icon:
    ```sh
-   cd photocraft-0.1.0-linux-x86_64
+   cd photocraft-0.1.1-linux-x86_64
    ./install.sh               # for your account, into ~/.local (no root)
    sudo ./install.sh /usr/local   # or for everyone
    ```
@@ -227,7 +261,8 @@ Open a coding agent (Claude Code, Codex, or any agent with a terminal) and paste
 ```text
 Install ShotoPhopEX on this PC from the latest release at
 https://github.com/CodyChuGit/ShotoPhopEX/releases/latest, following the README's Install
-section. Run nvidia-smi first and stop if there is no NVIDIA GPU with 12 GB or more.
+section. On a PC, run nvidia-smi first and stop if there is no NVIDIA GPU with 12 GB or more;
+on a Mac, stop unless it is Apple Silicon with 16 GB and macOS 14 or newer.
 Check the download against SHA256SUMS, install it, start the app, and tell me to open
 Help > Get AI Models… to download the models for my card.
 ```
@@ -401,7 +436,10 @@ cache). ComfyUI ran with `--fast fp8_matrix_mult`.
 | Generative Upscale 2× | **24.2 s** | 44.1 s | 1.82× |
 | MOSS-Image (1024², 50 steps) | 11.0 s | 10.8 s | 0.98× |
 
-Measured on an RTX 5090 (32 GB, Windows 11) on 2026-10-28 and 29. Remove Background has since
+Measured on an RTX 5090 (32 GB, Windows 11) on 2026-10-28 and 29, on one machine, by the
+project itself; the ComfyUI version and NVIDIA driver were not recorded, so treat these as
+indicative, not as an independent benchmark. Your numbers will differ with other cards, drivers
+and settings. Remove Background has since
 moved to SAM 3.1 + ViTMatte (0.45 s). Split into Layers, Clown Pass and the MOSS Turbo routes have
 no ComfyUI graph to compare against, so they are listed in [Every feature](#every-feature) only. No RTX
 3090 numbers exist yet, so none are shown.
@@ -431,13 +469,35 @@ about 12 GB.
 | **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
 | **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟡 should work, not yet benchmarked |
 | **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB |
-| **Mac, 16 GB** | MOSS Turbo and MOSS Edit Turbo on MLX | ⚪ planned |
+| **Mac, 16 GB** (Apple Silicon) | MOSS Turbo, MOSS Edit and FLUX 3 Image Klein on MLX ([On a Mac](#-on-a-mac)) | 🟡 works on an M1 Air; `.dmg` since v0.1.1 |
 | **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
 
 A **memory check at first launch** reads your card's memory and picks these defaults for you;
 bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
 Integrations › Memory profile** lets you choose another.
 Nothing is ever locked: every model is bring-your-own and selectable on any card.
+
+## 🍎 On a Mac
+
+The Mac build runs the same editor with the models on Apple's GPU through
+[MLX](https://github.com/ml-explore/mlx), compiled into the app: no Python, Homebrew or Xcode.
+It is tuned on an M1 MacBook Air with 16 GB; times below are for 512² pictures. Expect minutes where an RTX card takes seconds.
+
+| Feature | On a Mac | About how long, M1 Air 16 GB |
+|---|---|---|
+| **Generate Image** | MOSS Turbo; FLUX 3 Image Klein for higher quality | about 36 s · Klein about 100 s |
+| **Generative Edit** | MOSS Edit; Klein Edit selectable | about 1.75 min |
+| **Generative Fill · Remove** | Klein | about 2 min |
+| **Generative Expand** | Klein + Outpaint LoRA | about 3.2 min (512² to 768×512) |
+| **Split into Layers** | SAM 3.1 + ViTMatte + Klein fill | about 3.5 min |
+| **Clown Pass** | SAM 3.1 + ViTMatte | about 3.3 min |
+| **Select Subject / by text / by point** | SAM 3.1 | 1 s for a click · about 28 s by text |
+| **Remove Background** | SAM 3.1 + ViTMatte | about 8 s |
+| **Prompt Enhance** | MOSS's own text encoder, reading your words only (not yet the picture) | about 15–30 s |
+
+Not on the Mac yet: **Generative Angles**, Upscale and the big Krea 2 and Qwen-Image-2.1 models.
+Times are early and getting faster. Klein runs from mflux's 4-bit MLX files, bring-your-own like
+every model, under the FLUX Kommunity License.
 
 ## 🧠 Models
 
@@ -471,6 +531,20 @@ ComfyUI's layout. Most files come from the Comfy-Org repacks on Hugging Face.
 | `text_encoders/` | `qwen3.5_9b_int8_convrot.safetensors`, plus `qwen35_tokenizer/tokenizer.json` | `Comfy-Org/MOSS-Image`; the tokenizer from `OpenMOSS-Team/MOSS-Image-SFT` | MOSS's text encoder |
 | `vae/` | `flux2-vae_small.safetensors` | `Comfy-Org/MOSS-Image` | MOSS |
 
+**Mac pack (Apple Silicon, about 25 GB)**
+
+Get AI Models downloads these for you; MOSS Turbo here is MOSS-Image with a 4-step LoRA, and
+SAM 3.1 and ViTMatte are the same files as above.
+
+| Folder | File | From | Used for |
+|---|---|---|---|
+| `diffusion_models/` | `moss_image_sft_int8_convrot.safetensors` | `Comfy-Org/MOSS-Image` | MOSS Turbo and MOSS Edit |
+| `loras/` | `moss_image_sft_4step_v2.0.safetensors` | `akhaliq/MOSS-Image-SFT-4-steps` | MOSS Turbo at 4 steps |
+| `loras/` | `moss-image-edit/adapter_model.safetensors` + `adapter_config.json` | `chinoll/Moss-Image-Edit` | MOSS Edit |
+| `text_encoders/`, `vae/` | `qwen3.5_9b_int8_convrot.safetensors` + tokenizer, `flux2-vae_small.safetensors` | as in the low-VRAM set | MOSS, Enhance; the VAE for Klein too |
+| `mlx/flux-3-image-klein-q4/` | `transformer/`, `text_encoder/` | `mflux-community/flux-3-image-klein-mflux-q4` | Klein: Generate, Edit, Fill, Remove, Expand, Split |
+| `loras/` | `flux-3-image-klein-outpaint.safetensors` | `ausboss/FLUX-3-Image-Klein-Outpaint-LoRA` | Generative Expand on Klein |
+
 **Optional extras**
 
 | Folder | File | From | Used for |
@@ -482,11 +556,19 @@ ComfyUI's layout. Most files come from the Comfy-Org repacks on Hugging Face.
 | `loras/` | `krea2_style_reference.safetensors` | `ostris/krea2_turbo_style_reference` | Krea 2 style reference |
 | `vae_approx/` | `taew2_1.safetensors`, `taeqi2_1.safetensors` | madebyollin (MIT) | Sharp live previews |
 
-**Licences matter.** Qwen-Image-2.1 and its LoRAs are under the Qwen Research License (research
-and evaluation; commercial use needs Alibaba's agreement). Krea 2, its LoRAs and SAM 3.1 are
-under their own community licences. Kromoss, MOSS-Image, Qwen-Image-Edit-2511 and the Lightning
-and Angles LoRAs are Apache-2.0; ViTMatte is MIT; check the MOSS Edit adapter's own card. The full
-catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comfy/models.md).
+**Licences matter.** Model weights are not part of ShotoPhopEX and are not covered by its
+licence. Qwen-Image-2.1, its VAE and its Outpaint, Restore and Viggle LoRAs are under the Qwen
+Research License (non-commercial; commercial use needs a licence from Alibaba). Krea 2 and its
+AnyPaint and style LoRAs are under the Krea 2 Community License (commercial use only below US$1M
+annual revenue, plus Krea's use policy); the Krea 2 General Edit LoRA adds its author's own
+non-commercial licence. SAM 3.1 is under Meta's SAM License (commercial use allowed; no military,
+weapons or trade-control-restricted uses). FLUX 3 Image Klein and its LoRAs (the Mac's Fill and Expand) are under the FLUX Kommunity
+License. Kromoss, MOSS-Image, Qwen-Image-Edit-2511, the
+Lightning, Angles and Object Remover LoRAs and ViTMatte are Apache-2.0. The MOSS Edit adapter
+states no licence at all. **Get AI Models** lists the licence of every file it is about to
+download, with a link, and downloads only after you accept them. Details and sources:
+[`docs/compliance/MODEL_LICENSES.md`](docs/compliance/MODEL_LICENSES.md); sizes, hashes and VRAM:
+[`docs/comfy/models.md`](docs/comfy/models.md).
 
 ## 🗺️ Roadmap
 
@@ -503,10 +585,11 @@ catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comf
 - [x] Generative Angles on Qwen-Image-Edit-2511 with the Multiple Angles LoRA
 - [x] A security pass on the app's own code (automation folders, model file parsing, downloads), with fuzz targets
 - [x] Best quality at 2 MP without the slow decode: the Krea 2 VAE decode at 1440² went from 14–45 s to 0.47 s
-- [ ] **The first release, v0.1.0:** Windows installer, portable zip and Linux `.tar.gz`, built in CI and being tested before it goes public
+- [x] **The first release, v0.1.0:** Windows installer, portable zip and Linux `.tar.gz`
 - [ ] **Split into Layers on busy scenes:** some people can still stay in the background; a mask-aware remover is next
 - [ ] **RTX 3090 / 4090 benchmarks**, and 4-bit weights for 16 GB cards
-- [ ] **Mac** (MLX, 16 GB unified memory) on the MOSS stack
+- [x] **Mac** (MLX, Apple Silicon, 16 GB): `.dmg` since v0.1.1, with MOSS, Klein and SAM 3.1
+- [ ] **Mac Angles**
 
 **What's next**
 
@@ -514,7 +597,7 @@ catalogue, with sizes, hashes and VRAM, is in [`docs/comfy/models.md`](docs/comf
 |---|---|---|
 | 1 | **ControlNet**, native in Rust, with its own panel: guide a picture by pose, depth, edges or lines | [Qwen-Image-2.1 Fun ControlNet Union](https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union) |
 | 2 | **Pose posing**: drag a 3D armature (or hands, or several figures) into place instead of hunting for a pose image; the armature is only a front end, and ControlNet does the generating | step 1 |
-| 3 | **Apple Silicon** (in parallel with 1 and 2): an MLX rewrite, MOSS first, the larger models as 16 GB+ Macs allow | the MOSS stack |
+| 3 | **Apple Silicon** (in parallel with 1 and 2): MOSS, Klein and SAM 3.1 already run on MLX; next are speed, Enhance that reads the picture, and Angles | the MOSS stack, FLUX 3 Image Klein |
 | 4 | **Style tuning**: LoRA and checkpoint tuning for better photoreal, anime and illustration output | every route's LoRA loading |
 | 5 | **Live paint**: generation that follows your brush in real time, locally | the live preview path, Krea 2 / MOSS Turbo |
 
@@ -597,8 +680,23 @@ The full feature list, file formats and platform notes are in upstream's
 <details>
 <summary><b>Does anything go to the cloud?</b></summary>
 
-No. The models run in a worker process on your own GPU, read from your own folder. There is no
-account, no telemetry for generations and no credit counter.
+Your images don't. Image editing and AI inference run locally on your device: the models run in
+a worker process on your own GPU, read from your own folder, and images are not uploaded for
+inference. There is no account, no telemetry, no crash reporting and no credit counter.
+
+The app does use the network for a few things you can see:
+
+- **Get AI Models** downloads model files from Hugging Face and, on Windows, NVIDIA's CUDA
+  libraries from NVIDIA, when you press Download (a Hugging Face token, if you type one, is sent
+  only to Hugging Face and never saved).
+- **Update check**: at launch it asks GitHub for the latest ShotoPhopEX release (Preferences ›
+  General › Automatically Check for Updates turns it off); installing an update downloads it from GitHub.
+- Things you start yourself: downloading an app icon from a URL, printing to a network printer,
+  opening links in your browser.
+- **Agent control** (`--control`, MCP) listens only on `127.0.0.1` and needs a token; it is off
+  unless you start it.
+
+Each of those requests reveals your IP address to the server it goes to, as any download does.
 
 </details>
 
@@ -619,10 +717,20 @@ selection, which peak at about 12 GiB. The larger models stay selectable; they m
 </details>
 
 <details>
+<summary><b>Does it run on a Mac?</b></summary>
+
+Yes, on Apple Silicon (M1 or newer) with 16 GB and macOS 14 or newer, through MLX built into the
+app. It is slower than an RTX card and Angles isn't there
+yet; see [On a Mac](#-on-a-mac). There is no Intel Mac build.
+
+</details>
+
+<details>
 <summary><b>Can I use my own models and LoRAs?</b></summary>
 
 Yes. Every model is bring-your-own, and every route accepts LoRAs from your `loras` folder. The
-app never locks a model behind a licence switch; you are responsible for each model's own licence.
+app never locks a model behind a licence switch; you are responsible for each model's own licence
+(Get AI Models shows them before it downloads anything).
 
 </details>
 
@@ -672,12 +780,17 @@ helps other people find it.
     [MOSS-Image-SFT](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT)) for MOSS-Image, and
     [lodestones](https://huggingface.co/lodestones) for [Kromoss](https://huggingface.co/lodestones/Kromoss)
     and its 8-step DMD2 LoRA;
+  - [**Black Forest Labs**](https://huggingface.co/black-forest-labs) for FLUX 3 Image Klein, and
+    [mflux](https://github.com/filipstrand/mflux) and [mflux-community](https://huggingface.co/mflux-community)
+    for its MLX port and 4-bit files, which our Mac code follows; Apple's [MLX](https://github.com/ml-explore/mlx) team;
   - **Meta** for SAM 3.1, and [hustvl](https://huggingface.co/hustvl) for
     [ViTMatte](https://huggingface.co/hustvl/vitmatte-base-composition-1k).
 - **The LoRA and adapter authors:**
   [AusBoss](https://huggingface.co/ausboss) for the
-  [Outpaint](https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA) and
-  [Restore](https://huggingface.co/ausboss/Qwen-Image-2.1-Restore-LoRA) LoRAs;
+  [Outpaint](https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA),
+  [Restore](https://huggingface.co/ausboss/Qwen-Image-2.1-Restore-LoRA) and
+  [Klein Outpaint](https://huggingface.co/ausboss/FLUX-3-Image-Klein-Outpaint-LoRA) LoRAs;
+  [akhaliq](https://huggingface.co/akhaliq) for the [MOSS 4-step LoRA](https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps);
   [yijunwang2](https://huggingface.co/yijunwang2) for [Krea 2 AnyPaint](https://huggingface.co/yijunwang2/krea2-anypaint);
   [fal](https://huggingface.co/fal) for the [Multiple Angles LoRA](https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA);
   [lightx2v](https://huggingface.co/lightx2v) for the [2511 Lightning LoRAs](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning);
@@ -692,20 +805,26 @@ helps other people find it.
 ## License
 
 ShotoPhopEX is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
-option, like upstream. Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, and
-Copyright (c) 2026 [Cody Chu](https://github.com/CodyChuGit) and the ShotoPhopEX contributors.
+option, like upstream (the native engine's `qir` crate is Apache-2.0 only). The PhotoCraft code
+is Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors; this fork's additions are
+Copyright (c) 2026 [Cody Chu](https://github.com/CodyChuGit) and the other ShotoPhopEX
+contributors, each in their own contributions.
 Required notices are in [NOTICE](NOTICE); bundled fonts, icons and images keep their own
 licences, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
 
-**Forking or reusing this code?** You're welcome to, under either licence. Both licences require
-you to keep the copyright lines in [LICENSE-MIT](LICENSE-MIT) and the [NOTICE](NOTICE) file
-with every copy, in source or binary form. Please also credit
-**ShotoPhopEX by Cody Chu** with a link to <https://github.com/CodyChuGit/ShotoPhopEX> in your
-README or About screen.
+**Forking or reusing this code?** You're welcome to, commercially or not, under either licence.
+Under MIT, keep the copyright and permission notice; under Apache-2.0, keep the licence, mark the
+files you change, and carry over the notices in [NOTICE](NOTICE) that apply to what you
+distribute. Third-party parts, the NVIDIA libraries in the release packages and the model weights
+have their own terms. Public attribution to ShotoPhopEX by Cody Chu, with a link to
+<https://github.com/CodyChuGit/ShotoPhopEX>, is appreciated but is not an additional license
+requirement. The compliance notes are in [`docs/compliance/`](docs/compliance/).
 
-Built on [PhotoCraft](https://github.com/storytold/photocraft) by the ArtCraft team. This fork is
-not made or endorsed by them, and per [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt)
-it does not use the ArtCraft name or logos as its own. Thanks to the authors of every open model
+Built on [PhotoCraft](https://github.com/storytold/photocraft) by the ArtCraft team. ShotoPhopEX
+is an independent fork, not an official PhotoCraft release, and is not made or endorsed by them.
+Per [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt) it does not use the ArtCraft
+logos; the Windows installer still uses upstream's install folder and publisher name for
+compatibility, which is under review ([`docs/compliance/UNRESOLVED_RISKS.md`](docs/compliance/UNRESOLVED_RISKS.md)). Thanks to the authors of every open model
 and LoRA listed in [Models](#-models).
 
 Model weights are not part of this repository and keep their own licences. Every artwork shown in

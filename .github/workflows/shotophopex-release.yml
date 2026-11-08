@@ -115,6 +115,12 @@ jobs:
             # Each archive holds one <name>-archive folder with bin, include, lib...: merge them into one tree.
             robocopy (Join-Path $dl ($file -replace '\.zip$', '')) $root /E /NFL /NDL /NJH /NJS /NP | Out-Null
             if ($LASTEXITCODE -ge 8) { throw "${c}: copy failed ($LASTEXITCODE)" }
+            # NVIDIA's EULA as it ships with the runtime libraries; the packages carry it (runtime.ps1).
+            if ($c -eq 'cuda_cudart') {
+              $eula = Join-Path (Join-Path $dl ($file -replace '\.zip$', '')) 'LICENSE'
+              if (-not (Test-Path $eula)) { throw 'cuda_cudart: the archive has no LICENSE (NVIDIA EULA)' }
+              Copy-Item $eula (Join-Path $root 'NVIDIA-CUDA-EULA.txt')
+            }
             Write-Host "$c $($manifest.$c.version)"
           }
           # CCCL (CUB, Thrust, libcu++) is no longer in the CUDA 13 redist manifest: take NVIDIA's wheel,
@@ -150,7 +156,7 @@ jobs:
         shell: pwsh
         run: |
           $bin = if (Test-Path "$env:CUDA_PATH\bin\x64\cudart64_13.dll") { "$env:CUDA_PATH\bin\x64" } else { "$env:CUDA_PATH\bin" }
-          pwsh packaging/windows/runtime.ps1 -Cuda $bin
+          pwsh packaging/windows/runtime.ps1 -Cuda $bin -Eula "$env:CUDA_PATH\NVIDIA-CUDA-EULA.txt"
       - name: Build and package (MSI + portable zip)
         shell: pwsh
         run: pwsh packaging/windows/package.ps1 -Arch x64 -Native
@@ -165,6 +171,9 @@ jobs:
           & (Join-Path $dir 'photocraft-cli.exe') --version
           if ($LASTEXITCODE -ne 0) { throw "photocraft-cli.exe did not start from the zip ($LASTEXITCODE)" }
           if (-not (Test-Path (Join-Path $dir 'runtime\cublasLt64_13.dll'))) { throw 'the zip has no runtime folder' }
+          foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt', 'runtime\NVIDIA-CUDA-EULA.txt') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "the zip has no $f" }
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: windows-x64
@@ -172,6 +181,7 @@ jobs:
           path: |
             dist/release/*.msi
             dist/release/*-portable.zip
+            dist/release/*.spdx.json
 
   linux:
     needs: version
@@ -214,6 +224,7 @@ jobs:
             echo "CUDA_HOME=$C"; echo "CUDA_PATH=$C"; echo "CUDA_ROOT=$C"
             echo "LIBRARY_PATH=$C/lib:$RUNNER_TEMP/cuda-link"; echo "CUDA_LIB=$C/lib"
           } >> "$GITHUB_ENV"
+          echo "NVIDIA_EULA=$(ls "$RUNNER_TEMP"/cuda/nvidia_cuda_runtime-*.dist-info/licenses/License.txt)" >> "$GITHUB_ENV"
           echo "$C/bin" >> "$GITHUB_PATH"
           "$C/bin/nvcc" --version
       - name: CUTLASS headers
@@ -224,12 +235,14 @@ jobs:
         with:
           key: native-sm${{ env.CUDA_COMPUTE_CAP }}-k${{ env.QIR_CUDA_ARCHS }}
       - name: Build and package (tar.gz)
-        run: DRIVER_LIB_DIR="$RUNNER_TEMP/cuda-link" packaging/linux/package-native.sh --cuda-lib "$CUDA_LIB"
+        run: DRIVER_LIB_DIR="$RUNNER_TEMP/cuda-link" packaging/linux/package-native.sh --cuda-lib "$CUDA_LIB" --nvidia-eula "$NVIDIA_EULA"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: linux-x86_64
           if-no-files-found: error
-          path: dist/release/*.tar.gz
+          path: |
+            dist/release/*.tar.gz
+            dist/release/*.spdx.json
 
   draft:
     needs: [version, windows, linux]

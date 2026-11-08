@@ -13,6 +13,8 @@ default = ["gpu"]
 heif = ["photocraft-codecs/heif"]
 # The native worker serves Qwen-Image-2.1 too (needs nvcc; see crates/genai/Cargo.toml).
 native-diffusion = ["photocraft-genai/native-diffusion"]
+# The Mac build's native worker: MOSS-Image on MLX (Apple Silicon), no CUDA.
+native-mlx = ["photocraft-genai/native-mlx"]
 # Optional native GPU rendering backend, enabled by default in native CLI builds.
 gpu = ["photocraft-automation/gpu"]
 

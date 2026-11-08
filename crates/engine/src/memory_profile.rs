@@ -127,6 +127,12 @@ pub fn edit_template(p: Option<Profile>) -> Option<&'static str> {
     p.is_some_and(Profile::small).then_some(SMALL_EDIT_TEMPLATE)
 }
 
+/// The fill template Auto runs on this profile, when it differs from the usual choice: a Mac
+/// fills with FLUX 3 Klein on MLX (the Qwen fills are CUDA-only).
+pub fn fill_template(p: Option<Profile>) -> Option<&'static str> {
+    matches!(p, Some(Profile::Mac16 | Profile::Mac8)).then_some(crate::generate_cmds::KLEIN_FILL_TEMPLATE)
+}
+
 /// Gigabytes of card memory a template's family needs at its peak, in the formats it runs in
 /// today (the worker drops the 2.1 text encoder to Q8_0 under 28 GB and runs MOSS in its 12 GB
 /// mode on a small card). `None` for a family not listed.
@@ -148,7 +154,10 @@ pub fn need_gb(template: &str) -> Option<f32> {
 
 /// The picker's `may not fit` badge: the template needs more than the profile's budget.
 pub fn may_not_fit(p: Option<Profile>, template: &str) -> bool {
-    match (p, need_gb(template)) {
+    // On a Mac MOSS runs on MLX: the 8-bit encoder, then the 8-bit DiT, 7.6 GB at the peak
+    // (gn-mlx, measured on a 16 GB M1 Air, 2026-11-07).
+    let need = if matches!(p, Some(Profile::Mac16 | Profile::Mac8)) && template.starts_with("moss") { Some(8.0) } else { need_gb(template) };
+    match (p, need) {
         (Some(p), Some(need)) => need > p.budget_gb(),
         _ => false,
     }

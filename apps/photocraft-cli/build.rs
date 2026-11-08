@@ -42,8 +42,8 @@ fn main() -> std::io::Result<()> {
     res.set_icon("../../assets/app-icon/photocraft.ico")
         .set("ProductName", "ShotoPhopEX")
         .set("FileDescription", "ShotoPhopEX command-line interface")
-        .set("CompanyName", "Learning Machines LLC")
-        .set("LegalCopyright", "Copyright (c) the PhotoCraft authors. MIT OR Apache-2.0.")
+        .set("CompanyName", "ShotoPhopEX contributors")
+        .set("LegalCopyright", "Copyright (c) the PhotoCraft authors and the ShotoPhopEX contributors. MIT OR Apache-2.0.")
         .set("OriginalFilename", "photocraft-cli.exe")
         .set("InternalName", "photocraft-cli");
     if let Err(err) = res.compile() {

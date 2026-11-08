@@ -18,6 +18,8 @@ engine = ["dep:gn-engine"]
 candle = ["dep:gn-segment", "dep:candle-core", "dep:anyhow"]
 # The same on the GPU.
 cuda = ["candle", "gn-segment/cuda", "candle-core/cuda"]
+# The Apple GPU (macOS), through candle's Metal backend.
+metal = ["candle", "gn-segment/metal", "candle-core/metal"]
 
 [dependencies]
 serde_json = { workspace = true }

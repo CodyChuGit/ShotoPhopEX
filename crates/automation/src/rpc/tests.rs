@@ -908,6 +908,18 @@ fn idle_tcp_daemon_releases_its_port_but_keeps_active_clients() {
 }
 
 #[test]
+fn tcp_refuses_non_loopback_addresses_before_binding() {
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    for addr in ["0.0.0.0:0", "[::]:0"] {
+        let h = Arc::new(Mutex::new(Headless::new()));
+        let mut ready = false;
+        let err = serve_tcp_until_idle(addr, h, TOKEN.to_owned(), |_| ready = true, Duration::from_millis(50)).unwrap_err();
+        assert!(err.to_string().contains("not a loopback address"), "{addr}: {err}");
+        assert!(!ready, "{addr} must never start listening");
+    }
+}
+
+#[test]
 fn tcp_serves_loopback() {
     use std::io::{BufReader, Write as _};
     const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

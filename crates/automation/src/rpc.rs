@@ -424,7 +424,14 @@ fn serve_tcp_until_idle(
     ready: impl FnOnce(std::net::SocketAddr),
     idle: Duration,
 ) -> Result<(), AutomationError> {
-    let listener = TcpListener::bind(addr).map_err(|e| AutomationError::Io(format!("bind {addr}: {e}")))?;
+    // Resolve first and refuse anything that isn't loopback before a socket is opened, so a
+    // mistyped `--listen 0.0.0.0:…` never accepts on the network, even for a moment.
+    let addrs: Vec<std::net::SocketAddr> =
+        std::net::ToSocketAddrs::to_socket_addrs(addr).map_err(|e| AutomationError::Io(format!("resolve {addr}: {e}")))?.collect();
+    if addrs.is_empty() || addrs.iter().any(|a| !a.ip().is_loopback()) {
+        return Err(bad(format!("{addr} is not a loopback address")));
+    }
+    let listener = TcpListener::bind(&addrs[..]).map_err(|e| AutomationError::Io(format!("bind {addr}: {e}")))?;
     let local = listener.local_addr().map_err(|e| AutomationError::Io(e.to_string()))?;
     if !local.ip().is_loopback() {
         return Err(bad(format!("{addr} is not a loopback address")));

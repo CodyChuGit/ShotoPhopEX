@@ -770,7 +770,7 @@ pub fn default_dir() -> Option<PathBuf> {
     };
     let base = var("PHOTOCRAFT_CONFIG_DIR").or_else(portable).or_else(|| {
         if cfg!(target_os = "macos") {
-            var("HOME").map(|h| h.join("Library/Application Support/Photocraft"))
+            var("HOME").map(|h| h.join("Library/Application Support/ShotoPhopEX"))
         } else if cfg!(windows) {
             var("APPDATA").map(|a| a.join("Photocraft"))
         } else {

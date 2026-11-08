@@ -4,7 +4,10 @@
 #   $DIST/photocraft-<version>-macos-<arch>.dmg          PhotoCraft.app on a drag-to-Applications DMG
 #   $DIST/photocraft-cli-<version>-macos-<arch>.zip      the headless CLI
 #
-# Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build]
+# Usage: packaging/macos/package.sh [--arch aarch64] [--skip-build]
+#
+# Apple Silicon only: the AI models run on Apple's MLX (genai-native gn-mlx, the `native-mlx`
+# feature), which has no Intel build; its kernels ship as Contents/Resources/mlx.metallib.
 #
 # Signing (env):
 #   MACOS_SIGN_IDENTITY   codesign identity (name or SHA-1). Default "-" = ad-hoc (local testing;
@@ -17,7 +20,7 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/macos"
 
-ARCH=universal
+ARCH=aarch64
 SKIP_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,18 +31,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$ARCH" in
-  universal) TARGETS=(aarch64-apple-darwin x86_64-apple-darwin) ;;
   aarch64) TARGETS=(aarch64-apple-darwin) ;;
-  x86_64) TARGETS=(x86_64-apple-darwin) ;;
+  universal | x86_64) echo "--arch $ARCH: PhotoCraft for macOS is Apple Silicon only (MLX)" >&2; exit 2 ;;
   *) echo "unknown --arch $ARCH" >&2; exit 2 ;;
 esac
 
-# Keep in sync with LSMinimumSystemVersion in Info.plist.in.
-export MACOSX_DEPLOYMENT_TARGET=11.0
+# Keep in sync with LSMinimumSystemVersion in Info.plist.in. MLX's minimum (its CMakeLists stops
+# below 14.0); without it MLX would build for the builder's own macOS.
+export MACOSX_DEPLOYMENT_TARGET=14.0
 IDENTITY="${MACOS_SIGN_IDENTITY:--}"
 SHORT_VERSION="${VERSION%%-*}"
 WORK="$CARGO_TARGET_DIR/macos-package"
-APP="$WORK/PhotoCraft.app"
+APP="$WORK/ShotoPhopEX.app"
 DMG="$DIST/photocraft-$VERSION-macos-$ARCH.dmg"
 CLI_ZIP="$DIST/photocraft-cli-$VERSION-macos-$ARCH.zip"
 
@@ -58,7 +61,7 @@ echo "==> PhotoCraft $VERSION for macOS ($ARCH), identity: $IDENTITY, notarize: 
 if [[ "$SKIP_BUILD" = 0 ]]; then
   args=()
   for t in "${TARGETS[@]}"; do args+=(--target "$t"); done
-  (cd "$ROOT" && cargo build --release --locked -p photocraft -p photocraft-cli --features heif,photocraft/alerts "${args[@]}")
+  (cd "$ROOT" && cargo build --release --locked -p photocraft -p photocraft-cli --features heif,photocraft/alerts,photocraft/native-mlx,photocraft-cli/native-mlx "${args[@]}")
 fi
 
 rm -rf "$WORK"
@@ -122,6 +125,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$WORK/bin/photocraft" "$APP/Contents/MacOS/PhotoCraft"
 cp "$WORK/bin/photocraft-cli" "$APP/Contents/MacOS/photocraft-cli"
 cp "$ROOT/assets/app-icon/photocraft.icns" "$APP/Contents/Resources/PhotoCraft.icns"
+# MLX's Metal kernels, built with mlx-sys (gn-mlx points MLX here at start-up).
+# The newest one when several mlx-sys build directories exist (BSD stat: mtime, then path).
+METALLIB="$(find "$CARGO_TARGET_DIR/${TARGETS[0]}/release/build" -path '*/mlx-sys-*/out/build/lib/mlx.metallib' -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+[[ -f "$METALLIB" ]] || { echo "error: no mlx.metallib under $CARGO_TARGET_DIR/${TARGETS[0]}/release/build (build with native-mlx)" >&2; exit 1; }
+cp "$METALLIB" "$APP/Contents/Resources/mlx.metallib"
 # Notices for the bundled font fallback, included before the bundle is signed.
 cp "$ROOT/NOTICE" "$ROOT/ATTRIBUTION.md" "$APP/Contents/Resources/"
 # Licences of the embedded craft-fonts fonts (only when built with CRAFT_FONTS_DIR).
@@ -153,7 +161,7 @@ fi
 echo "==> building $DMG"
 STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/PhotoCraft.app"
+ditto "$APP" "$STAGE/ShotoPhopEX.app"
 ln -s /Applications "$STAGE/Applications"
 # Finder window layout: background, icon size and positions (packaging/macos/dmg/README.md).
 mkdir -p "$STAGE/.background"
@@ -163,7 +171,7 @@ rm -f "$DMG" "$WORK/raw.dmg"
 # makehybrid + convert builds the image without attaching a device, unlike `create -srcfolder`,
 # which is flaky on CI runners ("Resource busy") and hangs in sandboxed sessions.
 # The volume name has no version: .DS_Store finds the background through an alias that includes it.
-hdiutil makehybrid -hfs -hfs-volume-name "PhotoCraft" -hfs-openfolder "$STAGE" -o "$WORK/raw.dmg" "$STAGE"
+hdiutil makehybrid -hfs -hfs-volume-name "ShotoPhopEX" -hfs-openfolder "$STAGE" -o "$WORK/raw.dmg" "$STAGE"
 hdiutil convert "$WORK/raw.dmg" -format UDZO -imagekey zlib-level=9 -o "$DMG"
 rm -f "$WORK/raw.dmg"
 sign "$DMG"

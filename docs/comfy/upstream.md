@@ -83,6 +83,7 @@ the permissive default for fill, edit and expand is still Qwen-Image-Edit-2511.
 
 ## Licence of the fork
 
-The fork stays **MIT OR Apache-2.0** for all code. The generative features depend on model
+The fork stays **MIT OR Apache-2.0**, except `genai-native/crates/qir`, which is Apache-2.0 only
+(see `genai-native/NOTICE` and `docs/compliance/`). The generative features depend on model
 weights with their own licences (see [`models.md`](models.md)); the app ships no weights, only
 pointers, and shows each model's licence class in the picker.
