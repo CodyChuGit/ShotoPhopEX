@@ -14,11 +14,13 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
     // Fork: check and download ShotoPhopEX's own releases, never upstream PhotoCraft's (whose
-    // installer would replace this build). The id stays `photocraft`: it is the asset stem
-    // package.ps1 writes and the name the MSI registered.
+    // installer would replace this build). The id stays `photocraft` (the exe, the MSI's
+    // registration, install folders); release files are named `shotophopex-<ver>-<os>-<arch>`
+    // since 0.1.2, so that is listed as a stem too, and the update check finds either name.
     name: "ShotoPhopEX",
     repo: "CodyChuGit/ShotoPhopEX",
     developer: "CodyChuGit",
+    former_ids: &["shotophopex"],
     former_names: &["PhotoCraft"],
     icon_png: Some(include_bytes!("../../../assets/app-icon/sp/sp-128.png")),
     accent: Some([0x31, 0xa8, 0xff]),

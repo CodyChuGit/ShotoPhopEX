@@ -5,7 +5,7 @@ signed installers for macOS, Windows, Linux and the web, plus a FreeBSD tarball,
 or updates a **draft** GitHub Release named `PhotoCraft v<version>`. Nobody sees a draft until a
 maintainer publishes it.
 
-User-facing names say **PhotoCraft**. Files, binaries and ids stay lowercase (`photocraft-<version>-<platform>-<arch>.<ext>`, `ai.storyteller.photocraft`).
+User-facing names say **PhotoCraft**. Files, binaries and ids stay lowercase (`shotophopex-<version>-<platform>-<arch>.<ext>`, `ai.storyteller.photocraft`).
 
 ## In-app update checks
 
@@ -62,13 +62,13 @@ in the dialog.
 
 | Platform | Artifacts | Built on |
 |---|---|---|
-| macOS 11+ (universal: Apple silicon + Intel) | `photocraft-<v>-macos-universal.dmg`, `photocraft-cli-<v>-macos-universal.zip` | `macos-15` |
-| Windows 10+ x64 | `photocraft-<v>-windows-x64.msi`, `photocraft-<v>-windows-x64-portable.zip`, `photocraft-<v>-windows-x64-symbols.zip` | `windows-latest` |
-| Windows 10+ x86 (32-bit) | `photocraft-<v>-windows-x86.msi`, `photocraft-<v>-windows-x86-portable.zip`, `photocraft-<v>-windows-x86-symbols.zip` | `windows-latest` |
-| Linux x86_64 | `photocraft-<v>-linux-x86_64.{AppImage,AppImage.zsync,deb,rpm,tar.gz,flatpak}` | `ubuntu-22.04` (Flatpak: `ubuntu-24.04`) |
-| Linux aarch64 | `photocraft-<v>-linux-aarch64.{AppImage,AppImage.zsync,deb,rpm,tar.gz,flatpak}` | `ubuntu-22.04-arm` (Flatpak: `ubuntu-24.04-arm`) |
-| Linux riscv64 (glibc 2.39+) | `photocraft-<v>-linux-riscv64.tar.gz` | cross-compiled on `ubuntu-24.04` (ports.ubuntu.com riscv64 libs); CLI smoke-tested under QEMU |
-| FreeBSD 14 x86_64 | `photocraft-<v>-freebsd-x86_64.tar.gz` | FreeBSD 14.3 VM on `ubuntu-latest` |
+| macOS 11+ (universal: Apple silicon + Intel) | `shotophopex-<v>-macos-universal.dmg`, `shotophopex-cli-<v>-macos-universal.zip` | `macos-15` |
+| Windows 10+ x64 | `shotophopex-<v>-windows-x64.msi`, `shotophopex-<v>-windows-x64-portable.zip`, `shotophopex-<v>-windows-x64-symbols.zip` | `windows-latest` |
+| Windows 10+ x86 (32-bit) | `shotophopex-<v>-windows-x86.msi`, `shotophopex-<v>-windows-x86-portable.zip`, `shotophopex-<v>-windows-x86-symbols.zip` | `windows-latest` |
+| Linux x86_64 | `shotophopex-<v>-linux-x86_64.{AppImage,AppImage.zsync,deb,rpm,tar.gz,flatpak}` | `ubuntu-22.04` (Flatpak: `ubuntu-24.04`) |
+| Linux aarch64 | `shotophopex-<v>-linux-aarch64.{AppImage,AppImage.zsync,deb,rpm,tar.gz,flatpak}` | `ubuntu-22.04-arm` (Flatpak: `ubuntu-24.04-arm`) |
+| Linux riscv64 (glibc 2.39+) | `shotophopex-<v>-linux-riscv64.tar.gz` | cross-compiled on `ubuntu-24.04` (ports.ubuntu.com riscv64 libs); CLI smoke-tested under QEMU |
+| FreeBSD 14 x86_64 | `shotophopex-<v>-freebsd-x86_64.tar.gz` | FreeBSD 14.3 VM on `ubuntu-latest` |
 | Web | `photocraft-web-<v>.zip` (static site; see [`packaging/web/README.md`](../packaging/web/README.md)) | `ubuntu-latest` |
 
 Every binary reports its version, the commit and the build date: `photocraft --version`,
@@ -128,7 +128,7 @@ That's enough to check the bundle and the DMG on your own Mac:
 ```sh
 packaging/macos/package.sh                    # universal; needs both rustup targets
 packaging/macos/package.sh --arch aarch64     # quicker, host-only
-open dist/release/photocraft-*-macos-*.dmg
+open dist/release/shotophopex-*-macos-*.dmg
 ```
 
 ### Windows
@@ -247,7 +247,7 @@ Why these formats:
   ~/.local/share/icons/hicolor -name 'ai.storyteller.photocraft*' -delete`. The script is
   covered by `packaging/linux/apprun-test.sh` in the packaging-lint workflow.
   A leading `--cli` launches the bundled `usr/bin/photocraft-cli`, without desktop
-  integration: `./photocraft-<version>-linux-x86_64.AppImage --cli mcp` serves MCP on
+  integration: `./shotophopex-<version>-linux-x86_64.AppImage --cli mcp` serves MCP on
   stdio. A symlink named `photocraft-cli` also selects that binary via the runtime's
   `ARGV0`. Arguments and process streams pass through unchanged; the entry point
   uses `exec` so signals and exit status reach the caller directly. CLI routing is
@@ -271,7 +271,7 @@ Why these formats:
   it with:
 
   ```sh
-  flatpak install --user photocraft-<v>-linux-x86_64.flatpak   # pulls org.freedesktop.Platform//26.08 from Flathub if missing
+  flatpak install --user shotophopex-<v>-linux-x86_64.flatpak   # pulls org.freedesktop.Platform//26.08 from Flathub if missing
   flatpak run ai.storyteller.photocraft
   ```
 
@@ -308,7 +308,7 @@ GitHub has no FreeBSD runners, so the `freebsd` job runs `packaging/freebsd/pack
 FreeBSD 14.3 VM (`vmactions/freebsd-vm`, pinned by commit), with the same packages as the
 FreeBSD CI workflow (`.github/workflows/freebsd.yml`) plus `bash`. The script builds both
 binaries with `CARGO_BUILD_JOBS=4` (more runs the 12 GB VM out of memory) and writes
-`photocraft-<v>-freebsd-x86_64.tar.gz`. FreeBSD's `uname -m` says `amd64`; the file name uses
+`shotophopex-<v>-freebsd-x86_64.tar.gz`. FreeBSD's `uname -m` says `amd64`; the file name uses
 `x86_64` like the other artifacts. The tarball is a `/usr/local`-style tree: `bin/photocraft`,
 `bin/photocraft-cli`, and under `share/` the same desktop entry, MIME type, AppStream metainfo
 and hicolor icons as Linux, plus the licences, `NOTICE` and `ATTRIBUTION.md` in
@@ -318,7 +318,7 @@ completions (`share/bash-completion`, `share/zsh/site-functions`, `share/fish`),
 
 ```sh
 pkg install libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
-tar -xzf photocraft-<v>-freebsd-x86_64.tar.gz --strip-components 1 -C /usr/local
+tar -xzf shotophopex-<v>-freebsd-x86_64.tar.gz --strip-components 1 -C /usr/local
 ```
 
 The job signs nothing, so it runs outside the `release` environment and gets no secrets. The
