@@ -95,7 +95,12 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
     let (cmd, q) = request(&app).unwrap();
     assert_eq!((cmd, q["references"].as_array().map(Vec::len)), ("generate.edit", Some(1)));
     generate(&mut app).unwrap();
-    assert_eq!(fake.state().pictures.len(), 5, "the picture and the reference, after the fill's three");
+    // The edit sends the picture and the reference (then its result goes to the detector for
+    // the subject mask, more pictures).
+    let st = fake.state();
+    let edit = st.runs.iter().rev().find(|r| r.request["task"] == "edit").expect("the edit");
+    assert!(edit.request["references"].as_array().is_some_and(|r| r.len() == 1), "the reference");
+    drop(st);
     // The limit: a third and fourth are refused with a status message.
     add_reference(&mut app, json!({"layer": 1}));
     add_reference(&mut app, json!({"layer": 2}));
