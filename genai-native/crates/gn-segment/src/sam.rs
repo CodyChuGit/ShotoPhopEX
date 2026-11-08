@@ -591,15 +591,29 @@ fn threshold(logits: &[f32]) -> Vec<f32> {
     logits.iter().map(|v| if *v > 0.0 { 1.0 } else { 0.0 }).collect()
 }
 
-/// [`ranked_head`]'s whole object: the largest of a click's three answers.
+/// [`ranked_head`]'s whole object: the largest of a click's three answers…
 const WHOLE: usize = usize::MAX;
+/// …unless it covers at least this share of the picture…
+const OVERMERGE_SHARE: f32 = 0.4;
+/// …and its predicted IoU (a logit) is this far below the best head's: then SAM has joined the
+/// clicked object to what is next to it, and the next largest is the object. A click on the cat
+/// picture's newspaper took the cat and the paper (43–47% of the frame, 3.4–4.3 below the best,
+/// with holes through the fur), while every whole object clicked on the cat, duck and kitchen
+/// pictures was either scored near the best or under 37% of the frame: the cat from its paw (31%,
+/// 4.5 below), the fridge (37%), the fruit bowl (1.4%, 4.4 below), the lighthouse (8%, 4.9
+/// below) (2026-11-08).
+const OVERMERGE_GAP: f32 = 2.0;
 
 /// The multimask token (1..=3) of a single click's `c`-th meaning: the head of best predicted
 /// IoU first (what [`select_head`] takes), then the other two by mask area, largest first; `c`
 /// modulo three; [`WHOLE`]: the largest.
 fn ranked_head(iou: &[f32; 4], areas: &[f32; 3], c: usize) -> usize {
     if c == WHOLE {
-        return (1..4).fold(1, |big, t| if areas[t - 1] > areas[big - 1] { t } else { big });
+        let best = (1..4).map(|t| iou[t]).fold(f32::NEG_INFINITY, f32::max);
+        let mut by_size: Vec<usize> = (1..4).collect();
+        by_size.sort_by(|a, b| areas[b - 1].total_cmp(&areas[a - 1]));
+        let overmerged = |t: usize| areas[t - 1] >= OVERMERGE_SHARE * (LOW * LOW) as f32 && iou[t] <= best - OVERMERGE_GAP;
+        return by_size.iter().copied().find(|t| !overmerged(*t)).unwrap_or(by_size[0]);
     }
     let mut best = 1;
     for t in 2..4 {
@@ -658,6 +672,20 @@ mod tests {
         assert_eq!(ranked_head(&iou, &[44.0, 6353.0, 115.0], WHOLE), 2);
         assert_eq!(ranked_head(&iou, &[44.0, 6353.0, 115.0], 0), 1);
         assert_eq!(ranked_head(&iou, &[50.0, 50.0, 50.0], WHOLE), 1);
+    }
+
+    #[test]
+    fn a_click_skips_a_whole_that_joined_the_object_to_its_neighbour() {
+        // The cat picture's newspaper (2026-11-08): the largest head is the cat and the paper,
+        // 46% of the 288² frame and 3.8 below the best; the next largest is the paper.
+        let iou = [0.0, 2.015, -0.497, 3.313];
+        assert_eq!(ranked_head(&iou, &[12444.0, 38235.0, 14345.0], WHOLE), 3);
+        // The cat from its paw: as poorly scored but 31% of the frame, so still the whole cat.
+        assert_eq!(ranked_head(&[0.0, 1.402, -3.082, -1.830], &[667.0, 25851.0, 6638.0], WHOLE), 2);
+        // The fridge: 37%, the best score; kept.
+        assert_eq!(ranked_head(&[0.0, -0.535, 1.957, -0.466], &[10110.0, 29539.0, 14390.0], WHOLE), 2);
+        // A big whole scored near the best is the whole.
+        assert_eq!(ranked_head(&[0.0, 2.0, 2.5, 3.0], &[100.0, 50000.0, 200.0], WHOLE), 2);
     }
 
     #[test]

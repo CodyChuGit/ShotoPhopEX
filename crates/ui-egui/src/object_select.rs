@@ -71,8 +71,11 @@ pub struct Probe {
     /// Asked for a part (the options bar's Parts), not the whole.
     part: bool,
     /// The mask over the canvas (width × height, 255 = the object), so a pointer still on the
-    /// object neither asks again nor changes what a click applies.
+    /// object neither asks again nor changes what a click applies. It comes at the probe's
+    /// request size (at most 768², smaller than most canvases)…
     mask: std::sync::Arc<(usize, usize, Vec<u8>)>,
+    /// …so the canvas size it spans, to look a canvas point up in it.
+    canvas: [f64; 2],
     tex: egui::TextureHandle,
 }
 
@@ -83,7 +86,7 @@ impl Probe {
         if p[0] < 0.0 || p[1] < 0.0 {
             return false;
         }
-        let (x, y) = (p[0] as usize, p[1] as usize);
+        let (x, y) = ((p[0] * *w as f64 / self.canvas[0].max(1.0)) as usize, (p[1] * *h as f64 / self.canvas[1].max(1.0)) as usize);
         x < *w && y < *h && m.get(y * w + x).is_some_and(|v| *v >= 128)
     }
 }
@@ -242,13 +245,24 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // An answer that arrived: decode its mask into the tint texture.
     if let Some((cell, v)) = app.ui.object_select.incoming.take()
         && let (Some(doc), Some(mask)) = (active_doc, mask_of(&v))
+        && let Some(size) = app.session.active().map(|d| d.doc.size)
     {
         let b = v["bounds"].as_array().map(|a| a.iter().filter_map(Value::as_i64).map(|x| x as i32).collect::<Vec<_>>()).unwrap_or_default();
         let bounds = [b.first().copied().unwrap_or(0), b.get(1).copied().unwrap_or(0), b.get(2).copied().unwrap_or(0), b.get(3).copied().unwrap_or(0)];
         let color = color_for(&mut app.ui.object_select, bounds);
         let tex = texture_of(ctx, &mask, OBJECT_COLORS[color]);
         let part = app.ui.tool_options.object_parts;
-        app.ui.object_select.probe = Some(Probe { cell, id: v["probe"].as_u64().unwrap_or(0), doc, bounds, color, part, mask: std::sync::Arc::new(mask), tex });
+        app.ui.object_select.probe = Some(Probe {
+            cell,
+            id: v["probe"].as_u64().unwrap_or(0),
+            doc,
+            bounds,
+            color,
+            part,
+            mask: std::sync::Arc::new(mask),
+            canvas: [f64::from(size.width), f64::from(size.height)],
+            tex,
+        });
         ctx.request_repaint();
     }
     let inside = app.hover_doc.filter(|p| {
