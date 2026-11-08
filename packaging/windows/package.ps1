@@ -68,6 +68,8 @@ if (-not $env:PHOTOCRAFT_BUILD_DATE) { $env:PHOTOCRAFT_BUILD_DATE = (Get-Date).T
 
 Write-Output "PhotoCraft $Version for Windows $Arch ($Target)"
 
+$Features = if ($Native) { 'heif,photocraft/alerts,photocraft/native-diffusion,photocraft-cli/native-diffusion' } else { 'heif,photocraft/alerts' }
+
 if (-not $SkipBuild) {
   # Static CRT: no VC++ redistributable needed. Scoped to the target so host build scripts and
   # proc-macros are unaffected.
@@ -75,7 +77,6 @@ if (-not $SkipBuild) {
   [Environment]::SetEnvironmentVariable($flagVar, '-C target-feature=+crt-static')
   # Fail the build (rather than warn) if the icon/VERSIONINFO can't be embedded.
   $env:PHOTOCRAFT_REQUIRE_WINRES = '1'
-  $Features = if ($Native) { 'heif,photocraft/alerts,photocraft/native-diffusion,photocraft-cli/native-diffusion' } else { 'heif,photocraft/alerts' }
   # The CUDA objects must take the static CRT too (the dev build's /MD would leave __imp_ CRT
   # symbols unresolved at link); the environment of build-native.cmd says /MD.
   if ($Native -and $env:NVCC_APPEND_FLAGS) { $env:NVCC_APPEND_FLAGS = $env:NVCC_APPEND_FLAGS -replace '/MD\b', '/MT' }
@@ -117,7 +118,16 @@ Copy-Item (Join-Path $Bin 'photocraft.exe'), (Join-Path $Bin 'photocraft-cli.exe
 $Docs = Join-Path $Stage 'font-licences'
 New-Item -ItemType Directory -Force -Path $Docs | Out-Null
 # The existing MSI document group also carries notices for bundled egui font inputs.
-Copy-Item -LiteralPath (Join-Path $Root 'NOTICE'), (Join-Path $Root 'ATTRIBUTION.md') -Destination $Docs
+# Both licence texts ship with every package (MIT: the permission notice; Apache-2.0 4(a): a copy
+# of the licence), with THIRD_PARTY_NOTICES.txt: every shipped crate's licence files, the fonts,
+# icons, CUTLASS and the native engine's notices (packaging/third_party_notices.py). The SPDX SBOM
+# of the same crate set goes beside the release files.
+Copy-Item -LiteralPath (Join-Path $Root 'LICENSE-MIT'), (Join-Path $Root 'LICENSE-APACHE'), (Join-Path $Root 'NOTICE'), (Join-Path $Root 'ATTRIBUTION.md') -Destination $Docs
+$Python = if (Get-Command python -ErrorAction SilentlyContinue) { 'python' } else { 'py' }
+Invoke-Native 'third-party notices and SBOM' {
+  & $Python -I (Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party_notices.py') --target $Target --features $Features --version $Version `
+    --out (Join-Path $Docs 'THIRD_PARTY_NOTICES.txt') --spdx (Join-Path $Dist "photocraft-$Version-windows-$Arch.spdx.json")
+}
 $HasCraftFontLicences = 1
 if ($env:CRAFT_FONTS_DIR) {
   foreach ($ofl in Get-ChildItem -Path (Join-Path $env:CRAFT_FONTS_DIR 'fonts\*\OFL.txt') -File -ErrorAction SilentlyContinue) {
@@ -200,6 +210,7 @@ foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE'
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }
 }
+Copy-Item (Join-Path $Docs 'THIRD_PARTY_NOTICES.txt') $Portable
 # Builds made with craft-fonts (CRAFT_FONTS_DIR, all official releases) embed its OFL-1.1 fonts:
 # ship each font's licence as OFL-<family-dir>.txt.
 if ($env:CRAFT_FONTS_DIR) {
@@ -224,7 +235,7 @@ Compress-Archive -Path (Join-Path $Portable '*') -DestinationPath $Zip
 $Check = Join-Path $TargetDir 'windows-package\portable-zip-check'
 Remove-Item -Recurse -Force $Check -ErrorAction SilentlyContinue
 Expand-Archive -Path $Zip -DestinationPath $Check -Force
-foreach ($f in 'photocraft.exe', 'photocraft-cli.exe', 'portable.txt') {
+foreach ($f in 'photocraft.exe', 'photocraft-cli.exe', 'portable.txt', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt') {
   if (-not (Test-Path (Join-Path $Check $f))) { throw "the portable zip has no $f at its root: $Zip" }
 }
 Remove-Item -Recurse -Force $Check -ErrorAction SilentlyContinue
