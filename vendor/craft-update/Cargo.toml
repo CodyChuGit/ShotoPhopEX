@@ -1,0 +1,56 @@
+# ShotoPhopEX: a copy of craft-update from storytold/craft-libs at rev
+# c5a1cbfb5f9049f9270955caffb5bee5997aebf7 (crates/update), used through [patch] in the root
+# Cargo.toml. The only change: self_update::update picks the download by every stem the app
+# lists (App::stems), not just App::id, so ShotoPhopEX finds its shotophopex-<ver>-<os>-<arch>
+# release files. Bumping craft-libs' rev upstream does NOT update this copy: re-copy it and
+# re-apply the change (see README.md here).
+[package]
+name = "craft-update"
+description = "Release checking, downloading, installing and self-updating for the Craft App Suite and ArtCraft Launcher"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/storytold/craft-libs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[features]
+default = []
+egui = ["dep:egui", "dep:image"]
+local-mirror = []
+
+[dependencies]
+egui = { version = "0.37", default-features = false, optional = true }
+# Decodes the app icon the startup prompt shows (`App::icon_png`); PNG only.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+getrandom = "0.3"
+tempfile = "3"
+sha2 = "0.10"
+ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "_ring", "gzip", "platform-verifier"] }
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+semver = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+flate2 = "1"
+egui_kittest = "0.37"
+# egui's own Hack and Ubuntu Light for the screenshots (egui is built without default fonts).
+epaint_default_fonts = "0.37"
+
+[target.'cfg(unix)'.dependencies]
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.55"
+dunce = "1"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+winsafe = { version = "0.0.29", features = ["advapi", "kernel", "shell", "version"] }
+verifysign = "1"

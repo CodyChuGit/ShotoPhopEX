@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/photocraft", "apps/photocraft-cli", "xtask"]
 # The native engine (genai-native/) is its own workspace: the app uses its crates by path.
-exclude = ["genai-native"]
+exclude = ["genai-native", "vendor/craft-update"]
 
 [workspace.package]
 version = "0.1.1"
@@ -206,3 +206,8 @@ eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc79968157
 egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
+
+# ShotoPhopEX: craft-update with one change so the in-app updater finds release files named
+# shotophopex-<ver>-<os>-<arch> (see vendor/craft-update/README.md).
+[patch."https://github.com/storytold/craft-libs"]
+craft-update = { path = "vendor/craft-update" }
