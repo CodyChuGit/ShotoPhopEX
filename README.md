@@ -82,9 +82,9 @@ Pick one file; none of them includes models (you add those on first launch).
 
 | Download | For | Size |
 |---|---|---|
-| [`photocraft-0.1.1-windows-x64.msi`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-windows-x64.msi) | **Windows installer**: Start menu entry, uninstalls from Settings | 490 MB |
-| [`photocraft-0.1.1-windows-x64-portable.zip`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-windows-x64-portable.zip) | **Windows portable**: extract and run, nothing installed | 541 MB |
-| [`photocraft-0.1.1-linux-x86_64.tar.gz`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-linux-x86_64.tar.gz) | **Linux**: run from the folder, or install with `install.sh` | 609 MB |
+| [`photocraft-0.1.1-windows-x64.msi`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-windows-x64.msi) | **Windows installer**: Start menu entry, uninstalls from Settings | 498 MB |
+| [`photocraft-0.1.1-windows-x64-portable.zip`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-windows-x64-portable.zip) | **Windows portable**: extract and run, nothing installed | 552 MB |
+| [`photocraft-0.1.1-linux-x86_64.tar.gz`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-linux-x86_64.tar.gz) | **Linux**: run from the folder, or install with `install.sh` | 620 MB |
 | [`photocraft-0.1.1-macos-aarch64.dmg`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-macos-aarch64.dmg) | **Mac (Apple Silicon)**: drag to Applications | 118 MB |
 | [`SHA256SUMS`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/SHA256SUMS) | Checksums for the files above | |
 
