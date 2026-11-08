@@ -471,17 +471,17 @@ Nothing is ever locked: every model is bring-your-own and selectable on any card
 
 The Mac build runs the same editor with the models on Apple's GPU through
 [MLX](https://github.com/ml-explore/mlx), compiled into the app: no Python, Homebrew or Xcode.
-It is tuned on an M1 MacBook Air with 16 GB. Expect minutes where an RTX card takes seconds.
+It is tuned on an M1 MacBook Air with 16 GB; times below are for 512² pictures. Expect minutes where an RTX card takes seconds.
 
 | Feature | On a Mac | About how long, M1 Air 16 GB |
 |---|---|---|
-| **Generate Image** | MOSS Turbo; FLUX 3 Image Klein for higher quality | about 35 s at 512² · Klein about 100 s at 512² |
-| **Generative Edit** | MOSS Edit; Klein Edit selectable | about 1.75 min at 512² |
-| **Generative Fill · Remove** | Klein | about 2.5 min at 512² |
-| **Generative Expand** | Klein + Outpaint LoRA | about 3.5 min (512² to 768×512) |
-| **Split into Layers** | SAM 3.1 + ViTMatte + Klein fill | about 5.5 min |
+| **Generate Image** | MOSS Turbo; FLUX 3 Image Klein for higher quality | about 36 s · Klein about 100 s |
+| **Generative Edit** | MOSS Edit; Klein Edit selectable | about 1.75 min |
+| **Generative Fill · Remove** | Klein | about 2 min |
+| **Generative Expand** | Klein + Outpaint LoRA | about 3.2 min (512² to 768×512) |
+| **Split into Layers** | SAM 3.1 + ViTMatte + Klein fill | about 3.5 min |
 | **Clown Pass** | SAM 3.1 + ViTMatte | about 3.3 min |
-| **Select Subject / by text / by point** | SAM 3.1 | 1 s for a click · about 18 s by text |
+| **Select Subject / by text / by point** | SAM 3.1 | 1 s for a click · about 28 s by text |
 | **Remove Background** | SAM 3.1 + ViTMatte | about 8 s |
 | **Prompt Enhance** | MOSS's own text encoder, reading your words only (not yet the picture) | about 15–30 s |
 
