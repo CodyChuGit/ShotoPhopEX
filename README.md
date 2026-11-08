@@ -28,7 +28,7 @@
   <a href="#-install-with-an-agent">Agent install</a> ·
   <a href="#-features">Features</a> ·
   <a href="#-benchmarks">Benchmarks</a> ·
-  <a href="#-will-it-run-on-my-card">Your GPU</a> ·
+  <a href="#-will-it-run-on-my-computer">Your computer</a> ·
   <a href="#-on-a-mac">Mac</a> ·
   <a href="#-models">Models</a> ·
   <a href="#-faq">FAQ</a>
@@ -108,11 +108,14 @@ comes from the same release page, so it catches a damaged download, not a compro
 
 | | |
 |---|---|
-| **GPU** | NVIDIA RTX 30, 40 or 50 series with 12 GB or more (32 GB for every model at full speed). See [Will it run on my card?](#-will-it-run-on-my-card). |
-| **Driver** | NVIDIA driver 580 or newer (CUDA 13). Nothing else: the CUDA libraries the app needs ship with it. |
-| **OS** | Windows 10 or 11, x64, or Linux x86_64 (glibc 2.39 or newer, e.g. Ubuntu 24.04) |
-| **Mac** | Apple Silicon (M1 or newer) with 16 GB, macOS 14 or newer. No NVIDIA card or driver needed; there is no Intel build |
-| **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set, about 25 GB for the Mac pack |
+| | **PC with an NVIDIA RTX card** | **Mac** |
+|---|---|---|
+| **Chip** | NVIDIA RTX 30, 40 or 50 series with 12 GB or more (32 GB for every model at full speed) | Apple Silicon (M1 or newer) with 16 GB |
+| **System** | Windows 10 or 11, x64, or Linux x86_64 (glibc 2.39 or newer, e.g. Ubuntu 24.04) | macOS 14 or newer |
+| **Driver** | NVIDIA driver 580 or newer (CUDA 13); the CUDA libraries the app needs ship with it | nothing: MLX is built into the app |
+| **Disk** | About 60 GB for the default models, about 15 GB for the MOSS-only set | About 25 GB for the Mac pack |
+
+See [Will it run on my computer?](#-will-it-run-on-my-computer) for what each setup gets.
 
 ### macOS (`.dmg`, Apple Silicon)
 
@@ -259,12 +262,12 @@ pwsh packaging/windows/package.ps1 -Arch x64 -Native -SkipBuild
 Open a coding agent (Claude Code, Codex, or any agent with a terminal) and paste this:
 
 ```text
-Install ShotoPhopEX on this PC from the latest release at
+Install ShotoPhopEX on this computer from the latest release at
 https://github.com/CodyChuGit/ShotoPhopEX/releases/latest, following the README's Install
 section. On a PC, run nvidia-smi first and stop if there is no NVIDIA GPU with 12 GB or more;
 on a Mac, stop unless it is Apple Silicon with 16 GB and macOS 14 or newer.
 Check the download against SHA256SUMS, install it, start the app, and tell me to open
-Help > Get AI Models… to download the models for my card.
+Help > Get AI Models… to download the models for my computer.
 ```
 
 The agent can drive the app afterwards too, because every generative action is a command:
@@ -281,6 +284,7 @@ photocraft-cli mcp   # expose all 500+ commands, generative ones included, to an
 ## ✨ Features
 
 Every clip was recorded in the real app on one RTX 5090. The clips play back faster than real time; the time under each one is the real, measured time.
+The same tools run on an Apple Silicon Mac, slower; [On a Mac](#-on-a-mac) lists what runs there and how long it takes.
 The photos were generated in the app too, so no stock images are involved. Times are warm.
 
 ### Generative Fill
@@ -365,22 +369,22 @@ One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to 
 
 ### Every feature
 
-| Feature | What it does | Default model | Warm time, RTX 5090 |
-|---|---|---|---|
-| **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best |
-| **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** |
-| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP |
-| **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s |
-| **Remove · Generative Remove** | One stroke or a selection: the object is found, named and removed with its shadow; the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** (10.2 s from a lasso) |
-| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 (MOSS Edit Turbo on small cards) | **5.1 s** (7.1 s with a text selection) · 3.8 s MOSS Edit Turbo |
-| **Generative Expand** | Grow the canvas and continue the scene, people included | Qwen-Image-2.1 + Outpaint LoRA | about 10 s at 1 MP · 32 s to 3.6 MP |
-| **Split into Layers** | Every subject on its own matted layer, nearest on top, over a repainted background; Rough, Medium or Fine detail | SAM 3.1 + ViTMatte + fill | 4.2 s for one subject · 3–3.5 min for a busy 2 MP scene |
-| **Clown Pass** | Everything in the picture on its own colour-coded, edge-matted layer, no fills | SAM 3.1 + ViTMatte | **9.5 s** (40 layers, 2 MP) |
-| **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** |
-| **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** |
-| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-Edit-2511 + Multiple Angles LoRA | 10.3 s |
-| **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
-| **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
+| Feature | What it does | Default model | Warm time, RTX 5090 | Mac (M1 Air 16 GB, 512²) |
+|---|---|---|---|---|
+| **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best | 36 s MOSS Turbo · 100 s Klein |
+| **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** | not yet |
+| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP | about 2 min (Klein) |
+| **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s | not yet |
+| **Remove · Generative Remove** | One stroke or a selection: the object is found, named and removed with its shadow; the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** (10.2 s from a lasso) | about 2 min (Klein) |
+| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 (MOSS Edit Turbo on small cards) | **5.1 s** (7.1 s with a text selection) · 3.8 s MOSS Edit Turbo | about 1.75 min (MOSS Edit) |
+| **Generative Expand** | Grow the canvas and continue the scene, people included | Qwen-Image-2.1 + Outpaint LoRA | about 10 s at 1 MP · 32 s to 3.6 MP | about 3.2 min (Klein) |
+| **Split into Layers** | Every subject on its own matted layer, nearest on top, over a repainted background; Rough, Medium or Fine detail | SAM 3.1 + ViTMatte + fill | 4.2 s for one subject · 3–3.5 min for a busy 2 MP scene | about 3.5 min |
+| **Clown Pass** | Everything in the picture on its own colour-coded, edge-matted layer, no fills | SAM 3.1 + ViTMatte | **9.5 s** (40 layers, 2 MP) | about 3.3 min |
+| **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** | about 8 s |
+| **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** | 1 s click · 28 s by text |
+| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-Edit-2511 + Multiple Angles LoRA | 10.3 s | not yet |
+| **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** | not yet |
+| **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s | 15–30 s, words only |
 
 Times are warm, measured in the app at about 1 MP unless the row says otherwise (2026-10-28 to 2026-11-06). **Bold** means faster than ComfyUI on the
 same GPU or a feature ComfyUI has no matching graph for. Every feature also takes **LoRAs** from
@@ -458,13 +462,21 @@ checked against the ComfyUI route at every step (within 0.06/255, or byte-identi
 
 </details>
 
-## 💻 Will it run on my card?
+## 💻 Will it run on my computer?
 
-ShotoPhopEX is tuned on an RTX 5090 first, and smaller cards get a real option too:
-**MOSS Turbo** for pictures and **MOSS Edit Turbo** for edits, both Apache-2.0, both inside
-about 12 GB.
+ShotoPhopEX is tuned on an RTX 5090 first. Smaller cards get a real option too, **MOSS Turbo**
+for pictures and **MOSS Edit Turbo** for edits, both Apache-2.0 and both inside about 12 GB, and
+Apple Silicon Macs run MOSS and FLUX 3 Image Klein on MLX.
 
-| Your card | What Auto uses | Status |
+**Tested on**
+
+| Setup | Role |
+|---|---|
+| **RTX 5090** (32 GB, Windows 11) | the reference build; every time in [Every feature](#every-feature) and [Benchmarks](#-benchmarks) |
+| **RTX 3090** (24 GB) | benchmark in progress; numbers land here when measured |
+| **MacBook Air M1** (16 GB) | the Mac reference; every time in [On a Mac](#-on-a-mac) |
+
+| Your computer | What Auto uses | Status |
 |---|---|---|
 | **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
 | **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟡 should work, not yet benchmarked |
@@ -472,10 +484,10 @@ about 12 GB.
 | **Mac, 16 GB** (Apple Silicon) | MOSS Turbo, MOSS Edit and FLUX 3 Image Klein on MLX ([On a Mac](#-on-a-mac)) | 🟡 works on an M1 Air; `.dmg` since v0.1.1 |
 | **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
 
-A **memory check at first launch** reads your card's memory and picks these defaults for you;
+A **memory check at first launch** reads your card's (or Mac's) memory and picks these defaults for you;
 bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
 Integrations › Memory profile** lets you choose another.
-Nothing is ever locked: every model is bring-your-own and selectable on any card.
+Nothing is ever locked: every model is bring-your-own and selectable on any card or Mac.
 
 ## 🍎 On a Mac
 
@@ -606,7 +618,7 @@ download, with a link, and downloads only after you accept them. Details and sou
 ```mermaid
 flowchart LR
     A["Editor · CLI · MCP"] --> B["Commands<br/>generate.* select.*"]
-    B --> C["Native worker<br/>Rust + CUDA"]
+    B --> C["Native worker<br/>Rust + CUDA or MLX"]
     D[("Models folder")] -.-> C
     C --> E["Masked layer"]
 ```
@@ -703,7 +715,7 @@ Each of those requests reveals your IP address to the server it goes to, as any 
 <details>
 <summary><b>Do I need ComfyUI or Python?</b></summary>
 
-No. The engine is native Rust with its own CUDA kernels. It only borrows ComfyUI's folder layout,
+No. The engine is native Rust, with its own CUDA kernels on a PC and MLX on a Mac. It only borrows ComfyUI's folder layout,
 so if you already have a ComfyUI `models` folder you can point the app at it and reuse the files.
 
 </details>
@@ -721,7 +733,7 @@ selection, which peak at about 12 GiB. The larger models stay selectable; they m
 
 Yes, on Apple Silicon (M1 or newer) with 16 GB and macOS 14 or newer, through MLX built into the
 app. It is slower than an RTX card and Angles isn't there
-yet; see [On a Mac](#-on-a-mac). There is no Intel Mac build.
+yet; see [On a Mac](#-on-a-mac).
 
 </details>
 
