@@ -77,6 +77,10 @@ pub fn intercept(app: &mut PhotocraftApp, id: &str) -> bool {
     if app.automation_input || !NEEDS_MODELS.contains(&id) || !has_no_models(app) {
         return false;
     }
+    // A tool that can't run yet anyway (no picture, no selection) keeps saying why.
+    if photocraft_engine::commands::find(id).is_some_and(|c| (c.enabled)(&app.session).is_err()) {
+        return false;
+    }
     open(app);
     true
 }

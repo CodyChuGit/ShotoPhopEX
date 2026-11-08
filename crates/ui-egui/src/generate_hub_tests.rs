@@ -25,8 +25,9 @@ fn app(pick: Option<&str>) -> PhotocraftApp {
         ..Services::default()
     };
     let mut s = photocraft_engine::Session::new();
-    // No server: opening the Angles window must not reach a real ComfyUI from a test.
-    s.edit_prefs(|p| p.integrations.models_path.clear());
+    // A models folder (so the cards run, not Get AI Models) that no worker serves: opening the
+    // Angles window must not reach a real model server from a test.
+    s.edit_prefs(|p| p.integrations.models_path = "/nonexistent/photocraft-test-models".into());
     let mut app = PhotocraftApp::new(s, services);
     app.ui.panels.generate = false;
     app
@@ -46,6 +47,22 @@ fn every_card_has_an_icon_and_a_place_to_go() {
         }
     }
     assert_eq!(CARDS.iter().filter(|c| c.create).count(), 1, "Create: Image");
+}
+
+#[test]
+fn with_no_models_every_card_opens_get_ai_models_first() {
+    let ctx = egui::Context::default();
+    let mut a = app(Some("duck.png"));
+    a.session.edit_prefs(|p| p.integrations.models_path.clear());
+    if !a.session.prefs().integrations.models_root().is_empty() {
+        return; // this machine has a ComfyUI models folder the app finds by itself
+    }
+    for id in ["image", "fill", "removeBackground"] {
+        a.ui.get_models.open = false;
+        assert_eq!(activate(&mut a, &ctx, &card(id)).unwrap(), json!({"getModels": true}), "{id}");
+        assert!(a.ui.get_models.open, "{id}");
+        assert!(a.ui.hub.pending.is_none() && !a.ui.panels.generate, "{id}: nothing else started");
+    }
 }
 
 #[test]
