@@ -641,6 +641,9 @@ pub fn add_dropped(app: &mut PhotocraftApp, files: Vec<egui::DroppedFileHandle>)
     }
 }
 
+/// The pinned footer: the Generate button, its progress line and the Clear all row.
+const FOOTER_H: f32 = 64.0;
+
 /// The dock group's body.
 pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     load_catalog(app);
@@ -654,7 +657,11 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if compact {
         compact_row(app, ui, &t, &mut action);
     } else {
-        egui::ScrollArea::vertical().id_salt("generate-panel").auto_shrink([false, true]).show(ui, |ui| full(app, ui, &t, &mut action));
+        // The footer's height is kept for it; the form above scrolls.
+        let max = (ui.available_height() - FOOTER_H).max(ROW_H * 3.0);
+        egui::ScrollArea::vertical().id_salt("generate-panel").auto_shrink([false, true]).max_height(max).show(ui, |ui| full(app, ui, &t, &mut action));
+        ui.add_space(SECTION_GAP);
+        footer(app, ui, &t, &mut action);
     }
     app.ui.generate.drop_rect = Some(Rect::from_min_max(top, ui.min_rect().max.max(top + vec2(ui.available_width(), 0.0))));
     editor(app, ui.ctx(), &mut action);
@@ -901,9 +908,12 @@ fn full(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, action: &mut Opt
     section(ui, t, tl!("Settings"), None);
     settings(app, ui, t, &mode, &template);
     lora_rows(app, ui, &mode, &template);
-    ui.add_space(SECTION_GAP);
+}
 
-    // The one primary action, full width; Clear all and the shortcut under it.
+/// The full form's footer, under the scrolling part so it never scrolls out of a short dock
+/// (in Image mode the button sat below the fold, 2026-11-08): the one primary action, full
+/// width; Clear all and the shortcut under it.
+fn footer(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, action: &mut Option<Action>) {
     let w = ui.available_width();
     generate_button(app, ui, action, w);
     ui.horizontal(|ui| {

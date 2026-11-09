@@ -340,7 +340,8 @@ fn the_lora_rows_list_the_templates_family_and_a_run_sends_the_ones_switched_on(
     a.ui.generate.mode_chosen = true;
     a.ui.generate.template.insert("edit".into(), "qwen-2.1/edit".into());
     a.ui.generate.prompt = "restore the photo".into();
-    let mut h = harness(a, 520.0);
+    // Tall enough that the LoRA rows sit above the pinned Generate footer, not scrolled under it.
+    let mut h = harness(a, 680.0);
     h.get_by_label("LoRAs").click();
     h.run_steps(2);
     assert!(h.query_by_label("restore").is_some(), "the 2.1 adapter is listed");
