@@ -9,6 +9,9 @@ mod tool;
 mod tool_options;
 mod transform;
 
+#[cfg(test)]
+mod type_default_size_tests;
+
 pub use color_panel::{ColorPanelMode, ColorPanelState, ColorRamp, DockTabs};
 pub use panel_state::{
     CameraRawPreviewState, CameraRawScopeState, CurvesEditorState, LayerThumbnailContents, LayerThumbnailSize, LayersPanelDialog, LayersPanelOptions,
@@ -72,10 +75,30 @@ pub struct Panels {
     /// Window › Generate: the Generate dock group (the prompt box; on in Essentials).
     #[serde(default = "shown_by_default")]
     pub generate: bool,
+    /// Window › Contextual Task Bar (#10890): the small floating bar under the Crop tool's frame
+    /// (`crop_task_bar`). Its ⋯ menu's Hide bar clears it too.
+    #[serde(default = "yes")]
+    pub context_task_bar: bool,
+    /// Where that bar sits: following its frame, or dragged or pinned (`widgets::task_bar`).
+    #[serde(default)]
+    pub task_bar: TaskBarPlace,
 }
 
 fn shown_by_default() -> bool {
     true
+}
+
+/// Where the contextual task bar sits (#10890). Part of [`Panels`], so it is kept with the panel
+/// layout across restarts, and `ui.set {panels: {task_bar: …}}` sets it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TaskBarPlace {
+    /// Pin bar position: the bar stays where it is while its frame changes.
+    #[serde(default)]
+    pub pinned: bool,
+    /// The bar's top-left corner in points from the canvas area's top-left, once it was dragged
+    /// by its grip or pinned; `None` follows the frame. Reset bar position clears both.
+    #[serde(default)]
+    pub at: Option<[f32; 2]>,
 }
 
 impl Default for Panels {
@@ -101,6 +124,8 @@ impl Default for Panels {
             rail: true,
             menu_bar: true,
             gradient_editor: false,
+            context_task_bar: true,
+            task_bar: TaskBarPlace::default(),
         }
     }
 }
@@ -218,8 +243,11 @@ pub struct DocWindow {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UiState {
     pub tool: Tool,
-    /// The last tool used in each shortcut group (the tools sharing a key, [`Tool::key`]), at most
-    /// one per group: the group's key brings it back, as in Photoshop (#2608).
+    /// The tools used so far, most recent first and each one once. The first tool of a shortcut
+    /// group (the tools sharing a key, [`Tool::key`]) is the one its key brings back, and the first
+    /// tool of a toolbar slot is the one the slot shows, as in Photoshop (#2608, #3569). One list
+    /// answers both because they don't line up: the Marquee slot holds tools with and without a
+    /// key, the Hand slot two keys. Kept between launches in `Preferences::group_tools`.
     #[serde(default)]
     pub group_tools: Vec<Tool>,
     /// A tool letter still held (spring-loaded tool, #2672): the tool to give back on release.
@@ -358,6 +386,10 @@ pub struct UiState {
     /// The generative engine's last polled status, for the status bar's dot (`engine_ui`).
     #[serde(skip)]
     pub engine: crate::engine_ui::EngineUi,
+    /// An outside press dismissed the canvas tool menu; suppress the corresponding
+    /// release click from triggering a tool action.
+    #[serde(default)]
+    pub canvas_tool_menu_dismissed: bool,
     /// The guide a Move-tool click selected (`guide_select`): drawn blue, Delete removes it.
     #[serde(default)]
     pub selected_guide: Option<crate::guide_select::SelectedGuide>,
@@ -449,6 +481,10 @@ pub struct UiState {
     /// Frame tool (see `frame_tool`).
     #[serde(default)]
     pub frame_tool: crate::frame_tool::FrameToolUi,
+    /// The contextual task bar as drawn in the last frame: its screen rect `[x0, y0, x1, y1]` in
+    /// points, `None` while no bar shows (`ui.inspect` › `taskBar`).
+    #[serde(skip)]
+    pub task_bar_shown: Option<[f32; 4]>,
     /// Artboard tool (see `artboard_tool`).
     pub artboard_tool: crate::artboard_tool::ArtboardToolUi,
     /// Modifier Keys panel, custom pixel aspect ratios, workspace dialogs (see `workspace_ui`).
@@ -617,6 +653,7 @@ impl Default for UiState {
             get_models: Default::default(),
             object_select: Default::default(),
             engine: Default::default(),
+            canvas_tool_menu_dismissed: false,
             selected_guide: None,
             brush_tool: Tool::Brush,
             tool_brushes: Vec::new(),
@@ -634,6 +671,7 @@ impl Default for UiState {
             timeline: Default::default(),
             slices: Default::default(),
             frame_tool: Default::default(),
+            task_bar_shown: None,
             artboard_tool: Default::default(),
             shell: Default::default(),
             layer_filter: Vec::new(),
@@ -702,16 +740,16 @@ impl Default for UiState {
 }
 
 impl UiState {
-    /// Records the current tool as the last one used in its shortcut group.
-    pub fn remember_group_tool(&mut self) {
-        let tool = self.tool;
-        if !self.group_tools.contains(&tool) {
-            self.group_tools.retain(|t| t.key() != tool.key());
-            self.group_tools.push(tool);
+    /// Records `tool` as the last one used in its shortcut group and toolbar slot.
+    pub fn remember_group_tool(&mut self, tool: Tool) {
+        if self.group_tools.first() != Some(&tool) {
+            self.group_tools.retain(|t| *t != tool);
+            self.group_tools.insert(0, tool);
         }
     }
 
     /// The last tool used in the shortcut group of `key`, if any.
+    #[cfg(test)]
     pub fn group_tool(&self, key: char) -> Option<Tool> {
         self.group_tools.iter().copied().find(|t| t.key() == key)
     }
@@ -790,7 +828,7 @@ mod tests {
         assert!(!Tool::RedEye.is_brushlike());
         assert_eq!(Tool::from_name("patternStamp"), Some(Tool::PatternStamp));
         assert_eq!(Tool::from_name("Pattern Stamp Tool"), Some(Tool::PatternStamp));
-        assert_eq!(Tool::ALL.len(), 68);
+        assert_eq!(Tool::ALL.len(), 69);
     }
 
     fn vector_tool_names_parse() {
