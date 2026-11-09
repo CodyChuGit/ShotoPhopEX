@@ -18,13 +18,23 @@ pub fn machine_memory() -> (Option<u64>, Option<u64>) {
 pub fn check_at_launch(app: &mut PhotocraftApp) -> Option<Profile> {
     let (nvidia, unified) = machine_memory();
     let detected = memory_profile::detect(nvidia, unified);
-    let p = memory_profile::record_detected(&mut app.session, detected)?;
+    let recorded = memory_profile::record_detected(&mut app.session, detected);
+    // ponytail: every launch on the 8 GB Mac profile (detected or chosen) starts Generate at
+    // 0.5K, so a 1K picked last session does not stick; remember the choice if that annoys.
+    if memory_profile::active(&app.session) == Some(Profile::Mac8) {
+        app.ui.generate.size = "0.5K".into();
+    }
+    let p = recorded?;
     if let Err(e) = crate::prefs_ui::save_preferences(app) {
         log::warn!("couldn't save the detected memory profile: {e}");
     }
     let gb = nvidia.or(unified).map_or_else(String::new, |b| format!("{}", (b as f64 / (1u64 << 30) as f64).round()));
     log::info!("memory profile: {} ({gb} GB detected)", p.name());
-    let models = if p.small() { tl!("MOSS Turbo for images and MOSS Edit Turbo for edits") } else { tl!("Krea 2 and Qwen-Image-2.1") };
+    let models = match p {
+        Profile::Mac8 => tl!("FLUX 3 Image Klein (4-bit) for images, edits and fills, at 512 px"),
+        p if p.small() => tl!("MOSS Turbo for images and MOSS Edit Turbo for edits"),
+        _ => tl!("Krea 2 and Qwen-Image-2.1"),
+    };
     let chosen = app.session.prefs().integrations.memory_profile.trim() != "auto";
     let mut lines = vec![crate::i18n::fmt(tl!("{gb} GB of graphics memory: the AI models default to {models}."), &[("gb", &gb), ("models", models)])];
     if chosen {
@@ -33,8 +43,12 @@ pub fn check_at_launch(app: &mut PhotocraftApp) -> Option<Profile> {
         lines.push(tl!("Models that may need more memory are marked “may not fit”. Change it in Preferences › AI Integrations › Memory profile.").to_string());
     }
     lines.push(tl!("Help › Get AI Models… downloads the models for this profile.").to_string());
-    if matches!(p, Profile::Gb8 | Profile::Mac8) {
+    if p == Profile::Gb8 {
         lines.push(tl!("Image generation needs a smaller model that isn't ready yet; selection tools work.").to_string());
+    }
+    if p == Profile::Mac8 {
+        lines.push(tl!("Experimental: one model in memory at a time; MOSS and Prompt Enhance are off.").to_string());
+        lines.push(tl!("SAM 3.1 (Select Subject, Object Selection, Split into Layers, Remove Background) peaks near 7 GB and may swap.").to_string());
     }
     crate::notices::post(app, crate::i18n::fmt(tl!("Memory profile: {profile}"), &[("profile", p.label())]), lines, false, None);
     Some(p)

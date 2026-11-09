@@ -4633,7 +4633,10 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
     // An edit re-renders the whole picture; what shows of it is its subject (Select Subject on
     // the result), so a new thing (a Pikachu for the duck) sits in the untouched original. Not
     // for Angles, whose camera move is the whole picture; no detector, no subject mask.
-    let finder = if whole { None } else { crate::select_ml_cmds::subject_finder(s, None).ok() };
+    // Not on the 8 GB Mac profile either: the SAM pass took the edit from 5.3 to 10 GB at its peak
+    // (6.7 GB with f16 SAM; measured 2026-11-08).
+    let mac8 = crate::memory_profile::active(s) == Some(crate::memory_profile::Profile::Mac8);
+    let finder = if whole || mac8 { None } else { crate::select_ml_cmds::subject_finder(s, None).ok() };
     let job = FillJob {
         thinker: Arc::clone(&backend),
         backend,
@@ -5379,6 +5382,10 @@ fn always(_: &Session) -> std::result::Result<(), String> {
 /// command needs no ComfyUI (the Rust rebuild's R0 inventory found it always went there);
 /// otherwise the preferences' backend.
 fn enhancer_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> {
+    // Its language model (MOSS's 9B encoder on a Mac) does not fit beside anything in 8 GB.
+    if crate::memory_profile::active(s) == Some(crate::memory_profile::Profile::Mac8) {
+        return Err(EngineError::Other("Prompt Enhance is off on the 8 GB Mac profile (its language model needs 16 GB)".into()));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if s.prefs().integrations.native_configured()
         && let Ok(b) = native_backend(s)

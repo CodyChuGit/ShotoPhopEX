@@ -27,7 +27,8 @@ use crate::widgets;
 
 pub const MODES: [&str; 4] = ["image", "fill", "edit", "expand"];
 /// Sizes the image page offers: the longer side in pixels (the template's limits apply).
-pub const SIZES: [(&str, u32); 3] = [("1K", 1024), ("1.5K", 1536), ("2K", 2048)];
+/// 0.5K is the 8 GB Mac's default (`memory_profile_ui::check_at_launch`).
+pub const SIZES: [(&str, u32); 4] = [("0.5K", 512), ("1K", 1024), ("1.5K", 1536), ("2K", 2048)];
 /// The prompt's length limit (the engine's `MAX_PROMPT_CHARS`).
 pub const MAX_PROMPT: usize = 4000;
 /// Below this content height the group shows its one-row compact form.
@@ -1621,7 +1622,7 @@ pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
         next.aspect = s.to_string();
     }
     if let Some(x) = o.get("size") {
-        next.size = x.as_str().filter(|s| SIZES.iter().any(|(k, _)| k == s)).ok_or("generatePanel.size must be 1K, 1.5K or 2K")?.to_string();
+        next.size = x.as_str().filter(|s| SIZES.iter().any(|(k, _)| k == s)).ok_or("generatePanel.size must be 0.5K, 1K, 1.5K or 2K")?.to_string();
     }
     for (key, slot) in [("width", &mut next.width), ("height", &mut next.height)] {
         if let Some(x) = o.get(key) {

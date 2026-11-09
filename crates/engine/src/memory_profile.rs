@@ -35,6 +35,10 @@ pub const BIG_IMAGE_TEMPLATE: &str = "krea2-turbo/image";
 pub const SMALL_IMAGE_TEMPLATE: &str = "moss-image/turbo";
 /// The edit template of the small profiles: MOSS Edit with the 8-step LoRA stacked.
 pub const SMALL_EDIT_TEMPLATE: &str = "moss-image/edit-turbo";
+/// A Mac with 8 GB (experimental): FLUX 3 Image Klein in 4-bit for everything, one model held at
+/// a time (MOSS's 9B text encoder does not fit beside anything there).
+pub const MAC8_IMAGE_TEMPLATE: &str = "flux3-klein/image";
+pub const MAC8_EDIT_TEMPLATE: &str = "flux3-klein/edit";
 
 impl Profile {
     pub const ALL: [Profile; 7] = [Profile::Gb32, Profile::Gb24, Profile::Gb16, Profile::Gb12, Profile::Gb8, Profile::Mac16, Profile::Mac8];
@@ -64,7 +68,7 @@ impl Profile {
             Profile::Gb12 => "12 GB",
             Profile::Gb8 => "8 GB",
             Profile::Mac16 => "Mac, 16 GB",
-            Profile::Mac8 => "Mac, 8 GB",
+            Profile::Mac8 => "Mac, 8 GB (experimental)",
         }
     }
 
@@ -119,12 +123,19 @@ pub fn active(s: &Session) -> Option<Profile> {
 
 /// The image template Auto runs (Preferences › Default Image Template set to `auto`).
 pub fn image_template(p: Option<Profile>) -> &'static str {
-    if p.is_some_and(Profile::small) { SMALL_IMAGE_TEMPLATE } else { BIG_IMAGE_TEMPLATE }
+    match p {
+        Some(Profile::Mac8) => MAC8_IMAGE_TEMPLATE,
+        p if p.is_some_and(Profile::small) => SMALL_IMAGE_TEMPLATE,
+        _ => BIG_IMAGE_TEMPLATE,
+    }
 }
 
 /// The edit template Auto runs on this profile, when it differs from the usual choice.
 pub fn edit_template(p: Option<Profile>) -> Option<&'static str> {
-    p.is_some_and(Profile::small).then_some(SMALL_EDIT_TEMPLATE)
+    match p {
+        Some(Profile::Mac8) => Some(MAC8_EDIT_TEMPLATE),
+        p => p.is_some_and(Profile::small).then_some(SMALL_EDIT_TEMPLATE),
+    }
 }
 
 /// The fill template Auto runs on this profile, when it differs from the usual choice: a Mac
@@ -203,10 +214,13 @@ mod tests {
             assert_eq!(image_template(p), BIG_IMAGE_TEMPLATE);
             assert_eq!(edit_template(p), None);
         }
-        for p in [Profile::Gb16, Profile::Gb12, Profile::Gb8, Profile::Mac16, Profile::Mac8] {
+        for p in [Profile::Gb16, Profile::Gb12, Profile::Gb8, Profile::Mac16] {
             assert_eq!(image_template(Some(p)), SMALL_IMAGE_TEMPLATE);
             assert_eq!(edit_template(Some(p)), Some(SMALL_EDIT_TEMPLATE));
         }
+        // An 8 GB Mac (experimental) runs Klein for everything.
+        assert_eq!(image_template(Some(Profile::Mac8)), MAC8_IMAGE_TEMPLATE);
+        assert_eq!(edit_template(Some(Profile::Mac8)), Some(MAC8_EDIT_TEMPLATE));
     }
 
     #[test]
