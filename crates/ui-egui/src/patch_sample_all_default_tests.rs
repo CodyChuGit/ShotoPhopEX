@@ -1,6 +1,7 @@
 //! The Patch tool's Content-Aware Sample All Layers starts on (#12125): a fresh start and Reset
-//! Tool give the Patch tool Sample All Layers on while other tools stay off, and saved settings
-//! keep their stored value.
+//! Tool give the Patch tool Sample All Layers on while other tools stay off (except ShotoPhopEX's
+//! Object Selection, on so SAM sees the picture as shown), and saved settings keep their stored
+//! value.
 
 use serde_json::json;
 
@@ -18,8 +19,9 @@ fn patch_sample_all_layers_starts_on_and_other_tools_start_off() {
     let defaults = SampleAllLayers::default();
     assert!(defaults.patch);
     assert!(defaults.get(Tool::Patch));
+    assert!(defaults.get(Tool::ObjectSelection), "ShotoPhopEX: Object Selection samples all layers");
     for tool in Tool::ALL {
-        if tool != Tool::Patch {
+        if !matches!(tool, Tool::Patch | Tool::ObjectSelection) {
             assert!(!defaults.get(tool), "{tool:?} should default to Sample All Layers off");
         }
     }
