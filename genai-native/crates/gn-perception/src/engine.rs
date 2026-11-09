@@ -525,7 +525,22 @@ impl Engine for PerceptionEngine {
                     if !positives.is_empty() || !negatives.is_empty() {
                         out.push(without_islands(sam.segment_points(emb, &positives, &negatives, opts)?, wu, hu, &positives));
                     }
-                    if let Some(b) = bbox {
+                    // ponytail: SAM 3.1's box prompt answers a sliver (a box around the 512² duck
+                    // selected 590 px of its base, 2026-11-08; the refinement passes then lose it),
+                    // so a box alone asks for the object under its centre, kept inside the box.
+                    // Upgrade path: find the box route's difference from ComfyUI's node.
+                    if let Some(b) = bbox.filter(|_| positives.is_empty() && negatives.is_empty()) {
+                        let centre = [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5];
+                        let mut inst = sam.segment_points(emb, &[centre], &[], opts)?;
+                        for (i, v) in inst.mask.iter_mut().enumerate() {
+                            let (x, y) = ((i % wu) as f32, (i / wu) as f32);
+                            if x < b[0].floor() || x >= b[2].ceil() || y < b[1].floor() || y >= b[3].ceil() {
+                                *v = 0.0;
+                            }
+                        }
+                        let inst = Instance::from_mask(inst.mask, wu, hu, inst.score, inst.bbox);
+                        out.push(without_islands(inst, wu, hu, &[centre]));
+                    } else if let Some(b) = bbox {
                         out.push(without_islands(sam.segment_box(emb, b, opts)?, wu, hu, &[]));
                     }
                     if out.is_empty() {

@@ -72,6 +72,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `SAM_BOX=1`: the box route on BOX (debug).
+    if std::env::var_os("SAM_BOX").is_some() {
+        let ck = Checkpoint::open(&a[1])?.with_compute_dtype(dtype)?;
+        let mut sam = Sam31::from_checkpoint(&ck, &device)?;
+        sam.set_tokenizer(&a[2])?;
+        let frame = sam.encode(img.as_raw(), w, h)?;
+        for refine in [0usize, 1, 2] {
+            let (inst, _) = sam.segment_box(&frame, BOX, Options { refine_iterations: refine, ..Options::default() })?;
+            println!("box {BOX:?} refine {refine}: bounds {:?} px {}", inst.bounds, inst.pixels);
+        }
+        return Ok(());
+    }
     // `SAM_MEMORY=1`: the process's footprint and its peak (MB) after each stage.
     if std::env::var_os("SAM_MEMORY").is_some() {
         let mem = |stage: &str| {
