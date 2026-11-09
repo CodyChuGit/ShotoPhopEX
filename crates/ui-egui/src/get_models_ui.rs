@@ -275,11 +275,20 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 let id = e["id"].as_str().unwrap_or_default().to_string();
                 let mut on = extras.contains(&id);
                 let missing = e["missingBytes"].as_u64().unwrap_or(0);
-                let label = if missing == 0 {
-                    format!("{} ✓", e["name"].as_str().unwrap_or_default())
-                } else {
-                    format!("{} ({})", e["name"].as_str().unwrap_or_default(), gb(missing))
-                };
+                // Installed: nothing to tick, so no checkbox beside its ✓ (it read as "not
+                // chosen, yet installed").
+                if missing == 0 {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("✓").color(t.accent));
+                        ui.label(e["name"].as_str().unwrap_or_default()).on_hover_text(e["description"].as_str().unwrap_or_default());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(tl!("Installed")).small().color(t.text_dim));
+                        });
+                    });
+                    extras.retain(|x| *x != id);
+                    continue;
+                }
+                let label = format!("{} ({})", e["name"].as_str().unwrap_or_default(), gb(missing));
                 ui.add_enabled_ui(!running, |ui| crate::widgets::checkbox(ui, &mut on, &label))
                     .inner
                     .on_hover_text(e["description"].as_str().unwrap_or_default());
