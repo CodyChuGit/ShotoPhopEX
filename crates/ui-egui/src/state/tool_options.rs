@@ -371,8 +371,11 @@ fn default_eyedropper_sample() -> String {
 /// Each tool's Sample All Layers (the Paint Bucket calls it All Layers). Photoshop keeps one per
 /// tool, all off by default: turning it on for the Magic Wand must not leave Blur or Smudge
 /// copying the composite onto the active layer (#5524). The Mixer Brush keeps its own with the
-/// brush (`MixerSettings`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// brush (`MixerSettings`). Object Selection is the exception, on by default: SAM should see the
+/// picture as shown, and after a generative fill the active layer is the masked result, so off it
+/// found the fill's rectangle instead of the mug under it (2026-11-08; `select.byPoint`'s own
+/// default is all layers too).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SampleAllLayers {
     pub magic_wand: bool,
@@ -389,7 +392,29 @@ pub struct SampleAllLayers {
     pub smudge: bool,
 }
 
+impl Default for SampleAllLayers {
+    fn default() -> Self {
+        Self { object_selection: true, ..Self::NONE }
+    }
+}
+
 impl SampleAllLayers {
+    /// Every tool off.
+    pub const NONE: Self = Self {
+        magic_wand: false,
+        quick_selection: false,
+        object_selection: false,
+        paint_bucket: false,
+        magic_eraser: false,
+        spot_healing: false,
+        patch: false,
+        content_aware_move: false,
+        remove: false,
+        blur: false,
+        sharpen: false,
+        smudge: false,
+    };
+
     /// `tool`'s setting; false for a tool without the option.
     pub fn get(mut self, tool: Tool) -> bool {
         self.slot(tool).is_some_and(|v| *v)

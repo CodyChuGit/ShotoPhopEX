@@ -304,6 +304,8 @@ mod tests {
     fn hovering_an_empty_active_layer_gives_a_hint_not_silence() {
         let mut app = disc_app();
         app.session.execute("layer.new.layer", json!({})).unwrap();
+        // Sample All Layers off (on by default for Object Selection).
+        app.ui.tool_options.sample_all.object_selection = false;
         let u = update(&mut app, Some([100.0, 80.0]), false, 100.0);
         assert!(u.shown.is_none() && !u.busy);
         assert_eq!(u.hint, Some(empty_layer_hint()));
