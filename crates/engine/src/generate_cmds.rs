@@ -4578,6 +4578,22 @@ fn parse_variations(cmd: &str, p: &Value) -> Result<u32> {
     }
 }
 
+/// The Mac build ([`photocraft_genai::MLX`]), for the UI.
+pub fn mlx_build() -> bool {
+    photocraft_genai::MLX
+}
+
+/// The tooltip of a tool the Mac build has no model for.
+pub const NOT_ON_MAC: &str = "Not on Mac yet";
+
+/// Generative Angles runs Qwen-Image-Edit with fal's LoRA, which has no MLX port.
+fn angles_enabled(s: &Session) -> std::result::Result<(), String> {
+    if photocraft_genai::MLX {
+        return Err(NOT_ON_MAC.into());
+    }
+    edit_enabled(s)
+}
+
 fn edit_enabled(s: &Session) -> std::result::Result<(), String> {
     web_unavailable()?;
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
@@ -4926,7 +4942,7 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
             if segment {
                 params.insert("threshold".to_string(), json!(0.5));
             }
-            let req = Request {
+            let mut req = Request {
                 template: template_id.clone(),
                 prompt,
                 negative,
@@ -4940,12 +4956,27 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 params,
                 references: Vec::new(),
             };
-            let resp = match backend.as_ref().run(&req, &JobProgress::new(ctx)) {
-                Ok(r) => r,
-                Err(photocraft_genai::Error::NoOutput(_)) if segment => {
-                    return Err(EngineError::Other("the detector found no subject: name it in the prompt".into()));
+            // No subject named and none found: the kinds of thing Select Subject tries next (a
+            // kitchen has no "main subject" but has objects; the matte template, Windows' default,
+            // never comes back empty). Still nothing: say where to name one.
+            let fallbacks: &[&str] = if segment && subject.is_empty() { &crate::select_ml_cmds::SUBJECT_FALLBACKS[1..] } else { &[] };
+            let mut next = fallbacks.iter();
+            let resp = loop {
+                match backend.as_ref().run(&req, &JobProgress::new(ctx)) {
+                    Ok(r) => break r,
+                    Err(photocraft_genai::Error::NoOutput(_)) if segment => match next.next() {
+                        Some(p) => {
+                            ctx.check()?;
+                            req.prompt = (*p).to_string();
+                        }
+                        None => {
+                            return Err(EngineError::Other(
+                                "no subject found: type what to keep (e.g. \"the fridge\") in Remove Background's Subject box".into(),
+                            ));
+                        }
+                    },
+                    Err(e) => return Err(gen_err(e)),
                 }
-                Err(e) => return Err(gen_err(e)),
             };
             ctx.check()?;
             ctx.progress(0.95, if as_selection { "Selecting" } else { "Masking" });
@@ -5500,7 +5531,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it)"#,
-            enabled: edit_enabled,
+            enabled: angles_enabled,
             run: run_angles,
             journal: true,
         },
