@@ -202,6 +202,7 @@ impl Linear {
         if let Some(fused) = &self.fused {
             return Ok(fused.forward(x)?);
         }
+        let x = &x.to_dtype(self.weight.dtype())?;
         let dims = x.dims().to_vec();
         let input = self.weight.dim(1)?;
         let output = self.weight.dim(0)?;
@@ -228,7 +229,7 @@ impl Conv {
         if let Some(weight) = &self.fused_weight {
             return Ok(crate::ops::bias_channels(x)?.conv2d(weight, self.padding, self.stride, 1, 1)?);
         }
-        let y = x.conv2d(&self.weight, self.padding, self.stride, 1, 1)?;
+        let y = x.to_dtype(self.weight.dtype())?.conv2d(&self.weight, self.padding, self.stride, 1, 1)?;
         Ok(if let Some(bias) = &self.bias { y.broadcast_add(&bias.reshape((1, bias.elem_count(), 1, 1))?)? } else { y })
     }
 }

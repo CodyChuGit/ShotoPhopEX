@@ -72,6 +72,40 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `SAM_MEMORY=1`: the process's footprint and its peak (MB) after each stage.
+    if std::env::var_os("SAM_MEMORY").is_some() {
+        let mem = |stage: &str| {
+            let out = std::process::Command::new("footprint").arg(std::process::id().to_string()).output().ok();
+            let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            let grab = |key: &str| text.lines().find(|l| l.trim_start().starts_with(key)).map(|l| l.trim().to_string()).unwrap_or_default();
+            println!("{stage}: {} | {}", grab("phys_footprint:"), grab("phys_footprint_peak:"));
+        };
+        mem("start");
+        let ck = Checkpoint::open(&a[1])?.with_compute_dtype(dtype)?;
+        mem("checkpoint open");
+        let mut sam = Sam31::from_checkpoint(&ck, &device)?;
+        mem("model built");
+        drop(ck);
+        mem("checkpoint dropped");
+        sam.set_tokenizer(&a[2])?;
+        device.synchronize()?;
+        mem("synchronized");
+        let frame = sam.encode(img.as_raw(), w, h)?;
+        device.synchronize()?;
+        mem("embedded + synchronized");
+        for prompt in PROMPTS {
+            let _ = sam.detect_text(&frame, prompt, &[], Options { refine_iterations: 0, ..Options::default() })?;
+            device.synchronize()?;
+            mem(&format!("{prompt:?}"));
+        }
+        let _ = sam.segment_points(&frame, &[CLICKS[0]], &[], Options::default())?;
+        device.synchronize()?;
+        mem("click");
+        drop(frame);
+        device.synchronize()?;
+        mem("frame dropped");
+        return Ok(());
+    }
     let t = Instant::now();
     let ck = Checkpoint::open(&a[1])?.with_compute_dtype(dtype)?;
     let mut sam = Sam31::from_checkpoint(&ck, &device)?;

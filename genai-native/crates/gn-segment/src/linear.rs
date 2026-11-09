@@ -30,7 +30,7 @@ impl Linear {
             let zeros = Tensor::zeros((7, h * w), x.dtype(), x.device())?;
             weight.matmul(&Tensor::cat(&[flat, ones, zeros], 0)?)?
         } else {
-            let y = self.inner.weight().matmul(&flat)?;
+            let y = self.inner.weight().matmul(&flat.to_dtype(self.inner.weight().dtype())?)?;
             if let Some(bias) = self.inner.bias() { y.broadcast_add(&bias.unsqueeze(1)?)? } else { y }
         };
         y.reshape((1, self.inner.weight().dim(0)?, h, w))
@@ -42,7 +42,8 @@ impl Linear {
 impl Module for Linear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let Some(weight) = &self.packed else {
-            return self.inner.forward(x);
+            // Off CUDA the activations may come in f32 beside f16 weights (Metal).
+            return self.inner.forward(&x.to_dtype(self.inner.weight().dtype())?);
         };
         let (output, input) = self.inner.weight().dims2()?;
         let rows = x.elem_count() / input;
