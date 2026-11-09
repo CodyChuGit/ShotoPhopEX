@@ -660,12 +660,31 @@
    ]
   },
   {
+   "id": "mac8",
+   "name": "Mac 8 GB pack (experimental)",
+   "description": "Experimental, for Macs with 8 GB: FLUX 3 Image Klein (4-bit) for images, edits, Fill and Expand on Apple's MLX, one model in memory at a time; SAM 3.1 and ViTMatte for selections. No MOSS (its text encoder needs 16 GB).",
+   "profiles": [
+    "mac8"
+   ],
+   "files": [
+    "flux3-klein-q4-transformer-0",
+    "flux3-klein-q4-transformer-1",
+    "flux3-klein-q4-text-encoder-0",
+    "flux3-klein-q4-text-encoder-tokenizer",
+    "flux2-vae",
+    "klein-outpaint",
+    "sam31",
+    "sam31-tokenizer",
+    "vitmatte",
+    "vitmatte-config"
+   ]
+  },
+  {
    "id": "selection",
    "name": "Selection pack",
    "description": "SAM 3.1 and ViTMatte for Select Subject, Object Selection and edges. Image generation needs a smaller model that isn't ready yet.",
    "profiles": [
-    "8gb",
-    "mac8"
+    "8gb"
    ],
    "files": [
     "sam31",

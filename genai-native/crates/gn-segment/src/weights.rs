@@ -260,14 +260,16 @@ impl Checkpoint {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self { tensors: candle_core::safetensors::BufferedSafetensors::new(std::fs::read(path)?)?, compute_dtype: candle_core::DType::F32 })
     }
-    /// Opt into a CUDA compute precision; CPU remains f32 for fixture parity.
+    /// Opt into a GPU compute precision (CUDA or Metal); CPU remains f32 for fixture parity.
     pub fn with_compute_dtype(mut self, dtype: candle_core::DType) -> Result<Self> {
         ensure!(matches!(dtype, candle_core::DType::F32 | candle_core::DType::F16), "SAM compute dtype must be F32 or F16");
         self.compute_dtype = dtype;
         Ok(self)
     }
     pub(crate) fn compute_dtype(&self, device: &candle_core::Device) -> candle_core::DType {
-        if device.is_cuda() { self.compute_dtype } else { candle_core::DType::F32 }
+        // Metal too: f32 there held SAM 3.1 at 7.8 GB built (a 1.7 GB checkpoint) and 8.9 GB at
+        // its peak on a 512² picture, measured 2026-11-08, though f16 was asked for.
+        if device.is_cuda() || device.is_metal() { self.compute_dtype } else { candle_core::DType::F32 }
     }
     pub(crate) fn get(&self, key: &str, shape: &[usize], device: &candle_core::Device) -> Result<Tensor> {
         let t = self.tensors.load(key, device)?;

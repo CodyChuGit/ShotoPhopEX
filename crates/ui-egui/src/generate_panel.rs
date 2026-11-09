@@ -27,7 +27,8 @@ use crate::widgets;
 
 pub const MODES: [&str; 4] = ["image", "fill", "edit", "expand"];
 /// Sizes the image page offers: the longer side in pixels (the template's limits apply).
-pub const SIZES: [(&str, u32); 3] = [("1K", 1024), ("1.5K", 1536), ("2K", 2048)];
+/// 0.5K is the 8 GB Mac's default (`memory_profile_ui::check_at_launch`).
+pub const SIZES: [(&str, u32); 4] = [("0.5K", 512), ("1K", 1024), ("1.5K", 1536), ("2K", 2048)];
 /// The prompt's length limit (the engine's `MAX_PROMPT_CHARS`).
 pub const MAX_PROMPT: usize = 4000;
 /// Below this content height the group shows its one-row compact form.
@@ -640,6 +641,9 @@ pub fn add_dropped(app: &mut PhotocraftApp, files: Vec<egui::DroppedFileHandle>)
     }
 }
 
+/// The pinned footer: the Generate button, its progress line and the Clear all row.
+const FOOTER_H: f32 = 64.0;
+
 /// The dock group's body.
 pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     load_catalog(app);
@@ -653,7 +657,11 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if compact {
         compact_row(app, ui, &t, &mut action);
     } else {
-        egui::ScrollArea::vertical().id_salt("generate-panel").auto_shrink([false, true]).show(ui, |ui| full(app, ui, &t, &mut action));
+        // The footer's height is kept for it; the form above scrolls.
+        let max = (ui.available_height() - FOOTER_H).max(ROW_H * 3.0);
+        egui::ScrollArea::vertical().id_salt("generate-panel").auto_shrink([false, true]).max_height(max).show(ui, |ui| full(app, ui, &t, &mut action));
+        ui.add_space(SECTION_GAP);
+        footer(app, ui, &t, &mut action);
     }
     app.ui.generate.drop_rect = Some(Rect::from_min_max(top, ui.min_rect().max.max(top + vec2(ui.available_width(), 0.0))));
     editor(app, ui.ctx(), &mut action);
@@ -685,7 +693,12 @@ enum Action {
 fn apply(app: &mut PhotocraftApp, a: Action) {
     match a {
         Action::Generate => {
-            let _ = generate(app);
+            // Nothing to generate with yet: take them to Get AI Models.
+            if crate::get_models_ui::has_no_models(app) {
+                crate::get_models_ui::open(app);
+            } else {
+                let _ = generate(app);
+            }
         }
         Action::Cancel(j) => {
             crate::jobs_ui::cancel(app, j);
@@ -895,9 +908,12 @@ fn full(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, action: &mut Opt
     section(ui, t, tl!("Settings"), None);
     settings(app, ui, t, &mode, &template);
     lora_rows(app, ui, &mode, &template);
-    ui.add_space(SECTION_GAP);
+}
 
-    // The one primary action, full width; Clear all and the shortcut under it.
+/// The full form's footer, under the scrolling part so it never scrolls out of a short dock
+/// (in Image mode the button sat below the fold, 2026-11-08): the one primary action, full
+/// width; Clear all and the shortcut under it.
+fn footer(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, action: &mut Option<Action>) {
     let w = ui.available_width();
     generate_button(app, ui, action, w);
     ui.horizontal(|ui| {
@@ -1616,7 +1632,7 @@ pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
         next.aspect = s.to_string();
     }
     if let Some(x) = o.get("size") {
-        next.size = x.as_str().filter(|s| SIZES.iter().any(|(k, _)| k == s)).ok_or("generatePanel.size must be 1K, 1.5K or 2K")?.to_string();
+        next.size = x.as_str().filter(|s| SIZES.iter().any(|(k, _)| k == s)).ok_or("generatePanel.size must be 0.5K, 1K, 1.5K or 2K")?.to_string();
     }
     for (key, slot) in [("width", &mut next.width), ("height", &mut next.height)] {
         if let Some(x) = o.get(key) {

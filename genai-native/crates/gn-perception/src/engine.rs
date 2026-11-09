@@ -7,8 +7,9 @@
 //! `points` / `negatives` as JSON strings of `{x, y}` pixel coordinates in the request picture,
 //! `bx by bw bh` as pixels. Every instance comes back as a 1-channel coverage blob.
 //!
-//! The model loads on the first request and stays resident; the last picture's
-//! embedding is cached by content, so the probe that follows the pointer pays only the prompt.
+//! The model loads on the first request and stays resident; the last two pictures'
+//! embeddings are cached by content, so the probe that follows the pointer pays only the prompt
+//! (two: the finder's probe asks at a smaller size than the click after it).
 //!
 //! With the `candle` feature and SAM 3.1's own checkpoint on disk (ComfyUI's
 //! `checkpoints/sam3.1_multiplex_fp16.safetensors`, or one in `sam3.1/`), `gn-segment` runs it
@@ -88,8 +89,10 @@ pub struct PerceptionEngine {
     /// diffusion run paid (2026-11-01).
     #[cfg(feature = "candle")]
     checkpoint: Option<gn_segment::weights::Checkpoint>,
-    /// The last picture embedded: a content hash and its embedding.
-    cache: Option<(u64, Emb)>,
+    /// The last pictures embedded, the newest last: a content hash and its embedding. Two, as
+    /// the hover probe (768²) and a click or prompt (up to 2 MP) send the same picture at two
+    /// sizes; with one they evicted each other and every switch paid the vision trunk again.
+    cache: Vec<(u64, Emb)>,
     last_error: Option<String>,
     #[cfg(feature = "candle")]
     vitmatte: Option<gn_segment::vitmatte::VitMatte>,
@@ -112,7 +115,7 @@ impl PerceptionEngine {
             sam: None,
             #[cfg(feature = "candle")]
             checkpoint: None,
-            cache: None,
+            cache: Vec::new(),
             last_error: None,
             #[cfg(feature = "candle")]
             vitmatte: None,
@@ -307,6 +310,50 @@ fn default_refine(device: &Device, w: u32, h: u32) -> usize {
     }
 }
 
+/// A click's or a box's islands under this share of its mask are dropped: SAM's whole-object
+/// answer comes with specks, the fridge clicked in the kitchen picture with 55 of them on the
+/// cabinet handles beside it, none over 0.07% of the mask, while the parts an object really has
+/// apart (the cat's paw beyond the newspaper, 2%; the fruit seen through a wire bowl, 0.14% and
+/// up) are bigger (2026-11-08).
+const ISLAND_SHARE: f64 = 0.001;
+
+/// `inst` without its specks ([`ISLAND_SHARE`]); an island under a clicked point stays.
+fn without_islands(inst: Instance, w: usize, h: usize, clicks: &[[f32; 2]]) -> Instance {
+    let mut mask = inst.mask;
+    if mask.len() != w * h || inst.pixels == 0 {
+        return Instance { mask, ..inst };
+    }
+    let floor = (inst.pixels as f64 * ISLAND_SHARE).ceil() as usize;
+    let clicked: Vec<usize> =
+        clicks.iter().filter(|p| p[0] >= 0.0 && p[1] >= 0.0 && (p[0] as usize) < w && (p[1] as usize) < h).map(|p| p[1] as usize * w + p[0] as usize).collect();
+    let mut seen = vec![false; w * h];
+    let mut island = Vec::new();
+    for start in 0..w * h {
+        if seen[start] || mask[start] < 0.5 {
+            continue;
+        }
+        island.clear();
+        let mut stack = vec![start];
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            island.push(i);
+            let (x, y) = (i % w, i / w);
+            for (ok, j) in [(x > 0, i.wrapping_sub(1)), (x + 1 < w, i + 1), (y > 0, i.wrapping_sub(w)), (y + 1 < h, i + w)] {
+                if ok && !seen[j] && mask[j] >= 0.5 {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        if island.len() < floor && !island.iter().any(|i| clicked.contains(i)) {
+            for &i in &island {
+                mask[i] = 0.0;
+            }
+        }
+    }
+    Instance::from_mask(mask, w, h, inst.score, inst.bbox)
+}
+
 /// FNV-1a over the picture bytes and its size: the embedding cache key.
 fn content_hash(bytes: &[u8], w: u32, h: u32) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -445,17 +492,26 @@ impl Engine for PerceptionEngine {
             }
             // The picture's embedding: reused when the same pixels come again.
             let key = content_hash(rgba, w, h);
-            let hit = cache.as_ref().is_some_and(|(k, _)| *k == key);
-            if !hit {
-                progress(0.1, "Reading the picture");
-                let emb = sam.embed(rgba, w as usize, h as usize)?;
-                *cache = Some((key, emb));
+            let t_embed = Instant::now();
+            match cache.iter().position(|(k, _)| *k == key) {
+                // The hit becomes the newest.
+                Some(i) => cache[i..].rotate_left(1),
+                None => {
+                    progress(0.1, "Reading the picture");
+                    let emb = sam.embed(rgba, w as usize, h as usize)?;
+                    if cache.len() >= 2 {
+                        cache.remove(0);
+                    }
+                    cache.push((key, emb));
+                }
             }
-            let Some((_, emb)) = cache.as_ref() else { return Err(EngineError::new(ErrorKind::Internal, "no embedding")) };
+            let embed_s = t_embed.elapsed().as_secs_f32();
+            let Some((_, emb)) = cache.last() else { return Err(EngineError::new(ErrorKind::Internal, "no embedding")) };
             if cancel.load(Ordering::SeqCst) {
                 return Err(EngineError::cancelled());
             }
             progress(0.5, "Segmenting");
+            let t_seg = Instant::now();
             let mut out = Vec::new();
             match route {
                 Route::Text => {
@@ -463,17 +519,38 @@ impl Engine for PerceptionEngine {
                     out.extend(sam.detect_text(emb, &req.prompt, &boxes, opts)?);
                 }
                 Route::Point | Route::Box => {
+                    let (wu, hu) = (w as usize, h as usize);
                     if !positives.is_empty() || !negatives.is_empty() {
-                        out.push(sam.segment_points(emb, &positives, &negatives, opts)?);
+                        out.push(without_islands(sam.segment_points(emb, &positives, &negatives, opts)?, wu, hu, &positives));
                     }
-                    if let Some(b) = bbox {
-                        out.push(sam.segment_box(emb, b, opts)?);
+                    // ponytail: SAM 3.1's box prompt answers a sliver (a box around the 512² duck
+                    // selected 590 px of its base, 2026-11-08; the refinement passes then lose it),
+                    // so a box alone asks for the object under its centre, kept inside the box.
+                    // Upgrade path: find the box route's difference from ComfyUI's node.
+                    if let Some(b) = bbox.filter(|_| positives.is_empty() && negatives.is_empty()) {
+                        let centre = [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5];
+                        let mut inst = sam.segment_points(emb, &[centre], &[], opts)?;
+                        for (i, v) in inst.mask.iter_mut().enumerate() {
+                            let (x, y) = ((i % wu) as f32, (i / wu) as f32);
+                            if x < b[0].floor() || x >= b[2].ceil() || y < b[1].floor() || y >= b[3].ceil() {
+                                *v = 0.0;
+                            }
+                        }
+                        let inst = Instance::from_mask(inst.mask, wu, hu, inst.score, inst.bbox);
+                        out.push(without_islands(inst, wu, hu, &[centre]));
+                    } else if let Some(b) = bbox {
+                        out.push(without_islands(sam.segment_box(emb, b, opts)?, wu, hu, &[]));
                     }
                     if out.is_empty() {
                         return Err(EngineError::new(ErrorKind::BadRequest, "a point or box segmentation needs points or a box"));
                     }
                 }
             }
+            eprintln!(
+                "gn-perception: {route:?} {w}x{h}: embed {embed_s:.1} s, segment {:.1} s (refine {})",
+                t_seg.elapsed().as_secs_f32(),
+                opts.refine_iterations
+            );
             Ok(out)
         })();
         let instances = match result {
@@ -500,7 +577,7 @@ impl Engine for PerceptionEngine {
     }
 
     fn free(&mut self) {
-        self.cache = None;
+        self.cache.clear();
         self.sam = None;
         #[cfg(feature = "candle")]
         {
@@ -660,6 +737,25 @@ mod tests {
         assert_eq!(default_refine(&Device::Metal, 512, 512), 0);
         assert_eq!(default_refine(&Device::Metal, 4000, 3000), 1);
         assert_eq!(default_refine(&Device::Cpu, 512, 512), 2);
+    }
+
+    #[test]
+    fn a_clicks_specks_go_and_its_parts_stay() {
+        // 100×40: the object (x 0..50), a 120-pixel part apart (x 60..63), a 1-pixel speck at x 90
+        // and another under the click at x 95; the floor is 3 pixels.
+        let (w, h) = (100, 40);
+        let mut m = vec![0.0f32; w * h];
+        for y in 0..h {
+            for x in (0..50).chain(60..63) {
+                m[y * w + x] = 1.0;
+            }
+        }
+        m[5 * w + 90] = 1.0;
+        m[5 * w + 95] = 1.0;
+        let inst = without_islands(Instance::from_mask(m, w, h, 1.0, [0.0; 4]), w, h, &[[95.0, 5.0]]);
+        assert_eq!(inst.pixels, 2000 + 120 + 1);
+        assert_eq!(inst.mask[5 * w + 90], 0.0);
+        assert_eq!(inst.mask[5 * w + 95], 1.0);
     }
 
     #[test]

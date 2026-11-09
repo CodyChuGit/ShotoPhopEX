@@ -41,6 +41,41 @@ pub(super) fn screen_mode_commands(
     (commands, remember)
 }
 
+/// The Mac's window commands for switching from screen mode `from` to `next`, and whether the
+/// window should be maximized again when it goes back to Standard. A Mac app's menus live in the
+/// system menu bar, and native full screen hides that bar, so Full Screen Mode With Menu Bar is a
+/// maximized (zoomed) window instead: it fills the screen and leaves the system menu bar showing.
+/// Full Screen Mode is native full screen. `was_maximized` is whether the window was maximized
+/// in Standard, so that Standard gets the window back as it was.
+pub(super) fn screen_mode_commands_mac(full_screen: bool, maximized: bool, was_maximized: bool, from: &str, next: &str) -> (Vec<egui::ViewportCommand>, bool) {
+    use egui::ViewportCommand::{Fullscreen, Maximized};
+    // Leaving Standard: remember how the window was.
+    let remember = if from == "standard" { maximized } else { was_maximized };
+    let mut commands = Vec::new();
+    match next {
+        "fullScreenWithMenuBar" => {
+            if full_screen {
+                commands.push(Fullscreen(false));
+            }
+            commands.push(Maximized(true));
+            (commands, remember)
+        }
+        "fullScreen" => {
+            commands.push(Fullscreen(true));
+            (commands, remember)
+        }
+        _ => {
+            if full_screen {
+                commands.push(Fullscreen(false));
+            }
+            if from != "standard" {
+                commands.push(Maximized(remember));
+            }
+            (commands, false)
+        }
+    }
+}
+
 /// Pixel aspect ratio (width / height of a pixel) of a preset id.
 pub fn pixel_aspect_ratio(id: &str) -> f32 {
     // View › Pixel Aspect Ratio › Custom: `custom:<ratio>:<name>` (see `workspace_ui`).

@@ -280,6 +280,16 @@ impl KleinMlx {
         let check = || -> Result<()> { if cancel() { Err(Cancelled.into()) } else { Ok(()) } };
         let mut timings = Timings::default();
 
+        // Low memory (an 8 GB Mac): the encodings before the DiT, so the text encoder and the DiT
+        // are never held together (the prompt and the empty one, as Base would need it).
+        if crate::nn::low_memory() && self.encoded.iter().all(|(m, q, _)| m != model || q != &req.prompt) {
+            self.dit = None;
+            self.dit_loras.clear();
+            mlx_rs::memory::clear_cache()?;
+            let t0 = Instant::now();
+            self.encode(model, &[&req.prompt, ""], cancel)?;
+            timings.encode_s = t0.elapsed().as_secs_f32();
+        }
         // The DiT first: whether it is Base decides whether the empty prompt is needed.
         let t0 = Instant::now();
         let flow_map = self.dit(model, loras)?.is_flow_map();
@@ -288,7 +298,7 @@ impl KleinMlx {
         let t0 = Instant::now();
         let prompts: Vec<&str> = if cfg { vec![&req.prompt, ""] } else { vec![&req.prompt] };
         let enc = self.encode(model, &prompts, cancel)?;
-        timings.encode_s = t0.elapsed().as_secs_f32();
+        timings.encode_s += t0.elapsed().as_secs_f32();
         check()?;
 
         // The references: the first at the output's size (it sets the canvas), the rest under 1 MP.

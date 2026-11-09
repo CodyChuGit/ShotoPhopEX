@@ -95,7 +95,12 @@ fn the_mode_decides_the_command_and_the_deck_follows_the_template() {
     let (cmd, q) = request(&app).unwrap();
     assert_eq!((cmd, q["references"].as_array().map(Vec::len)), ("generate.edit", Some(1)));
     generate(&mut app).unwrap();
-    assert_eq!(fake.state().pictures.len(), 5, "the picture and the reference, after the fill's three");
+    // The edit sends the picture and the reference (then its result goes to the detector for
+    // the subject mask, more pictures).
+    let st = fake.state();
+    let edit = st.runs.iter().rev().find(|r| r.request["task"] == "edit").expect("the edit");
+    assert!(edit.request["references"].as_array().is_some_and(|r| r.len() == 1), "the reference");
+    drop(st);
     // The limit: a third and fourth are refused with a status message.
     add_reference(&mut app, json!({"layer": 1}));
     add_reference(&mut app, json!({"layer": 2}));
@@ -335,7 +340,8 @@ fn the_lora_rows_list_the_templates_family_and_a_run_sends_the_ones_switched_on(
     a.ui.generate.mode_chosen = true;
     a.ui.generate.template.insert("edit".into(), "qwen-2.1/edit".into());
     a.ui.generate.prompt = "restore the photo".into();
-    let mut h = harness(a, 520.0);
+    // Tall enough that the LoRA rows sit above the pinned Generate footer, not scrolled under it.
+    let mut h = harness(a, 680.0);
     h.get_by_label("LoRAs").click();
     h.run_steps(2);
     assert!(h.query_by_label("restore").is_some(), "the 2.1 adapter is listed");

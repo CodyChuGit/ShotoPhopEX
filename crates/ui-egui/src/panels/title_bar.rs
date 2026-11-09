@@ -14,7 +14,10 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let system = system_title_bar(app);
     // The caption buttons' room at each end (`titlebar`); a side with buttons has no margin.
     let (caption_left, caption_right) = crate::titlebar::reserved(app, ui.ctx());
-    let left = if cfg!(target_os = "macos") && app.integrated_titlebar {
+    // A Mac window's traffic lights sit in the bar's left end, except in full screen, where
+    // macOS hides them (and the bar would start with an empty gap).
+    let mac_full_screen = cfg!(target_os = "macos") && ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+    let left = if cfg!(target_os = "macos") && app.integrated_titlebar && !mac_full_screen {
         78
     } else if caption_left > 0.0 {
         0

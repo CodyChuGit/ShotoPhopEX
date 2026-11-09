@@ -238,6 +238,11 @@ pub fn looks_like_an_edit(prompt: &str) -> bool {
 /// follows; inline (tests, web) the results land at once. Either way the run's variations show
 /// in the Variations strip.
 pub fn generate(app: &mut PhotocraftApp) -> Result<Value, String> {
+    // Nothing to generate with yet: Get AI Models instead of a failed job.
+    if !app.automation_input && crate::get_models_ui::has_no_models(app) {
+        crate::get_models_ui::open(app);
+        return Ok(json!({"getModels": true}));
+    }
     let prompt = app.ui.generate.prompt.trim().to_string();
     if prompt.is_empty() {
         return Err("type what to generate first".into());

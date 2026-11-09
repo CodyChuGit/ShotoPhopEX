@@ -4578,6 +4578,22 @@ fn parse_variations(cmd: &str, p: &Value) -> Result<u32> {
     }
 }
 
+/// The Mac build ([`photocraft_genai::MLX`]), for the UI.
+pub fn mlx_build() -> bool {
+    photocraft_genai::MLX
+}
+
+/// The tooltip of a tool the Mac build has no model for.
+pub const NOT_ON_MAC: &str = "Not on Mac yet";
+
+/// Generative Angles runs Qwen-Image-Edit with fal's LoRA, which has no MLX port.
+fn angles_enabled(s: &Session) -> std::result::Result<(), String> {
+    if photocraft_genai::MLX {
+        return Err(NOT_ON_MAC.into());
+    }
+    edit_enabled(s)
+}
+
 fn edit_enabled(s: &Session) -> std::result::Result<(), String> {
     web_unavailable()?;
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
@@ -4630,6 +4646,13 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let label = name.clone();
     // `wholePicture` (Generative Angles): the selection does not confine the result.
     let whole = opt_bool(EDIT, p, "wholePicture", false)?;
+    // An edit re-renders the whole picture; what shows of it is its subject (Select Subject on
+    // the result), so a new thing (a Pikachu for the duck) sits in the untouched original. Not
+    // for Angles, whose camera move is the whole picture; no detector, no subject mask.
+    // Not on the 8 GB Mac profile either: the SAM pass took the edit from 5.3 to 10 GB at its peak
+    // (6.7 GB with f16 SAM; measured 2026-11-08).
+    let mac8 = crate::memory_profile::active(s) == Some(crate::memory_profile::Profile::Mac8);
+    let finder = if whole || mac8 { None } else { crate::select_ml_cmds::subject_finder(s, None).ok() };
     let job = FillJob {
         thinker: Arc::clone(&backend),
         backend,
@@ -4663,6 +4686,7 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
         move |doc, active, ctx| {
             // The whole canvas is re-rendered; a selection, when there is one, confines what
             // of it shows (the edit template takes no mask, see `fill_region`).
+            let selected = doc.selection.is_some() && !whole;
             let coverage: Vec<f32> = match doc.selection.as_ref().filter(|_| !whole) {
                 Some(sel) => {
                     let k = sel.channels().max(1);
@@ -4670,11 +4694,58 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 None => vec![1.0; rect.width() as usize * rect.height() as usize],
             };
-            fill_region(doc, active, ctx, job, rect, coverage, None)
+            let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
+            if let Some(finder) = finder.as_ref() {
+                for (id, ..) in &filled.0 {
+                    mask_to_subject(doc, *id, rect, selected, finder, ctx)?;
+                }
+            }
+            Ok(filled)
         },
         move |(made, w, h, request, template_id)| made_json(&made, w, h, request, &template_id),
     )
 }
+
+/// An edit result's layer mask from its subject: Select Subject's prompts on the result in turn,
+/// the first that finds anything, its instances joined. With a selection the subject joins the
+/// selection's mask (the selected area changes, and a new subject larger than it still shows
+/// whole); without one it is the mask. Nothing found: the mask stays as it was.
+fn mask_to_subject(doc: &mut Document, id: LayerId, rect: Rect, selected: bool, finder: &crate::select_ml_cmds::SubjectFinder, ctx: &JobCtx) -> Result<()> {
+    let layer = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    let surf = layer.surface().ok_or(EngineError::NoLayer(id))?;
+    let mut px = vec![[0u8; 4]; rect.width() as usize * rect.height() as usize];
+    surf.read_rgba8_into(rect, &mut px);
+    let picture: Vec<u8> = px.into_iter().flatten().collect();
+    let mut subject: Option<Vec<f32>> = None;
+    for prompt in crate::select_ml_cmds::SUBJECT_FALLBACKS.iter().take(2) {
+        ctx.check()?;
+        let found = finder.find_in(&picture, rect, prompt, SUBJECT_MASK_AT_MOST, ctx)?;
+        if found.is_empty() {
+            continue;
+        }
+        let mut joined = vec![0.0f32; picture.len() / 4];
+        for (cov, ..) in &found {
+            for (j, c) in joined.iter_mut().zip(cov) {
+                *j = j.max(*c);
+            }
+        }
+        subject = Some(joined);
+        break;
+    }
+    let Some(subject) = subject else { return Ok(()) };
+    let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+    let shown: Vec<f32> = match layer.mask.as_ref().filter(|_| selected) {
+        Some(m) => m.surface.read_region(rect).iter().zip(&subject).map(|(a, b)| a.max(*b)).collect(),
+        None => subject,
+    };
+    let mut surface = Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+    surface.write_region(rect, &shown);
+    layer.mask = Some(LayerMask { surface, enabled: true, linked: true, density: 1.0, feather: 0.0 });
+    Ok(())
+}
+
+/// How many subjects an edit result's mask may join.
+const SUBJECT_MASK_AT_MOST: usize = 3;
 
 /// `generate.angles`: the whole picture from another camera position, as Generative Edit runs it
 /// with the Multiple Angles template and the LoRA's words for `rotation`, `tilt` and `zoom`.
@@ -4871,7 +4942,7 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
             if segment {
                 params.insert("threshold".to_string(), json!(0.5));
             }
-            let req = Request {
+            let mut req = Request {
                 template: template_id.clone(),
                 prompt,
                 negative,
@@ -4885,12 +4956,27 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 params,
                 references: Vec::new(),
             };
-            let resp = match backend.as_ref().run(&req, &JobProgress::new(ctx)) {
-                Ok(r) => r,
-                Err(photocraft_genai::Error::NoOutput(_)) if segment => {
-                    return Err(EngineError::Other("the detector found no subject: name it in the prompt".into()));
+            // No subject named and none found: the kinds of thing Select Subject tries next (a
+            // kitchen has no "main subject" but has objects; the matte template, Windows' default,
+            // never comes back empty). Still nothing: say where to name one.
+            let fallbacks: &[&str] = if segment && subject.is_empty() { &crate::select_ml_cmds::SUBJECT_FALLBACKS[1..] } else { &[] };
+            let mut next = fallbacks.iter();
+            let resp = loop {
+                match backend.as_ref().run(&req, &JobProgress::new(ctx)) {
+                    Ok(r) => break r,
+                    Err(photocraft_genai::Error::NoOutput(_)) if segment => match next.next() {
+                        Some(p) => {
+                            ctx.check()?;
+                            req.prompt = (*p).to_string();
+                        }
+                        None => {
+                            return Err(EngineError::Other(
+                                "no subject found: type what to keep (e.g. \"the fridge\") in Remove Background's Subject box".into(),
+                            ));
+                        }
+                    },
+                    Err(e) => return Err(gen_err(e)),
                 }
-                Err(e) => return Err(gen_err(e)),
             };
             ctx.check()?;
             ctx.progress(0.95, if as_selection { "Selecting" } else { "Masking" });
@@ -5327,6 +5413,10 @@ fn always(_: &Session) -> std::result::Result<(), String> {
 /// command needs no ComfyUI (the Rust rebuild's R0 inventory found it always went there);
 /// otherwise the preferences' backend.
 fn enhancer_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> {
+    // Its language model (MOSS's 9B encoder on a Mac) does not fit beside anything in 8 GB.
+    if crate::memory_profile::active(s) == Some(crate::memory_profile::Profile::Mac8) {
+        return Err(EngineError::Other("Prompt Enhance is off on the 8 GB Mac profile (its language model needs 16 GB)".into()));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if s.prefs().integrations.native_configured()
         && let Ok(b) = native_backend(s)
@@ -5441,7 +5531,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it)"#,
-            enabled: edit_enabled,
+            enabled: angles_enabled,
             run: run_angles,
             journal: true,
         },

@@ -29,7 +29,29 @@ pub fn limit_cache() -> Result<()> {
         mlx_rs::metal::set_metallib_path(path.to_string_lossy())?;
     }
     mlx_rs::memory::set_cache_limit(1 << 30)?;
+    // `GN_MLX_MEMORY_LIMIT_GB`: cap MLX's memory (a 16 GB Mac standing in for an 8 GB one).
+    if let Some(gb) = std::env::var("GN_MLX_MEMORY_LIMIT_GB").ok().and_then(|v| v.trim().parse::<f64>().ok()).filter(|g| *g > 0.0) {
+        mlx_rs::memory::set_memory_limit((gb * 1e9) as usize)?;
+    }
     Ok(())
+}
+
+/// Whether to hold one model at a time (an 8 GB Mac): `GN_MLX_LOW_MEMORY=1`, or under 12 GB of
+/// memory.
+pub fn low_memory() -> bool {
+    static LOW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LOW.get_or_init(|| {
+        if let Ok(v) = std::env::var("GN_MLX_LOW_MEMORY") {
+            return v.trim() == "1";
+        }
+        let bytes = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        bytes.is_some_and(|b| b < 12 * 1024 * 1024 * 1024)
+    })
 }
 
 /// Give MLX's cache of freed buffers back to the system (after a model is dropped).

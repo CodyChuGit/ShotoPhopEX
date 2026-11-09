@@ -9,6 +9,10 @@ pub mod native;
 pub mod png;
 pub mod template;
 
+/// The Mac build: the generative models run on Apple's MLX (`native-mlx`), where some tools
+/// (Generative Angles, Upscale) have no model yet.
+pub const MLX: bool = cfg!(feature = "native-mlx");
+
 use serde::{Deserialize, Serialize};
 
 /// Why a generation did not happen. Messages are written for the user and for agents.

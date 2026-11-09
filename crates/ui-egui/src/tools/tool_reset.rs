@@ -145,7 +145,7 @@ pub fn reset_options(o: &mut ToolOptions, tool: Tool) {
 /// The serialized name of `tool`'s own Sample All Layers inside `sample_all`, if it has one: a
 /// tool preset stores that one alone, not the other tools' (#5524, #7356).
 pub fn sample_all_key(tool: Tool) -> Option<String> {
-    let mut probe = crate::state::SampleAllLayers::default();
+    let mut probe = crate::state::SampleAllLayers::NONE;
     *probe.slot(tool)? = true;
     let Ok(Value::Object(m)) = serde_json::to_value(probe) else { return None };
     m.into_iter().find(|(_, v)| v.as_bool() == Some(true)).map(|(k, _)| k)

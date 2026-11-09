@@ -111,7 +111,8 @@ fn the_edit_and_fill_commands_rewrite_on_the_way_and_the_layer_remembers_both() 
     let id = LayerId(r["layer"].as_u64().unwrap());
     {
         let st = fake.state();
-        assert_eq!(st.runs.len(), 2, "the rewriter, then the edit");
+        // An edit's result is then searched for its subject ("segment" runs after it).
+        assert_eq!(st.runs.iter().filter(|r| r.request["task"] != "segment").count(), 2, "the rewriter, then the edit");
         assert!(is_text_request(&st.runs[0].request));
         let g = &st.runs[1].request;
         assert!(!is_text_request(g));
@@ -212,7 +213,7 @@ fn a_rewriter_that_says_nothing_usable_leaves_the_prompt_as_typed() {
     let r = s.execute(EDIT, json!({"prompt": "make the sky stormy", "seed": 3, "enhance": true})).unwrap();
     {
         let st = mute.state();
-        assert_eq!(st.runs.len(), before + 3, "two tries, then the edit as typed");
+        assert_eq!(st.runs.iter().filter(|r| r.request["task"] != "segment").count(), before + 3, "two tries, then the edit as typed");
         assert_eq!(st.runs[before + 2].request["prompt"], "make the sky stormy. Keep everything else exactly as it is.");
     }
     let info = s.execute(INFO, json!({"layer": r["layer"]})).unwrap();
