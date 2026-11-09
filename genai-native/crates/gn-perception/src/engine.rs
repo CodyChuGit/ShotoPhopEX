@@ -494,10 +494,8 @@ impl Engine for PerceptionEngine {
             let key = content_hash(rgba, w, h);
             let t_embed = Instant::now();
             match cache.iter().position(|(k, _)| *k == key) {
-                Some(i) => {
-                    let e = cache.remove(i);
-                    cache.push(e);
-                }
+                // The hit becomes the newest.
+                Some(i) => cache[i..].rotate_left(1),
                 None => {
                     progress(0.1, "Reading the picture");
                     let emb = sam.embed(rgba, w as usize, h as usize)?;
