@@ -30,6 +30,9 @@ struct Int8Index {
     modules: BTreeMap<String, (usize, usize)>,
     /// Module → its rotation group, for the rest.
     other: BTreeMap<String, usize>,
+    /// The `asym_w4a8_int8` modules among `modules`, with their group size: 4-bit codes that
+    /// decode to the same INT8 grid (comfy_kitchen's `_dequant_int4_grouped_to_int8`).
+    w4a8: BTreeMap<String, usize>,
 }
 
 #[derive(serde::Deserialize)]
@@ -39,6 +42,50 @@ struct Descriptor {
     convrot: bool,
     #[serde(default)]
     convrot_groupsize: usize,
+    #[serde(default)]
+    group_size: Option<usize>,
+}
+
+/// The descriptor of the INT8 grid a W4A8 module decodes to.
+const INT8_DESCRIPTOR: &[u8] = br#"{"format":"int8_tensorwise","convrot":true,"convrot_groupsize":256}"#;
+
+/// An e4m3fn byte as f32 (bias 7, no infinities, `0x7f`/`0xff` NaN).
+fn e4m3(b: u8) -> f32 {
+    let sign = if b & 0x80 != 0 { -1.0 } else { 1.0 };
+    let e = i32::from((b >> 3) & 0xf);
+    let m = f32::from(b & 0x7);
+    if e == 0xf && b & 0x7 == 0x7 {
+        return f32::NAN;
+    }
+    if e == 0 {
+        sign * m / 8.0 * 2f32.powi(-6)
+    } else {
+        sign * (1.0 + m / 8.0) * 2f32.powi(e - 7)
+    }
+}
+
+/// W4A8 storage to its INT8 grid in ComfyUI's basis, `(n, k)` bytes: each code through the
+/// codebook (or `code - 8` without one) times its group's scale, rounded half to even and
+/// clamped to ±127, as comfy_kitchen decodes it for the GEMM.
+pub fn w4a8_to_int8(packed: &[u8], n: usize, k: usize, group: usize, s_rel: &[f32], codebook: Option<&[f32; 16]>) -> Result<Vec<u8>> {
+    anyhow::ensure!(k.is_multiple_of(2) && k.is_multiple_of(group) && group > 0, "W4A8: K={k} with group {group}");
+    anyhow::ensure!(packed.len() == n * k / 2 && s_rel.len() == n * (k / group), "W4A8: storage does not match ({n}, {k})");
+    let mut out = vec![0u8; n * k];
+    for (r, row) in out.chunks_exact_mut(k).enumerate() {
+        let src = &packed[r * k / 2..(r + 1) * k / 2];
+        let scales = &s_rel[r * (k / group)..(r + 1) * (k / group)];
+        for (c, v) in row.iter_mut().enumerate() {
+            let byte = src[c / 2];
+            let code = if c % 2 == 0 { byte & 0xf } else { byte >> 4 };
+            let level = match codebook {
+                Some(cb) => cb[usize::from(code)],
+                None => f32::from(code) - 8.0,
+            };
+            let q = (level * scales[c / group]).round_ties_even().clamp(-127.0, 127.0);
+            *v = (q as i8) as u8;
+        }
+    }
+    Ok(out)
 }
 
 impl Int8Index {
@@ -55,20 +102,25 @@ impl Int8Index {
         // SAFETY: an installed checkpoint stays unchanged while it is loaded (as for candle's
         // mapped VarBuilder of the same file); every read is bounds-checked against the map.
         let map = unsafe { memmap2::Mmap::map(&file)? };
-        let mut this = Self { map, metadata, data_start: usize::try_from(8 + len)?, modules: BTreeMap::new(), other: BTreeMap::new() };
+        let mut this = Self { map, metadata, data_start: usize::try_from(8 + len)?, modules: BTreeMap::new(), other: BTreeMap::new(), w4a8: BTreeMap::new() };
         let names: Vec<String> = this.metadata.tensors().keys().filter_map(|n| n.strip_suffix(".comfy_quant").map(str::to_owned)).collect();
         for name in names {
             let raw = this.read(&format!("{name}.comfy_quant"))?;
             anyhow::ensure!(raw.len() <= 4096, "{name}: comfy_quant descriptor too long");
             let d: Descriptor = serde_json::from_slice(raw).with_context(|| format!("{name}: comfy_quant descriptor"))?;
-            anyhow::ensure!(d.format == "int8_tensorwise" && d.convrot, "{name}: {} (only int8_tensorwise ConvRot is read)", d.format);
+            let w4a8 = d.format == "asym_w4a8_int8";
+            anyhow::ensure!((d.format == "int8_tensorwise" || w4a8) && d.convrot, "{name}: {} (only int8_tensorwise and asym_w4a8_int8 ConvRot are read)", d.format);
             if d.convrot_groupsize != GROUP {
                 this.other.insert(name, d.convrot_groupsize);
                 continue;
             }
             let w = this.metadata.info(&format!("{name}.weight")).with_context(|| format!("{name}.weight missing"))?;
             anyhow::ensure!(w.dtype == Dtype::I8 && w.shape.len() == 2, "{name}.weight must be a 2-D I8 matrix");
-            this.modules.insert(name, (w.shape[0], w.shape[1]));
+            let k = if w4a8 { w.shape[1] * 2 } else { w.shape[1] };
+            if w4a8 {
+                this.w4a8.insert(name.clone(), d.group_size.unwrap_or(16));
+            }
+            this.modules.insert(name, (w.shape[0], k));
         }
         Ok(this)
     }
@@ -85,9 +137,25 @@ impl Int8Index {
             anyhow::bail!("{module}: ConvRot group {g} (qir's kernels take {GROUP})");
         }
         let &(n, k) = self.modules.get(module).with_context(|| format!("{module}: not an INT8 module"))?;
+        let f32s = |name: &str| -> Result<Vec<f32>> { Ok(self.read(name)?.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()) };
+        if let Some(&group) = self.w4a8.get(module) {
+            let s_rel: Vec<f32> = match self.metadata.info(&format!("{module}.weight_s_rel")).map(|i| i.dtype) {
+                Some(Dtype::F32) => f32s(&format!("{module}.weight_s_rel"))?,
+                _ => self.read(&format!("{module}.weight_s_rel"))?.iter().map(|&b| e4m3(b)).collect(),
+            };
+            let codebook = if self.metadata.info(&format!("{module}.weight_codebook")).is_some() {
+                let v = f32s(&format!("{module}.weight_codebook"))?;
+                Some(<[f32; 16]>::try_from(v.as_slice()).map_err(|_| anyhow::anyhow!("{module}: the codebook must have 16 levels"))?)
+            } else {
+                None
+            };
+            let grid = w4a8_to_int8(self.read(&format!("{module}.weight"))?, n, k, group, &s_rel, codebook.as_ref()).with_context(|| format!("{module}: W4A8"))?;
+            let scale = f32s(&format!("{module}.weight_s_channel"))?;
+            return comfy_int8::convert_rows(INT8_DESCRIPTOR, &[n, k], &grid, &[n, 1], &scale, rows).with_context(|| format!("{module}: W4A8 ConvRot"));
+        }
         let descriptor = self.read(&format!("{module}.comfy_quant"))?;
         let weight = self.read(&format!("{module}.weight"))?;
-        let scale: Vec<f32> = self.read(&format!("{module}.weight_scale"))?.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+        let scale = f32s(&format!("{module}.weight_scale"))?;
         comfy_int8::convert_rows(descriptor, &[n, k], weight, &[n, 1], &scale, rows).with_context(|| format!("{module}: INT8 ConvRot"))
     }
 

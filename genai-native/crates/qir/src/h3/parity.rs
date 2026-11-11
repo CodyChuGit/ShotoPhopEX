@@ -176,3 +176,22 @@ fn lora_side_path_matches_merged_weights() {
     assert!(net.set_loras(&bad).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// P-H3's W4A8 files: a layer comfy_kitchen quantized (with and without a codebook) reads back to
+/// the weight comfy_kitchen dequantizes it to.
+#[test]
+fn w4a8_reads_like_comfy_kitchen() {
+    let Some(path) = fixture("h3_w4a8.safetensors") else {
+        eprintln!("H3_FIXTURES not set or h3_w4a8 missing: skipped");
+        return;
+    };
+    let w = Weights::open(&path, &Device::Cpu, DType::F32, false).unwrap();
+    for m in ["a", "b"] {
+        assert!(w.is_quantized(m));
+        let got = crate::moss::weights::dequantize(&w.prequantized(m).unwrap()).unwrap();
+        let want = w.get_as(&format!("ref.{m}"), DType::F32).unwrap();
+        let e = max_rel(&got, &want);
+        eprintln!("w4a8 {m} rel err {e}");
+        assert!(e < 1e-5, "w4a8 {m} rel err {e}");
+    }
+}
