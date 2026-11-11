@@ -39,6 +39,13 @@ pub const SMALL_EDIT_TEMPLATE: &str = "moss-image/edit-turbo";
 /// a time (MOSS's 9B text encoder does not fit beside anything there).
 pub const MAC8_IMAGE_TEMPLATE: &str = "flux3-klein/image";
 pub const MAC8_EDIT_TEMPLATE: &str = "flux3-klein/edit";
+/// FLUX 3 Image Klein's edit on CUDA: the 8, 12 and 16 GB profiles' edit when its files are in
+/// the Models folder (BFL's INT8 DiT, 5.8 GB, with the Qwen3-VL 4B encoder; the two take turns
+/// on cards under 15 GB). Cleaner than MOSS Edit on the Mac (2026-11-07).
+pub const KLEIN_EDIT_TEMPLATE: &str = "flux3-klein/edit";
+/// Klein's DiT and text encoder files, either of each.
+const KLEIN_DIT_FILES: [&str; 2] = ["flux3-image-klein-int8-convrot.safetensors", "flux3-image-klein-bf16.safetensors"];
+const KLEIN_TEXT_FILES: [&str; 2] = ["qwen3vl_4b_fp8_scaled.safetensors", "qwen3vl_4b_bf16.safetensors"];
 
 impl Profile {
     pub const ALL: [Profile; 7] = [Profile::Gb32, Profile::Gb24, Profile::Gb16, Profile::Gb12, Profile::Gb8, Profile::Mac16, Profile::Mac8];
@@ -138,6 +145,25 @@ pub fn edit_template(p: Option<Profile>) -> Option<&'static str> {
     }
 }
 
+/// Whether the Models folder at `root` holds FLUX 3 Image Klein for the CUDA worker (its DiT and
+/// its text encoder; the VAE is MOSS's).
+pub fn klein_installed(root: &str) -> bool {
+    if root.trim().is_empty() {
+        return false;
+    }
+    let root = std::path::Path::new(root);
+    let any = |dir: &str, names: &[&str]| names.iter().any(|n| root.join(dir).join(n).is_file());
+    any("diffusion_models", &KLEIN_DIT_FILES) && any("text_encoders", &KLEIN_TEXT_FILES)
+}
+
+/// Whether this PC edits and expands with FLUX 3 Image Klein on CUDA: an 8, 12 or 16 GB profile
+/// (not a Mac, which has its own Klein route) with Klein's files installed.
+pub fn cuda_klein(s: &Session) -> bool {
+    !cfg!(target_os = "macos")
+        && matches!(active(s), Some(Profile::Gb16 | Profile::Gb12 | Profile::Gb8))
+        && klein_installed(&s.prefs().integrations.models_root())
+}
+
 /// The fill template Auto runs on this profile, when it differs from the usual choice: a Mac
 /// fills with FLUX 3 Klein on MLX (the Qwen fills are CUDA-only).
 pub fn fill_template(p: Option<Profile>) -> Option<&'static str> {
@@ -158,6 +184,8 @@ pub fn need_gb(template: &str) -> Option<f32> {
         f if f.starts_with("qwen-edit-2511") || f.starts_with("qwen-image-layered") => 28.0,
         // 12 GB mode: encoder then DiT, 11.4–12.0 GiB peak.
         f if f.starts_with("moss") => 11.0,
+        // 8 GB mode: the fp8 encoder (about 4.5 GB), then the INT8 DiT (5.8 GB) with the VAE.
+        f if f.starts_with("flux3-klein") => 7.0,
         f if f.starts_with("sam") => 2.0,
         _ => return None,
     })
@@ -221,6 +249,22 @@ mod tests {
         // An 8 GB Mac (experimental) runs Klein for everything.
         assert_eq!(image_template(Some(Profile::Mac8)), MAC8_IMAGE_TEMPLATE);
         assert_eq!(edit_template(Some(Profile::Mac8)), Some(MAC8_EDIT_TEMPLATE));
+    }
+
+    #[test]
+    fn klein_counts_as_installed_with_its_dit_and_encoder() {
+        let dir = std::env::temp_dir().join(format!("pc-klein-installed-{}", std::process::id()));
+        let root = dir.to_string_lossy().into_owned();
+        assert!(!klein_installed("") && !klein_installed(&root));
+        std::fs::create_dir_all(dir.join("diffusion_models")).unwrap();
+        std::fs::create_dir_all(dir.join("text_encoders")).unwrap();
+        std::fs::write(dir.join("diffusion_models").join(KLEIN_DIT_FILES[0]), b"x").unwrap();
+        assert!(!klein_installed(&root), "the encoder is missing");
+        std::fs::write(dir.join("text_encoders").join(KLEIN_TEXT_FILES[0]), b"x").unwrap();
+        assert!(klein_installed(&root));
+        let _ = std::fs::remove_dir_all(&dir);
+        // It fits the 8 GB budget in its 8 GB mode.
+        assert!(!may_not_fit(Some(Profile::Gb8), KLEIN_EDIT_TEMPLATE));
     }
 
     #[test]
