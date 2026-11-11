@@ -420,27 +420,28 @@ bar. Each task is timed as one cold run, then the median of three warm runs, in 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/genai/bench-devices-dark.svg">
-    <img alt="Seconds per result on an RTX 5090 and a MacBook Air M1, same picture and settings. Select by text 0.3 s vs 18 s, Generate Image 2.8 s vs 3.3 min, Fill 1.4 s vs 114 s, Remove 9.1 s vs 6.6 min, Edit 5.5 s vs 6.5 min, Expand 3.3 s vs 6.6 min, Split into Layers 17 s vs 10.5 min, Clown Pass 7.6 s vs 3.2 min, Prompt Enhance 2.4 s vs 27 s. RTX 3090 being measured." src="docs/images/genai/bench-devices-light.svg" width="100%">
+    <img alt="Seconds per result on an RTX 5090 and a MacBook Air M1, same picture and settings. Select by text 0.3 s vs 18 s, Generate Image 2.8 s vs 3.3 min, Fill 1.4 s vs 114 s, Remove 9.1 s vs 6.6 min, Edit 5.5 s vs 6.5 min, Expand 3.3 s vs 6.6 min, Split into Layers 17 s vs 10.5 min, Clown Pass 7.6 s vs 3.2 min, Prompt Enhance 2.4 s vs 27 s. RTX 3090: Select by text 0.7 s and Clown Pass 10.6 s; the image models run out of memory in v0.1.1." src="docs/images/genai/bench-devices-light.svg" width="100%">
   </picture>
 </p>
 
 | Task (1024², warm) | RTX 5090 (32 GB) | RTX 3090 (24 GB) | MacBook Air M1 (16 GB) |
 |---|---:|---:|---:|
-| Select by text | **0.33 s** · SAM 3.1 | being measured | 17.9 s · SAM 3.1 |
-| Generate Image | **2.8 s** · Krea 2 Turbo | being measured | 195 s · MOSS Turbo |
-| Generative Fill | **1.4 s** · Qwen-Image-2.1 | being measured | 114 s · Klein 4-bit |
-| Generative Remove | **9.1 s** · Qwen-Image-2.1 edit | being measured | 396 s · Klein 4-bit |
-| Generative Edit | **5.5 s** · Qwen-Image-2.1 edit | being measured | 392 s · MOSS Edit Turbo |
-| Generative Expand (to 1536×1024) | **3.3 s** · Qwen-Image-2.1 + Outpaint | being measured | 393 s · Klein + Outpaint |
-| Split into Layers (Medium) | **17 s** · SAM 3.1 + Qwen-Image-2.1 | being measured | 633 s · SAM 3.1 + Klein |
-| Clown Pass | **7.6 s** · SAM 3.1 | being measured | 192 s · SAM 3.1 |
-| Prompt Enhance | **2.4 s** · Qwen3-VL | being measured | 27 s · Qwen3.5-9B |
+| Select by text | **0.33 s** · SAM 3.1 | 0.66 s · SAM 3.1 | 17.9 s · SAM 3.1 |
+| Generate Image | **2.8 s** · Krea 2 Turbo | out of memory in v0.1.1 | 195 s · MOSS Turbo |
+| Generative Fill | **1.4 s** · Qwen-Image-2.1 | out of memory in v0.1.1 | 114 s · Klein 4-bit |
+| Generative Remove | **9.1 s** · Qwen-Image-2.1 edit | out of memory in v0.1.1 | 396 s · Klein 4-bit |
+| Generative Edit | **5.5 s** · Qwen-Image-2.1 edit | out of memory in v0.1.1 | 392 s · MOSS Edit Turbo |
+| Generative Expand (to 1536×1024) | **3.3 s** · Qwen-Image-2.1 + Outpaint | out of memory in v0.1.1 | 393 s · Klein + Outpaint |
+| Split into Layers (Medium) | **17 s** · SAM 3.1 + Qwen-Image-2.1 | out of memory in v0.1.1 | 633 s · SAM 3.1 + Klein |
+| Clown Pass | **7.6 s** · SAM 3.1 | 10.6 s · SAM 3.1 | 192 s · SAM 3.1 |
+| Prompt Enhance | **2.4 s** · Qwen3-VL | fails in v0.1.1 | 27 s · Qwen3.5-9B |
 
 Measured 2026-11-07 to 2026-11-11 with v0.1.1. The RTX 5090 ran driver 621.14 on Windows 10. The
 MacBook Air M1 ran macOS 26; it has no fan, so long runs slow down as it warms up. With 16 GB, the
 Mac runs Edit at 768² and Expand at 928×624 inside the model, then scales the result to the
-canvas. Remove Background is left out: with no prompt, it found no single subject in this busy
-kitchen on either device.
+canvas. On the RTX 3090 in v0.1.1, every image model ran out of memory: the 24 GB pack's
+models don't fit 24 GB yet, and a fix is in progress. Only the SAM 3.1 tools ran there (driver 621.14, Windows 10). Remove Background is left out: with no prompt, it found no single subject in this busy
+kitchen on any device.
 
 **On a Mac** the models run on Apple's GPU through [MLX](https://github.com/ml-explore/mlx),
 which is compiled into the app, so there is no Python, Homebrew or Xcode to install. Not on the Mac
@@ -511,7 +512,7 @@ Apple Silicon Macs run MOSS and FLUX 3 Image Klein on MLX.
 | Setup | Role |
 |---|---|
 | **RTX 5090** (32 GB) | the reference build |
-| **RTX 3090** (24 GB) | being measured |
+| **RTX 3090** (24 GB) | the 24 GB tier; in v0.1.1 only the selection tools fit |
 | **MacBook Air M1** (16 GB) | the Mac reference |
 
 All three run the same test, compared in [Speed on every device](#-speed-on-every-device).
@@ -519,7 +520,7 @@ All three run the same test, compared in [Speed on every device](#-speed-on-ever
 | Your computer | What Auto uses | Status |
 |---|---|---|
 | **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
-| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟡 should work, not yet benchmarked |
+| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🔴 tested on a 3090: in v0.1.1 the image models run out of memory, and only selection works; fix in progress |
 | **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB |
 | **Mac, 16 GB** (Apple Silicon) | MOSS Turbo, MOSS Edit and FLUX 3 Image Klein on MLX ([speed](#-speed-on-every-device)) | 🟡 works on an M1 Air; `.dmg` since v0.1.1 |
 | **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
@@ -617,7 +618,7 @@ download, with a link, and downloads only after you accept them. Details and sou
 - [x] Best quality at 2 MP without the slow decode: the Krea 2 VAE decode at 1440² went from 14–45 s to 0.47 s
 - [x] **The first release, v0.1.0:** Windows installer, portable zip and Linux `.tar.gz`
 - [ ] **Split into Layers on busy scenes:** some people can still stay in the background; a mask-aware remover is next
-- [ ] **RTX 3090 / 4090 benchmarks**, and 4-bit weights for 16 GB cards
+- [ ] **24 GB cards (RTX 3090 / 4090):** the image models must fit 24 GB (benchmarked on a 3090: out of memory in v0.1.1), and 4-bit weights for 16 GB cards
 - [x] **Mac** (MLX, Apple Silicon, 16 GB): `.dmg` since v0.1.1, with MOSS, Klein and SAM 3.1
 - [ ] **Mac Angles**
 
