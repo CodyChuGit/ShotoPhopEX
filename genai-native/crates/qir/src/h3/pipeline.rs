@@ -105,6 +105,11 @@ impl H3Pipeline {
         &self.dev
     }
 
+    /// The run dtype (LoRA files are read in it).
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
     /// `run` with the VAE on the card (loaded on first use).
     fn with_vae<T>(&self, run: impl FnOnce(&H3Vae) -> Result<T>) -> Result<T> {
         let mut slot = self.vae.lock().unwrap_or_else(|e| e.into_inner());
@@ -200,6 +205,8 @@ impl H3Pipeline {
         let (lh, lw) = (h / vae::SCALE, w / vae::SCALE);
         let audio_t = self.dit.config().audio.then_some(AUDIO_T);
         let layout = Layout::new(tags, &ref_sizes, audio_t, lh, lw);
+        // the request's adapters, before the text is refined (none takes the previous ones off)
+        self.dit.set_loras(&req.loras)?;
         let prepared = self.dit.prepare(&states, layout)?;
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
@@ -215,6 +222,9 @@ impl H3Pipeline {
             None => None,
         };
         let sig = sigmas(req.steps)?;
+        if !req.loras.is_empty() {
+            tracing::info!(loras = ?req.loras, steps = sig.len() - 1, "H3 LoRAs on");
+        }
         let n = sig.len() - 1;
         let t0 = Instant::now();
         for i in 0..n {

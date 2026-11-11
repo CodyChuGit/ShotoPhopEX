@@ -594,7 +594,7 @@ impl DiffusionEngine {
             Resident::Moss(p, _) => (p.device().clone(), p.dtype()),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => return Err(EngineError::new(ErrorKind::Internal, "MLX applies its LoRAs itself")),
-            Resident::H3(_) => return Err(EngineError::new(ErrorKind::Unsupported, "P-H3-Image takes no LoRAs yet")),
+            Resident::H3(p) => (p.device().clone(), p.dtype()),
             Resident::Layered(_) | Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
         };
         let mut layers = Vec::with_capacity(asks.len());

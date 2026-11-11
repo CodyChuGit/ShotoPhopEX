@@ -164,9 +164,27 @@ pub(crate) fn swiglu_down(fc2: &QLinear, gu: &Tensor) -> Result<Tensor> {
     fc2.forward(&h)
 }
 
+/// A block linear with its LoRA slot (`s · B (A x)` added beside the quantized weight, so an
+/// INT8 or 4-bit weight is never requantized).
+struct Lin {
+    q: QLinear,
+    lora: crate::lora::LoraSlot,
+    name: String,
+}
+
+impl Lin {
+    fn load(w: &Weights, name: String) -> Result<Self> {
+        Ok(Self { q: w.linear(&name)?, lora: Default::default(), name })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        self.lora.add_to(self.q.forward(x)?, x)
+    }
+}
+
 struct Attn {
-    qkv: QLinear,
-    out: QLinear,
+    qkv: Lin,
+    out: Lin,
     q_norm: Rms,
     k_norm: Rms,
 }
@@ -174,8 +192,8 @@ struct Attn {
 impl Attn {
     fn load(w: &Weights, p: &str, eps: f64) -> Result<Self> {
         Ok(Self {
-            qkv: w.linear(&format!("{p}.qkv_proj"))?,
-            out: w.linear(&format!("{p}.out_proj"))?,
+            qkv: Lin::load(w, format!("{p}.qkv_proj"))?,
+            out: Lin::load(w, format!("{p}.out_proj"))?,
             q_norm: Rms::load(w, &format!("{p}.q_norm.weight"), eps)?,
             k_norm: Rms::load(w, &format!("{p}.k_norm.weight"), eps)?,
         })
@@ -198,17 +216,23 @@ impl Attn {
 }
 
 struct Mlp {
-    fc1: QLinear,
-    fc2: QLinear,
+    fc1: Lin,
+    fc2: Lin,
 }
 
 impl Mlp {
     fn load(w: &Weights, p: &str) -> Result<Self> {
-        Ok(Self { fc1: w.linear(&format!("{p}.fc1"))?, fc2: w.linear(&format!("{p}.fc2"))? })
+        Ok(Self { fc1: Lin::load(w, format!("{p}.fc1"))?, fc2: Lin::load(w, format!("{p}.fc2"))? })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        swiglu_down(&self.fc2, &self.fc1.forward(x)?)
+        let gu = self.fc1.forward(x)?;
+        if self.fc2.lora.is_empty() {
+            return swiglu_down(&self.fc2.q, &gu);
+        }
+        let f = gu.dim(1)? / 2;
+        let h = (candle_nn::ops::silu(&gu.narrow(1, 0, f)?)? * gu.narrow(1, f, f)?)?;
+        self.fc2.forward(&h)
     }
 }
 
@@ -387,6 +411,30 @@ impl H3Dit {
 
     pub fn config(&self) -> &H3Config {
         &self.cfg
+    }
+
+    fn lins(&self) -> Vec<&Lin> {
+        let refiner = self.refiner.iter().map(|b| (&b.attn, &b.mlp));
+        let blocks = self.blocks.iter().map(|b| (&b.attn, &b.mlp));
+        refiner.chain(blocks).flat_map(|(a, m)| [&a.qkv, &a.out, &m.fc1, &m.fc2]).collect()
+    }
+
+    /// Put `stack`'s adapters on the block linears (an empty stack takes them off). Fails when
+    /// the stack names a module this model lacks (a LoRA for another model), before any change.
+    pub fn set_loras(&self, stack: &crate::lora::LoraStack) -> Result<()> {
+        let lins = self.lins();
+        let names: std::collections::HashSet<&str> = lins.iter().map(|l| l.name.as_str()).collect();
+        let unknown = stack.unmatched(&|m| names.contains(m));
+        anyhow::ensure!(
+            unknown.is_empty(),
+            "the LoRA names {} module(s) P-H3-Image does not have (first: {}); it is for another model",
+            unknown.len(),
+            unknown.first().copied().unwrap_or_default()
+        );
+        for l in lins {
+            l.lora.set(stack.pairs(&l.name)?);
+        }
+        Ok(())
     }
 
     /// `condition_proj` + the token refiner on the text encoder's states `(T, text_dim)`.

@@ -91,3 +91,88 @@ fn vae_matches_comfy() {
     eprintln!("vae encode rel err {e}");
     assert!(e < 1e-4, "encode rel err {e}");
 }
+
+/// A LoRA beside the weights gives what the same LoRA merged into them gives (ComfyUI merges
+/// it, `W + s·B A`), on the refiner and the blocks; taking it off restores the plain model.
+#[test]
+fn lora_side_path_matches_merged_weights() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use crate::lora::{LoraFile, LoraStack};
+
+    let Some(path) = fixture("h3_tiny_t2i.safetensors") else {
+        eprintln!("H3_FIXTURES not set or h3_tiny_t2i missing: skipped");
+        return;
+    };
+    let dev = Device::Cpu;
+    let raw = candle_core::safetensors::load(&path, &dev).unwrap();
+    let dir = std::env::temp_dir().join(format!("qir-h3-lora-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut merged: HashMap<String, Tensor> = raw.clone();
+    let mut lora: HashMap<String, Tensor> = HashMap::new();
+    let modules = ["token_refiner.blocks.0.attn.qkv_proj", "blocks.0.attn.out_proj", "blocks.1.mlp.fc1", "blocks.1.mlp.fc2"];
+    let (rank, alpha, strength) = (4usize, 2f32, 0.8f32);
+    for (i, m) in modules.iter().enumerate() {
+        let w = &raw[&format!("{m}.weight")];
+        let (out, inp) = w.dims2().unwrap();
+        let a = (Tensor::randn(0f32, 1.0, (rank, inp), &dev).unwrap() * (0.3 / (inp as f64).sqrt())).unwrap();
+        let b = (Tensor::randn(0f32, 1.0, (out, rank), &dev).unwrap() * (0.3 + 0.1 * i as f64)).unwrap();
+        let s = f64::from(strength * alpha / rank as f32);
+        merged.insert(format!("{m}.weight"), (w + (b.matmul(&a).unwrap() * s).unwrap()).unwrap());
+        lora.insert(format!("diffusion_model.{m}.lora_A.weight"), a);
+        lora.insert(format!("diffusion_model.{m}.lora_B.weight"), b);
+        lora.insert(format!("diffusion_model.{m}.alpha"), Tensor::new(&[alpha], &dev).unwrap());
+    }
+    let merged_path = dir.join("merged.safetensors");
+    let lora_path = dir.join("lora.safetensors");
+    // keep the fixture's metadata (its PDD config)
+    let bytes = std::fs::read(&path).unwrap();
+    let (_, meta) = safetensors::SafeTensors::read_metadata(&bytes).unwrap();
+    let info = meta.metadata().clone();
+    safetensors::tensor::serialize_to_file(merged.iter().map(|(k, v)| (k.as_str(), v)), info, &merged_path).unwrap();
+    candle_core::safetensors::save(&lora, &lora_path).unwrap();
+
+    let run = |w: &Weights, stack: Option<&LoraStack>| -> Tensor {
+        let net = H3Dit::load(w).unwrap();
+        if let Some(s) = stack {
+            net.set_loras(s).unwrap();
+        }
+        let ctx = w.get_as("in.ctx", DType::F32).unwrap().i(0).unwrap();
+        let video = w.get_as("in.video", DType::F32).unwrap().i(0).unwrap();
+        let (_, _, lh, lw) = video.dims4().unwrap();
+        let p = net.prepare(&ctx, Layout::new(text_tags(ctx.dim(0).unwrap()), &[], None, lh, lw)).unwrap();
+        let v = net.forward(&p, &video, None, &[], 0, 0.6, &[1.0, 0.7, 0.0]).unwrap().0;
+        if stack.is_some() {
+            net.set_loras(&LoraStack::default()).unwrap();
+            // the refined text depends on the refiner's adapters: prepare again
+            let p = net.prepare(&ctx, Layout::new(text_tags(ctx.dim(0).unwrap()), &[], None, lh, lw)).unwrap();
+            let plain = net.forward(&p, &video, None, &[], 0, 0.6, &[1.0, 0.7, 0.0]).unwrap().0;
+            let base = H3Dit::load(&Weights::open(&path, &dev, DType::F32, false).unwrap()).unwrap();
+            let pb = base.prepare(&ctx, Layout::new(text_tags(ctx.dim(0).unwrap()), &[], None, lh, lw)).unwrap();
+            let want = base.forward(&pb, &video, None, &[], 0, 0.6, &[1.0, 0.7, 0.0]).unwrap().0;
+            assert!(max_rel(&plain, &want) < 1e-6, "taking the LoRA off restores the model");
+        }
+        v
+    };
+    let file = Arc::new(LoraFile::load(&lora_path, &dev, DType::F32).unwrap());
+    let stack = LoraStack { layers: vec![(file, strength)] };
+    let side = run(&Weights::open(&path, &dev, DType::F32, false).unwrap(), Some(&stack));
+    let want = run(&Weights::open(&merged_path, &dev, DType::F32, false).unwrap(), None);
+    let plain = run(&Weights::open(&path, &dev, DType::F32, false).unwrap(), None);
+    let e = max_rel(&side, &want);
+    eprintln!("lora side path vs merged rel err {e}, effect {}", max_rel(&plain, &want));
+    assert!(e < 1e-4, "side path vs merged rel err {e}");
+    assert!(max_rel(&plain, &want) > 1e-3, "the LoRA changes the output");
+
+    // a LoRA for another model is refused
+    let mut other = HashMap::new();
+    other.insert("diffusion_model.transformer_blocks.0.attn.to_q.lora_A.weight".to_string(), Tensor::zeros((2, 4), DType::F32, &dev).unwrap());
+    other.insert("diffusion_model.transformer_blocks.0.attn.to_q.lora_B.weight".to_string(), Tensor::zeros((4, 2), DType::F32, &dev).unwrap());
+    let other_path = dir.join("other.safetensors");
+    candle_core::safetensors::save(&other, &other_path).unwrap();
+    let net = H3Dit::load(&Weights::open(&path, &dev, DType::F32, false).unwrap()).unwrap();
+    let bad = LoraStack { layers: vec![(Arc::new(LoraFile::load(&other_path, &dev, DType::F32).unwrap()), 1.0)] };
+    assert!(net.set_loras(&bad).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
