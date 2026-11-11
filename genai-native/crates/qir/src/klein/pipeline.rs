@@ -147,8 +147,13 @@ impl KleinPipeline {
             progress(0.0, "Loading the text encoder");
             *te.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(load_text(files, &dev, dtype)?));
         }
-        progress(0.5, "Loading the transformer");
-        let d = Mutex::new(Some(Arc::new(load_dit(files, &dev, dtype)?)));
+        // In 8 GB mode both wait for the first picture: the encoder runs first, and a DiT loaded
+        // now would only be dropped for it and loaded again.
+        let d = Mutex::new(None);
+        if !low_vram {
+            progress(0.5, "Loading the transformer");
+            *d.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(load_dit(files, &dev, dtype)?));
+        }
         progress(0.9, "Loading the VAE");
         let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&files.vae], dtype, &dev)? };
         let vae = Flux2Decoder::load(vb.clone()).context("the FLUX.2 VAE")?;
