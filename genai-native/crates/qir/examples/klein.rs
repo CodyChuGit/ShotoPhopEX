@@ -5,7 +5,7 @@
 //! writes `<out dir>/klein-<size>-<seed>.png` for each square size. `<models dir>` holds
 //! `diffusion_models/flux3-image-klein-int8-convrot.safetensors` (or the bf16 file),
 //! `text_encoders/qwen3vl_4b_fp8_scaled.safetensors` (or `qwen3vl_4b_bf16`),
-//! `vae/flux2-vae.safetensors` and Qwen's tokenizer folder. Optional settings:
+//! `vae/flux2-vae_small.safetensors` and Qwen's tokenizer folder. Optional settings:
 //! - `KLEIN_EDIT=<a.png>[,<b.png>…]` edits those pictures. The first sets the canvas, and a size
 //!   of 0 keeps its aspect at about 1 MP.
 //! - `KLEIN_LORA=<file>[:<strength>]` adds a LoRA, unmerged.

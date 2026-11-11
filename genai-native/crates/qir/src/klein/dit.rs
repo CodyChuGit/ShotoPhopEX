@@ -150,8 +150,9 @@ fn attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
     let scale = 1.0 / (d as f64).sqrt();
     #[cfg(feature = "flash")]
     if q.device().is_cuda() && q.dtype() == DType::BF16 && d == crate::flash::HEAD_DIM {
+        // The kernel answers `(1, S, H, D)`, already in the order the rows are read back in.
         let out = crate::flash::attention(q, k, v, scale as f32)?;
-        return Ok(out.squeeze(0)?.transpose(0, 1)?.reshape((s, h * d))?);
+        return Ok(out.squeeze(0)?.reshape((s, h * d))?);
     }
     const ROWS: usize = 1024;
     let qh = q.squeeze(0)?.to_dtype(DType::F32)?.contiguous()?;

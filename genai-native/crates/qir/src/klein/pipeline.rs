@@ -50,7 +50,10 @@ const DIT: &[&str] = &["flux3-image-klein-int8-convrot.safetensors", "flux3-imag
 const DIT_BASE: &[&str] = &["flux3-image-klein-base-int8-convrot.safetensors", "flux3-image-klein-base-bf16.safetensors"];
 /// Qwen3-VL-4B: Krea 2's fp8 file first (4.5 GB on the card), then BFL's bf16 one.
 const TEXT: &[&str] = &["qwen3vl_4b_fp8_scaled.safetensors", "qwen3vl_4b_bf16.safetensors"];
-const VAE: &[&str] = &["flux2-vae.safetensors", "flux2-vae_small.safetensors"];
+/// The FLUX.2 VAE in diffusers' names (Comfy-Org's `flux2-vae_small`, which Get AI Models
+/// installs). BFL's own `flux2-vae.safetensors` keeps the original names, which
+/// [`Flux2Decoder`] does not read, so it is not looked for.
+const VAE: &[&str] = &["flux2-vae_small.safetensors"];
 
 /// Qwen3-VL's chat template for one user message, ready for the answer.
 pub fn template(prompt: &str) -> String {
