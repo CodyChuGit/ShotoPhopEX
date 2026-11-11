@@ -68,23 +68,38 @@ fn e4m3(b: u8) -> f32 {
 /// codebook (or `code - 8` without one) times its group's scale, rounded half to even and
 /// clamped to ±127, as comfy_kitchen decodes it for the GEMM.
 pub fn w4a8_to_int8(packed: &[u8], n: usize, k: usize, group: usize, s_rel: &[f32], codebook: Option<&[f32; 16]>) -> Result<Vec<u8>> {
-    anyhow::ensure!(k.is_multiple_of(2) && k.is_multiple_of(group) && group > 0, "W4A8: K={k} with group {group}");
+    anyhow::ensure!(k.is_multiple_of(2) && k.is_multiple_of(group) && group > 0 && group.is_multiple_of(2), "W4A8: K={k} with group {group}");
     anyhow::ensure!(packed.len() == n * k / 2 && s_rel.len() == n * (k / group), "W4A8: storage does not match ({n}, {k})");
+    let levels: [f32; 16] = match codebook {
+        Some(cb) => *cb,
+        None => std::array::from_fn(|c| c as f32 - 8.0),
+    };
+    let groups = k / group;
     let mut out = vec![0u8; n * k];
-    for (r, row) in out.chunks_exact_mut(k).enumerate() {
-        let src = &packed[r * k / 2..(r + 1) * k / 2];
-        let scales = &s_rel[r * (k / group)..(r + 1) * (k / group)];
-        for (c, v) in row.iter_mut().enumerate() {
-            let byte = src[c / 2];
-            let code = if c % 2 == 0 { byte & 0xf } else { byte >> 4 };
-            let level = match codebook {
-                Some(cb) => cb[usize::from(code)],
-                None => f32::from(code) - 8.0,
-            };
-            let q = (level * scales[c / group]).round_ties_even().clamp(-127.0, 127.0);
-            *v = (q as i8) as u8;
+    // A group's 16 decoded values once, then one lookup a weight; rows split over the cores
+    // (the 33B DiT's 13 GB took 11 minutes element by element on one thread).
+    let decode_rows = |dst: &mut [u8], row0: usize| {
+        for (i, row) in dst.chunks_exact_mut(k).enumerate() {
+            let r = row0 + i;
+            let src = &packed[r * k / 2..(r + 1) * k / 2];
+            for (g, (out_g, in_g)) in row.chunks_exact_mut(group).zip(src.chunks_exact(group / 2)).enumerate() {
+                let s = s_rel[r * groups + g];
+                let lut: [u8; 16] = std::array::from_fn(|c| ((levels[c] * s).round_ties_even().clamp(-127.0, 127.0) as i8) as u8);
+                for (pair, &byte) in out_g.chunks_exact_mut(2).zip(in_g) {
+                    pair[0] = lut[usize::from(byte & 0xf)];
+                    pair[1] = lut[usize::from(byte >> 4)];
+                }
+            }
         }
-    }
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).clamp(1, 16);
+    let rows_per = n.div_ceil(threads).max(1);
+    std::thread::scope(|sc| {
+        for (j, dst) in out.chunks_mut(rows_per * k).enumerate() {
+            let decode_rows = &decode_rows;
+            sc.spawn(move || decode_rows(dst, j * rows_per));
+        }
+    });
     Ok(out)
 }
 
@@ -141,7 +156,10 @@ impl Int8Index {
         if let Some(&group) = self.w4a8.get(module) {
             let s_rel: Vec<f32> = match self.metadata.info(&format!("{module}.weight_s_rel")).map(|i| i.dtype) {
                 Some(Dtype::F32) => f32s(&format!("{module}.weight_s_rel"))?,
-                _ => self.read(&format!("{module}.weight_s_rel"))?.iter().map(|&b| e4m3(b)).collect(),
+                _ => {
+                    let lut: [f32; 256] = std::array::from_fn(|b| e4m3(b as u8));
+                    self.read(&format!("{module}.weight_s_rel"))?.iter().map(|&b| lut[usize::from(b)]).collect()
+                }
             };
             let codebook = if self.metadata.info(&format!("{module}.weight_codebook")).is_some() {
                 let v = f32s(&format!("{module}.weight_codebook"))?;
