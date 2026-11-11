@@ -1310,8 +1310,13 @@ fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, mode: &str, 
             }
         });
         if swapping(app) && app.ui.generate.references.is_empty() {
+            // Wrapped to the row's width: one long line widened the dock and pushed Generate off it.
             setting_row(ui, "", |ui| {
-                ui.label(RichText::new(tl!("Add a picture of who to swap in as a reference")).small().color(t.text_faint));
+                let w = ui.available_width();
+                ui.allocate_ui_with_layout(vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_max_width(w);
+                    ui.add(egui::Label::new(RichText::new(tl!("Add a picture of who to swap in as a reference")).small().color(t.text_faint)).wrap());
+                });
             });
         }
     }
