@@ -234,6 +234,8 @@ const BUILTIN: &[&str] = &[
     include_str!("../workflows/moss-image-turbo.json"),
     include_str!("../workflows/moss-image-edit.json"),
     include_str!("../workflows/moss-image-edit-turbo.json"),
+    include_str!("../workflows/p-h3-image-image.json"),
+    include_str!("../workflows/p-h3-image-edit.json"),
 ];
 
 /// Verbs a prompt can open with when it is already an edit instruction ("remove the car",

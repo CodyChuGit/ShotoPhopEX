@@ -2,7 +2,9 @@
 //! (pictures as `<Picture n>: ` blocks) through Qwen3-VL-4B and the text connector, torch's CPU
 //! noise for the seed over the packed still (one video latent frame and two audio latents),
 //! Euler on the 8 fixed sigmas at shift 1 with no CFG, and the tiled VAE decode. The encoder
-//! is loaded for a new prompt and dropped before sampling; the DiT and the VAE stay resident.
+//! and the VAE take turns beside the resident DiT (int8: 21 GB): the encoder loads for a new
+//! prompt and goes, the VAE loads when a picture is read or decoded and stays until the next
+//! new prompt, so the card never holds both (peak about 28 GB at 4 MP).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -82,7 +84,7 @@ pub struct H3Pipeline {
     tok: Tokenizer,
     files: H3Files,
     dit: H3Dit,
-    vae: H3Vae,
+    vae: Mutex<Option<H3Vae>>,
     cond: Mutex<Option<Cached>>,
 }
 
@@ -95,18 +97,23 @@ impl H3Pipeline {
         let t0 = Instant::now();
         let dit = H3Dit::load(&Weights::open(&files.dit, &dev, dtype, true)?).context("the P-H3-Image DiT")?;
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "H3 DiT loaded");
-        progress(0.9, "Loading the VAE");
-        let vae = H3Vae::load(&Weights::open(&files.vae, &dev, dtype, true)?).context("the P-H3-Image VAE")?;
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, files: files.clone(), dit, vae, cond: Mutex::new(None) })
+        Ok(Self { dev, dtype, tok, files: files.clone(), dit, vae: Mutex::new(None), cond: Mutex::new(None) })
     }
 
     pub fn device(&self) -> &Device {
         &self.dev
     }
 
-    pub fn can_edit(&self) -> bool {
-        self.vae.can_encode()
+    /// `run` with the VAE on the card (loaded on first use).
+    fn with_vae<T>(&self, run: impl FnOnce(&H3Vae) -> Result<T>) -> Result<T> {
+        let mut slot = self.vae.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            let t0 = Instant::now();
+            *slot = Some(H3Vae::load(&Weights::open(&self.files.vae, &self.dev, self.dtype, true)?).context("the P-H3-Image VAE")?);
+            tracing::info!(load_s = t0.elapsed().as_secs_f32(), "H3 VAE loaded");
+        }
+        run(slot.as_ref().ok_or_else(|| anyhow::anyhow!("no VAE"))?)
     }
 
     /// The conditioning for `prompt` with `pictures` (already in the encoder's view), the
@@ -117,6 +124,9 @@ impl H3Pipeline {
         if let Some(c) = slot.as_ref().filter(|c| c.key == key) {
             return Ok((c.states.clone(), c.tags.clone()));
         }
+        // the VAE makes room for the encoder
+        *self.vae.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        crate::device::trim_pool(&self.dev);
         let t0 = Instant::now();
         let features = if pictures.is_empty() {
             Vec::new()
@@ -183,7 +193,7 @@ impl H3Pipeline {
                 let (rw, rh) = text::size_within_area(p.width, p.height, area);
                 let rgb = resized_rgb(p, rw, rh)?;
                 let x = Tensor::from_vec(rgb, (rh, rw, 3), &self.dev)?.permute((2, 0, 1))?.to_dtype(DType::F32)?.affine(2.0 / 255.0, -1.0)?;
-                refs.push(self.vae.encode(&x)?);
+                refs.push(self.with_vae(|v| v.encode(&x))?);
             }
         }
         let ref_sizes: Vec<(usize, usize)> = refs.iter().map(|r| -> Result<(usize, usize)> { Ok((r.dim(2)?, r.dim(3)?)) }).collect::<Result<_>>()?;
@@ -231,7 +241,7 @@ impl H3Pipeline {
         progress(0.92, "Decoding");
         crate::device::trim_pool(&self.dev);
         let t0 = Instant::now();
-        let img = self.vae.decode(&x)?;
+        let img = self.with_vae(|v| v.decode(&x))?;
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let rgba = to_rgba_u8(&img)?;
