@@ -136,7 +136,10 @@ fn the_button_shows_the_formula_estimate() {
     let g = photocraft_engine::generate_cmds::quality(&app.session);
     let (rw, rh) = photocraft_engine::generate_cmds::image_quality_size("krea2-turbo/image", g, 1536, 1024);
     assert!(u64::from(rw) * u64::from(rh) > 1536 * 1024, "{rw}x{rh}");
-    let want = photocraft_engine::generate_cmds::estimate_seconds("krea2-turbo/image", rw, rh, 2, 0).unwrap();
+    // And best's 9-step detail schedule: 9/8 of the 8-step formula.
+    let cost = photocraft_engine::generate_cmds::image_quality_cost("krea2-turbo/image", g);
+    assert_eq!(cost, 9.0 / 8.0);
+    let want = photocraft_engine::generate_cmds::estimate_seconds("krea2-turbo/image", rw, rh, 2, 0).unwrap() * cost;
     assert!((estimate(&app, "image").unwrap() - want).abs() < 1e-3);
     assert_eq!(eta_label(want), format!("~{:.0} s", want));
     assert_eq!(eta_label(150.0), "~3 min");
