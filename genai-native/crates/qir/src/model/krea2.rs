@@ -184,6 +184,8 @@ enum KLinear {
     LowRank(crate::convrot::ConvRotLinear, Tensor, Tensor),
     /// The file's own e4m3 weight (ComfyUI's `fp8_scaled` repacks), `crate::fp8`.
     Fp8(Fp8Linear),
+    /// The file's own 4-bit weight (ComfyUI's `nvfp4` repack), `crate::nvfp4`.
+    Nvfp4(crate::nvfp4::Nvfp4Linear),
 }
 
 /// How the block and text-fusion linears are held: as the file has them, rotated to ConvRot
@@ -198,6 +200,12 @@ pub struct Quant<'a> {
 impl KLinear {
     fn load(in_c: usize, out_c: usize, bias: bool, q: Quant<'_>, vb: VarBuilder) -> Result<Self> {
         if q.fp8.is_some() && !bias {
+            // ComfyUI's NVFP4 file keeps some layers in e4m3 (the `_scaled` file's scales stay
+            // beside them), so both kinds come through here.
+            let full = q.fp8.is_some_and(|p| p.is_full_precision(&vb.prefix()));
+            if let Some(l) = crate::nvfp4::load_linear(in_c, out_c, full, &vb)? {
+                return Ok(Self::Nvfp4(l));
+            }
             if let Some(l) = crate::fp8::load_linear(in_c, out_c, q.fp8, &vb)? {
                 // The file's full-precision layers (attention gate, `wo`, `down`) on ConvRot INT8
                 // with a low-rank correction instead of bf16 ([`full_precision_int8`]).
@@ -255,6 +263,7 @@ impl KLinear {
                 Ok((c.forward(x)? + low)?)
             }
             Self::Fp8(l) => l.forward(x),
+            Self::Nvfp4(l) => l.forward(x),
         }
     }
 }

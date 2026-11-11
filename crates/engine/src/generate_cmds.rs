@@ -889,11 +889,15 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
     let integrations = &s.prefs().integrations;
     let timeout = std::time::Duration::from_secs(u64::from(integrations.generative_timeout_secs.max(5)));
     let preview = preview_mode(integrations);
-    // The deadline and the preview mode are read at each run: a change takes effect on the next
-    // generation without restarting the worker.
+    // Fast and Balanced take 4-bit weights where the worker can (Krea 2's NVFP4 file on an RTX
+    // 50-series card); Best keeps the full models.
+    let nvfp4 = quality(s) != "best";
+    // The deadline, the preview mode and the precision are read at each run: a change takes
+    // effect on the next generation without restarting the worker.
     let configure = |b: &photocraft_genai::native::NativeBackend| {
         b.set_timeout(timeout);
         b.set_preview(preview);
+        b.set_nvfp4(nvfp4);
     };
     if let Some(b) = photocraft_genai::native::test_backend(&integrations.models_root()).map_err(gen_err)? {
         configure(&b);
