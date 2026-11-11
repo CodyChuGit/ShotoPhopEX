@@ -61,10 +61,12 @@ pub struct Sampling {
 impl Sampling {
     /// The official pipeline: Euler on the shift-5 schedule, block 22 skipped in the negative.
     pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true, eta: 0.0 };
-    /// RaymondLuxuryYacht's MOSS realism workflow (Civitai 3035895, 2026-11-04): `res_2s` on
-    /// the FlowMatchEulerDiscreteScheduler node's registered schedule (dynamic shifting at
-    /// mu 0, so linear σ: shift 1), 20 steps, plain CFG 3 (no skipped block) with a real negative.
-    pub const REALISM: Self = Self { shift: 1.0, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5 };
+    /// The app's MOSS-Image text to image, after RaymondLuxuryYacht's MOSS realism workflow
+    /// (Civitai 3035895, 2026-11-04): RES4LYF's `res_2s` (ancestral, eta 0.5), 20 steps, plain CFG
+    /// 3 (no skipped block) with a real negative ([`REALISM_NEGATIVE`]). The workflow's schedule
+    /// is linear σ (shift 1); in the app (2026-11-11, three prompts) that came out dark and
+    /// muddy with broken signs, so the official shift 5 stays. About 30 % faster than 50 Euler steps.
+    pub const REALISM: Self = Self { shift: SHIFT, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5 };
 
     /// `self` with the A/B hooks applied: `QIR_MOSS_SHIFT`, `QIR_MOSS_SAMPLER` (`euler` /
     /// `res_2s`), `QIR_MOSS_SKIP` (`0` / `1`), `QIR_MOSS_ETA` (`res_2s`'s noise, 0..1).
