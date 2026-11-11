@@ -121,6 +121,12 @@ pub struct ToolOptions {
     /// under it, such as one piece of clothing, instead of the whole figure (`detail: "part"`).
     #[serde(default)]
     pub object_parts: bool,
+    /// Select Subject's quality: High Quality asks Qwen-Image-2.1 for the subject's soft matte
+    /// (`generate.removeBackground` with `asSelection` on `qwen-2.1/matte`, about 8 s warm, a
+    /// cleaner edge on hair, fur and glass than SAM 3.1 with refinement, measured in the app
+    /// 2026-11-11); Fast (off) is SAM 3.1 (`select.subjectML`, under a second).
+    #[serde(default)]
+    pub subject_hq: bool,
     /// Pen: "path" (work path) or "shape" (shape layer).
     pub vector_mode: String,
     /// Pen, Freeform Pen and Curvature Pen › Path Operations (#1397): how a new path combines with
@@ -531,6 +537,7 @@ impl Default for ToolOptions {
             object_fill_holes: false,
             object_soften: 0.0,
             object_parts: false,
+            subject_hq: false,
             vector_mode: "path".into(),
             pen_path_op: default_pen_path_op(),
             shape_mode: "shape".into(),

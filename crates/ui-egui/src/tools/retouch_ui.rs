@@ -530,15 +530,39 @@ pub fn select_by_text(app: &mut PhotocraftApp) -> Result<Value, String> {
 
 /// Select › Subject and the selection tools' Select Subject button: SAM 3.1's reading of the
 /// main subject when the server answers (`select.subjectML`, with the edge refinement the
-/// Object Selection tool uses), the classical `select.subject` otherwise.
+/// Object Selection tool uses), the classical `select.subject` otherwise. With High Quality
+/// chosen ([`subject_quality`]), Qwen-Image-2.1's soft matte of the subject first
+/// (`generate.removeBackground` with `asSelection`), SAM 3.1 when that cannot start.
 pub fn select_subject(app: &mut PhotocraftApp) -> Result<Value, String> {
     let refine = app.ui.tool_options.refine_edge;
-    if server_online(app)
-        && let Ok(v) = app.run("select.subjectML", json!({"refine": refine}))
-    {
-        return Ok(v);
+    if server_online(app) {
+        if app.ui.tool_options.subject_hq
+            && let Ok(v) = app.run("generate.removeBackground", subject_hq_params(app.ui.tool_options.sample_all.object_selection))
+        {
+            return Ok(v);
+        }
+        if let Ok(v) = app.run("select.subjectML", json!({"refine": refine})) {
+            return Ok(v);
+        }
     }
     app.run("select.subject", json!({}))
+}
+
+/// The Qwen matte template High Quality runs.
+pub const SUBJECT_HQ_TEMPLATE: &str = "qwen-2.1/matte";
+
+/// `generate.removeBackground`'s params for a High Quality Select Subject: the matte as a new
+/// selection, the main subject (nothing named), from the layer or every layer.
+pub fn subject_hq_params(sample_all: bool) -> Value {
+    json!({"asSelection": true, "mode": "replace", "prompt": "", "template": SUBJECT_HQ_TEMPLATE, "sampleAllLayers": sample_all})
+}
+
+/// The Fast / High Quality choice beside a selection tool's Select Subject button.
+pub fn subject_quality(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let mut hq = app.ui.tool_options.subject_hq;
+    if crate::widgets::dropdown(ui, "subject-quality", tl!("Select Subject quality"), &mut hq, &[(false, tl!("Fast")), (true, tl!("High Quality"))], 104.0) {
+        app.ui.tool_options.subject_hq = hq;
+    }
 }
 
 /// The Content-Aware Move tool's "Don't show again" for [`content_aware_move_no_pixels`].
@@ -1037,6 +1061,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             }
             opt(ui, &crate::i18n::fmt(tl!("{key} to subtract"), &[("key", &crate::shortcuts::pretty("Alt"))]));
             crate::widgets::vline(ui, 22.0);
+            subject_quality(app, ui);
             if crate::widgets::secondary_button(ui, tl!("Select Subject"), 0.0).clicked() {
                 let _ = select_subject(app);
             }
@@ -1088,6 +1113,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                 opt(ui, tl!("Drag a rectangle around the object"));
             }
             crate::widgets::vline(ui, 22.0);
+            subject_quality(app, ui);
             let subject = crate::widgets::secondary_button(ui, tl!("Select Subject"), 0.0).clicked();
             if next_match {
                 crate::object_select::next_match(app);

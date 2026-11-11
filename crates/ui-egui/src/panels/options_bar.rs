@@ -430,6 +430,7 @@ fn selection_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: 
             widgets::checkbox(ui, &mut app.ui.tool_options.contiguous, tl!("Contiguous"));
             widgets::checkbox(ui, &mut app.ui.tool_options.sample_all.magic_wand, tl!("Sample All Layers"));
             widgets::vline(ui, 22.0);
+            crate::retouch_ui::subject_quality(app, ui);
             if widgets::secondary_button(ui, tl!("Select Subject"), 0.0).clicked() {
                 let _ = crate::retouch_ui::select_subject(app);
             }
