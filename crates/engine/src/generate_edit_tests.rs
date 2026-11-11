@@ -194,15 +194,17 @@ fn a_swap_sends_the_bfs_lora_and_prompt() {
     let prompt = q["prompt"].as_str().unwrap();
     assert!(prompt.starts_with("head_swap: start with <image1>") && prompt.ends_with(" smiling"), "{prompt}");
     assert_eq!(q["name"], "Face Swap");
+    assert_eq!(q["steps"], swap::SWAP_STEPS);
     assert!(q.get("swap").is_none());
 
     // A named template stays, a LoRA already listed is not added twice.
     let p = json!({"swap": "body", "template": "qwen-2.1/edit", "references": [{"layer": 2}],
-        "loras": [{"file": swap::BODY.lora, "strength": 0.8}]});
+        "loras": [{"file": swap::BODY.lora, "strength": 0.8}], "steps": 25});
     let q = swap::apply(&s, &p).unwrap().unwrap();
     assert_eq!(q["loras"].as_array().unwrap().len(), 1);
     assert_eq!(q["loras"][0]["strength"], 0.8);
     assert!(q["prompt"].as_str().unwrap().starts_with("body_swap:"));
+    assert_eq!(q["steps"], 25, "named steps stay");
 
     assert!(swap::apply(&s, &json!({"prompt": "x"})).unwrap().is_none(), "no swap, no change");
     assert!(swap::apply(&s, &json!({"swap": "none"})).unwrap().is_none());

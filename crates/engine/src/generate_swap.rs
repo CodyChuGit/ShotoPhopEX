@@ -13,6 +13,11 @@ use crate::{EngineError, Result, Session};
 /// The template a swap runs (the BFS LoRAs are for Qwen-Image-2.1; nine reference slots).
 pub const SWAP_TEMPLATE: &str = "qwen-2.1/edit";
 
+/// The steps a swap runs when the request leaves `steps` at 0: in the app on 2026-11-11 (5090,
+/// head swap 896x1152) 16 steps looked as sharp as the template's 25 at 5.1 s warm against
+/// about 7 s, and the 8-step turbo LoRA (Pruna) came out softer at the same time.
+pub const SWAP_STEPS: u64 = 16;
+
 /// One kind of swap: its `swap` value, its LoRA file and its prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Swap {
@@ -51,7 +56,7 @@ pub fn find(kind: &str) -> Option<Swap> {
 /// `p` rewritten for its `swap`, or None when it asks for none: the template pinned to
 /// [`SWAP_TEMPLATE`] (unless one is named), the swap's LoRA added at strength 1 (unless the
 /// request lists it), the author's prompt with the typed one after it, and Enhance off (a
-/// rewritten prompt would lose the LoRA's trigger words).
+/// rewritten prompt would lose the LoRA's trigger words), and [`SWAP_STEPS`] unless steps are named.
 pub(crate) fn apply(s: &Session, p: &Value) -> Result<Option<Value>> {
     let Some(kind) = p.get("swap").filter(|v| !v.is_null()) else { return Ok(None) };
     let kind = kind.as_str().ok_or_else(|| bad(EDIT, "`swap` is \"head\" or \"body\""))?;
@@ -82,6 +87,9 @@ pub(crate) fn apply(s: &Session, p: &Value) -> Result<Option<Value>> {
     let prompt = if typed.is_empty() { swap.prompt.to_string() } else { format!("{} {typed}", swap.prompt) };
     o.insert("prompt".into(), json!(prompt));
     o.insert("enhance".into(), json!(false));
+    if o.get("steps").and_then(Value::as_u64).unwrap_or(0) == 0 {
+        o.insert("steps".into(), json!(SWAP_STEPS));
+    }
     let mut list: Vec<Value> = o.get("loras").and_then(Value::as_array).cloned().unwrap_or_default();
     if !list.iter().any(|l| l.get("file").and_then(Value::as_str) == Some(swap.lora)) {
         list.insert(0, json!({"file": swap.lora, "strength": 1.0}));
