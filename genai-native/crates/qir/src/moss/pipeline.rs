@@ -15,9 +15,9 @@ use super::dit::{self, MossConfig, MossDit};
 use super::text::{self, Qwen35Text, TextConfig};
 use super::vae::{self, Flux2Decoder, Flux2Encoder};
 use super::weights::Weights;
-use crate::Result;
 use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
 use crate::preview::StepPreview;
+use crate::Result;
 
 /// The official defaults.
 pub const STEPS: usize = 50;
@@ -356,7 +356,13 @@ impl MossPipeline {
         anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16), "the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
         anyhow::ensure!(req.references.len() <= 4, "MOSS Edit takes at most 4 pictures ({} given)", req.references.len());
 
-        let check = || -> Result<()> { if cancel() { Err(Cancelled.into()) } else { Ok(()) } };
+        let check = || -> Result<()> {
+            if cancel() {
+                Err(Cancelled.into())
+            } else {
+                Ok(())
+            }
+        };
         let mut timings = Timings::default();
 
         check()?;
@@ -457,7 +463,11 @@ impl MossPipeline {
                     let v2 = velocity(&x2, st.mid_sigma as f32)?;
                     let x0_2 = (&x2 - (v2 * st.mid_sigma)?)?;
                     let out = (((&x * st.x)? + (x0 * st.x0_1)?)? + (x0_2 * st.x0_2)?)?;
-                    if step.up > 0.0 { ((out * step.alpha)? + (fresh(2 * i as u64 + 2)? * step.up)?)? } else { out }
+                    if step.up > 0.0 {
+                        ((out * step.alpha)? + (fresh(2 * i as u64 + 2)? * step.up)?)?
+                    } else {
+                        out
+                    }
                 }
                 _ => (x + (v * f64::from(sig[i + 1] - sig[i]))?)?,
             };
@@ -574,7 +584,11 @@ fn load_text(files: &MossFiles, dev: &Device, dtype: DType) -> Result<Qwen35Text
 /// The DiT's dtype: the run's, or f32 (dense, dequantized, the candle chains) under
 /// `QIR_MOSS_DIT_F32=1`: a reference for the bf16 paths, not for use.
 fn dit_dtype(run: DType) -> DType {
-    if std::env::var("QIR_MOSS_DIT_F32").is_ok_and(|v| v.trim() == "1") { DType::F32 } else { run }
+    if std::env::var("QIR_MOSS_DIT_F32").is_ok_and(|v| v.trim() == "1") {
+        DType::F32
+    } else {
+        run
+    }
 }
 
 fn load_dit(files: &MossFiles, dev: &Device, dtype: DType) -> Result<MossDit> {
