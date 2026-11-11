@@ -10,8 +10,8 @@
 <text x="24" y="146.0" font-size="14" font-weight="600" fill="#ededeb">Select by text</text>
 <rect x="210" y="108" width="7.7" height="18" rx="3" fill="#5a9cf0"/>
 <text x="225.7" y="121" font-size="12" fill="#ededeb">0.3 s  ·  SAM 3.1</text>
-<rect x="210" y="132" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="145" font-size="12" fill="#a3a29c">being measured</text>
+<rect x="210" y="132" width="15.3" height="18" rx="3" fill="#4cc27d"/>
+<text x="233.3" y="145" font-size="12" fill="#ededeb">0.7 s  ·  SAM 3.1</text>
 <rect x="210" y="156" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="169" font-size="12" fill="#ededeb">18 s  ·  SAM 3.1</text>
 <line x1="24" y1="190" x2="856" y2="190" stroke="#2e2e2c"/>
@@ -19,7 +19,7 @@
 <rect x="210" y="206" width="6.1" height="18" rx="3" fill="#5a9cf0"/>
 <text x="224.1" y="219" font-size="12" fill="#ededeb">2.8 s  ·  Krea 2 Turbo</text>
 <rect x="210" y="230" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="243" font-size="12" fill="#a3a29c">being measured</text>
+<text x="218" y="243" font-size="12" fill="#a3a29c">out of memory in v0.1.1</text>
 <rect x="210" y="254" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="267" font-size="12" fill="#ededeb">3.3 min  ·  MOSS Turbo</text>
 <line x1="24" y1="288" x2="856" y2="288" stroke="#2e2e2c"/>
@@ -27,7 +27,7 @@
 <rect x="210" y="304" width="4.9" height="18" rx="3" fill="#5a9cf0"/>
 <text x="222.9" y="317" font-size="12" fill="#ededeb">1.4 s  ·  Qwen-Image-2.1</text>
 <rect x="210" y="328" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="341" font-size="12" fill="#a3a29c">being measured</text>
+<text x="218" y="341" font-size="12" fill="#a3a29c">out of memory in v0.1.1</text>
 <rect x="210" y="352" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="365" font-size="12" fill="#ededeb">114 s  ·  Klein 4-bit</text>
 <line x1="24" y1="386" x2="856" y2="386" stroke="#2e2e2c"/>
@@ -35,7 +35,7 @@
 <rect x="210" y="402" width="9.5" height="18" rx="3" fill="#5a9cf0"/>
 <text x="227.5" y="415" font-size="12" fill="#ededeb">9.1 s  ·  Qwen-Image-2.1 edit</text>
 <rect x="210" y="426" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="439" font-size="12" fill="#a3a29c">being measured</text>
+<text x="218" y="439" font-size="12" fill="#a3a29c">out of memory in v0.1.1</text>
 <rect x="210" y="450" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="463" font-size="12" fill="#ededeb">6.6 min  ·  Klein 4-bit</text>
 <line x1="24" y1="484" x2="856" y2="484" stroke="#2e2e2c"/>
@@ -43,7 +43,7 @@
 <rect x="210" y="500" width="5.8" height="18" rx="3" fill="#5a9cf0"/>
 <text x="223.8" y="513" font-size="12" fill="#ededeb">5.5 s  ·  Qwen-Image-2.1 edit</text>
 <rect x="210" y="524" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="537" font-size="12" fill="#a3a29c">being measured</text>
+<text x="218" y="537" font-size="12" fill="#a3a29c">out of memory in v0.1.1</text>
 <rect x="210" y="548" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="561" font-size="12" fill="#ededeb">6.5 min  ·  MOSS Edit Turbo</text>
 <line x1="24" y1="582" x2="856" y2="582" stroke="#2e2e2c"/>
@@ -51,7 +51,7 @@
 <rect x="210" y="598" width="3.5" height="18" rx="3" fill="#5a9cf0"/>
 <text x="221.5" y="611" font-size="12" fill="#ededeb">3.3 s  ·  Qwen-Image-2.1 + Outpaint</text>
 <rect x="210" y="622" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="635" font-size="12" fill="#a3a29c">being measured</text>
+<text x="218" y="635" font-size="12" fill="#a3a29c">out of memory in v0.1.1</text>
 <rect x="210" y="646" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="659" font-size="12" fill="#ededeb">6.6 min  ·  Klein + Outpaint</text>
 <line x1="24" y1="680" x2="856" y2="680" stroke="#2e2e2c"/>
@@ -59,15 +59,15 @@
 <rect x="210" y="696" width="11.2" height="18" rx="3" fill="#5a9cf0"/>
 <text x="229.2" y="709" font-size="12" fill="#ededeb">17 s  ·  SAM 3.1 + Qwen-Image-2.1</text>
 <rect x="210" y="720" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="733" font-size="12" fill="#a3a29c">being measured</text>
+<text x="218" y="733" font-size="12" fill="#a3a29c">out of memory in v0.1.1</text>
 <rect x="210" y="744" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="757" font-size="12" fill="#ededeb">10.5 min  ·  SAM 3.1 + Klein</text>
 <line x1="24" y1="778" x2="856" y2="778" stroke="#2e2e2c"/>
 <text x="24" y="832.0" font-size="14" font-weight="600" fill="#ededeb">Clown Pass</text>
 <rect x="210" y="794" width="16.4" height="18" rx="3" fill="#5a9cf0"/>
 <text x="234.4" y="807" font-size="12" fill="#ededeb">7.5 s  ·  SAM 3.1</text>
-<rect x="210" y="818" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="831" font-size="12" fill="#a3a29c">being measured</text>
+<rect x="210" y="818" width="23.0" height="18" rx="3" fill="#4cc27d"/>
+<text x="241.0" y="831" font-size="12" fill="#ededeb">11 s  ·  SAM 3.1</text>
 <rect x="210" y="842" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="855" font-size="12" fill="#ededeb">3.2 min  ·  SAM 3.1</text>
 <line x1="24" y1="876" x2="856" y2="876" stroke="#2e2e2c"/>
@@ -75,7 +75,7 @@
 <rect x="210" y="892" width="37.3" height="18" rx="3" fill="#5a9cf0"/>
 <text x="255.3" y="905" font-size="12" fill="#ededeb">2.4 s  ·  Qwen3-VL</text>
 <rect x="210" y="916" width="416" height="18" rx="3" fill="#222220"/>
-<text x="218" y="929" font-size="12" fill="#a3a29c">being measured</text>
+<text x="218" y="929" font-size="12" fill="#a3a29c">fails in v0.1.1 (text-only encoder files)</text>
 <rect x="210" y="940" width="416.0" height="18" rx="3" fill="#b0afa9"/>
 <text x="634.0" y="953" font-size="12" fill="#ededeb">27 s  ·  Qwen3.5-9B (MOSS)</text>
 </svg>
