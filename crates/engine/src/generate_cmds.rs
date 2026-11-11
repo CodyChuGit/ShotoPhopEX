@@ -679,54 +679,19 @@ pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     Some(format!("<sks> {r} {t} {z}"))
 }
 
-/// The template `generate.angles` runs: 2511 with the Multiple Angles LoRA, which was trained on
-/// exactly these camera moves. Plain Qwen-Image-2.1 by instruction ([`angle_instruction`]) barely
-/// turned the camera on side views (README recording, 2026-11-06), so it is only the stand-in
-/// when the Models folder is there and its `loras/` lacks the LoRA (with the research opt-in).
-pub fn angles_template(s: &Session) -> &'static str {
-    let root = s.prefs().integrations.models_root();
-    let loras = std::path::Path::new(&root).join("loras");
-    let lacks_lora = !root.is_empty() && loras.is_dir() && !loras.join(ANGLES_LORA).is_file();
-    if lacks_lora && let Some(t) = native21_only(s, EDIT, false) {
-        return t;
-    }
+/// The template `generate.angles` runs: always 2511 with the Multiple Angles LoRA, which was
+/// trained on exactly these camera moves. Plain Qwen-Image-2.1 by instruction never turned the
+/// camera (0 of 4 at 45°, 2026-11-03 bench; barely on side views in the 2026-11-06 README
+/// recording), so it no longer stands in when the LoRA is missing: the Angles window says what
+/// to download instead. Bring-your-own: on a card below 2511's budget it still runs, with the
+/// window's `may not fit` note.
+pub fn angles_template(_s: &Session) -> &'static str {
     ANGLES_TEMPLATE
 }
 
 /// The Multiple Angles LoRA file [`ANGLES_TEMPLATE`] loads (fal, Apache-2.0).
 pub const ANGLES_LORA: &str = "qwen-image-edit-2511-multiple-angles-lora.safetensors";
 
-/// The plain camera instruction the Qwen-Image-2.1 edit gets for a camera, which has no
-/// Multiple Angles LoRA: the camera named as moved ("Rotate the camera 90 degrees to the right
-/// around the subject", "Raise the camera high above…"), the wording that made 2.1 orbit a
-/// bench and raise or close in on people and a dog in the 2026-10-27 probe (`benchmarks.md`),
-/// where naming the view ("a right side view") mostly turned the subject. None as above.
-pub fn angle_instruction(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
-    angle_prompt(rotation, tilt, zoom)?;
-    let mut parts: Vec<String> = Vec::new();
-    match rotation {
-        0 => {}
-        180 => parts.push("Move the camera behind the subject, so it is seen from the back.".into()),
-        r if r < 180 => parts.push(format!("Rotate the camera {r} degrees to the right around the subject.")),
-        r => parts.push(format!("Rotate the camera {} degrees to the left around the subject.", 360 - r)),
-    }
-    match tilt {
-        -30 => parts.push("Lower the camera to a low angle, looking up at the subject.".into()),
-        30 => parts.push("Raise the camera a little, looking slightly down at the subject.".into()),
-        60 => parts.push("Raise the camera high above the subject, looking down at it.".into()),
-        _ => {}
-    }
-    match zoom {
-        0 => parts.push("Pull the camera back for a wide shot that shows more of the surroundings.".into()),
-        10 => parts.push("Move the camera closer for a close-up of the subject.".into()),
-        _ => {}
-    }
-    if parts.is_empty() {
-        parts.push("Show the subject from the front at eye level.".into());
-    }
-    parts.push("Keep the subject, its identity, its clothing and the setting the same.".into());
-    Some(parts.join(" "))
-}
 /// The Qwen-Image-2.1 template that `auto` runs for `command` (a removal when `removal`) instead
 /// of the Qwen-Image-Edit-2511 order, when research-only models are allowed and the native
 /// worker runs the family: the owner's choice of 2026-10-27, on the removal numbers of
@@ -751,8 +716,7 @@ pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option
     native21_only(s, command, removal)
 }
 
-/// [`native21_auto`] without the memory profile: the Qwen-Image-2.1 route alone (Angles, whose
-/// camera instructions are written for 2.1's edit).
+/// [`native21_auto`] without the memory profile: the Qwen-Image-2.1 route alone.
 fn native21_only(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
     let t = match command {
         FILL if removal => "qwen-2.1/edit",
@@ -4765,11 +4729,6 @@ fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
     let camera = words.trim_start_matches("<sks> ").to_string();
     let template = angles_template(s);
     let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "name": format!("Angles: {camera}")});
-    if template != ANGLES_TEMPLATE {
-        // The instruction is already the camera move; the rewriter would only blur it.
-        q["prompt"] = json!(angle_instruction(rotation, tilt, zoom).unwrap_or_default());
-        q["enhance"] = json!(false);
-    }
     for key in ["seed", "variations"] {
         if let Some(v) = p.get(key) {
             q[key] = v.clone();
