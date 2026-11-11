@@ -516,10 +516,17 @@ impl Krea2Pipeline {
             },
         )
         .map_err(anyhow::Error::msg)?;
+        // The detail recipe swaps in the beta schedule over AuraFlow shift 1.25 (style keeps its own).
+        let schedule = if req.schedule == crate::pipeline::Schedule::KreaDetail && !style {
+            crate::comfy::FlowSchedule::beta(req.steps, crate::comfy::FlowSchedule::aura_flow(1.25)).map_err(anyhow::Error::msg)?
+        } else {
+            schedule
+        };
+        let steps = schedule.steps();
         let noise = crate::comfy::torch_randn(req.seed, wan_vae::LATENT_CHANNELS * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, wan_vae::LATENT_CHANNELS, lh, lw), &self.dev)?;
         let t0 = Instant::now();
-        for i in 0..req.steps {
+        for i in 0..steps {
             check(cancel)?;
             let input = x.to_dtype(self.dtype)?;
             let v = if style {
@@ -535,15 +542,15 @@ impl Krea2Pipeline {
             }
             .to_dtype(DType::F32)?;
             if let Some(p) = preview.as_deref_mut() {
-                if p.wants(i + 1, req.steps) {
+                if p.wants(i + 1, steps) {
                     match (&v * f64::from(schedule.sigma(i))).and_then(|sv| &x - sv) {
-                        Ok(x0) => p.show(i + 1, req.steps, &x0),
+                        Ok(x0) => p.show(i + 1, steps, &x0),
                         Err(e) => tracing::warn!(error = %e, "preview skipped"),
                     }
                 }
             }
             x = (x + (v * f64::from(schedule.dt(i)))?)?;
-            progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
+            progress(0.05 + 0.85 * (i + 1) as f32 / steps as f32, "Sampling");
         }
         self.dev.synchronize()?;
         timings.denoise_s = t0.elapsed().as_secs_f32();
@@ -556,15 +563,7 @@ impl Krea2Pipeline {
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, rgba) = wan_vae::to_rgba_u8(&img)?;
-        tracing::info!(
-            encode_s = timings.encode_s,
-            denoise_s = timings.denoise_s,
-            decode_s = timings.decode_s,
-            width = pw,
-            height = ph,
-            steps = req.steps,
-            "timings"
-        );
+        tracing::info!(encode_s = timings.encode_s, denoise_s = timings.denoise_s, decode_s = timings.decode_s, width = pw, height = ph, steps, "timings");
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
