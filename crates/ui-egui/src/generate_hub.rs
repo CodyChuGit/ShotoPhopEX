@@ -179,9 +179,19 @@ pub fn section(ui: &mut egui::Ui, width: f32) -> Option<Card> {
     clicked
 }
 
+/// A card for a tool the Mac build has no model for (Angles).
+fn off_on_mac(c: &Card) -> bool {
+    photocraft_engine::generate_cmds::mlx_build() && c.target == Target::Command("generate.angles")
+}
+
+/// Whether a card can be clicked.
+fn live(c: &Card) -> bool {
+    c.target != Target::Soon && !off_on_mac(c)
+}
+
 /// One card: a tinted icon tile, the uppercase label, one sentence, the badge.
 fn card_ui(ui: &mut egui::Ui, r: Rect, c: &Card, t: &Tokens) -> bool {
-    let live = c.target != Target::Soon;
+    let live = live(c);
     let resp = ui.interact(r, ui.scope_id().with(("hub-card", c.id)), if live { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
     p.rect_filled(r, t.radius_sm, if resp.hovered() && live { t.hover } else { t.card });
@@ -207,7 +217,8 @@ fn card_ui(ui: &mut egui::Ui, r: Rect, c: &Card, t: &Tokens) -> bool {
         ui.painter().galley(pos2(br.left() + 4.0, br.center().y - bg.size().y / 2.0), bg, color);
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, live, tl!(c.label)));
-    let tip = if live { tl!(c.sentence).to_string() } else { format!("{}\n{}", tl!(c.sentence), tl!("Not in this build yet")) };
+    let why = if off_on_mac(c) { tl!("Not on Mac yet") } else { tl!("Not in this build yet") };
+    let tip = if live { tl!(c.sentence).to_string() } else { format!("{}\n{}", tl!(c.sentence), why) };
     live && resp.on_hover_text(tip).clicked()
 }
 
@@ -217,6 +228,14 @@ pub fn activate(app: &mut PhotocraftApp, ctx: &egui::Context, card: &Card) -> Re
     app.ui.hub.open = false;
     if card.target == Target::Soon {
         return Err(tl!("Not in this build yet").to_string());
+    }
+    if off_on_mac(card) {
+        return Err(tl!("Not on Mac yet").to_string());
+    }
+    // No models on this computer yet: Get AI Models first, before asking for a picture.
+    if !app.automation_input && crate::get_models_ui::has_no_models(app) {
+        crate::get_models_ui::open(app);
+        return Ok(json!({"getModels": true}));
     }
     if !card.create && app.session.active().is_none() {
         // The dialog answers on a later frame (`file_dialog`): the card carries on in `tick`
@@ -321,7 +340,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
     json!({
         "open": app.ui.hub.open,
         "pending": app.ui.hub.pending,
-        "cards": CARDS.iter().map(|c| json!({"id": c.id, "label": c.label, "create": c.create, "badge": c.badge, "live": c.target != Target::Soon, "rects": rects(c.id)})).collect::<Vec<_>>(),
+        "cards": CARDS.iter().map(|c| json!({"id": c.id, "label": c.label, "create": c.create, "badge": c.badge, "live": live(c), "rects": rects(c.id)})).collect::<Vec<_>>(),
     })
 }
 

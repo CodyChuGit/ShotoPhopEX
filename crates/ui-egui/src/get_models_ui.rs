@@ -48,6 +48,43 @@ pub fn open(app: &mut PhotocraftApp) {
     refresh(app);
 }
 
+/// The generative commands that need models on this computer: from the UI, each opens this
+/// window instead while there are none (see [`intercept`]).
+const NEEDS_MODELS: &[&str] = &[
+    "generate.fill",
+    "generate.image",
+    "generate.expand",
+    "generate.edit",
+    "generate.similar",
+    "generate.removeBackground",
+    "generate.splitLayers",
+    "generate.clownPass",
+    "generate.angles",
+    "generate.upscale",
+    "select.byText",
+];
+
+/// Whether this computer has no AI models yet: no models folder chosen or found (a fresh
+/// install; Get AI Models sets the folder it downloads into). Any folder counts as having
+/// models, so the window never nags someone who brought their own.
+pub fn has_no_models(app: &PhotocraftApp) -> bool {
+    app.session.prefs().integrations.models_root().is_empty()
+}
+
+/// A click on a generative tool (menu, task bar, toolbar, Generate panel) before any models are
+/// downloaded opens Get AI Models instead of failing. Automation keeps the command's own error.
+pub fn intercept(app: &mut PhotocraftApp, id: &str) -> bool {
+    if app.automation_input || !NEEDS_MODELS.contains(&id) || !has_no_models(app) {
+        return false;
+    }
+    // A tool that can't run yet anyway (no picture, no selection) keeps saying why.
+    if photocraft_engine::commands::find(id).is_some_and(|c| (c.enabled)(&app.session).is_err()) {
+        return false;
+    }
+    open(app);
+    true
+}
+
 pub fn menu(app: &mut PhotocraftApp, id: &str, _params: &Value) -> Option<Result<Value, String>> {
     (id == COMMAND).then(|| {
         open(app);
@@ -238,11 +275,20 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 let id = e["id"].as_str().unwrap_or_default().to_string();
                 let mut on = extras.contains(&id);
                 let missing = e["missingBytes"].as_u64().unwrap_or(0);
-                let label = if missing == 0 {
-                    format!("{} ✓", e["name"].as_str().unwrap_or_default())
-                } else {
-                    format!("{} ({})", e["name"].as_str().unwrap_or_default(), gb(missing))
-                };
+                // Installed: nothing to tick, so no checkbox beside its ✓ (it read as "not
+                // chosen, yet installed").
+                if missing == 0 {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("✓").color(t.accent));
+                        ui.label(e["name"].as_str().unwrap_or_default()).on_hover_text(e["description"].as_str().unwrap_or_default());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(tl!("Installed")).small().color(t.text_dim));
+                        });
+                    });
+                    extras.retain(|x| *x != id);
+                    continue;
+                }
+                let label = format!("{} ({})", e["name"].as_str().unwrap_or_default(), gb(missing));
                 ui.add_enabled_ui(!running, |ui| crate::widgets::checkbox(ui, &mut on, &label))
                     .inner
                     .on_hover_text(e["description"].as_str().unwrap_or_default());

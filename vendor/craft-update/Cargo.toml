@@ -1,5 +1,5 @@
 # ShotoPhopEX: a copy of craft-update from storytold/craft-libs at rev
-# c5a1cbfb5f9049f9270955caffb5bee5997aebf7 (crates/update), used through [patch] in the root
+# 1b34eba41e62138fc2438d2734523b302840b45d (crates/update), used through [patch] in the root
 # Cargo.toml. The only change: self_update::update picks the download by every stem the app
 # lists (App::stems), not just App::id, so ShotoPhopEX finds its shotophopex-<ver>-<os>-<arch>
 # release files. Bumping craft-libs' rev upstream does NOT update this copy: re-copy it and
@@ -51,6 +51,11 @@ plist = "1"
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55"
 dunce = "1"
-zip = { version = "9", default-features = false, features = ["deflate"] }
+# `deflate-flate2` with flate2's default miniz_oxide backend, not zip's `deflate` (zopfli and
+# zlib-rs): Cargo unifies flate2's features across an app, and zlib-rs would switch the whole
+# app's flate2 to it, where level 1 is a static-Huffman mode that can make output larger than
+# its input (Lightcraft's 16-bit ZIP TIFFs on Windows).
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+flate2 = "1"
 winsafe = { version = "0.0.29", features = ["advapi", "kernel", "shell", "version"] }
 verifysign = "1"

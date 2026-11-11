@@ -16,7 +16,8 @@ fn every_route_uses_the_native_worker() {
     s.execute("generate.image", json!({"prompt":"a fox", "width":64, "height":64, "seed":9})).unwrap();
     s.execute("generate.edit", json!({"prompt":"make it winter", "template":"qwen-2.1/edit", "enhance":true})).unwrap();
     let st = fake.state();
-    assert_eq!(st.runs.len(), 3);
+    // The edit's result is then searched for its subject (a "segment" run after it).
+    assert_eq!(st.runs.iter().filter(|r| r.request["task"] != "segment").count(), 3);
     assert_eq!(st.runs[0].run.model, "krea2-turbo/image");
     assert_eq!(st.runs[0].run.seed, 9);
     assert_eq!(st.runs[1].run.task, "text");

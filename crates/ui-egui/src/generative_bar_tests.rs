@@ -130,10 +130,11 @@ fn edit_mode_runs_generate_edit(app: &mut PhotocraftApp, ctx: &egui::Context, fa
     let prompts_before = fake.state().runs.len();
     generate(app).unwrap();
     let st = fake.state();
-    assert_eq!(st.runs.len(), prompts_before + 1);
-    assert!(st.runs.last().unwrap().run.image.is_some());
-    assert_eq!(st.runs.last().unwrap().run.task, "edit");
-    let g = &st.runs.last().unwrap().request;
+    // The edit, then Select Subject on its result for the layer mask (segment runs).
+    let edits: Vec<_> = st.runs[prompts_before..].iter().filter(|r| r.run.task == "edit").collect();
+    assert_eq!(edits.len(), 1);
+    assert!(edits[0].run.image.is_some());
+    let g = &edits[0].request;
     assert_eq!(g["prompt"], "turn this drawing into a realistic portrait. Keep everything else exactly as it is.");
     drop(st);
     let d = app.session.active().unwrap();

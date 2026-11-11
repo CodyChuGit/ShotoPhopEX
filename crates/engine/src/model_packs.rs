@@ -653,8 +653,16 @@ mod tests {
             let pack = m.pack_for(Some(p)).unwrap();
             let files: Vec<&str> = pack.files.iter().filter_map(|id| m.file(id)).map(|f| f.file.as_str()).collect();
             let image = photocraft_genai::template::find(memory_profile::image_template(Some(p))).unwrap();
-            if matches!(p, Profile::Gb8 | Profile::Mac8) {
+            if p == Profile::Gb8 {
                 continue; // no image model fits yet
+            }
+            if p == Profile::Mac8 {
+                // Klein on MLX from mflux's 4-bit folder (gn-mlx), not the template's files.
+                for id in ["flux3-klein-q4-transformer-0", "flux3-klein-q4-text-encoder-0", "flux2-vae", "sam31"] {
+                    assert!(pack.files.iter().any(|f| f == id), "mac8's pack lacks {id}");
+                }
+                assert!(!files.iter().any(|f| f.contains("moss") || f.contains("qwen3.5")), "mac8's pack holds MOSS");
+                continue;
             }
             if p == Profile::Mac16 {
                 // MLX runs MOSS Turbo as MOSS-Image-SFT with the 4-step LoRA (gn-diffusion's

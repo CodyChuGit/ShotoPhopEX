@@ -252,3 +252,21 @@ fn next_match_after_a_plain_click_asks_for_the_first_other_meaning() {
     next_match(&mut a);
     assert_eq!(last_params(&a).1["candidate"], json!(1));
 }
+
+#[test]
+fn a_probe_mask_at_request_size_is_read_in_canvas_pixels() {
+    // The probe comes at most 768² however big the canvas: a 4×2 mask over a 400×200 canvas,
+    // the right half the object. Canvas (300, 50) is on it, (100, 150) is not (read unscaled,
+    // both fell outside or on the wrong pixel: the tint stuck and a click applied another object).
+    let a = app("http://127.0.0.1:9");
+    let doc = a.session.active().unwrap().doc.id;
+    let ctx = egui::Context::default();
+    let mask = (4, 2, vec![0, 0, 255, 255, 0, 0, 255, 255]);
+    let tex = texture_of(&ctx, &mask, OBJECT_COLORS[0]);
+    let pr =
+        Probe { cell: [0, 0], id: 1, doc, bounds: [200, 0, 200, 200], color: 0, part: false, mask: std::sync::Arc::new(mask), canvas: [400.0, 200.0], tex };
+    assert!(pr.covers([300.0, 50.0]));
+    assert!(pr.covers([399.0, 199.0]));
+    assert!(!pr.covers([100.0, 150.0]));
+    assert!(!pr.covers([3.0, 1.0]), "a canvas pixel is not a mask pixel");
+}
