@@ -33,6 +33,9 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         let r = crate::rulers::content_rect(app, app.last_canvas_rect);
         [r.left(), r.top(), r.width(), r.height()]
     };
+    // Last frame's task bar rect, unless the bar can't show now (hidden by `ui.set` before the
+    // next draw).
+    let task_bar_rect = app.ui.task_bar_shown.filter(|_| crate::crop_task_bar::eligible(app));
     let mut v = json!({
         "window": {"width": screen.width(), "height": screen.height(), "pixelsPerPoint": ctx.pixels_per_point()},
         "scratch": photocraft_raster::spill::stats(),
@@ -96,6 +99,15 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
             })
         }),
         "panels": app.ui.panels,
+        // The contextual task bar (#10890): Window › Contextual Task Bar, whether it shows now and
+        // where (screen points), and its place (pinned, dragged-to corner).
+        "taskBar": json!({
+            "enabled": app.ui.panels.context_task_bar,
+            "visible": task_bar_rect.is_some(),
+            "rect": task_bar_rect,
+            "pinned": app.ui.panels.task_bar.pinned,
+            "at": app.ui.panels.task_bar.at,
+        }),
         "dockTabs": app.ui.dock_tabs,
         "dock": app.ui.dock,
         "docking": app.ui.docking,
