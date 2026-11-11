@@ -442,7 +442,7 @@ impl H3Dit {
                 .collect::<Result<_>>()?;
             return Ok(Tensor::stack(&rows, 0)?);
         }
-        let (pin, pout) = self.time_embedder.as_ref().expect("a time embedder without a curve table");
+        let (pin, pout) = self.time_embedder.as_ref().ok_or_else(|| anyhow::anyhow!("H3: a time embedder without a curve table"))?;
         let half = pin.weight().dim(1)? / 2;
         let freqs: Vec<f32> = (0..half).map(|i| (-(10000f64.ln()) * i as f64 / half as f64).exp() as f32).collect();
         let mut emb = Vec::with_capacity(ts.len() * half * 2);
@@ -464,14 +464,16 @@ impl H3Dit {
         let lay = &p.layout;
         let t = 1.0 - sigma;
         let t_ref = t.max(VISUAL_COND_TIMESTEP);
+        // without references only `t` is embedded (the reference row is never read)
+        let t_ref = if refs.is_empty() { t } else { t_ref };
         let mut unique = vec![t];
-        if !refs.is_empty() && (t_ref - t).abs() > 0.0 {
+        if t_ref != t {
             unique.push(t_ref);
         }
-        unique.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        unique.sort_by(f32::total_cmp);
         unique.dedup();
-        let ti = |v: f32| unique.iter().position(|u| *u == v).unwrap();
-        let segs = lay.mod_segments(ti(t), ti(t_ref));
+        let ti = |v: f32| unique.iter().position(|u| *u == v).ok_or_else(|| anyhow::anyhow!("H3: timestep {v} missing from the modulation table"));
+        let segs = lay.mod_segments(ti(t)?, ti(t_ref)?);
 
         // embed + pack
         let (_, _, lat_h, lat_w) = video.dims4()?;
@@ -516,7 +518,7 @@ impl H3Dit {
         // final layer: per target stream, its own timestep row (modality 1 of 1)
         let m = self.final_adaln.forward(&t_emb, DType::F32)?;
         let (shift, scale) = (&m[0], &m[1]);
-        let row = ti(t);
+        let row = ti(t)?;
         let head_in = |a: usize, n: usize| -> Result<Tensor> {
             let x = self.final_norm.forward(&h.narrow(0, a, n)?)?.to_dtype(DType::F32)?;
             Ok(x.broadcast_mul(&(scale.i(row)?.unsqueeze(0)? + 1.0)?)?.broadcast_add(&shift.i(row)?.unsqueeze(0)?)?)
@@ -543,9 +545,9 @@ impl H3Dit {
         }
         let grid = &self.pdd_grid;
         anyhow::ensure!(grid.len() == n + 1, "PDD grid has {} points for {n} heads", grid.len());
-        let i = sample_sigmas.iter().enumerate().min_by(|a, b| (a.1 - sigma).abs().partial_cmp(&(b.1 - sigma).abs()).unwrap()).map(|(i, _)| i).unwrap_or(0);
+        let i = sample_sigmas.iter().enumerate().min_by(|a, b| (a.1 - sigma).abs().total_cmp(&(b.1 - sigma).abs())).map(|(i, _)| i).unwrap_or(0);
         let next = sample_sigmas[(i + 1).min(sample_sigmas.len() - 1)];
-        let nearest = |s: f32| (0..=n).min_by(|a, b| (grid[*a] - s).abs().partial_cmp(&(grid[*b] - s).abs()).unwrap()).unwrap();
+        let nearest = |s: f32| (0..=n).min_by(|a, b| (grid[*a] - s).abs().total_cmp(&(grid[*b] - s).abs())).unwrap_or(0);
         let start = nearest(sigma).min(n - 1);
         let stop = nearest(next).max(start + 1);
         let dt: Vec<f32> = (start..stop).map(|k| grid[k] - grid[k + 1]).collect();

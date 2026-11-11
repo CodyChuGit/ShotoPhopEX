@@ -1,6 +1,6 @@
 //! Parity against ComfyUI's own `comfy/ldm/minimax/model.py` on a tiny random-weight model.
 //! The fixtures are generated outside the repository; set `H3_FIXTURES` to the folder that
-//! holds `h3_tiny_av.safetensors` and `h3_tiny_pdd.safetensors` to run these.
+//! holds `h3_tiny_av`, `h3_tiny_pdd` and `h3_tiny_t2i.safetensors` to run these.
 
 use std::path::PathBuf;
 
@@ -23,7 +23,7 @@ fn max_rel(a: &Tensor, b: &Tensor) -> f32 {
     a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / scale
 }
 
-fn run(name: &str, audio_t: Option<usize>, sample: &[f32]) {
+fn run(name: &str, audio_t: Option<usize>, sample: &[f32], with_ref: bool) {
     let Some(path) = fixture(name) else {
         eprintln!("H3_FIXTURES not set or {name} missing: skipped");
         return;
@@ -36,13 +36,14 @@ fn run(name: &str, audio_t: Option<usize>, sample: &[f32]) {
     let rf = w.get_as("in.ref", DType::F32).unwrap().i(0).unwrap();
     let sigma = w.get_as("in.sigma", DType::F32).unwrap().to_vec1::<f32>().unwrap()[0];
     let (_, _, lh, lw) = video.dims4().unwrap();
-    let lay = Layout::new(text_tags(ctx.dim(0).unwrap()), &[(4, 4)], audio_t, lh, lw);
+    let ref_dims: &[(usize, usize)] = if with_ref { &[(4, 4)] } else { &[] };
+    let lay = Layout::new(text_tags(ctx.dim(0).unwrap()), ref_dims, audio_t, lh, lw);
     let p = net.prepare(&ctx, lay).unwrap();
     let want_text = w.get_as("out.text", DType::F32).unwrap().i(0).unwrap();
     let e = max_rel(&p.text, &want_text);
     assert!(e < 1e-4, "{name} text rel err {e}");
     let audio = audio_t.map(|_| w.get_as("in.audio", DType::F32).unwrap().i(0).unwrap());
-    let (v, a) = net.forward(&p, &video, audio.as_ref(), &[rf], 0, sigma, sample).unwrap();
+    let (v, a) = net.forward(&p, &video, audio.as_ref(), if with_ref { std::slice::from_ref(&rf) } else { &[] }, 0, sigma, sample).unwrap();
     let want_v = w.get_as("out.video", DType::F32).unwrap().i(0).unwrap();
     let e = max_rel(&v, &want_v);
     eprintln!("{name} video rel err {e}");
@@ -56,12 +57,18 @@ fn run(name: &str, audio_t: Option<usize>, sample: &[f32]) {
 
 #[test]
 fn av_still_matches_comfy() {
-    run("h3_tiny_av.safetensors", Some(2), &[]);
+    run("h3_tiny_av.safetensors", Some(2), &[], true);
 }
 
 #[test]
 fn pdd_still_matches_comfy() {
-    run("h3_tiny_pdd.safetensors", None, &[1.0, 0.7, 0.0]);
+    run("h3_tiny_pdd.safetensors", None, &[1.0, 0.7, 0.0], true);
+}
+
+/// Text to image: no reference pictures, first step (sigma 1.0).
+#[test]
+fn t2i_first_step_matches_comfy() {
+    run("h3_tiny_t2i.safetensors", None, &[1.0, 0.7, 0.0], false);
 }
 
 #[test]

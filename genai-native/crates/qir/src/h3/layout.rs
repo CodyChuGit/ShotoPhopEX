@@ -68,7 +68,8 @@ impl Layout {
         }
         if let Some(at) = audio_t {
             if at > 0 {
-                let (lo, hi) = (w_grid[0], *w_grid.last().unwrap());
+                let lo = w_grid.first().copied().unwrap_or(0.0);
+                let hi = w_grid.last().copied().unwrap_or(lo);
                 for ch in 0..2 {
                     for j in 0..at {
                         positions.push([cursor + j as f64, 0.0, if ch == 0 { lo } else { hi }]);
