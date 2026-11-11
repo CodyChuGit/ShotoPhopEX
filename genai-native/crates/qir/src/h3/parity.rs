@@ -1,0 +1,65 @@
+//! Parity against ComfyUI's own `comfy/ldm/minimax/model.py` on a tiny random-weight model.
+//! The fixtures are generated outside the repository; set `H3_FIXTURES` to the folder that
+//! holds `h3_tiny_av.safetensors` and `h3_tiny_pdd.safetensors` to run these.
+
+use std::path::PathBuf;
+
+use candle_core::{DType, Device, IndexOp, Tensor};
+
+use super::dit::H3Dit;
+use super::layout::{text_tags, Layout};
+use crate::moss::weights::Weights;
+
+fn fixture(name: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(std::env::var_os("H3_FIXTURES")?).join(name);
+    p.exists().then_some(p)
+}
+
+fn max_rel(a: &Tensor, b: &Tensor) -> f32 {
+    let a = a.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+    let b = b.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+    assert_eq!(a.len(), b.len());
+    let scale = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-6);
+    a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / scale
+}
+
+fn run(name: &str, audio_t: Option<usize>, sample: &[f32]) {
+    let Some(path) = fixture(name) else {
+        eprintln!("H3_FIXTURES not set or {name} missing: skipped");
+        return;
+    };
+    let dev = Device::Cpu;
+    let w = Weights::open(&path, &dev, DType::F32, false).unwrap();
+    let net = H3Dit::load(&w).unwrap();
+    let ctx = w.get_as("in.ctx", DType::F32).unwrap().i(0).unwrap();
+    let video = w.get_as("in.video", DType::F32).unwrap().i(0).unwrap();
+    let rf = w.get_as("in.ref", DType::F32).unwrap().i(0).unwrap();
+    let sigma = w.get_as("in.sigma", DType::F32).unwrap().to_vec1::<f32>().unwrap()[0];
+    let (_, _, lh, lw) = video.dims4().unwrap();
+    let lay = Layout::new(text_tags(ctx.dim(0).unwrap()), &[(4, 4)], audio_t, lh, lw);
+    let p = net.prepare(&ctx, lay).unwrap();
+    let want_text = w.get_as("out.text", DType::F32).unwrap().i(0).unwrap();
+    let e = max_rel(&p.text, &want_text);
+    assert!(e < 1e-4, "{name} text rel err {e}");
+    let audio = audio_t.map(|_| w.get_as("in.audio", DType::F32).unwrap().i(0).unwrap());
+    let (v, a) = net.forward(&p, &video, audio.as_ref(), &[rf], 0, sigma, sample).unwrap();
+    let want_v = w.get_as("out.video", DType::F32).unwrap().i(0).unwrap();
+    let e = max_rel(&v, &want_v);
+    eprintln!("{name} video rel err {e}");
+    assert!(e < 1e-4, "{name} video rel err {e}");
+    if let Some(a) = a {
+        let want_a = w.get_as("out.audio", DType::F32).unwrap().i(0).unwrap();
+        let e = max_rel(&a, &want_a);
+        assert!(e < 1e-4, "{name} audio rel err {e}");
+    }
+}
+
+#[test]
+fn av_still_matches_comfy() {
+    run("h3_tiny_av.safetensors", Some(2), &[]);
+}
+
+#[test]
+fn pdd_still_matches_comfy() {
+    run("h3_tiny_pdd.safetensors", None, &[1.0, 0.7, 0.0]);
+}

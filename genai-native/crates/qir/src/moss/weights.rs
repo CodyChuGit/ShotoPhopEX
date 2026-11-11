@@ -99,6 +99,8 @@ impl Int8Index {
 /// One safetensors file of the model, plain and quantized tensors alike.
 pub struct Weights {
     vb: VarBuilder<'static>,
+    /// The file's header (shapes and dtypes, no data).
+    meta: Metadata,
     int8: Option<Int8Index>,
     /// qir's ConvRot rotation, on the device (f32).
     #[cfg_attr(not(feature = "convrot"), allow(dead_code))]
@@ -117,9 +119,10 @@ impl Weights {
         // The plain tensors are read through the map; the I8 ones never through it.
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
         let int8 = Int8Index::open(path).with_context(|| format!("{}: its INT8 ConvRot layers", path.display()))?;
+        let meta = int8.metadata.clone();
         let int8 = if int8.modules.is_empty() && int8.other.is_empty() { None } else { Some(int8) };
         let convrot = convrot && cfg!(feature = "convrot") && dev.is_cuda() && dtype == DType::BF16;
-        Ok(Self { vb, int8, rot: regular_hadamard_256(dev)?, dev: dev.clone(), dtype, convrot })
+        Ok(Self { vb, meta, int8, rot: regular_hadamard_256(dev)?, dev: dev.clone(), dtype, convrot })
     }
 
     pub fn device(&self) -> &Device {
@@ -128,6 +131,26 @@ impl Weights {
 
     pub fn dtype(&self) -> DType {
         self.dtype
+    }
+
+    /// A tensor's shape from the header (nothing is read).
+    pub fn shape(&self, name: &str) -> Result<Vec<usize>> {
+        Ok(self.meta.info(name).with_context(|| format!("missing tensor {name}"))?.shape.clone())
+    }
+
+    /// A linear's output features (`<module>.weight`'s rows, any storage).
+    pub fn out_features(&self, module: &str) -> Result<usize> {
+        Ok(self.shape(&format!("{module}.weight"))?[0])
+    }
+
+    /// The file's `__metadata__` value for `key`.
+    pub fn file_metadata(&self, key: &str) -> Option<String> {
+        self.meta.metadata().as_ref().and_then(|m| m.get(key).cloned())
+    }
+
+    /// The tensor names in the file.
+    pub fn names(&self) -> Vec<String> {
+        self.meta.tensors().keys().cloned().collect()
     }
 
     pub fn contains(&self, name: &str) -> bool {
