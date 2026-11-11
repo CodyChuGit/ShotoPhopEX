@@ -15,9 +15,9 @@ use super::dit::{self, MossConfig, MossDit};
 use super::text::{self, Qwen35Text, TextConfig};
 use super::vae::{self, Flux2Decoder, Flux2Encoder};
 use super::weights::Weights;
+use crate::Result;
 use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
 use crate::preview::StepPreview;
-use crate::Result;
 
 /// The official defaults.
 pub const STEPS: usize = 50;
@@ -53,18 +53,21 @@ pub struct Sampling {
     pub sampler: Sampler,
     /// Skip block [`UNCOND_SKIP`] in the negative branch (the official skip-layer guidance).
     pub skip_uncond: bool,
+    /// `res_2s`'s ancestral noise, RES4LYF's `eta` in its "hard" mode (0 = the plain ODE,
+    /// `res_2s_ode`; the `res_2s` that KSamplerSelect lists runs 0.5 on steps and substeps).
+    pub eta: f64,
 }
 
 impl Sampling {
     /// The official pipeline: Euler on the shift-5 schedule, block 22 skipped in the negative.
-    pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true };
+    pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true, eta: 0.0 };
     /// RaymondLuxuryYacht's MOSS realism workflow (Civitai 3035895, 2026-11-04): `res_2s` on
     /// the FlowMatchEulerDiscreteScheduler node's registered schedule (dynamic shifting at
     /// mu 0, so linear σ: shift 1), 20 steps, plain CFG 3 (no skipped block) with a real negative.
-    pub const REALISM: Self = Self { shift: 1.0, sampler: Sampler::Res2s, skip_uncond: false };
+    pub const REALISM: Self = Self { shift: 1.0, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5 };
 
     /// `self` with the A/B hooks applied: `QIR_MOSS_SHIFT`, `QIR_MOSS_SAMPLER` (`euler` /
-    /// `res_2s`), `QIR_MOSS_SKIP` (`0` / `1`).
+    /// `res_2s`), `QIR_MOSS_SKIP` (`0` / `1`), `QIR_MOSS_ETA` (`res_2s`'s noise, 0..1).
     pub fn with_env(mut self) -> Self {
         let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_ascii_lowercase()).filter(|v| !v.is_empty());
         if let Some(s) = var("QIR_MOSS_SHIFT").and_then(|v| v.parse::<f64>().ok()).filter(|s| s.is_finite() && *s > 0.0) {
@@ -72,8 +75,18 @@ impl Sampling {
         }
         match var("QIR_MOSS_SAMPLER").as_deref() {
             Some("euler") => self.sampler = Sampler::Euler,
-            Some("res_2s" | "res2s") => self.sampler = Sampler::Res2s,
+            Some("res_2s" | "res2s") => {
+                self.sampler = Sampler::Res2s;
+                self.eta = 0.5;
+            }
+            Some("res_2s_ode" | "res2s_ode") => {
+                self.sampler = Sampler::Res2s;
+                self.eta = 0.0;
+            }
             _ => {}
+        }
+        if let Some(e) = var("QIR_MOSS_ETA").and_then(|v| v.parse::<f64>().ok()).filter(|e| (0.0..=1.0).contains(e)) {
+            self.eta = e;
         }
         match var("QIR_MOSS_SKIP").as_deref() {
             Some("0") => self.skip_uncond = false,
@@ -119,8 +132,6 @@ fn dit_names(v: Variant) -> [&'static str; 2] {
 }
 const TEXT: &[&str] = &["qwen3.5_9b_int8_convrot.safetensors", "qwen3.5_9b_bf16.safetensors"];
 const VAE: &[&str] = &["flux2-vae_small.safetensors", "flux2-vae.safetensors"];
-/// The full decoder first, under `QIR_MOSS_FULL_VAE=1` (the realism workflow decodes with it).
-const VAE_FULL_FIRST: &[&str] = &["flux2-vae.safetensors", "flux2-vae_small.safetensors"];
 /// Qwen3.5's `tokenizer.json` (its vocabulary is not Qwen2.5's), in its own folder.
 const TOKENIZER_DIR: &str = "qwen35_tokenizer";
 
@@ -141,15 +152,7 @@ pub fn find_files(root: &Path, variant: Variant) -> Option<MossFiles> {
     let own = root.join("text_encoders").join(TOKENIZER_DIR).join("tokenizer.json");
     let beside = text.parent().map(|d| d.join("tokenizer.json"));
     let tokenizer = std::iter::once(own).chain(beside).find(|p| p.is_file())?;
-    Some(MossFiles { dit: find(&root.join("diffusion_models"), &dit_names(variant))?, text, vae: find(&root.join("vae"), vae_names())?, tokenizer })
-}
-
-fn vae_names() -> &'static [&'static str] {
-    if std::env::var("QIR_MOSS_FULL_VAE").is_ok_and(|v| v.trim() == "1") {
-        VAE_FULL_FIRST
-    } else {
-        VAE
-    }
+    Some(MossFiles { dit: find(&root.join("diffusion_models"), &dit_names(variant))?, text, vae: find(&root.join("vae"), VAE)?, tokenizer })
 }
 
 /// A prompt's encoding, kept for the next request with the same prompt.
@@ -351,13 +354,7 @@ impl MossPipeline {
         anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16), "the picture's sides must be positive multiples of 16 ({w}x{h} asked)");
         anyhow::ensure!(req.references.len() <= 4, "MOSS Edit takes at most 4 pictures ({} given)", req.references.len());
 
-        let check = || -> Result<()> {
-            if cancel() {
-                Err(Cancelled.into())
-            } else {
-                Ok(())
-            }
-        };
+        let check = || -> Result<()> { if cancel() { Err(Cancelled.into()) } else { Ok(()) } };
         let mut timings = Timings::default();
 
         check()?;
@@ -385,14 +382,13 @@ impl MossPipeline {
         };
         // The edit's negative branch skips no block (the official edit sampler), unless
         // `QIR_MOSS_EDIT_SKIP` names one (the author's ComfyUI workflow skips 22).
-        let skip: Vec<usize> =
-            if refs.is_some() {
-                std::env::var("QIR_MOSS_EDIT_SKIP").ok().and_then(|v| v.trim().parse().ok()).into_iter().collect()
-            } else if sampling.skip_uncond {
-                vec![UNCOND_SKIP]
-            } else {
-                Vec::new()
-            };
+        let skip: Vec<usize> = if refs.is_some() {
+            std::env::var("QIR_MOSS_EDIT_SKIP").ok().and_then(|v| v.trim().parse().ok()).into_iter().collect()
+        } else if sampling.skip_uncond {
+            vec![UNCOND_SKIP]
+        } else {
+            Vec::new()
+        };
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
 
@@ -402,7 +398,7 @@ impl MossPipeline {
         let mut x = Tensor::from_vec(noise, (1, channels, lh, lw), &self.dev)?;
         let sig = dit::sigmas(req.steps, sampling.shift);
         let n = sig.len() - 1;
-        tracing::info!(shift = sampling.shift, sampler = ?sampling.sampler, skip = ?skip, steps = n, guidance = req.guidance, "MOSS sampling");
+        tracing::info!(shift = sampling.shift, sampler = ?sampling.sampler, eta = sampling.eta, skip = ?skip, steps = n, guidance = req.guidance, "MOSS sampling");
         // The guided velocity at σ (the DiT's timestep is σ·1000).
         let velocity = |x: &Tensor, s: f32| -> Result<Tensor> {
             let t = s * 1000.0;
@@ -413,6 +409,16 @@ impl MossPipeline {
                 }
                 None => dit.forward_refs(x, t, &cond, &[], refs.as_ref())?,
             })
+        };
+        // `res_2s`'s fresh noise: seeded from the request, standardised per channel (RES4LYF's z-score).
+        let xdt = x.dtype();
+        let fresh = |k: u64| -> Result<Tensor> {
+            let seed = req.seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let v = crate::comfy::torch_randn(seed, channels * lh * lw).map_err(anyhow::Error::msg)?;
+            let t = Tensor::from_vec(v, (1, channels, lh, lw), &self.dev)?;
+            let c = t.broadcast_sub(&t.mean_keepdim(3)?.mean_keepdim(2)?)?;
+            let sd = c.sqr()?.mean_keepdim(3)?.mean_keepdim(2)?.sqrt()?;
+            Ok(c.broadcast_div(&sd)?.to_dtype(xdt)?)
         };
         let t0 = Instant::now();
         for i in 0..n {
@@ -434,12 +440,22 @@ impl MossPipeline {
             }
             x = match sampling.sampler {
                 Sampler::Res2s if sig[i + 1] > 0.0 => {
-                    let x0 = (&x - (&v * f64::from(sig[i]))?)?;
-                    let st = res2s_step(f64::from(sig[i]), f64::from(sig[i + 1]));
-                    let x2 = ((&x * st.mid_x)? + (&x0 * st.mid_x0)?)?;
+                    let s = f64::from(sig[i]);
+                    let x0 = (&x - (&v * s)?)?;
+                    // The step lands at σ_down, fresh noise takes it to σ' (eta 0: σ_down = σ').
+                    let step = ancestral(f64::from(sig[i + 1]), sampling.eta);
+                    let st = res2s_step(s, step.down);
+                    // The midpoint stage the same way: to its own σ_down, then noised to it.
+                    let mid = ancestral(st.mid_sigma, sampling.eta);
+                    let (cx, cx0) = exp_step(s, mid.down);
+                    let mut x2 = ((&x * cx)? + (&x0 * cx0)?)?;
+                    if mid.up > 0.0 {
+                        x2 = ((x2 * mid.alpha)? + (fresh(2 * i as u64 + 1)? * mid.up)?)?;
+                    }
                     let v2 = velocity(&x2, st.mid_sigma as f32)?;
                     let x0_2 = (&x2 - (v2 * st.mid_sigma)?)?;
-                    (((&x * st.x)? + (x0 * st.x0_1)?)? + (x0_2 * st.x0_2)?)?
+                    let out = (((&x * st.x)? + (x0 * st.x0_1)?)? + (x0_2 * st.x0_2)?)?;
+                    if step.up > 0.0 { ((out * step.alpha)? + (fresh(2 * i as u64 + 2)? * step.up)?)? } else { out }
                 }
                 _ => (x + (v * f64::from(sig[i + 1] - sig[i]))?)?,
             };
@@ -488,6 +504,34 @@ pub struct Res2sStep {
     pub x0_2: f64,
 }
 
+/// RES4LYF's "hard" noise on a rectified flow for a step ending at σ': σ_up = eta·σ', the
+/// deterministic part ends at σ_down and `alpha·x(σ_down) + σ_up·ε` is back at σ' (signal
+/// 1 − σ', noise σ').
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ancestral {
+    pub down: f64,
+    pub alpha: f64,
+    pub up: f64,
+}
+
+pub fn ancestral(next: f64, eta: f64) -> Ancestral {
+    if next <= 0.0 || eta <= 0.0 {
+        return Ancestral { down: next, alpha: 1.0, up: 0.0 };
+    }
+    let up = eta.min(0.9999) * next;
+    let residual = (next * next - up * up).sqrt();
+    let alpha = (1.0 - next) + residual;
+    Ancestral { down: residual / alpha, alpha, up }
+}
+
+/// The first-order data-prediction step from σ to σ' as `(x, x̂₀)` coefficients.
+pub fn exp_step(sigma: f64, next: f64) -> (f64, f64) {
+    let s = sigma.clamp(1e-6, 1.0 - 1e-4);
+    // e^{−h} = (α σ') / (σ α')
+    let e = ((1.0 - s) * next) / (s * (1.0 - next));
+    (next / sigma, (1.0 - next) * (1.0 - e))
+}
+
 pub fn res2s_step(sigma: f64, next: f64) -> Res2sStep {
     const C2: f64 = 0.5;
     let s = sigma.clamp(1e-6, 1.0 - 1e-4);
@@ -528,11 +572,7 @@ fn load_text(files: &MossFiles, dev: &Device, dtype: DType) -> Result<Qwen35Text
 /// The DiT's dtype: the run's, or f32 (dense, dequantized, the candle chains) under
 /// `QIR_MOSS_DIT_F32=1`: a reference for the bf16 paths, not for use.
 fn dit_dtype(run: DType) -> DType {
-    if std::env::var("QIR_MOSS_DIT_F32").is_ok_and(|v| v.trim() == "1") {
-        DType::F32
-    } else {
-        run
-    }
+    if std::env::var("QIR_MOSS_DIT_F32").is_ok_and(|v| v.trim() == "1") { DType::F32 } else { run }
 }
 
 fn load_dit(files: &MossFiles, dev: &Device, dtype: DType) -> Result<MossDit> {
@@ -585,6 +625,15 @@ mod tests {
             let mid = s.mid_x * x + s.mid_x0 * x0;
             let want = (1.0 - s.mid_sigma) * x0 + s.mid_sigma * eps;
             assert!((mid - want).abs() < 2e-3, "{a}->{b}: mid {mid} vs {want}");
+            let (cx, cx0) = exp_step(a, b);
+            assert!((cx * x + cx0 * x0 - ((1.0 - b) * x0 + b * eps)).abs() < 2e-3);
+        }
+        for (next, eta) in [(0.9, 0.5), (0.3, 0.5), (0.05, 1.0), (0.4, 0.0)] {
+            let a = ancestral(next, eta);
+            // Signal and noise land on the flow at σ'.
+            assert!((a.alpha * (1.0 - a.down) - (1.0 - next)).abs() < 1e-9);
+            assert!(((a.alpha * a.down).powi(2) + a.up * a.up - next * next).abs() < 1e-9);
+            assert!(a.down <= next + 1e-12);
         }
     }
 }
