@@ -105,7 +105,7 @@ impl Rms {
 
 /// Split-half RoPE on the first `cos.dim(1) * 2` channels of `x (S, H, D)`: pair `i` is
 /// channels `i` and `i + half`; the rest pass through (comfy-kitchen's `rot_dim`).
-fn rope(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
+pub(crate) fn rope(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let d = x.dim(D::Minus1)?;
     let half = cos.dim(1)?;
     let rot = 2 * half;
@@ -125,7 +125,7 @@ fn rope(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
 }
 
 /// Bidirectional attention over `q`, `k`, `v` `(S, H, D)`; `(S, H·D)`.
-fn attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
+pub(crate) fn attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
     let (s, h, d) = q.dims3()?;
     let scale = 1.0 / (d as f64).sqrt();
     #[cfg(feature = "flash")]
@@ -152,7 +152,7 @@ fn attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
 
 /// `fc2(silu(gate) * up)` for the merged `fc1` output `(S, 2F)` (gate first, ComfyUI's
 /// `swiglu`), fused into the INT8 quantization on CUDA.
-fn swiglu_down(fc2: &QLinear, gu: &Tensor) -> Result<Tensor> {
+pub(crate) fn swiglu_down(fc2: &QLinear, gu: &Tensor) -> Result<Tensor> {
     let f = gu.dim(1)? / 2;
     let gate = gu.narrow(1, 0, f)?;
     let up = gu.narrow(1, f, f)?;

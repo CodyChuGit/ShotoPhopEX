@@ -4,6 +4,8 @@
 
 pub mod dit;
 pub mod layout;
+pub mod text;
+pub mod vae;
 
 /// P-H3-Image's 8-step sigma grid (the Pruna workflows' `ManualSigmas`), at shift 1.
 pub const PH3_SIGMAS: [f32; 9] = [1.0, 0.984753, 0.967905, 0.951688, 0.925372, 0.881923, 0.810083, 0.528718, 0.0];

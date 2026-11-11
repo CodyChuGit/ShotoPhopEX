@@ -63,3 +63,24 @@ fn av_still_matches_comfy() {
 fn pdd_still_matches_comfy() {
     run("h3_tiny_pdd.safetensors", None, &[1.0, 0.7, 0.0]);
 }
+
+#[test]
+fn vae_matches_comfy() {
+    let Some(path) = fixture("h3_tiny_vae.safetensors") else {
+        eprintln!("H3_FIXTURES not set or h3_tiny_vae missing: skipped");
+        return;
+    };
+    let w = Weights::open(&path, &Device::Cpu, DType::F32, false).unwrap();
+    let vae = super::vae::H3Vae::load(&w).unwrap();
+    let z = vae.decode(&w.get_as("in.latent", DType::F32).unwrap().i(0).unwrap()).unwrap();
+    let want = w.get_as("out.pixels", DType::F32).unwrap().i(0).unwrap().squeeze(1).unwrap();
+    let e = max_rel(&z, &want);
+    eprintln!("vae decode rel err {e}");
+    assert!(e < 1e-4, "decode rel err {e}");
+    let px = w.get_as("in.pixels", DType::F32).unwrap().i(0).unwrap().squeeze(1).unwrap();
+    let lat = vae.encode(&px).unwrap();
+    let want = w.get_as("out.latent", DType::F32).unwrap().i(0).unwrap();
+    let e = max_rel(&lat, &want);
+    eprintln!("vae encode rel err {e}");
+    assert!(e < 1e-4, "encode rel err {e}");
+}
