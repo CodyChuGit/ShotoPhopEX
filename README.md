@@ -27,9 +27,8 @@
   <a href="#-install">Install</a> ·
   <a href="#-install-with-an-agent">Agent install</a> ·
   <a href="#-features">Features</a> ·
-  <a href="#-benchmarks">Benchmarks</a> ·
+  <a href="#-speed-on-every-device">Speed</a> ·
   <a href="#-will-it-run-on-my-computer">Your computer</a> ·
-  <a href="#-on-a-mac">Mac</a> ·
   <a href="#-models">Models</a> ·
   <a href="#-faq">FAQ</a>
 </p>
@@ -60,9 +59,9 @@ an Apple Silicon Mac. Every result lands on its own masked layer, so the origina
 | | |
 |---|---|
 | **What you get** | Generative Fill, Edit, Remove, Expand, Angles, Upscale, Split into Layers, Clown Pass, Select by text and text to image |
-| **Where it runs** | On your own NVIDIA RTX card, from 12 GB of VRAM, on Windows 10 or 11 and Linux; on an Apple Silicon Mac with 16 GB ([Mac](#-on-a-mac)) |
+| **Where it runs** | On your own NVIDIA RTX card, from 12 GB of VRAM, on Windows 10 or 11 and Linux; on an Apple Silicon Mac with 16 GB ([Mac](#macos-dmg-apple-silicon)) |
 | **What it doesn't need** | No cloud, no account, no credits, no Python, no ComfyUI |
-| **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([benchmarks](#-benchmarks)) |
+| **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([speed](#-speed-on-every-device)) |
 | **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, SAM 3.1), in ComfyUI's folder layout |
 | **Status** | Beta, v0.1.1. Downloads for Windows, Linux and Apple Silicon Macs ([install](#-install)) |
 | **Licence** | MIT or Apache-2.0 (the native engine's `qir` crate is Apache-2.0 only). Each model keeps its own licence |
@@ -122,7 +121,7 @@ See [Will it run on my computer?](#-will-it-run-on-my-computer) for what each se
 `photocraft-0.1.1-macos-aarch64.dmg` (about 120 MB, MLX built in, nothing else to install)
 runs on an Apple Silicon Mac (M1 or newer) with macOS 14 or newer. It installs as **ShotoPhopEX**,
 with its own app id and settings, so it sits happily next to an official PhotoCraft. What runs on
-a Mac is in [On a Mac](#-on-a-mac).
+a Mac is in [Speed on every device](#-speed-on-every-device).
 
 1. Open the `.dmg` and drag **ShotoPhopEX** onto **Applications**.
 2. Open it from Applications. The app is not signed or notarized, so the first time macOS says
@@ -284,7 +283,7 @@ photocraft-cli mcp   # expose all 500+ commands, generative ones included, to an
 ## ✨ Features
 
 Every clip was recorded in the real app on one RTX 5090. The clips play back faster than real time; the time under each one is the real, measured time.
-The same tools run on an Apple Silicon Mac, slower; [On a Mac](#-on-a-mac) lists what runs there and how long it takes.
+The same tools run on an Apple Silicon Mac, slower; [Speed on every device](#-speed-on-every-device) compares them side by side.
 The photos were generated in the app too, so no stock images are involved. Times are warm.
 
 ### Generative Fill
@@ -369,24 +368,24 @@ One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to 
 
 ### Every feature
 
-| Feature | What it does | Default model | Warm time, RTX 5090 | Mac (M1 Air 16 GB, 512²) |
-|---|---|---|---|---|
-| **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best | 36 s MOSS Turbo · 100 s Klein |
-| **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** | not yet |
-| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP | about 2 min (Klein) |
-| **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s | not yet |
-| **Remove · Generative Remove** | One stroke or a selection: the object is found, named and removed with its shadow; the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** (10.2 s from a lasso) | about 2 min (Klein) |
-| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 (MOSS Edit Turbo on small cards) | **5.1 s** (7.1 s with a text selection) · 3.8 s MOSS Edit Turbo | about 1.75 min (MOSS Edit) |
-| **Generative Expand** | Grow the canvas and continue the scene, people included | Qwen-Image-2.1 + Outpaint LoRA | about 10 s at 1 MP · 32 s to 3.6 MP | about 3.2 min (Klein) |
-| **Split into Layers** | Every subject on its own matted layer, nearest on top, over a repainted background; Rough, Medium or Fine detail | SAM 3.1 + ViTMatte + fill | 4.2 s for one subject · 3–3.5 min for a busy 2 MP scene | about 3.5 min |
-| **Clown Pass** | Everything in the picture on its own colour-coded, edge-matted layer, no fills | SAM 3.1 + ViTMatte | **9.5 s** (40 layers, 2 MP) | about 3.3 min |
-| **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** | about 8 s |
-| **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** | 1 s click · 28 s by text |
-| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-Edit-2511 + Multiple Angles LoRA | 10.3 s | not yet |
-| **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** | not yet |
-| **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s | 15–30 s, words only |
+| Feature | What it does | Default model | Warm time, RTX 5090 |
+|---|---|---|---|
+| **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best |
+| **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** |
+| **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP |
+| **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s |
+| **Remove · Generative Remove** | One stroke or a selection: the object is found, named and removed with its shadow; the best of two tries is kept | Qwen-Image-2.1 edit + SAM 3.1 | **4.3 s** (10.2 s from a lasso) |
+| **Generative Edit** | Change what is in the picture by instruction ("make the jacket leather") | Qwen-Image-2.1 (MOSS Edit Turbo on small cards) | **5.1 s** (7.1 s with a text selection) · 3.8 s MOSS Edit Turbo |
+| **Generative Expand** | Grow the canvas and continue the scene, people included | Qwen-Image-2.1 + Outpaint LoRA | about 10 s at 1 MP · 32 s to 3.6 MP |
+| **Split into Layers** | Every subject on its own matted layer, nearest on top, over a repainted background; Rough, Medium or Fine detail | SAM 3.1 + ViTMatte + fill | 4.2 s for one subject · 3–3.5 min for a busy 2 MP scene |
+| **Clown Pass** | Everything in the picture on its own colour-coded, edge-matted layer, no fills | SAM 3.1 + ViTMatte | **9.5 s** (40 layers, 2 MP) |
+| **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** |
+| **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** |
+| **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-Edit-2511 + Multiple Angles LoRA | 10.3 s |
+| **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
+| **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
-Times are warm, measured in the app at about 1 MP unless the row says otherwise (2026-10-28 to 2026-11-06). **Bold** means faster than ComfyUI on the
+Times are warm, measured in the app at about 1 MP unless the row says otherwise (2026-10-28 to 2026-11-06); every device side by side is in [Speed on every device](#-speed-on-every-device). **Bold** means faster than ComfyUI on the
 same GPU or a feature ComfyUI has no matching graph for. Every feature also takes **LoRAs** from
 your models folder, and Qwen-Image-Edit-2511 with its Lightning LoRAs is selectable for Fill, Edit,
 Remove and Expand.
@@ -412,7 +411,45 @@ Remove and Expand.
 
 </details>
 
-## 📊 Benchmarks
+## 📊 Speed on every device
+
+Every tested computer gets the same job: the same 1024×1024 kitchen photo, the same prompts,
+seed 42 and Image Quality Fast. Each device uses the model its memory check picks, named on its
+bar. Each task is timed as one cold run, then the median of three warm runs, in the released app.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/genai/bench-devices-dark.svg">
+    <img alt="Seconds per result on an RTX 5090 and a MacBook Air M1, same picture and settings. Select by text 0.3 s vs 18 s, Generate Image 2.8 s vs 3.3 min, Fill 1.4 s vs 114 s, Remove 9.1 s vs 6.6 min, Edit 5.5 s vs 6.5 min, Expand 3.3 s vs 6.6 min, Split into Layers 17 s vs 10.5 min, Clown Pass 7.6 s vs 3.2 min, Prompt Enhance 2.4 s vs 27 s. RTX 3090 being measured." src="docs/images/genai/bench-devices-light.svg" width="100%">
+  </picture>
+</p>
+
+| Task (1024², warm) | RTX 5090 (32 GB) | RTX 3090 (24 GB) | MacBook Air M1 (16 GB) |
+|---|---:|---:|---:|
+| Select by text | **0.33 s** · SAM 3.1 | being measured | 17.9 s · SAM 3.1 |
+| Generate Image | **2.8 s** · Krea 2 Turbo | being measured | 195 s · MOSS Turbo |
+| Generative Fill | **1.4 s** · Qwen-Image-2.1 | being measured | 114 s · Klein 4-bit |
+| Generative Remove | **9.1 s** · Qwen-Image-2.1 edit | being measured | 396 s · Klein 4-bit |
+| Generative Edit | **5.5 s** · Qwen-Image-2.1 edit | being measured | 392 s · MOSS Edit Turbo |
+| Generative Expand (to 1536×1024) | **3.3 s** · Qwen-Image-2.1 + Outpaint | being measured | 393 s · Klein + Outpaint |
+| Split into Layers (Medium) | **17 s** · SAM 3.1 + Qwen-Image-2.1 | being measured | 633 s · SAM 3.1 + Klein |
+| Clown Pass | **7.6 s** · SAM 3.1 | being measured | 192 s · SAM 3.1 |
+| Prompt Enhance | **2.4 s** · Qwen3-VL | being measured | 27 s · Qwen3.5-9B |
+
+Measured 2026-11-07 to 2026-11-11 with v0.1.1. The RTX 5090 ran driver 621.14 on Windows 10. The
+MacBook Air M1 ran macOS 26; it has no fan, so long runs slow down as it warms up. With 16 GB, the
+Mac runs Edit at 768² and Expand at 928×624 inside the model, then scales the result to the
+canvas. Remove Background is left out: with no prompt, it found no single subject in this busy
+kitchen on either device.
+
+**On a Mac** the models run on Apple's GPU through [MLX](https://github.com/ml-explore/mlx),
+which is compiled into the app, so there is no Python, Homebrew or Xcode to install. Not on the Mac
+yet: **Generative Angles**, Upscale, Image and Fill from a reference, and the big Krea 2 and
+Qwen-Image-2.1 models. Klein runs from mflux's 4-bit MLX files. Like every model it is
+bring-your-own, and it comes under the FLUX Kommunity License.
+
+<details>
+<summary><b>Against ComfyUI on the same RTX 5090</b></summary>
 
 <p align="center">
   <picture>
@@ -445,8 +482,9 @@ project itself; the ComfyUI version and NVIDIA driver were not recorded, so trea
 indicative, not as an independent benchmark. Your numbers will differ with other cards, drivers
 and settings. Remove Background has since
 moved to SAM 3.1 + ViTMatte (0.45 s). Split into Layers, Clown Pass and the MOSS Turbo routes have
-no ComfyUI graph to compare against, so they are listed in [Every feature](#every-feature) only. No RTX
-3090 numbers exist yet, so none are shown.
+no ComfyUI graph to compare against, so they are only in the device comparison above.
+
+</details>
 
 <details>
 <summary><b>What makes it fast</b></summary>
@@ -472,44 +510,24 @@ Apple Silicon Macs run MOSS and FLUX 3 Image Klein on MLX.
 
 | Setup | Role |
 |---|---|
-| **RTX 5090** (32 GB, Windows 11) | the reference build; every time in [Every feature](#every-feature) and [Benchmarks](#-benchmarks) |
-| **RTX 3090** (24 GB) | benchmark in progress; numbers land here when measured |
-| **MacBook Air M1** (16 GB) | the Mac reference; every time in [On a Mac](#-on-a-mac) |
+| **RTX 5090** (32 GB) | the reference build |
+| **RTX 3090** (24 GB) | being measured |
+| **MacBook Air M1** (16 GB) | the Mac reference |
+
+All three run the same test, compared in [Speed on every device](#-speed-on-every-device).
 
 | Your computer | What Auto uses | Status |
 |---|---|---|
 | **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
 | **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟡 should work, not yet benchmarked |
 | **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB |
-| **Mac, 16 GB** (Apple Silicon) | MOSS Turbo, MOSS Edit and FLUX 3 Image Klein on MLX ([On a Mac](#-on-a-mac)) | 🟡 works on an M1 Air; `.dmg` since v0.1.1 |
+| **Mac, 16 GB** (Apple Silicon) | MOSS Turbo, MOSS Edit and FLUX 3 Image Klein on MLX ([speed](#-speed-on-every-device)) | 🟡 works on an M1 Air; `.dmg` since v0.1.1 |
 | **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
 
 A **memory check at first launch** reads your card's (or Mac's) memory and picks these defaults for you;
 bigger models get a "may not fit" badge instead of being hidden, and **Preferences › AI
 Integrations › Memory profile** lets you choose another.
 Nothing is ever locked: every model is bring-your-own and selectable on any card or Mac.
-
-## 🍎 On a Mac
-
-The Mac build runs the same editor with the models on Apple's GPU through
-[MLX](https://github.com/ml-explore/mlx), compiled into the app: no Python, Homebrew or Xcode.
-It is tuned on an M1 MacBook Air with 16 GB; times below are for 512² pictures. Expect minutes where an RTX card takes seconds.
-
-| Feature | On a Mac | About how long, M1 Air 16 GB |
-|---|---|---|
-| **Generate Image** | MOSS Turbo; FLUX 3 Image Klein for higher quality | about 36 s · Klein about 100 s |
-| **Generative Edit** | MOSS Edit; Klein Edit selectable | about 1.75 min |
-| **Generative Fill · Remove** | Klein | about 2 min |
-| **Generative Expand** | Klein + Outpaint LoRA | about 3.2 min (512² to 768×512) |
-| **Split into Layers** | SAM 3.1 + ViTMatte + Klein fill | about 3.5 min |
-| **Clown Pass** | SAM 3.1 + ViTMatte | about 3.3 min |
-| **Select Subject / by text / by point** | SAM 3.1 | 1 s for a click · about 28 s by text |
-| **Remove Background** | SAM 3.1 + ViTMatte | about 8 s |
-| **Prompt Enhance** | MOSS's own text encoder, reading your words only (not yet the picture) | about 15–30 s |
-
-Not on the Mac yet: **Generative Angles**, Upscale and the big Krea 2 and Qwen-Image-2.1 models.
-Times are early and getting faster. Klein runs from mflux's 4-bit MLX files, bring-your-own like
-every model, under the FLUX Kommunity License.
 
 ## 🧠 Models
 
@@ -733,7 +751,7 @@ selection, which peak at about 12 GiB. The larger models stay selectable; they m
 
 Yes, on Apple Silicon (M1 or newer) with 16 GB and macOS 14 or newer, through MLX built into the
 app. It is slower than an RTX card and Angles isn't there
-yet; see [On a Mac](#-on-a-mac).
+yet; see [Speed on every device](#-speed-on-every-device).
 
 </details>
 
