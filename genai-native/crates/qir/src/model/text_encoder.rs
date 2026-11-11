@@ -467,6 +467,56 @@ impl QwenTextEncoder {
         taps.iter().map(|t| states.get((*t).min(last)).cloned().ok_or_else(|| anyhow::anyhow!("tap {t} past the layers"))).collect()
     }
 
+    /// FLUX 3 Image Klein's reading of a prompt (BFL's reference, `gn-mlx`'s Klein): `ids` run
+    /// causally, plus `pads` pad rows. The reference masks the pads as keys and puts each at
+    /// position 1, so every pad row sees exactly the prompt's tokens from the same place and
+    /// comes out the same: one pad row (`pad_id`, position 1, attending to the prompt and not to
+    /// itself) is run and repeated. The hidden states at `taps` (as [`Self::forward_taps`]),
+    /// each `(ids.len() + pads, hidden)`.
+    pub fn forward_taps_padded(&self, ids: &[u32], pad_id: u32, pads: usize, taps: &[usize]) -> Result<Vec<Tensor>> {
+        let real = ids.len();
+        anyhow::ensure!(real > 0, "an empty prompt");
+        let extra = usize::from(pads > 0);
+        let s = real + extra;
+        let mut all = ids.to_vec();
+        if extra == 1 {
+            all.push(pad_id);
+        }
+        let input = Tensor::from_vec(all, (1, s), &self.device)?;
+        let mut xs = self.embed(&input)?;
+        let mut mask = vec![0f32; s * s];
+        for i in 0..s {
+            for j in 0..s {
+                let blocked = if i < real { j > i } else { j >= real };
+                if blocked {
+                    mask[i * s + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let mask = Tensor::from_vec(mask, (1, 1, s, s), &self.device)?.to_dtype(xs.dtype())?;
+        let mut p: Vec<f32> = (0..real).map(|i| i as f32).collect();
+        if extra == 1 {
+            p.push(1.0);
+        }
+        let rope = self.rope.tables(&[p.clone(), p.clone(), p])?;
+        let last = taps.iter().copied().max().unwrap_or(0).min(self.layers.len());
+        let mut states: Vec<Tensor> = Vec::with_capacity(last + 1);
+        let expand = |x: &Tensor| -> Result<Tensor> {
+            if extra == 0 {
+                return Ok(x.clone());
+            }
+            let (_, _, h) = x.dims3()?;
+            let pad = x.narrow(1, real, 1)?.broadcast_as((1, pads, h))?;
+            Ok(Tensor::cat(&[&x.narrow(1, 0, real)?, &pad], 1)?)
+        };
+        states.push(expand(&xs)?);
+        for layer in self.layers.iter().take(last) {
+            xs = layer.forward(&xs, &mask, &rope)?;
+            states.push(expand(&xs)?);
+        }
+        taps.iter().map(|t| states.get((*t).min(last)).cloned().ok_or_else(|| anyhow::anyhow!("tap {t} past the layers"))).collect()
+    }
+
     /// The decoder on a prompt with pictures, as ComfyUI's `Qwen3VL` runs it: each `<|image_pad|>`
     /// token (one per picture, in order) is replaced by the picture's merged vision rows, the
     /// positions follow the multimodal RoPE (`qwen2vl_mrope_position_ids`), and the three
