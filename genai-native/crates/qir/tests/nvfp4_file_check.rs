@@ -1,5 +1,5 @@
 //! Reads Comfy-Org's Krea 2 Turbo NVFP4 file against its fp8 file: which byte layout the NVFP4
-//! weights are in (swizzled or plain block scales, low or high nibble first), and how far the
+//! weights are in (swizzled or plain block scales, high or low nibble first), and how far the
 //! FP4 GEMM lands from the fp8 weights' bf16 matmul. Needs both files in a ComfyUI models folder
 //! named by `QIR_NVFP4_CHECK_MODELS`, and a CUDA build (`--features fp8`); skipped otherwise.
 //!
@@ -51,8 +51,8 @@ fn krea2_nvfp4_matches_its_fp8_file() -> anyhow::Result<()> {
         };
         let mut best = (f32::MAX, Layout::default());
         for linear_scales in [false, true] {
-            for high_first in [false, true] {
-                let layout = Layout { linear_scales, high_first };
+            for low_first in [false, true] {
+                let layout = Layout { linear_scales, low_first };
                 let e = rel(&l4.dequantized_as(layout)?, &reference);
                 eprintln!("{name} ({out_c}, {in_c}) {layout:?}: {:.2} % from the fp8 weight", e * 100.0);
                 if e < best.0 {

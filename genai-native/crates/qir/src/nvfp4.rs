@@ -1,5 +1,6 @@
 //! NVFP4 linears: 4-bit e2m1 weights with an e4m3 scale for each 16 values and one f32 global
-//! scale, as ComfyUI's `nvfp4` repacks store them (`weight` U8 `(out, in/2)`, `weight_scale`
+//! scale, as ComfyUI's `nvfp4` repacks store them (`weight` U8 `(out, in/2)` with element `2i`
+//! in the high nibble, `weight_scale`
 //! e4m3 in cuBLAS's swizzled 128×4 tiles, `weight_scale_2` F32), run the way ComfyUI runs them on
 //! a Blackwell card (comfy_kitchen's `TensorCoreNVFP4Layout`):
 //!
@@ -91,7 +92,11 @@ pub fn load_linear(in_c: usize, out_c: usize, full: bool, vb: &candle_nn::VarBui
 
 /// One NVFP4 linear `y = x Wᵀ` (no bias: the repacks' NVFP4 layers have none).
 pub struct Nvfp4Linear {
-    /// `(out, in/2)`: two e2m1 values a byte, element `2i` in the low nibble.
+    /// `(out, in/2)`: two e2m1 values a byte, element `2i` in the high nibble (Comfy-Org's
+    /// files, checked against the fp8 file on 2026-11-11: 9.3 % from it read this way, 142 %
+    /// the other). The activations are packed the same way, so the GEMM, which pairs the
+    /// nibbles of both operands alike, sums the same products whichever order the tensor cores
+    /// read.
     w: Tensor,
     /// The e4m3 block scales, flat, swizzled ([`scale_bytes`] of them).
     scales: Tensor,
@@ -176,8 +181,8 @@ fn reshape_out(y: Tensor, dims: &[usize], n: usize) -> Result<Tensor> {
 pub struct Layout {
     /// Block scales as a plain `(rows, cols/16)` matrix instead of swizzled tiles.
     pub linear_scales: bool,
-    /// Element `2i` in the high nibble.
-    pub high_first: bool,
+    /// Element `2i` in the low nibble (ComfyUI's files hold it in the high one).
+    pub low_first: bool,
 }
 
 /// [`Nvfp4Linear::dequantized`] on the CPU, in f32.
@@ -193,7 +198,7 @@ fn dequant_cpu(w: &Tensor, scales: &Tensor, global: f32, layout: Layout) -> Resu
             let scale = s[si] * global;
             for j in 0..8 {
                 let byte = q[(row * k + col * 16) / 2 + j];
-                let (a, b) = if layout.high_first { (byte >> 4, byte & 15) } else { (byte & 15, byte >> 4) };
+                let (a, b) = if layout.low_first { (byte & 15, byte >> 4) } else { (byte >> 4, byte & 15) };
                 out[row * k + col * 16 + 2 * j] = e2m1_value(a) * scale;
                 out[row * k + col * 16 + 2 * j + 1] = e2m1_value(b) * scale;
             }
@@ -221,7 +226,7 @@ pub fn quantize_cpu(w: &Tensor) -> Result<(Tensor, Tensor, f32)> {
             s[swizzled(row, col, cols)] = scale;
             let inv = if scale > 0.0 { 1.0 / (scale * global) } else { 0.0 };
             for j in 0..8 {
-                q[(row * cols + col * 16) / 2 + j] = e2m1_code(block[2 * j] * inv) | (e2m1_code(block[2 * j + 1] * inv) << 4);
+                q[(row * cols + col * 16) / 2 + j] = (e2m1_code(block[2 * j] * inv) << 4) | e2m1_code(block[2 * j + 1] * inv);
             }
         }
     }
@@ -256,7 +261,7 @@ mod cuda {
 
     extern "C" {
         fn qir_nvfp4_quant(q: *mut c_void, scales: *mut c_void, params: *mut c_void, x: *const c_void, rows: usize, cols: usize, weight_global: f32, stream: *mut c_void) -> i32;
-        fn qir_nvfp4_dequant(out: *mut c_void, q: *const c_void, scales: *const c_void, rows: usize, cols: usize, global: f32, linear: i32, high_first: i32, stream: *mut c_void) -> i32;
+        fn qir_nvfp4_dequant(out: *mut c_void, q: *const c_void, scales: *const c_void, rows: usize, cols: usize, global: f32, linear: i32, low_first: i32, stream: *mut c_void) -> i32;
     }
 
     static DECLINED: AtomicBool = AtomicBool::new(false);
@@ -321,7 +326,7 @@ mod cuda {
                         k,
                         self.global,
                         self.layout.linear_scales as i32,
-                        self.layout.high_first as i32,
+                        self.layout.low_first as i32,
                         stream.cu_stream() as *mut c_void,
                     )
                 };

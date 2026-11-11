@@ -1,7 +1,8 @@
 // NVFP4 (e2m1 values, e4m3 scales for each 16-element block, one f32 global scale) for
 // src/nvfp4.rs, laid out the way ComfyUI's `nvfp4` repacks (comfy_kitchen) store their weights
 // and the way cuBLASLt's block-scaled FP4 GEMM reads them:
-//   - data: two values a byte, row-major `(rows, cols/2)`, element 2i in the low nibble;
+//   - data: two values a byte, row-major `(rows, cols/2)`, element 2i in the high nibble
+//     (Comfy-Org's files; activations are packed alike, so the GEMM pairs the same products);
 //   - block scales: e4m3, `(rows, cols/16)` padded to `(128, 4)` tiles and swizzled inside each
 //     tile (cuBLAS's "1D block scaling factors layout": row r of a tile sits at
 //     `(r % 32) * 16 + (r / 32) * 4`, then the column within the tile);
@@ -100,7 +101,7 @@ __global__ void quant_kernel(uint8_t* __restrict__ q, uint8_t* __restrict__ scal
         __align__(8) uint8_t packed[8];
 #pragma unroll
         for (int j = 0; j < 8; ++j) {
-            packed[j] = (uint8_t)(e2m1_code(f[2 * j] * inv) | (e2m1_code(f[2 * j + 1] * inv) << 4));
+            packed[j] = (uint8_t)((e2m1_code(f[2 * j] * inv) << 4) | e2m1_code(f[2 * j + 1] * inv));
         }
         reinterpret_cast<uint2*>(q)[(row * cols + col * 16) / 16] = *reinterpret_cast<const uint2*>(packed);
         scales[swizzled(row, col, col_tiles)] = *reinterpret_cast<const uint8_t*>(&s8);
@@ -109,7 +110,7 @@ __global__ void quant_kernel(uint8_t* __restrict__ q, uint8_t* __restrict__ scal
 
 // Weights back to bf16: one thread a 16-element block.
 __global__ void dequant_kernel(__nv_bfloat16* __restrict__ out, const uint8_t* __restrict__ q, const uint8_t* __restrict__ scales,
-                               size_t rows, size_t cols, float global, int linear_scales, int high_first) {
+                               size_t rows, size_t cols, float global, int linear_scales, int low_first) {
     const size_t blocks_per_row = cols / 16;
     const size_t total = rows * blocks_per_row;
     const size_t col_tiles = (blocks_per_row + 3) / 4;
@@ -124,8 +125,8 @@ __global__ void dequant_kernel(__nv_bfloat16* __restrict__ out, const uint8_t* _
 #pragma unroll
         for (int j = 0; j < 8; ++j) {
             const uint8_t lo = bytes[j] & 15, hi = bytes[j] >> 4;
-            o[2 * j] = __float2bfloat16(e2m1_value(high_first ? hi : lo) * s);
-            o[2 * j + 1] = __float2bfloat16(e2m1_value(high_first ? lo : hi) * s);
+            o[2 * j] = __float2bfloat16(e2m1_value(low_first ? lo : hi) * s);
+            o[2 * j + 1] = __float2bfloat16(e2m1_value(low_first ? hi : lo) * s);
         }
         uint4* dst = reinterpret_cast<uint4*>(out + row * cols + col * 16);
         dst[0] = reinterpret_cast<const uint4*>(o)[0];
@@ -168,12 +169,12 @@ extern "C" int qir_nvfp4_quant(void* q, void* scales, void* params, const void* 
 }
 
 // Packed e2m1 + e4m3 block scales + global -> bf16 `(rows, cols)`. `linear_scales` reads the
-// scales as a plain `(rows, cols/16)` matrix instead of the swizzled tiles, `high_first` takes
-// element 2i from the high nibble: both only for checking a file's layout.
+// scales as a plain `(rows, cols/16)` matrix instead of the swizzled tiles, `low_first` takes
+// element 2i from the low nibble: both only for checking a file's layout.
 extern "C" int qir_nvfp4_dequant(void* out, const void* q, const void* scales, size_t rows, size_t cols, float global, int linear_scales,
-                                 int high_first, void* stream) {
+                                 int low_first, void* stream) {
     if (((uintptr_t)out & 15) || ((uintptr_t)q & 7) || (cols % 16)) return 2;
     dequant_kernel<<<grid_for(rows * (cols / 16)), 256, 0, (cudaStream_t)stream>>>(
-        (__nv_bfloat16*)out, (const uint8_t*)q, (const uint8_t*)scales, rows, cols, global, linear_scales, high_first);
+        (__nv_bfloat16*)out, (const uint8_t*)q, (const uint8_t*)scales, rows, cols, global, linear_scales, low_first);
     return (int)cudaGetLastError();
 }
