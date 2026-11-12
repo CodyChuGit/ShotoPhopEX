@@ -184,20 +184,28 @@ fn target_root(s: &Session) -> Option<std::path::PathBuf> {
 /// finds them too, so the same name at the same size there counts.
 pub fn installed(root: &std::path::Path, f: &ModelFile) -> bool {
     let full = |p: &std::path::Path| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() == f.bytes);
-    let dest = path_of(root, f);
-    full(&dest) || dest.parent().is_some_and(|dir| in_subfolders(dir, dest.file_name().unwrap_or_default(), 2, &full))
+    if full(&path_of(root, f)) {
+        return true;
+    }
+    // Deeper down: under the file's top folder (`loras`), its listed subfolders and name
+    // (`moss-image-edit/adapter_model.safetensors`) one or two folders further in
+    // (`loras/moss-image/moss-image-edit/…`).
+    let rel = std::path::Path::new(&f.folder).join(&f.file);
+    let mut parts = rel.components();
+    let Some(top) = parts.next() else { return false };
+    in_subfolders(&root.join(top), parts.as_path(), 2, &full)
 }
 
-/// Whether a subfolder of `dir`, up to `depth` levels down, holds `name` that `ok` accepts.
-fn in_subfolders(dir: &std::path::Path, name: &std::ffi::OsStr, depth: u32, ok: &dyn Fn(&std::path::Path) -> bool) -> bool {
-    if depth == 0 || name.is_empty() {
+/// Whether a subfolder of `dir`, up to `depth` levels down, holds `rel` that `ok` accepts.
+fn in_subfolders(dir: &std::path::Path, rel: &std::path::Path, depth: u32, ok: &dyn Fn(&std::path::Path) -> bool) -> bool {
+    if depth == 0 || rel.as_os_str().is_empty() {
         return false;
     }
     let Ok(entries) = std::fs::read_dir(dir) else { return false };
     // `metadata` follows links, so a subfolder that is a junction or symlink to another drive counts.
     entries.flatten().filter(|e| std::fs::metadata(e.path()).is_ok_and(|m| m.is_dir())).any(|e| {
         let sub = e.path();
-        ok(&sub.join(name)) || in_subfolders(&sub, name, depth - 1, ok)
+        ok(&sub.join(rel)) || in_subfolders(&sub, rel, depth - 1, ok)
     })
 }
 
@@ -766,6 +774,11 @@ mod tests {
         std::fs::create_dir_all(&deeper).unwrap();
         std::fs::rename(deep.join("x.safetensors"), deeper.join("x.safetensors")).unwrap();
         assert!(!installed(&dir, &f), "three levels down is too deep");
+        let g = ModelFile { folder: "loras/moss-image-edit".into(), file: "a.safetensors".into(), ..f.clone() };
+        let held = dir.join("loras").join("moss-image").join("moss-image-edit");
+        std::fs::create_dir_all(&held).unwrap();
+        std::fs::write(held.join("a.safetensors"), b"abc").unwrap();
+        assert!(installed(&dir, &g), "the listed subfolder one folder deeper under loras/");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
