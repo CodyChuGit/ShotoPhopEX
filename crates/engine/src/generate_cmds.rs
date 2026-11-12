@@ -679,54 +679,19 @@ pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     Some(format!("<sks> {r} {t} {z}"))
 }
 
-/// The template `generate.angles` runs: 2511 with the Multiple Angles LoRA, which was trained on
-/// exactly these camera moves. Plain Qwen-Image-2.1 by instruction ([`angle_instruction`]) barely
-/// turned the camera on side views (README recording, 2026-11-06), so it is only the stand-in
-/// when the Models folder is there and its `loras/` lacks the LoRA (with the research opt-in).
-pub fn angles_template(s: &Session) -> &'static str {
-    let root = s.prefs().integrations.models_root();
-    let loras = std::path::Path::new(&root).join("loras");
-    let lacks_lora = !root.is_empty() && loras.is_dir() && !loras.join(ANGLES_LORA).is_file();
-    if lacks_lora && let Some(t) = native21_only(s, EDIT, false) {
-        return t;
-    }
+/// The template `generate.angles` runs: always 2511 with the Multiple Angles LoRA, which was
+/// trained on exactly these camera moves. Plain Qwen-Image-2.1 by instruction never turned the
+/// camera (0 of 4 at 45°, 2026-11-03 bench; barely on side views in the 2026-11-06 README
+/// recording), so it no longer stands in when the LoRA is missing: the Angles window says what
+/// to download instead. Bring-your-own: on a card below 2511's budget it still runs, with the
+/// window's `may not fit` note.
+pub fn angles_template(_s: &Session) -> &'static str {
     ANGLES_TEMPLATE
 }
 
 /// The Multiple Angles LoRA file [`ANGLES_TEMPLATE`] loads (fal, Apache-2.0).
 pub const ANGLES_LORA: &str = "qwen-image-edit-2511-multiple-angles-lora.safetensors";
 
-/// The plain camera instruction the Qwen-Image-2.1 edit gets for a camera, which has no
-/// Multiple Angles LoRA: the camera named as moved ("Rotate the camera 90 degrees to the right
-/// around the subject", "Raise the camera high above…"), the wording that made 2.1 orbit a
-/// bench and raise or close in on people and a dog in the 2026-10-27 probe (`benchmarks.md`),
-/// where naming the view ("a right side view") mostly turned the subject. None as above.
-pub fn angle_instruction(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
-    angle_prompt(rotation, tilt, zoom)?;
-    let mut parts: Vec<String> = Vec::new();
-    match rotation {
-        0 => {}
-        180 => parts.push("Move the camera behind the subject, so it is seen from the back.".into()),
-        r if r < 180 => parts.push(format!("Rotate the camera {r} degrees to the right around the subject.")),
-        r => parts.push(format!("Rotate the camera {} degrees to the left around the subject.", 360 - r)),
-    }
-    match tilt {
-        -30 => parts.push("Lower the camera to a low angle, looking up at the subject.".into()),
-        30 => parts.push("Raise the camera a little, looking slightly down at the subject.".into()),
-        60 => parts.push("Raise the camera high above the subject, looking down at it.".into()),
-        _ => {}
-    }
-    match zoom {
-        0 => parts.push("Pull the camera back for a wide shot that shows more of the surroundings.".into()),
-        10 => parts.push("Move the camera closer for a close-up of the subject.".into()),
-        _ => {}
-    }
-    if parts.is_empty() {
-        parts.push("Show the subject from the front at eye level.".into());
-    }
-    parts.push("Keep the subject, its identity, its clothing and the setting the same.".into());
-    Some(parts.join(" "))
-}
 /// The Qwen-Image-2.1 template that `auto` runs for `command` (a removal when `removal`) instead
 /// of the Qwen-Image-Edit-2511 order, when research-only models are allowed and the native
 /// worker runs the family: the owner's choice of 2026-10-27, on the removal numbers of
@@ -735,6 +700,10 @@ pub fn angle_instruction(rotation: u32, tilt: i32, zoom: u32) -> Option<String> 
 /// fill is the 2.1 fill (the mask in view); an expand the in-context 2.1 expand. Without the
 /// opt-in or the worker, the 2511 orders stand (the permissive default).
 pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
+    // An 8 to 16 GB card with FLUX 3 Image Klein installed edits with Klein.
+    if command == EDIT && crate::memory_profile::cuda_klein(s) && loras::runs_native(s, crate::memory_profile::KLEIN_EDIT_TEMPLATE) {
+        return Some(crate::memory_profile::KLEIN_EDIT_TEMPLATE);
+    }
     // A small memory profile edits with MOSS Edit (permissive, so no research opt-in).
     if command == EDIT
         && let Some(t) = crate::memory_profile::edit_template(crate::memory_profile::active(s))
@@ -751,8 +720,7 @@ pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option
     native21_only(s, command, removal)
 }
 
-/// [`native21_auto`] without the memory profile: the Qwen-Image-2.1 route alone (Angles, whose
-/// camera instructions are written for 2.1's edit).
+/// [`native21_auto`] without the memory profile: the Qwen-Image-2.1 route alone.
 fn native21_only(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
     let t = match command {
         FILL if removal => "qwen-2.1/edit",
@@ -889,11 +857,15 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
     let integrations = &s.prefs().integrations;
     let timeout = std::time::Duration::from_secs(u64::from(integrations.generative_timeout_secs.max(5)));
     let preview = preview_mode(integrations);
-    // The deadline and the preview mode are read at each run: a change takes effect on the next
-    // generation without restarting the worker.
+    // Fast and Balanced take 4-bit weights where the worker can (Krea 2's NVFP4 file on an RTX
+    // 50-series card); Best keeps the full models.
+    let nvfp4 = quality(s) != "best";
+    // The deadline, the preview mode and the precision are read at each run: a change takes
+    // effect on the next generation without restarting the worker.
     let configure = |b: &photocraft_genai::native::NativeBackend| {
         b.set_timeout(timeout);
         b.set_preview(preview);
+        b.set_nvfp4(nvfp4);
     };
     if let Some(b) = photocraft_genai::native::test_backend(&integrations.models_root()).map_err(gen_err)? {
         configure(&b);
@@ -996,6 +968,7 @@ fn warm_need(template: &str) -> u64 {
     match template.split('/').next().unwrap_or("") {
         t if t.starts_with("krea2") => WARM_KREA2_GB * GB,
         t if t.starts_with("moss") => WARM_MOSS_GB * GB,
+        t if t.starts_with("p-h3") => WARM_H3_GB * GB,
         _ => WARM_QWEN21_GB * GB,
     }
 }
@@ -1007,6 +980,10 @@ const WARM_QWEN21_GB: u64 = 27; // 25.0 GB resident
 /// a warm-up on a 12 GB card wants most of it free.
 #[cfg(not(target_arch = "wasm32"))]
 const WARM_MOSS_GB: u64 = 10;
+/// P-H3-Image: the int8 DiT (21.2 GB) stays, the encoder or the VAE (5–6 GB) beside it (an
+/// estimate until measured on the 5090).
+#[cfg(not(target_arch = "wasm32"))]
+const WARM_H3_GB: u64 = 28;
 
 /// Start the worker and load the default image template's models (`generate.engine.warmUp`):
 /// on a thread of its own, or with `wait` before returning (the bench). It is skipped on a card
@@ -1780,6 +1757,9 @@ pub(crate) fn generative_remove(
     if hole.is_empty() {
         return Err(EngineError::Other("nothing to remove: the stroke covers no pixel that can change (check the selection)".into()));
     }
+    // No Consistency LoRA here: on a pedestrian it turned the removal into a copy of the input
+    // (mean change 0.9/255 inside the hole, measured in the app 2026-11-12); a request can still
+    // name it in `loras`.
     let job = removal_job(s, label, grow, erase, enhance, variations, seed, prefill, tuning)?;
     let label_kept = label.to_string();
     crate::jobs::edit_job(
@@ -2308,6 +2288,8 @@ struct ImagePlan {
     seed: u64,
     steps: u32,
     guidance: f32,
+    /// The native engine's schedule (`params.schedule`), `None` for the template's own.
+    schedule: Option<&'static str>,
     name: String,
     models: Vec<(String, String)>,
     /// The size asked of the model (rounded to the latent grid).
@@ -2339,6 +2321,27 @@ pub fn image_quality_tuning(template: &str, quality: &str) -> Option<(u32, f32)>
         ("qwen-2.1/image", "best") => Some((40, 3.0)),
         // The middle ground: the guidance (what made the difference) at the template's 25 steps.
         ("qwen-2.1/image", "balanced") => Some((25, 3.0)),
+        // Krea 2 Turbo's detail recipe ([`image_quality_schedule`]) takes one step more than
+        // the template's 8: the Sick Ollie Creator Kit's 9.
+        ("krea2-turbo/image", "best" | "balanced") => Some((KREA_DETAIL_STEPS, 1.0)),
+        _ => None,
+    }
+}
+
+/// The schedule the native engine runs Krea 2 Turbo's detail recipe under (`params.schedule`):
+/// ComfyUI's `beta` scheduler over AuraFlow shift 1.25, the sampler settings of the Sick Ollie
+/// Creator Kit Studio (civitai 2811445, v5; its Generation Core defaults). Against the
+/// template's `simple` schedule at Krea's own shift it ends on sigmas 0.18 and 0.06 instead of
+/// jumping from 0.31 to clean, so the last steps go to fine detail.
+pub const KREA_DETAIL_SCHEDULE: &str = "krea-detail";
+/// The kit's step count under that schedule.
+pub const KREA_DETAIL_STEPS: u32 = 9;
+
+/// The schedule a text-to-image run of `template` asks for under `quality` (`None`: the
+/// template's own): Krea 2 Turbo under `best` and `balanced` runs [`KREA_DETAIL_SCHEDULE`].
+pub fn image_quality_schedule(template: &str, quality: &str) -> Option<&'static str> {
+    match (template, quality) {
+        ("krea2-turbo/image", "best" | "balanced") => Some(KREA_DETAIL_SCHEDULE),
         _ => None,
     }
 }
@@ -2481,15 +2484,31 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     };
     let Common { template, prompt, mut negative, seed, mut steps, mut guidance, models, name } =
         plan_common(s, IMAGE, p, &default_template, Task::Image, &default_model)?;
-    // Preferences › Quality, when the request leaves the steps and guidance to the template.
+    // `schedule`: "simple" (the template's) or "krea-detail" (Krea 2 Turbo only); absent, the
+    // Quality's.
+    let asked_schedule = match opt_str(IMAGE, p, "schedule", 20)? {
+        None => None,
+        Some("simple") => Some(None),
+        Some(KREA_DETAIL_SCHEDULE) if template.meta.id == "krea2-turbo/image" => Some(Some(KREA_DETAIL_SCHEDULE)),
+        Some(other) => {
+            return Err(bad(IMAGE, format!("`schedule` must be \"simple\" or, on krea2-turbo/image, \"{KREA_DETAIL_SCHEDULE}\" (got `{other}`)")));
+        }
+    };
+    let schedule = asked_schedule.unwrap_or_else(|| image_quality_schedule(&template.meta.id, quality(s)));
+    // Preferences › Quality, when the request leaves the steps and guidance to the template
+    // (and, for Krea 2, does not ask for its plain schedule).
     if steps == 0
         && guidance == 0.0
+        && !(asked_schedule == Some(None) && template.meta.id == "krea2-turbo/image")
         && let Some((st, g)) = image_quality_tuning(&template.meta.id, quality(s))
     {
         (steps, guidance) = (st, g);
         if g > 1.0 && negative.trim().is_empty() {
             negative = BEST_IMAGE_NEGATIVE.to_string();
         }
+    }
+    if schedule == Some(KREA_DETAIL_SCHEDULE) && steps == 0 {
+        steps = KREA_DETAIL_STEPS;
     }
     crate::generate_refs::check_count(IMAGE, &template, ref_specs.len())?;
     let variations = parse_variations(IMAGE, p)?;
@@ -2540,6 +2559,7 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         seed,
         steps,
         guidance,
+        schedule,
         name,
         models,
         width,
@@ -2587,6 +2607,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         seed,
         steps,
         guidance,
+        schedule,
         name,
         models,
         width,
@@ -2598,8 +2619,11 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
     } = plan;
     let label = name.clone();
     let tid = template.meta.id.clone();
-    let params: BTreeMap<String, Value> =
+    let mut params: BTreeMap<String, Value> =
         Tuning { loras, ..Tuning::default() }.loras_param().map(|l| BTreeMap::from([("loras".to_string(), l)])).unwrap_or_default();
+    if let Some(schedule) = schedule {
+        params.insert("schedule".to_string(), Value::String(schedule.to_string()));
+    }
     // What the result layer remembers (`generate.similar` re-runs it).
     let info = GenerativeInfo {
         command: IMAGE.to_string(),
@@ -3981,6 +4005,8 @@ pub(crate) const OUTPAINT_TURBO_TEMPLATE: &str = "qwen-2.1/outpaint-turbo";
 /// an edit of the whole canvas, 187 s as this fill, the seam the same.
 pub(crate) const KLEIN_OUTPAINT_LORA: &str = "flux-3-image-klein-outpaint.safetensors";
 const KLEIN_OUTPAINT_PIXELS: u64 = 589_824;
+/// On CUDA, about 1 MP: the size AusBoss's Klein Outpaint workflow pads to.
+const KLEIN_CUDA_OUTPAINT_PIXELS: u64 = 1_048_576;
 /// The 2.1 edit the plain Outpaint LoRA runs on.
 const OUTPAINT_EDIT_TEMPLATE: &str = "qwen-2.1/edit";
 /// The picture's share of the grown canvas below which the v1 file goes first.
@@ -4008,6 +4034,11 @@ fn outpaint_lora(s: &Session, (ow, oh): (u32, u32), (nw, nh): (u32, u32)) -> Opt
         return None;
     }
     let has = |f: &str| std::path::Path::new(&root).join("loras").join(f).is_file();
+    // An 8 to 16 GB card with FLUX 3 Image Klein: its fill with the Klein Outpaint LoRA, as on a
+    // Mac (Qwen-Image-2.1's 14 GB DiT does not fit beside its encoder there).
+    if crate::memory_profile::cuda_klein(s) && has(KLEIN_OUTPAINT_LORA) {
+        return Some((KLEIN_FILL_TEMPLATE, Some(KLEIN_OUTPAINT_LORA), KLEIN_CUDA_OUTPAINT_PIXELS));
+    }
     if s.prefs().integrations.allow_research_models {
         let share = (f64::from(ow) * f64::from(oh)) / (f64::from(nw) * f64::from(nh)).max(1.0);
         if let Some(route) = pick_outpaint_lora(has, share, quality(s) == "fast") {
@@ -4602,6 +4633,9 @@ fn edit_enabled(s: &Session) -> std::result::Result<(), String> {
 /// `generate.edit`: the whole picture goes to an edit model with an instruction; the result is
 /// a layer over the canvas, masked to the selection when there is one.
 fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
+    // `swap`: the BFS face or body swap (its template, LoRA and prompt), see `generate_swap.rs`.
+    let swapped = swap::apply(s, p)?;
+    let p = swapped.as_ref().unwrap_or(p);
     let default_model = s.prefs().integrations.default_edit_model.clone();
     let mut requested = opt_str(EDIT, p, "template", 200)?.map(str::to_string).unwrap_or_else(|| AUTO_TEMPLATE.to_string());
     let mut auto = requested == AUTO_TEMPLATE;
@@ -4644,8 +4678,10 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let backend = backend(s)?;
     let FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow, erase, tuning } = plan;
     let label = name.clone();
-    // `wholePicture` (Generative Angles): the selection does not confine the result.
-    let whole = opt_bool(EDIT, p, "wholePicture", false)?;
+    // `wholePicture` (Generative Angles, and a swap, whose rewrite sets it): the selection does
+    // not confine the result.
+    let swapped = swap::apply(s, p)?;
+    let whole = opt_bool(EDIT, swapped.as_ref().unwrap_or(p), "wholePicture", false)?;
     // An edit re-renders the whole picture; what shows of it is its subject (Select Subject on
     // the result), so a new thing (a Pikachu for the duck) sits in the untouched original. Not
     // for Angles, whose camera move is the whole picture; no detector, no subject mask.
@@ -4716,23 +4752,7 @@ fn mask_to_subject(doc: &mut Document, id: LayerId, rect: Rect, selected: bool, 
     let mut px = vec![[0u8; 4]; rect.width() as usize * rect.height() as usize];
     surf.read_rgba8_into(rect, &mut px);
     let picture: Vec<u8> = px.into_iter().flatten().collect();
-    let mut subject: Option<Vec<f32>> = None;
-    for prompt in crate::select_ml_cmds::SUBJECT_FALLBACKS.iter().take(2) {
-        ctx.check()?;
-        let found = finder.find_in(&picture, rect, prompt, SUBJECT_MASK_AT_MOST, ctx)?;
-        if found.is_empty() {
-            continue;
-        }
-        let mut joined = vec![0.0f32; picture.len() / 4];
-        for (cov, ..) in &found {
-            for (j, c) in joined.iter_mut().zip(cov) {
-                *j = j.max(*c);
-            }
-        }
-        subject = Some(joined);
-        break;
-    }
-    let Some(subject) = subject else { return Ok(()) };
+    let Some(subject) = subject_in(&picture, rect, finder, ctx)? else { return Ok(()) };
     let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     let shown: Vec<f32> = match layer.mask.as_ref().filter(|_| selected) {
         Some(m) => m.surface.read_region(rect).iter().zip(&subject).map(|(a, b)| a.max(*b)).collect(),
@@ -4742,6 +4762,26 @@ fn mask_to_subject(doc: &mut Document, id: LayerId, rect: Rect, selected: bool, 
     surface.write_region(rect, &shown);
     layer.mask = Some(LayerMask { surface, enabled: true, linked: true, density: 1.0, feather: 0.0 });
     Ok(())
+}
+
+/// The subjects (at most [`SUBJECT_MASK_AT_MOST`]) Select Subject finds in `picture` (RGBA8 of
+/// `rect`), joined into one coverage; None when nothing is found.
+fn subject_in(picture: &[u8], rect: Rect, finder: &crate::select_ml_cmds::SubjectFinder, ctx: &JobCtx) -> Result<Option<Vec<f32>>> {
+    for prompt in crate::select_ml_cmds::SUBJECT_FALLBACKS.iter().take(2) {
+        ctx.check()?;
+        let found = finder.find_in(picture, rect, prompt, SUBJECT_MASK_AT_MOST, ctx)?;
+        if found.is_empty() {
+            continue;
+        }
+        let mut joined = vec![0.0f32; picture.len() / 4];
+        for (cov, ..) in &found {
+            for (j, c) in joined.iter_mut().zip(cov) {
+                *j = j.max(*c);
+            }
+        }
+        return Ok(Some(joined));
+    }
+    Ok(None)
 }
 
 /// How many subjects an edit result's mask may join.
@@ -4765,11 +4805,6 @@ fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
     let camera = words.trim_start_matches("<sks> ").to_string();
     let template = angles_template(s);
     let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "name": format!("Angles: {camera}")});
-    if template != ANGLES_TEMPLATE {
-        // The instruction is already the camera move; the rewriter would only blur it.
-        q["prompt"] = json!(angle_instruction(rotation, tilt, zoom).unwrap_or_default());
-        q["enhance"] = json!(false);
-    }
     for key in ["seed", "variations"] {
         if let Some(v) = p.get(key) {
             q[key] = v.clone();
@@ -5260,7 +5295,7 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
             "defaults": {"steps": m.defaults.steps, "guidance": m.defaults.guidance},
             "needsImage": m.needs_image, "needsMask": m.needs_mask, "models": slots,
             "creator": m.creator, "description": m.description, "badges": m.badges, "references": m.references,
-            "sizes": m.sizes, "counts": m.counts, "estimatedSeconds": m.estimated_seconds, "pages": m.pages, "eta": eta,
+            "sizes": m.sizes, "counts": m.counts, "estimatedSeconds": m.estimate(), "pages": m.pages, "eta": eta,
         }));
     }
     // What `auto` would pick right now (needs the server's model lists).
@@ -5497,7 +5532,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generate Image…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"schedule":{"simple"|"krea-detail"?=Preferences › Quality: krea-detail (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: image_enabled,
             run: run_image,
             journal: true,
@@ -5519,7 +5554,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; a background job; needs the native worker)"#,
+            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"swap":{str?=none},"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; swap = put the head ("head", also "face") or the whole person ("body") from the first reference onto the person in the picture, with the BFS LoRAs for Qwen-Image-2.1 (MIT): runs qwen-2.1/edit unless a template is named, adds the LoRA (bfs_head_v1.1_qwen_2.1 or bfs_body_swap_v1.0_qwen_2.1, from the loras folder), sends the LoRA author's prompt with any typed text after it, Enhance off, and keeps the whole re-rendered picture (wholePicture: a subject mask left the old person's outline); a background job; needs the native worker)"#,
             enabled: edit_enabled,
             run: run_edit,
             journal: true,
@@ -5686,6 +5721,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[path = "generate_loras.rs"]
 pub(crate) mod loras;
+
+#[path = "generate_swap.rs"]
+pub mod swap;
 
 #[cfg(test)]
 #[path = "generate_cmds_tests.rs"]

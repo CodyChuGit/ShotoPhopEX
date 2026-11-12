@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "id": "p-h3-image/image",
+    "name": "Generate Image (P-H3 Image)",
+    "family": "p-h3-image",
+    "task": "image",
+    "license": "community",
+    "licenseNote": "MiniMax H3 Community License (MiniMax, 2026), PrunaAI's P-H3-Image repack under the same terms: the grant excludes the EU, the UK, South Korea and the USA; over USD 1M yearly revenue or a hosted service needs MiniMax's OK; show \"Powered by MiniMax H3\"; outputs may not train other models. Bring your own files. The app ships no weights.",
+    "needsImage": false,
+    "needsMask": false,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "p-h3-image_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "p-h3-image_text_encoder_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "p-h3-image_vae_bf16.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native gn-diffusion p-h3-image/image, qwen-image-rs h3): PrunaAI's P-H3-Image (the 33B MiniMax H3 DiT sampling a still as one video latent frame and two audio latents), its Qwen3-VL-4B encoder read at hidden states 13/19/25/31/36 through the text connector, PrunaAI's 8 fixed sigmas at shift 1, Euler, no CFG, the tiled ViT VAE decode. Sides multiples of 32; the model's own default is 2912x2912 (8.5 MP).",
+    "creator": "MiniMax · PrunaAI",
+    "description": "Large open model for detailed pictures up to 8 MP (5090 class)",
+    "badges": [
+      "text"
+    ],
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 1024,
+      "max": 3904,
+      "step": 32
+    },
+    "estimatedSeconds": {
+      "base": 3,
+      "perMegapixel": 1.5
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
+  }
+}

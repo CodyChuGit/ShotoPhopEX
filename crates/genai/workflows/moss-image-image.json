@@ -9,7 +9,7 @@
     "needsImage": false,
     "needsMask": false,
     "defaults": {
-      "steps": 50,
+      "steps": 20,
       "guidance": 3.0
     },
     "models": [
@@ -29,7 +29,7 @@
         "default": "flux2-vae_small.safetensors"
       }
     ],
-    "notes": "Runs natively (genai-native qir::moss) with the official pipeline's settings: Qwen3.5-9B's last hidden state for the prompt in its chat template with thinking on, 50 Euler steps on the shift-5 schedule snapped to the 1000-step training grid, CFG 3 whose negative branch is the empty prompt with DiT block 22 skipped, the FLUX.2 small decoder. Files from Comfy-Org/MOSS-Image (each may sit one subfolder deep) and Qwen3.5's tokenizer.json in text_encoders/qwen35_tokenizer/.",
+    "notes": "Runs natively (genai-native qir::moss) with a realism recipe after RaymondLuxuryYacht's MOSS realism workflow (Civitai 3035895): Qwen3.5-9B's last hidden state for the prompt in its chat template with thinking on, 20 res_2s steps (RES4LYF's two-stage exponential sampler with eta 0.5 noise) on the shift-5 schedule, plain CFG 3 against the negative (\"blur, smooth, anime, render, cartoon, 3d\" when none is typed), the FLUX.2 small decoder. Files from Comfy-Org/MOSS-Image (each may sit one subfolder deep) and Qwen3.5's tokenizer.json in text_encoders/qwen35_tokenizer/.",
     "creator": "OpenMOSS",
     "description": "Text to image with strong text rendering and layouts",
     "badges": [
@@ -51,7 +51,7 @@
     },
     "estimatedSeconds": {
       "base": 2,
-      "perMegapixel": 11
+      "perMegapixel": 8
     },
     "pages": [
       "image"

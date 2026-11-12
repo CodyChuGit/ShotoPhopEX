@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/photocraft", "apps/photocraft-cli", "xtask"]
 # The native engine (genai-native/) is its own workspace: the app uses its crates by path.
-exclude = ["genai-native"]
+exclude = ["genai-native", "vendor/craft-update"]
 
 [workspace.package]
 version = "0.1.1"
@@ -212,3 +212,8 @@ hayro = { git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e6213
 hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e62138fc2438d2734523b302840b45d" }
 hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e62138fc2438d2734523b302840b45d" }
 hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e62138fc2438d2734523b302840b45d" }
+
+# ShotoPhopEX: craft-update with one change so the in-app updater finds release files named
+# shotophopex-<ver>-<os>-<arch> (see vendor/craft-update/README.md).
+[patch."https://github.com/storytold/craft-libs"]
+craft-update = { path = "vendor/craft-update" }

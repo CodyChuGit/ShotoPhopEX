@@ -29,6 +29,8 @@ enum QLinear {
     Full(Linear),
     Quant(QMatMul),
     Fp8(crate::fp8::Fp8Linear),
+    /// A ComfyUI file's linear through [`crate::moss::weights::Weights`] (dense, or INT8 ConvRot).
+    Comfy(crate::moss::weights::QLinear),
 }
 
 impl QLinear {
@@ -50,6 +52,12 @@ impl QLinear {
             QLinear::Full(l) => Ok(l.forward(x)?),
             QLinear::Quant(q) => Ok(q.forward(x)?),
             QLinear::Fp8(l) => l.forward(x),
+            QLinear::Comfy(l) => {
+                let (b, s, k) = x.dims3()?;
+                let y = l.forward(&x.reshape((b * s, k))?)?.to_dtype(x.dtype())?;
+                let n = y.dim(1)?;
+                Ok(y.reshape((b, s, n))?)
+            }
         }
     }
 }
@@ -304,6 +312,10 @@ impl DecoderLayer {
         self.finish(xs, residual)
     }
 
+    fn input_ln_dtype(&self) -> Result<DType> {
+        Ok(self.input_ln.clone().into_inner().weight().dtype())
+    }
+
     fn finish(&self, attn: Tensor, residual: &Tensor) -> Result<Tensor> {
         let xs = (attn + residual)?;
         let residual = &xs;
@@ -337,6 +349,9 @@ impl KvCache {
 /// Qwen3-VL text encoder producing pre-final-norm hidden states.
 pub struct QwenTextEncoder {
     embed_tokens: Embedding,
+    /// An INT8 ConvRot token table (ComfyUI's quantized encoders), gathered row by row on the
+    /// host instead of `embed_tokens`.
+    embed_int8: Option<crate::comfy_int8::Prequantized>,
     layers: Vec<DecoderLayer>,
     rope: RotaryEmbedding,
     device: Device,
@@ -361,7 +376,7 @@ impl QwenTextEncoder {
         for i in 0..cfg.num_layers {
             layers.push(DecoderLayer::load(cfg, quant, vb_l.pp(i))?);
         }
-        Ok(Self { embed_tokens, layers, rope, device: vb.device().clone() })
+        Ok(Self { embed_tokens, embed_int8: None, layers, rope, device: vb.device().clone() })
     }
 
     /// Load from a pre-quantized GGUF (written by `prequantize-text`): linears
@@ -408,7 +423,51 @@ impl QwenTextEncoder {
             };
             layers.push(DecoderLayer { attn, mlp, input_ln: rms(h, &vb.pp("input_layernorm"))?, post_attn_ln: rms(h, &vb.pp("post_attention_layernorm"))? });
         }
-        Ok(Self { embed_tokens, layers, rope, device: dev })
+        Ok(Self { embed_tokens, embed_int8: None, layers, rope, device: dev })
+    }
+
+    /// Load from a ComfyUI file through [`crate::moss::weights::Weights`] (plain bf16, or INT8
+    /// ConvRot linears and token table), the language model at `root` (`model.language_model`
+    /// in ComfyUI's Qwen3-VL repacks). Returns the encoder and its final norm.
+    pub fn load_weights(cfg: &TextConfig, w: &crate::moss::weights::Weights, root: &str) -> Result<(Self, RmsNorm)> {
+        let dev = w.device().clone();
+        let dt = w.dtype();
+        let rms = |name: &str| -> Result<RmsNorm> { Ok(RmsNorm::new(w.get(&format!("{name}.weight"))?, cfg.rms_norm_eps)) };
+        let lin = |name: &str| -> Result<QLinear> { Ok(QLinear::Comfy(w.linear(name)?)) };
+        let embed = format!("{root}.embed_tokens");
+        let (embed_tokens, embed_int8) = if w.is_quantized(&embed) {
+            // a one-row placeholder: the rows come from the INT8 table
+            (Embedding::new(Tensor::zeros((1, cfg.hidden_size), dt, &Device::Cpu)?, cfg.hidden_size), Some(w.prequantized(&embed)?))
+        } else {
+            (Embedding::new(w.get(&format!("{embed}.weight"))?.to_device(&Device::Cpu)?, cfg.hidden_size), None)
+        };
+        let (nh, nkv, hd) = (cfg.num_heads, cfg.num_kv_heads, cfg.head_dim);
+        let mut layers = Vec::with_capacity(cfg.num_layers);
+        for i in 0..cfg.num_layers {
+            let p = format!("{root}.layers.{i}");
+            let attn = Attention {
+                q_proj: lin(&format!("{p}.self_attn.q_proj"))?,
+                k_proj: lin(&format!("{p}.self_attn.k_proj"))?,
+                v_proj: lin(&format!("{p}.self_attn.v_proj"))?,
+                o_proj: lin(&format!("{p}.self_attn.o_proj"))?,
+                q_norm: rms(&format!("{p}.self_attn.q_norm"))?,
+                k_norm: rms(&format!("{p}.self_attn.k_norm"))?,
+                num_heads: nh,
+                num_kv_heads: nkv,
+                head_dim: hd,
+                groups: nh / nkv,
+                scale: 1.0 / (hd as f64).sqrt(),
+            };
+            let mlp = Mlp { gate: lin(&format!("{p}.mlp.gate_proj"))?, up: lin(&format!("{p}.mlp.up_proj"))?, down: lin(&format!("{p}.mlp.down_proj"))? };
+            layers.push(DecoderLayer {
+                attn,
+                mlp,
+                input_ln: rms(&format!("{p}.input_layernorm"))?,
+                post_attn_ln: rms(&format!("{p}.post_attention_layernorm"))?,
+            });
+        }
+        let norm = rms(&format!("{root}.norm"))?;
+        Ok((Self { embed_tokens, embed_int8, layers, rope: RotaryEmbedding::new(cfg, &dev, dt)?, device: dev }, norm))
     }
 
     /// Keep the vocabulary on the host; only the requested rows need GPU memory.
@@ -420,6 +479,15 @@ impl QwenTextEncoder {
     }
 
     fn embed(&self, ids: &Tensor) -> Result<Tensor> {
+        if let Some(table) = &self.embed_int8 {
+            let dims = ids.dims().to_vec();
+            let flat = ids.flatten_all()?.to_device(&Device::Cpu)?.to_vec1::<u32>()?;
+            let rows = table.gather_cpu(&flat)?;
+            let mut shape = dims;
+            shape.push(rows.dim(1)?);
+            let dt = self.layers.first().map_or(Ok(DType::BF16), |l| l.input_ln_dtype())?;
+            return Ok(rows.reshape(shape)?.to_dtype(dt)?.to_device(&self.device)?);
+        }
         let ids = ids.to_device(self.embed_tokens.embeddings().device())?;
         Ok(self.embed_tokens.forward(&ids)?.to_device(&self.device)?)
     }
@@ -463,6 +531,56 @@ impl QwenTextEncoder {
         for layer in self.layers.iter().take(last) {
             xs = layer.forward(&xs, &mask, &rope)?;
             states.push(xs.clone());
+        }
+        taps.iter().map(|t| states.get((*t).min(last)).cloned().ok_or_else(|| anyhow::anyhow!("tap {t} past the layers"))).collect()
+    }
+
+    /// FLUX 3 Image Klein's reading of a prompt (BFL's reference, `gn-mlx`'s Klein): `ids` run
+    /// causally, plus `pads` pad rows. The reference masks the pads as keys and puts each at
+    /// position 1, so every pad row sees exactly the prompt's tokens from the same place and
+    /// comes out the same: one pad row (`pad_id`, position 1, attending to the prompt and not to
+    /// itself) is run and repeated. The hidden states at `taps` (as [`Self::forward_taps`]),
+    /// each `(ids.len() + pads, hidden)`.
+    pub fn forward_taps_padded(&self, ids: &[u32], pad_id: u32, pads: usize, taps: &[usize]) -> Result<Vec<Tensor>> {
+        let real = ids.len();
+        anyhow::ensure!(real > 0, "an empty prompt");
+        let extra = usize::from(pads > 0);
+        let s = real + extra;
+        let mut all = ids.to_vec();
+        if extra == 1 {
+            all.push(pad_id);
+        }
+        let input = Tensor::from_vec(all, (1, s), &self.device)?;
+        let mut xs = self.embed(&input)?;
+        let mut mask = vec![0f32; s * s];
+        for i in 0..s {
+            for j in 0..s {
+                let blocked = if i < real { j > i } else { j >= real };
+                if blocked {
+                    mask[i * s + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let mask = Tensor::from_vec(mask, (1, 1, s, s), &self.device)?.to_dtype(xs.dtype())?;
+        let mut p: Vec<f32> = (0..real).map(|i| i as f32).collect();
+        if extra == 1 {
+            p.push(1.0);
+        }
+        let rope = self.rope.tables(&[p.clone(), p.clone(), p])?;
+        let last = taps.iter().copied().max().unwrap_or(0).min(self.layers.len());
+        let mut states: Vec<Tensor> = Vec::with_capacity(last + 1);
+        let expand = |x: &Tensor| -> Result<Tensor> {
+            if extra == 0 {
+                return Ok(x.clone());
+            }
+            let (_, _, h) = x.dims3()?;
+            let pad = x.narrow(1, real, 1)?.broadcast_as((1, pads, h))?;
+            Ok(Tensor::cat(&[&x.narrow(1, 0, real)?, &pad], 1)?)
+        };
+        states.push(expand(&xs)?);
+        for layer in self.layers.iter().take(last) {
+            xs = layer.forward(&xs, &mask, &rope)?;
+            states.push(expand(&xs)?);
         }
         taps.iter().map(|t| states.get((*t).min(last)).cloned().ok_or_else(|| anyhow::anyhow!("tap {t} past the layers"))).collect()
     }

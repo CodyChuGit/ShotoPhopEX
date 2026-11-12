@@ -229,6 +229,34 @@ mod tests {
         (app, calls, sender)
     }
 
+    #[test]
+    fn the_update_check_finds_shotophopex_and_older_photocraft_release_files() {
+        use craft_update::{Arch, Os, PackageKind, Platform, pick_asset, release::Asset};
+        let stems: Vec<&str> = crate::UPDATE_APP.stems().collect();
+        let release = |names: &[&str]| craft_update::release::Release {
+            assets: names.iter().map(|n| Asset { name: (*n).into(), size: 1, url: format!("https://x/{n}"), sha256: None }).collect(),
+            ..Default::default()
+        };
+        let pick = |r: &craft_update::release::Release, os, arch, kind| pick_asset(r, &stems, Platform { os, arch }, &[kind]).map(|(a, _)| a.name.clone());
+        let new = release(&[
+            "shotophopex-0.1.2-windows-x64.msi",
+            "shotophopex-0.1.2-windows-x64-portable.zip",
+            "shotophopex-0.1.2-windows-x64.spdx.json",
+            "shotophopex-0.1.2-linux-x86_64.tar.gz",
+            "shotophopex-0.1.2-macos-aarch64.dmg",
+            "shotophopex-cli-0.1.2-macos-aarch64.zip",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(pick(&new, Os::Windows, Arch::X64, PackageKind::Msi).as_deref(), Some("shotophopex-0.1.2-windows-x64.msi"));
+        assert_eq!(pick(&new, Os::Windows, Arch::X64, PackageKind::PortableZip).as_deref(), Some("shotophopex-0.1.2-windows-x64-portable.zip"));
+        assert_eq!(pick(&new, Os::Linux, Arch::X64, PackageKind::TarGz).as_deref(), Some("shotophopex-0.1.2-linux-x86_64.tar.gz"));
+        assert_eq!(pick(&new, Os::MacOs, Arch::Arm64, PackageKind::Dmg).as_deref(), Some("shotophopex-0.1.2-macos-aarch64.dmg"));
+        // Releases up to 0.1.1 were named photocraft-*.
+        let old = release(&["photocraft-0.1.1-windows-x64.msi", "photocraft-0.1.1-macos-aarch64.dmg"]);
+        assert_eq!(pick(&old, Os::Windows, Arch::X64, PackageKind::Msi).as_deref(), Some("photocraft-0.1.1-windows-x64.msi"));
+        assert_eq!(pick(&old, Os::MacOs, Arch::Arm64, PackageKind::Dmg).as_deref(), Some("photocraft-0.1.1-macos-aarch64.dmg"));
+    }
+
     fn at(app: &mut PhotocraftApp, ctx: &egui::Context, time: f64) {
         let mut output = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| tick(app, ui.ctx()));
         output.textures_delta.clear();

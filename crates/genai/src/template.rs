@@ -164,6 +164,10 @@ pub struct Meta {
     pub counts: Counts,
     #[serde(default)]
     pub estimated_seconds: Estimate,
+    /// The estimate off a Mac (CUDA), for a template whose `estimatedSeconds` were measured on
+    /// one (FLUX 3 Image Klein: minutes on a 16 GB M1, seconds on an RTX card).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_seconds_cuda: Option<Estimate>,
     /// The Generate panel pages that offer this template: `image`, `fill`, `edit`, `expand`,
     /// `matte`, `split`, `select`, `enhance`.
     #[serde(default)]
@@ -171,11 +175,19 @@ pub struct Meta {
 }
 
 impl Meta {
+    /// The estimate for this machine: `estimatedSecondsCuda` where given and not on a Mac.
+    pub fn estimate(&self) -> &Estimate {
+        match &self.estimated_seconds_cuda {
+            Some(c) if !cfg!(target_os = "macos") => c,
+            _ => &self.estimated_seconds,
+        }
+    }
+
     /// Expected seconds for `count` variations at `width × height` with `references` reference
     /// images on a warm server (0 when the template has no estimate). One formula for the UI,
     /// the CLI and scripts.
     pub fn estimate_seconds(&self, width: u32, height: u32, count: u32, references: u32) -> f32 {
-        let e = &self.estimated_seconds;
+        let e = self.estimate();
         let mp = f64::from(width) * f64::from(height) / 1_000_000.0;
         let free = u32::from(!self.needs_image && self.references.min > 0);
         let extra = f64::from(references.saturating_sub(free));
@@ -234,6 +246,8 @@ const BUILTIN: &[&str] = &[
     include_str!("../workflows/moss-image-turbo.json"),
     include_str!("../workflows/moss-image-edit.json"),
     include_str!("../workflows/moss-image-edit-turbo.json"),
+    include_str!("../workflows/p-h3-image-image.json"),
+    include_str!("../workflows/p-h3-image-edit.json"),
 ];
 
 /// Verbs a prompt can open with when it is already an edit instruction ("remove the car",

@@ -38,12 +38,15 @@ pub struct Krea2Options {
     /// Where the prequantized ConvRot DiT is cached (the quantisation is 11 s of each cold
     /// start otherwise).
     pub cache: CacheSpec,
+    /// Load ComfyUI's NVFP4 DiT ([`crate::comfy_files::krea2_nvfp4`]) instead of the fp8 one
+    /// when it is beside it (a ComfyUI models folder only; ignored otherwise).
+    pub nvfp4: bool,
 }
 
 impl Krea2Options {
     /// ConvRot on when the build has it, the cache where the environment says.
     pub fn defaults() -> Self {
-        Self { convrot: cfg!(feature = "convrot"), cache: CacheSpec::from_cli(None, false, false) }
+        Self { convrot: cfg!(feature = "convrot"), cache: CacheSpec::from_cli(None, false, false), nvfp4: false }
     }
 }
 
@@ -118,6 +121,8 @@ pub struct Krea2Pipeline {
     /// The encoder's final norm and language-model head (Qwen3-VL-4B ties it to the token
     /// embedding), loaded on the first [`Self::chat`].
     head: std::sync::Mutex<Option<crate::pipeline::ChatHead>>,
+    /// The DiT is the NVFP4 file.
+    nvfp4: bool,
 }
 
 impl Krea2Pipeline {
@@ -133,8 +138,11 @@ impl Krea2Pipeline {
         let dtype = if matches!(dev, Device::Cuda(_)) { DType::BF16 } else { DType::F32 };
         let tok = files.tokenizer()?;
 
-        // ComfyUI's fp8_scaled file as it is: 13 GB, run with its own fp8 recipe (`crate::fp8`).
-        let raw = files.dit.clone();
+        // ComfyUI's fp8_scaled file as it is: 13 GB, run with its own fp8 recipe (`crate::fp8`);
+        // or, asked for and on disk, its NVFP4 file (7.2 GB, `crate::nvfp4`).
+        let nvfp4_file = if opts.nvfp4 && !is_snapshot(model) { crate::comfy_files::krea2_nvfp4(model) } else { None };
+        let nvfp4 = nvfp4_file.is_some();
+        let raw = nvfp4_file.map_or_else(|| files.dit.clone(), |f| vec![f]);
         let fp8 = crate::fp8::Fp8Plan::from_files(&raw)?;
         let fp8_text = crate::fp8::Fp8Plan::from_files(&files.text)?.is_some();
         anyhow::ensure!(
@@ -164,6 +172,7 @@ impl Krea2Pipeline {
             load_s = t0.elapsed().as_secs_f32(),
             convrot = opts.convrot && fp8.is_none(),
             fp8 = fp8.is_some(),
+            nvfp4,
             full_precision = fp8.as_ref().map_or(0, |p| p.full_precision.len()),
             "DiT loaded"
         );
@@ -187,7 +196,13 @@ impl Krea2Pipeline {
             style_vae: std::sync::Mutex::new(None),
             evict_te,
             head: std::sync::Mutex::new(None),
+            nvfp4,
         })
+    }
+
+    /// Whether the DiT is the NVFP4 file.
+    pub fn is_nvfp4(&self) -> bool {
+        self.nvfp4
     }
 
     pub fn is_cuda(&self) -> bool {
@@ -516,10 +531,17 @@ impl Krea2Pipeline {
             },
         )
         .map_err(anyhow::Error::msg)?;
+        // The detail recipe swaps in the beta schedule over AuraFlow shift 1.25 (style keeps its own).
+        let schedule = if req.schedule == crate::pipeline::Schedule::KreaDetail && !style {
+            crate::comfy::FlowSchedule::beta(req.steps, crate::comfy::FlowSchedule::aura_flow(1.25)).map_err(anyhow::Error::msg)?
+        } else {
+            schedule
+        };
+        let steps = schedule.steps();
         let noise = crate::comfy::torch_randn(req.seed, wan_vae::LATENT_CHANNELS * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, wan_vae::LATENT_CHANNELS, lh, lw), &self.dev)?;
         let t0 = Instant::now();
-        for i in 0..req.steps {
+        for i in 0..steps {
             check(cancel)?;
             let input = x.to_dtype(self.dtype)?;
             let v = if style {
@@ -535,15 +557,15 @@ impl Krea2Pipeline {
             }
             .to_dtype(DType::F32)?;
             if let Some(p) = preview.as_deref_mut() {
-                if p.wants(i + 1, req.steps) {
+                if p.wants(i + 1, steps) {
                     match (&v * f64::from(schedule.sigma(i))).and_then(|sv| &x - sv) {
-                        Ok(x0) => p.show(i + 1, req.steps, &x0),
+                        Ok(x0) => p.show(i + 1, steps, &x0),
                         Err(e) => tracing::warn!(error = %e, "preview skipped"),
                     }
                 }
             }
             x = (x + (v * f64::from(schedule.dt(i)))?)?;
-            progress(0.05 + 0.85 * (i + 1) as f32 / req.steps as f32, "Sampling");
+            progress(0.05 + 0.85 * (i + 1) as f32 / steps as f32, "Sampling");
         }
         self.dev.synchronize()?;
         timings.denoise_s = t0.elapsed().as_secs_f32();
@@ -556,15 +578,7 @@ impl Krea2Pipeline {
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, rgba) = wan_vae::to_rgba_u8(&img)?;
-        tracing::info!(
-            encode_s = timings.encode_s,
-            denoise_s = timings.denoise_s,
-            decode_s = timings.decode_s,
-            width = pw,
-            height = ph,
-            steps = req.steps,
-            "timings"
-        );
+        tracing::info!(encode_s = timings.encode_s, denoise_s = timings.denoise_s, decode_s = timings.decode_s, width = pw, height = ph, steps, "timings");
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }

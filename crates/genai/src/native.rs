@@ -47,6 +47,9 @@ pub struct NativeBackend {
     warm_cancel: AtomicBool,
     /// [`PreviewMode`] as its index in [`PREVIEW_MODES`], read at each run.
     preview: AtomicU8,
+    /// Ask every run (warm-ups too) for 4-bit weights where the card and the files allow
+    /// (`params.precision: "nvfp4"`; the worker decides): the Fast and Balanced qualities.
+    nvfp4: AtomicBool,
 }
 
 /// What [`NativeBackend::warm_up`] did.
@@ -196,6 +199,7 @@ impl NativeBackend {
             timeout_ms: AtomicU64::new(600_000),
             warm_cancel: AtomicBool::new(false),
             preview: AtomicU8::new(0),
+            nvfp4: AtomicBool::new(false),
         }
     }
 
@@ -244,6 +248,12 @@ impl NativeBackend {
     pub fn set_preview(&self, mode: PreviewMode) {
         let i = PREVIEW_MODES.iter().position(|m| *m == mode).unwrap_or(0);
         self.preview.store(i as u8, Ordering::Relaxed);
+    }
+
+    /// Ask the next runs for NVFP4 weights (Krea 2's 4-bit file on an RTX 50-series card; the
+    /// worker ignores it on other cards or without the file).
+    pub fn set_nvfp4(&self, on: bool) {
+        self.nvfp4.store(on, Ordering::Relaxed);
     }
 
     /// The preview mode the next run asks for.
@@ -513,6 +523,9 @@ impl GenerativeBackend for NativeBackend {
         let (width, height) = req.size.unwrap_or((0, 0));
         let mut params = req.params.clone();
         params.insert("models".into(), serde_json::to_value(tpl.model_bindings(&req.models)?).map_err(|e| Error::Request(e.to_string()))?);
+        if self.nvfp4.load(Ordering::Relaxed) && !params.contains_key("precision") {
+            params.insert("precision".into(), Value::String("nvfp4".into()));
+        }
         let rr = RunRequest {
             model: req.template.clone(),
             task: task_name(tpl.meta.task),

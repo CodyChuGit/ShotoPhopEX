@@ -1081,9 +1081,9 @@ fn angles_runs_the_multiple_angles_lora_and_the_auto_line_names_the_outpaint_exp
         p.integrations.allow_research_models = true;
         p.integrations.quality = "best".into();
     });
-    // Without the LoRA in loras/: the 2.1 instruction edit stands in; with it, 2511 + the LoRA,
-    // research opt-in or not.
-    assert_eq!(angles_template(&s), "qwen-2.1/edit");
+    // Always 2511 + the Multiple Angles LoRA: plain 2.1 never turned the camera, so it no longer
+    // stands in when the LoRA is missing (the window says what to download); research opt-in or not.
+    assert_eq!(angles_template(&s), ANGLES_TEMPLATE);
     std::fs::write(dir.path().join("loras").join(ANGLES_LORA), b"x").unwrap();
     assert_eq!(angles_template(&s), ANGLES_TEMPLATE);
     s.edit_prefs(|p| p.integrations.allow_research_models = false);

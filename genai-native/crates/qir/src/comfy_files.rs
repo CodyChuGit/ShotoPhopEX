@@ -43,6 +43,9 @@ const QWEN21_DIT: &[&str] = &["qwen_image_2.1_bf16.safetensors"];
 const QWEN21_TEXT: &[&str] = &["qwen3vl_8b_bf16.safetensors"];
 const QWEN21_VAE: &[&str] = &["qwen_image_2.1_vae_bf16.safetensors"];
 const KREA2_DIT: &[&str] = &["krea2_turbo_fp8_scaled.safetensors"];
+/// Comfy-Org's NVFP4 repack of the same DiT (7.2 GB): the Fast and Balanced qualities on an
+/// RTX 50-series card, beside the fp8 file ([`krea2_nvfp4`]).
+pub const KREA2_DIT_NVFP4: &str = "krea2_turbo_nvfp4.safetensors";
 const KREA2_TEXT: &[&str] = &["qwen3vl_4b_fp8_scaled.safetensors"];
 /// The Wan 2.1 VAE the native Krea 2 route was measured at parity with.
 const KREA2_VAE: &[&str] = &["wan_2.1_vae.safetensors"];
@@ -70,6 +73,11 @@ pub fn find_krea2(root: &Path) -> Option<Krea2Files> {
         vae: first(&root.join("vae"), KREA2_VAE)?,
         tokenizer: tokenizer_dir(root)?,
     })
+}
+
+/// Krea 2 Turbo's NVFP4 DiT under `root`, when it is there.
+pub fn krea2_nvfp4(root: &Path) -> Option<PathBuf> {
+    Some(root.join("diffusion_models").join(KREA2_DIT_NVFP4)).filter(|p| p.is_file())
 }
 
 /// The Qwen tokenizer's folder for a `models` root: a copy in `text_encoders/qwen25_tokenizer`,

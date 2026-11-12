@@ -179,9 +179,34 @@ fn target_root(s: &Session) -> Option<std::path::PathBuf> {
 }
 
 /// A file counts as installed when it is there at its full size (hashing tens of gigabytes on
-/// every look would take minutes; downloads are hashed as they finish).
+/// every look would take minutes; downloads are hashed as they finish). A ComfyUI models folder
+/// often keeps files a folder or two deeper (`diffusion_models/moss/…`), where the native engine
+/// finds them too, so the same name at the same size there counts.
 pub fn installed(root: &std::path::Path, f: &ModelFile) -> bool {
-    std::fs::metadata(path_of(root, f)).is_ok_and(|m| m.is_file() && m.len() == f.bytes)
+    let full = |p: &std::path::Path| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() == f.bytes);
+    if full(&path_of(root, f)) {
+        return true;
+    }
+    // Deeper down: under the file's top folder (`loras`), its listed subfolders and name
+    // (`moss-image-edit/adapter_model.safetensors`) one or two folders further in
+    // (`loras/moss-image/moss-image-edit/…`).
+    let rel = std::path::Path::new(&f.folder).join(&f.file);
+    let mut parts = rel.components();
+    let Some(top) = parts.next() else { return false };
+    in_subfolders(&root.join(top), parts.as_path(), 2, &full)
+}
+
+/// Whether a subfolder of `dir`, up to `depth` levels down, holds `rel` that `ok` accepts.
+fn in_subfolders(dir: &std::path::Path, rel: &std::path::Path, depth: u32, ok: &dyn Fn(&std::path::Path) -> bool) -> bool {
+    if depth == 0 || rel.as_os_str().is_empty() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    // `metadata` follows links, so a subfolder that is a junction or symlink to another drive counts.
+    entries.flatten().filter(|e| std::fs::metadata(e.path()).is_ok_and(|m| m.is_dir())).any(|e| {
+        let sub = e.path();
+        ok(&sub.join(rel)) || in_subfolders(&sub, rel, depth - 1, ok)
+    })
 }
 
 /// Bytes still to fetch for `f`: none when installed, else what a resumable `.part` lacks.
@@ -722,6 +747,38 @@ mod tests {
         std::fs::write(dir.join("loras").join("sub").join("x.safetensors"), b"abc").unwrap();
         assert!(installed(&dir, &f));
         assert_eq!(left(Some(&dir), &f), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_same_file_a_folder_or_two_deeper_counts_as_installed() {
+        let dir = std::env::temp_dir().join(format!("pc-packs-deep-{}", std::process::id()));
+        let f = ModelFile {
+            id: "t".into(),
+            name: "T".into(),
+            folder: "diffusion_models".into(),
+            file: "x.safetensors".into(),
+            bytes: 3,
+            sha256: "0".repeat(64),
+            url: "https://example.invalid/x".into(),
+            license: "apache-2.0".into(),
+            gated: false,
+        };
+        let deep = dir.join("diffusion_models").join("moss").join("int8");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("x.safetensors"), b"ab").unwrap();
+        assert!(!installed(&dir, &f), "a short file deeper down does not count");
+        std::fs::write(deep.join("x.safetensors"), b"abc").unwrap();
+        assert!(installed(&dir, &f), "two levels down at the full size");
+        let deeper = deep.join("one-more");
+        std::fs::create_dir_all(&deeper).unwrap();
+        std::fs::rename(deep.join("x.safetensors"), deeper.join("x.safetensors")).unwrap();
+        assert!(!installed(&dir, &f), "three levels down is too deep");
+        let g = ModelFile { folder: "loras/moss-image-edit".into(), file: "a.safetensors".into(), ..f.clone() };
+        let held = dir.join("loras").join("moss-image").join("moss-image-edit");
+        std::fs::create_dir_all(&held).unwrap();
+        std::fs::write(held.join("a.safetensors"), b"abc").unwrap();
+        assert!(installed(&dir, &g), "the listed subfolder one folder deeper under loras/");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

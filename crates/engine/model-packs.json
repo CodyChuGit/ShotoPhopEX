@@ -80,6 +80,14 @@
    "commercial": "yes",
    "sourceGated": false,
    "summary": "NVIDIA's proprietary licence for the CUDA runtime, cuBLAS and cuRAND libraries; not open source. Downloaded from NVIDIA."
+  },
+  {
+   "id": "mit",
+   "name": "MIT License",
+   "url": "https://opensource.org/license/mit",
+   "commercial": "yes",
+   "sourceGated": false,
+   "summary": "Permissive: use, modify and redistribute, including commercially; keep the copyright notice. The BFS author asks that face and body swaps be made only with the consent of the people shown."
   }
  ],
  "files": [
@@ -91,6 +99,16 @@
    "bytes": 13141730784,
    "sha256": "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1",
    "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_fp8_scaled.safetensors",
+   "license": "krea-2-community"
+  },
+  {
+   "id": "krea2-dit-nvfp4",
+   "name": "Krea 2 Turbo, 4-bit (RTX 50-series)",
+   "folder": "diffusion_models",
+   "file": "krea2_turbo_nvfp4.safetensors",
+   "bytes": 7673668448,
+   "sha256": "61527003b2d537055494d01bc8efe51d6e86e64192ba23e3721a5647231fe394",
+   "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_nvfp4.safetensors",
    "license": "krea-2-community"
   },
   {
@@ -364,6 +382,26 @@
    "license": "qwen-research"
   },
   {
+   "id": "bfs-head",
+   "name": "BFS Face Swap (Qwen 2.1)",
+   "folder": "loras",
+   "file": "bfs_head_v1.1_qwen_2.1.safetensors",
+   "bytes": 260096144,
+   "sha256": "d1d748d5601077f3b6d05766f6823510e901970d916afa404a97e85dc92fa88e",
+   "url": "https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_head_v1.1_qwen_2.1.safetensors",
+   "license": "mit"
+  },
+  {
+   "id": "bfs-body",
+   "name": "BFS Body Swap (Qwen 2.1)",
+   "folder": "loras",
+   "file": "bfs_body_swap_v1.0_qwen_2.1.safetensors",
+   "bytes": 209753576,
+   "sha256": "7dc0a53aba4dbc70c204f498936a619d226559da11011f748c389189af46b664",
+   "url": "https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_body_swap_v1.0_qwen_2.1.safetensors",
+   "license": "mit"
+  },
+  {
    "id": "sam31",
    "name": "SAM 3.1 (selection)",
    "folder": "checkpoints",
@@ -474,8 +512,19 @@
    "license": "flux-kommunity"
   },
   {
+   "id": "flux3-klein-int8",
+   "name": "FLUX 3 Image Klein (INT8, Windows and Linux)",
+   "folder": "diffusion_models",
+   "file": "flux3-image-klein-int8-convrot.safetensors",
+   "bytes": 5827874779,
+   "sha256": "847d8933548afd93df4af2cac2498e70891bf28d9dae06d695f536992e168fe2",
+   "url": "https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/9d36114cf7a2e03a45c28f5cc4987d20ebfdb6c1/diffusion_models/flux3-image-klein-int8-convrot.safetensors",
+   "license": "flux-kommunity",
+   "gated": true
+  },
+  {
    "id": "klein-outpaint",
-   "name": "Klein Outpaint LoRA (Mac Expand)",
+   "name": "Klein Outpaint LoRA (Expand)",
    "folder": "loras",
    "file": "flux-3-image-klein-outpaint.safetensors",
    "bytes": 160697104,
@@ -766,6 +815,34 @@
    ]
   },
   {
+   "id": "face-swap",
+   "name": "Face & body swap",
+   "description": "Alissonerdx's BFS LoRAs for Edit › Swap (Face, Body), on Qwen-Image-2.1. Only swap people who agreed to it.",
+   "os": [
+    "windows",
+    "linux"
+   ],
+   "files": [
+    "qwen21-dit",
+    "qwen3vl-8b",
+    "qwen21-vae",
+    "bfs-head",
+    "bfs-body"
+   ]
+  },
+  {
+   "id": "krea2-nvfp4",
+   "name": "Krea 2 Turbo, 4-bit (RTX 50-series)",
+   "description": "Comfy-Org's NVFP4 Krea 2 for RTX 50-series cards: the Fast and Balanced qualities use it, Best keeps the regular model. 7.7 GB instead of 13.1 GB. Other cards don't use it.",
+   "os": [
+    "windows",
+    "linux"
+   ],
+   "files": [
+    "krea2-dit-nvfp4"
+   ]
+  },
+  {
    "id": "flux3-klein-q4",
    "name": "FLUX 3 Image Klein, 4-bit (Mac)",
    "description": "Text-to-image and editing with up to 10 reference images, in MLX 4-bit (mflux's conversion). Smaller and quicker to download. Weights under the FLUX Kommunity License.",
@@ -795,6 +872,24 @@
     "flux3-klein-q8-text-encoder-1",
     "flux3-klein-q8-text-encoder-tokenizer",
     "flux2-vae"
+   ]
+  },
+  {
+   "id": "flux3-klein",
+   "name": "FLUX 3 Image Klein (low-memory edits)",
+   "description": "Edits by instruction and Expand on cards with 8 to 16 GB, with AusBoss's Outpaint LoRA: BFL's INT8 file, the Qwen3-VL 4B encoder Krea 2 also uses, and the FLUX.2 VAE. Black Forest Labs asks you to accept the FLUX Kommunity License on Hugging Face first (a token is needed).",
+   "os": [
+    "windows",
+    "linux"
+   ],
+   "files": [
+    "flux3-klein-int8",
+    "qwen3vl-4b",
+    "flux2-vae",
+    "klein-outpaint",
+    "qwen25-tokenizer-vocab",
+    "qwen25-tokenizer-merges",
+    "qwen25-tokenizer-config"
    ]
   }
  ]

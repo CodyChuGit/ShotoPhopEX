@@ -32,6 +32,8 @@ use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, Preview, RunRequest
 use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::edit2511_pipeline::{self, Edit2511Pipeline, Edit2511Request};
+use qwen_image_rs::h3::pipeline::{self as h3, H3Pipeline};
+use qwen_image_rs::klein::pipeline::{self as klein_cuda, KleinPipeline};
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::layered_pipeline::LayeredPipeline;
 use qwen_image_rs::lora::{LoraFile, LoraStack};
@@ -118,6 +120,9 @@ pub const TEMPLATE_MOSS: &str = "moss-image/image";
 pub const TEMPLATE_MOSS_BASE: &str = "moss-image/image-base";
 /// The official pipeline's defaults: 50 steps at CFG 3.
 pub const MOSS_STEPS: u32 = 50;
+/// MOSS-Image's text to image (`moss-image/image`) runs the realism recipe
+/// (`moss::Sampling::REALISM`): 20 `res_2s` steps.
+pub const MOSS_REALISM_STEPS: u32 = 20;
 pub const MOSS_GUIDANCE: f32 = 3.0;
 /// The low-VRAM turbo: lodestones' Kromoss (Apache-2.0, a full fine-tune of MOSS-Image-Base)
 /// with its 8-step DMD2 LoRA, at the card's 8 steps and CFG 1 (no negative pass).
@@ -142,12 +147,21 @@ pub const MOSS_EDIT_STEPS: u32 = 30;
 pub const TEMPLATE_KLEIN_IMAGE: &str = "flux3-klein/image";
 pub const TEMPLATE_KLEIN_EDIT: &str = "flux3-klein/edit";
 pub const TEMPLATE_KLEIN_FILL: &str = "flux3-klein/fill";
+/// AusBoss's Klein Outpaint LoRA: a Klein fill that carries it is the editor's Expand.
+pub const KLEIN_OUTPAINT_LORA: &str = "flux-3-image-klein-outpaint.safetensors";
 /// Klein's folders under the model root, the first found wins (q4 first: on an M1 it is as fast
 /// as q8 and half the memory).
 pub const KLEIN_DIRS: [&str; 2] = ["mlx/flux-3-image-klein-q4", "mlx/flux-3-image-klein-q8"];
 /// The FLUX.2 VAE Klein decodes with (MOSS's file).
 pub const KLEIN_VAE: &str = "vae/flux2-vae_small.safetensors";
 pub const MOSS_EDIT_GUIDANCE: f32 = 4.0;
+/// P-H3-Image (PrunaAI's pruned MiniMax H3 Image; MiniMax H3 Community License, bring your own
+/// files): text to image, and edits of picture 1 with up to seven references, 8 fixed steps.
+pub const TEMPLATE_H3_IMAGE: &str = "p-h3-image/image";
+pub const TEMPLATE_H3_EDIT: &str = "p-h3-image/edit";
+pub const H3_STEPS: u32 = 8;
+/// A P-H3 picture's side when the request names none (4 MP; the model's own default is 2912).
+pub const H3_DEFAULT_SIDE: usize = 2048;
 
 /// The model families served, one resident at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,10 +173,14 @@ pub enum Family {
     Moss(MossVariant),
     /// FLUX 3 Image Klein, MLX only.
     Klein,
+    /// P-H3-Image.
+    H3,
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 36] = [
+pub const TEMPLATES: [(&str, &str, Family); 38] = [
+    (TEMPLATE_H3_IMAGE, "image", Family::H3),
+    (TEMPLATE_H3_EDIT, "edit", Family::H3),
     (TEMPLATE_KLEIN_IMAGE, "image", Family::Klein),
     (TEMPLATE_KLEIN_EDIT, "edit", Family::Klein),
     (TEMPLATE_KLEIN_FILL, "fill", Family::Klein),
@@ -225,6 +243,10 @@ enum Resident {
     Edit2511(Edit2511Pipeline),
     #[cfg_attr(feature = "mlx", allow(dead_code))]
     Moss(MossPipeline, MossVariant),
+    H3(H3Pipeline),
+    /// FLUX 3 Image Klein on CUDA (ComfyUI's files).
+    #[cfg_attr(feature = "mlx", allow(dead_code))]
+    KleinCuda(KleinPipeline),
     /// MOSS-Image on MLX (macOS): every variant through one pipeline, its DiT swapped per
     /// request.
     #[cfg(feature = "mlx")]
@@ -250,6 +272,10 @@ pub struct DiffusionEngine {
     refused: Option<String>,
     /// The tiny decoder Sharp previews use, loaded on the first Sharp run of its latent space.
     tiny: Option<TinyDecoder>,
+    /// The last run asked for 4-bit weights (`params.precision: "nvfp4"`, the app's Fast and
+    /// Balanced qualities) and this card can multiply in FP4: Krea 2 loads its NVFP4 file when
+    /// it is on disk.
+    want_nvfp4: bool,
 }
 
 /// The protocol's preview mode as the pipelines know it.
@@ -268,7 +294,8 @@ fn latent_space(f: Family) -> LatentSpace {
         Family::QwenImage21 => LatentSpace::QwenImage21,
         Family::Krea2 | Family::Edit2511 => LatentSpace::Wan21,
         Family::Layered => LatentSpace::Layered,
-        Family::Moss(_) | Family::Klein => LatentSpace::Flux2,
+        // H3 has no preview (its runs show none); the arm only completes the match.
+        Family::Moss(_) | Family::Klein | Family::H3 => LatentSpace::Flux2,
     }
 }
 
@@ -350,6 +377,22 @@ fn chat_on_krea2(params: &std::collections::BTreeMap<String, Value>) -> Result<b
 
 /// A Krea 2 fill's `denoise` (0 < d ≤ 1, default 1) and `seam` (the band around the area the
 /// sampler may repaint, 0..256 px, default AnyPaint's 32).
+/// `params.schedule: "krea-detail"` asks Krea 2 Turbo's text to image or edit for the detail
+/// recipe ([`Schedule::KreaDetail`]: the Sick Ollie Creator Kit's beta scheduler over AuraFlow
+/// shift 1.25); absent or `"simple"` keeps ComfyUI's `simple` schedule.
+pub const KREA_DETAIL_SCHEDULE: &str = "krea-detail";
+
+fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Schedule, EngineError> {
+    if model == TEMPLATE_OUTPAINT_TURBO {
+        return Ok(Schedule::ViggleTurbo);
+    }
+    match params.get("schedule").and_then(Value::as_str) {
+        None | Some("simple") => Ok(Schedule::Comfy),
+        Some(KREA_DETAIL_SCHEDULE) if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaDetail),
+        Some(other) => Err(EngineError::new(ErrorKind::BadRequest, format!("schedule {other:?} is not one {model} takes"))),
+    }
+}
+
 fn krea2_fill_options(params: &std::collections::BTreeMap<String, Value>) -> Result<krea2_pipeline::FillOptions, EngineError> {
     let mut o = krea2_pipeline::FillOptions::default();
     if let Some(v) = params.get("denoise") {
@@ -394,7 +437,7 @@ impl DiffusionEngine {
         if let Some(why) = &refused {
             eprintln!("gn-diffusion: {why}");
         }
-        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None }
+        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None, want_nvfp4: false }
     }
 
     /// For a Sharp preview: `space`'s tiny decoder on the resident pipeline's device, loaded
@@ -410,6 +453,8 @@ impl DiffusionEngine {
             Resident::Layered(p) => p.device(),
             Resident::Edit2511(p) => p.device(),
             Resident::Moss(p, _) => p.device(),
+            Resident::H3(p) => p.device(),
+            Resident::KleinCuda(p) => p.device(),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => return,
             Resident::None => return,
@@ -541,6 +586,8 @@ impl DiffusionEngine {
             Resident::Layered(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Edit2511(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Moss(p, _) => qwen_image_rs::device::trim_pool(p.device()),
+            Resident::H3(p) => qwen_image_rs::device::trim_pool(p.device()),
+            Resident::KleinCuda(p) => qwen_image_rs::device::trim_pool(p.device()),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => {}
             Resident::None => {}
@@ -557,6 +604,8 @@ impl DiffusionEngine {
             Resident::Layered(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Edit2511(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Moss(p, _) => qwen_image_rs::device::bind_thread(p.device()),
+            Resident::H3(p) => qwen_image_rs::device::bind_thread(p.device()),
+            Resident::KleinCuda(p) => qwen_image_rs::device::bind_thread(p.device()),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => {}
             Resident::None => {}
@@ -575,8 +624,10 @@ impl DiffusionEngine {
             Resident::Krea2(p) => (p.device().clone(), p.dtype()),
             Resident::Edit2511(_) => (qwen_image_rs::edit2511_pipeline::cpu_device(), qwen_image_rs::edit2511_pipeline::adapter_dtype()),
             Resident::Moss(p, _) => (p.device().clone(), p.dtype()),
+            Resident::KleinCuda(p) => (p.device().clone(), p.lora_dtype()),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => return Err(EngineError::new(ErrorKind::Internal, "MLX applies its LoRAs itself")),
+            Resident::H3(p) => (p.device().clone(), p.dtype()),
             Resident::Layered(_) | Resident::None => return Err(EngineError::new(ErrorKind::Internal, "no pipeline for the LoRAs")),
         };
         let mut layers = Vec::with_capacity(asks.len());
@@ -636,6 +687,15 @@ impl DiffusionEngine {
         if krea2_pipeline::is_snapshot(&dir) { Some(dir) } else { qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone()) }
     }
 
+    /// Whether Krea 2 should load its NVFP4 file: asked for, an FP4-capable card (compute 10.x
+    /// and up, the RTX 50-series), and the file beside the fp8 one in the models folder.
+    fn krea2_nvfp4(&self) -> bool {
+        self.want_nvfp4
+            && self.gpu.as_ref().is_some_and(|g| g.compute_cap >= 100)
+            && self.krea2_source().is_some_and(|d| d == self.models_root)
+            && qwen_image_rs::comfy_files::krea2_nvfp4(&self.models_root).is_some()
+    }
+
     fn has_family(&self, family: Family) -> bool {
         match family {
             Family::QwenImage21 => self.qwen21_source().is_some(),
@@ -643,7 +703,9 @@ impl DiffusionEngine {
             Family::Layered => self.layered_available(),
             Family::Edit2511 => self.edit2511_available(),
             Family::Moss(v) => moss::find_files(&self.models_root, v).is_some(),
-            Family::Klein => cfg!(feature = "mlx") && self.klein_dir().is_some() && self.models_root.join(KLEIN_VAE).is_file(),
+            Family::H3 => cfg!(not(feature = "mlx")) && h3::find_files(&self.models_root).is_some(),
+            Family::Klein if cfg!(feature = "mlx") => self.klein_dir().is_some() && self.models_root.join(KLEIN_VAE).is_file(),
+            Family::Klein => klein_cuda::find_files(&self.models_root, false).is_some(),
         }
     }
 
@@ -687,11 +749,11 @@ impl DiffusionEngine {
     fn ensure_loaded(&mut self, family: Family, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
         self.bind();
         match (&self.resident, family) {
-            (Resident::Qwen(_), Family::QwenImage21)
-            | (Resident::Krea2(_), Family::Krea2)
-            | (Resident::Layered(_), Family::Layered)
-            | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
+            (Resident::Krea2(p), Family::Krea2) if p.is_nvfp4() == self.krea2_nvfp4() => return Ok(()),
+            (Resident::Qwen(_), Family::QwenImage21) | (Resident::Layered(_), Family::Layered) | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
             (Resident::Moss(_, held), Family::Moss(v)) if *held == v => return Ok(()),
+            (Resident::H3(_), Family::H3) => return Ok(()),
+            (Resident::KleinCuda(_), Family::Klein) => return Ok(()),
             #[cfg(feature = "mlx")]
             (Resident::Mlx(_), Family::Moss(_)) => return Ok(()),
             #[cfg(feature = "mlx")]
@@ -748,7 +810,11 @@ impl DiffusionEngine {
                         ),
                     ));
                 };
-                let opts = Krea2Options { cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false), ..Krea2Options::defaults() };
+                let opts = Krea2Options {
+                    cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false),
+                    nvfp4: self.krea2_nvfp4(),
+                    ..Krea2Options::defaults()
+                };
                 Resident::Krea2(Krea2Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
             Family::Edit2511 => {
@@ -775,7 +841,19 @@ impl DiffusionEngine {
                 Resident::Klein(Box::new(gn_mlx::klein::KleinMlx::new(&self.models_root.join(KLEIN_VAE)).map_err(err)?))
             }
             #[cfg(not(feature = "mlx"))]
-            Family::Klein => return Err(EngineError::new(ErrorKind::Unsupported, "FLUX 3 Image Klein runs on a Mac (MLX) only")),
+            Family::Klein => {
+                let Some(files) = klein_cuda::find_files(&self.models_root, false) else {
+                    return Err(EngineError::new(
+                        ErrorKind::ModelMissing,
+                        format!(
+                            "no FLUX 3 Image Klein in {}: diffusion_models/flux3-image-klein-int8-convrot (or -bf16), \
+                             text_encoders/qwen3vl_4b_fp8_scaled (or qwen3vl_4b_bf16), vae/flux2-vae (or flux2-vae_small) and ComfyUI's qwen25_tokenizer",
+                            self.models_root.display()
+                        ),
+                    ));
+                };
+                Resident::KleinCuda(KleinPipeline::load(&files, &mut report).map_err(err)?)
+            }
             #[cfg(feature = "mlx")]
             Family::Moss(_) => {
                 report(0.5, "Loading the VAE");
@@ -801,6 +879,20 @@ impl DiffusionEngine {
                     ));
                 };
                 Resident::Moss(MossPipeline::load(&files, &mut report).map_err(err)?, v)
+            }
+            Family::H3 => {
+                let Some(files) = h3::find_files(&self.models_root) else {
+                    return Err(EngineError::new(
+                        ErrorKind::ModelMissing,
+                        format!(
+                            "no P-H3-Image in {}: diffusion_models/p-h3-image_int8_convrot (or _bf16), \
+                             text_encoders/p-h3-image_text_encoder_int8_convrot (or _bf16), vae/p-h3-image_vae_bf16 (or _int8_convrot) \
+                             and ComfyUI's qwen25_tokenizer",
+                            self.models_root.display()
+                        ),
+                    ));
+                };
+                Resident::H3(H3Pipeline::load(&files, &mut report).map_err(err)?)
             }
         };
         Ok(())
@@ -1175,6 +1267,8 @@ impl Engine for DiffusionEngine {
             Resident::Layered(p) => (vec!["qwen-image-layered".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Edit2511(p) => (vec!["qwen-image-edit-2511".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Moss(p, _) => (vec!["moss-image".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::H3(p) => (vec!["p-h3-image".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::KleinCuda(p) => (vec!["flux3-klein".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) => (vec!["moss-image".to_string()], false, None),
             #[cfg(feature = "mlx")]
@@ -1231,6 +1325,7 @@ impl Engine for DiffusionEngine {
         if req.task != task {
             return Err(EngineError::new(ErrorKind::Unsupported, format!("{} answers `{task}`, not `{}`", req.model, req.task)));
         }
+        self.want_nvfp4 = req.params.get("precision").and_then(Value::as_str) == Some("nvfp4");
         // A warm-up (the editor at launch): the template's models loaded, nothing generated.
         if req.params.get("warmup").and_then(Value::as_bool) == Some(true) {
             // The VRAM guard: with nothing resident, `need_free` bytes must be free on the card
@@ -1348,9 +1443,11 @@ impl Engine for DiffusionEngine {
             Family::Edit2511 => 40,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => MOSS_TURBO_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS => MOSS_REALISM_STEPS,
             Family::Moss(_) => MOSS_STEPS,
             // Klein's own (its checkpoint's 16).
             Family::Klein => 0,
+            Family::H3 => H3_STEPS,
         };
         let default_guidance = match family {
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => 1.0,
@@ -1365,6 +1462,7 @@ impl Engine for DiffusionEngine {
             }
             let (width, height) = match canvas {
                 Some(c) => c,
+                None if references.is_empty() && family == Family::H3 && (req.width == 0 || req.height == 0) => (H3_DEFAULT_SIDE, H3_DEFAULT_SIDE),
                 None if references.is_empty() => (side(req.width), side(req.height)),
                 None => (0, 0),
             };
@@ -1412,15 +1510,18 @@ impl Engine for DiffusionEngine {
                 None if krea2_edit => KREA2_REF_BOOST,
                 None => 1.0,
             };
+            // MOSS-Image's text to image: the realism recipe's negative when none is typed.
+            let realism = req.model == TEMPLATE_MOSS;
+            let negative = if realism && req.negative.trim().is_empty() { moss::REALISM_NEGATIVE.to_string() } else { req.negative.clone() };
             let ask = Request {
                 prompt: req.prompt.clone(),
-                negative: req.negative.clone(),
+                negative,
                 width,
                 height,
                 steps: if req.steps == 0 { default_steps } else { req.steps } as usize,
                 seed: req.seed,
                 guidance: if req.guidance > 0.0 { req.guidance } else { default_guidance },
-                schedule: if req.model == TEMPLATE_OUTPAINT_TURBO { Schedule::ViggleTurbo } else { Schedule::Comfy },
+                schedule: schedule_for(&req.model, &req.params)?,
                 references,
                 loras,
                 ref_boost,
@@ -1429,7 +1530,7 @@ impl Engine for DiffusionEngine {
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             let stop = || cancel.load(Ordering::SeqCst);
             let err = |e: anyhow::Error| EngineError::new(kind_of(&e), e.to_string());
-            let mode = preview_mode(req.preview);
+            let mode = if family == Family::H3 { PreviewMode::Off } else { preview_mode(req.preview) };
             self.ensure_tiny(mode, latent_space(family));
             let mut sink = |f: Frame| preview(engine_preview(f));
             let mut viewer = Previewer::new(mode, latent_space(family), self.tiny.as_ref(), &mut sink);
@@ -1449,7 +1550,25 @@ impl Engine for DiffusionEngine {
                     p.generate_style_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Krea2(p), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Moss(p, _), _) if realism => {
+                    p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                }
                 (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::H3(p), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::KleinCuda(p), _) => {
+                    // A fill's second picture is its mask.
+                    let mut ask = ask.clone();
+                    let mask = if task == "fill" { ask.references.pop() } else { None };
+                    // The editor's Expand comes as a fill with AusBoss's Outpaint LoRA: run it
+                    // the way that LoRA was made for (see `KleinPipeline::outpaint`).
+                    let outpaint = ask.loras.layers.iter().any(|(f, _)| f.path.file_name().is_some_and(|n| n == KLEIN_OUTPAINT_LORA));
+                    match &mask {
+                        Some(m) if outpaint => p.outpaint(&ask, m, &mut report, &stop),
+                        _ => p.generate(&ask, mask.as_ref(), &mut report, &stop),
+                    }
+                    .map(|p| vec![p])
+                    .map_err(err)
+                }
                 #[cfg(feature = "mlx")]
                 (Resident::Mlx(_) | Resident::Klein(_), _) => Err(EngineError::new(ErrorKind::Internal, "MLX runs before the LoRA stack")),
                 (Resident::Edit2511(_) | Resident::Layered(_) | Resident::None, _) => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
@@ -1514,7 +1633,9 @@ fn cuda_default_steps(template: &str) -> Option<u32> {
     match template {
         TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(MOSS_TURBO_STEPS),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_STEPS),
-        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
+        // The realism recipe's res_2s is CUDA only: MLX keeps its 50 Euler steps.
+        TEMPLATE_MOSS => Some(MOSS_REALISM_STEPS),
+        TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
         _ => None,
     }
 }
@@ -1882,6 +2003,20 @@ mod tests {
             std::fs::remove_dir(root.join(d))?;
         }
         Ok(())
+    }
+
+    /// `params.schedule` picks Krea 2's detail recipe, only where Krea 2 takes it.
+    #[test]
+    fn the_krea_detail_schedule_is_krea_only() {
+        let p = |v: &str| std::collections::BTreeMap::from([("schedule".to_string(), Value::from(v))]);
+        let none = std::collections::BTreeMap::new();
+        assert_eq!(schedule_for(TEMPLATE_KREA2, &none).unwrap(), Schedule::Comfy);
+        assert_eq!(schedule_for(TEMPLATE_KREA2, &p("simple")).unwrap(), Schedule::Comfy);
+        assert_eq!(schedule_for(TEMPLATE_KREA2, &p(KREA_DETAIL_SCHEDULE)).unwrap(), Schedule::KreaDetail);
+        assert_eq!(schedule_for(TEMPLATE_KREA2_EDIT, &p(KREA_DETAIL_SCHEDULE)).unwrap(), Schedule::KreaDetail);
+        assert_eq!(schedule_for(TEMPLATE_OUTPAINT_TURBO, &none).unwrap(), Schedule::ViggleTurbo);
+        assert!(schedule_for(TEMPLATE_KREA2_FILL, &p(KREA_DETAIL_SCHEDULE)).is_err());
+        assert!(schedule_for(TEMPLATE_KREA2, &p("karras")).is_err());
     }
 
     /// A Krea 2 edit runs with its edit LoRA in front of the request's own, once.

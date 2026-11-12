@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build, sign and (optionally) notarize the macOS release artifacts:
 #
-#   $DIST/photocraft-<version>-macos-<arch>.dmg          PhotoCraft.app on a drag-to-Applications DMG
-#   $DIST/photocraft-cli-<version>-macos-<arch>.zip      the headless CLI
+#   $DIST/shotophopex-<version>-macos-<arch>.dmg          PhotoCraft.app on a drag-to-Applications DMG
+#   $DIST/shotophopex-cli-<version>-macos-<arch>.zip      the headless CLI
 #
 # Usage: packaging/macos/package.sh [--arch aarch64] [--skip-build]
 #
@@ -43,8 +43,8 @@ IDENTITY="${MACOS_SIGN_IDENTITY:--}"
 SHORT_VERSION="${VERSION%%-*}"
 WORK="$CARGO_TARGET_DIR/macos-package"
 APP="$WORK/ShotoPhopEX.app"
-DMG="$DIST/photocraft-$VERSION-macos-$ARCH.dmg"
-CLI_ZIP="$DIST/photocraft-cli-$VERSION-macos-$ARCH.zip"
+DMG="$DIST/shotophopex-$VERSION-macos-$ARCH.dmg"
+CLI_ZIP="$DIST/shotophopex-cli-$VERSION-macos-$ARCH.zip"
 
 NOTARIZE=0
 if [[ "$IDENTITY" = "-" ]]; then
@@ -184,7 +184,7 @@ fi
 
 # ---- CLI ---------------------------------------------------------------------------------------
 echo "==> building $CLI_ZIP"
-CLI_DIR="$WORK/photocraft-cli-$VERSION-macos-$ARCH"
+CLI_DIR="$WORK/shotophopex-cli-$VERSION-macos-$ARCH"
 mkdir -p "$CLI_DIR"
 cp "$WORK/bin/photocraft-cli" "$CLI_DIR/"
 copy_docs "$CLI_DIR"

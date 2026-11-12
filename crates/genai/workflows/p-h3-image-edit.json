@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "id": "p-h3-image/edit",
+    "name": "Generative Edit (P-H3 Image)",
+    "family": "p-h3-image",
+    "task": "edit",
+    "license": "community",
+    "licenseNote": "MiniMax H3 Community License (MiniMax, 2026), PrunaAI's P-H3-Image repack under the same terms: the grant excludes the EU, the UK, South Korea and the USA; over USD 1M yearly revenue or a hosted service needs MiniMax's OK; show \"Powered by MiniMax H3\"; outputs may not train other models. Bring your own files. The app ships no weights.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "p-h3-image_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "p-h3-image_text_encoder_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "p-h3-image_vae_bf16.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native gn-diffusion p-h3-image/edit): picture 1 is the one edited, up to seven references follow (<Picture 2> ... in the prompt). Each picture goes to the encoder at 1 MP and through the VAE within the output's area (4 MP when no size is asked) as reference tokens at t = 0.999. A short instruction gets \"Edit <Picture 1>. \" in front, as PrunaAI's PH3ImageConditioning does. 8 fixed steps, no CFG.",
+    "creator": "MiniMax · PrunaAI",
+    "description": "Edit by instruction with up to 7 references (5090 class)",
+    "badges": [],
+    "references": {
+      "max": 7
+    },
+    "estimatedSeconds": {
+      "base": 5,
+      "perMegapixel": 2,
+      "perReference": 3
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
+  }
+}

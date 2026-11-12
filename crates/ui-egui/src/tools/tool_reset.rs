@@ -197,7 +197,18 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         Tool::MagicWand => reset!(tolerance, anti_alias, contiguous),
         Tool::QuickSelection => reset!(enhance_edge),
         Tool::ObjectSelection => {
-            reset!(enhance_edge, object_finder, select_text, refine_edge, object_refine, object_widen, object_fill_holes, object_soften, object_parts)
+            reset!(
+                enhance_edge,
+                object_finder,
+                select_text,
+                refine_edge,
+                object_refine,
+                object_widen,
+                object_fill_holes,
+                object_soften,
+                object_parts,
+                subject_hq
+            )
         }
         Tool::Crop => reset!(
             crop_ratio,

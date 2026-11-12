@@ -138,6 +138,9 @@ pub struct GeneratePanel {
     /// Fill mode on a template whose sampler takes it: how much of the selection is redrawn
     /// (`denoise`; 1 replaces it).
     pub denoise: f32,
+    /// Edit mode: `head` or `body` puts that from the first reference onto the person in the
+    /// picture (`generate.edit` `swap`, the BFS LoRAs); empty = an ordinary edit.
+    pub swap: String,
 }
 
 impl Default for GeneratePanel {
@@ -173,6 +176,7 @@ impl Default for GeneratePanel {
             loras: BTreeMap::new(),
             lora_list: None,
             denoise: 1.0,
+            swap: String::new(),
         }
     }
 }
@@ -339,8 +343,14 @@ pub fn default_template(app: &PhotocraftApp, mode: &str) -> String {
             let takes_refs = info(app, &t).is_some_and(|m| m.refs_max > 0);
             if !app.ui.generate.references.is_empty() && !takes_refs { g::fill_ref_template(q).to_string() } else { t }
         }
+        "edit" if swapping(app) => g::swap::SWAP_TEMPLATE.to_string(),
         m => g::likely_auto_in(&app.session, command_of(m), g::quality(&app.session)).to_string(),
     }
+}
+
+/// Edit mode with Swap on (Face or Body).
+pub fn swapping(app: &PhotocraftApp) -> bool {
+    app.ui.generate.mode == "edit" && photocraft_engine::generate_cmds::swap::find(&app.ui.generate.swap).is_some()
 }
 
 /// The name the picker shows for [`default_template`], for its Auto row.
@@ -427,8 +437,12 @@ pub fn request(app: &PhotocraftApp) -> Result<(&'static str, Value), String> {
     let p = &app.ui.generate;
     let mode = p.mode.as_str();
     let prompt = p.prompt.trim();
-    if prompt.is_empty() && mode != "expand" {
+    let swap = swapping(app);
+    if prompt.is_empty() && mode != "expand" && !swap {
         return Err(tl!("Type what to generate first").to_string());
+    }
+    if swap && p.references.is_empty() {
+        return Err(tl!("Add a picture of who to swap in as a reference").to_string());
     }
     if let Some(why) = blocked(app, mode) {
         return Err(why.to_string());
@@ -461,7 +475,12 @@ pub fn request(app: &PhotocraftApp) -> Result<(&'static str, Value), String> {
                 q["denoise"] = json!((f64::from(p.denoise) * 100.0).round() / 100.0);
             }
         }
-        "edit" => q["variations"] = json!(count),
+        "edit" => {
+            q["variations"] = json!(count);
+            if swap {
+                q["swap"] = json!(p.swap);
+            }
+        }
         _ => {
             let e = p.expand;
             if e.iter().all(|v| *v == 0) {
@@ -1273,6 +1292,34 @@ fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, mode: &str, 
             });
         }
     }
+    if mode == "edit" {
+        // Swap: the head (face and hair) or the whole person from the first reference, onto the
+        // person in the picture (the BFS LoRAs on Qwen-Image-2.1).
+        setting_row(ui, tl!("Swap"), |ui| {
+            let cur = if swapping(app) { app.ui.generate.swap.clone() } else { String::new() };
+            let options = [
+                Seg::new(String::new(), tl!("Off")).tip(tl!("An ordinary edit by instruction")),
+                Seg::new("head".to_string(), tl!("Face")).tip(tl!("Put the face and hair from the first reference onto the person in the picture")),
+                Seg::new("body".to_string(), tl!("Body"))
+                    .tip(tl!("Put the whole person from the first reference (clothes, build, face) into the picture, in the same pose")),
+            ];
+            if let Some(x) = segmented(ui, &cur, &options, 0.0) {
+                app.ui.generate.swap = x;
+                let template = effective_template(app, "edit");
+                refresh_loras(app, &template);
+            }
+        });
+        if swapping(app) && app.ui.generate.references.is_empty() {
+            // Wrapped to the row's width: one long line widened the dock and pushed Generate off it.
+            setting_row(ui, "", |ui| {
+                let w = ui.available_width();
+                ui.allocate_ui_with_layout(vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_max_width(w);
+                    ui.add(egui::Label::new(RichText::new(tl!("Add a picture of who to swap in as a reference")).small().color(t.text_faint)).wrap());
+                });
+            });
+        }
+    }
     if mode == "expand" {
         expand_sides(app, ui, t);
     }
@@ -1557,7 +1604,7 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
         "mode": p.mode, "into": p.into, "prompt": p.prompt, "negative": p.negative, "references": p.references,
         "template": p.template, "effectiveTemplate": template, "aspect": p.aspect, "size": p.size,
         "width": p.width, "height": p.height, "imageSize": image_size(app), "count": p.count, "enhance": p.enhance,
-        "expand": p.expand, "grow": p.grow, "denoise": p.denoise, "job": p.job, "compact": p.compact, "eta": estimate(app, mode), "etaLabel": estimate(app, mode).map(eta_label),
+        "expand": p.expand, "grow": p.grow, "denoise": p.denoise, "swap": p.swap, "job": p.job, "compact": p.compact, "eta": estimate(app, mode), "etaLabel": estimate(app, mode).map(eta_label),
         "command": request.as_ref().ok().map(|(c, _)| *c), "params": request.as_ref().ok().map(|(_, q)| q.clone()),
         "blocked": request.err(), "referencesMax": refs_limit(app, mode),
         "loras": p.lora_list.as_ref().filter(|(t, _, _)| *t == template).map(|(_, native, files)| json!({
@@ -1569,7 +1616,7 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
 }
 
 /// `ui.set {generatePanel: {mode, into, prompt, negative, template, aspect, size, width,
-/// height, count, enhance, references, expand, grow, focus, loras, denoise}}`: each field validated before any
+/// height, count, enhance, references, expand, grow, focus, loras, denoise, swap}}`: each field validated before any
 /// is applied; `focus: true` puts the keyboard in the prompt (then `ui.key` Enter with
 /// `command` generates through the panel).
 pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
@@ -1593,6 +1640,7 @@ pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
         "focus",
         "loras",
         "denoise",
+        "swap",
     ];
     if let Some(k) = o.keys().find(|k| !known.contains(&k.as_str())) {
         return Err(format!("generatePanel has no field `{k}`"));
@@ -1679,6 +1727,14 @@ pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
     }
     if let Some(x) = o.get("denoise") {
         next.denoise = x.as_f64().filter(|d| (0.05..=1.0).contains(d)).ok_or("generatePanel.denoise must be 0.05 to 1")? as f32;
+    }
+    if let Some(x) = o.get("swap") {
+        next.swap = match x {
+            Value::Null => String::new(),
+            Value::String(k) if k.is_empty() || k == "off" => String::new(),
+            Value::String(k) => photocraft_engine::generate_cmds::swap::find(k).ok_or("generatePanel.swap must be head, body or off")?.kind.to_string(),
+            _ => return Err("generatePanel.swap must be head, body or off".into()),
+        };
     }
     if let Some(x) = o.get("loras") {
         // `{"file.safetensors": strength}`: those switched on at that strength, the rest off.
