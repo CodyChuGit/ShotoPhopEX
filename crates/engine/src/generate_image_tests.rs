@@ -289,3 +289,24 @@ fn best_quality_renders_krea2_at_about_two_megapixels() {
     let req = fake.state().runs.last().unwrap().request.clone();
     assert_eq!((req["width"].as_u64(), req["height"].as_u64()), (Some(1440), Some(1440)), "{req}");
 }
+
+/// `refine` asks the native engine for Krea 2's second pass at `scale` times the size, on the
+/// 16-px grid and at most 2560 a side; other templates refuse it.
+#[test]
+fn image_refine_sends_the_larger_size() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    let ask = |r: Value| json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024, "refine": r});
+    s.execute(IMAGE, ask(json!({"scale": 1.5, "denoise": 0.3, "steps": 4}))).unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!(req["params"]["refine"], json!({"width": 2160, "height": 2160, "denoise": 0.3, "steps": 4}), "{req}");
+    s.execute(IMAGE, ask(json!({"scale": 2.0, "denoise": 0.3, "steps": 4}))).unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!(req["params"]["refine"]["width"], 2560, "capped: {req}");
+    s.execute(IMAGE, ask(Value::Bool(false))).unwrap();
+    assert!(fake.state().runs.last().unwrap().request["params"].get("refine").is_none());
+    assert!(s.execute(IMAGE, ask(json!({"scale": 3.0, "denoise": 0.3, "steps": 4}))).is_err());
+    let r = s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "refine": {"scale": 1.5, "denoise": 0.3, "steps": 4}}));
+    assert!(r.is_err());
+}

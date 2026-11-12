@@ -2290,6 +2290,8 @@ struct ImagePlan {
     guidance: f32,
     /// The native engine's schedule (`params.schedule`), `None` for the template's own.
     schedule: Option<&'static str>,
+    /// Krea 2 Turbo's second pass at a larger size (`params.refine`), `None` for none.
+    refine: Option<Value>,
     name: String,
     models: Vec<(String, String)>,
     /// The size asked of the model (rounded to the latent grid).
@@ -2528,6 +2530,7 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     // Quality `best` (`balanced`) renders Krea 2 at about 2 (1.5) MP: a new document keeps that size, a layer is
     // scaled to the canvas as any result of another size is.
     let (width, height) = image_quality_size(&template.meta.id, quality(s), side(IMAGE, p, "width", dw)?, side(IMAGE, p, "height", dh)?);
+    let refine = image_refine(p, &template.meta.id, width, height)?;
     let name = name.unwrap_or_else(|| format!("Generated: {}", short(&prompt)));
     // A transparent result: the template says how its model is asked for one (Qwen-Image-2.1
     // decodes RGBA); the layer keeps the alpha the PNG comes back with.
@@ -2560,6 +2563,7 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         steps,
         guidance,
         schedule,
+        refine,
         name,
         models,
         width,
@@ -2568,6 +2572,27 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         variations,
         refs,
     })
+}
+
+/// The longest side a Krea 2 refine pass redraws at.
+pub const MAX_REFINE_SIDE: u32 = 2560;
+
+/// `refine: {"scale": 1..2, "denoise": 0.05..1, "steps": 1..20}` on `generate.image` with
+/// krea2-turbo/image: a second pass over the picture at `scale` times its size (on the 16-px
+/// grid, at most [`MAX_REFINE_SIDE`] a side) as `params.refine` for the native engine.
+fn image_refine(p: &Value, template: &str, width: u32, height: u32) -> Result<Option<Value>> {
+    let Some(r) = p.get("refine").filter(|v| !v.is_null() && **v != Value::Bool(false)) else { return Ok(None) };
+    if template != "krea2-turbo/image" {
+        return Err(bad(IMAGE, format!("`refine` is for krea2-turbo/image (not `{template}`)")));
+    }
+    let num = |k: &str, lo: f64, hi: f64| -> Result<f64> {
+        r.get(k).and_then(Value::as_f64).filter(|x| (lo..=hi).contains(x)).ok_or_else(|| bad(IMAGE, format!("`refine.{k}` must be {lo}..{hi}")))
+    };
+    let (scale, denoise, steps) = (num("scale", 1.0, 2.0)?, num("denoise", 0.05, 1.0)?, num("steps", 1.0, 20.0)?.round() as u64);
+    let long = f64::from(width.max(height));
+    let k = scale.min(f64::from(MAX_REFINE_SIDE) / long).max(1.0);
+    let fit = |v: u32| ((f64::from(v) * k) as u32 / SIZE_STEP * SIZE_STEP).max(SIZE_STEP);
+    Ok(Some(serde_json::json!({"width": fit(width), "height": fit(height), "denoise": denoise, "steps": steps})))
 }
 
 /// The prompt a `generate.image` job sends, and what the layer remembers as `enhanced`: the
@@ -2608,6 +2633,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         steps,
         guidance,
         schedule,
+        refine,
         name,
         models,
         width,
@@ -2623,6 +2649,9 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         Tuning { loras, ..Tuning::default() }.loras_param().map(|l| BTreeMap::from([("loras".to_string(), l)])).unwrap_or_default();
     if let Some(schedule) = schedule {
         params.insert("schedule".to_string(), Value::String(schedule.to_string()));
+    }
+    if let Some(refine) = refine {
+        params.insert("refine".to_string(), refine);
     }
     // What the result layer remembers (`generate.similar` re-runs it).
     let info = GenerativeInfo {
@@ -5530,7 +5559,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generate Image…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"schedule":{"simple"|"krea-detail"?=Preferences › Quality: krea-detail (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"refine":{{"scale":1..2,"denoise":0.05..1,"steps":1..20}?=none: krea2-turbo/image redrawn once more at scale times the size (at most 2560 a side)},"schedule":{"simple"|"krea-detail"?=Preferences › Quality: krea-detail (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: image_enabled,
             run: run_image,
             journal: true,

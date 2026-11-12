@@ -583,6 +583,98 @@ impl Krea2Pipeline {
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
 
+    /// A second pass over a finished picture (ComfyUI's "hires fix", the refine stage of the
+    /// Sick Ollie kit's Enhancement Core and of the top Krea 2 realism workflows): `picture`
+    /// resampled to `opts.width × opts.height`, through the VAE's encoder, noised to the
+    /// schedule's sigma at `opts.denoise` (KSampler's tail: `steps / denoise` steps, the last
+    /// `steps`) and sampled back with the request's prompt, LoRAs and schedule. The layout stays;
+    /// the model redraws fine detail at the larger size.
+    pub fn refine_previewed(
+        &self,
+        req: &Request,
+        picture: &Picture,
+        opts: &RefineOptions,
+        progress: &mut dyn FnMut(f32, &str),
+        mut preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
+        crate::device::bind_thread(&self.dev);
+        let (w, h) = (opts.width, opts.height);
+        anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16), "the refine size must be positive multiples of 16 ({w}x{h} asked)");
+        anyhow::ensure!(opts.steps > 0 && opts.denoise > 0.0 && opts.denoise <= 1.0, "a refine takes at least one step and a denoise in (0, 1]");
+        let unmatched = self.dit.set_loras(&req.loras)?;
+        if !unmatched.is_empty() {
+            tracing::warn!(modules = unmatched.len(), first = unmatched[0], "LoRA modules this model does not have (a file for another model?)");
+        }
+        let check = || -> Result<()> {
+            if cancel() {
+                Err(Cancelled.into())
+            } else {
+                Ok(())
+            }
+        };
+        let mut timings = Timings::default();
+        check()?;
+        progress(0.02, "Encoding the picture");
+        let t0 = Instant::now();
+        let cond = self.condition(&req.prompt, None)?;
+        let source = RefImage { width: picture.width as usize, height: picture.height as usize, rgba: picture.rgba.clone(), offset: None };
+        let target = self.picture_latent(&source, w, h)?;
+        self.dev.synchronize()?;
+        timings.encode_s = t0.elapsed().as_secs_f32();
+
+        // KSampler at `denoise` < 1: the tail of the full schedule.
+        let full = ((opts.steps as f32 / opts.denoise).round() as usize).max(opts.steps);
+        let sched = if req.schedule == crate::pipeline::Schedule::KreaDetail {
+            crate::comfy::FlowSchedule::beta(full, crate::comfy::FlowSchedule::aura_flow(1.25))
+        } else {
+            crate::comfy::FlowSchedule::simple(full, crate::comfy::FlowSchedule::KREA2)
+        }
+        .map_err(anyhow::Error::msg)?;
+        let n = opts.steps.min(sched.steps());
+        let sigmas = sched.sigmas[sched.sigmas.len() - n - 1..].to_vec();
+        let (lh, lw) = (h / wan_vae::SCALE, w / wan_vae::SCALE);
+        let noise = crate::comfy::torch_randn(req.seed, wan_vae::LATENT_CHANNELS * lh * lw).map_err(anyhow::Error::msg)?;
+        let noise = Tensor::from_vec(noise, (1, wan_vae::LATENT_CHANNELS, lh, lw), &self.dev)?;
+        let mut x = ((&noise * f64::from(sigmas[0]))? + (&target * f64::from(1.0 - sigmas[0]))?)?;
+        let t0 = Instant::now();
+        for i in 0..n {
+            check()?;
+            let v = self.dit.forward_edit(&x.to_dtype(self.dtype)?, sigmas[i], &cond, None)?.to_dtype(DType::F32)?;
+            if let Some(p) = preview.as_deref_mut() {
+                if p.wants(i + 1, n) {
+                    match (&v * f64::from(sigmas[i])).and_then(|sv| &x - sv) {
+                        Ok(x0) => p.show(i + 1, n, &x0),
+                        Err(e) => tracing::warn!(error = %e, "preview skipped"),
+                    }
+                }
+            }
+            x = (x + (v * f64::from(sigmas[i + 1] - sigmas[i]))?)?;
+            progress(0.05 + 0.85 * (i + 1) as f32 / n as f32, "Refining");
+        }
+        self.dev.synchronize()?;
+        timings.denoise_s = t0.elapsed().as_secs_f32();
+        check()?;
+        progress(0.92, "Decoding");
+        let t0 = Instant::now();
+        let img = self.vae.decode(&self.vae.denormalize(&x)?)?;
+        self.dev.synchronize()?;
+        timings.decode_s = t0.elapsed().as_secs_f32();
+        let (pw, ph, rgba) = wan_vae::to_rgba_u8(&img)?;
+        tracing::info!(
+            encode_s = timings.encode_s,
+            denoise_s = timings.denoise_s,
+            decode_s = timings.decode_s,
+            width = pw,
+            height = ph,
+            steps = n,
+            denoise = opts.denoise,
+            "refine timings"
+        );
+        progress(1.0, "Done");
+        Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
+    }
+
     /// Inpaint with the AnyPaint LoRA (yijunwang2/krea2-anypaint; the recipe of its
     /// `anypaint.py` and of AusBoss's "Krea 2 Inpaint Masked" workflow): `req.references` is
     /// the picture (the crop around the area) and its mask (white = paint). The model is shown
@@ -792,6 +884,18 @@ fn load_text_encoder(files: &[PathBuf], dev: &Device, dtype: DType) -> Result<Qw
     // The language model faulted in on every core first ([`crate::mapped`]), not the vision tower.
     let vb = crate::mapped::var_builder(files, dtype, dev, |n| n.starts_with("model.") && !n.starts_with("model.visual."))?;
     QwenTextEncoder::load_at(&TextConfig::qwen3vl_4b(), false, vb.pp("model")).context("the Qwen3-VL-4B encoder")
+}
+
+/// A refine pass over a finished picture ([`Krea2Pipeline::refine_previewed`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefineOptions {
+    /// The size it is redrawn at (multiples of 16).
+    pub width: usize,
+    pub height: usize,
+    /// How much is redrawn: about 0.2 to 0.4 keeps the picture and adds detail.
+    pub denoise: f32,
+    /// Sampler steps of the pass.
+    pub steps: usize,
 }
 
 /// How a Krea 2 AnyPaint fill runs ([`Krea2Pipeline::fill_previewed`]).
