@@ -118,6 +118,9 @@ pub const TEMPLATE_MOSS: &str = "moss-image/image";
 pub const TEMPLATE_MOSS_BASE: &str = "moss-image/image-base";
 /// The official pipeline's defaults: 50 steps at CFG 3.
 pub const MOSS_STEPS: u32 = 50;
+/// MOSS-Image's text to image (`moss-image/image`) runs the realism recipe
+/// (`moss::Sampling::REALISM`): 20 `res_2s` steps.
+pub const MOSS_REALISM_STEPS: u32 = 20;
 pub const MOSS_GUIDANCE: f32 = 3.0;
 /// The low-VRAM turbo: lodestones' Kromoss (Apache-2.0, a full fine-tune of MOSS-Image-Base)
 /// with its 8-step DMD2 LoRA, at the card's 8 steps and CFG 1 (no negative pass).
@@ -1382,6 +1385,7 @@ impl Engine for DiffusionEngine {
             Family::Edit2511 => 40,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => MOSS_TURBO_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS => MOSS_REALISM_STEPS,
             Family::Moss(_) => MOSS_STEPS,
             // Klein's own (its checkpoint's 16).
             Family::Klein => 0,
@@ -1446,9 +1450,12 @@ impl Engine for DiffusionEngine {
                 None if krea2_edit => KREA2_REF_BOOST,
                 None => 1.0,
             };
+            // MOSS-Image's text to image: the realism recipe's negative when none is typed.
+            let realism = req.model == TEMPLATE_MOSS;
+            let negative = if realism && req.negative.trim().is_empty() { moss::REALISM_NEGATIVE.to_string() } else { req.negative.clone() };
             let ask = Request {
                 prompt: req.prompt.clone(),
-                negative: req.negative.clone(),
+                negative,
                 width,
                 height,
                 steps: if req.steps == 0 { default_steps } else { req.steps } as usize,
@@ -1483,6 +1490,9 @@ impl Engine for DiffusionEngine {
                     p.generate_style_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Krea2(p), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Moss(p, _), _) if realism => {
+                    p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                }
                 (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 #[cfg(feature = "mlx")]
                 (Resident::Mlx(_) | Resident::Klein(_), _) => Err(EngineError::new(ErrorKind::Internal, "MLX runs before the LoRA stack")),
@@ -1548,7 +1558,9 @@ fn cuda_default_steps(template: &str) -> Option<u32> {
     match template {
         TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(MOSS_TURBO_STEPS),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_STEPS),
-        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
+        // The realism recipe's res_2s is CUDA only: MLX keeps its 50 Euler steps.
+        TEMPLATE_MOSS => Some(MOSS_REALISM_STEPS),
+        TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
         _ => None,
     }
 }
