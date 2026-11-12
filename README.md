@@ -338,8 +338,8 @@ Move the camera after the shot: a side view, a high angle, a close-up, with the 
 
 In Edit, pick **Swap › Face** or **Swap › Body** and drop a picture of the person to put in on
 References. Alissonerdx's BFS LoRAs on Qwen-Image-2.1 keep the pose, light and scene of your
-picture and take the face and hair (or the whole outfit and build) from the reference. The result
-is masked to the old and the new person together, so nothing of the old one shows around the new.
+picture and take the face and hair (or the whole outfit and build) from the reference. The whole
+re-rendered picture comes back as one layer, so nothing of the old person shows around the new one.
 A face swap takes **about 5&nbsp;s** warm. Only swap people who agreed to it.
 
 ### Object Selection

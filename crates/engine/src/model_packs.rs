@@ -194,7 +194,8 @@ fn in_subfolders(dir: &std::path::Path, name: &std::ffi::OsStr, depth: u32, ok: 
         return false;
     }
     let Ok(entries) = std::fs::read_dir(dir) else { return false };
-    entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).any(|e| {
+    // `metadata` follows links, so a subfolder that is a junction or symlink to another drive counts.
+    entries.flatten().filter(|e| std::fs::metadata(e.path()).is_ok_and(|m| m.is_dir())).any(|e| {
         let sub = e.path();
         ok(&sub.join(name)) || in_subfolders(&sub, name, depth - 1, ok)
     })

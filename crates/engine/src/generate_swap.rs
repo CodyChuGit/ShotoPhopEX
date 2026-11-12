@@ -56,7 +56,8 @@ pub fn find(kind: &str) -> Option<Swap> {
 /// `p` rewritten for its `swap`, or None when it asks for none: the template pinned to
 /// [`SWAP_TEMPLATE`] (unless one is named), the swap's LoRA added at strength 1 (unless the
 /// request lists it), the author's prompt with the typed one after it, and Enhance off (a
-/// rewritten prompt would lose the LoRA's trigger words), and [`SWAP_STEPS`] unless steps are named.
+/// rewritten prompt would lose the LoRA's trigger words), the whole picture kept (`wholePicture`),
+/// and [`SWAP_STEPS`] unless steps are named.
 pub(crate) fn apply(s: &Session, p: &Value) -> Result<Option<Value>> {
     let Some(kind) = p.get("swap").filter(|v| !v.is_null()) else { return Ok(None) };
     let kind = kind.as_str().ok_or_else(|| bad(EDIT, "`swap` is \"head\" or \"body\""))?;
@@ -87,6 +88,12 @@ pub(crate) fn apply(s: &Session, p: &Value) -> Result<Option<Value>> {
     let prompt = if typed.is_empty() { swap.prompt.to_string() } else { format!("{} {typed}", swap.prompt) };
     o.insert("prompt".into(), json!(prompt));
     o.insert("enhance".into(), json!(false));
+    // The whole re-rendered picture is the result: masked to the new person (or to the old and
+    // the new together) it left the old one's suit, then a hard outline and a darker patch where
+    // he stood (measured in the app 2026-11-12); the BFS LoRAs keep the rest of image 1 as it was.
+    if o.get("wholePicture").is_none_or(Value::is_null) {
+        o.insert("wholePicture".into(), json!(true));
+    }
     if o.get("steps").and_then(Value::as_u64).unwrap_or(0) == 0 {
         o.insert("steps".into(), json!(SWAP_STEPS));
     }

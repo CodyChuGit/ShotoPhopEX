@@ -4728,14 +4728,10 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 None => vec![1.0; rect.width() as usize * rect.height() as usize],
             };
-            // The picture before the edit: its subject joins the result's in the mask, so a
-            // replaced person who was bigger than the new one (a body swap's old suit and shoes,
-            // measured in the app 2026-11-12) is covered by the result, not left around it.
-            let before: Option<Vec<u8>> = finder.as_ref().map(|_| photocraft_compose::render(doc, rect).to_rgba8().pixels);
             let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
             if let Some(finder) = finder.as_ref() {
                 for (id, ..) in &filled.0 {
-                    mask_to_subject(doc, *id, rect, selected, before.as_deref(), finder, ctx)?;
+                    mask_to_subject(doc, *id, rect, selected, finder, ctx)?;
                 }
             }
             Ok(filled)
@@ -4748,30 +4744,13 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
 /// the first that finds anything, its instances joined. With a selection the subject joins the
 /// selection's mask (the selected area changes, and a new subject larger than it still shows
 /// whole); without one it is the mask. Nothing found: the mask stays as it was.
-fn mask_to_subject(
-    doc: &mut Document,
-    id: LayerId,
-    rect: Rect,
-    selected: bool,
-    before: Option<&[u8]>,
-    finder: &crate::select_ml_cmds::SubjectFinder,
-    ctx: &JobCtx,
-) -> Result<()> {
+fn mask_to_subject(doc: &mut Document, id: LayerId, rect: Rect, selected: bool, finder: &crate::select_ml_cmds::SubjectFinder, ctx: &JobCtx) -> Result<()> {
     let layer = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
     let surf = layer.surface().ok_or(EngineError::NoLayer(id))?;
     let mut px = vec![[0u8; 4]; rect.width() as usize * rect.height() as usize];
     surf.read_rgba8_into(rect, &mut px);
     let picture: Vec<u8> = px.into_iter().flatten().collect();
-    let Some(mut subject) = subject_in(&picture, rect, finder, ctx)? else { return Ok(()) };
-    // The subject the edit replaced, where the picture before it is given: what of it the new
-    // one does not cover would otherwise show through around the result.
-    if let Some(before) = before.filter(|b| b.len() == picture.len())
-        && let Some(old) = subject_in(before, rect, finder, ctx)?
-    {
-        for (j, c) in subject.iter_mut().zip(&old) {
-            *j = j.max(*c);
-        }
-    }
+    let Some(subject) = subject_in(&picture, rect, finder, ctx)? else { return Ok(()) };
     let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     let shown: Vec<f32> = match layer.mask.as_ref().filter(|_| selected) {
         Some(m) => m.surface.read_region(rect).iter().zip(&subject).map(|(a, b)| a.max(*b)).collect(),
@@ -5573,7 +5552,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"swap":{str?=none},"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; swap = put the head ("head", also "face") or the whole person ("body") from the first reference onto the person in the picture, with the BFS LoRAs for Qwen-Image-2.1 (MIT): runs qwen-2.1/edit unless a template is named, adds the LoRA (bfs_head_v1.1_qwen_2.1 or bfs_body_swap_v1.0_qwen_2.1, from the loras folder), sends the LoRA author's prompt with any typed text after it, Enhance off; a background job; needs the native worker)"#,
+            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"swap":{str?=none},"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; swap = put the head ("head", also "face") or the whole person ("body") from the first reference onto the person in the picture, with the BFS LoRAs for Qwen-Image-2.1 (MIT): runs qwen-2.1/edit unless a template is named, adds the LoRA (bfs_head_v1.1_qwen_2.1 or bfs_body_swap_v1.0_qwen_2.1, from the loras folder), sends the LoRA author's prompt with any typed text after it, Enhance off, and keeps the whole re-rendered picture (wholePicture: a subject mask left the old person's outline); a background job; needs the native worker)"#,
             enabled: edit_enabled,
             run: run_edit,
             journal: true,

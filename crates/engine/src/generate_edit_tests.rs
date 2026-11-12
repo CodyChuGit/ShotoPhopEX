@@ -195,6 +195,7 @@ fn a_swap_sends_the_bfs_lora_and_prompt() {
     assert!(prompt.starts_with("head_swap: start with <image1>") && prompt.ends_with(" smiling"), "{prompt}");
     assert_eq!(q["name"], "Face Swap");
     assert_eq!(q["steps"], swap::SWAP_STEPS);
+    assert_eq!(q["wholePicture"], true, "a swap keeps the whole re-rendered picture");
     assert!(q.get("swap").is_none());
 
     // A named template stays, a LoRA already listed is not added twice.
