@@ -1345,6 +1345,7 @@ fn edit(
         references,
         loras: Default::default(),
         ref_boost: 1.0,
+        sampler: Default::default(),
     };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
     let pic = p.generate(&req, &mut report, &|| false)?;
@@ -1404,6 +1405,7 @@ fn generate_krea2(
         references,
         loras: stack,
         ref_boost,
+        sampler: Default::default(),
     };
     let mut report = |f: f32, m: &str| tracing::debug!(progress = f, "{m}");
     let mut pic = p.generate(&req, &mut report, &|| false)?;

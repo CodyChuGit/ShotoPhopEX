@@ -310,3 +310,19 @@ fn image_refine_sends_the_larger_size() {
     let r = s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "refine": {"scale": 1.5, "denoise": 0.3, "steps": 4}}));
     assert!(r.is_err());
 }
+
+/// `sampler: "er_sde"` and `schedule: "beta"` reach the native engine on Krea 2 Turbo only.
+#[test]
+fn image_sampler_and_beta_schedule_pass_through() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.execute(IMAGE, json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "sampler": "er_sde", "schedule": "beta", "steps": 9}))
+        .unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!(
+        (req["params"]["sampler"].as_str(), req["params"]["schedule"].as_str(), req["steps"].as_u64()),
+        (Some("er_sde"), Some("beta"), Some(9)),
+        "{req}"
+    );
+    assert!(s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "sampler": "er_sde"})).is_err());
+}

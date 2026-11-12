@@ -105,6 +105,19 @@ pub enum Schedule {
     /// ([`crate::comfy::FlowSchedule::beta`], [`crate::comfy::FlowSchedule::aura_flow`]), so
     /// the last steps refine low-noise detail. Only Krea 2's text to image and edit take it.
     KreaDetail,
+    /// Krea 2: ComfyUI's `beta` scheduler over the model's own table (shift 1.15).
+    KreaBeta,
+}
+
+/// The sampler a generation steps with (Krea 2 Turbo takes either; the rest run Euler).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Sampler {
+    /// Euler on the model's velocity.
+    #[default]
+    Euler,
+    /// ComfyUI's `er_sde` (ER-SDE-Solver-3, Cui et al. 2023): the stochastic extended-reverse-time
+    /// solver, up to third order, with fresh noise each step.
+    ErSde,
 }
 
 /// One text-to-image generation.
@@ -131,6 +144,8 @@ pub struct Request {
     /// An edit's pull toward its picture on the models that take one as in-context tokens (Krea 2's
     /// edit LoRAs: the target's attention to the picture multiplied by this; 1 = none).
     pub ref_boost: f32,
+    /// The sampler ([`Sampler::Euler`] unless the model takes another).
+    pub sampler: Sampler,
 }
 
 impl Request {
@@ -147,6 +162,7 @@ impl Request {
             references: Vec::new(),
             loras: crate::lora::LoraStack::default(),
             ref_boost: 1.0,
+            sampler: Sampler::Euler,
         }
     }
 }
@@ -955,7 +971,7 @@ impl Pipeline {
                 let t: Vec<f32> = s.timesteps().iter().map(|t| (*t / 1000.0) as f32).collect();
                 (t.clone(), (0..req.steps).map(|i| s.dt(i) as f32).collect(), t)
             }
-            Schedule::KreaDetail => anyhow::bail!("the Krea detail schedule is for Krea 2 only"),
+            Schedule::KreaDetail | Schedule::KreaBeta => anyhow::bail!("the Krea schedules are for Krea 2 only"),
             Schedule::ViggleTurbo => {
                 use crate::comfy::{comfy_timestep, FlowSchedule};
                 let s = FlowSchedule::viggle_turbo(img_seq);
@@ -965,7 +981,7 @@ impl Pipeline {
         };
         let t0 = Instant::now();
         let mut latents = match req.schedule {
-            Schedule::Comfy | Schedule::ViggleTurbo | Schedule::KreaDetail => {
+            Schedule::Comfy | Schedule::ViggleTurbo | Schedule::KreaDetail | Schedule::KreaBeta => {
                 let noise = crate::comfy::noise_packed(req.seed, lh, lw).map_err(anyhow::Error::msg)?;
                 Tensor::from_vec(noise, (1, img_seq, 64), &self.dev)?
             }

@@ -156,6 +156,14 @@ fn flux_time_shift(mu: f32, t: f32) -> f32 {
     e / (e + (1.0 / t - 1.0))
 }
 
+/// The sigma a model's table gives at time `t` in (0, 1] (`percent_to_sigma(1 − t)`).
+pub fn shifted_sigma(shift: Shift, t: f32) -> f32 {
+    match shift {
+        Shift::Flux { shift, .. } => flux_time_shift(shift, t),
+        Shift::Snr { shift, .. } => time_snr_shift(shift, t),
+    }
+}
+
 /// How a ComfyUI model type builds its sigma table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shift {

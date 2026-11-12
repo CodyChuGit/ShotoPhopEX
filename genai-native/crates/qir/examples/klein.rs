@@ -84,6 +84,7 @@ fn main() -> anyhow::Result<()> {
             references: references.clone(),
             loras: loras.clone(),
             ref_boost: 1.0,
+            sampler: Default::default(),
         };
         let t0 = Instant::now();
         let pic = match &mask {
