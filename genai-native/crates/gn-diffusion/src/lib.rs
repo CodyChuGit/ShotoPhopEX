@@ -143,6 +143,8 @@ pub const MOSS_EDIT_STEPS: u32 = 30;
 pub const TEMPLATE_KLEIN_IMAGE: &str = "flux3-klein/image";
 pub const TEMPLATE_KLEIN_EDIT: &str = "flux3-klein/edit";
 pub const TEMPLATE_KLEIN_FILL: &str = "flux3-klein/fill";
+/// AusBoss's Klein Outpaint LoRA: a Klein fill that carries it is the editor's Expand.
+pub const KLEIN_OUTPAINT_LORA: &str = "flux-3-image-klein-outpaint.safetensors";
 /// Klein's folders under the model root, the first found wins (q4 first: on an M1 it is as fast
 /// as q8 and half the memory).
 pub const KLEIN_DIRS: [&str; 2] = ["mlx/flux-3-image-klein-q4", "mlx/flux-3-image-klein-q8"];
@@ -1477,7 +1479,15 @@ impl Engine for DiffusionEngine {
                     // A fill's second picture is its mask.
                     let mut ask = ask.clone();
                     let mask = if task == "fill" { ask.references.pop() } else { None };
-                    p.generate(&ask, mask.as_ref(), &mut report, &stop).map(|p| vec![p]).map_err(err)
+                    // The editor's Expand comes as a fill with AusBoss's Outpaint LoRA: run it
+                    // the way that LoRA was made for (see `KleinPipeline::outpaint`).
+                    let outpaint = ask.loras.layers.iter().any(|(f, _)| f.path.file_name().is_some_and(|n| n == KLEIN_OUTPAINT_LORA));
+                    match &mask {
+                        Some(m) if outpaint => p.outpaint(&ask, m, &mut report, &stop),
+                        _ => p.generate(&ask, mask.as_ref(), &mut report, &stop),
+                    }
+                    .map(|p| vec![p])
+                    .map_err(err)
                 }
                 #[cfg(feature = "mlx")]
                 (Resident::Mlx(_) | Resident::Klein(_), _) => Err(EngineError::new(ErrorKind::Internal, "MLX runs before the LoRA stack")),

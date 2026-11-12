@@ -10,6 +10,8 @@
 //!   of 0 keeps its aspect at about 1 MP.
 //! - `KLEIN_LORA=<file>[:<strength>]` adds a LoRA, unmerged.
 //! - `KLEIN_MASK=<mask.png>` fills the mask's white on the first picture (Generative Fill).
+//! - `KLEIN_OUTPAINT=1` with a mask runs the editor's Expand instead (the canvas greyed under
+//!   the mask as a full-size reference, no noise mask; use it with the Outpaint LoRA at 1.5).
 //! - `KLEIN_STEPS=<n>` sets the step count (0, the default, takes the checkpoint's own).
 //! - `KLEIN_BASE=1` runs Base (50 steps, CFG 4) instead of the distilled model.
 //!
@@ -60,7 +62,9 @@ fn main() -> anyhow::Result<()> {
     }
     let steps = std::env::var("KLEIN_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
     let mask = std::env::var("KLEIN_MASK").ok().map(|p| picture(&p)).transpose()?;
+    let outpaint = std::env::var("KLEIN_OUTPAINT").is_ok_and(|v| v.trim() == "1");
     let kind = match (&mask, references.is_empty()) {
+        (Some(_), _) if outpaint => "klein-expand",
         (Some(_), _) => "klein-fill",
         (None, true) => "klein",
         (None, false) => "klein-edit",
@@ -82,7 +86,10 @@ fn main() -> anyhow::Result<()> {
             ref_boost: 1.0,
         };
         let t0 = Instant::now();
-        let pic = klein.generate(&req, mask.as_ref(), &mut |_, _| {}, &|| false)?;
+        let pic = match &mask {
+            Some(m) if outpaint => klein.outpaint(&req, m, &mut |_, _| {}, &|| false)?,
+            _ => klein.generate(&req, mask.as_ref(), &mut |_, _| {}, &|| false)?,
+        };
         let total = t0.elapsed().as_secs_f32();
         let path = out.join(format!("{kind}-{size}-{seed}.png"));
         image::RgbaImage::from_raw(pic.width, pic.height, pic.rgba).ok_or_else(|| anyhow::anyhow!("a picture of the wrong size"))?.save(&path)?;

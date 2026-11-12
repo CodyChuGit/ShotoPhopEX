@@ -256,6 +256,32 @@ impl KleinPipeline {
         dit::to_tokens(&z)
     }
 
+    /// Generative Expand as AusBoss's Klein Outpaint workflow runs it (the LoRA in `req.loras`, at
+    /// 1.5): the canvas with `mask`'s white flat grey (#808080) is the reference at the output's
+    /// full size, the picture is sampled whole with no noise mask, and the canvas' own pixels go
+    /// back outside the mask after decoding. Keeping the latent every step instead (the fill)
+    /// leaves the new areas out of line with the picture: hard seams and a horizon that jumps.
+    pub fn outpaint(&self, req: &Request, mask: &RefImage, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
+        let canvas = req.references.first().context("an expand needs its canvas")?;
+        let mut ask = req.clone();
+        ask.references[0] = greyed(canvas, mask)?;
+        let mut pic = self.generate(&ask, None, progress, cancel)?;
+        let (w, h) = (pic.width, pic.height);
+        let fit = |r: &RefImage, filter| -> Result<image::RgbaImage> {
+            let img = image::RgbaImage::from_raw(u32::try_from(r.width)?, u32::try_from(r.height)?, r.rgba.clone())
+                .context("a picture's pixels do not match its size")?;
+            Ok(if img.dimensions() == (w, h) { img } else { image::imageops::resize(&img, w, h, filter) })
+        };
+        let (orig, m) = (fit(canvas, image::imageops::FilterType::Lanczos3)?, fit(mask, image::imageops::FilterType::Triangle)?);
+        for ((px, o), mp) in pic.rgba.chunks_exact_mut(4).zip(orig.pixels()).zip(m.pixels()) {
+            let a = f32::from(mp.0[0]) / 255.0;
+            for (c, oc) in px.iter_mut().zip(o.0).take(3) {
+                *c = (f32::from(*c) * a + f32::from(oc) * (1.0 - a)).round() as u8;
+            }
+        }
+        Ok(pic)
+    }
+
     /// Make one picture. `req.references`: the pictures (the first is the one edited and sets
     /// the canvas); `mask`, for a fill, white where the model paints (the first picture is kept
     /// elsewhere). `req.steps` 0 takes the checkpoint's own (16, or 50 for Base);
