@@ -227,7 +227,7 @@ fn best_quality_tunes_qwen21_text_to_image() {
 #[test]
 fn balanced_and_best_run_krea2_detail_schedule() {
     assert_eq!(image_quality_tuning("krea2-turbo/image", "best"), Some((KREA_DETAIL_STEPS, 1.0)));
-    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some(KREA_DETAIL_SCHEDULE));
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some("beta"));
     assert_eq!(image_quality_schedule("krea2-turbo/image", "fast"), None);
     assert_eq!(image_quality_schedule("qwen-2.1/image", "best"), None);
     let fake = FakeNative::start().unwrap();
@@ -336,8 +336,8 @@ fn best_runs_krea2_on_er_sde_and_beta_balanced_on_euler() {
     use crate::generate_cmds::{image_quality_sampler, image_quality_schedule};
     assert_eq!(image_quality_schedule("krea2-turbo/image", "best"), Some("beta"));
     assert_eq!(image_quality_sampler("krea2-turbo/image", "best"), Some("er_sde"));
-    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some("krea-detail"));
-    assert_eq!(image_quality_sampler("krea2-turbo/image", "balanced"), None);
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some("beta"));
+    assert_eq!(image_quality_sampler("krea2-turbo/image", "balanced"), Some("er_sde"));
     assert_eq!(image_quality_sampler("krea2-turbo/image", "fast"), None);
     assert_eq!(image_quality_sampler("qwen-2.1/image", "best"), None);
 }

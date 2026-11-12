@@ -2428,20 +2428,20 @@ pub const KREA_DETAIL_STEPS: u32 = 9;
 /// Best runs the plain beta schedule over Krea's own shift with er_sde
 /// ([`image_quality_sampler`]): the realism A/B of 2026-11-12 (6 prompts × 2 seeds in the app)
 /// found er_sde gives finer skin, hair and crumb and less plastic look than euler at the same
-/// time, with beta and simple hard to tell apart.
+/// time, with beta and simple hard to tell apart. Balanced too (round 5: crisper fur and wrinkles
+/// than its euler krea-detail run, same 7.3 s); Fast stays on euler (no visible gain at 8 steps).
 pub fn image_quality_schedule(template: &str, quality: &str) -> Option<&'static str> {
     match (template, quality) {
-        ("krea2-turbo/image", "best") => Some("beta"),
-        ("krea2-turbo/image", "balanced") => Some(KREA_DETAIL_SCHEDULE),
+        ("krea2-turbo/image", "best" | "balanced") => Some("beta"),
         _ => None,
     }
 }
 
 /// The sampler a text-to-image run of `template` uses under `quality` (`None`: euler, the
-/// template's): er_sde on Krea 2 Turbo under `best` (see [`image_quality_schedule`]).
+/// template's): er_sde on Krea 2 Turbo under `best` and `balanced` (see [`image_quality_schedule`]).
 pub fn image_quality_sampler(template: &str, quality: &str) -> Option<&'static str> {
     match (template, quality) {
-        ("krea2-turbo/image", "best") => Some("er_sde"),
+        ("krea2-turbo/image", "best" | "balanced") => Some("er_sde"),
         _ => None,
     }
 }
@@ -5698,7 +5698,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generate Image…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"refine":{{"scale":1..2,"denoise":0.05..1,"steps":1..20}?=none: krea2-turbo/image redrawn once more at scale times the size (at most 2560 a side)},"enhanceStyle":{"default"|"photo"?=photo under Preferences › Quality best (no references, not transparent), else default; photo = written like a real photo's caption},"sampler":{"euler"|"er_sde"?=Preferences › Quality: er_sde on krea2-turbo/image under best, else euler},"schedule":{"simple"|"krea-detail"|"beta"?=Preferences › Quality: on krea2-turbo/image beta (9 steps) under best, krea-detail (9 steps) under balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"refine":{{"scale":1..2,"denoise":0.05..1,"steps":1..20}?=none: krea2-turbo/image redrawn once more at scale times the size (at most 2560 a side)},"enhanceStyle":{"default"|"photo"?=photo under Preferences › Quality best (no references, not transparent), else default; photo = written like a real photo's caption},"sampler":{"euler"|"er_sde"?=Preferences › Quality: er_sde on krea2-turbo/image under best and balanced, else euler},"schedule":{"simple"|"krea-detail"|"beta"?=Preferences › Quality: beta (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: image_enabled,
             run: run_image,
             journal: true,
