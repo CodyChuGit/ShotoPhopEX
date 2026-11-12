@@ -393,6 +393,31 @@ fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>)
     }
 }
 
+/// `params.refine: {"width", "height", "denoise", "steps"}` on Krea 2 Turbo's text to image: a
+/// second pass over the picture at that size ([`Krea2Pipeline::refine_previewed`]).
+fn krea2_refine_options(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Option<krea2_pipeline::RefineOptions>, EngineError> {
+    let Some(v) = params.get("refine").filter(|v| !v.is_null()) else { return Ok(None) };
+    let bad = |m: String| EngineError::new(ErrorKind::BadRequest, m);
+    if model != TEMPLATE_KREA2 {
+        return Err(bad(format!("refine is for {TEMPLATE_KREA2} only, not {model}")));
+    }
+    let side = |k: &str| -> Result<usize, EngineError> {
+        match v.get(k).and_then(Value::as_u64) {
+            Some(x) if (256..=4096).contains(&x) && x % 16 == 0 => Ok(x as usize),
+            _ => Err(bad(format!("refine.{k} must be a multiple of 16 in 256..4096"))),
+        }
+    };
+    let denoise = match v.get("denoise").and_then(Value::as_f64) {
+        Some(d) if d > 0.0 && d <= 1.0 => d as f32,
+        _ => return Err(bad("refine.denoise must be in (0, 1]".into())),
+    };
+    let steps = match v.get("steps").and_then(Value::as_u64) {
+        Some(n) if (1..=50).contains(&n) => n as usize,
+        _ => return Err(bad("refine.steps must be 1..50".into())),
+    };
+    Ok(Some(krea2_pipeline::RefineOptions { width: side("width")?, height: side("height")?, denoise, steps }))
+}
+
 fn krea2_fill_options(params: &std::collections::BTreeMap<String, Value>) -> Result<krea2_pipeline::FillOptions, EngineError> {
     let mut o = krea2_pipeline::FillOptions::default();
     if let Some(v) = params.get("denoise") {
@@ -1549,7 +1574,14 @@ impl Engine for DiffusionEngine {
                 (Resident::Krea2(p), _) if req.model == TEMPLATE_KREA2_STYLE => {
                     p.generate_style_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
-                (Resident::Krea2(p), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Krea2(p), _) => match krea2_refine_options(&req.model, &req.params)? {
+                    None => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                    // A second pass at the larger size after the picture (Quality best).
+                    Some(opts) => {
+                        let base = p.generate_previewed(&ask, &mut |f, m| report(0.55 * f, m), None, &stop).map_err(err)?;
+                        p.refine_previewed(&ask, &base, &opts, &mut |f, m| report(0.55 + 0.45 * f, m), shown, &stop).map(|p| vec![p]).map_err(err)
+                    }
+                },
                 (Resident::Moss(p, _), _) if realism => {
                     p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
@@ -2003,6 +2035,17 @@ mod tests {
             std::fs::remove_dir(root.join(d))?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn krea2_refine_options_parse() {
+        let p = |v: Value| std::collections::BTreeMap::from([("refine".to_string(), v)]);
+        assert_eq!(krea2_refine_options(TEMPLATE_KREA2, &std::collections::BTreeMap::new()).unwrap(), None);
+        let o = krea2_refine_options(TEMPLATE_KREA2, &p(json!({"width": 2048, "height": 1536, "denoise": 0.3, "steps": 4}))).unwrap().unwrap();
+        assert_eq!((o.width, o.height, o.steps), (2048, 1536, 4));
+        assert!(krea2_refine_options(TEMPLATE_KREA2_EDIT, &p(json!({"width": 2048, "height": 1536, "denoise": 0.3, "steps": 4}))).is_err());
+        assert!(krea2_refine_options(TEMPLATE_KREA2, &p(json!({"width": 2050, "height": 1536, "denoise": 0.3, "steps": 4}))).is_err());
+        assert!(krea2_refine_options(TEMPLATE_KREA2, &p(json!({"width": 2048, "height": 1536, "denoise": 0.0, "steps": 4}))).is_err());
     }
 
     /// `params.schedule` picks Krea 2's detail recipe, only where Krea 2 takes it.
