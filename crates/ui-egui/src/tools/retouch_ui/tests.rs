@@ -1363,3 +1363,16 @@ fn history_brush_options_bar_shows_source_name() {
     h.run_steps(4);
     h.get_by_label("The History Brush source was deleted: set a new source in the History panel");
 }
+
+/// High Quality Select Subject asks for Qwen-Image-2.1's matte of the main subject as a new
+/// selection, from the layer or every layer as the tool says.
+#[test]
+fn high_quality_select_subject_asks_for_the_qwen_matte_as_a_selection() {
+    let q = super::subject_hq_params(true);
+    assert_eq!(q["template"], "qwen-2.1/matte");
+    assert_eq!(q["asSelection"], true);
+    assert_eq!(q["mode"], "replace");
+    assert_eq!(q["prompt"], "", "nothing named: the main subject");
+    assert_eq!(q["sampleAllLayers"], true);
+    assert_eq!(super::subject_hq_params(false)["sampleAllLayers"], false);
+}

@@ -350,6 +350,8 @@ Hover, and what a click would take lights up in its own colour once the pointer 
 
 One click and SAM 3.1 finds the subject. **0.6&nbsp;s** warm, 2.2 s cold.
 
+Switch the selection tool's options bar from **Fast** to **High Quality** and Qwen-Image-2.1 draws the subject's matte instead: cleaner hair, fur and glass edges, and it keeps what the subject holds. **About 8.5&nbsp;s** warm. Needs Allow Research-Only Models.
+
 ### Clown Pass
 
 <p align="center">

@@ -1097,3 +1097,24 @@ fn angles_runs_the_multiple_angles_lora_and_the_auto_line_names_the_outpaint_exp
     assert_eq!(likely_auto_in(&s, EXPAND, "best"), OUTPAINT_EDIT_TEMPLATE);
     assert!(native21_picks(&s).contains(&("autoExpand", OUTPAINT_EDIT_TEMPLATE)));
 }
+
+/// Generative Remove on Qwen-Image-2.1's edit takes AusBoss's Consistency LoRA when the LoRA
+/// folder has it and the request names none; any other template, a LoRA of the request's own,
+/// or a missing file leaves the request as it was.
+#[test]
+fn a_21_removal_takes_the_consistency_lora_when_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let models = dir.path().to_string_lossy().into_owned();
+    let mut s = session(&models);
+    assert_eq!(consistency_lora(&s, "qwen-2.1/edit", &[]), None, "no file, no LoRA");
+    std::fs::create_dir_all(dir.path().join("loras")).unwrap();
+    std::fs::write(dir.path().join("loras").join(CONSISTENCY_LORA), b"x").unwrap();
+    assert_eq!(consistency_lora(&s, "qwen-2.1/edit", &[]), Some(CONSISTENCY_LORA));
+    assert_eq!(consistency_lora(&s, "qwen-2.1/fill", &[]), None, "only the 2.1 edit");
+    assert_eq!(consistency_lora(&s, "qwen-edit-2511/edit", &[]), None);
+    assert_eq!(consistency_lora(&s, "qwen-2.1/edit", &[("mine.safetensors".into(), 0.5)]), None, "the request's own LoRAs stand");
+    s.edit_prefs(|p| p.integrations.runtime_path = String::new());
+    if !cfg!(target_os = "macos") {
+        assert_eq!(consistency_lora(&s, "qwen-2.1/edit", &[]), None, "only through the native engine");
+    }
+}

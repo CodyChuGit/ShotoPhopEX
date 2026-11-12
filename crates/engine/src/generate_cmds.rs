@@ -1678,6 +1678,24 @@ fn removal_job(
     })
 }
 
+/// AusBoss's Consistency LoRA for Qwen-Image-2.1 edits (ausboss/Qwen-Image-2.1-Consistency-LoRA,
+/// strength 1): keeps the edited picture on the original's frame. On Generative Remove it cut
+/// the change outside the hole 2.6 to 3.5 times on four of five pictures at the same speed
+/// (measured in the app 2026-11-11, `target/cutout-qwen21-test`).
+pub(crate) const CONSISTENCY_LORA: &str = "qwen-image-2.1-consistency.safetensors";
+
+/// The Consistency LoRA a generative removal on `template` adds: only on Qwen-Image-2.1's edit
+/// through the native engine, when the LoRA folder has the file and the request names no LoRA of
+/// its own. Split into Layers does not take it: its author saw a big removal (a person up front)
+/// leave a faint ghost with it on.
+fn consistency_lora(s: &Session, template: &str, loras: &[(String, f32)]) -> Option<&'static str> {
+    if template != "qwen-2.1/edit" || !loras.is_empty() || !loras::runs_native(s, template) {
+        return None;
+    }
+    let root = s.prefs().integrations.models_root();
+    (!root.is_empty() && std::path::Path::new(&root).join("loras").join(CONSISTENCY_LORA).is_file()).then_some(CONSISTENCY_LORA)
+}
+
 /// What Split's background fill asks for once the removal has painted a large subject back:
 /// the backdrop alone, the subject never named (a model told to remove "the person" from a
 /// 12-megapixel portrait kept them in place on every route, measured in the app 2026-11-03).
@@ -1780,7 +1798,10 @@ pub(crate) fn generative_remove(
     if hole.is_empty() {
         return Err(EngineError::Other("nothing to remove: the stroke covers no pixel that can change (check the selection)".into()));
     }
-    let job = removal_job(s, label, grow, erase, enhance, variations, seed, prefill, tuning)?;
+    let mut job = removal_job(s, label, grow, erase, enhance, variations, seed, prefill, tuning)?;
+    if let Some(lora) = consistency_lora(s, &job.template_id, &job.tuning.loras) {
+        job.tuning.loras.push((lora.to_string(), 1.0));
+    }
     let label_kept = label.to_string();
     crate::jobs::edit_job(
         s,
