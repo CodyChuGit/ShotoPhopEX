@@ -97,6 +97,23 @@ fn enhance_prompt_rewrites_an_instruction_with_the_picture_in_view() {
         assert!(system_prompt(g).starts_with("You are an expert prompt writer for a text-to-image model."));
         assert_eq!(text_prompt(g), "a fox in snow");
     }
+    // The photographic rewriter: written like a real photo's caption, no "8k" words.
+    s.execute(ENHANCE, json!({"prompt": "a fox in snow", "task": "photo"})).unwrap();
+    {
+        let st = fake.state();
+        let g = &st.runs.last().unwrap().request;
+        let sys = system_prompt(g);
+        assert!(g["image"].is_null());
+        assert!(sys.starts_with("You are an expert prompt writer for a photorealistic") && sys.contains("Never write photorealistic"), "{sys}");
+    }
+    // generate.image with enhanceStyle "photo" rewrites with it first.
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document", "enhance": true, "enhanceStyle": "photo"}))
+        .unwrap();
+    {
+        let st = fake.state();
+        assert!(st.runs.iter().any(|r| system_prompt(&r.request).starts_with("You are an expert prompt writer for a photorealistic")));
+    }
+    assert!(s.execute(IMAGE, json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "enhance": true, "enhanceStyle": "film"})).is_err());
     // Validation.
     for p in [json!({}), json!({"prompt": "  "}), json!({"prompt": "x", "task": "paint"}), json!({"prompt": "x", "useImage": "yes"})] {
         assert!(matches!(s.execute(ENHANCE, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
