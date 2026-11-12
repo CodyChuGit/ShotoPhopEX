@@ -278,3 +278,26 @@ fn a_text_only_prompt_writer_rewrites_an_edit_from_its_words() {
     assert_eq!(st.runs.len(), 2, "refused with the picture, answered without");
     assert!(!system_prompt(&st.runs[1].request).contains("You can see the image."));
 }
+
+#[test]
+fn quality_best_rewrites_text_to_image_photo_style_unless_told_not_to() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| {
+        p.integrations.quality = "best".into();
+        p.integrations.enhance_prompts = false;
+    });
+    let photo = |fake: &FakeNative| {
+        fake.state().runs.iter().filter(|r| system_prompt(&r.request).starts_with("You are an expert prompt writer for a photorealistic")).count()
+    };
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document"})).unwrap();
+    assert_eq!(photo(&fake), 1, "Best rewrites photo-style with Enhance prompts off");
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document", "enhance": false})).unwrap();
+    assert_eq!(photo(&fake), 1, "an explicit enhance: false opts out");
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document", "enhanceStyle": "default"})).unwrap();
+    assert_eq!(photo(&fake), 1, "an explicit style wins");
+    s.edit_prefs(|p| p.integrations.quality = "balanced".into());
+    let before = fake.state().runs.len();
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document"})).unwrap();
+    assert_eq!(fake.state().runs.len(), before + 1, "Balanced sends the words as typed");
+}
