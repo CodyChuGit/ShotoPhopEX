@@ -45,6 +45,7 @@ mod lora_gemm;
 #[cfg(feature = "convrot")]
 pub mod lora_materialize;
 pub mod mapped;
+pub mod nvfp4;
 pub mod model;
 pub mod moss;
 pub mod pipeline;

@@ -102,6 +102,16 @@
    "license": "krea-2-community"
   },
   {
+   "id": "krea2-dit-nvfp4",
+   "name": "Krea 2 Turbo, 4-bit (RTX 50-series)",
+   "folder": "diffusion_models",
+   "file": "krea2_turbo_nvfp4.safetensors",
+   "bytes": 7673668448,
+   "sha256": "61527003b2d537055494d01bc8efe51d6e86e64192ba23e3721a5647231fe394",
+   "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_nvfp4.safetensors",
+   "license": "krea-2-community"
+  },
+  {
    "id": "qwen21-dit",
    "name": "Qwen-Image-2.1",
    "folder": "diffusion_models",
@@ -807,6 +817,18 @@
     "qwen21-vae",
     "bfs-head",
     "bfs-body"
+   ]
+  },
+  {
+   "id": "krea2-nvfp4",
+   "name": "Krea 2 Turbo, 4-bit (RTX 50-series)",
+   "description": "Comfy-Org's NVFP4 Krea 2 for RTX 50-series cards: the Fast and Balanced qualities use it, Best keeps the regular model. 7.7 GB instead of 13.1 GB. Other cards don't use it.",
+   "os": [
+    "windows",
+    "linux"
+   ],
+   "files": [
+    "krea2-dit-nvfp4"
    ]
   },
   {

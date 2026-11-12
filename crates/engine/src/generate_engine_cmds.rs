@@ -164,6 +164,18 @@ mod tests {
         (fake, s)
     }
 
+    /// Fast and Balanced ask the worker for 4-bit weights (it loads Krea 2's NVFP4 file only on
+    /// an RTX 50-series card that has it); Best never does.
+    #[test]
+    fn fast_and_balanced_ask_for_nvfp4_and_best_does_not() {
+        for (quality, want) in [("best", None), ("balanced", Some(json!("nvfp4"))), ("fast", Some(json!("nvfp4")))] {
+            let (fake, mut s) = fake_session(photocraft_genai::fake::Options { vram_free: Some(40_000_000_000), ..Default::default() });
+            s.edit_prefs(|p| p.integrations.quality = quality.into());
+            s.execute(WARM_UP, json!({"wait": true})).unwrap();
+            assert_eq!(fake.state().runs[0].run.params.get("precision"), want.as_ref(), "{quality}");
+        }
+    }
+
     /// A warm-up loads the default image template's models and generates nothing; with too little
     /// free memory on the card it loads nothing.
     #[test]

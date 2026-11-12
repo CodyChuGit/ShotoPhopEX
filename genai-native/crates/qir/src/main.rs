@@ -1375,7 +1375,7 @@ fn generate_krea2(
     use qwen_image_rs::pipeline::{RefImage, Request, Schedule};
     let mut report = |f: f32, m: &str| tracing::info!(progress = f, "{m}");
     let t0 = std::time::Instant::now();
-    let p = Krea2Pipeline::load(model, Krea2Options { convrot, cache: cache.clone() }, &mut report)?;
+    let p = Krea2Pipeline::load(model, Krea2Options { convrot, cache: cache.clone(), nvfp4: std::env::var_os("QIR_KREA2_NVFP4").is_some() }, &mut report)?;
     tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
     let references = match image {
         Some(path) => {

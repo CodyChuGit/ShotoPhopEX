@@ -138,8 +138,10 @@ fn main() {
     #[cfg(feature = "fp8")]
     {
         // The e4m3 casts of src/fp8.rs (candle's PTX has no e4m3 -> bf16 cast on this toolkit).
+        // And the NVFP4 casts of src/nvfp4.rs (the GEMM itself is cuBLASLt's).
         println!("cargo:rerun-if-changed=kernels/fp8/fp8_cast.cu");
-        nvcc().file("kernels/fp8/fp8_cast.cu").compile("qir_fp8");
+        println!("cargo:rerun-if-changed=kernels/fp8/nvfp4.cu");
+        nvcc().file("kernels/fp8/fp8_cast.cu").file("kernels/fp8/nvfp4.cu").compile("qir_fp8");
         println!("cargo:rustc-link-lib=dylib=cudart");
     }
 

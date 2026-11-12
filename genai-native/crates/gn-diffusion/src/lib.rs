@@ -250,6 +250,10 @@ pub struct DiffusionEngine {
     refused: Option<String>,
     /// The tiny decoder Sharp previews use, loaded on the first Sharp run of its latent space.
     tiny: Option<TinyDecoder>,
+    /// The last run asked for 4-bit weights (`params.precision: "nvfp4"`, the app's Fast and
+    /// Balanced qualities) and this card can multiply in FP4: Krea 2 loads its NVFP4 file when
+    /// it is on disk.
+    want_nvfp4: bool,
 }
 
 /// The protocol's preview mode as the pipelines know it.
@@ -410,7 +414,7 @@ impl DiffusionEngine {
         if let Some(why) = &refused {
             eprintln!("gn-diffusion: {why}");
         }
-        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None }
+        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None, want_nvfp4: false }
     }
 
     /// For a Sharp preview: `space`'s tiny decoder on the resident pipeline's device, loaded
@@ -652,6 +656,15 @@ impl DiffusionEngine {
         if krea2_pipeline::is_snapshot(&dir) { Some(dir) } else { qwen_image_rs::comfy_files::find_krea2(&self.models_root).map(|_| self.models_root.clone()) }
     }
 
+    /// Whether Krea 2 should load its NVFP4 file: asked for, an FP4-capable card (compute 10.x
+    /// and up, the RTX 50-series), and the file beside the fp8 one in the models folder.
+    fn krea2_nvfp4(&self) -> bool {
+        self.want_nvfp4
+            && self.gpu.as_ref().is_some_and(|g| g.compute_cap >= 100)
+            && self.krea2_source().is_some_and(|d| d == self.models_root)
+            && qwen_image_rs::comfy_files::krea2_nvfp4(&self.models_root).is_some()
+    }
+
     fn has_family(&self, family: Family) -> bool {
         match family {
             Family::QwenImage21 => self.qwen21_source().is_some(),
@@ -703,8 +716,8 @@ impl DiffusionEngine {
     fn ensure_loaded(&mut self, family: Family, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
         self.bind();
         match (&self.resident, family) {
+            (Resident::Krea2(p), Family::Krea2) if p.is_nvfp4() == self.krea2_nvfp4() => return Ok(()),
             (Resident::Qwen(_), Family::QwenImage21)
-            | (Resident::Krea2(_), Family::Krea2)
             | (Resident::Layered(_), Family::Layered)
             | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
             (Resident::Moss(_, held), Family::Moss(v)) if *held == v => return Ok(()),
@@ -764,7 +777,11 @@ impl DiffusionEngine {
                         ),
                     ));
                 };
-                let opts = Krea2Options { cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false), ..Krea2Options::defaults() };
+                let opts = Krea2Options {
+                    cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false),
+                    nvfp4: self.krea2_nvfp4(),
+                    ..Krea2Options::defaults()
+                };
                 Resident::Krea2(Krea2Pipeline::load(&dir, opts, &mut report).map_err(err)?)
             }
             Family::Edit2511 => {
@@ -1247,6 +1264,7 @@ impl Engine for DiffusionEngine {
         if req.task != task {
             return Err(EngineError::new(ErrorKind::Unsupported, format!("{} answers `{task}`, not `{}`", req.model, req.task)));
         }
+        self.want_nvfp4 = req.params.get("precision").and_then(Value::as_str) == Some("nvfp4");
         // A warm-up (the editor at launch): the template's models loaded, nothing generated.
         if req.params.get("warmup").and_then(Value::as_bool) == Some(true) {
             // The VRAM guard: with nothing resident, `need_free` bytes must be free on the card
