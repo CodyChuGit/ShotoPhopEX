@@ -27,7 +27,7 @@ use super::{
     BACKGROUND_PROMPT, Common, DEFAULT_MATTE_TEMPLATE, FillJob, GenerativeInfo, Gray8, JobProgress, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, PEEL_PROMPT,
     PREFILL, REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, TONE_MATCH_MAX, Task, Tuning, Value, at_least, background_job, box_blur, dilate,
     embed_coverage, fill_rect, fill_region, gen_err, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt,
-    remove_grow, request_size, resize_gray8, resize_rgba8, resolve_auto, set_generative_info, write_rgba8,
+    remove_grow, request_size, resize_gray8, resize_rgba8, resolve_auto, sees, set_generative_info, write_rgba8,
 };
 
 /// The simple split: progressive subject removal, nearest first, until the detector finds nothing.
@@ -2736,6 +2736,7 @@ fn find_subjects(
             let left = budget.saturating_sub(out.len());
             take(ANIMAL, false, left, &mut out, &mut by, ctx)?;
             ctx.check()?;
+            name_lookalikes(thinker, picture, area, &mut out, seed, ctx)?;
             let left = budget.saturating_sub(out.len());
             if left > 0 {
                 ctx.progress(0.04, "Naming the things in front");
@@ -2781,6 +2782,46 @@ fn find_subjects(
     }
     Ok((out, by.join(", ")))
 }
+
+/// Each person and animal the detector found, checked by the vision-language model on its own
+/// crop: the detector's "person" and "animal" also fire on things of their shape (a duck was a
+/// "Person" and a pear an "Animal" in the app, 2026-11-06 and 2026-11-12). One the model says
+/// is no real person (animal) is renamed by what the model calls it ([`list_things`] on the
+/// crop, which names things, not people or animals), so its layer is "Pear" and its removal asks
+/// for a pear. One the model sees, does not answer about, or cannot name keeps its word.
+fn name_lookalikes(thinker: &dyn GenerativeBackend, picture: &[u8], area: Rect, out: &mut [Subject], seed: u64, ctx: &JobCtx) -> Result<()> {
+    let progress = JobProgress::span(ctx, 0.03, 0.04);
+    for s in out.iter_mut().filter(|s| !s.asked) {
+        let word = bare(&s.term).to_ascii_lowercase();
+        if word != PERSON && word != ANIMAL {
+            continue;
+        }
+        ctx.check()?;
+        let Some(view) = lookalike_view(picture, area, s.bounds) else { continue };
+        let question = format!("Is there a real {word} (not a picture, toy, statue or object shaped like one) in this photo?");
+        if sees(thinker, &view, &question, seed, &progress) != Some(false) {
+            continue;
+        }
+        if let Some(name) = list_things(thinker, &view, 1, seed, &progress).into_iter().next() {
+            s.term = name;
+        }
+    }
+    Ok(())
+}
+
+/// A subject's bounds with a margin of [`LOOKALIKE_MARGIN`] of their size (within `area`),
+/// cut from `picture`: what the vision-language model is shown to say what the subject is.
+fn lookalike_view(picture: &[u8], area: Rect, bounds: Rect) -> Option<Rgba8> {
+    let (mx, my) = ((bounds.width() as f32 * LOOKALIKE_MARGIN) as i32, (bounds.height() as f32 * LOOKALIKE_MARGIN) as i32);
+    let r = Rect::new(bounds.x0 - mx, bounds.y0 - my, bounds.x1 + mx, bounds.y1 + my).intersect(&area);
+    if r.is_empty() {
+        return None;
+    }
+    Rgba8::new(r.width(), r.height(), crop_rgba(picture, area, r)).ok()
+}
+
+/// The margin around a subject shown to the vision-language model, as a share of its size.
+const LOOKALIKE_MARGIN: f32 = 0.15;
 
 /// Drop what is not a subject of its own: specks, whole-frame detections, near-duplicates,
 /// parts inside wholes (unless the caller asked for the part by name, when it is cut out of the
