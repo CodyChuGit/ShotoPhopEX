@@ -300,7 +300,22 @@ fn quality_best_rewrites_photo_style_only_when_enhance_is_on() {
     assert_eq!(photo(&fake), 1, "an explicit enhance: false opts out");
     s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document", "enhanceStyle": "default"})).unwrap();
     assert_eq!(photo(&fake), 1, "an explicit style wins");
+    s.execute(IMAGE, json!({"prompt": "an oil painting of a lighthouse", "template": "krea2-turbo/image", "target": "document"})).unwrap();
+    assert_eq!(photo(&fake), 1, "a painting gets the plain rewriter");
+    let last = fake.state().runs.iter().rev().find(|r| is_text_request(&r.request)).map(|r| system_prompt(&r.request)).unwrap();
+    assert!(!last.contains("photorealistic text-to-image"), "{last}");
     s.edit_prefs(|p| p.integrations.quality = "balanced".into());
     s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document"})).unwrap();
     assert_eq!(photo(&fake), 1, "Balanced uses the plain rewriter");
+}
+
+#[test]
+fn other_media_are_recognised() {
+    use crate::generate_cmds::names_other_medium;
+    for p in ["an oil painting of a lighthouse", "Watercolour of a fox", "anime girl on a train", "a 3D render of a chair", "pencil sketch of hands"] {
+        assert!(names_other_medium(p), "{p}");
+    }
+    for p in ["a woman in a cafe", "a ceramic coffee mug on a wooden desk", "street at night, shot on 35mm"] {
+        assert!(!names_other_medium(p), "{p}");
+    }
 }

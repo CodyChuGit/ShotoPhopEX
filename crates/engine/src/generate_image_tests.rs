@@ -240,10 +240,14 @@ fn balanced_and_best_run_krea2_detail_schedule() {
     };
     s.edit_prefs(|p| p.integrations.quality = "best".into());
     let req = run(&mut s, json!({}));
-    assert_eq!((req["steps"].as_u64(), req["params"]["schedule"].as_str()), (Some(9), Some("krea-detail")), "{req}");
-    // Asked for the plain schedule: the template's steps, no schedule param.
+    // Best: er_sde over beta at 9 steps (the realism A/B of 2026-11-12).
+    assert_eq!((req["steps"].as_u64(), req["params"]["schedule"].as_str()), (Some(9), Some("beta")), "{req}");
+    assert_eq!(req["params"]["sampler"], "er_sde", "{req}");
+    // Asked for the plain schedule: the template's steps, sampler and schedule.
     let req = run(&mut s, json!({"schedule": "simple"}));
-    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(8), None), "{req}");
+    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule"), req["params"].get("sampler")), (Some(8), None, None), "{req}");
+    let req = run(&mut s, json!({"sampler": "euler"}));
+    assert_eq!((req["params"]["schedule"].as_str(), req["params"].get("sampler")), (Some("beta"), None), "{req}");
     s.edit_prefs(|p| p.integrations.quality = "fast".into());
     let req = run(&mut s, json!({}));
     assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(8), None), "{req}");
@@ -325,4 +329,15 @@ fn image_sampler_and_beta_schedule_pass_through() {
         "{req}"
     );
     assert!(s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "sampler": "er_sde"})).is_err());
+}
+
+#[test]
+fn best_runs_krea2_on_er_sde_and_beta_balanced_on_euler() {
+    use crate::generate_cmds::{image_quality_sampler, image_quality_schedule};
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "best"), Some("beta"));
+    assert_eq!(image_quality_sampler("krea2-turbo/image", "best"), Some("er_sde"));
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some("krea-detail"));
+    assert_eq!(image_quality_sampler("krea2-turbo/image", "balanced"), None);
+    assert_eq!(image_quality_sampler("krea2-turbo/image", "fast"), None);
+    assert_eq!(image_quality_sampler("qwen-2.1/image", "best"), None);
 }

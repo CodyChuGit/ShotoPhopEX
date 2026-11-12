@@ -326,15 +326,70 @@ const ENHANCE_IMAGE_SYSTEM: &str = "You are an expert prompt writer for a text-t
 Keep every subject, action, colour and spatial relation the user gave. Add no new objects, characters or animals. Keep any medium the user named (photo, painting, sketch, 3D render). Put any words to be rendered in the image in double quotes. If the idea is already detailed, polish it lightly and keep its wording.\n\
 Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
 
+/// Whether a prompt asks for a medium other than a photograph (a painting, a drawing, a
+/// render…): Best's photo rewriter turned "an oil painting of a lighthouse" into a photograph
+/// of one (round 3, 2026-11-12), so such prompts get the plain rewriter.
+pub fn names_other_medium(prompt: &str) -> bool {
+    const MEDIA: &[&str] = &[
+        "painting",
+        "painted",
+        "watercolor",
+        "watercolour",
+        "gouache",
+        "acrylic",
+        "oil on canvas",
+        "illustration",
+        "illustrated",
+        "drawing",
+        "drawn",
+        "sketch",
+        "cartoon",
+        "anime",
+        "manga",
+        "comic",
+        "3d render",
+        "render of",
+        "rendered",
+        "cgi",
+        "pixel art",
+        "vector",
+        "line art",
+        "concept art",
+        "digital art",
+        "low poly",
+        "claymation",
+        "woodcut",
+        "linocut",
+        "engraving",
+        "pastel",
+        "charcoal",
+        "pencil",
+        "ink wash",
+        "mural",
+        "fresco",
+        "stained glass",
+        "poster",
+        "logo",
+        "icon",
+        "clip art",
+        "sticker",
+        "isometric",
+        "cel shaded",
+        "cel-shaded",
+        "voxel",
+    ];
+    let p = prompt.to_lowercase();
+    MEDIA.iter().any(|m| p.contains(m))
+}
+
 /// The photographic rewriter ([`EnhanceKind::ImagePhoto`], `enhanceStyle: "photo"`): how the most
 /// liked photoreal Krea 2 / MOSS pictures on Civitai are prompted (their generation data,
 /// 2026-11-12): plain prose that opens with the kind of shot and what took it, one named light
 /// source, and the small flaws of a real photo, without "photorealistic", "8k" or camera brands.
 const ENHANCE_IMAGE_PHOTO_SYSTEM: &str = "You are an expert prompt writer for a photorealistic text-to-image model. Rewrite the user's idea as one paragraph of 60 to 110 words that reads like the caption of a real, unretouched photograph.\n\
-Open with the kind of shot that suits the subject, and vary it: a portrait on an 85mm lens, a close-up on a macro lens, a wide shot on a 24mm lens, a flash snapshot, a candid street photo, a product shot on a tabletop, a landscape at golden hour. Use a smartphone photo only for casual, everyday scenes. Then the subject and what it does, its clothing, materials and surfaces, the setting, and one concrete light source (window light, overcast daylight, a street lamp, a softbox, on-camera flash) with how it falls.\n\
-Name two or three small imperfections a real photo has, each on something that really has it: pores, fine lines and stray hairs only on people; fur and whiskers on animals; scratches, fingerprints, dust or wear on objects; creases on fabric; puddles or litter on streets. Shallow focus, slight motion blur and soft grain apply to the whole frame.\n\
-If the user names another medium, such as a painting, illustration, drawing, cartoon, anime or 3D render, keep that medium, describe it in its own terms and use no camera or lens words.\n\
-Keep every subject, action, colour and spatial relation the user gave. Add no new people, characters or animals. Put any words to be rendered in the image in double quotes. Never write photorealistic, hyperrealistic, 8k, 4k, masterpiece, best quality, DSLR or a camera brand.\n\
+Always open with the kind of shot, chosen for the scene: a portrait on an 85mm lens for a person, a close-up on a macro lens for a small object, a wide shot on a 24mm lens for a room or landscape, a candid photo for people going about their day, a product shot for an object on display, a flash snapshot at night. Call it a street photo only when the scene is a street. If the user names a lens, film or camera setting, keep it word for word. Then the subject and what it does, its clothing, materials and surfaces, the setting, and one concrete light source (window light, overcast daylight, a street lamp, a softbox, on-camera flash) with how it falls.\n\
+Name two or three small imperfections a real photo has, each on something the user named that really has it: pores, fine lines and stray hairs only on a person's skin; fur on animals; scratches, fingerprints, chips or dust on objects; creases on fabric; crumbs on food. Never put hair or pores on an object or food. Shallow focus and soft grain apply to the whole frame.\n\
+Keep every subject, action, colour and spatial relation the user gave. Add no new people, characters, animals, objects, clothing or weather (no gloves, puddles or rain the user did not ask for). Put any words to be rendered in the image in double quotes. Never write photorealistic, hyperrealistic, 8k, 4k, masterpiece, best quality, DSLR or a camera brand.\n\
 Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
 
 /// The longest text-to-image rewrite, in tokens (about 160 words).
@@ -2370,9 +2425,23 @@ pub const KREA_DETAIL_STEPS: u32 = 9;
 
 /// The schedule a text-to-image run of `template` asks for under `quality` (`None`: the
 /// template's own): Krea 2 Turbo under `best` and `balanced` runs [`KREA_DETAIL_SCHEDULE`].
+/// Best runs the plain beta schedule over Krea's own shift with er_sde
+/// ([`image_quality_sampler`]): the realism A/B of 2026-11-12 (6 prompts × 2 seeds in the app)
+/// found er_sde gives finer skin, hair and crumb and less plastic look than euler at the same
+/// time, with beta and simple hard to tell apart.
 pub fn image_quality_schedule(template: &str, quality: &str) -> Option<&'static str> {
     match (template, quality) {
-        ("krea2-turbo/image", "best" | "balanced") => Some(KREA_DETAIL_SCHEDULE),
+        ("krea2-turbo/image", "best") => Some("beta"),
+        ("krea2-turbo/image", "balanced") => Some(KREA_DETAIL_SCHEDULE),
+        _ => None,
+    }
+}
+
+/// The sampler a text-to-image run of `template` uses under `quality` (`None`: euler, the
+/// template's): er_sde on Krea 2 Turbo under `best` (see [`image_quality_schedule`]).
+pub fn image_quality_sampler(template: &str, quality: &str) -> Option<&'static str> {
+    match (template, quality) {
+        ("krea2-turbo/image", "best") => Some("er_sde"),
         _ => None,
     }
 }
@@ -2539,12 +2608,15 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
             negative = BEST_IMAGE_NEGATIVE.to_string();
         }
     }
-    if schedule == Some(KREA_DETAIL_SCHEDULE) && steps == 0 {
+    if matches!(schedule, Some(KREA_DETAIL_SCHEDULE | "beta")) && steps == 0 {
         steps = KREA_DETAIL_STEPS;
     }
     // `sampler`: "euler" (the template's) or "er_sde" (Krea 2 Turbo only).
     let sampler = match opt_str(IMAGE, p, "sampler", 20)? {
-        None | Some("euler") => None,
+        // Preferences › Quality, unless the request asks for Krea's plain schedule.
+        None if asked_schedule == Some(None) => None,
+        None => image_quality_sampler(&template.meta.id, quality(s)),
+        Some("euler") => None,
         Some("er_sde") if template.meta.id == "krea2-turbo/image" => Some("er_sde"),
         Some(other) => return Err(bad(IMAGE, format!("`sampler` must be \"euler\" or, on krea2-turbo/image, \"er_sde\" (got `{other}`)"))),
     };
@@ -2591,7 +2663,7 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     let enhance = opt_bool(IMAGE, p, "enhance", s.prefs().integrations.enhance_prompts)?;
     let enhance = match (enhance, opt_str(IMAGE, p, "enhanceStyle", 20)?) {
         (false, _) => None,
-        (true, None) if best_photo => Some(EnhanceKind::ImagePhoto),
+        (true, None) if best_photo && !names_other_medium(&typed) => Some(EnhanceKind::ImagePhoto),
         (true, None | Some("default")) => Some(EnhanceKind::Image),
         (true, Some("photo")) => Some(EnhanceKind::ImagePhoto),
         (true, Some(other)) => return Err(bad(IMAGE, format!("`enhanceStyle` must be \"default\" or \"photo\" (got `{other}`)"))),
@@ -5626,7 +5698,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generate Image…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"refine":{{"scale":1..2,"denoise":0.05..1,"steps":1..20}?=none: krea2-turbo/image redrawn once more at scale times the size (at most 2560 a side)},"enhanceStyle":{"default"|"photo"?=photo under Preferences › Quality best (no references, not transparent), else default; photo = written like a real photo's caption},"sampler":{"euler"|"er_sde"?=euler; er_sde on krea2-turbo/image},"schedule":{"simple"|"krea-detail"|"beta"?=Preferences › Quality: krea-detail (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"refine":{{"scale":1..2,"denoise":0.05..1,"steps":1..20}?=none: krea2-turbo/image redrawn once more at scale times the size (at most 2560 a side)},"enhanceStyle":{"default"|"photo"?=photo under Preferences › Quality best (no references, not transparent), else default; photo = written like a real photo's caption},"sampler":{"euler"|"er_sde"?=Preferences › Quality: er_sde on krea2-turbo/image under best, else euler},"schedule":{"simple"|"krea-detail"|"beta"?=Preferences › Quality: on krea2-turbo/image beta (9 steps) under best, krea-detail (9 steps) under balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: image_enabled,
             run: run_image,
             journal: true,
