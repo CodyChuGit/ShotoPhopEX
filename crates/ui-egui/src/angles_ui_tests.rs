@@ -77,7 +77,7 @@ fn the_window_draws_the_orbit_and_warns_when_the_lora_is_missing() {
     );
     crate::PhotocraftApp::setup_context(&h.ctx, Default::default());
     h.run_steps(4);
-    assert!(h.query_by_label_contains("multiple-angles-lora.safetensors").is_some(), "the missing file is named");
+    assert!(h.query_by_label_contains("Multiple Angles LoRA").is_some(), "the missing LoRA is named");
     assert!(h.query_by_label_contains("Generate ·").is_some(), "the estimate is on the button");
     // A click on the orbit moves the camera to the nearest stop.
     let orbit = h.get_by_label("Camera").rect();
@@ -93,4 +93,9 @@ fn the_window_draws_the_orbit_and_warns_when_the_lora_is_missing() {
     assert_ne!(after, before, "moved");
     assert_eq!(after.0 % 45, 0);
     assert!(ANGLE_TILTS.iter().any(|(t, _)| *t == after.1));
+    // The button opens Get AI Models with the 2511 extra (2511 and the LoRA) ticked.
+    h.get_by_label("Get AI Models…").click();
+    h.run_steps(2);
+    assert!(h.state().ui.get_models.open, "Get AI Models opened");
+    assert!(h.state().ui.get_models.extras.iter().any(|x| x == "qwen-edit-2511"), "the 2511 extra is ticked");
 }
