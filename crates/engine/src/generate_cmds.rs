@@ -326,6 +326,15 @@ const ENHANCE_IMAGE_SYSTEM: &str = "You are an expert prompt writer for a text-t
 Keep every subject, action, colour and spatial relation the user gave. Add no new objects, characters or animals. Keep any medium the user named (photo, painting, sketch, 3D render). Put any words to be rendered in the image in double quotes. If the idea is already detailed, polish it lightly and keep its wording.\n\
 Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
 
+/// The photographic rewriter ([`EnhanceKind::ImagePhoto`], `enhanceStyle: "photo"`): how the most
+/// liked photoreal Krea 2 / MOSS pictures on Civitai are prompted (their generation data,
+/// 2026-11-12): plain prose that opens with the kind of shot and what took it, one named light
+/// source, and the small flaws of a real photo, without "photorealistic", "8k" or camera brands.
+const ENHANCE_IMAGE_PHOTO_SYSTEM: &str = "You are an expert prompt writer for a photorealistic text-to-image model. Rewrite the user's idea as one paragraph of 60 to 110 words that reads like the caption of a real, unretouched photograph.\n\
+Open with the kind of shot and what took it, for example \"A candid smartphone photo of\", \"A close-up taken on a 50mm lens of\", \"A flash snapshot of\" or \"A wide shot of\". Then the subject and what it does, its clothing, materials and surfaces, the setting, and one concrete light source (window light, overcast daylight, a street lamp, phone flash) with how it falls. Name the small imperfections a real photo has where they fit: natural skin texture with pores and fine lines, stray hairs, creases, dust, scuffs, slight motion blur, shallow focus, soft film grain.\n\
+Keep every subject, action, colour and spatial relation the user gave. Add no new people, characters or animals. Put any words to be rendered in the image in double quotes. Never write photorealistic, hyperrealistic, 8k, 4k, masterpiece, best quality, DSLR or a camera brand.\n\
+Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
+
 /// Which rewriter an `enhance` runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EnhanceKind {
@@ -345,6 +354,8 @@ pub(crate) enum EnhanceKind {
     Edit,
     /// Text to image: no picture.
     Image,
+    /// A text-to-image idea written the way real photos are captioned ([`ENHANCE_IMAGE_PHOTO_SYSTEM`]).
+    ImagePhoto,
     /// A picture: name its main subject (Remove Background with no prompt).
     Subject,
     /// A picture: describe its background alone (Generative Expand with no prompt).
@@ -539,7 +550,7 @@ fn enhance_once(
         return Ok(None);
     }
     let image = match kind {
-        EnhanceKind::Image => None,
+        EnhanceKind::Image | EnhanceKind::ImagePhoto => None,
         _ => image.cloned(),
     };
     // The engine's instructions are the chat's system turn, the user's prompt its user turn.
@@ -547,6 +558,7 @@ fn enhance_once(
     let template = if image.is_some() { ENHANCE_EDIT_TEMPLATE } else { ENHANCE_IMAGE_TEMPLATE };
     let system = match kind {
         EnhanceKind::Image => ENHANCE_IMAGE_SYSTEM.to_string(),
+        EnhanceKind::ImagePhoto => ENHANCE_IMAGE_PHOTO_SYSTEM.to_string(),
         EnhanceKind::Edit => edit_system,
         EnhanceKind::Fill => format!("{edit_system}\n{}", ENHANCE_FILL_NOTE.replace("{place}", place.unwrap_or("selected part"))),
         EnhanceKind::Remove => format!("{edit_system}\n{ENHANCE_REMOVE_NOTE}"),
@@ -2282,8 +2294,9 @@ struct ImagePlan {
     /// The template's wording around a transparent request (`{prompt}` inside), empty otherwise;
     /// a rewritten prompt is wrapped in it the same way.
     wrap: String,
-    /// Rewrite the prompt with the vision-language model first (`enhance`).
-    enhance: bool,
+    /// Rewrite the prompt with the vision-language model first (`enhance`), and how
+    /// (`enhanceStyle`: "default" or "photo").
+    enhance: Option<EnhanceKind>,
     negative: String,
     seed: u64,
     steps: u32,
@@ -2557,6 +2570,12 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         prompt
     };
     let enhance = opt_bool(IMAGE, p, "enhance", s.prefs().integrations.enhance_prompts)?;
+    let enhance = match (enhance, opt_str(IMAGE, p, "enhanceStyle", 20)?) {
+        (false, _) => None,
+        (true, None | Some("default")) => Some(EnhanceKind::Image),
+        (true, Some("photo")) => Some(EnhanceKind::ImagePhoto),
+        (true, Some(other)) => return Err(bad(IMAGE, format!("`enhanceStyle` must be \"default\" or \"photo\" (got `{other}`)"))),
+    };
     let refs = crate::generate_refs::Refs { images: crate::generate_refs::resolve(s, &ref_specs)?, specs: ref_specs };
     let loras = loras_of(IMAGE, p)?;
     Ok(ImagePlan {
@@ -2608,12 +2627,18 @@ fn image_refine(p: &Value, template: &str, width: u32, height: u32) -> Result<Op
 /// The prompt a `generate.image` job sends, and what the layer remembers as `enhanced`: the
 /// typed idea expanded by the vision-language model when asked (then wrapped for transparency
 /// as the typed one was), else the plan's prompt and an empty string.
-fn image_prompt(backend: &dyn GenerativeBackend, ctx: &JobCtx, enhance: bool, typed: &str, planned: String, wrap: &str, seed: u64) -> (String, String) {
-    if !enhance {
-        return (planned, String::new());
-    }
+fn image_prompt(
+    backend: &dyn GenerativeBackend,
+    ctx: &JobCtx,
+    enhance: Option<EnhanceKind>,
+    typed: &str,
+    planned: String,
+    wrap: &str,
+    seed: u64,
+) -> (String, String) {
+    let Some(kind) = enhance else { return (planned, String::new()) };
     ctx.progress(0.02, "Improving the prompt");
-    match enhance_prompt(backend, EnhanceKind::Image, typed, None, None, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
+    match enhance_prompt(backend, kind, typed, None, None, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
         Ok(Some(e)) => {
             let p = if wrap.is_empty() { e.clone() } else { wrap.replace("{prompt}", &e) };
             (p, e)
@@ -5515,13 +5540,14 @@ fn run_enhance(s: &mut Session, p: &Value) -> Result<Value> {
         None | Some("fill") => EnhanceKind::Fill,
         Some("edit") => EnhanceKind::Edit,
         Some("image") => EnhanceKind::Image,
-        Some(other) => return Err(bad(ENHANCE, format!("`task` must be \"fill\", \"edit\" or \"image\" (got `{other}`)"))),
+        Some("photo") => EnhanceKind::ImagePhoto,
+        Some(other) => return Err(bad(ENHANCE, format!("`task` must be \"fill\", \"edit\", \"image\" or \"photo\" (got `{other}`)"))),
     };
     let use_image = opt_bool(ENHANCE, p, "useImage", true)?;
     let seed = parse_seed(ENHANCE, p)?;
     let backend = enhancer_backend(s)?;
     let (image, place) = match (kind, use_image, s.active()) {
-        (EnhanceKind::Image, _, _) | (_, false, _) | (_, _, None) => (None, None),
+        (EnhanceKind::Image | EnhanceKind::ImagePhoto, _, _) | (_, false, _) | (_, _, None) => (None, None),
         (_, true, Some(d)) => {
             let canvas = d.doc.bounds();
             if canvas.is_empty() || u64::from(canvas.width()) * u64::from(canvas.height()) > MAX_REQUEST_PIXELS {
@@ -5575,7 +5601,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generate Image…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"refine":{{"scale":1..2,"denoise":0.05..1,"steps":1..20}?=none: krea2-turbo/image redrawn once more at scale times the size (at most 2560 a side)},"sampler":{"euler"|"er_sde"?=euler; er_sde on krea2-turbo/image},"schedule":{"simple"|"krea-detail"|"beta"?=Preferences › Quality: krea-detail (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"refine":{{"scale":1..2,"denoise":0.05..1,"steps":1..20}?=none: krea2-turbo/image redrawn once more at scale times the size (at most 2560 a side)},"enhanceStyle":{"default"|"photo"?=default; photo = written like a real photo's caption},"sampler":{"euler"|"er_sde"?=euler; er_sde on krea2-turbo/image},"schedule":{"simple"|"krea-detail"|"beta"?=Preferences › Quality: krea-detail (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: image_enabled,
             run: run_image,
             journal: true,
