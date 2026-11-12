@@ -1,0 +1,230 @@
+# ShotoPhopEX's own interface rows for hu: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/hu/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Instance	Példány
+	Intersect	Metszet
+	Prompt	Utasítás
+	Template	Sablon
+	Select by Text…	Kijelölés szöveg alapján…
+	Generative Fill…	Generatív kitöltés…
+	Generate Image…	Kép generálása…
+	Allow research models	Kutatási modellek engedélyezése
+	Default edit model	Alapértelmezett szerkesztési modell
+	Default fill template	Alapértelmezett kitöltési sablon
+	Default generate model	Alapértelmezett generálási modell
+	Default image template	Alapértelmezett képsablon
+	Generative timeout (seconds)	Generálási időkorlát (másodperc)
+	Show generative bar	Generatív sáv megjelenítése
+	Describe what to generate…	Írja le, mit generáljon…
+	Variations	Változatok
+	Generating…	Generálás…
+	Previous variation	Előző változat
+	Next variation	Következő változat
+	Generative Models	Generatív modellek
+	Generative Expand…	Generatív bővítés…
+	Remove Background (Generative)…	Háttér eltávolítása (generatív)…
+	As Selection	Kijelölésként
+	Generative Edit…	Generatív szerkesztés…
+	Generate Similar	Hasonló generálása
+	Generative Expand	Generatív bővítés
+	not installed	nincs telepítve
+	Split into Layers (Generative)…	Felosztás rétegekre (generatív)…
+	Changing what is there? Switch to Edit	A meglévőt módosítaná? Váltson Szerkesztésre
+	Describe the change…	Írja le a módosítást…
+	Enhance prompts	Utasítások javítása
+	Warm up AI models at launch	AI-modellek előmelegítése indításkor
+	Fast draft (faster, slightly softer detail)	Gyors vázlat (gyorsabb, kissé lágyabb részletek)
+	Enhance prompt	Utasítás javítása
+	Enhancing…	Javítás…
+	The model could not improve this prompt	A modell nem tudta javítani ezt az utasítást
+	Select by text…	Kijelölés szöveg alapján…
+	Click an object, or drag a rectangle around it	Kattintson egy objektumra, vagy húzzon köré téglalapot
+	Select by Point	Kijelölés pont alapján
+	Select by Text	Kijelölés szöveg alapján
+	{done} results	{done} eredmény
+	{running} running · {done} results	{running} fut · {done} eredmény
+	Cancelled	Megszakítva
+	Clear completed…	Befejezettek törlése…
+	Clear failed…	Sikertelenek törlése…
+	Completed	Befejezve
+	Copy prompt	Utasítás másolása
+	Delete every completed result and its files?	Törli az összes befejezett eredményt és a fájljait?
+	Delete every generation and its files? Running jobs stay.	Törli az összes generálást és a fájljait? A futó feladatok megmaradnak.
+	Dismiss failed	Sikertelenek elvetése
+	Generations	Generálások
+	Generative Fill, Edit and Generate Image results appear here.	Itt jelennek meg a generatív kitöltés, szerkesztés és képgenerálás eredményei.
+	In progress	Folyamatban
+	Interrupted	Megszakadt
+	Invalid request	Érvénytelen kérés
+	Model files missing	Hiányoznak a modellfájlok
+	No generations yet	Még nincs generálás
+	Open as Document	Megnyitás dokumentumként
+	Out of memory on the server	Elfogyott a memória a kiszolgálón
+	Pin	Rögzítés
+	Place	Elhelyezés
+	Place as Layer	Elhelyezés rétegként
+	Prompt copied	Utasítás másolva
+	Recreate	Újra létrehozás
+	Remove all…	Összes eltávolítása…
+	Remove every failed and cancelled row?	Eltávolítja az összes sikertelen és megszakított sort?
+	Result discarded	Eredmény elvetve
+	Saved {n} file(s)	{n} fájl mentve
+	Saving files is not available here	A fájlok mentése itt nem érhető el
+	Server error	Kiszolgálóhiba
+	Server unreachable	A kiszolgáló nem érhető el
+	Timed out	Időtúllépés
+	Unpin	Rögzítés feloldása
+	Active layer ({name})	Aktív réteg ({name})
+	Add a reference image	Referenciakép hozzáadása
+	Clear all	Összes törlése
+	Clear the prompt and remove the reference images?	Törli az utasítást és eltávolítja a referenciaképeket?
+	Describe what continues the scene…	Írja le, hogyan folytatódik a jelenet…
+	Describe what to generate in the selection…	Írja le, mit generáljon a kijelölésben…
+	Describe what you want in the image…	Írja le, mit szeretne a képen…
+	File: {name}	Fájl: {name}
+	File…	Fájl…
+	Fill needs a selection	A kitöltéshez kijelölés kell
+	From Generations	A Generálásokból
+	Generation: {name}	Generálás: {name}
+	Give the expand at least one side	Adjon meg legalább egy oldalt a bővítéshez
+	Hide negative prompt	Negatív utasítás elrejtése
+	Layer: {name}	Réteg: {name}
+	More than this model takes	Több, mint amennyit ez a modell fogad
+	Move left	Mozgatás balra
+	Move right	Mozgatás jobbra
+	Negative prompt	Negatív utasítás
+	Only files with a path can be references here	Itt csak elérési úttal rendelkező fájlok lehetnek referenciák
+	Open a document first	Először nyisson meg egy dokumentumot
+	Open the prompt in a larger editor	Utasítás megnyitása nagyobb szerkesztőben
+	Reference images (optional)	Referenciaképek (nem kötelező)
+	This model takes at most {n} reference images	Ez a modell legfeljebb {n} referenciaképet fogad
+	Type a prompt first	Először írjon be egy utasítást
+	Type what to generate first	Először írja be, mit generáljon
+	What to avoid…	Mit kerüljön…
+	a layer that is gone	egy már nem létező réteg
+	Enter to generate	Enter: generálás
+	research	kutatási
+	The fastest permissive model the server has	A kiszolgáló leggyorsabb szabad licencű modellje
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Kutatási licenc: kapcsolja be a „Kutatási modellek engedélyezése” beállítást a Beállítások › AI-integrációk alatt
+	Uses: {name}	Használja: {name}
+	Group models by family	Modellek csoportosítása család szerint
+	Variation {n} of {count}	{n}. változat a(z) {count} közül
+	Delete this variation	Ennek a változatnak a törlése
+	Keep this one	Ennek a megtartása
+	Keep this one and delete the other variations	Ennek a megtartása és a többi változat törlése
+	Click to retry	Kattintson az újrapróbáláshoz
+	Variations strip	Változatok sávja
+	{n} selected	{n} kijelölve
+	Save selected	Kijelöltek mentése
+	Save results dir	Mentett eredmények mappája
+	Save results naming	Mentett eredmények elnevezése
+	Alerts	Jelzések
+	Done and failed	Kész és sikertelen
+	Preview while generating	Előnézet generálás közben
+	Not in this build yet	Ebben a buildben még nincs
+	Open a picture first	Először nyisson meg egy képet
+	Generative Features	Generatív funkciók
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	HAMAROSAN
+	Split into Layers	Felosztás rétegekre
+	Angles	Nézőszögek
+	A new picture from a prompt, with up to three references	Új kép utasításból, legfeljebb három referenciával
+	Paint the selection from a prompt	Kitölti a kijelölést egy utasítás alapján
+	Change the picture by instruction	Módosítja a képet utasítás alapján
+	Grow the canvas and continue the scene	Megnöveli a vásznat és folytatja a jelenetet
+	Cut the subject out onto transparency	Kivágja a témát átlátszó háttérre
+	Separate the picture into editable layers	Szerkeszthető rétegekre bontja a képet
+	Select what you name in a few words	Kijelöli, amit néhány szóval megnevez
+	See the subject from another camera angle	Más kameraszögből mutatja a témát
+	Generative Features…	Generatív funkciók…
+	Generative Angles…	Generatív nézőszögek…
+	front	elöl
+	Camera	Kamera
+	Generative Angles	Generatív nézőszögek
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	elölnézet
+	front-right quarter view	elöl-jobb háromnegyed nézet
+	right side view	jobb oldalnézet
+	back-right quarter view	hátul-jobb háromnegyed nézet
+	back view	hátulnézet
+	back-left quarter view	hátul-bal háromnegyed nézet
+	left side view	bal oldalnézet
+	front-left quarter view	elöl-bal háromnegyed nézet
+	low-angle shot	alsó nézőszögű felvétel
+	eye-level shot	szemmagasságú felvétel
+	elevated shot	emelt nézőszögű felvétel
+	high-angle shot	felső nézőszögű felvétel
+	wide shot	totálkép
+	medium shot	középkép
+	close-up	közelkép
+	CREATE	LÉTREHOZÁS
+	EDIT	SZERKESZTÉS
+	Balanced	Kiegyensúlyozott
+	Auto takes the full-step model and keeps the 4-bit weights off	Az Automatikus a teljes lépésszámú modellt veszi, és nem használja a 4 bites súlyokat
+	Auto takes the 8-step Lightning tier when the server has it	Az Automatikus a 8 lépéses Lightning szintet veszi, ha a kiszolgálón megvan
+	Auto takes the 4-step tier where there is one	Az Automatikus a 4 lépéses szintet veszi, ahol van ilyen
+	Object finder	Objektumkereső
+	Show what a click would select while the pointer rests	Mutassa, mit jelölne ki egy kattintás, amíg a mutató áll
+	Refine edge	Él finomítása
+	Soften the detector's hard edge from the pixels (hair, fur)	A detektor kemény élének lágyítása a pixelek alapján (haj, szőr)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Kattintson egy objektumra, vagy húzzon köré keretet; Ctrl+kattintással kizár egy pontot
+	Select by Box	Kijelölés kerettel
+	Click or drag a box around an object	Kattintson egy objektumra, vagy húzzon köré keretet
+	Click a spot the object must include; Alt-click one it must not	Kattintson egy pontra, amelyet az objektumnak tartalmaznia kell; Alt+kattintás egy olyanra, amelyet nem
+	Click to include a spot, Alt-click to exclude one	Kattintás: pont hozzáadása, Alt+kattintás: kizárása
+	Click an object, or drag a box around it	Kattintson egy objektumra, vagy húzzon köré keretet
+	Paint over an object to select it	Fesse át az objektumot a kijelöléséhez
+	Engine: not configured	Motor: nincs beállítva
+	Engine: starting…	Motor: indul…
+	Engine: ready	Motor: kész
+	Engine: running outside the app	Motor: az alkalmazáson kívül fut
+	Engine: failed	Motor: hiba
+	Engine: stopped	Motor: leállítva
+	Start engine	Motor indítása
+	Stop engine	Motor leállítása
+	Restart engine	Motor újraindítása
+	Show log	Napló megjelenítése
+	Engine	Motor
+	Native	Beépített
+	Native runtime folders	Beépített futtatókörnyezet mappái
+	Models folder	Beépített modellek mappája
+	Widen	Szélesítés
+	Fill Holes	Lyukak kitöltése
+	Widen the object's mask by this many pixels (negative shrinks it)	Az objektum maszkjának szélesítése ennyi képponttal (negatív érték szűkíti)
+	Fill the gaps the object's mask encloses	Az objektum maszkja által közrezárt hézagok kitöltése
+	Feather the mask's edge by this many pixels	A maszk szélének lágyítása ennyi képponttal
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	A kijelölés szélesítése ennyi képponttal a kitöltés előtt, hogy a terjedelmesebb csere elférjen
+	Generative	Generatív
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Az előnézet a klasszikus kitöltést mutatja; az OK és az Alkalmaz a modellt futtatja egy új rétegre.
+	Best of two	Kettőből a jobb
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Két jelöltet készít, és az érintetlennek tűnőt mutatja; kikapcsolva: egy jelölt, körülbelül fele idő
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Adapterek a modellmappa loras almappájában, a natív motor alkalmazza őket
+	Generative Upscale	Generatív felskálázás
+	Denoise	Zajmentesítés
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Mennyi rajzolódik újra a kijelölésből: az 1 lecseréli, kb. 0,9 megtartja a régi formát
+	Native engine	Natív motor
+	Native engine: not configured	Natív motor: nincs beállítva
+	Native engine: starting…	Natív motor: indul…
+	Native engine: working	Natív motor: dolgozik
+	Native engine: ready	Natív motor: kész
+	Native engine: failed	Natív motor: hiba
+	Native engine: stopped	Natív motor: leállítva
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	A natív motor használatához állítsa be a futtatókörnyezet és a modellek mappáját a Beállítások › AI-integrációk alatt
+	{free} of {total} free	{total}-ból {free} szabad
+	Loaded: {models}	Betöltve: {models}
+	Purge models	Modellek kiürítése
+	Choose the folder that holds your model weights to use the generative tools	A generatív eszközök használatához válassza ki a modellsúlyokat tartalmazó mappát
+	Set Models Folder…	Modellmappa beállítása…
+	App Icon…	Alkalmazásikon…
+	App Icon	Alkalmazásikon
+	Built-in	Beépített
+	Choose Image…	Kép kiválasztása…
+	Paste Image	Kép beillesztése
+	Image address (https://…)	Kép címe (https://…)
+	Download	Letöltés
+	Downloading…	Letöltés folyamatban…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Bármilyen kép jó; négyzetbe illesztjük. Az ikon eltávolításához kattintson rá a jobb gombbal.

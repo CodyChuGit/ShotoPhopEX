@@ -1,0 +1,230 @@
+# ShotoPhopEX's own interface rows for nl: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/nl/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Instance	Instantie
+	Intersect	Doorsnede
+	Prompt	Prompt
+	Template	Sjabloon
+	Select by Text…	Selecteren op tekst…
+	Generative Fill…	Generatieve vulling…
+	Generate Image…	Afbeelding genereren…
+	Allow research models	Onderzoeksmodellen toestaan
+	Default edit model	Standaard bewerkingsmodel
+	Default fill template	Standaard vulsjabloon
+	Default generate model	Standaard generatiemodel
+	Default image template	Standaard afbeeldingssjabloon
+	Generative timeout (seconds)	Time-out voor genereren (seconden)
+	Show generative bar	Generatieve balk tonen
+	Describe what to generate…	Beschrijf wat er gegenereerd moet worden…
+	Variations	Variaties
+	Generating…	Genereren…
+	Previous variation	Vorige variatie
+	Next variation	Volgende variatie
+	Generative Models	Generatieve modellen
+	Generative Expand…	Generatief uitbreiden…
+	Remove Background (Generative)…	Achtergrond verwijderen (generatief)…
+	As Selection	Als selectie
+	Generative Edit…	Generatief bewerken…
+	Generate Similar	Vergelijkbaar genereren
+	Generative Expand	Generatief uitbreiden
+	not installed	niet geïnstalleerd
+	Split into Layers (Generative)…	Splitsen in lagen (generatief)…
+	Changing what is there? Switch to Edit	Verander je wat er al is? Schakel over naar Bewerken
+	Describe the change…	Beschrijf de wijziging…
+	Enhance prompts	Prompts verbeteren
+	Warm up AI models at launch	AI-modellen opwarmen bij het starten
+	Fast draft (faster, slightly softer detail)	Snel concept (sneller, iets zachtere details)
+	Enhance prompt	Prompt verbeteren
+	Enhancing…	Verbeteren…
+	The model could not improve this prompt	Het model kon deze prompt niet verbeteren
+	Select by text…	Selecteren op tekst…
+	Click an object, or drag a rectangle around it	Klik op een object of sleep er een rechthoek omheen
+	Select by Point	Selecteren op punt
+	Select by Text	Selecteren op tekst
+	{done} results	{done} resultaten
+	{running} running · {done} results	{running} bezig · {done} resultaten
+	Cancelled	Geannuleerd
+	Clear completed…	Voltooide wissen…
+	Clear failed…	Mislukte wissen…
+	Completed	Voltooid
+	Copy prompt	Prompt kopiëren
+	Delete every completed result and its files?	Elk voltooid resultaat en de bijbehorende bestanden verwijderen?
+	Delete every generation and its files? Running jobs stay.	Elke generatie en de bijbehorende bestanden verwijderen? Lopende taken blijven.
+	Dismiss failed	Mislukte verbergen
+	Generations	Generaties
+	Generative Fill, Edit and Generate Image results appear here.	Resultaten van Generatieve vulling, Bewerken en Afbeelding genereren verschijnen hier.
+	In progress	Bezig
+	Interrupted	Onderbroken
+	Invalid request	Ongeldige aanvraag
+	Model files missing	Modelbestanden ontbreken
+	No generations yet	Nog geen generaties
+	Open as Document	Openen als document
+	Out of memory on the server	Onvoldoende geheugen op de server
+	Pin	Vastzetten
+	Place	Plaatsen
+	Place as Layer	Plaatsen als laag
+	Prompt copied	Prompt gekopieerd
+	Recreate	Opnieuw maken
+	Remove all…	Alles verwijderen…
+	Remove every failed and cancelled row?	Elke mislukte en geannuleerde rij verwijderen?
+	Result discarded	Resultaat verworpen
+	Saved {n} file(s)	{n} bestand(en) opgeslagen
+	Saving files is not available here	Bestanden opslaan is hier niet beschikbaar
+	Server error	Serverfout
+	Server unreachable	Server onbereikbaar
+	Timed out	Time-out
+	Unpin	Losmaken
+	Active layer ({name})	Actieve laag ({name})
+	Add a reference image	Referentieafbeelding toevoegen
+	Clear all	Alles wissen
+	Clear the prompt and remove the reference images?	De prompt wissen en de referentieafbeeldingen verwijderen?
+	Describe what continues the scene…	Beschrijf hoe de scène verdergaat…
+	Describe what to generate in the selection…	Beschrijf wat er in de selectie gegenereerd moet worden…
+	Describe what you want in the image…	Beschrijf wat je in de afbeelding wilt…
+	File: {name}	Bestand: {name}
+	File…	Bestand…
+	Fill needs a selection	Vulling heeft een selectie nodig
+	From Generations	Uit Generaties
+	Generation: {name}	Generatie: {name}
+	Give the expand at least one side	Geef de uitbreiding minstens één zijde
+	Hide negative prompt	Negatieve prompt verbergen
+	Layer: {name}	Laag: {name}
+	More than this model takes	Meer dan dit model aanneemt
+	Move left	Naar links
+	Move right	Naar rechts
+	Negative prompt	Negatieve prompt
+	Only files with a path can be references here	Alleen bestanden met een pad kunnen hier referenties zijn
+	Open a document first	Open eerst een document
+	Open the prompt in a larger editor	De prompt openen in een grotere editor
+	Reference images (optional)	Referentieafbeeldingen (optioneel)
+	This model takes at most {n} reference images	Dit model neemt maximaal {n} referentieafbeeldingen aan
+	Type a prompt first	Typ eerst een prompt
+	Type what to generate first	Typ eerst wat er gegenereerd moet worden
+	What to avoid…	Wat te vermijden…
+	a layer that is gone	een laag die er niet meer is
+	Enter to generate	Enter om te genereren
+	research	onderzoek
+	The fastest permissive model the server has	Het snelste model met vrije licentie dat de server heeft
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Onderzoekslicentie: schakel ‘Onderzoeksmodellen toestaan’ in bij Voorkeuren › AI-integraties
+	Uses: {name}	Gebruikt: {name}
+	Group models by family	Modellen groeperen per familie
+	Variation {n} of {count}	Variatie {n} van {count}
+	Delete this variation	Deze variatie verwijderen
+	Keep this one	Deze behouden
+	Keep this one and delete the other variations	Deze behouden en de andere variaties verwijderen
+	Click to retry	Klik om opnieuw te proberen
+	Variations strip	Variatiestrook
+	{n} selected	{n} geselecteerd
+	Save selected	Geselecteerde opslaan
+	Save results dir	Map voor opgeslagen resultaten
+	Save results naming	Naamgeving van opgeslagen resultaten
+	Alerts	Meldingen
+	Done and failed	Voltooid en mislukt
+	Preview while generating	Voorvertoning tijdens het genereren
+	Not in this build yet	Nog niet in deze build
+	Open a picture first	Open eerst een afbeelding
+	Generative Features	Generatieve functies
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	BINNENKORT
+	Split into Layers	Splitsen in lagen
+	Angles	Hoeken
+	A new picture from a prompt, with up to three references	Een nieuwe afbeelding uit een prompt, met maximaal drie referenties
+	Paint the selection from a prompt	Vult de selectie op basis van een prompt
+	Change the picture by instruction	Wijzigt de afbeelding op aanwijzing
+	Grow the canvas and continue the scene	Vergroot het canvas en zet de scène voort
+	Cut the subject out onto transparency	Snijdt het onderwerp uit op transparantie
+	Separate the picture into editable layers	Splitst de afbeelding in bewerkbare lagen
+	Select what you name in a few words	Selecteert wat je in een paar woorden benoemt
+	See the subject from another camera angle	Toont het onderwerp vanuit een andere camerahoek
+	Generative Features…	Generatieve functies…
+	Generative Angles…	Generatieve hoeken…
+	front	voorkant
+	Camera	Camera
+	Generative Angles	Generatieve hoeken
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	vooraanzicht
+	front-right quarter view	driekwartaanzicht voor rechts
+	right side view	rechter zijaanzicht
+	back-right quarter view	driekwartaanzicht achter rechts
+	back view	achteraanzicht
+	back-left quarter view	driekwartaanzicht achter links
+	left side view	linker zijaanzicht
+	front-left quarter view	driekwartaanzicht voor links
+	low-angle shot	kikkerperspectief
+	eye-level shot	opname op ooghoogte
+	elevated shot	verhoogde opname
+	high-angle shot	vogelperspectief
+	wide shot	totaalshot
+	medium shot	medium shot
+	close-up	close-up
+	CREATE	MAKEN
+	EDIT	BEWERKEN
+	Balanced	Gebalanceerd
+	Auto takes the full-step model and keeps the 4-bit weights off	Auto neemt het model met alle stappen en laat de 4-bits gewichten uit
+	Auto takes the 8-step Lightning tier when the server has it	Auto neemt het Lightning-niveau met 8 stappen als de server het heeft
+	Auto takes the 4-step tier where there is one	Auto neemt het niveau met 4 stappen waar dat er is
+	Object finder	Objectzoeker
+	Show what a click would select while the pointer rests	Toon wat een klik zou selecteren terwijl de aanwijzer stilstaat
+	Refine edge	Rand verfijnen
+	Soften the detector's hard edge from the pixels (hair, fur)	De harde rand van de detector verzachten op basis van de pixels (haar, vacht)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Klik op een object of sleep er een kader omheen; Ctrl+klik op een plek om die uit te sluiten
+	Select by Box	Selecteren met kader
+	Click or drag a box around an object	Klik op een object of sleep er een kader omheen
+	Click a spot the object must include; Alt-click one it must not	Klik op een plek die het object moet bevatten; Alt+klik op een die het niet mag bevatten
+	Click to include a spot, Alt-click to exclude one	Klik om een plek op te nemen, Alt+klik om er een uit te sluiten
+	Click an object, or drag a box around it	Klik op een object of sleep er een kader omheen
+	Paint over an object to select it	Schilder over een object om het te selecteren
+	Engine: not configured	Engine: niet geconfigureerd
+	Engine: starting…	Engine: wordt gestart…
+	Engine: ready	Engine: gereed
+	Engine: running outside the app	Engine: draait buiten de app
+	Engine: failed	Engine: mislukt
+	Engine: stopped	Engine: gestopt
+	Start engine	Engine starten
+	Stop engine	Engine stoppen
+	Restart engine	Engine opnieuw starten
+	Show log	Logboek tonen
+	Engine	Engine
+	Native	Ingebouwd
+	Native runtime folders	Mappen van de ingebouwde runtime
+	Models folder	Map met ingebouwde modellen
+	Widen	Verbreden
+	Fill Holes	Gaten vullen
+	Widen the object's mask by this many pixels (negative shrinks it)	Het masker van het object met zoveel pixels verbreden (negatief verkleint het)
+	Fill the gaps the object's mask encloses	De openingen vullen die het masker van het object omsluit
+	Feather the mask's edge by this many pixels	De rand van het masker over zoveel pixels verzachten
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	De selectie vóór de vulling met zoveel pixels verbreden, zodat een omvangrijkere vervanging ruimte heeft
+	Generative	Generatief
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	De voorvertoning toont de klassieke vulling; OK en Toepassen laten het model op een nieuwe laag werken.
+	Best of two	Beste van twee
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Berekent twee kandidaten en toont de kandidaat die onaangeroerd lijkt; uit: één kandidaat, ongeveer de helft van de tijd
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Adapters in de submap loras van de modellenmap, toegepast door de native engine
+	Generative Upscale	Generatief opschalen
+	Denoise	Ruisonderdrukking
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Hoeveel van de selectie opnieuw wordt getekend: 1 vervangt haar, ongeveer 0,9 behoudt de oude vorm
+	Native engine	Native engine
+	Native engine: not configured	Native engine: niet geconfigureerd
+	Native engine: starting…	Native engine: wordt gestart…
+	Native engine: working	Native engine: bezig
+	Native engine: ready	Native engine: gereed
+	Native engine: failed	Native engine: mislukt
+	Native engine: stopped	Native engine: gestopt
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Stel de runtime- en modelmappen in bij Voorkeuren › AI-integraties om de native engine te gebruiken
+	{free} of {total} free	{free} van {total} vrij
+	Loaded: {models}	Geladen: {models}
+	Purge models	Modellen leegmaken
+	Choose the folder that holds your model weights to use the generative tools	Kies de map met uw modelgewichten om de generatieve hulpmiddelen te gebruiken
+	Set Models Folder…	Modellenmap instellen…
+	App Icon…	App-pictogram…
+	App Icon	App-pictogram
+	Built-in	Ingebouwd
+	Choose Image…	Afbeelding kiezen…
+	Paste Image	Afbeelding plakken
+	Image address (https://…)	Afbeeldingsadres (https://…)
+	Download	Downloaden
+	Downloading…	Bezig met downloaden…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Elke afbeelding werkt; ze wordt in een vierkant gepast. Klik met rechts op een pictogram om het te verwijderen.

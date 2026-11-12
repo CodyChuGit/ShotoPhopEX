@@ -1,0 +1,233 @@
+# ShotoPhopEX's own interface rows for vi: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/vi/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Instance	Thực thể
+	Intersect	Giao
+	Prompt	Lời nhắc
+	Template	Mẫu
+	Select by Text…	Chọn theo văn bản…
+	Generative Fill…	Tô sinh tạo…
+	Generate Image…	Tạo ảnh…
+	Allow research models	Cho phép mô hình nghiên cứu
+	Default edit model	Mô hình chỉnh sửa mặc định
+	Default fill template	Mẫu tô mặc định
+	Default generate model	Mô hình tạo mặc định
+	Default image template	Mẫu ảnh mặc định
+	Generative timeout (seconds)	Thời gian chờ tạo (giây)
+	Show generative bar	Hiện thanh sinh tạo
+	Describe what to generate…	Mô tả nội dung cần tạo…
+	Variations	Biến thể
+	Generating…	Đang tạo…
+	Previous variation	Biến thể trước
+	Next variation	Biến thể sau
+	Generative Models	Mô hình sinh tạo
+	Generative Expand…	Mở rộng sinh tạo…
+	Remove Background (Generative)…	Xóa nền (sinh tạo)…
+	As Selection	Thành vùng chọn
+	Generative Edit…	Chỉnh sửa sinh tạo…
+	Generate Similar	Tạo ảnh tương tự
+	Generative Expand	Mở rộng sinh tạo
+	not installed	chưa cài đặt
+	Split into Layers (Generative)…	Tách thành lớp (sinh tạo)…
+	Changing what is there? Switch to Edit	Thay đổi nội dung sẵn có? Chuyển sang Chỉnh sửa
+	Describe the change…	Mô tả thay đổi…
+	Enhance prompts	Cải thiện lời nhắc
+	Warm up AI models at launch	Tải sẵn các mô hình AI khi khởi động
+	Fast draft (faster, slightly softer detail)	Bản nháp nhanh (nhanh hơn, chi tiết mềm hơn một chút)
+	Enhance prompt	Cải thiện lời nhắc
+	Enhancing…	Đang cải thiện…
+	The model could not improve this prompt	Mô hình không thể cải thiện lời nhắc này
+	Select by text…	Chọn theo văn bản…
+	Click an object, or drag a rectangle around it	Nhấp vào một đối tượng hoặc kéo một hình chữ nhật quanh nó
+	Select by Point	Chọn theo điểm
+	Select by Text	Chọn theo văn bản
+	{done} results	{done} kết quả
+	{running} running · {done} results	{running} đang chạy · {done} kết quả
+	Cancelled	Đã hủy
+	Clear completed…	Xóa mục đã hoàn thành…
+	Clear failed…	Xóa mục thất bại…
+	Completed	Đã hoàn thành
+	Copy prompt	Sao chép lời nhắc
+	Delete every completed result and its files?	Xóa mọi kết quả đã hoàn thành cùng tệp của chúng?
+	Delete every generation and its files? Running jobs stay.	Xóa mọi lần tạo cùng tệp của chúng? Các tác vụ đang chạy vẫn giữ lại.
+	Dismiss failed	Bỏ qua mục thất bại
+	Failed	Thất bại
+	Generations	Lần tạo
+	Generative Fill, Edit and Generate Image results appear here.	Kết quả Tô sinh tạo, Chỉnh sửa và Tạo ảnh hiển thị tại đây.
+	In progress	Đang thực hiện
+	Interrupted	Bị gián đoạn
+	Invalid request	Yêu cầu không hợp lệ
+	Model files missing	Thiếu tệp mô hình
+	More	Thêm
+	No generations yet	Chưa có lần tạo nào
+	Open as Document	Mở dưới dạng tài liệu
+	Out of memory on the server	Máy chủ hết bộ nhớ
+	Pin	Ghim
+	Place	Đặt vào
+	Place as Layer	Đặt vào dưới dạng lớp
+	Prompt copied	Đã sao chép lời nhắc
+	Recreate	Tạo lại
+	Remove all…	Xóa tất cả…
+	Remove every failed and cancelled row?	Xóa mọi hàng thất bại và đã hủy?
+	Result discarded	Đã bỏ kết quả
+	Saved {n} file(s)	Đã lưu {n} tệp
+	Saving files is not available here	Không thể lưu tệp tại đây
+	Server error	Lỗi máy chủ
+	Server unreachable	Không kết nối được máy chủ
+	Timed out	Hết thời gian chờ
+	Unpin	Bỏ ghim
+	Active layer ({name})	Lớp hiện hành ({name})
+	Add a reference image	Thêm ảnh tham chiếu
+	Clear all	Xóa tất cả
+	Clear the prompt and remove the reference images?	Xóa lời nhắc và gỡ các ảnh tham chiếu?
+	Describe what continues the scene…	Mô tả phần tiếp theo của khung cảnh…
+	Describe what to generate in the selection…	Mô tả nội dung cần tạo trong vùng chọn…
+	Describe what you want in the image…	Mô tả nội dung bạn muốn có trong ảnh…
+	File: {name}	Tệp: {name}
+	File…	Tệp…
+	Fill needs a selection	Tô cần có vùng chọn
+	From Generations	Từ Lần tạo
+	Generation: {name}	Lần tạo: {name}
+	Give the expand at least one side	Hãy chọn ít nhất một cạnh để mở rộng
+	Hide negative prompt	Ẩn lời nhắc phủ định
+	Layer: {name}	Lớp: {name}
+	More than this model takes	Nhiều hơn mức mô hình này nhận
+	Move left	Chuyển sang trái
+	Move right	Chuyển sang phải
+	Negative prompt	Lời nhắc phủ định
+	Only files with a path can be references here	Chỉ tệp có đường dẫn mới có thể làm tham chiếu tại đây
+	Open a document first	Hãy mở một tài liệu trước
+	Open the prompt in a larger editor	Mở lời nhắc trong trình soạn thảo lớn hơn
+	Reference images (optional)	Ảnh tham chiếu (tùy chọn)
+	This model takes at most {n} reference images	Mô hình này nhận tối đa {n} ảnh tham chiếu
+	Type a prompt first	Hãy nhập lời nhắc trước
+	Type what to generate first	Hãy nhập nội dung cần tạo trước
+	What to avoid…	Nội dung cần tránh…
+	a layer that is gone	một lớp không còn tồn tại
+	Enter to generate	Enter để tạo
+	research	nghiên cứu
+	The fastest permissive model the server has	Mô hình giấy phép mở nhanh nhất trên máy chủ
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Giấy phép nghiên cứu: bật “Cho phép mô hình nghiên cứu” trong Tùy chọn › Tích hợp AI
+	Uses: {name}	Dùng: {name}
+	Group models by family	Nhóm mô hình theo họ
+	Variation {n} of {count}	Biến thể {n} / {count}
+	Delete this variation	Xóa biến thể này
+	Keep this one	Giữ biến thể này
+	Keep this one and delete the other variations	Giữ biến thể này và xóa các biến thể khác
+	Click to retry	Nhấp để thử lại
+	Retry	Thử lại
+	Variations strip	Dải biến thể
+	{n} selected	Đã chọn {n}
+	Save selected	Lưu mục đã chọn
+	Save results dir	Thư mục lưu kết quả
+	Save results naming	Cách đặt tên kết quả đã lưu
+	Alerts	Cảnh báo
+	Done and failed	Hoàn thành và thất bại
+	Preview while generating	Xem trước trong khi tạo
+	Not in this build yet	Chưa có trong bản dựng này
+	Open a picture first	Hãy mở một ảnh trước
+	Generative Features	Tính năng sinh tạo
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	SẮP CÓ
+	Split into Layers	Tách thành lớp
+	Angles	Góc nhìn
+	A new picture from a prompt, with up to three references	Ảnh mới từ lời nhắc, với tối đa ba ảnh tham chiếu
+	Paint the selection from a prompt	Tô vùng chọn theo lời nhắc
+	Change the picture by instruction	Thay đổi ảnh theo chỉ dẫn
+	Grow the canvas and continue the scene	Mở rộng khung vẽ và tiếp nối khung cảnh
+	Cut the subject out onto transparency	Tách chủ thể ra nền trong suốt
+	Separate the picture into editable layers	Tách ảnh thành các lớp có thể chỉnh sửa
+	Select what you name in a few words	Chọn thứ bạn gọi tên bằng vài từ
+	See the subject from another camera angle	Xem chủ thể từ một góc máy khác
+	Generative Features…	Tính năng sinh tạo…
+	Generative Angles…	Góc nhìn sinh tạo…
+	front	phía trước
+	Camera	Máy ảnh
+	Generative Angles	Góc nhìn sinh tạo
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	góc nhìn phía trước
+	front-right quarter view	góc nhìn chéo trước bên phải
+	right side view	góc nhìn bên phải
+	back-right quarter view	góc nhìn chéo sau bên phải
+	back view	góc nhìn phía sau
+	back-left quarter view	góc nhìn chéo sau bên trái
+	left side view	góc nhìn bên trái
+	front-left quarter view	góc nhìn chéo trước bên trái
+	low-angle shot	góc máy thấp
+	eye-level shot	góc máy ngang tầm mắt
+	elevated shot	góc máy trên cao
+	high-angle shot	góc máy cao
+	wide shot	toàn cảnh
+	medium shot	trung cảnh
+	close-up	cận cảnh
+	CREATE	TẠO
+	EDIT	CHỈNH SỬA
+	Balanced	Cân bằng
+	Auto takes the full-step model and keeps the 4-bit weights off	Tự động dùng mô hình đủ bước và không dùng trọng số 4 bit
+	Auto takes the 8-step Lightning tier when the server has it	Tự động dùng bậc Lightning 8 bước khi máy chủ có
+	Auto takes the 4-step tier where there is one	Tự động dùng bậc 4 bước khi có
+	Object finder	Tìm đối tượng
+	Show what a click would select while the pointer rests	Hiện thứ một cú nhấp sẽ chọn khi con trỏ đứng yên
+	Refine edge	Tinh chỉnh viền
+	Soften the detector's hard edge from the pixels (hair, fur)	Làm mềm viền cứng của bộ nhận dạng theo điểm ảnh (tóc, lông)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Nhấp hoặc kéo một khung quanh đối tượng; Ctrl+nhấp vào một điểm để loại trừ
+	Select by Box	Chọn bằng khung
+	Click or drag a box around an object	Nhấp hoặc kéo một khung quanh đối tượng
+	Click a spot the object must include; Alt-click one it must not	Nhấp vào điểm đối tượng phải bao gồm; Alt+nhấp vào điểm không được bao gồm
+	Click to include a spot, Alt-click to exclude one	Nhấp để thêm điểm, Alt+nhấp để loại trừ
+	Click an object, or drag a box around it	Nhấp vào một đối tượng hoặc kéo một khung quanh nó
+	Paint over an object to select it	Tô lên đối tượng để chọn nó
+	Engine: not configured	Bộ máy: chưa cấu hình
+	Engine: starting…	Bộ máy: đang khởi động…
+	Engine: ready	Bộ máy: sẵn sàng
+	Engine: running outside the app	Bộ máy: đang chạy ngoài ứng dụng
+	Engine: failed	Bộ máy: lỗi
+	Engine: stopped	Bộ máy: đã dừng
+	Start engine	Khởi động bộ máy
+	Stop engine	Dừng bộ máy
+	Restart engine	Khởi động lại bộ máy
+	Show log	Hiện nhật ký
+	Engine	Bộ máy
+	Native	Tích hợp sẵn
+	Native runtime folders	Thư mục môi trường chạy tích hợp
+	Models folder	Thư mục mô hình tích hợp
+	Widen	Mở rộng
+	Fill Holes	Lấp lỗ
+	Widen the object's mask by this many pixels (negative shrinks it)	Mở rộng mặt nạ của đối tượng thêm chừng này điểm ảnh (giá trị âm thu hẹp lại)
+	Fill the gaps the object's mask encloses	Lấp các khoảng trống mà mặt nạ của đối tượng bao quanh
+	Feather the mask's edge by this many pixels	Làm mềm viền mặt nạ chừng này điểm ảnh
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Mở rộng vùng chọn thêm chừng này điểm ảnh trước khi tô, để vật thay thế to hơn có chỗ
+	Generative	Sinh tạo
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Bản xem trước hiển thị cách tô cổ điển; OK và Áp dụng chạy mô hình lên một lớp mới.
+	Best of two	Chọn tốt nhất trong hai
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Tạo hai ứng viên và hiển thị ứng viên trông như chưa chỉnh sửa; tắt: một ứng viên, khoảng một nửa thời gian
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Các bộ điều hợp trong thư mục con loras của thư mục mô hình, do engine gốc áp dụng
+	Generative Upscale	Phóng to tạo sinh
+	Denoise	Khử nhiễu
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Mức vẽ lại vùng chọn: 1 thay thế hoàn toàn, khoảng 0,9 giữ hình dạng cũ
+	Native engine	Bộ máy gốc
+	Native engine: not configured	Bộ máy gốc: chưa cấu hình
+	Native engine: starting…	Bộ máy gốc: đang khởi động…
+	Native engine: working	Bộ máy gốc: đang chạy
+	Native engine: ready	Bộ máy gốc: sẵn sàng
+	Native engine: failed	Bộ máy gốc: lỗi
+	Native engine: stopped	Bộ máy gốc: đã dừng
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Đặt thư mục môi trường chạy và thư mục mô hình trong Tùy chọn › Tích hợp AI để dùng bộ máy gốc
+	{free} of {total} free	còn trống {free} / {total}
+	Loaded: {models}	Đã nạp: {models}
+	Purge models	Giải phóng mô hình
+	Choose the folder that holds your model weights to use the generative tools	Chọn thư mục chứa trọng số mô hình để dùng các công cụ tạo sinh
+	Set Models Folder…	Đặt thư mục mô hình…
+	App Icon…	Biểu tượng ứng dụng…
+	App Icon	Biểu tượng ứng dụng
+	Built-in	Tích hợp sẵn
+	Choose Image…	Chọn ảnh…
+	Paste Image	Dán ảnh
+	Image address (https://…)	Địa chỉ ảnh (https://…)
+	Download	Tải xuống
+	Downloading…	Đang tải xuống…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Ảnh nào cũng được; ảnh sẽ được đặt vừa trong một hình vuông. Nhấp chuột phải vào biểu tượng để xóa.
