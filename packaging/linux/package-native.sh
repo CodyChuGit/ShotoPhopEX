@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Fork: build and package ShotoPhopEX with the native generative engine for Linux x86_64:
 #
-#   $DIST/photocraft-<version>-linux-x86_64.tar.gz
-#       photocraft-<version>-linux-x86_64/{bin, bin/runtime, share/applications,
+#   $DIST/shotophopex-<version>-linux-x86_64.tar.gz
+#       shotophopex-<version>-linux-x86_64/{bin, bin/runtime, share/applications,
 #       share/icons, share/mime, share/doc/photocraft, install.sh}
 #
 # bin/runtime holds the CUDA libraries the binaries link (the CUDA runtime, cuBLAS, cuBLASLt and
@@ -55,7 +55,7 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
 fi
 BIN="$CARGO_TARGET_DIR/release"
 
-BASENAME="photocraft-$VERSION-linux-x86_64"
+BASENAME="shotophopex-$VERSION-linux-x86_64"
 WORK="$CARGO_TARGET_DIR/linux-native-package"
 STAGE="$WORK/$BASENAME"
 rm -rf "$WORK"

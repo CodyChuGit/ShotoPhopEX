@@ -1,8 +1,8 @@
 name: ShotoPhopEX release
 
 # Fork: builds the native (CUDA) release on GitHub's runners and attaches it to a draft release.
-#   Windows x64: photocraft-<v>-windows-x64.msi and photocraft-<v>-windows-x64-portable.zip
-#   Linux x86_64: photocraft-<v>-linux-x86_64.tar.gz
+#   Windows x64: shotophopex-<v>-windows-x64.msi and shotophopex-<v>-windows-x64-portable.zip
+#   Linux x86_64: shotophopex-<v>-linux-x86_64.tar.gz
 # Compiling the CUDA kernels needs the toolkit and CUTLASS, not a GPU; the generative features
 # are smoke-tested on real hardware before the draft is published by hand. No model weights ship.
 #
@@ -163,7 +163,7 @@ jobs:
       - name: The portable app starts on a PC without the CUDA Toolkit
         shell: pwsh
         run: |
-          $zip = Get-Item "dist/release/photocraft-$env:PHOTOCRAFT_VERSION-windows-x64-portable.zip"
+          $zip = Get-Item "dist/release/shotophopex-$env:PHOTOCRAFT_VERSION-windows-x64-portable.zip"
           $dir = Join-Path $env:RUNNER_TEMP 'portable-check'
           Expand-Archive $zip $dir -Force
           # Only Windows itself on PATH: anything the exe needs must come from its own folder.

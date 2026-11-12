@@ -4,9 +4,9 @@
 
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
-    photocraft-<version>-windows-<arch>.msi            installer (WiX v5, per-user by default, per-machine optional)
-    photocraft-<version>-windows-<arch>-portable.zip   photocraft.exe + photocraft-cli.exe + portable.txt
-    photocraft-<version>-windows-<arch>-symbols.zip    photocraft.pdb + photocraft_cli.pdb (optional, for profilers)
+    shotophopex-<version>-windows-<arch>.msi            installer (WiX v5, per-user by default, per-machine optional)
+    shotophopex-<version>-windows-<arch>-portable.zip   photocraft.exe + photocraft-cli.exe + portable.txt
+    shotophopex-<version>-windows-<arch>-symbols.zip    photocraft.pdb + photocraft_cli.pdb (optional, for profilers)
 
   The binaries link the C runtime statically (+crt-static), so neither the MSI nor the portable
   zip needs the Visual C++ redistributable. Signing is delegated to sign.ps1 (skipped with a
@@ -126,7 +126,7 @@ Copy-Item -LiteralPath (Join-Path $Root 'LICENSE-MIT'), (Join-Path $Root 'LICENS
 $Python = if (Get-Command python -ErrorAction SilentlyContinue) { 'python' } else { 'py' }
 Invoke-Native 'third-party notices and SBOM' {
   & $Python -I (Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party_notices.py') --target $Target --features $Features --version $Version `
-    --out (Join-Path $Docs 'THIRD_PARTY_NOTICES.txt') --spdx (Join-Path $Dist "photocraft-$Version-windows-$Arch.spdx.json")
+    --out (Join-Path $Docs 'THIRD_PARTY_NOTICES.txt') --spdx (Join-Path $Dist "shotophopex-$Version-windows-$Arch.spdx.json")
 }
 $HasCraftFontLicences = 1
 if ($env:CRAFT_FONTS_DIR) {
@@ -176,7 +176,7 @@ $Dialog = Join-Path $Stage 'installer-dialog.bmp'
 # Fork: the ShotoPhopEX "Sp" tile, the same icon the exe embeds (apps/photocraft/build.rs).
 New-InstallerArt (Join-Path $Root 'assets\app-icon\sp\sp-256.png') $Banner $Dialog
 
-$Msi = Join-Path $Dist "photocraft-$Version-windows-$Arch.msi"
+$Msi = Join-Path $Dist "shotophopex-$Version-windows-$Arch.msi"
 $RuntimeDefine = if ($Native) { @('-d', "RuntimeDir=$Runtime") } else { @() }
 & (Join-Path $PSScriptRoot 'check-icons.ps1')
 if (-not $NoMsi) {
@@ -202,7 +202,7 @@ Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Ms
 }
 
 # ---- portable zip ------------------------------------------------------------------------------
-$Portable = Join-Path $TargetDir "windows-package\photocraft-$Version-windows-$Arch-portable"
+$Portable = Join-Path $TargetDir "windows-package\shotophopex-$Version-windows-$Arch-portable"
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
@@ -225,7 +225,7 @@ Copy-Item (Join-Path $PSScriptRoot 'portable.txt') $Portable
 if ($Native) { Copy-Item -Recurse $Runtime (Join-Path $Portable 'runtime') }
 # Fork: no "-native" in the name. The in-app updater (craft-update) only reads
 # <app>-<version>-<os>-<arch>[-portable].<ext>, and every ShotoPhopEX release is the native build.
-$Zip = Join-Path $Dist "photocraft-$Version-windows-$Arch-portable.zip"
+$Zip = Join-Path $Dist "shotophopex-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 # The archive holds the files themselves. `-Path <folder>` puts the folder *in* the archive, so
 # photocraft.exe came out one level down and portable mode needs portable.txt beside the exe
@@ -246,7 +246,7 @@ Remove-Item -Recurse -Force $Check -ErrorAction SilentlyContinue
 # Analyzer, Superluminal, Visual Studio) show PhotoCraft's function names for the released
 # binaries (#688). Signing doesn't change the PDB signature an exe records, so they match the
 # signed exes; a rebuild of the same commit writes a PDB that doesn't.
-$Symbols = Join-Path $TargetDir "windows-package\photocraft-$Version-windows-$Arch-symbols"
+$Symbols = Join-Path $TargetDir "windows-package\shotophopex-$Version-windows-$Arch-symbols"
 Remove-Item -Recurse -Force $Symbols -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Symbols | Out-Null
 foreach ($pdb in 'photocraft.pdb', 'photocraft_cli.pdb') {
@@ -255,7 +255,7 @@ foreach ($pdb in 'photocraft.pdb', 'photocraft_cli.pdb') {
   Copy-Item $p $Symbols
 }
 Copy-Item (Join-Path $PSScriptRoot 'symbols.txt') $Symbols
-$SymbolsZip = Join-Path $Dist "photocraft-$Version-windows-$Arch-symbols.zip"
+$SymbolsZip = Join-Path $Dist "shotophopex-$Version-windows-$Arch-symbols.zip"
 Remove-Item -Force $SymbolsZip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Symbols -DestinationPath $SymbolsZip
 
