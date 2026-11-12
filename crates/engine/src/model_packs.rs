@@ -179,9 +179,25 @@ fn target_root(s: &Session) -> Option<std::path::PathBuf> {
 }
 
 /// A file counts as installed when it is there at its full size (hashing tens of gigabytes on
-/// every look would take minutes; downloads are hashed as they finish).
+/// every look would take minutes; downloads are hashed as they finish). A ComfyUI models folder
+/// often keeps files a folder or two deeper (`diffusion_models/moss/…`), where the native engine
+/// finds them too, so the same name at the same size there counts.
 pub fn installed(root: &std::path::Path, f: &ModelFile) -> bool {
-    std::fs::metadata(path_of(root, f)).is_ok_and(|m| m.is_file() && m.len() == f.bytes)
+    let full = |p: &std::path::Path| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() == f.bytes);
+    let dest = path_of(root, f);
+    full(&dest) || dest.parent().is_some_and(|dir| in_subfolders(dir, dest.file_name().unwrap_or_default(), 2, &full))
+}
+
+/// Whether a subfolder of `dir`, up to `depth` levels down, holds `name` that `ok` accepts.
+fn in_subfolders(dir: &std::path::Path, name: &std::ffi::OsStr, depth: u32, ok: &dyn Fn(&std::path::Path) -> bool) -> bool {
+    if depth == 0 || name.is_empty() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).any(|e| {
+        let sub = e.path();
+        ok(&sub.join(name)) || in_subfolders(&sub, name, depth - 1, ok)
+    })
 }
 
 /// Bytes still to fetch for `f`: none when installed, else what a resumable `.part` lacks.
@@ -722,6 +738,33 @@ mod tests {
         std::fs::write(dir.join("loras").join("sub").join("x.safetensors"), b"abc").unwrap();
         assert!(installed(&dir, &f));
         assert_eq!(left(Some(&dir), &f), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_same_file_a_folder_or_two_deeper_counts_as_installed() {
+        let dir = std::env::temp_dir().join(format!("pc-packs-deep-{}", std::process::id()));
+        let f = ModelFile {
+            id: "t".into(),
+            name: "T".into(),
+            folder: "diffusion_models".into(),
+            file: "x.safetensors".into(),
+            bytes: 3,
+            sha256: "0".repeat(64),
+            url: "https://example.invalid/x".into(),
+            license: "apache-2.0".into(),
+            gated: false,
+        };
+        let deep = dir.join("diffusion_models").join("moss").join("int8");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("x.safetensors"), b"ab").unwrap();
+        assert!(!installed(&dir, &f), "a short file deeper down does not count");
+        std::fs::write(deep.join("x.safetensors"), b"abc").unwrap();
+        assert!(installed(&dir, &f), "two levels down at the full size");
+        let deeper = deep.join("one-more");
+        std::fs::create_dir_all(&deeper).unwrap();
+        std::fs::rename(deep.join("x.safetensors"), deeper.join("x.safetensors")).unwrap();
+        assert!(!installed(&dir, &f), "three levels down is too deep");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

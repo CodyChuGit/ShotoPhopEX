@@ -31,11 +31,15 @@
     ],
     "notes": "Runs natively on a Mac (genai-native gn-diffusion flux3-klein/edit on gn-mlx, MLX): Klein's distilled 16-step flow map, the picture as its reference at about 768² (the output takes its aspect), LoRAs unmerged. (generate.expand runs on flux3-klein/fill with AusBoss's Outpaint LoRA instead.) q4 on a 16 GB M1 Air at 512²: about 190 s. On Windows and Linux (CUDA) it runs from BFL's INT8 ComfyUI file with the Qwen3-VL 4B encoder (qir::klein), the 8, 12 and 16 GB profiles' edit when the files are installed; the picture at about 1 MP.",
     "creator": "Black Forest Labs · mflux-community",
-    "description": "Edits by instruction on the Mac's GPU: cleaner than MOSS Edit, slower",
+    "description": "Edits by instruction on the GPU: cleaner than MOSS Edit, slower",
     "badges": [],
     "estimatedSeconds": {
       "base": 20,
       "perMegapixel": 650
+    },
+    "estimatedSecondsCuda": {
+      "base": 6,
+      "perMegapixel": 20
     },
     "pages": [
       "edit"

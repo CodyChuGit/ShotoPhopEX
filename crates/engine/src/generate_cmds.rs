@@ -1655,24 +1655,6 @@ fn removal_job(
     })
 }
 
-/// AusBoss's Consistency LoRA for Qwen-Image-2.1 edits (ausboss/Qwen-Image-2.1-Consistency-LoRA,
-/// strength 1): keeps the edited picture on the original's frame. On Generative Remove it cut
-/// the change outside the hole 2.6 to 3.5 times on four of five pictures at the same speed
-/// (measured in the app 2026-11-11, `target/cutout-qwen21-test`).
-pub(crate) const CONSISTENCY_LORA: &str = "qwen-image-2.1-consistency.safetensors";
-
-/// The Consistency LoRA a generative removal on `template` adds: only on Qwen-Image-2.1's edit
-/// through the native engine, when the LoRA folder has the file and the request names no LoRA of
-/// its own. Split into Layers does not take it: its author saw a big removal (a person up front)
-/// leave a faint ghost with it on.
-fn consistency_lora(s: &Session, template: &str, loras: &[(String, f32)]) -> Option<&'static str> {
-    if template != "qwen-2.1/edit" || !loras.is_empty() || !loras::runs_native(s, template) {
-        return None;
-    }
-    let root = s.prefs().integrations.models_root();
-    (!root.is_empty() && std::path::Path::new(&root).join("loras").join(CONSISTENCY_LORA).is_file()).then_some(CONSISTENCY_LORA)
-}
-
 /// What Split's background fill asks for once the removal has painted a large subject back:
 /// the backdrop alone, the subject never named (a model told to remove "the person" from a
 /// 12-megapixel portrait kept them in place on every route, measured in the app 2026-11-03).
@@ -1775,10 +1757,10 @@ pub(crate) fn generative_remove(
     if hole.is_empty() {
         return Err(EngineError::Other("nothing to remove: the stroke covers no pixel that can change (check the selection)".into()));
     }
-    let mut job = removal_job(s, label, grow, erase, enhance, variations, seed, prefill, tuning)?;
-    if let Some(lora) = consistency_lora(s, &job.template_id, &job.tuning.loras) {
-        job.tuning.loras.push((lora.to_string(), 1.0));
-    }
+    // No Consistency LoRA here: on a pedestrian it turned the removal into a copy of the input
+    // (mean change 0.9/255 inside the hole, measured in the app 2026-11-12); a request can still
+    // name it in `loras`.
+    let job = removal_job(s, label, grow, erase, enhance, variations, seed, prefill, tuning)?;
     let label_kept = label.to_string();
     crate::jobs::edit_job(
         s,
@@ -4746,10 +4728,14 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 None => vec![1.0; rect.width() as usize * rect.height() as usize],
             };
+            // The picture before the edit: its subject joins the result's in the mask, so a
+            // replaced person who was bigger than the new one (a body swap's old suit and shoes,
+            // measured in the app 2026-11-12) is covered by the result, not left around it.
+            let before: Option<Vec<u8>> = finder.as_ref().map(|_| photocraft_compose::render(doc, rect).to_rgba8().pixels);
             let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
             if let Some(finder) = finder.as_ref() {
                 for (id, ..) in &filled.0 {
-                    mask_to_subject(doc, *id, rect, selected, finder, ctx)?;
+                    mask_to_subject(doc, *id, rect, selected, before.as_deref(), finder, ctx)?;
                 }
             }
             Ok(filled)
@@ -4762,29 +4748,30 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
 /// the first that finds anything, its instances joined. With a selection the subject joins the
 /// selection's mask (the selected area changes, and a new subject larger than it still shows
 /// whole); without one it is the mask. Nothing found: the mask stays as it was.
-fn mask_to_subject(doc: &mut Document, id: LayerId, rect: Rect, selected: bool, finder: &crate::select_ml_cmds::SubjectFinder, ctx: &JobCtx) -> Result<()> {
+fn mask_to_subject(
+    doc: &mut Document,
+    id: LayerId,
+    rect: Rect,
+    selected: bool,
+    before: Option<&[u8]>,
+    finder: &crate::select_ml_cmds::SubjectFinder,
+    ctx: &JobCtx,
+) -> Result<()> {
     let layer = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
     let surf = layer.surface().ok_or(EngineError::NoLayer(id))?;
     let mut px = vec![[0u8; 4]; rect.width() as usize * rect.height() as usize];
     surf.read_rgba8_into(rect, &mut px);
     let picture: Vec<u8> = px.into_iter().flatten().collect();
-    let mut subject: Option<Vec<f32>> = None;
-    for prompt in crate::select_ml_cmds::SUBJECT_FALLBACKS.iter().take(2) {
-        ctx.check()?;
-        let found = finder.find_in(&picture, rect, prompt, SUBJECT_MASK_AT_MOST, ctx)?;
-        if found.is_empty() {
-            continue;
+    let Some(mut subject) = subject_in(&picture, rect, finder, ctx)? else { return Ok(()) };
+    // The subject the edit replaced, where the picture before it is given: what of it the new
+    // one does not cover would otherwise show through around the result.
+    if let Some(before) = before.filter(|b| b.len() == picture.len())
+        && let Some(old) = subject_in(before, rect, finder, ctx)?
+    {
+        for (j, c) in subject.iter_mut().zip(&old) {
+            *j = j.max(*c);
         }
-        let mut joined = vec![0.0f32; picture.len() / 4];
-        for (cov, ..) in &found {
-            for (j, c) in joined.iter_mut().zip(cov) {
-                *j = j.max(*c);
-            }
-        }
-        subject = Some(joined);
-        break;
     }
-    let Some(subject) = subject else { return Ok(()) };
     let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     let shown: Vec<f32> = match layer.mask.as_ref().filter(|_| selected) {
         Some(m) => m.surface.read_region(rect).iter().zip(&subject).map(|(a, b)| a.max(*b)).collect(),
@@ -4794,6 +4781,26 @@ fn mask_to_subject(doc: &mut Document, id: LayerId, rect: Rect, selected: bool, 
     surface.write_region(rect, &shown);
     layer.mask = Some(LayerMask { surface, enabled: true, linked: true, density: 1.0, feather: 0.0 });
     Ok(())
+}
+
+/// The subjects (at most [`SUBJECT_MASK_AT_MOST`]) Select Subject finds in `picture` (RGBA8 of
+/// `rect`), joined into one coverage; None when nothing is found.
+fn subject_in(picture: &[u8], rect: Rect, finder: &crate::select_ml_cmds::SubjectFinder, ctx: &JobCtx) -> Result<Option<Vec<f32>>> {
+    for prompt in crate::select_ml_cmds::SUBJECT_FALLBACKS.iter().take(2) {
+        ctx.check()?;
+        let found = finder.find_in(picture, rect, prompt, SUBJECT_MASK_AT_MOST, ctx)?;
+        if found.is_empty() {
+            continue;
+        }
+        let mut joined = vec![0.0f32; picture.len() / 4];
+        for (cov, ..) in &found {
+            for (j, c) in joined.iter_mut().zip(cov) {
+                *j = j.max(*c);
+            }
+        }
+        return Ok(Some(joined));
+    }
+    Ok(None)
 }
 
 /// How many subjects an edit result's mask may join.
@@ -5307,7 +5314,7 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
             "defaults": {"steps": m.defaults.steps, "guidance": m.defaults.guidance},
             "needsImage": m.needs_image, "needsMask": m.needs_mask, "models": slots,
             "creator": m.creator, "description": m.description, "badges": m.badges, "references": m.references,
-            "sizes": m.sizes, "counts": m.counts, "estimatedSeconds": m.estimated_seconds, "pages": m.pages, "eta": eta,
+            "sizes": m.sizes, "counts": m.counts, "estimatedSeconds": m.estimate(), "pages": m.pages, "eta": eta,
         }));
     }
     // What `auto` would pick right now (needs the server's model lists).

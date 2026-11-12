@@ -1,7 +1,7 @@
 {
   "meta": {
     "id": "flux3-klein/image",
-    "name": "Generate Image (FLUX 3 Image Klein, Mac)",
+    "name": "Generate Image (FLUX 3 Image Klein)",
     "family": "flux3-klein",
     "task": "image",
     "license": "community",
@@ -31,7 +31,7 @@
     ],
     "notes": "Runs natively on a Mac (genai-native gn-diffusion flux3-klein/image on gn-mlx, MLX): Klein's distilled 16-step flow map at the asked size, no prompt upsampler. The Mac's quality pick for Generate; MOSS Turbo stays the default. q4 on a 16 GB M1 Air: about 95 s at 512², about 6.5 min at 1024².",
     "creator": "Black Forest Labs · mflux-community",
-    "description": "Text to image on the Mac's GPU: better pictures than MOSS Turbo, slower",
+    "description": "Text to image on the GPU: better pictures than MOSS Turbo, slower",
     "badges": ["text"],
     "sizes": {
       "aspects": ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"],
@@ -42,6 +42,10 @@
     "estimatedSeconds": {
       "base": 5,
       "perMegapixel": 360
+    },
+    "estimatedSecondsCuda": {
+      "base": 2,
+      "perMegapixel": 10
     },
     "pages": [
       "image"
