@@ -192,7 +192,7 @@ impl Fp8Linear {
         let x2 = x.reshape(((), k))?;
         let flops = 2.0 * x2.dim(0)? as f64 * (n * k) as f64;
         #[cfg(feature = "fp8")]
-        if !self.full && x2.device().is_cuda() && x.dtype() == DType::BF16 {
+        if !self.full && x2.device().is_cuda() && x.dtype() == DType::BF16 && card_has_fp8_mma() {
             match crate::profile::scope("fp8 matmul", flops, x2.device(), || cuda::fp8_matmul(&x2, &self.w, &self.scales)) {
                 Ok(y) => return reshape_out(y, &dims, n),
                 Err(e) => tracing::debug!(error = %e, "fp8 matmul declined: the layer runs in bf16"),
@@ -201,6 +201,15 @@ impl Fp8Linear {
         let y = crate::profile::scope("fp8 dequantized + bf16 matmul", flops, x2.device(), || Ok(x2.matmul(&self.dequantized(x.dtype())?.t()?)?))?;
         reshape_out(y, &dims, n)
     }
+}
+
+/// Whether the card multiplies in FP8 (Ada, sm_89, and newer). An RTX 30 card (sm_86) has no
+/// FP8 tensor cores: cuBLASLt declines every FP8 GEMM there, after the activation was already
+/// cast, so each layer paid a cast and a failed algorithm search before its bf16 matmul.
+#[cfg_attr(not(feature = "fp8"), allow(dead_code))]
+fn card_has_fp8_mma() -> bool {
+    static FP8_MMA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FP8_MMA.get_or_init(|| crate::device::probe().map_or(true, |g| g.compute_cap >= 89))
 }
 
 fn reshape_out(y: Tensor, dims: &[usize], n: usize) -> Result<Tensor> {

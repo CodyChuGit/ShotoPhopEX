@@ -232,6 +232,23 @@ pub const KREA2_STEPS: u32 = 8;
 pub const DEFAULT_SIDE: u32 = 1024;
 /// How many pictures an edit may carry: the picture and the template's nine references.
 pub const MAX_PICTURES: usize = 10;
+/// Cards with less memory than this (a 24 GB RTX 3090 or 4090, and smaller) run lean: the 2.1
+/// text encoder in Q8_0, Krea 2's encoder loaded per prompt, the 2.1 vision tower only when a
+/// picture needs it, and the resident model giving way to SAM when the card is short. With
+/// everything kept resident a 3090 ran out of memory on every diffusion task (2026-11-11).
+pub const LEAN_BELOW: usize = 28 << 30;
+/// Free card memory the perception engine (SAM 3.1 with its matte model, ~2 GB, and its
+/// working set) wants beside a resident diffusion model; with less, on a lean card, the
+/// diffusion model is unloaded for it ([`DiffusionEngine::yields`]).
+pub const PERCEPTION_ROOM: usize = 4 << 30;
+
+/// Whether a card of `total` bytes runs lean ([`LEAN_BELOW`]). `forced_mb` (the app's
+/// `PHOTOCRAFT_VRAM_MB`, in megabytes) stands in for the card's memory, to try the lean
+/// settings on a bigger card.
+pub fn lean_card(total: Option<usize>, forced_mb: Option<&str>) -> bool {
+    let forced = forced_mb.and_then(|v| v.trim().parse::<usize>().ok()).map(|mb| mb << 20);
+    forced.or(total).is_some_and(|t| t > 0 && t < LEAN_BELOW)
+}
 
 /// What is on the device. One per engine, so the variants' sizes do not matter.
 #[allow(clippy::large_enum_variant)]
@@ -258,8 +275,10 @@ enum Resident {
 
 pub struct DiffusionEngine {
     models_root: PathBuf,
-    /// Q8_0 the 2.1 text encoder (for cards under 28 GB).
+    /// Q8_0 the 2.1 text encoder (`--text-quant`, or a lean card).
     quant_text: bool,
+    /// A card under [`LEAN_BELOW`]: see there.
+    lean: bool,
     resident: Resident,
     last_error: Option<String>,
     /// LoRA files on the device, by path, in the order they were loaded (the oldest goes when
@@ -437,7 +456,12 @@ impl DiffusionEngine {
         if let Some(why) = &refused {
             eprintln!("gn-diffusion: {why}");
         }
-        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None, want_nvfp4: false }
+        let lean = cfg!(feature = "cuda") && lean_card(gpu.as_ref().map(|g| g.total_bytes), std::env::var("PHOTOCRAFT_VRAM_MB").ok().as_deref());
+        if lean {
+            eprintln!("gn-diffusion: lean memory mode (card under {} GB): Q8_0 text encoder, encoders loaded when needed", LEAN_BELOW >> 30);
+        }
+        let quant_text = quant_text || lean;
+        Self { models_root, quant_text, lean, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None, want_nvfp4: false }
     }
 
     /// For a Sharp preview: `space`'s tiny decoder on the resident pipeline's device, loaded
@@ -591,6 +615,59 @@ impl DiffusionEngine {
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => {}
             Resident::None => {}
+        }
+    }
+
+    /// The driver's free memory on the resident pipeline's card; `None` with nothing resident.
+    fn free_now(&self) -> Option<usize> {
+        let dev = match &self.resident {
+            Resident::Qwen(p) => p.device(),
+            Resident::Krea2(p) => p.device(),
+            Resident::Layered(p) => p.device(),
+            Resident::Edit2511(p) => p.device(),
+            Resident::Moss(p, _) => p.device(),
+            Resident::H3(p) => p.device(),
+            Resident::KleinCuda(p) => p.device(),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) | Resident::Klein(_) => return None,
+            Resident::None => return None,
+        };
+        qwen_image_rs::device::free_vram(dev).map(|(free, _)| free)
+    }
+
+    /// Drop the resident pipeline and hand the memory it held back to the driver at once:
+    /// kept in the pool, the next family's loads (and SAM's, in the same worker) found the card
+    /// full and ran out of memory on a 24 GB card.
+    fn unload(&mut self) {
+        let dev = match &self.resident {
+            Resident::Qwen(p) => Some(p.device().clone()),
+            Resident::Krea2(p) => Some(p.device().clone()),
+            Resident::Layered(p) => Some(p.device().clone()),
+            Resident::Edit2511(p) => Some(p.device().clone()),
+            Resident::Moss(p, _) => Some(p.device().clone()),
+            Resident::H3(p) => Some(p.device().clone()),
+            Resident::KleinCuda(p) => Some(p.device().clone()),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) | Resident::Klein(_) => None,
+            Resident::None => None,
+        };
+        self.resident = Resident::None;
+        if let Some(dev) = dev {
+            qwen_image_rs::device::trim_pool(&dev);
+        }
+    }
+
+    /// After running out of memory: the resident pipeline goes, and so does the pool's hold on
+    /// whatever a load that failed half way had taken (with nothing resident to name the card,
+    /// the card's own context is asked).
+    fn unload_after_oom(&mut self) {
+        let held = !matches!(self.resident, Resident::None);
+        self.unload();
+        if !held
+            && cfg!(feature = "cuda")
+            && let Ok(dev) = qwen_image_rs::device::best_device()
+        {
+            qwen_image_rs::device::trim_pool(&dev);
         }
     }
 
@@ -761,7 +838,7 @@ impl DiffusionEngine {
             (Resident::None, _) => {}
             _ => {
                 progress(0.0, "Unloading the other models");
-                self.resident = Resident::None;
+                self.unload();
             }
         }
         let mut report = |f: f32, m: &str| progress(f * 0.3, m);
@@ -795,6 +872,7 @@ impl DiffusionEngine {
                     cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false),
                     quant_text: self.quant_text,
                     text_gguf,
+                    lazy_vision: self.lean,
                     ..Options::default()
                 };
                 Resident::Qwen(Pipeline::load(&dir, opts, &mut report).map_err(err)?)
@@ -813,6 +891,7 @@ impl DiffusionEngine {
                 let opts = Krea2Options {
                     cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false),
                     nvfp4: self.krea2_nvfp4(),
+                    evict_text_encoder: self.lean,
                     ..Krea2Options::defaults()
                 };
                 Resident::Krea2(Krea2Pipeline::load(&dir, opts, &mut report).map_err(err)?)
@@ -949,7 +1028,7 @@ impl DiffusionEngine {
                     self.last_error = Some(e.message.clone());
                 }
                 if e.kind == ErrorKind::OutOfMemory {
-                    self.resident = Resident::None;
+                    self.unload_after_oom();
                 }
                 return Err(e);
             }
@@ -1023,7 +1102,7 @@ impl DiffusionEngine {
                     self.last_error = Some(e.message.clone());
                 }
                 if e.kind == ErrorKind::OutOfMemory {
-                    self.resident = Resident::None;
+                    self.unload_after_oom();
                 }
                 return Err(e);
             }
@@ -1345,7 +1424,7 @@ impl Engine for DiffusionEngine {
             self.give_back();
             if let Err(e) = loaded {
                 if e.kind == ErrorKind::OutOfMemory {
-                    self.resident = Resident::None;
+                    self.unload_after_oom();
                 }
                 return Err(e);
             }
@@ -1586,7 +1665,7 @@ impl Engine for DiffusionEngine {
                 }
                 if e.kind == ErrorKind::OutOfMemory {
                     // Give the memory back: the next request reloads.
-                    self.resident = Resident::None;
+                    self.unload_after_oom();
                     self.loras.clear();
                 }
                 return Err(e);
@@ -1602,7 +1681,7 @@ impl Engine for DiffusionEngine {
 
     fn free(&mut self) {
         self.bind();
-        self.resident = Resident::None;
+        self.unload();
         self.loras.clear();
         self.tiny = None;
         #[cfg(feature = "mlx")]
@@ -1611,9 +1690,19 @@ impl Engine for DiffusionEngine {
 
     /// On a Mac (MLX) the models and the perception engine's SAM share one memory: the diffusion
     /// model gives it up when SAM runs (reloaded from the converted cache in a few seconds after),
-    /// where holding both pushed a 16 GB Mac into gigabytes of swap. On CUDA it stays.
+    /// where holding both pushed a 16 GB Mac into gigabytes of swap. On a CUDA card under
+    /// [`LEAN_BELOW`] it gives way only when the card has less than [`PERCEPTION_ROOM`] free
+    /// (Krea 2 warmed at launch filled a 3090, and the first Select Subject ran out of memory
+    /// instead of making room, 2026-11-11). On a bigger card it stays.
     fn yields(&self) -> bool {
-        cfg!(feature = "mlx")
+        if cfg!(feature = "mlx") {
+            return true;
+        }
+        if !self.lean || matches!(self.resident, Resident::None) {
+            return false;
+        }
+        self.give_back();
+        self.free_now().is_some_and(|free| free < PERCEPTION_ROOM)
     }
 
     fn index(&mut self, dir: &str) -> Value {
@@ -2129,6 +2218,28 @@ mod tests {
         let both = with_lora_first(&with_lora_first(&BTreeMap::new(), QWEN21_TURBO_LORA), QWEN21_OUTPAINT_LORA);
         assert_eq!((both["loras"][0]["file"].as_str(), both["loras"][1]["file"].as_str()), (Some(QWEN21_OUTPAINT_LORA), Some(QWEN21_TURBO_LORA)));
         assert_eq!(task_of(TEMPLATE_OUTPAINT_TURBO), Some("expand"));
+    }
+
+    #[test]
+    fn cards_under_28_gb_run_lean() {
+        const GIB: usize = 1 << 30;
+        // DXGI's and the driver's counts: a 5090 is about 31.5 GiB, a 3090 or 4090 about 23.6.
+        assert!(!lean_card(Some(32_607 << 20), None));
+        assert!(lean_card(Some(24_268 << 20), None));
+        assert!(lean_card(Some(16 * GIB), None));
+        assert!(!lean_card(None, None), "an unknown card keeps the usual settings");
+        assert!(!lean_card(Some(0), None));
+        // PHOTOCRAFT_VRAM_MB stands in for the card.
+        assert!(lean_card(Some(32_607 << 20), Some("24000")));
+        assert!(!lean_card(Some(24_268 << 20), Some(" 32768 ")));
+        assert!(lean_card(Some(24_268 << 20), Some("not a number")));
+    }
+
+    #[test]
+    fn a_cpu_engine_never_gives_way_to_sam() {
+        // Nothing resident (and no CUDA): the perception engine has the card to itself already.
+        let e = DiffusionEngine::new(PathBuf::from("m"), false);
+        assert_eq!(e.yields(), cfg!(feature = "mlx"));
     }
 
     #[test]
