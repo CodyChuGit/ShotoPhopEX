@@ -331,9 +331,14 @@ Reply with the paragraph only: no title, no bullets, no quotes around it, no mar
 /// 2026-11-12): plain prose that opens with the kind of shot and what took it, one named light
 /// source, and the small flaws of a real photo, without "photorealistic", "8k" or camera brands.
 const ENHANCE_IMAGE_PHOTO_SYSTEM: &str = "You are an expert prompt writer for a photorealistic text-to-image model. Rewrite the user's idea as one paragraph of 60 to 110 words that reads like the caption of a real, unretouched photograph.\n\
-Open with the kind of shot and what took it, for example \"A candid smartphone photo of\", \"A close-up taken on a 50mm lens of\", \"A flash snapshot of\" or \"A wide shot of\". Then the subject and what it does, its clothing, materials and surfaces, the setting, and one concrete light source (window light, overcast daylight, a street lamp, phone flash) with how it falls. Name the small imperfections a real photo has where they fit: natural skin texture with pores and fine lines, stray hairs, creases, dust, scuffs, slight motion blur, shallow focus, soft film grain.\n\
+Open with the kind of shot that suits the subject, and vary it: a portrait on an 85mm lens, a close-up on a macro lens, a wide shot on a 24mm lens, a flash snapshot, a candid street photo, a product shot on a tabletop, a landscape at golden hour. Use a smartphone photo only for casual, everyday scenes. Then the subject and what it does, its clothing, materials and surfaces, the setting, and one concrete light source (window light, overcast daylight, a street lamp, a softbox, on-camera flash) with how it falls.\n\
+Name two or three small imperfections a real photo has, each on something that really has it: pores, fine lines and stray hairs only on people; fur and whiskers on animals; scratches, fingerprints, dust or wear on objects; creases on fabric; puddles or litter on streets. Shallow focus, slight motion blur and soft grain apply to the whole frame.\n\
+If the user names another medium, such as a painting, illustration, drawing, cartoon, anime or 3D render, keep that medium, describe it in its own terms and use no camera or lens words.\n\
 Keep every subject, action, colour and spatial relation the user gave. Add no new people, characters or animals. Put any words to be rendered in the image in double quotes. Never write photorealistic, hyperrealistic, 8k, 4k, masterpiece, best quality, DSLR or a camera brand.\n\
 Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
+
+/// The longest text-to-image rewrite, in tokens (about 160 words).
+const ENHANCE_IMAGE_MAX_TOKENS: u64 = 220;
 
 /// Which rewriter an `enhance` runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -579,6 +584,15 @@ fn enhance_once(
     // Qwen-Image-2.1's 8B answered (21.9-24.3 s a fill with enhance before, 2.4-4.1 s after).
     if kind == EnhanceKind::FillScene {
         params.insert("encoder".to_string(), Value::String(KREA2_CHAT_ENCODER.to_string()));
+    }
+    if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto) {
+        // A text-to-image rewrite is 60 to 120 words: past the default 120 tokens it was cut
+        // mid-sentence (2026-11-12). `place` names the encoder for these kinds: Krea 2's own
+        // when the picture runs on Krea 2, so the model stays resident (no 8B load and swap).
+        params.insert("max_tokens".to_string(), Value::from(ENHANCE_IMAGE_MAX_TOKENS));
+        if place == Some(KREA2_CHAT_ENCODER) {
+            params.insert("encoder".to_string(), Value::String(KREA2_CHAT_ENCODER.to_string()));
+        }
     }
     for attempt in 0..2u64 {
         let req = Request {
@@ -2631,6 +2645,7 @@ fn image_prompt(
     backend: &dyn GenerativeBackend,
     ctx: &JobCtx,
     enhance: Option<EnhanceKind>,
+    template: &str,
     typed: &str,
     planned: String,
     wrap: &str,
@@ -2638,7 +2653,9 @@ fn image_prompt(
 ) -> (String, String) {
     let Some(kind) = enhance else { return (planned, String::new()) };
     ctx.progress(0.02, "Improving the prompt");
-    match enhance_prompt(backend, kind, typed, None, None, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
+    // On Krea 2 the rewrite runs on its own encoder, which the picture loads anyway.
+    let encoder = template.starts_with("krea2-turbo/").then_some(KREA2_CHAT_ENCODER);
+    match enhance_prompt(backend, kind, typed, None, encoder, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
         Ok(Some(e)) => {
             let p = if wrap.is_empty() { e.clone() } else { wrap.replace("{prompt}", &e) };
             (p, e)
@@ -2725,6 +2742,8 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
     let n = variations.max(1);
     // A layer name per result: "Generated: …" alone, or with "(2/3)".
     let numbered = move |base: &str, i: u32| if n > 1 { format!("{base} ({}/{n})", i + 1) } else { base.to_string() };
+    // The rewriter runs on the template's own encoder where it has one.
+    let enhance_template = tid.clone();
     if to_document {
         let doc_name = name.clone();
         return crate::jobs::run(
@@ -2734,7 +2753,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
             move |ctx| {
                 // No canvas yet: the pictures are the new document's (the Generations panel's row).
                 ctx.preview_at(Rect::new(0, 0, width as i32, height as i32));
-                let (prompt, enhanced) = image_prompt(thinker.as_ref(), ctx, enhance, &typed, req.prompt, &wrap, seed);
+                let (prompt, enhanced) = image_prompt(thinker.as_ref(), ctx, enhance, &enhance_template, &typed, req.prompt, &wrap, seed);
                 req.prompt = prompt;
                 ctx.check()?;
                 let resps = run_variations(backend.as_ref(), &mut req, n, seed, ctx)?;
@@ -2776,7 +2795,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         move |doc, active, ctx| {
             // The new layer covers the canvas.
             ctx.preview_at(doc.bounds());
-            let (prompt, enhanced) = image_prompt(backend.as_ref(), ctx, enhance, &typed, req.prompt, &wrap, seed);
+            let (prompt, enhanced) = image_prompt(backend.as_ref(), ctx, enhance, &enhance_template, &typed, req.prompt, &wrap, seed);
             req.prompt = prompt;
             ctx.check()?;
             let resps = run_variations(backend.as_ref(), &mut req, n, seed, ctx)?;

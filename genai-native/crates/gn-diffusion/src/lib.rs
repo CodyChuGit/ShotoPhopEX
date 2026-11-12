@@ -595,7 +595,16 @@ impl DiffusionEngine {
         let on_krea2 = chat_on_krea2(&req.params)?;
         self.ensure_loaded(if on_krea2 { Family::Krea2 } else { Family::QwenImage21 }, progress)?;
         progress(0.5, "Thinking");
-        let opts = ChatOptions { seed: req.seed, ..ChatOptions::default() };
+        // `params.max_tokens` (16..512): a longer answer than the default 120 tokens (a
+        // text-to-image rewrite of 60 to 120 words runs past it and is cut mid-sentence).
+        let max_new = match req.params.get("max_tokens") {
+            None => ChatOptions::default().max_new,
+            Some(v) => match v.as_u64() {
+                Some(n) if (16..=512).contains(&n) => n as usize,
+                _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("max_tokens {v} is outside 16..512"))),
+            },
+        };
+        let opts = ChatOptions { seed: req.seed, max_new, ..ChatOptions::default() };
         let stop = || cancel.load(Ordering::SeqCst);
         let reply = match &self.resident {
             Resident::Qwen(p) if !on_krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
