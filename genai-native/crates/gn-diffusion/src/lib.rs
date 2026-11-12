@@ -38,7 +38,7 @@ use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::layered_pipeline::LayeredPipeline;
 use qwen_image_rs::lora::{LoraFile, LoraStack};
 use qwen_image_rs::moss::pipeline::{self as moss, MossPipeline, Variant as MossVariant};
-use qwen_image_rs::pipeline::{Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule, is_snapshot};
+use qwen_image_rs::pipeline::{Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Sampler, Schedule, is_snapshot};
 use qwen_image_rs::preview::{Frame, LatentSpace, PreviewMode, Previewer, StepPreview, TINY_DIR, TinyDecoder};
 use serde_json::{Value, json};
 
@@ -382,6 +382,15 @@ fn chat_on_krea2(params: &std::collections::BTreeMap<String, Value>) -> Result<b
 /// shift 1.25); absent or `"simple"` keeps ComfyUI's `simple` schedule.
 pub const KREA_DETAIL_SCHEDULE: &str = "krea-detail";
 
+/// `params.sampler`: `"euler"` (absent) or, on Krea 2 Turbo's text to image and edit, `"er_sde"`.
+fn sampler_for(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Sampler, EngineError> {
+    match params.get("sampler").and_then(Value::as_str) {
+        None | Some("euler") => Ok(Sampler::Euler),
+        Some("er_sde") if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Sampler::ErSde),
+        Some(other) => Err(EngineError::new(ErrorKind::BadRequest, format!("sampler {other:?} is not one {model} takes"))),
+    }
+}
+
 fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Schedule, EngineError> {
     if model == TEMPLATE_OUTPAINT_TURBO {
         return Ok(Schedule::ViggleTurbo);
@@ -389,6 +398,7 @@ fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>)
     match params.get("schedule").and_then(Value::as_str) {
         None | Some("simple") => Ok(Schedule::Comfy),
         Some(KREA_DETAIL_SCHEDULE) if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaDetail),
+        Some("beta") if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaBeta),
         Some(other) => Err(EngineError::new(ErrorKind::BadRequest, format!("schedule {other:?} is not one {model} takes"))),
     }
 }
@@ -1550,6 +1560,7 @@ impl Engine for DiffusionEngine {
                 references,
                 loras,
                 ref_boost,
+                sampler: sampler_for(&req.model, &req.params)?,
             };
             let fill_opts = if krea2_fill { Some(krea2_fill_options(&req.params)?) } else { None };
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
@@ -2060,6 +2071,11 @@ mod tests {
         assert_eq!(schedule_for(TEMPLATE_OUTPAINT_TURBO, &none).unwrap(), Schedule::ViggleTurbo);
         assert!(schedule_for(TEMPLATE_KREA2_FILL, &p(KREA_DETAIL_SCHEDULE)).is_err());
         assert!(schedule_for(TEMPLATE_KREA2, &p("karras")).is_err());
+        assert_eq!(schedule_for(TEMPLATE_KREA2, &p("beta")).unwrap(), Schedule::KreaBeta);
+        let sp = |v: &str| std::collections::BTreeMap::from([("sampler".to_string(), Value::from(v))]);
+        assert_eq!(sampler_for(TEMPLATE_KREA2, &none).unwrap(), Sampler::Euler);
+        assert_eq!(sampler_for(TEMPLATE_KREA2, &sp("er_sde")).unwrap(), Sampler::ErSde);
+        assert!(sampler_for(TEMPLATE_KREA2_FILL, &sp("er_sde")).is_err());
     }
 
     /// A Krea 2 edit runs with its edit LoRA in front of the request's own, once.
