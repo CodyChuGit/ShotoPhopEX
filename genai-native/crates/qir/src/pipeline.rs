@@ -726,12 +726,15 @@ impl Pipeline {
             let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, self.dtype, &self.dev)? };
             let cfg = TextConfig::default();
             let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp(self.src.lm_root()).pp("norm"))?;
+            // Only a missing tensor is a text-only repack: a card out of memory while the head
+            // went up read as one (RTX 3090, 2026-11-11, with the head on disk and quantized).
+            anyhow::ensure!(vb.contains_tensor("lm_head.weight"), "the text encoder has no lm_head (a text-only repack?)");
             let head = if matches!(self.dev, Device::Cuda(_)) {
                 // Read on the CPU and quantized on every core ([`crate::q8`]): candle's own
                 // quantize of the CUDA copy ran on one thread, 10.2 s a load. The blocks are
                 // kept on disk for the next load ([`crate::q8::cached_q8_0`]).
                 let q = crate::q8::cached_q8_0(&files, "lm_head.weight", (cfg.vocab_size, cfg.hidden_size), self.dtype, &self.dev)
-                    .context("the text encoder has no lm_head (a text-only repack?)")?;
+                    .context("loading the language-model head")?;
                 candle_core::quantized::QMatMul::from_qtensor(q)?
             } else {
                 candle_core::quantized::QMatMul::Tensor(

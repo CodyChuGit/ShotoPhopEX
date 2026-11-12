@@ -69,6 +69,14 @@ fn image_lands_as_a_layer_covering_the_canvas() {
 }
 
 #[test]
+fn an_auto_template_is_the_default_image_template() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    let r = s.execute(IMAGE, json!({"prompt": "a lighthouse at dusk", "seed": 3, "template": "auto"})).unwrap();
+    assert_eq!(r["template"], DEFAULT_IMAGE_TEMPLATE);
+}
+
+#[test]
 fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
     let fake = FakeNative::start().unwrap();
     let mut s = Session::new();
