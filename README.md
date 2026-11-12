@@ -522,8 +522,8 @@ All three run the same test, compared in [Speed on every device](#-speed-on-ever
 | Your computer | What Auto uses | Status |
 |---|---|---|
 | **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
-| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🔴 tested on a 3090: in v0.1.1 the image models run out of memory, and only selection works; fix in progress |
-| **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB |
+| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🔴 tested on a 3090: in v0.1.1 the image models run out of memory, and only selection works; not fixed yet |
+| **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection; with the optional FLUX 3 Image Klein extra, Klein for Edit and Expand | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB. Klein on CUDA is new: tested on an RTX 3090 (picture 21 s, edit 46 s, expand 33 s at about 1 MP), not yet at 12 GB |
 | **Mac, 16 GB** (Apple Silicon) | MOSS Turbo, MOSS Edit and FLUX 3 Image Klein on MLX ([speed](#-speed-on-every-device)) | 🟡 works on an M1 Air; `.dmg` since v0.1.1 |
 | **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
 
@@ -562,7 +562,7 @@ ComfyUI's layout. Most files come from the Comfy-Org repacks on Hugging Face.
 | `diffusion_models/` | `moss_image_sft_int8_convrot.safetensors` | `Comfy-Org/MOSS-Image` | MOSS-Image and MOSS Edit |
 | `loras/` | `moss-image-edit/adapter_model.safetensors` + `adapter_config.json` | `chinoll/Moss-Image-Edit` | MOSS Edit and MOSS Edit Turbo |
 | `text_encoders/` | `qwen3.5_9b_int8_convrot.safetensors`, plus `qwen35_tokenizer/tokenizer.json` | `Comfy-Org/MOSS-Image`; the tokenizer from `OpenMOSS-Team/MOSS-Image-SFT` | MOSS's text encoder |
-| `vae/` | `flux2-vae_small.safetensors` | `Comfy-Org/MOSS-Image` | MOSS |
+| `vae/` | `flux2-vae_small.safetensors` | `Comfy-Org/MOSS-Image` | MOSS, and Klein |
 
 **Mac pack (Apple Silicon, about 25 GB)**
 
@@ -588,6 +588,9 @@ SAM 3.1 and ViTMatte are the same files as above.
 | `loras/` | `qwen-image-edit-2511-multiple-angles-lora.safetensors` | `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` | Generative Angles |
 | `loras/` | `krea2_style_reference.safetensors` | `ostris/krea2_turbo_style_reference` | Krea 2 style reference |
 | `vae_approx/` | `taew2_1.safetensors`, `taeqi2_1.safetensors` | madebyollin (MIT) | Sharp live previews |
+| `diffusion_models/` | `flux3-image-klein-int8-convrot.safetensors` | `black-forest-labs/flux-3-image-klein-comfy` (gated: accept on Hugging Face) | Klein Edit and Expand on 8–16 GB cards (Windows, Linux) |
+| `text_encoders/` | `qwen3vl_4b_fp8_scaled.safetensors` | `Comfy-Org` (the Krea 2 file) | Klein's text encoder |
+| `loras/` | `flux-3-image-klein-outpaint.safetensors` | `ausboss/FLUX-3-Image-Klein-Outpaint-LoRA` | Generative Expand on Klein |
 
 **Licences matter.** Model weights are not part of ShotoPhopEX and are not covered by its
 licence. Qwen-Image-2.1, its VAE and its Outpaint, Restore and Viggle LoRAs are under the Qwen
@@ -595,7 +598,7 @@ Research License (non-commercial; commercial use needs a licence from Alibaba). 
 AnyPaint and style LoRAs are under the Krea 2 Community License (commercial use only below US$1M
 annual revenue, plus Krea's use policy); the Krea 2 General Edit LoRA adds its author's own
 non-commercial licence. SAM 3.1 is under Meta's SAM License (commercial use allowed; no military,
-weapons or trade-control-restricted uses). FLUX 3 Image Klein and its LoRAs (the Mac's Fill and Expand) are under the FLUX Kommunity
+weapons or trade-control-restricted uses). FLUX 3 Image Klein and its LoRAs (the Mac's Fill and Expand, and Edit and Expand on 8–16 GB cards) are under the FLUX Kommunity
 License. Kromoss, MOSS-Image, Qwen-Image-Edit-2511, the
 Lightning, Angles and Object Remover LoRAs and ViTMatte are Apache-2.0. The MOSS Edit adapter
 states no licence at all. **Get AI Models** lists the licence of every file it is about to
