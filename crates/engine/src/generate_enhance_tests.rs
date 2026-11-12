@@ -319,3 +319,18 @@ fn other_media_are_recognised() {
         assert!(!names_other_medium(p), "{p}");
     }
 }
+
+#[test]
+fn a_text_to_image_rewrite_runs_on_the_pictures_own_encoder() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    let encoder_of = |s: &mut crate::Session, template: &str| {
+        s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": template, "target": "document", "enhance": true})).unwrap();
+        let st = fake.state();
+        st.runs.iter().rev().find(|r| is_text_request(&r.request)).map(|r| r.request["params"]["encoder"].clone()).unwrap()
+    };
+    assert_eq!(encoder_of(&mut s, "krea2-turbo/image"), "krea2");
+    assert_eq!(encoder_of(&mut s, "moss-image/turbo"), "moss-image/turbo");
+    assert_eq!(encoder_of(&mut s, "moss-image/image"), "moss-image/image");
+    assert_eq!(encoder_of(&mut s, "qwen-2.1/image"), Value::Null, "the default encoder");
+}

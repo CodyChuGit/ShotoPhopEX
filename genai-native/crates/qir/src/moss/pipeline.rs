@@ -14,7 +14,7 @@ use tokenizers::Tokenizer;
 use super::dit::{self, MossConfig, MossDit};
 use super::text::{self, Qwen35Text, TextConfig};
 use super::vae::{self, Flux2Decoder, Flux2Encoder};
-use super::weights::Weights;
+use super::weights::{QLinear, Weights};
 use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
 use crate::preview::StepPreview;
 use crate::Result;
@@ -178,6 +178,8 @@ pub struct MossPipeline {
     encoder: Option<Flux2Encoder>,
     positive: Mutex<Option<Cached>>,
     negative: Mutex<Option<Cached>>,
+    /// The language-model head, loaded on a first chat ([`Self::chat`]).
+    head: Mutex<Option<Arc<QLinear>>>,
 }
 
 impl MossPipeline {
@@ -220,6 +222,7 @@ impl MossPipeline {
             encoder,
             positive: Mutex::new(None),
             negative: Mutex::new(None),
+            head: Mutex::new(None),
         })
     }
 
@@ -279,6 +282,70 @@ impl MossPipeline {
         let d = Arc::new(load_dit(&self.files, &self.dev, dit_dtype(self.dtype))?);
         *dit = Some(Arc::clone(&d));
         Ok(d)
+    }
+
+    /// A text answer from the encoder itself, Qwen3.5-9B (thinking off): the reply to `user`
+    /// under `system`, sampled as the other chats are ([`crate::pipeline::ChatOptions`]). The
+    /// prompt rewriter of a MOSS picture then needs no other model on the card.
+    pub fn chat(&self, system: &str, user: &str, opts: &crate::pipeline::ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
+        use crate::pipeline::{sample, Cancelled, ChatRng};
+        crate::device::bind_thread(&self.dev);
+        let t0 = Instant::now();
+        let text = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
+        let prompt: Vec<u32> = self.tok.encode(text, false).map_err(|e| anyhow::anyhow!("encode the chat: {e}"))?.get_ids().to_vec();
+        let stops: Vec<u32> = ["<|im_end|>", "<|endoftext|>"].iter().filter_map(|t| self.tok.token_to_id(t)).collect();
+        anyhow::ensure!(!stops.is_empty(), "the Qwen3.5 tokenizer has no <|im_end|>");
+        let te = self.text_encoder()?;
+        let head = self.lm_head()?;
+        let mut out = Vec::new();
+        let mut rng = ChatRng::new(opts.seed);
+        let (mut last, mut st) = te.prefill(&prompt)?;
+        let tp = Instant::now();
+        while out.len() < opts.max_new {
+            if cancel() {
+                return Err(Cancelled.into());
+            }
+            let logits = head.forward(&last)?.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+            let next = sample(&logits, opts, &mut rng);
+            if stops.contains(&next) {
+                break;
+            }
+            out.push(next);
+            last = te.step(next, &mut st)?;
+        }
+        drop((head, st, last));
+        if self.low_vram {
+            // 12 GB mode: the head (1-2 GB) goes again, so the DiT has its room back.
+            *self.head.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            crate::device::trim_pool(&self.dev);
+        }
+        let reply = self.tok.decode(&out, true).map_err(|e| anyhow::anyhow!("decode the reply: {e}"))?;
+        tracing::info!(
+            tokens = out.len(),
+            prompt_tokens = prompt.len(),
+            decode_s = tp.elapsed().as_secs_f32(),
+            chat_s = t0.elapsed().as_secs_f32(),
+            "moss chat"
+        );
+        Ok(reply.trim().to_string())
+    }
+
+    /// The encoder file's `lm_head` (248320 × 4096), on the card from the first chat on.
+    fn lm_head(&self) -> Result<Arc<QLinear>> {
+        let mut slot = self.head.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(h) = slot.as_ref() {
+            return Ok(Arc::clone(h));
+        }
+        let w = Weights::open(&self.files.text, &self.dev, self.dtype, true)?;
+        let name = ["lm_head", "model.lm_head", "model.language_model.lm_head"]
+            .into_iter()
+            .find(|n| w.contains(&format!("{n}.weight")))
+            .context("this Qwen3.5-9B encoder file has no lm_head, so it cannot write text")?;
+        let t0 = Instant::now();
+        let h = Arc::new(w.linear(name)?);
+        tracing::info!(load_s = t0.elapsed().as_secs_f32(), name, "MOSS chat head loaded");
+        *slot = Some(Arc::clone(&h));
+        Ok(h)
     }
 
     /// The encoder's last hidden state `(tokens, 4096)` for `prompt`.

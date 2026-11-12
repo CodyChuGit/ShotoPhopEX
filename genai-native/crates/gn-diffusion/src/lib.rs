@@ -365,13 +365,27 @@ fn with_style_lora(params: &std::collections::BTreeMap<String, Value>) -> Result
     Ok(out)
 }
 
-/// Whether a chat's `encoder` param asks for Krea 2's encoder ([`CHAT_ON_KREA2`]); absent or
-/// null is the default (Qwen-Image-2.1's 8B), anything else an error.
-fn chat_on_krea2(params: &std::collections::BTreeMap<String, Value>) -> Result<bool, EngineError> {
+/// Which encoder a chat answers on: Qwen-Image-2.1's 8B (the default), Krea 2's 4B
+/// ([`CHAT_ON_KREA2`]) or a MOSS template's own Qwen3.5-9B (`encoder` = that template's id, so
+/// the variant the picture will run on is the one that loads).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatOn {
+    Qwen21,
+    Krea2,
+    Moss(MossVariant),
+}
+
+fn chat_on(params: &std::collections::BTreeMap<String, Value>) -> Result<ChatOn, EngineError> {
     match params.get("encoder") {
-        None | Some(Value::Null) => Ok(false),
-        Some(v) if v.as_str() == Some(CHAT_ON_KREA2) => Ok(true),
-        Some(v) => Err(EngineError::new(ErrorKind::BadRequest, format!("encoder {v}: a chat answers on the default encoder or \"{CHAT_ON_KREA2}\""))),
+        None | Some(Value::Null) => Ok(ChatOn::Qwen21),
+        Some(v) if v.as_str() == Some(CHAT_ON_KREA2) => Ok(ChatOn::Krea2),
+        Some(v) => match v.as_str().and_then(family_of) {
+            Some(Family::Moss(m)) => Ok(ChatOn::Moss(m)),
+            _ => Err(EngineError::new(
+                ErrorKind::BadRequest,
+                format!("encoder {v}: a chat answers on the default encoder, \"{CHAT_ON_KREA2}\" or a moss-image template's"),
+            )),
+        },
     }
 }
 
@@ -592,8 +606,18 @@ impl DiffusionEngine {
             return Ok((DoneInfo { images: Vec::new(), texts: vec![reply], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
         }
         #[cfg_attr(feature = "mlx", allow(unreachable_code))]
-        let on_krea2 = chat_on_krea2(&req.params)?;
-        self.ensure_loaded(if on_krea2 { Family::Krea2 } else { Family::QwenImage21 }, progress)?;
+        let on = chat_on(&req.params)?;
+        if matches!(on, ChatOn::Moss(_)) && image.is_some() {
+            return Err(EngineError::new(ErrorKind::Unsupported, "MOSS's encoder answers from words only (no picture) on this build"));
+        }
+        self.ensure_loaded(
+            match on {
+                ChatOn::Qwen21 => Family::QwenImage21,
+                ChatOn::Krea2 => Family::Krea2,
+                ChatOn::Moss(v) => Family::Moss(v),
+            },
+            progress,
+        )?;
         progress(0.5, "Thinking");
         // `params.max_tokens` (16..512): a longer answer than the default 120 tokens (a
         // text-to-image rewrite of 60 to 120 words runs past it and is cut mid-sentence).
@@ -607,8 +631,9 @@ impl DiffusionEngine {
         let opts = ChatOptions { seed: req.seed, max_new, ..ChatOptions::default() };
         let stop = || cancel.load(Ordering::SeqCst);
         let reply = match &self.resident {
-            Resident::Qwen(p) if !on_krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
-            Resident::Krea2(p) if on_krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
+            Resident::Qwen(p) if on == ChatOn::Qwen21 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
+            Resident::Krea2(p) if on == ChatOn::Krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
+            Resident::Moss(p, _) if matches!(on, ChatOn::Moss(_)) => p.chat(&system, &req.prompt, &opts, &stop),
             _ => return Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
         };
         self.give_back();
@@ -2104,16 +2129,20 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_names_krea2s_encoder_or_none() {
+    fn a_chat_names_krea2s_or_a_moss_encoder_or_none() {
         let mut p = BTreeMap::new();
-        assert!(!chat_on_krea2(&p).unwrap());
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Qwen21);
         p.insert("encoder".into(), json!(CHAT_ON_KREA2));
-        assert!(chat_on_krea2(&p).unwrap());
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Krea2);
+        p.insert("encoder".into(), json!(TEMPLATE_MOSS_TURBO));
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Moss(MossVariant::Kromoss));
+        p.insert("encoder".into(), json!(TEMPLATE_MOSS));
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Moss(MossVariant::Sft));
         p.insert("encoder".into(), Value::Null);
-        assert!(!chat_on_krea2(&p).unwrap());
-        for bad in [json!("qwen"), json!(3), json!(["krea2"])] {
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Qwen21);
+        for bad in [json!("qwen"), json!(3), json!(["krea2"]), json!(TEMPLATE_KREA2)] {
             p.insert("encoder".into(), bad);
-            assert!(chat_on_krea2(&p).is_err());
+            assert!(chat_on(&p).is_err());
         }
     }
 
