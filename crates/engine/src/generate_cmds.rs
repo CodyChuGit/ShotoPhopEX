@@ -2293,6 +2293,8 @@ struct ImagePlan {
     seed: u64,
     steps: u32,
     guidance: f32,
+    /// The native engine's schedule (`params.schedule`), `None` for the template's own.
+    schedule: Option<&'static str>,
     name: String,
     models: Vec<(String, String)>,
     /// The size asked of the model (rounded to the latent grid).
@@ -2324,6 +2326,27 @@ pub fn image_quality_tuning(template: &str, quality: &str) -> Option<(u32, f32)>
         ("qwen-2.1/image", "best") => Some((40, 3.0)),
         // The middle ground: the guidance (what made the difference) at the template's 25 steps.
         ("qwen-2.1/image", "balanced") => Some((25, 3.0)),
+        // Krea 2 Turbo's detail recipe ([`image_quality_schedule`]) takes one step more than
+        // the template's 8: the Sick Ollie Creator Kit's 9.
+        ("krea2-turbo/image", "best" | "balanced") => Some((KREA_DETAIL_STEPS, 1.0)),
+        _ => None,
+    }
+}
+
+/// The schedule the native engine runs Krea 2 Turbo's detail recipe under (`params.schedule`):
+/// ComfyUI's `beta` scheduler over AuraFlow shift 1.25, the sampler settings of the Sick Ollie
+/// Creator Kit Studio (civitai 2811445, v5; its Generation Core defaults). Against the
+/// template's `simple` schedule at Krea's own shift it ends on sigmas 0.18 and 0.06 instead of
+/// jumping from 0.31 to clean, so the last steps go to fine detail.
+pub const KREA_DETAIL_SCHEDULE: &str = "krea-detail";
+/// The kit's step count under that schedule.
+pub const KREA_DETAIL_STEPS: u32 = 9;
+
+/// The schedule a text-to-image run of `template` asks for under `quality` (`None`: the
+/// template's own): Krea 2 Turbo under `best` and `balanced` runs [`KREA_DETAIL_SCHEDULE`].
+pub fn image_quality_schedule(template: &str, quality: &str) -> Option<&'static str> {
+    match (template, quality) {
+        ("krea2-turbo/image", "best" | "balanced") => Some(KREA_DETAIL_SCHEDULE),
         _ => None,
     }
 }
@@ -2466,15 +2489,31 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     };
     let Common { template, prompt, mut negative, seed, mut steps, mut guidance, models, name } =
         plan_common(s, IMAGE, p, &default_template, Task::Image, &default_model)?;
-    // Preferences › Quality, when the request leaves the steps and guidance to the template.
+    // `schedule`: "simple" (the template's) or "krea-detail" (Krea 2 Turbo only); absent, the
+    // Quality's.
+    let asked_schedule = match opt_str(IMAGE, p, "schedule", 20)? {
+        None => None,
+        Some("simple") => Some(None),
+        Some(KREA_DETAIL_SCHEDULE) if template.meta.id == "krea2-turbo/image" => Some(Some(KREA_DETAIL_SCHEDULE)),
+        Some(other) => {
+            return Err(bad(IMAGE, format!("`schedule` must be \"simple\" or, on krea2-turbo/image, \"{KREA_DETAIL_SCHEDULE}\" (got `{other}`)")));
+        }
+    };
+    let schedule = asked_schedule.unwrap_or_else(|| image_quality_schedule(&template.meta.id, quality(s)));
+    // Preferences › Quality, when the request leaves the steps and guidance to the template
+    // (and, for Krea 2, does not ask for its plain schedule).
     if steps == 0
         && guidance == 0.0
+        && !(asked_schedule == Some(None) && template.meta.id == "krea2-turbo/image")
         && let Some((st, g)) = image_quality_tuning(&template.meta.id, quality(s))
     {
         (steps, guidance) = (st, g);
         if g > 1.0 && negative.trim().is_empty() {
             negative = BEST_IMAGE_NEGATIVE.to_string();
         }
+    }
+    if schedule == Some(KREA_DETAIL_SCHEDULE) && steps == 0 {
+        steps = KREA_DETAIL_STEPS;
     }
     crate::generate_refs::check_count(IMAGE, &template, ref_specs.len())?;
     let variations = parse_variations(IMAGE, p)?;
@@ -2525,6 +2564,7 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         seed,
         steps,
         guidance,
+        schedule,
         name,
         models,
         width,
@@ -2572,6 +2612,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         seed,
         steps,
         guidance,
+        schedule,
         name,
         models,
         width,
@@ -2583,8 +2624,11 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
     } = plan;
     let label = name.clone();
     let tid = template.meta.id.clone();
-    let params: BTreeMap<String, Value> =
+    let mut params: BTreeMap<String, Value> =
         Tuning { loras, ..Tuning::default() }.loras_param().map(|l| BTreeMap::from([("loras".to_string(), l)])).unwrap_or_default();
+    if let Some(schedule) = schedule {
+        params.insert("schedule".to_string(), Value::String(schedule.to_string()));
+    }
     // What the result layer remembers (`generate.similar` re-runs it).
     let info = GenerativeInfo {
         command: IMAGE.to_string(),
@@ -5480,7 +5524,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generate Image…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"schedule":{"simple"|"krea-detail"?=Preferences › Quality: krea-detail (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: image_enabled,
             run: run_image,
             journal: true,

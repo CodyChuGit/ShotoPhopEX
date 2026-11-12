@@ -201,6 +201,42 @@ impl FlowSchedule {
         Ok(Self { sigmas })
     }
 
+    /// `comfy.samplers.beta_scheduler(model_sampling, steps, alpha=0.6, beta=0.6)`: the
+    /// timesteps at the Beta(0.6, 0.6) quantiles of `1 − i/steps`, rounded (half to even, as
+    /// numpy's `rint`) onto the model's table, repeats dropped, then 0. The quantiles crowd
+    /// both ends, so more of the steps go to the last, low-noise detail than under `simple`.
+    /// A repeat drops a step, so [`Self::steps`] can be fewer than asked (never at the
+    /// step counts the app uses).
+    pub fn beta(steps: usize, shift: Shift) -> Result<Self, String> {
+        if steps == 0 {
+            return Err("a schedule needs at least one step".into());
+        }
+        let table = Self::model_sigmas(shift);
+        let total = (table.len() - 1) as f64;
+        let mut sigmas = Vec::with_capacity(steps + 1);
+        let mut last = usize::MAX;
+        for i in 0..steps {
+            let q = 1.0 - i as f64 / steps as f64;
+            // Snapped to 1e-6 first, so an exact tie (the median at an even step count: 499.5)
+            // rounds to even as scipy's exact 0.5 does, not down by the bisection's last bit.
+            let at = ((beta_ppf(q, 0.6, 0.6) * total) * 1e6).round() / 1e6;
+            let t = (at.round_ties_even() as usize).min(table.len() - 1);
+            if t != last {
+                sigmas.push(table[t]);
+            }
+            last = t;
+        }
+        sigmas.push(0.0);
+        Ok(Self { sigmas })
+    }
+
+    /// ComfyUI's `ModelSamplingAuraFlow` at `shift`: the table of a `FLOW` model (the SNR
+    /// shift over 1000 entries), patched over any model. The Sick Ollie Creator Kit runs
+    /// Krea 2 Turbo under it at 1.25 in place of Krea 2's own exponential shift 1.15.
+    pub const fn aura_flow(shift: f32) -> Shift {
+        Shift::Snr { shift, multiplier: 1.0, timesteps: 1000 }
+    }
+
     /// Viggle's 6-step Qwen-Image-2.1 Turbo LoRA (v0.3, `Viggle/Qwen-Image-2.1-viggle-turbo`,
     /// its ComfyUI `viggle_turbo.py` sigmas node): the fixed nodes
     /// [`Self::VIGGLE_TURBO_NODES`] through the exponential shift at `mu` interpolated from
@@ -230,6 +266,104 @@ impl FlowSchedule {
     pub fn dt(&self, i: usize) -> f32 {
         self.sigmas[i + 1] - self.sigmas[i]
     }
+}
+
+/// `ln Γ(x)` for `x > 0` (Lanczos, g = 7, nine terms; about 15 digits).
+fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        // Reflection.
+        return (std::f64::consts::PI / (std::f64::consts::PI * x).sin()).ln() - ln_gamma(1.0 - x);
+    }
+    let x = x - 1.0;
+    let mut a = G[0];
+    let t = x + 7.5;
+    for (i, g) in G.iter().enumerate().skip(1) {
+        a += g / (x + i as f64);
+    }
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
+}
+
+/// The continued fraction of the incomplete beta function (modified Lentz).
+fn beta_cf(x: f64, a: f64, b: f64) -> f64 {
+    const TINY: f64 = 1e-300;
+    let (qab, qap, qam) = (a + b, a + 1.0, a - 1.0);
+    let mut c = 1.0;
+    let mut d = 1.0 - qab * x / qap;
+    if d.abs() < TINY {
+        d = TINY;
+    }
+    d = 1.0 / d;
+    let mut h = d;
+    for m in 1..300 {
+        let m = m as f64;
+        let m2 = 2.0 * m;
+        for aa in [m * (b - m) * x / ((qam + m2) * (a + m2)), -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))] {
+            d = 1.0 + aa * d;
+            if d.abs() < TINY {
+                d = TINY;
+            }
+            c = 1.0 + aa / c;
+            if c.abs() < TINY {
+                c = TINY;
+            }
+            d = 1.0 / d;
+            h *= d * c;
+        }
+        if (d * c - 1.0).abs() < 1e-15 {
+            break;
+        }
+    }
+    h
+}
+
+/// The regularised incomplete beta function `I_x(a, b)`, the Beta(a, b) CDF.
+fn beta_cdf(x: f64, a: f64, b: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let front = (ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp();
+    if x < (a + 1.0) / (a + b + 2.0) {
+        front * beta_cf(x, a, b) / a
+    } else {
+        1.0 - front * beta_cf(1.0 - x, b, a) / b
+    }
+}
+
+/// The Beta(a, b) quantile (`scipy.stats.beta.ppf`), by bisection to f64 precision.
+fn beta_ppf(q: f64, a: f64, b: f64) -> f64 {
+    if q <= 0.0 {
+        return 0.0;
+    }
+    if q >= 1.0 {
+        return 1.0;
+    }
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if beta_cdf(mid, a, b) < q {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if hi - lo < 1e-15 {
+            break;
+        }
+    }
+    0.5 * (lo + hi)
 }
 
 /// Round to the nearest bf16 (ties to even), returned as f32.
@@ -407,6 +541,25 @@ mod tests {
         close(&s.sigmas, &[1.0, 0.6742671132087708, 0.4082840085029602, 0.1869918704032898, 0.0]);
         assert!(s.dt(0) < 0.0);
         assert!(FlowSchedule::simple(0, q).is_err());
+    }
+
+    #[test]
+    fn beta_schedule_matches_comfy() {
+        // scipy.stats.beta.ppf, what comfy.samplers.beta_scheduler calls.
+        for (q, want) in [(0.1, 0.03958441), (0.5, 0.5), (0.9, 0.96041559), (0.999, 0.99998144)] {
+            assert!((beta_ppf(q, 0.6, 0.6) - want).abs() < 1e-6, "ppf({q})");
+        }
+        // comfy.samplers.beta_scheduler(ModelSamplingAuraFlow(1.25), 9): the Sick Ollie
+        // Creator Kit's Krea 2 Turbo schedule (numpy/scipy, f32 table, 2026-11-11).
+        let s = FlowSchedule::beta(9, FlowSchedule::aura_flow(1.25)).unwrap();
+        close(&s.sigmas, &[1.0, 0.962043, 0.880536, 0.767196, 0.630326, 0.479204, 0.322732, 0.176073, 0.059289, 0.0]);
+        let s = FlowSchedule::beta(12, FlowSchedule::aura_flow(1.25)).unwrap();
+        close(&s.sigmas, &[1.0, 0.976665, 0.925851, 0.854063, 0.767196, 0.666306, 0.556543, 0.440036, 0.322732, 0.211875, 0.112414, 0.037221, 0.0]);
+        // Over Krea 2's own table.
+        let s = FlowSchedule::beta(9, FlowSchedule::KREA2).unwrap();
+        close(&s.sigmas, &[1.0, 0.98459, 0.948804, 0.892582, 0.811542, 0.698539, 0.545649, 0.35007, 0.135286, 0.0]);
+        assert_eq!(s.steps(), 9);
+        assert!(FlowSchedule::beta(0, FlowSchedule::KREA2).is_err());
     }
 
     #[test]

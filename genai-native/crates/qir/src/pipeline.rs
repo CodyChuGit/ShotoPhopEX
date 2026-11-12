@@ -100,6 +100,11 @@ pub enum Schedule {
     /// ComfyUI's noise and timesteps on the Viggle Turbo LoRA's six sigmas
     /// ([`crate::comfy::FlowSchedule::viggle_turbo`]); `steps` is ignored.
     ViggleTurbo,
+    /// Krea 2 Turbo's detail recipe (the Sick Ollie Creator Kit's sampler settings): ComfyUI's
+    /// noise, its `beta` scheduler over `ModelSamplingAuraFlow` at shift 1.25
+    /// ([`crate::comfy::FlowSchedule::beta`], [`crate::comfy::FlowSchedule::aura_flow`]), so
+    /// the last steps refine low-noise detail. Only Krea 2's text to image and edit take it.
+    KreaDetail,
 }
 
 /// One text-to-image generation.
@@ -950,6 +955,7 @@ impl Pipeline {
                 let t: Vec<f32> = s.timesteps().iter().map(|t| (*t / 1000.0) as f32).collect();
                 (t.clone(), (0..req.steps).map(|i| s.dt(i) as f32).collect(), t)
             }
+            Schedule::KreaDetail => anyhow::bail!("the Krea detail schedule is for Krea 2 only"),
             Schedule::ViggleTurbo => {
                 use crate::comfy::{comfy_timestep, FlowSchedule};
                 let s = FlowSchedule::viggle_turbo(img_seq);
@@ -959,7 +965,7 @@ impl Pipeline {
         };
         let t0 = Instant::now();
         let mut latents = match req.schedule {
-            Schedule::Comfy | Schedule::ViggleTurbo => {
+            Schedule::Comfy | Schedule::ViggleTurbo | Schedule::KreaDetail => {
                 let noise = crate::comfy::noise_packed(req.seed, lh, lw).map_err(anyhow::Error::msg)?;
                 Tensor::from_vec(noise, (1, img_seq, 64), &self.dev)?
             }

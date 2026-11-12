@@ -350,6 +350,22 @@ fn chat_on_krea2(params: &std::collections::BTreeMap<String, Value>) -> Result<b
 
 /// A Krea 2 fill's `denoise` (0 < d ≤ 1, default 1) and `seam` (the band around the area the
 /// sampler may repaint, 0..256 px, default AnyPaint's 32).
+/// `params.schedule: "krea-detail"` asks Krea 2 Turbo's text to image or edit for the detail
+/// recipe ([`Schedule::KreaDetail`]: the Sick Ollie Creator Kit's beta scheduler over AuraFlow
+/// shift 1.25); absent or `"simple"` keeps ComfyUI's `simple` schedule.
+pub const KREA_DETAIL_SCHEDULE: &str = "krea-detail";
+
+fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Schedule, EngineError> {
+    if model == TEMPLATE_OUTPAINT_TURBO {
+        return Ok(Schedule::ViggleTurbo);
+    }
+    match params.get("schedule").and_then(Value::as_str) {
+        None | Some("simple") => Ok(Schedule::Comfy),
+        Some(KREA_DETAIL_SCHEDULE) if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaDetail),
+        Some(other) => Err(EngineError::new(ErrorKind::BadRequest, format!("schedule {other:?} is not one {model} takes"))),
+    }
+}
+
 fn krea2_fill_options(params: &std::collections::BTreeMap<String, Value>) -> Result<krea2_pipeline::FillOptions, EngineError> {
     let mut o = krea2_pipeline::FillOptions::default();
     if let Some(v) = params.get("denoise") {
@@ -1420,7 +1436,7 @@ impl Engine for DiffusionEngine {
                 steps: if req.steps == 0 { default_steps } else { req.steps } as usize,
                 seed: req.seed,
                 guidance: if req.guidance > 0.0 { req.guidance } else { default_guidance },
-                schedule: if req.model == TEMPLATE_OUTPAINT_TURBO { Schedule::ViggleTurbo } else { Schedule::Comfy },
+                schedule: schedule_for(&req.model, &req.params)?,
                 references,
                 loras,
                 ref_boost,
@@ -1882,6 +1898,20 @@ mod tests {
             std::fs::remove_dir(root.join(d))?;
         }
         Ok(())
+    }
+
+    /// `params.schedule` picks Krea 2's detail recipe, only where Krea 2 takes it.
+    #[test]
+    fn the_krea_detail_schedule_is_krea_only() {
+        let p = |v: &str| std::collections::BTreeMap::from([("schedule".to_string(), Value::from(v))]);
+        let none = std::collections::BTreeMap::new();
+        assert_eq!(schedule_for(TEMPLATE_KREA2, &none).unwrap(), Schedule::Comfy);
+        assert_eq!(schedule_for(TEMPLATE_KREA2, &p("simple")).unwrap(), Schedule::Comfy);
+        assert_eq!(schedule_for(TEMPLATE_KREA2, &p(KREA_DETAIL_SCHEDULE)).unwrap(), Schedule::KreaDetail);
+        assert_eq!(schedule_for(TEMPLATE_KREA2_EDIT, &p(KREA_DETAIL_SCHEDULE)).unwrap(), Schedule::KreaDetail);
+        assert_eq!(schedule_for(TEMPLATE_OUTPAINT_TURBO, &none).unwrap(), Schedule::ViggleTurbo);
+        assert!(schedule_for(TEMPLATE_KREA2_FILL, &p(KREA_DETAIL_SCHEDULE)).is_err());
+        assert!(schedule_for(TEMPLATE_KREA2, &p("karras")).is_err());
     }
 
     /// A Krea 2 edit runs with its edit LoRA in front of the request's own, once.

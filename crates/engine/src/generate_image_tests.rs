@@ -214,10 +214,43 @@ fn best_quality_tunes_qwen21_text_to_image() {
     assert_eq!(image_quality_tuning("qwen-2.1/image", "best"), Some((40, 3.0)));
     assert_eq!(image_quality_tuning("qwen-2.1/image", "balanced"), Some((25, 3.0)));
     assert_eq!(image_quality_tuning("qwen-2.1/image", "fast"), None);
-    assert_eq!(image_quality_tuning("krea2-turbo/image", "best"), None);
+    assert_eq!(image_quality_tuning("krea2-turbo/image", "fast"), None);
     let cost = image_quality_cost("qwen-2.1/image", "best");
     assert!((2.5..3.0).contains(&cost), "{cost}");
-    assert_eq!(image_quality_cost("krea2-turbo/image", "best"), 1.0);
+    assert_eq!(image_quality_cost("krea2-turbo/image", "best"), 9.0 / 8.0);
+    assert_eq!(image_quality_cost("krea2-turbo/image", "fast"), 1.0);
+}
+
+/// Krea 2 Turbo under `best` and `balanced` runs the creator kit's detail recipe (9 steps,
+/// `params.schedule = "krea-detail"`); `fast` keeps the template's 8 simple steps; a request's
+/// `schedule` wins either way, and other templates refuse the Krea one.
+#[test]
+fn balanced_and_best_run_krea2_detail_schedule() {
+    assert_eq!(image_quality_tuning("krea2-turbo/image", "best"), Some((KREA_DETAIL_STEPS, 1.0)));
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some(KREA_DETAIL_SCHEDULE));
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "fast"), None);
+    assert_eq!(image_quality_schedule("qwen-2.1/image", "best"), None);
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    let run = |s: &mut Session, extra: Value| {
+        let mut p = json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        s.execute(IMAGE, p).unwrap();
+        fake.state().runs.last().unwrap().request.clone()
+    };
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    let req = run(&mut s, json!({}));
+    assert_eq!((req["steps"].as_u64(), req["params"]["schedule"].as_str()), (Some(9), Some("krea-detail")), "{req}");
+    // Asked for the plain schedule: the template's steps, no schedule param.
+    let req = run(&mut s, json!({"schedule": "simple"}));
+    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(8), None), "{req}");
+    s.edit_prefs(|p| p.integrations.quality = "fast".into());
+    let req = run(&mut s, json!({}));
+    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(8), None), "{req}");
+    let req = run(&mut s, json!({"schedule": "krea-detail"}));
+    assert_eq!((req["steps"].as_u64(), req["params"]["schedule"].as_str()), (Some(9), Some("krea-detail")), "{req}");
+    let err = s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "schedule": "krea-detail"}));
+    assert!(err.is_err());
 }
 
 #[test]
