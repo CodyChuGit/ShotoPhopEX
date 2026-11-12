@@ -156,6 +156,9 @@ pub fn need_gb(template: &str) -> Option<f32> {
         "qwen-2.1" => 17.0,
         // fp8 DiT ~20 GB + Qwen2.5-VL 7B fp8 ~8 GB.
         f if f.starts_with("qwen-edit-2511") || f.starts_with("qwen-image-layered") => 28.0,
+        // P-H3-Image: int8 DiT 21.2 GB resident, the 4B encoder (5.1 GB) and the VAE (5.6 GB)
+        // taking turns beside it, plus 4 MP activations (an estimate, not measured yet).
+        f if f.starts_with("p-h3") => 29.0,
         // 12 GB mode: encoder then DiT, 11.4–12.0 GiB peak.
         f if f.starts_with("moss") => 11.0,
         f if f.starts_with("sam") => 2.0,
@@ -227,7 +230,9 @@ mod tests {
     fn badges_follow_the_budget() {
         let g = Some(Profile::Gb32);
         assert!(!may_not_fit(g, "qwen-edit-2511/fill"));
+        assert!(!may_not_fit(g, "p-h3-image/image"));
         let g = Some(Profile::Gb24);
+        assert!(may_not_fit(g, "p-h3-image/edit"));
         assert!(may_not_fit(g, "qwen-edit-2511/fill"));
         assert!(!may_not_fit(g, "krea2-turbo/image"));
         assert!(!may_not_fit(g, "qwen-2.1/fill"));

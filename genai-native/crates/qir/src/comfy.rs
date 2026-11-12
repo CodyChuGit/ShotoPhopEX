@@ -82,10 +82,21 @@ impl Mt19937 {
 /// (the vectorised `normal_fill`: `n` uniforms, Box–Muller over 16-wide chunks, the last 16
 /// redrawn when `n % 16 != 0`). Smaller tensors take torch's scalar path, not reproduced here.
 pub fn torch_randn(seed: u64, n: usize) -> Result<Vec<f32>, String> {
+    let mut g = Mt19937::new(seed);
+    randn_from(&mut g, n)
+}
+
+/// Several `torch.randn` calls in a row on one generator seeded with `seed` (ComfyUI's
+/// `prepare_noise` for a packed latent: one tensor after the other), each of 16+ elements.
+pub fn torch_randn_seq(seed: u64, sizes: &[usize]) -> Result<Vec<Vec<f32>>, String> {
+    let mut g = Mt19937::new(seed);
+    sizes.iter().map(|&n| randn_from(&mut g, n)).collect()
+}
+
+fn randn_from(g: &mut Mt19937, n: usize) -> Result<Vec<f32>, String> {
     if n < 16 {
         return Err(format!("torch_randn reproduces tensors of 16+ elements, {n} asked"));
     }
-    let mut g = Mt19937::new(seed);
     let mut data: Vec<f32> = (0..n).map(|_| g.uniform_f32()).collect();
     let mut i = 0;
     while i + 16 <= n {
@@ -388,6 +399,14 @@ pub fn comfy_timestep(sigma: f32) -> f32 {
 #[allow(clippy::excessive_precision)] // the constants are python's f64 prints of torch's f32 values
 mod tests {
     use super::*;
+
+    #[allow(clippy::excessive_precision)]
+    /// Two `torch.randn` calls on one generator (torch 2.15 CPU, seed 5: randn(40), randn(128)).
+    #[test]
+    fn sequential_draws_continue_the_generator() {
+        let v = torch_randn_seq(5, &[40, 128]).unwrap();
+        close(&[v[0][0], v[0][39], v[1][0], v[1][127]], &[1.8423298597335815, -1.2896690368652344, 0.9895159602165222, 0.012119677849113941]);
+    }
 
     // From ComfyUI's python (torch 2.14.0+cu130): torch.manual_seed(s); torch.randn(shape).
     const S7_HEAD: [f32; 8] = [

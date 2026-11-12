@@ -47,6 +47,7 @@ pub mod lora_materialize;
 pub mod mapped;
 pub mod nvfp4;
 pub mod model;
+pub mod h3;
 pub mod moss;
 pub mod pipeline;
 pub mod preview;

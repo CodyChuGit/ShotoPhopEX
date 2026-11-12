@@ -964,6 +964,7 @@ fn warm_need(template: &str) -> u64 {
     match template.split('/').next().unwrap_or("") {
         t if t.starts_with("krea2") => WARM_KREA2_GB * GB,
         t if t.starts_with("moss") => WARM_MOSS_GB * GB,
+        t if t.starts_with("p-h3") => WARM_H3_GB * GB,
         _ => WARM_QWEN21_GB * GB,
     }
 }
@@ -975,6 +976,10 @@ const WARM_QWEN21_GB: u64 = 27; // 25.0 GB resident
 /// a warm-up on a 12 GB card wants most of it free.
 #[cfg(not(target_arch = "wasm32"))]
 const WARM_MOSS_GB: u64 = 10;
+/// P-H3-Image: the int8 DiT (21.2 GB) stays, the encoder or the VAE (5–6 GB) beside it (an
+/// estimate until measured on the 5090).
+#[cfg(not(target_arch = "wasm32"))]
+const WARM_H3_GB: u64 = 28;
 
 /// Start the worker and load the default image template's models (`generate.engine.warmUp`):
 /// on a thread of its own, or with `wait` before returning (the bench). It is skipped on a card

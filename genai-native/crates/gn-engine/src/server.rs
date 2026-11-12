@@ -167,6 +167,12 @@ fn greet(stream: TcpStream, token: &str) -> std::io::Result<Option<TcpStream>> {
     Ok(None)
 }
 
+/// The text of a caught panic, for the run's error.
+fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    let what = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "unknown cause".into());
+    format!("the engine failed unexpectedly: {what}")
+}
+
 /// How a connection ended.
 enum Ended {
     /// The greeted client said `Quit`.
@@ -212,15 +218,21 @@ fn serve_connection(stream: TcpStream, engine: &mut dyn Engine) -> std::io::Resu
                         let mut progress = |fraction: f32, message: &str| {
                             let _ = send(&w, &Reply::Progress { fraction, message: message.to_string() });
                         };
-                        if req.preview.is_off() {
-                            engine.run(&req, &f.blobs, &mut progress, &cancel)
-                        } else {
-                            let w = Arc::clone(&writer);
-                            let mut preview = |p: Preview| {
-                                let _ = send_preview(&w, p);
-                            };
-                            engine.run_previewed(&req, &f.blobs, &mut progress, &mut preview, &cancel)
-                        }
+                        // A panic inside the engine fails this run with an error the editor
+                        // shows at once; left alone it would end this thread while the reader
+                        // kept the socket open, and the editor would wait out its timeout.
+                        let run = std::panic::AssertUnwindSafe(|| {
+                            if req.preview.is_off() {
+                                engine.run(&req, &f.blobs, &mut progress, &cancel)
+                            } else {
+                                let w = Arc::clone(&writer);
+                                let mut preview = |p: Preview| {
+                                    let _ = send_preview(&w, p);
+                                };
+                                engine.run_previewed(&req, &f.blobs, &mut progress, &mut preview, &cancel)
+                            }
+                        });
+                        std::panic::catch_unwind(run).unwrap_or_else(|p| Err(EngineError::new(ErrorKind::Internal, panic_message(p.as_ref()))))
                     }
                 };
                 match reply {
@@ -281,4 +293,62 @@ pub fn solid(width: u32, height: u32, rgba: [u8; 4]) -> (Blob, Vec<u8>) {
         bytes.extend_from_slice(&rgba);
     }
     (Blob { width, height, channels: 4, index: 0 }, bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::client::{ClientError, EngineClient};
+    use crate::protocol::PreviewMode;
+
+    /// Panics in every run, as a model bug would.
+    struct Panics;
+
+    impl Engine for Panics {
+        fn name(&self) -> String {
+            "panics".into()
+        }
+        fn health(&mut self) -> Health {
+            Health { ok: true, engine: "panics".into(), device: "none".into(), vram_total: None, vram_free: None, resident: Vec::new(), detail: String::new() }
+        }
+        fn run(&mut self, _: &RunRequest, _: &[Vec<u8>], _: &mut dyn FnMut(f32, &str), _: &AtomicBool) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+            panic!("a model bug")
+        }
+        fn free(&mut self) {}
+    }
+
+    #[test]
+    fn a_panicking_run_fails_at_once_and_the_worker_keeps_serving() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = std::thread::spawn(move || serve(&listener, "tok", &mut Panics));
+        let mut c = EngineClient::connect(port, "tok").unwrap();
+        let req = RunRequest {
+            model: "m".into(),
+            task: "image".into(),
+            prompt: String::new(),
+            negative: String::new(),
+            seed: 0,
+            steps: 1,
+            guidance: 0.0,
+            width: 8,
+            height: 8,
+            image: None,
+            mask: None,
+            references: Vec::new(),
+            params: BTreeMap::new(),
+            preview: PreviewMode::Off,
+        };
+        for _ in 0..2 {
+            match c.run(&req, &[], &mut |_, _| {}, &|| false) {
+                Err(ClientError::Engine { kind: ErrorKind::Internal, message }) => assert!(message.contains("a model bug"), "{message}"),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(c.health().is_ok());
+        c.quit();
+        worker.join().unwrap().unwrap();
+    }
 }
