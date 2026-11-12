@@ -739,9 +739,7 @@ impl DiffusionEngine {
         self.bind();
         match (&self.resident, family) {
             (Resident::Krea2(p), Family::Krea2) if p.is_nvfp4() == self.krea2_nvfp4() => return Ok(()),
-            (Resident::Qwen(_), Family::QwenImage21)
-            | (Resident::Layered(_), Family::Layered)
-            | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
+            (Resident::Qwen(_), Family::QwenImage21) | (Resident::Layered(_), Family::Layered) | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
             (Resident::Moss(_, held), Family::Moss(v)) if *held == v => return Ok(()),
             (Resident::H3(_), Family::H3) => return Ok(()),
             #[cfg(feature = "mlx")]

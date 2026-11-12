@@ -382,11 +382,7 @@ impl H3Dit {
             });
         }
         let inv_freq = w.get_as("rope.inv_freq", DType::F32)?.to_device(&Device::Cpu)?.to_vec1::<f32>()?;
-        let time_embedder = if curve {
-            None
-        } else {
-            Some((f32_linear(w, "time_embedder.proj_in")?, f32_linear(w, "time_embedder.proj_out")?))
-        };
+        let time_embedder = if curve { None } else { Some((f32_linear(w, "time_embedder.proj_in")?, f32_linear(w, "time_embedder.proj_out")?)) };
         let pdd_grid = if cfg.pdd_steps > 1 { pdd_sigmas(w, cfg.pdd_steps)? } else { vec![1.0, 0.0] };
         Ok(Self {
             pdd_grid,
@@ -508,7 +504,16 @@ impl H3Dit {
     /// reference latents `(C, 1, h, w)` and `cond_seed` the sampling seed for their noise
     /// augmentation (ComfyUI `_cond_video_rows`). Returns the velocities `(video, audio)` the way the
     /// model reports them (ComfyUI's `_forward`: the negated head output), f32.
-    pub fn forward(&self, p: &Prepared, video: &Tensor, audio: Option<&Tensor>, refs: &[Tensor], cond_seed: u64, sigma: f32, sample_sigmas: &[f32]) -> Result<(Tensor, Option<Tensor>)> {
+    pub fn forward(
+        &self,
+        p: &Prepared,
+        video: &Tensor,
+        audio: Option<&Tensor>,
+        refs: &[Tensor],
+        cond_seed: u64,
+        sigma: f32,
+        sample_sigmas: &[f32],
+    ) -> Result<(Tensor, Option<Tensor>)> {
         let lay = &p.layout;
         let t = 1.0 - sigma;
         let t_ref = t.max(VISUAL_COND_TIMESTEP);

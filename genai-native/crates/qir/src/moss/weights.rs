@@ -124,7 +124,11 @@ impl Int8Index {
             anyhow::ensure!(raw.len() <= 4096, "{name}: comfy_quant descriptor too long");
             let d: Descriptor = serde_json::from_slice(raw).with_context(|| format!("{name}: comfy_quant descriptor"))?;
             let w4a8 = d.format == "asym_w4a8_int8";
-            anyhow::ensure!((d.format == "int8_tensorwise" || w4a8) && d.convrot, "{name}: {} (only int8_tensorwise and asym_w4a8_int8 ConvRot are read)", d.format);
+            anyhow::ensure!(
+                (d.format == "int8_tensorwise" || w4a8) && d.convrot,
+                "{name}: {} (only int8_tensorwise and asym_w4a8_int8 ConvRot are read)",
+                d.format
+            );
             if d.convrot_groupsize != GROUP {
                 this.other.insert(name, d.convrot_groupsize);
                 continue;
@@ -167,7 +171,8 @@ impl Int8Index {
             } else {
                 None
             };
-            let grid = w4a8_to_int8(self.read(&format!("{module}.weight"))?, n, k, group, &s_rel, codebook.as_ref()).with_context(|| format!("{module}: W4A8"))?;
+            let grid =
+                w4a8_to_int8(self.read(&format!("{module}.weight"))?, n, k, group, &s_rel, codebook.as_ref()).with_context(|| format!("{module}: W4A8"))?;
             let scale = f32s(&format!("{module}.weight_s_channel"))?;
             return comfy_int8::convert_rows(INT8_DESCRIPTOR, &[n, k], &grid, &[n, 1], &scale, rows).with_context(|| format!("{module}: W4A8 ConvRot"));
         }

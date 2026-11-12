@@ -459,7 +459,12 @@ impl QwenTextEncoder {
                 scale: 1.0 / (hd as f64).sqrt(),
             };
             let mlp = Mlp { gate: lin(&format!("{p}.mlp.gate_proj"))?, up: lin(&format!("{p}.mlp.up_proj"))?, down: lin(&format!("{p}.mlp.down_proj"))? };
-            layers.push(DecoderLayer { attn, mlp, input_ln: rms(&format!("{p}.input_layernorm"))?, post_attn_ln: rms(&format!("{p}.post_attention_layernorm"))? });
+            layers.push(DecoderLayer {
+                attn,
+                mlp,
+                input_ln: rms(&format!("{p}.input_layernorm"))?,
+                post_attn_ln: rms(&format!("{p}.post_attention_layernorm"))?,
+            });
         }
         let norm = rms(&format!("{root}.norm"))?;
         Ok((Self { embed_tokens, embed_int8, layers, rope: RotaryEmbedding::new(cfg, &dev, dt)?, device: dev }, norm))

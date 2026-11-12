@@ -30,12 +30,9 @@ fn krea2_nvfp4_matches_its_fp8_file() -> anyhow::Result<()> {
     let vb4 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&f4], DType::BF16, &dev)? };
     let vb8 = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&f8], DType::BF16, &dev)? };
     let mut checked = 0;
-    for (name, out_c, in_c) in [
-        ("blocks.0.attn.wq", 6144, 6144),
-        ("blocks.0.attn.wk", 1536, 6144),
-        ("blocks.10.mlp.up", 0, 6144),
-        ("blocks.20.mlp.down", 6144, 0),
-    ] {
+    for (name, out_c, in_c) in
+        [("blocks.0.attn.wq", 6144, 6144), ("blocks.0.attn.wk", 1536, 6144), ("blocks.10.mlp.up", 0, 6144), ("blocks.20.mlp.down", 6144, 0)]
+    {
         let (p4, p8) = (vb4.pp(name), vb8.pp(name));
         if !nvfp4::is_nvfp4(&p4) {
             eprintln!("{name}: not NVFP4 in this file");

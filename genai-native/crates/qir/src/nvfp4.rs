@@ -57,12 +57,20 @@ pub fn e2m1_code(x: f32) -> u8 {
     } else {
         7
     };
-    if x < 0.0 && c != 0 { c | 8 } else { c }
+    if x < 0.0 && c != 0 {
+        c | 8
+    } else {
+        c
+    }
 }
 
 pub fn e2m1_value(code: u8) -> f32 {
     let v = E2M1[(code & 7) as usize];
-    if code & 8 != 0 { -v } else { v }
+    if code & 8 != 0 {
+        -v
+    } else {
+        v
+    }
 }
 
 /// Whether this process's card can run the FP4 GEMM: a Blackwell card (compute 10.x or 12.x)
@@ -108,7 +116,12 @@ impl Nvfp4Linear {
     pub fn new(w: Tensor, scales: Tensor, global: f32, full: bool) -> Result<Self> {
         let (n, half) = w.dims2()?;
         let k = half * 2;
-        anyhow::ensure!(w.dtype() == DType::U8 && scales.dtype() == DType::F8E4M3, "NVFP4 wants U8 data and e4m3 scales, got {:?} and {:?}", w.dtype(), scales.dtype());
+        anyhow::ensure!(
+            w.dtype() == DType::U8 && scales.dtype() == DType::F8E4M3,
+            "NVFP4 wants U8 data and e4m3 scales, got {:?} and {:?}",
+            w.dtype(),
+            scales.dtype()
+        );
         anyhow::ensure!(k.is_multiple_of(16), "an NVFP4 width of {k}, not a multiple of 16");
         let scales = scales.flatten_all()?;
         anyhow::ensure!(
@@ -260,8 +273,27 @@ mod cuda {
     const POINTER_MODE_DEVICE: i32 = 1;
 
     extern "C" {
-        fn qir_nvfp4_quant(q: *mut c_void, scales: *mut c_void, params: *mut c_void, x: *const c_void, rows: usize, cols: usize, weight_global: f32, stream: *mut c_void) -> i32;
-        fn qir_nvfp4_dequant(out: *mut c_void, q: *const c_void, scales: *const c_void, rows: usize, cols: usize, global: f32, linear: i32, low_first: i32, stream: *mut c_void) -> i32;
+        fn qir_nvfp4_quant(
+            q: *mut c_void,
+            scales: *mut c_void,
+            params: *mut c_void,
+            x: *const c_void,
+            rows: usize,
+            cols: usize,
+            weight_global: f32,
+            stream: *mut c_void,
+        ) -> i32;
+        fn qir_nvfp4_dequant(
+            out: *mut c_void,
+            q: *const c_void,
+            scales: *const c_void,
+            rows: usize,
+            cols: usize,
+            global: f32,
+            linear: i32,
+            low_first: i32,
+            stream: *mut c_void,
+        ) -> i32;
     }
 
     static DECLINED: AtomicBool = AtomicBool::new(false);
@@ -303,7 +335,13 @@ mod cuda {
             candle_core::bail!("nvfp4-dequant is CUDA-only")
         }
 
-        fn cuda_fwd(&self, q: &CudaStorage, q_l: &candle_core::Layout, s: &CudaStorage, s_l: &candle_core::Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+        fn cuda_fwd(
+            &self,
+            q: &CudaStorage,
+            q_l: &candle_core::Layout,
+            s: &CudaStorage,
+            s_l: &candle_core::Layout,
+        ) -> candle_core::Result<(CudaStorage, Shape)> {
             let dev = q.device().clone();
             let (n, half) = q_l.shape().dims2()?;
             let k = half * 2;
@@ -442,7 +480,16 @@ mod cuda {
                     candle_core::bail!("nvfp4-gemm: misaligned view (w {wp:#x}, scales {sp:#x})");
                 }
                 let rc = unsafe {
-                    qir_nvfp4_quant(qp as *mut c_void, qsp as *mut c_void, pp as *mut c_void, xp as *const c_void, m, k, self.global, stream.cu_stream() as *mut c_void)
+                    qir_nvfp4_quant(
+                        qp as *mut c_void,
+                        qsp as *mut c_void,
+                        pp as *mut c_void,
+                        xp as *const c_void,
+                        m,
+                        k,
+                        self.global,
+                        stream.cu_stream() as *mut c_void,
+                    )
                 };
                 if rc != 0 {
                     candle_core::bail!("nvfp4 activation quant failed, rc={rc}");
@@ -535,7 +582,21 @@ mod tests {
 
     #[test]
     fn e2m1_rounds_to_nearest_even_and_saturates() {
-        let cases = [(0.0, 0.0), (0.25, 0.0), (0.26, 0.5), (0.75, 1.0), (1.25, 1.0), (1.3, 1.5), (1.75, 2.0), (2.5, 2.0), (2.6, 3.0), (3.5, 4.0), (5.0, 4.0), (5.1, 6.0), (100.0, 6.0)];
+        let cases = [
+            (0.0, 0.0),
+            (0.25, 0.0),
+            (0.26, 0.5),
+            (0.75, 1.0),
+            (1.25, 1.0),
+            (1.3, 1.5),
+            (1.75, 2.0),
+            (2.5, 2.0),
+            (2.6, 3.0),
+            (3.5, 4.0),
+            (5.0, 4.0),
+            (5.1, 6.0),
+            (100.0, 6.0),
+        ];
         for (x, want) in cases {
             assert_eq!(e2m1_value(e2m1_code(x)), want, "{x}");
             assert_eq!(e2m1_value(e2m1_code(-x)), -want, "-{x}");

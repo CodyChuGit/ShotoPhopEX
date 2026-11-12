@@ -177,7 +177,13 @@ impl H3Pipeline {
             }
         };
         let mut timings = Timings::default();
-        let area = if req.width > 0 && req.height > 0 { req.width * req.height } else if req.references.is_empty() { text::IMAGE_SIZE * text::IMAGE_SIZE } else { EDIT_AREA };
+        let area = if req.width > 0 && req.height > 0 {
+            req.width * req.height
+        } else if req.references.is_empty() {
+            text::IMAGE_SIZE * text::IMAGE_SIZE
+        } else {
+            EDIT_AREA
+        };
         let (w, h) = match req.references.first() {
             Some(p) if req.width == 0 || req.height == 0 => text::size_within_area(p.width, p.height, area),
             _ if req.width == 0 || req.height == 0 => (text::IMAGE_SIZE, text::IMAGE_SIZE),

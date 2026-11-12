@@ -31,6 +31,7 @@ pub mod fp8;
 #[cfg(feature = "fusednorm")]
 pub mod fusednorm;
 pub mod gemm_tiles;
+pub mod h3;
 pub mod int8_cache;
 #[cfg(feature = "fusednorm")]
 pub mod krea2_fused;
@@ -45,10 +46,9 @@ mod lora_gemm;
 #[cfg(feature = "convrot")]
 pub mod lora_materialize;
 pub mod mapped;
-pub mod nvfp4;
 pub mod model;
-pub mod h3;
 pub mod moss;
+pub mod nvfp4;
 pub mod pipeline;
 pub mod preview;
 pub mod profile;
