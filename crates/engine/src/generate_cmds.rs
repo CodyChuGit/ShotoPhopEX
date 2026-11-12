@@ -2470,6 +2470,19 @@ fn side(cmd: &str, p: &Value, key: &str, default: u32) -> Result<u32> {
 }
 
 fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
+    // `"template": "auto"` is the default image template, as on fill, edit and expand (the
+    // 3090 benchmark's generate.image refused it, 2026-11-11).
+    let without_auto;
+    let p = if p.get("template").and_then(Value::as_str).is_some_and(|t| t.trim() == AUTO_TEMPLATE) {
+        let mut q = p.clone();
+        if let Some(o) = q.as_object_mut() {
+            o.remove("template");
+        }
+        without_auto = q;
+        &without_auto
+    } else {
+        p
+    };
     let (default_template, default_model) = {
         let integrations = &s.prefs().integrations;
         (default_image_template(s), integrations.default_generate_model.clone())
