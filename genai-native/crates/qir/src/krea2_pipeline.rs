@@ -41,12 +41,17 @@ pub struct Krea2Options {
     /// Load ComfyUI's NVFP4 DiT ([`crate::comfy_files::krea2_nvfp4`]) instead of the fp8 one
     /// when it is beside it (a ComfyUI models folder only; ignored otherwise).
     pub nvfp4: bool,
+    /// Keep the text encoder off the card between prompts (loaded for each prompt, about 2 s,
+    /// and dropped before the sampling), as the bf16 DiT always does. On a 24 GB card the fp8
+    /// DiT, the encoder, the VAE and a 1 MP sampling did not fit together (RTX 3090,
+    /// 2026-11-11: every Generate Image ran out of memory).
+    pub evict_text_encoder: bool,
 }
 
 impl Krea2Options {
     /// ConvRot on when the build has it, the cache where the environment says.
     pub fn defaults() -> Self {
-        Self { convrot: cfg!(feature = "convrot"), cache: CacheSpec::from_cli(None, false, false), nvfp4: false }
+        Self { convrot: cfg!(feature = "convrot"), cache: CacheSpec::from_cli(None, false, false), nvfp4: false, evict_text_encoder: false }
     }
 }
 
@@ -151,7 +156,7 @@ impl Krea2Pipeline {
             model.display()
         );
         // Without ConvRot or fp8 the DiT is 24 GB in bf16: the encoder comes and goes per prompt.
-        let evict_te = fp8.is_none() && (!opts.convrot || !cfg!(feature = "convrot"));
+        let evict_te = opts.evict_text_encoder || (fp8.is_none() && (!opts.convrot || !cfg!(feature = "convrot")));
         let te = if evict_te {
             None
         } else {

@@ -53,6 +53,10 @@ pub struct Options {
     /// and load it again for the next request (about 7 s). Off, the driver pages instead,
     /// which made a two-reference edit twenty times slower on a 32 GB card.
     pub evict_text_encoder: bool,
+    /// Leave the vision tower off the card until a request carries a picture, and drop it
+    /// again after each encode (0.4 s to load). For cards under 28 GB, where its 2.4 GB beside
+    /// the encoder and the DiT left no room for the sampling.
+    pub lazy_vision: bool,
 }
 
 impl Default for Options {
@@ -67,6 +71,7 @@ impl Default for Options {
             vision: true,
             prefix_cache: true,
             evict_text_encoder: true,
+            lazy_vision: false,
         }
     }
 }
@@ -458,7 +463,7 @@ impl Pipeline {
         };
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "VAE loaded");
 
-        let vision = if opts.vision {
+        let vision = if opts.vision && !opts.lazy_vision {
             progress(0.9, "Loading the vision tower");
             let t0 = Instant::now();
             let tower = load_vision(&src, &dev)?;
@@ -478,7 +483,7 @@ impl Pipeline {
             dit,
             vae,
             vision: std::sync::Mutex::new(vision),
-            vision_transient: std::sync::atomic::AtomicBool::new(false),
+            vision_transient: std::sync::atomic::AtomicBool::new(opts.lazy_vision),
             hold_vision: std::sync::atomic::AtomicBool::new(false),
             opts,
             conditioning: std::sync::Mutex::new(None),
