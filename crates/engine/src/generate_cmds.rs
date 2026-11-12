@@ -700,6 +700,10 @@ pub const ANGLES_LORA: &str = "qwen-image-edit-2511-multiple-angles-lora.safeten
 /// fill is the 2.1 fill (the mask in view); an expand the in-context 2.1 expand. Without the
 /// opt-in or the worker, the 2511 orders stand (the permissive default).
 pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
+    // An 8 to 16 GB card with FLUX 3 Image Klein installed edits with Klein.
+    if command == EDIT && crate::memory_profile::cuda_klein(s) && loras::runs_native(s, crate::memory_profile::KLEIN_EDIT_TEMPLATE) {
+        return Some(crate::memory_profile::KLEIN_EDIT_TEMPLATE);
+    }
     // A small memory profile edits with MOSS Edit (permissive, so no research opt-in).
     if command == EDIT
         && let Some(t) = crate::memory_profile::edit_template(crate::memory_profile::active(s))
@@ -4019,6 +4023,8 @@ pub(crate) const OUTPAINT_TURBO_TEMPLATE: &str = "qwen-2.1/outpaint-turbo";
 /// an edit of the whole canvas, 187 s as this fill, the seam the same.
 pub(crate) const KLEIN_OUTPAINT_LORA: &str = "flux-3-image-klein-outpaint.safetensors";
 const KLEIN_OUTPAINT_PIXELS: u64 = 589_824;
+/// On CUDA, about 1 MP: the size AusBoss's Klein Outpaint workflow pads to.
+const KLEIN_CUDA_OUTPAINT_PIXELS: u64 = 1_048_576;
 /// The 2.1 edit the plain Outpaint LoRA runs on.
 const OUTPAINT_EDIT_TEMPLATE: &str = "qwen-2.1/edit";
 /// The picture's share of the grown canvas below which the v1 file goes first.
@@ -4046,6 +4052,11 @@ fn outpaint_lora(s: &Session, (ow, oh): (u32, u32), (nw, nh): (u32, u32)) -> Opt
         return None;
     }
     let has = |f: &str| std::path::Path::new(&root).join("loras").join(f).is_file();
+    // An 8 to 16 GB card with FLUX 3 Image Klein: its fill with the Klein Outpaint LoRA, as on a
+    // Mac (Qwen-Image-2.1's 14 GB DiT does not fit beside its encoder there).
+    if crate::memory_profile::cuda_klein(s) && has(KLEIN_OUTPAINT_LORA) {
+        return Some((KLEIN_FILL_TEMPLATE, Some(KLEIN_OUTPAINT_LORA), KLEIN_CUDA_OUTPAINT_PIXELS));
+    }
     if s.prefs().integrations.allow_research_models {
         let share = (f64::from(ow) * f64::from(oh)) / (f64::from(nw) * f64::from(nh)).max(1.0);
         if let Some(route) = pick_outpaint_lora(has, share, quality(s) == "fast") {

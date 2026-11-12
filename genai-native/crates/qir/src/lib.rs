@@ -33,6 +33,7 @@ pub mod fusednorm;
 pub mod gemm_tiles;
 pub mod h3;
 pub mod int8_cache;
+pub mod klein;
 #[cfg(feature = "fusednorm")]
 pub mod krea2_fused;
 pub mod krea2_pipeline;

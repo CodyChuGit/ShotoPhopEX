@@ -33,6 +33,7 @@ use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::edit2511_pipeline::{self, Edit2511Pipeline, Edit2511Request};
 use qwen_image_rs::h3::pipeline::{self as h3, H3Pipeline};
+use qwen_image_rs::klein::pipeline::{self as klein_cuda, KleinPipeline};
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::layered_pipeline::LayeredPipeline;
 use qwen_image_rs::lora::{LoraFile, LoraStack};
@@ -146,6 +147,8 @@ pub const MOSS_EDIT_STEPS: u32 = 30;
 pub const TEMPLATE_KLEIN_IMAGE: &str = "flux3-klein/image";
 pub const TEMPLATE_KLEIN_EDIT: &str = "flux3-klein/edit";
 pub const TEMPLATE_KLEIN_FILL: &str = "flux3-klein/fill";
+/// AusBoss's Klein Outpaint LoRA: a Klein fill that carries it is the editor's Expand.
+pub const KLEIN_OUTPAINT_LORA: &str = "flux-3-image-klein-outpaint.safetensors";
 /// Klein's folders under the model root, the first found wins (q4 first: on an M1 it is as fast
 /// as q8 and half the memory).
 pub const KLEIN_DIRS: [&str; 2] = ["mlx/flux-3-image-klein-q4", "mlx/flux-3-image-klein-q8"];
@@ -241,6 +244,9 @@ enum Resident {
     #[cfg_attr(feature = "mlx", allow(dead_code))]
     Moss(MossPipeline, MossVariant),
     H3(H3Pipeline),
+    /// FLUX 3 Image Klein on CUDA (ComfyUI's files).
+    #[cfg_attr(feature = "mlx", allow(dead_code))]
+    KleinCuda(KleinPipeline),
     /// MOSS-Image on MLX (macOS): every variant through one pipeline, its DiT swapped per
     /// request.
     #[cfg(feature = "mlx")]
@@ -448,6 +454,7 @@ impl DiffusionEngine {
             Resident::Edit2511(p) => p.device(),
             Resident::Moss(p, _) => p.device(),
             Resident::H3(p) => p.device(),
+            Resident::KleinCuda(p) => p.device(),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => return,
             Resident::None => return,
@@ -580,6 +587,7 @@ impl DiffusionEngine {
             Resident::Edit2511(p) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::Moss(p, _) => qwen_image_rs::device::trim_pool(p.device()),
             Resident::H3(p) => qwen_image_rs::device::trim_pool(p.device()),
+            Resident::KleinCuda(p) => qwen_image_rs::device::trim_pool(p.device()),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => {}
             Resident::None => {}
@@ -597,6 +605,7 @@ impl DiffusionEngine {
             Resident::Edit2511(p) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::Moss(p, _) => qwen_image_rs::device::bind_thread(p.device()),
             Resident::H3(p) => qwen_image_rs::device::bind_thread(p.device()),
+            Resident::KleinCuda(p) => qwen_image_rs::device::bind_thread(p.device()),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => {}
             Resident::None => {}
@@ -615,6 +624,7 @@ impl DiffusionEngine {
             Resident::Krea2(p) => (p.device().clone(), p.dtype()),
             Resident::Edit2511(_) => (qwen_image_rs::edit2511_pipeline::cpu_device(), qwen_image_rs::edit2511_pipeline::adapter_dtype()),
             Resident::Moss(p, _) => (p.device().clone(), p.dtype()),
+            Resident::KleinCuda(p) => (p.device().clone(), p.lora_dtype()),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => return Err(EngineError::new(ErrorKind::Internal, "MLX applies its LoRAs itself")),
             Resident::H3(p) => (p.device().clone(), p.dtype()),
@@ -694,7 +704,8 @@ impl DiffusionEngine {
             Family::Edit2511 => self.edit2511_available(),
             Family::Moss(v) => moss::find_files(&self.models_root, v).is_some(),
             Family::H3 => cfg!(not(feature = "mlx")) && h3::find_files(&self.models_root).is_some(),
-            Family::Klein => cfg!(feature = "mlx") && self.klein_dir().is_some() && self.models_root.join(KLEIN_VAE).is_file(),
+            Family::Klein if cfg!(feature = "mlx") => self.klein_dir().is_some() && self.models_root.join(KLEIN_VAE).is_file(),
+            Family::Klein => klein_cuda::find_files(&self.models_root, false).is_some(),
         }
     }
 
@@ -742,6 +753,7 @@ impl DiffusionEngine {
             (Resident::Qwen(_), Family::QwenImage21) | (Resident::Layered(_), Family::Layered) | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
             (Resident::Moss(_, held), Family::Moss(v)) if *held == v => return Ok(()),
             (Resident::H3(_), Family::H3) => return Ok(()),
+            (Resident::KleinCuda(_), Family::Klein) => return Ok(()),
             #[cfg(feature = "mlx")]
             (Resident::Mlx(_), Family::Moss(_)) => return Ok(()),
             #[cfg(feature = "mlx")]
@@ -829,7 +841,19 @@ impl DiffusionEngine {
                 Resident::Klein(Box::new(gn_mlx::klein::KleinMlx::new(&self.models_root.join(KLEIN_VAE)).map_err(err)?))
             }
             #[cfg(not(feature = "mlx"))]
-            Family::Klein => return Err(EngineError::new(ErrorKind::Unsupported, "FLUX 3 Image Klein runs on a Mac (MLX) only")),
+            Family::Klein => {
+                let Some(files) = klein_cuda::find_files(&self.models_root, false) else {
+                    return Err(EngineError::new(
+                        ErrorKind::ModelMissing,
+                        format!(
+                            "no FLUX 3 Image Klein in {}: diffusion_models/flux3-image-klein-int8-convrot (or -bf16), \
+                             text_encoders/qwen3vl_4b_fp8_scaled (or qwen3vl_4b_bf16), vae/flux2-vae (or flux2-vae_small) and ComfyUI's qwen25_tokenizer",
+                            self.models_root.display()
+                        ),
+                    ));
+                };
+                Resident::KleinCuda(KleinPipeline::load(&files, &mut report).map_err(err)?)
+            }
             #[cfg(feature = "mlx")]
             Family::Moss(_) => {
                 report(0.5, "Loading the VAE");
@@ -1244,6 +1268,7 @@ impl Engine for DiffusionEngine {
             Resident::Edit2511(p) => (vec!["qwen-image-edit-2511".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Moss(p, _) => (vec!["moss-image".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::H3(p) => (vec!["p-h3-image".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::KleinCuda(p) => (vec!["flux3-klein".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) => (vec!["moss-image".to_string()], false, None),
             #[cfg(feature = "mlx")]
@@ -1530,6 +1555,20 @@ impl Engine for DiffusionEngine {
                 }
                 (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::H3(p), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::KleinCuda(p), _) => {
+                    // A fill's second picture is its mask.
+                    let mut ask = ask.clone();
+                    let mask = if task == "fill" { ask.references.pop() } else { None };
+                    // The editor's Expand comes as a fill with AusBoss's Outpaint LoRA: run it
+                    // the way that LoRA was made for (see `KleinPipeline::outpaint`).
+                    let outpaint = ask.loras.layers.iter().any(|(f, _)| f.path.file_name().is_some_and(|n| n == KLEIN_OUTPAINT_LORA));
+                    match &mask {
+                        Some(m) if outpaint => p.outpaint(&ask, m, &mut report, &stop),
+                        _ => p.generate(&ask, mask.as_ref(), &mut report, &stop),
+                    }
+                    .map(|p| vec![p])
+                    .map_err(err)
+                }
                 #[cfg(feature = "mlx")]
                 (Resident::Mlx(_) | Resident::Klein(_), _) => Err(EngineError::new(ErrorKind::Internal, "MLX runs before the LoRA stack")),
                 (Resident::Edit2511(_) | Resident::Layered(_) | Resident::None, _) => Err(EngineError::new(ErrorKind::Internal, "no pipeline")),

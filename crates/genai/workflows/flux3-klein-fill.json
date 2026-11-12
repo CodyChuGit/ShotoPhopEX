@@ -1,7 +1,7 @@
 {
   "meta": {
     "id": "flux3-klein/fill",
-    "name": "Generative Fill (FLUX 3 Image Klein, Mac)",
+    "name": "Generative Fill (FLUX 3 Image Klein)",
     "family": "flux3-klein",
     "task": "fill",
     "license": "community",
@@ -29,7 +29,7 @@
         "default": "flux2-vae_small.safetensors"
       }
     ],
-    "notes": "Runs natively on a Mac (genai-native gn-diffusion flux3-klein/fill on gn-mlx, MLX): Klein sees the crop with the selection flat grey as its reference (at half the side), samples from noise, and after every step the area outside the selection is set back to the crop's own latent noised to that step's time (the last step leaves it exact); the editor masks the result to the selection. q4 on a 16 GB M1 Air at 512²: about 145 s.",
+    "notes": "Runs natively on a Mac (genai-native gn-diffusion flux3-klein/fill on gn-mlx, MLX): Klein sees the crop with the selection flat grey as its reference (at half the side), samples from noise, and after every step the area outside the selection is set back to the crop's own latent noised to that step's time (the last step leaves it exact); the editor masks the result to the selection. q4 on a 16 GB M1 Air at 512²: about 145 s. On Windows and Linux (CUDA) it is the 8, 12 and 16 GB profiles' Expand with the Outpaint LoRA when Klein is installed (qir::klein), at about 1 MP.",
     "creator": "Black Forest Labs · mflux-community",
     "description": "Repaints the selection on the Mac's GPU and keeps the rest",
     "badges": [],
