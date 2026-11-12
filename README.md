@@ -58,11 +58,11 @@ an Apple Silicon Mac. Every result lands on its own masked layer, so the origina
 
 | | |
 |---|---|
-| **What you get** | Generative Fill, Edit, Remove, Expand, Angles, Upscale, Split into Layers, Clown Pass, Select by text and text to image |
+| **What you get** | Generative Fill, Edit, Remove, Expand, Angles, Face and Body Swap, Upscale, Split into Layers, Clown Pass, Select by text and text to image |
 | **Where it runs** | On your own NVIDIA RTX card, from 12 GB of VRAM, on Windows 10 or 11 and Linux; on an Apple Silicon Mac with 16 GB ([Mac](#macos-dmg-apple-silicon)) |
 | **What it doesn't need** | No cloud, no account, no credits, no Python, no ComfyUI |
 | **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([speed](#-speed-on-every-device)) |
-| **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, SAM 3.1), in ComfyUI's folder layout |
+| **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, FLUX 3 Image Klein, H3 Image, SAM 3.1), in ComfyUI's folder layout |
 | **Status** | Beta, v0.1.1. Downloads for Windows, Linux and Apple Silicon Macs ([install](#-install)) |
 | **Licence** | MIT or Apache-2.0 (the native engine's `qir` crate is Apache-2.0 only). Each model keeps its own licence |
 
@@ -334,6 +334,14 @@ Grow the canvas and the scene continues, people included, with an outpainting Lo
 
 Move the camera after the shot: a side view, a high angle, a close-up, with the Multiple Angles LoRA on Qwen-Image-Edit-2511. **About 10&nbsp;s each.**
 
+### Face and Body Swap
+
+In Edit, pick **Swap › Face** or **Swap › Body** and drop a picture of the person to put in on
+References. Alissonerdx's BFS LoRAs on Qwen-Image-2.1 keep the pose, light and scene of your
+picture and take the face and hair (or the whole outfit and build) from the reference. The result
+is masked to the old and the new person together, so nothing of the old one shows around the new.
+A face swap takes **about 5&nbsp;s** warm. Only swap people who agreed to it.
+
 ### Object Selection
 
 <p align="center">
@@ -367,12 +375,15 @@ Every person and thing in the picture on its own colour-coded, edge-matted layer
 </p>
 
 One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to Krea 2 at about 2 MP (1440²). Same prompt and seed in all three.
+Balanced and Best run Krea 2 on the creator kit's 9-step detail schedule. On an RTX 50-series card, Fast and Balanced load the 4-bit NVFP4 Krea 2 (7.7 GB instead of 13.1 GB) when it is installed; Best keeps the full model.
 
 ### Every feature
 
 | Feature | What it does | Default model | Warm time, RTX 5090 |
 |---|---|---|---|
-| **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best |
+| **Generate Image** | Text to image into a new layer or document, with optional reference pictures, at Fast, Balanced or Best | Krea 2 Turbo (Qwen-Image-2.1, MOSS-Image, FLUX 3 Image Klein selectable) | **3.0 s** Fast · 5.4 s Balanced · 9.2 s Best |
+| **H3 Image** | Large, detailed pictures, 4 MP by default and up to about 8 MP, from the model picker | P-H3-Image (MiniMax H3, int8) | 15.6 s at 2048² |
+| **MOSS-Image** | Photographic pictures on the realism recipe (res_2s, 20 steps, a real negative prompt) | MOSS-Image | about 15 s |
 | **Image from a reference** | A new picture steered by up to ten references | Qwen-Image-2.1 | **5.2 s** |
 | **Generative Fill** | Repaint the selection from a prompt, on a masked layer, with variations | Qwen-Image-2.1 (Krea 2 AnyPaint selectable) | **3.2 s** · 6.6 s AnyPaint at 0.6 MP |
 | **Fill from a reference** | Repaint the selection with what a reference picture shows | Qwen-Image-2.1 edit | 9.6 s |
@@ -384,6 +395,7 @@ One switch trades seconds for detail: **Fast**, **Balanced** or **Best**, up to 
 | **Remove Background** | A soft alpha matte around the subject, as a layer mask | SAM 3.1 + ViTMatte | **0.45 s** |
 | **Select Subject / by text / by point** | Open-vocabulary selection: "the red car", "eye:2", a click, or a part of an object | SAM 3.1 | **0.3 s** |
 | **Generative Angles** | Orbit a camera around the subject (8 directions, 4 heights, 3 distances) | Qwen-Image-Edit-2511 + Multiple Angles LoRA | 10.3 s |
+| **Face and Body Swap** | Put the face and hair, or the whole person, from a reference onto the person in the picture | Qwen-Image-2.1 edit + BFS LoRAs | about 5 s (face) |
 | **Generative Upscale 2×** | Enlarge with new detail on a few large tiles, staying true to the original | Qwen-Image-2.1 edit + Restore LoRA | **24.2 s** |
 | **Prompt Enhance** | Rewrites a short prompt into a full one, reading the picture | Qwen3-VL | ~1–2 s |
 
@@ -591,6 +603,9 @@ SAM 3.1 and ViTMatte are the same files as above.
 | `diffusion_models/` | `flux3-image-klein-int8-convrot.safetensors` | `black-forest-labs/flux-3-image-klein-comfy` (gated: accept on Hugging Face) | Klein Edit and Expand on 8–16 GB cards (Windows, Linux) |
 | `text_encoders/` | `qwen3vl_4b_fp8_scaled.safetensors` | `Comfy-Org` (the Krea 2 file) | Klein's text encoder |
 | `loras/` | `flux-3-image-klein-outpaint.safetensors` | `ausboss/FLUX-3-Image-Klein-Outpaint-LoRA` | Generative Expand on Klein |
+| `diffusion_models/` | `krea2_turbo_nvfp4.safetensors` | `Comfy-Org/Krea-2` | Krea 2 Fast and Balanced on RTX 50-series cards |
+| `loras/` | `bfs_head_v1.1_qwen_2.1.safetensors`, `bfs_body_swap_v1.0_qwen_2.1.safetensors` | `Alissonerdx/BFS-Best-Face-Swap` | Face and Body Swap |
+| `diffusion_models/`, `text_encoders/`, `vae/` | `p-h3-image_int8_convrot.safetensors`, `p-h3-image_text_encoder_int8_convrot.safetensors`, `p-h3-image_vae_bf16.safetensors` | `PrunaAI/P-H3-Image-Comfy` | H3 Image (32 GB cards) |
 
 **Licences matter.** Model weights are not part of ShotoPhopEX and are not covered by its
 licence. Qwen-Image-2.1, its VAE and its Outpaint, Restore and Viggle LoRAs are under the Qwen
@@ -599,7 +614,9 @@ AnyPaint and style LoRAs are under the Krea 2 Community License (commercial use 
 annual revenue, plus Krea's use policy); the Krea 2 General Edit LoRA adds its author's own
 non-commercial licence. SAM 3.1 is under Meta's SAM License (commercial use allowed; no military,
 weapons or trade-control-restricted uses). FLUX 3 Image Klein and its LoRAs (the Mac's Fill and Expand, and Edit and Expand on 8–16 GB cards) are under the FLUX Kommunity
-License. Kromoss, MOSS-Image, Qwen-Image-Edit-2511, the
+License. H3 Image is under the MiniMax H3 Community License, which excludes the EU, the UK, South Korea and the USA,
+needs MiniMax's OK above US$1M yearly revenue or for a hosted service, and asks for "Powered by MiniMax H3". The BFS swap
+LoRAs are MIT. Kromoss, MOSS-Image, Qwen-Image-Edit-2511, the
 Lightning, Angles and Object Remover LoRAs and ViTMatte are Apache-2.0. The MOSS Edit adapter
 states no licence at all. **Get AI Models** lists the licence of every file it is about to
 download, with a link, and downloads only after you accept them. Details and sources:
