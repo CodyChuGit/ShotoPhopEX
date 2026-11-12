@@ -4678,8 +4678,10 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let backend = backend(s)?;
     let FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow, erase, tuning } = plan;
     let label = name.clone();
-    // `wholePicture` (Generative Angles): the selection does not confine the result.
-    let whole = opt_bool(EDIT, p, "wholePicture", false)?;
+    // `wholePicture` (Generative Angles, and a swap, whose rewrite sets it): the selection does
+    // not confine the result.
+    let swapped = swap::apply(s, p)?;
+    let whole = opt_bool(EDIT, swapped.as_ref().unwrap_or(p), "wholePicture", false)?;
     // An edit re-renders the whole picture; what shows of it is its subject (Select Subject on
     // the result), so a new thing (a Pikachu for the duck) sits in the untouched original. Not
     // for Angles, whose camera move is the whole picture; no detector, no subject mask.
