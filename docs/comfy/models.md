@@ -359,3 +359,14 @@ Community-licence models show their conditions once per session. The catalogue i
 - Adobe help: [Generative Fill on desktop](https://helpx.adobe.com/photoshop/desktop/create-open-import-images/create-images/edit-images-with-generative-fill.html) (Adobe models Firefly Fill & Expand, Firefly Image 5, Firefly Image 1; partner models FLUX.2 pro, FLUX Kontext pro, Gemini 3.1 / Nano Banana 2, Gemini 3 / Nano Banana Pro).
 - [Adobe Design: partner models in Photoshop](https://medium.com/@Adobe_Design/behind-the-design-partner-models-in-adobe-photoshop-91b54e1aaca9).
 - [What's new in Photoshop 2026 (PhotoshopCAFE)](https://photoshopcafe.com/whats-new-in-photoshop-2026-full-release-overview/) · [Generative Upscale 2026](https://www.photoshopessentials.com/photo-editing/how-to-use-generative-upscale-in-photoshop-2026/) · [Harmonize / Generative Upscale announcement](https://alternativeto.net/news/2025/7/photoshop-expands-ai-tools-with-harmonize-generative-upscale-and-project-collaboration) · [AI features field report](https://weandthecolor.com/ai-features-in-adobe-photoshop-that-actually-changed-how-i-work-a-designers-field-report/208072).
+
+### BFS Best Face Swap (face and body swap, Qwen-Image-2.1 LoRAs)
+
+| | |
+|---|---|
+| Weights | `Alissonerdx/BFS-Best-Face-Swap` on Hugging Face (also Civitai model 2027766). Head swap v1.1: `bfs_head_v1.1_qwen_2.1.safetensors`, 260,096,144 bytes, sha256 `d1d748d5601077f3b6d05766f6823510e901970d916afa404a97e85dc92fa88e`. Body swap v1.0: `bfs_body_swap_v1.0_qwen_2.1.safetensors`, 209,753,576 bytes, sha256 `7dc0a53aba4dbc70c204f498936a619d226559da11011f748c389189af46b664`. Both in `loras/`; checked against the HF LFS hashes and the owner's copies 2026-11-11. |
+| Inputs | Image 1 = the picture whose scene, lighting and pose stay; image 2 = the person put in (the head, or the clothes, build and face). The older Qwen-Image-Edit-2509 BFS versions take them the other way round. |
+| Prompts | The author's own, sent verbatim (`crates/engine/src/generate_swap.rs`), with `<image1>`/`<image2>` as the native 2.1 encoder builds them (same as ComfyUI's `TextEncodeQwenImage21`). Strength 1. The author's workflows add Pruna's 8-step LoRA (8 steps, CFG 1, deis_2m or euler / simple). The app runs 16 steps without it: in the app 2026-11-11 (5090, 896x1152) 16 steps looked as sharp as 25 (5.1 s warm), and 8 steps with Pruna came out softer at the same time. The body swap followed the pose only roughly (hands), as the author warns. |
+| Not wired | Body Swap Selective (magenta-tinted target person, three images), the Krea 2 head and body versions (the native Krea 2 edit takes no reference picture yet), and the H3 Character Swap version (a MiniMax H3 video LoRA). |
+| Licence | **MIT** (HF repo). The author asks that swaps be made only with the consent of the people shown. |
+| Role here | Generate panel › Edit › Swap (Face, Body); `generate.edit` `swap`; Get AI Models extra `face-swap`. |

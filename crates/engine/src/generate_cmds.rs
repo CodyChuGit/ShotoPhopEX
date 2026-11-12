@@ -4587,6 +4587,9 @@ fn edit_enabled(s: &Session) -> std::result::Result<(), String> {
 /// `generate.edit`: the whole picture goes to an edit model with an instruction; the result is
 /// a layer over the canvas, masked to the selection when there is one.
 fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
+    // `swap`: the BFS face or body swap (its template, LoRA and prompt), see `generate_swap.rs`.
+    let swapped = swap::apply(s, p)?;
+    let p = swapped.as_ref().unwrap_or(p);
     let default_model = s.prefs().integrations.default_edit_model.clone();
     let mut requested = opt_str(EDIT, p, "template", 200)?.map(str::to_string).unwrap_or_else(|| AUTO_TEMPLATE.to_string());
     let mut auto = requested == AUTO_TEMPLATE;
@@ -5499,7 +5502,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; a background job; needs the native worker)"#,
+            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"swap":{str?=none},"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; swap = put the head ("head", also "face") or the whole person ("body") from the first reference onto the person in the picture, with the BFS LoRAs for Qwen-Image-2.1 (MIT): runs qwen-2.1/edit unless a template is named, adds the LoRA (bfs_head_v1.1_qwen_2.1 or bfs_body_swap_v1.0_qwen_2.1, from the loras folder), sends the LoRA author's prompt with any typed text after it, Enhance off; a background job; needs the native worker)"#,
             enabled: edit_enabled,
             run: run_edit,
             journal: true,
@@ -5666,6 +5669,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[path = "generate_loras.rs"]
 pub(crate) mod loras;
+
+#[path = "generate_swap.rs"]
+pub mod swap;
 
 #[cfg(test)]
 #[path = "generate_cmds_tests.rs"]

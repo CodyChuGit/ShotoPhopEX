@@ -180,3 +180,34 @@ fn auto_falls_back_to_the_base_edit_template_and_params_are_validated() {
     let m = s.execute(MODELS, json!({})).unwrap();
     assert_eq!(m["autoEdit"], DEFAULT_EDIT_TEMPLATE, "what auto would pick without the LoRA");
 }
+
+/// `swap` pins the 2.1 edit, adds the BFS LoRA and the author's prompt, and needs a reference.
+#[test]
+fn a_swap_sends_the_bfs_lora_and_prompt() {
+    let s = Session::new();
+    let p = json!({"swap": "face", "prompt": "smiling", "references": [{"path": "who.png"}], "enhance": true});
+    let q = swap::apply(&s, &p).unwrap().unwrap();
+    assert_eq!(q["template"], swap::SWAP_TEMPLATE);
+    assert_eq!(q["enhance"], false, "a rewritten prompt would lose the trigger words");
+    assert_eq!(q["loras"][0]["file"], swap::HEAD.lora);
+    assert_eq!(q["loras"][0]["strength"], 1.0);
+    let prompt = q["prompt"].as_str().unwrap();
+    assert!(prompt.starts_with("head_swap: start with <image1>") && prompt.ends_with(" smiling"), "{prompt}");
+    assert_eq!(q["name"], "Face Swap");
+    assert_eq!(q["steps"], swap::SWAP_STEPS);
+    assert!(q.get("swap").is_none());
+
+    // A named template stays, a LoRA already listed is not added twice.
+    let p = json!({"swap": "body", "template": "qwen-2.1/edit", "references": [{"layer": 2}],
+        "loras": [{"file": swap::BODY.lora, "strength": 0.8}], "steps": 25});
+    let q = swap::apply(&s, &p).unwrap().unwrap();
+    assert_eq!(q["loras"].as_array().unwrap().len(), 1);
+    assert_eq!(q["loras"][0]["strength"], 0.8);
+    assert!(q["prompt"].as_str().unwrap().starts_with("body_swap:"));
+    assert_eq!(q["steps"], 25, "named steps stay");
+
+    assert!(swap::apply(&s, &json!({"prompt": "x"})).unwrap().is_none(), "no swap, no change");
+    assert!(swap::apply(&s, &json!({"swap": "none"})).unwrap().is_none());
+    assert!(swap::apply(&s, &json!({"swap": "head"})).is_err(), "a swap needs image 2");
+    assert!(swap::apply(&s, &json!({"swap": "hands", "references": [{"layer": 2}]})).is_err());
+}

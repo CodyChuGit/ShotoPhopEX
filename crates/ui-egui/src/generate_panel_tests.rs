@@ -415,3 +415,27 @@ fn capture_generate_panel_snapshots() {
         }
     }
 }
+
+#[test]
+fn edit_mode_swap_needs_a_reference_and_sends_swap_without_a_prompt() {
+    let fake = FakeNative::start().unwrap();
+    let (mut app, _base, hat) = app(&fake.url);
+    app.ui.generate.mode = "edit".into();
+    app.ui.generate.swap = "head".into();
+    assert!(swapping(&app));
+    assert_eq!(effective_template(&app, "edit"), photocraft_engine::generate_cmds::swap::SWAP_TEMPLATE);
+    assert!(request(&app).is_err(), "a swap needs the picture of who to put in");
+    add_reference(&mut app, json!({"layer": hat}));
+    let (cmd, q) = request(&app).unwrap();
+    assert_eq!(cmd, "generate.edit");
+    assert_eq!(q["swap"], "head");
+    assert_eq!(q["references"], json!([{"layer": hat}]));
+
+    // `ui.set` takes it; off clears it, and an ordinary edit needs its instruction again.
+    set(&mut app, &json!({"generatePanel": {"swap": "body"}})).unwrap();
+    assert_eq!(app.ui.generate.swap, "body");
+    assert!(set(&mut app, &json!({"generatePanel": {"swap": "hands"}})).is_err());
+    set(&mut app, &json!({"generatePanel": {"swap": "off"}})).unwrap();
+    assert!(!swapping(&app));
+    assert!(request(&app).is_err(), "no prompt, no swap");
+}
