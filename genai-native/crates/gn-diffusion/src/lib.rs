@@ -662,6 +662,13 @@ impl DiffusionEngine {
     /// the card's own context is asked).
     fn unload_after_oom(&mut self) {
         let held = !matches!(self.resident, Resident::None);
+        // The worker's log said nothing of these (they reached only the editor), so a 24 GB
+        // card's failures could not be placed (2026-11-11).
+        eprintln!(
+            "gn-diffusion: out of card memory ({} resident, {:.1} GB free by the driver's count); unloading",
+            if held { "a model" } else { "nothing" },
+            self.free_now().map_or(0.0, |f| f as f64 / 1e9)
+        );
         self.unload();
         if !held
             && cfg!(feature = "cuda")
@@ -974,6 +981,9 @@ impl DiffusionEngine {
                 Resident::H3(H3Pipeline::load(&files, &mut report).map_err(err)?)
             }
         };
+        if let Some(free) = self.free_now() {
+            eprintln!("gn-diffusion: {family:?} loaded{}, {:.1} GB of the card free", if self.lean { " (lean)" } else { "" }, free as f64 / 1e9);
+        }
         Ok(())
     }
 
