@@ -381,10 +381,8 @@ fn keeps_floating(id: &str) -> bool {
 /// library, never a document. The status bar polls `generate.engine.status` every few seconds and
 /// the panels ask for models and jobs, so dropping the piece for them would end a move mid-drag.
 fn generative_query(id: &str) -> bool {
-    matches!(
-        id,
-        "generate.health" | "generate.models" | "generate.loras" | "generate.info" | "generate.jobs" | "generate.enhancePrompt" | "generate.free"
-    ) || ["generate.engine.", "generate.jobs."].iter().any(|p| id.starts_with(p))
+    matches!(id, "generate.health" | "generate.models" | "generate.loras" | "generate.info" | "generate.jobs" | "generate.enhancePrompt" | "generate.free")
+        || ["generate.engine.", "generate.jobs."].iter().any(|p| id.starts_with(p))
 }
 
 /// Before any command (`Session::dispatch`): Undo puts a floating piece back (and is used up:
