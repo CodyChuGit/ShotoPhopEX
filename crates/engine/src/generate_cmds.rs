@@ -436,6 +436,8 @@ pub(crate) enum EnhanceKind {
 /// The worker's chat `encoder` that answers on Krea 2's Qwen3-VL-4B (genai-native
 /// `CHAT_ON_KREA2`).
 const KREA2_CHAT_ENCODER: &str = "krea2";
+/// A chat's `encoder` that names a MOSS template answers on that template's own Qwen3.5-9B.
+const MOSS_CHAT_PREFIX: &str = "moss-image/";
 
 /// The system turn of [`EnhanceKind::FillScene`]: AusBoss's "Write the prompt" step of the
 /// Krea 2 Inpaint Masked workflow (v1.3), which the AnyPaint LoRA follows best: it was trained
@@ -643,10 +645,11 @@ fn enhance_once(
     if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto) {
         // A text-to-image rewrite is 60 to 120 words: past the default 120 tokens it was cut
         // mid-sentence (2026-11-12). `place` names the encoder for these kinds: Krea 2's own
-        // when the picture runs on Krea 2, so the model stays resident (no 8B load and swap).
+        // when the picture runs on Krea 2, a MOSS template's own Qwen3.5-9B when it runs on
+        // MOSS, so the model stays resident (no 8B load and swap).
         params.insert("max_tokens".to_string(), Value::from(ENHANCE_IMAGE_MAX_TOKENS));
-        if place == Some(KREA2_CHAT_ENCODER) {
-            params.insert("encoder".to_string(), Value::String(KREA2_CHAT_ENCODER.to_string()));
+        if let Some(enc) = place.filter(|p| *p == KREA2_CHAT_ENCODER || p.starts_with(MOSS_CHAT_PREFIX)) {
+            params.insert("encoder".to_string(), Value::String(enc.to_string()));
         }
     }
     for attempt in 0..2u64 {
@@ -2731,8 +2734,15 @@ fn image_prompt(
 ) -> (String, String) {
     let Some(kind) = enhance else { return (planned, String::new()) };
     ctx.progress(0.02, "Improving the prompt");
-    // On Krea 2 the rewrite runs on its own encoder, which the picture loads anyway.
-    let encoder = template.starts_with("krea2-turbo/").then_some(KREA2_CHAT_ENCODER);
+    // On Krea 2 and MOSS the rewrite runs on the model's own encoder, which the picture loads
+    // anyway (on MOSS the 8B swap made Turbo's 2 s picture take 15 s, 2026-11-12).
+    let encoder = if template.starts_with("krea2-turbo/") {
+        Some(KREA2_CHAT_ENCODER)
+    } else if template.starts_with(MOSS_CHAT_PREFIX) {
+        Some(template)
+    } else {
+        None
+    };
     match enhance_prompt(backend, kind, typed, None, encoder, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
         Ok(Some(e)) => {
             let p = if wrap.is_empty() { e.clone() } else { wrap.replace("{prompt}", &e) };
