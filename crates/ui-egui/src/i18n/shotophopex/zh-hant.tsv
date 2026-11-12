@@ -1,0 +1,238 @@
+# ShotoPhopEX's own interface rows for zh-hant: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/zh-hant/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	生成式填滿…
+	Generate Image…	產生影像…
+	Select by Text…	依文字選取…
+	Allow research models	允許研究用模型
+	Default edit model	預設編輯模型
+	Default fill template	預設填滿範本
+	Default generate model	預設生成模型
+	Default image template	預設影像範本
+	Generative timeout (seconds)	生成逾時（秒）
+	Show generative bar	顯示生成列
+	Describe what to generate…	描述要生成的內容…
+	Variations	變化版本
+	Generating…	正在生成…
+	Previous variation	上一個變化版本
+	Next variation	下一個變化版本
+	Generative Models	生成模型
+	Generative Expand…	生成式擴展…
+	Remove Background (Generative)…	移除背景（生成式）…
+	As Selection	作為選取範圍
+	Generative Edit…	生成式編輯…
+	Generate Similar	產生相似內容
+	Generative Expand	生成式擴展
+	not installed	未安裝
+	Split into Layers (Generative)…	拆分為圖層（生成式）…
+	Changing what is there? Switch to Edit	要改變現有內容？請切換到「編輯」
+	Describe the change…	描述要做的變更…
+	Enhance prompts	自動優化提示詞
+	Warm up AI models at launch	啟動時預先載入 AI 模型
+	Fast draft (faster, slightly softer detail)	快速草稿（更快，細節略柔和）
+	Enhance prompt	優化提示詞
+	Enhancing…	正在優化…
+	The model could not improve this prompt	模型無法優化此提示詞
+	Select by text…	依文字選取…
+	Click an object, or drag a rectangle around it	點按物件，或在其周圍拖曳矩形
+	Select by Point	依點選取
+	Select by Text	依文字選取
+	{done} results	{done} 個結果
+	{running} running · {done} results	{running} 個進行中 · {done} 個結果
+	Cancelled	已取消
+	Clear completed…	清除已完成…
+	Clear failed…	清除失敗項目…
+	Completed	已完成
+	Copy prompt	複製提示詞
+	Delete every completed result and its files?	刪除所有已完成的結果及其檔案？
+	Delete every generation and its files? Running jobs stay.	刪除所有生成內容及其檔案？執行中的工作會保留。
+	Dismiss failed	關閉失敗項目
+	Failed	失敗
+	Generations	生成記錄
+	Generative Fill, Edit and Generate Image results appear here.	生成式填滿、生成式編輯與產生影像的結果會顯示在這裡。
+	In progress	進行中
+	Interrupted	已中斷
+	Invalid request	無效的要求
+	List	清單
+	Model files missing	缺少模型檔案
+	More	更多
+	No generations yet	尚無生成記錄
+	Open as Document	以文件開啟
+	Out of memory on the server	伺服器記憶體不足
+	Pin	釘選
+	Place	置入
+	Place as Layer	以圖層置入
+	Prompt copied	已複製提示詞
+	Recreate	重新產生
+	Remove all…	全部移除…
+	Remove every failed and cancelled row?	移除所有失敗與已取消的列？
+	Result discarded	結果已捨棄
+	Saved {n} file(s)	已儲存 {n} 個檔案
+	Saving files is not available here	此處無法儲存檔案
+	Server error	伺服器錯誤
+	Server unreachable	無法連線至伺服器
+	Timed out	逾時
+	Unpin	取消釘選
+	Active layer ({name})	作用中圖層（{name}）
+	Add a reference image	新增參考影像
+	Clear all	全部清除
+	Clear the prompt and remove the reference images?	清除提示詞並移除參考影像？
+	Describe what continues the scene…	描述場景如何延續…
+	Describe what to generate in the selection…	描述要在選取範圍中產生的內容…
+	Describe what you want in the image…	描述你想要的影像內容…
+	File: {name}	檔案：{name}
+	File…	檔案…
+	Fill needs a selection	填滿需要選取範圍
+	From Generations	來自生成記錄
+	Generation: {name}	生成：{name}
+	Give the expand at least one side	請至少為擴展指定一側
+	Hide negative prompt	隱藏負面提示詞
+	Layer: {name}	圖層：{name}
+	More than this model takes	超出此模型可接受的數量
+	Move left	左移
+	Move right	右移
+	Negative prompt	負面提示詞
+	New document	新增文件
+	Only files with a path can be references here	此處只有具路徑的檔案才能作為參考
+	Open a document first	請先開啟文件
+	Open the prompt in a larger editor	在較大的編輯器中開啟提示詞
+	Reference images (optional)	參考影像（選用）
+	This model takes at most {n} reference images	此模型最多接受 {n} 張參考影像
+	Type a prompt first	請先輸入提示詞
+	Type what to generate first	請先輸入要產生的內容
+	What to avoid…	要避免的內容…
+	a layer that is gone	已不存在的圖層
+	Enter to generate	按 Enter 鍵產生
+	research	研究用
+	The fastest permissive model the server has	伺服器上最快的寬鬆授權模型
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	研究授權：請在 偏好設定 › AI 整合 中開啟「允許僅限研究的模型」
+	Uses: {name}	使用：{name}
+	Group models by family	依系列分組模型
+	Variation {n} of {count}	變體 {n}/{count}
+	Delete this variation	刪除此變體
+	Keep this one	保留此項
+	Keep this one and delete the other variations	保留此項並刪除其他變體
+	Click to retry	按一下重試
+	Retry	重試
+	Variations strip	變體列
+	{n} selected	已選取 {n} 個
+	Save selected	儲存所選
+	Save results dir	結果儲存資料夾
+	Save results naming	儲存結果的命名
+	Alerts	提示音
+	Done and failed	完成與失敗
+	Preview while generating	生成時預覽
+	Not in this build yet	此版本尚未提供
+	Open a picture first	請先開啟一張圖片
+	Generative Features	生成式功能
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	即將推出
+	Split into Layers	分割為圖層
+	Angles	視角
+	A new picture from a prompt, with up to three references	依提示詞產生新圖片，最多三張參考圖
+	Paint the selection from a prompt	依提示詞填滿選取範圍
+	Change the picture by instruction	依指令修改圖片
+	Grow the canvas and continue the scene	擴展版面並延續場景
+	Cut the subject out onto transparency	將主體去背到透明背景
+	Separate the picture into editable layers	將圖片分離為可編輯的圖層
+	Select what you name in a few words	選取你用幾個詞說出的內容
+	See the subject from another camera angle	從另一個相機角度檢視主體
+	Generative Features…	生成式功能…
+	Generative Angles…	生成式視角…
+	front	正面
+	Camera	相機
+	Generative Angles	生成式視角
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	正視圖
+	front-right quarter view	右前四分之三視圖
+	right side view	右側視圖
+	back-right quarter view	右後四分之三視圖
+	back view	後視圖
+	back-left quarter view	左後四分之三視圖
+	left side view	左側視圖
+	front-left quarter view	左前四分之三視圖
+	low-angle shot	低角度
+	eye-level shot	平視
+	elevated shot	略高角度
+	high-angle shot	高角度
+	wide shot	遠景
+	medium shot	中景
+	close-up	特寫
+	CREATE	建立
+	EDIT	編輯
+	Best	最佳
+	Balanced	均衡
+	Auto takes the full-step model and keeps the 4-bit weights off	自動使用完整步數的模型，不使用 4 位元權重
+	Auto takes the 8-step Lightning tier when the server has it	伺服器有 8 步 Lightning 層級時自動使用
+	Auto takes the 4-step tier where there is one	有 4 步層級時自動使用
+	Object finder	物件搜尋器
+	Show what a click would select while the pointer rests	指標停留時顯示點按會選取的內容
+	Refine edge	調整邊緣
+	Soften the detector's hard edge from the pixels (hair, fur)	依像素柔化偵測器的硬邊緣（頭髮、毛髮）
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	點按物件或拖曳出方框圍住它；按住 Ctrl 點按可排除某處
+	Select by Box	方框選取
+	Click or drag a box around an object	點按物件或拖曳出方框圍住它
+	Click a spot the object must include; Alt-click one it must not	點按物件應包含的位置；按住 Alt 點按要排除的位置
+	Click to include a spot, Alt-click to exclude one	點按可包含某處，按住 Alt 點按可排除某處
+	Click an object, or drag a box around it	點按物件，或拖曳出方框圍住它
+	Fast	快速
+	Paint over an object to select it	在物件上塗抹即可選取它
+	Engine: not configured	引擎：未設定
+	Engine: starting…	引擎：正在啟動…
+	Engine: ready	引擎：就緒
+	Engine: running outside the app	引擎：在應用程式外執行
+	Engine: failed	引擎：失敗
+	Engine: stopped	引擎：已停止
+	Start engine	啟動引擎
+	Stop engine	停止引擎
+	Restart engine	重新啟動引擎
+	Show log	顯示記錄
+	Engine	引擎
+	Native	原生
+	Native runtime folders	原生執行階段資料夾
+	Models folder	原生模型資料夾
+	Instance	實例
+	Intersect	交集
+	Prompt	提示詞
+	Template	範本
+	Widen	加寬
+	Fill Holes	填補孔洞
+	Widen the object's mask by this many pixels (negative shrinks it)	將物件遮色片加寬這麼多像素（負值則縮小）
+	Fill the gaps the object's mask encloses	填補物件遮色片所包圍的空隙
+	Feather the mask's edge by this many pixels	將遮色片邊緣羽化這麼多像素
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	填色前將選取範圍加寬這麼多像素，讓更大的替換物有空間
+	Generative	生成式
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	預覽顯示的是傳統填滿；「確定」與「套用」會把模型結果放到新圖層。
+	Best of two	二選一
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	產生兩個候選結果，顯示看起來未經修改的那個；關閉後只產生一個，耗時約減半
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	模型資料夾 loras 子資料夾中的適配器，由原生引擎套用
+	Strength	強度
+	Generative Upscale	生成式放大
+	Denoise	降噪強度
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	重繪選取範圍的程度：1 完全取代，約 0.9 保留原有形狀
+	Native engine	原生引擎
+	Native engine: not configured	原生引擎：未設定
+	Native engine: starting…	原生引擎：正在啟動…
+	Native engine: working	原生引擎：正在工作
+	Native engine: ready	原生引擎：就緒
+	Native engine: failed	原生引擎：失敗
+	Native engine: stopped	原生引擎：已停止
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	在 偏好設定 › AI 整合 中設定執行階段資料夾與模型資料夾，即可使用原生引擎
+	{free} of {total} free	{total} 中可用 {free}
+	Loaded: {models}	已載入：{models}
+	Purge models	清除模型
+	Choose the folder that holds your model weights to use the generative tools	要使用生成工具，請選擇存放模型權重的資料夾
+	Set Models Folder…	設定模型資料夾…
+	App Icon…	應用程式圖示…
+	App Icon	應用程式圖示
+	Built-in	內建
+	Choose Image…	選擇影像…
+	Paste Image	貼上影像
+	Image address (https://…)	影像位址 (https://…)
+	Download	下載
+	Downloading…	正在下載…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	任何圖片都可以，會被放入正方形中。按一下右鍵可移除圖示。

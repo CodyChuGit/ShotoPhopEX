@@ -1,0 +1,231 @@
+# ShotoPhopEX's own interface rows for el: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/el/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Instance	Παρουσία
+	Intersect	Τομή
+	Prompt	Προτροπή
+	Template	Πρότυπο
+	Select by Text…	Επιλογή βάσει κειμένου…
+	Generative Fill…	Παραγωγικό γέμισμα…
+	Generate Image…	Δημιουργία εικόνας…
+	Allow research models	Να επιτρέπονται ερευνητικά μοντέλα
+	Default edit model	Προεπιλεγμένο μοντέλο επεξεργασίας
+	Default fill template	Προεπιλεγμένο πρότυπο γεμίσματος
+	Default generate model	Προεπιλεγμένο μοντέλο δημιουργίας
+	Default image template	Προεπιλεγμένο πρότυπο εικόνας
+	Generative timeout (seconds)	Χρονικό όριο δημιουργίας (δευτερόλεπτα)
+	Show generative bar	Εμφάνιση παραγωγικής γραμμής
+	Describe what to generate…	Περιγράψτε τι να δημιουργηθεί…
+	Variations	Παραλλαγές
+	Generating…	Δημιουργία…
+	Previous variation	Προηγούμενη παραλλαγή
+	Next variation	Επόμενη παραλλαγή
+	Generative Models	Παραγωγικά μοντέλα
+	Generative Expand…	Παραγωγική επέκταση…
+	Remove Background (Generative)…	Αφαίρεση φόντου (παραγωγικά)…
+	As Selection	Ως επιλογή
+	Generative Edit…	Παραγωγική επεξεργασία…
+	Generate Similar	Δημιουργία παρόμοιου
+	Generative Expand	Παραγωγική επέκταση
+	not installed	δεν έχει εγκατασταθεί
+	Split into Layers (Generative)…	Διαχωρισμός σε επίπεδα (παραγωγικά)…
+	Changing what is there? Switch to Edit	Αλλάζετε ό,τι υπάρχει; Μεταβείτε στην Επεξεργασία
+	Describe the change…	Περιγράψτε την αλλαγή…
+	Enhance prompts	Βελτίωση προτροπών
+	Warm up AI models at launch	Προθέρμανση μοντέλων AI κατά την εκκίνηση
+	Fast draft (faster, slightly softer detail)	Γρήγορο προσχέδιο (ταχύτερο, ελαφρώς πιο απαλές λεπτομέρειες)
+	Enhance prompt	Βελτίωση προτροπής
+	Enhancing…	Βελτίωση…
+	The model could not improve this prompt	Το μοντέλο δεν μπόρεσε να βελτιώσει αυτήν την προτροπή
+	Select by text…	Επιλογή βάσει κειμένου…
+	Click an object, or drag a rectangle around it	Κάντε κλικ σε ένα αντικείμενο ή σύρετε ένα ορθογώνιο γύρω του
+	Select by Point	Επιλογή βάσει σημείου
+	Select by Text	Επιλογή βάσει κειμένου
+	{done} results	Αποτελέσματα: {done}
+	{running} running · {done} results	Σε εξέλιξη: {running} · αποτελέσματα: {done}
+	Cancelled	Ακυρώθηκε
+	Clear completed…	Εκκαθάριση ολοκληρωμένων…
+	Clear failed…	Εκκαθάριση αποτυχημένων…
+	Completed	Ολοκληρώθηκε
+	Copy prompt	Αντιγραφή προτροπής
+	Delete every completed result and its files?	Διαγραφή κάθε ολοκληρωμένου αποτελέσματος και των αρχείων του;
+	Delete every generation and its files? Running jobs stay.	Διαγραφή κάθε δημιουργίας και των αρχείων της; Οι εργασίες σε εξέλιξη παραμένουν.
+	Dismiss failed	Απόρριψη αποτυχημένων
+	Generations	Δημιουργίες
+	Generative Fill, Edit and Generate Image results appear here.	Εδώ εμφανίζονται τα αποτελέσματα του παραγωγικού γεμίσματος, της επεξεργασίας και της δημιουργίας εικόνας.
+	In progress	Σε εξέλιξη
+	Interrupted	Διακόπηκε
+	Invalid request	Μη έγκυρο αίτημα
+	Model files missing	Λείπουν αρχεία μοντέλου
+	No generations yet	Δεν υπάρχουν ακόμη δημιουργίες
+	Open as Document	Άνοιγμα ως έγγραφο
+	Out of memory on the server	Ανεπαρκής μνήμη στον διακομιστή
+	Pin	Καρφίτσωμα
+	Place	Τοποθέτηση
+	Place as Layer	Τοποθέτηση ως επίπεδο
+	Prompt copied	Η προτροπή αντιγράφηκε
+	Recreate	Δημιουργία ξανά
+	Remove all…	Αφαίρεση όλων…
+	Remove every failed and cancelled row?	Αφαίρεση κάθε αποτυχημένης και ακυρωμένης γραμμής;
+	Result discarded	Το αποτέλεσμα απορρίφθηκε
+	Saved {n} file(s)	Αποθηκεύτηκαν {n} αρχεία
+	Saving files is not available here	Η αποθήκευση αρχείων δεν είναι διαθέσιμη εδώ
+	Server error	Σφάλμα διακομιστή
+	Server unreachable	Ο διακομιστής δεν είναι προσβάσιμος
+	Timed out	Λήξη χρονικού ορίου
+	Unpin	Ξεκαρφίτσωμα
+	Active layer ({name})	Ενεργό επίπεδο ({name})
+	Add a reference image	Προσθήκη εικόνας αναφοράς
+	Clear all	Εκκαθάριση όλων
+	Clear the prompt and remove the reference images?	Εκκαθάριση της προτροπής και αφαίρεση των εικόνων αναφοράς;
+	Describe what continues the scene…	Περιγράψτε πώς συνεχίζεται η σκηνή…
+	Describe what to generate in the selection…	Περιγράψτε τι να δημιουργηθεί στην επιλογή…
+	Describe what you want in the image…	Περιγράψτε τι θέλετε στην εικόνα…
+	File: {name}	Αρχείο: {name}
+	File…	Αρχείο…
+	Fill needs a selection	Το γέμισμα χρειάζεται επιλογή
+	From Generations	Από τις Δημιουργίες
+	Generation: {name}	Δημιουργία: {name}
+	Give the expand at least one side	Δώστε στην επέκταση τουλάχιστον μία πλευρά
+	Hide negative prompt	Απόκρυψη αρνητικής προτροπής
+	Layer: {name}	Επίπεδο: {name}
+	More than this model takes	Περισσότερες απ’ όσες δέχεται αυτό το μοντέλο
+	Move left	Μετακίνηση αριστερά
+	Move right	Μετακίνηση δεξιά
+	Negative prompt	Αρνητική προτροπή
+	Only files with a path can be references here	Μόνο αρχεία με διαδρομή μπορούν να είναι αναφορές εδώ
+	Open a document first	Ανοίξτε πρώτα ένα έγγραφο
+	Open the prompt in a larger editor	Άνοιγμα της προτροπής σε μεγαλύτερο επεξεργαστή
+	Reference images (optional)	Εικόνες αναφοράς (προαιρετικά)
+	This model takes at most {n} reference images	Αυτό το μοντέλο δέχεται το πολύ {n} εικόνες αναφοράς
+	Type a prompt first	Πληκτρολογήστε πρώτα μια προτροπή
+	Type what to generate first	Πληκτρολογήστε πρώτα τι να δημιουργηθεί
+	What to avoid…	Τι να αποφευχθεί…
+	a layer that is gone	ένα επίπεδο που δεν υπάρχει πια
+	Enter to generate	Enter για δημιουργία
+	research	ερευνητικό
+	The fastest permissive model the server has	Το ταχύτερο μοντέλο με ελεύθερη άδεια που έχει ο διακομιστής
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Ερευνητική άδεια: ενεργοποιήστε το «Να επιτρέπονται ερευνητικά μοντέλα» στις Προτιμήσεις › Ενσωματώσεις AI
+	Uses: {name}	Χρησιμοποιεί: {name}
+	Group models by family	Ομαδοποίηση μοντέλων ανά οικογένεια
+	Variation {n} of {count}	Παραλλαγή {n} από {count}
+	Delete this variation	Διαγραφή αυτής της παραλλαγής
+	Keep this one	Διατήρηση αυτής
+	Keep this one and delete the other variations	Διατήρηση αυτής και διαγραφή των άλλων παραλλαγών
+	Click to retry	Κάντε κλικ για νέα προσπάθεια
+	Variations strip	Λωρίδα παραλλαγών
+	{n} selected	Επιλεγμένα: {n}
+	Save selected	Αποθήκευση επιλεγμένων
+	Save results dir	Φάκελος αποθήκευσης αποτελεσμάτων
+	Save results naming	Ονομασία αποθηκευμένων αποτελεσμάτων
+	Alerts	Ειδοποιήσεις
+	Done and failed	Ολοκληρωμένα και αποτυχημένα
+	Preview while generating	Προεπισκόπηση κατά τη δημιουργία
+	Not in this build yet	Δεν υπάρχει ακόμη σε αυτήν την έκδοση
+	Open a picture first	Ανοίξτε πρώτα μια εικόνα
+	Generative Features	Παραγωγικές λειτουργίες
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	ΣΥΝΤΟΜΑ
+	Split into Layers	Διαχωρισμός σε επίπεδα
+	Angles	Γωνίες
+	A new picture from a prompt, with up to three references	Μια νέα εικόνα από προτροπή, με έως τρεις αναφορές
+	Paint the selection from a prompt	Γεμίζει την επιλογή από μια προτροπή
+	Change the picture by instruction	Αλλάζει την εικόνα με οδηγία
+	Grow the canvas and continue the scene	Μεγαλώνει τον καμβά και συνεχίζει τη σκηνή
+	Cut the subject out onto transparency	Αποκόπτει το θέμα σε διαφανές φόντο
+	Separate the picture into editable layers	Χωρίζει την εικόνα σε επεξεργάσιμα επίπεδα
+	Select what you name in a few words	Επιλέγει ό,τι κατονομάζετε με λίγες λέξεις
+	See the subject from another camera angle	Δείχνει το θέμα από άλλη γωνία κάμερας
+	Generative Features…	Παραγωγικές λειτουργίες…
+	Generative Angles…	Παραγωγικές γωνίες…
+	front	μπροστά
+	Camera	Κάμερα
+	Generative Angles	Παραγωγικές γωνίες
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	μπροστινή όψη
+	front-right quarter view	όψη τριών τετάρτων μπροστά δεξιά
+	right side view	δεξιά πλάγια όψη
+	back-right quarter view	όψη τριών τετάρτων πίσω δεξιά
+	back view	πίσω όψη
+	back-left quarter view	όψη τριών τετάρτων πίσω αριστερά
+	left side view	αριστερή πλάγια όψη
+	front-left quarter view	όψη τριών τετάρτων μπροστά αριστερά
+	low-angle shot	λήψη από χαμηλή γωνία
+	eye-level shot	λήψη στο ύψος των ματιών
+	elevated shot	λήψη από ύψος
+	high-angle shot	λήψη από ψηλή γωνία
+	wide shot	γενικό πλάνο
+	medium shot	μεσαίο πλάνο
+	close-up	κοντινό πλάνο
+	CREATE	ΔΗΜΙΟΥΡΓΙΑ
+	EDIT	ΕΠΕΞΕΡΓΑΣΙΑ
+	Balanced	Ισορροπημένο
+	Auto takes the full-step model and keeps the 4-bit weights off	Το Αυτόματο παίρνει το μοντέλο πλήρων βημάτων και δεν χρησιμοποιεί τα βάρη 4 bit
+	Auto takes the 8-step Lightning tier when the server has it	Το Αυτόματο παίρνει τη βαθμίδα Lightning 8 βημάτων όταν τη διαθέτει ο διακομιστής
+	Auto takes the 4-step tier where there is one	Το Αυτόματο παίρνει τη βαθμίδα 4 βημάτων όπου υπάρχει
+	Object finder	Εύρεση αντικειμένων
+	Show what a click would select while the pointer rests	Εμφάνιση του τι θα επέλεγε ένα κλικ όσο ο δείκτης μένει ακίνητος
+	Refine edge	Βελτίωση ακμής
+	Soften the detector's hard edge from the pixels (hair, fur)	Απαλύνει τη σκληρή ακμή του ανιχνευτή από τα εικονοστοιχεία (μαλλιά, τρίχωμα)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Κάντε κλικ ή σύρετε ένα πλαίσιο γύρω από ένα αντικείμενο· Ctrl+κλικ σε ένα σημείο για να εξαιρεθεί
+	Select by Box	Επιλογή με πλαίσιο
+	Click or drag a box around an object	Κάντε κλικ ή σύρετε ένα πλαίσιο γύρω από ένα αντικείμενο
+	Click a spot the object must include; Alt-click one it must not	Κάντε κλικ σε ένα σημείο που πρέπει να περιλαμβάνει το αντικείμενο· Alt+κλικ σε ένα που δεν πρέπει
+	Click to include a spot, Alt-click to exclude one	Κλικ για συμπερίληψη σημείου, Alt+κλικ για εξαίρεση
+	Click an object, or drag a box around it	Κάντε κλικ σε ένα αντικείμενο ή σύρετε ένα πλαίσιο γύρω του
+	Paint over an object to select it	Βάψτε πάνω από ένα αντικείμενο για να το επιλέξετε
+	Engine: not configured	Μηχανή: δεν έχει ρυθμιστεί
+	Engine: starting…	Μηχανή: εκκίνηση…
+	Engine: ready	Μηχανή: έτοιμη
+	Engine: running outside the app	Μηχανή: εκτελείται εκτός εφαρμογής
+	Engine: failed	Μηχανή: απέτυχε
+	Engine: stopped	Μηχανή: σταμάτησε
+	Start engine	Εκκίνηση μηχανής
+	Stop engine	Διακοπή μηχανής
+	Restart engine	Επανεκκίνηση μηχανής
+	Show log	Εμφάνιση αρχείου καταγραφής
+	Engine	Μηχανή
+	Native	Ενσωματωμένη
+	Native runtime folders	Φάκελοι ενσωματωμένου περιβάλλοντος εκτέλεσης
+	Models folder	Φάκελος ενσωματωμένων μοντέλων
+	Best	Βέλτιστη
+	Widen	Διεύρυνση
+	Fill Holes	Γέμισμα κενών
+	Widen the object's mask by this many pixels (negative shrinks it)	Διεύρυνση της μάσκας του αντικειμένου κατά τόσα εικονοστοιχεία (αρνητική τιμή τη συρρικνώνει)
+	Fill the gaps the object's mask encloses	Γέμισμα των κενών που περικλείει η μάσκα του αντικειμένου
+	Feather the mask's edge by this many pixels	Απάλυνση της ακμής της μάσκας κατά τόσα εικονοστοιχεία
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Διεύρυνση της επιλογής κατά τόσα εικονοστοιχεία πριν το γέμισμα, ώστε να χωρά μια ογκωδέστερη αντικατάσταση
+	Generative	Παραγωγικό
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Η προεπισκόπηση δείχνει το κλασικό γέμισμα· τα OK και Εφαρμογή τρέχουν το μοντέλο σε νέο επίπεδο.
+	Best of two	Το καλύτερο από δύο
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Εκτελεί δύο υποψήφια και δείχνει αυτό που μοιάζει ανέγγιχτο· ανενεργό: ένα υποψήφιο, περίπου ο μισός χρόνος
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Προσαρμογείς στον υποφάκελο loras του φακέλου μοντέλων, που εφαρμόζονται από την εγγενή μηχανή
+	Generative Upscale	Παραγωγική μεγέθυνση
+	Denoise	Αποθορυβοποίηση
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Πόσο από την επιλογή ξανασχεδιάζεται: το 1 την αντικαθιστά, περίπου 0,9 κρατά το παλιό σχήμα
+	Native engine	Εγγενής μηχανή
+	Native engine: not configured	Εγγενής μηχανή: δεν έχει ρυθμιστεί
+	Native engine: starting…	Εγγενής μηχανή: εκκίνηση…
+	Native engine: working	Εγγενής μηχανή: σε λειτουργία
+	Native engine: ready	Εγγενής μηχανή: έτοιμη
+	Native engine: failed	Εγγενής μηχανή: απέτυχε
+	Native engine: stopped	Εγγενής μηχανή: σταμάτησε
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Ορίστε τους φακέλους χρόνου εκτέλεσης και μοντέλων στις Προτιμήσεις › Ενσωματώσεις AI για να χρησιμοποιήσετε την εγγενή μηχανή
+	{free} of {total} free	{free} ελεύθερα από {total}
+	Loaded: {models}	Φορτωμένα: {models}
+	Purge models	Εκκαθάριση μοντέλων
+	Choose the folder that holds your model weights to use the generative tools	Επιλέξτε τον φάκελο με τα βάρη των μοντέλων σας για να χρησιμοποιήσετε τα παραγωγικά εργαλεία
+	Set Models Folder…	Ορισμός φακέλου μοντέλων…
+	App Icon…	Εικονίδιο εφαρμογής…
+	App Icon	Εικονίδιο εφαρμογής
+	Built-in	Ενσωματωμένο
+	Choose Image…	Επιλογή εικόνας…
+	Paste Image	Επικόλληση εικόνας
+	Image address (https://…)	Διεύθυνση εικόνας (https://…)
+	Download	Λήψη
+	Downloading…	Λήψη…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Οποιαδήποτε εικόνα κάνει· προσαρμόζεται σε τετράγωνο. Δεξί κλικ σε ένα εικονίδιο για αφαίρεση.

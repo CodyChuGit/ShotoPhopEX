@@ -1,0 +1,230 @@
+# ShotoPhopEX's own interface rows for cs: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/cs/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	Generativní výplň…
+	Generate Image…	Generovat obrázek…
+	Select by Text…	Vybrat podle textu…
+	Allow research models	Povolit výzkumné modely
+	Default edit model	Výchozí model pro úpravy
+	Default fill template	Výchozí šablona výplně
+	Default generate model	Výchozí model pro generování
+	Default image template	Výchozí šablona obrázku
+	Generative timeout (seconds)	Časový limit generování (sekundy)
+	Show generative bar	Zobrazit generativní lištu
+	Describe what to generate…	Popište, co vygenerovat…
+	Variations	Variace
+	Generating…	Generování…
+	Previous variation	Předchozí variace
+	Next variation	Další variace
+	Generative Models	Generativní modely
+	Generative Expand…	Generativní rozšíření…
+	Remove Background (Generative)…	Odstranit pozadí (generativně)…
+	As Selection	Jako výběr
+	Generative Edit…	Generativní úprava…
+	Generate Similar	Generovat podobné
+	Generative Expand	Generativní rozšíření
+	not installed	není nainstalováno
+	Split into Layers (Generative)…	Rozdělit do vrstev (generativně)…
+	Changing what is there? Switch to Edit	Měníte, co už tam je? Přepněte na Úpravy
+	Describe the change…	Popište změnu…
+	Enhance prompts	Vylepšovat výzvy
+	Warm up AI models at launch	Zahřát modely AI při spuštění
+	Fast draft (faster, slightly softer detail)	Rychlý koncept (rychlejší, o něco měkčí detaily)
+	Enhance prompt	Vylepšit výzvu
+	Enhancing…	Vylepšuje se…
+	The model could not improve this prompt	Model tuto výzvu nedokázal vylepšit
+	Select by text…	Vybrat podle textu…
+	Click an object, or drag a rectangle around it	Klikněte na objekt nebo kolem něj natáhněte obdélník
+	Select by Point	Vybrat bodem
+	Select by Text	Vybrat podle textu
+	{done} results	{done} výsledků
+	{running} running · {done} results	{running} běží · {done} výsledků
+	Cancelled	Zrušeno
+	Clear completed…	Vymazat dokončené…
+	Clear failed…	Vymazat neúspěšné…
+	Completed	Dokončené
+	Copy prompt	Kopírovat výzvu
+	Delete every completed result and its files?	Smazat všechny dokončené výsledky a jejich soubory?
+	Delete every generation and its files? Running jobs stay.	Smazat všechna generování a jejich soubory? Běžící úlohy zůstanou.
+	Dismiss failed	Zavřít neúspěšné
+	Generations	Generování
+	Generative Fill, Edit and Generate Image results appear here.	Zde se zobrazí výsledky generativní výplně, úprav a generování obrázků.
+	In progress	Probíhá
+	Interrupted	Přerušeno
+	Invalid request	Neplatný požadavek
+	Model files missing	Chybí soubory modelu
+	No generations yet	Zatím žádná generování
+	Open as Document	Otevřít jako dokument
+	Out of memory on the server	Na serveru došla paměť
+	Pin	Připnout
+	Place	Umístit
+	Place as Layer	Umístit jako vrstvu
+	Prompt copied	Výzva zkopírována
+	Recreate	Vytvořit znovu
+	Remove all…	Odstranit vše…
+	Remove every failed and cancelled row?	Odstranit všechny neúspěšné a zrušené řádky?
+	Result discarded	Výsledek zahozen
+	Saved {n} file(s)	Uložené soubory: {n}
+	Saving files is not available here	Ukládání souborů zde není k dispozici
+	Server error	Chyba serveru
+	Server unreachable	Server je nedostupný
+	Timed out	Vypršel časový limit
+	Unpin	Odepnout
+	Active layer ({name})	Aktivní vrstva ({name})
+	Add a reference image	Přidat referenční obrázek
+	Clear all	Vymazat vše
+	Clear the prompt and remove the reference images?	Vymazat výzvu a odebrat referenční obrázky?
+	Describe what continues the scene…	Popište, jak scéna pokračuje…
+	Describe what to generate in the selection…	Popište, co vygenerovat ve výběru…
+	Describe what you want in the image…	Popište, co chcete na obrázku…
+	File: {name}	Soubor: {name}
+	File…	Soubor…
+	Fill needs a selection	Výplň potřebuje výběr
+	From Generations	Z generování
+	Generation: {name}	Generování: {name}
+	Give the expand at least one side	Zadejte pro rozšíření alespoň jednu stranu
+	Hide negative prompt	Skrýt negativní výzvu
+	Layer: {name}	Vrstva: {name}
+	More than this model takes	Více, než tento model přijme
+	Move left	Posunout doleva
+	Move right	Posunout doprava
+	Negative prompt	Negativní výzva
+	Only files with a path can be references here	Referencí zde mohou být jen soubory s cestou
+	Open a document first	Nejprve otevřete dokument
+	Open the prompt in a larger editor	Otevřít výzvu ve větším editoru
+	Reference images (optional)	Referenční obrázky (volitelné)
+	This model takes at most {n} reference images	Tento model přijme nejvýše {n} referenčních obrázků
+	Type a prompt first	Nejprve napište výzvu
+	Type what to generate first	Nejprve napište, co vygenerovat
+	What to avoid…	Čemu se vyhnout…
+	a layer that is gone	vrstva, která už neexistuje
+	Enter to generate	Generovat klávesou Enter
+	research	výzkum
+	The fastest permissive model the server has	Nejrychlejší model se svobodnou licencí, který server má
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Výzkumná licence: zapněte Povolit modely jen pro výzkum v Předvolby › Integrace AI
+	Uses: {name}	Použije: {name}
+	Group models by family	Seskupit modely podle rodiny
+	Variation {n} of {count}	Varianta {n} z {count}
+	Delete this variation	Smazat tuto variantu
+	Keep this one	Ponechat tuto
+	Keep this one and delete the other variations	Ponechat tuto a smazat ostatní varianty
+	Click to retry	Kliknutím zkusíte znovu
+	Variations strip	Pruh variant
+	{n} selected	{n} vybráno
+	Save selected	Uložit vybrané
+	Save results dir	Složka pro uložené výsledky
+	Save results naming	Pojmenování uložených výsledků
+	Alerts	Upozornění
+	Done and failed	Hotovo a selhání
+	Preview while generating	Náhled během generování
+	Not in this build yet	V této verzi zatím není
+	Open a picture first	Nejprve otevřete obrázek
+	Generative Features	Generativní funkce
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	BRZY
+	Split into Layers	Rozdělit do vrstev
+	Angles	Úhly
+	A new picture from a prompt, with up to three references	Nový obrázek z promptu, až se třemi referencemi
+	Paint the selection from a prompt	Vyplní výběr podle promptu
+	Change the picture by instruction	Změní obrázek podle pokynu
+	Grow the canvas and continue the scene	Zvětší plátno a dokreslí scénu
+	Cut the subject out onto transparency	Vyřízne objekt na průhledné pozadí
+	Separate the picture into editable layers	Rozdělí obrázek do upravitelných vrstev
+	Select what you name in a few words	Vybere, co pojmenujete několika slovy
+	See the subject from another camera angle	Ukáže objekt z jiného úhlu kamery
+	Generative Features…	Generativní funkce…
+	Generative Angles…	Generativní úhly…
+	front	zepředu
+	Camera	Kamera
+	Generative Angles	Generativní úhly
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	pohled zepředu
+	front-right quarter view	čtvrtpohled zepředu zprava
+	right side view	pohled z pravé strany
+	back-right quarter view	čtvrtpohled zezadu zprava
+	back view	pohled zezadu
+	back-left quarter view	čtvrtpohled zezadu zleva
+	left side view	pohled z levé strany
+	front-left quarter view	čtvrtpohled zepředu zleva
+	low-angle shot	podhled
+	eye-level shot	záběr v úrovni očí
+	elevated shot	zvýšený záběr
+	high-angle shot	nadhled
+	wide shot	celkový záběr
+	medium shot	polocelek
+	close-up	detail
+	CREATE	VYTVOŘIT
+	EDIT	UPRAVIT
+	Balanced	Vyvážená
+	Auto takes the full-step model and keeps the 4-bit weights off	Auto vezme model s plným počtem kroků a nechá 4bitové váhy vypnuté
+	Auto takes the 8-step Lightning tier when the server has it	Auto vezme 8krokovou vrstvu Lightning, pokud ji server má
+	Auto takes the 4-step tier where there is one	Auto vezme 4krokovou vrstvu, kde existuje
+	Object finder	Vyhledávač objektů
+	Show what a click would select while the pointer rests	Zobrazit, co by kliknutí vybralo, když ukazatel spočine
+	Refine edge	Zjemnit okraj
+	Soften the detector's hard edge from the pixels (hair, fur)	Změkčit tvrdý okraj detektoru podle pixelů (vlasy, srst)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Klikněte na objekt nebo kolem něj táhněte rámeček; Ctrl+kliknutím místo vyloučíte
+	Select by Box	Výběr rámečkem
+	Click or drag a box around an object	Klikněte na objekt nebo kolem něj táhněte rámeček
+	Click a spot the object must include; Alt-click one it must not	Klikněte na místo, které má objekt obsahovat; Alt+kliknutím na místo, které ne
+	Click to include a spot, Alt-click to exclude one	Kliknutím přidáte místo, Alt+kliknutím místo vyloučíte
+	Click an object, or drag a box around it	Klikněte na objekt nebo kolem něj táhněte rámeček
+	Paint over an object to select it	Přetáhněte přes objekt a vyberete ho
+	Engine: not configured	Engine: nenastaven
+	Engine: starting…	Engine: spouští se…
+	Engine: ready	Engine: připraven
+	Engine: running outside the app	Engine: běží mimo aplikaci
+	Engine: failed	Engine: selhal
+	Engine: stopped	Engine: zastaven
+	Start engine	Spustit engine
+	Stop engine	Zastavit engine
+	Restart engine	Restartovat engine
+	Show log	Zobrazit protokol
+	Engine	Engine
+	Native	Nativní
+	Native runtime folders	Složky nativního běhového prostředí
+	Models folder	Složka nativních modelů
+	Instance	Instance
+	Intersect	Průnik
+	Prompt	Zadání
+	Template	Šablona
+	Widen	Rozšířit
+	Fill Holes	Vyplnit díry
+	Widen the object's mask by this many pixels (negative shrinks it)	Rozšířit masku objektu o tolik pixelů (záporná hodnota ji zmenší)
+	Fill the gaps the object's mask encloses	Vyplnit mezery, které maska objektu uzavírá
+	Feather the mask's edge by this many pixels	Prolnout okraj masky o tolik pixelů
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Rozšířit výběr o tolik pixelů před vyplněním, aby měla objemnější náhrada místo
+	Generative	Generativní
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Náhled ukazuje klasickou výplň; OK a Použít spustí model do nové vrstvy.
+	Best of two	Lepší ze dvou
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Spustí dva kandidáty a zobrazí ten, který vypadá nedotčeně; vypnuto: jeden kandidát, zhruba poloviční čas
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Adaptéry v podsložce loras složky modelů, použité nativním enginem
+	Generative Upscale	Generativní zvětšení
+	Denoise	Odšumění
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Kolik z výběru se překreslí: 1 jej nahradí, asi 0,9 zachová původní tvar
+	Native engine	Nativní engine
+	Native engine: not configured	Nativní engine: nenastaven
+	Native engine: starting…	Nativní engine: spouští se…
+	Native engine: working	Nativní engine: pracuje
+	Native engine: ready	Nativní engine: připraven
+	Native engine: failed	Nativní engine: selhal
+	Native engine: stopped	Nativní engine: zastaven
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Nastavte složky běhového prostředí a modelů v Předvolby › Integrace AI, abyste mohli používat nativní engine
+	{free} of {total} free	volno {free} z {total}
+	Loaded: {models}	Načteno: {models}
+	Purge models	Uvolnit modely
+	Choose the folder that holds your model weights to use the generative tools	Chcete-li používat generativní nástroje, vyberte složku s váhami modelů
+	Set Models Folder…	Nastavit složku modelů…
+	App Icon…	Ikona aplikace…
+	App Icon	Ikona aplikace
+	Built-in	Vestavěná
+	Choose Image…	Vybrat obrázek…
+	Paste Image	Vložit obrázek
+	Image address (https://…)	Adresa obrázku (https://…)
+	Download	Stáhnout
+	Downloading…	Stahování…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Hodí se jakýkoli obrázek; vejde se do čtverce. Ikonu odstraníte kliknutím pravým tlačítkem.

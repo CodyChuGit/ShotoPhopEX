@@ -85,6 +85,10 @@ jobs:
       NVCC_APPEND_FLAGS: "-Xcompiler /Zc:preprocessor -Xcompiler /MD -std=c++17"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # The interface translations at the commit in craft-i18n.rev, embedded by build.rs with
+      # ShotoPhopEX's own rows (sets CRAFT_I18N_DIR and CRAFT_I18N_REQUIRED=1).
+      - name: Check out craft-i18n
+        uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
       - name: Rust ${{ env.RUST_TOOLCHAIN }}
         shell: pwsh
         run: |
@@ -191,6 +195,10 @@ jobs:
       PHOTOCRAFT_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # The interface translations at the commit in craft-i18n.rev, embedded by build.rs with
+      # ShotoPhopEX's own rows (sets CRAFT_I18N_DIR and CRAFT_I18N_REQUIRED=1).
+      - name: Check out craft-i18n
+        uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: Build dependencies
