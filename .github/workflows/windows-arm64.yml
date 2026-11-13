@@ -31,5 +31,5 @@ jobs:
     with:
       app-name: photocraft
       app-dir: PhotoCraft
-      install-relative-path: Programs/ArtCraft/PhotoCraft
+      install-relative-path: Programs/ShotoPhopEX
       install-scope: perUser
