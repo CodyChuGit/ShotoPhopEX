@@ -1581,7 +1581,10 @@ pub(crate) fn named_object(rewritten: &str) -> Option<String> {
     ]
     .iter()
     .any(|w| lower.split(|c: char| !c.is_alphanumeric()).any(|t| t == *w));
-    (!name.is_empty() && !not_a_thing && name.split_whitespace().count() <= 6).then(|| name.to_string())
+    // Two things in the selection ("the man in a white shirt and the black car") name both: a
+    // longer name is a sentence, but each part of one joined by "and" may be six words.
+    let fits = name.split(" and ").all(|part| part.split_whitespace().count() <= 6) && name.split_whitespace().count() <= 13;
+    (!name.is_empty() && !not_a_thing && fits).then(|| name.to_string())
 }
 
 /// The fill's prompt for a removal the rewriter named: [`REMOVE_PROMPT`] with the name in it.
@@ -1808,7 +1811,7 @@ pub(crate) fn generative_remove(
                 // rewriter's own closing clauses listed the scene's neighbours and the model
                 // painted them: a rock for the boat, the table over a wrist).
                 dump_views(&seen);
-                if let Ok(Some(p)) = enhance_prompt(
+                let said = enhance_prompt(
                     job.thinker.as_ref(),
                     EnhanceKind::Remove,
                     &job.prompt,
@@ -1816,7 +1819,13 @@ pub(crate) fn generative_remove(
                     Some(&place),
                     job.seed,
                     &JobProgress::span(ctx, 0.01, 0.04),
-                ) && let Some(name) = named_object(&p)
+                );
+                // What the rewriter said and what was taken from it: when nothing is named the
+                // fill gets the generic "the object" and may take the wrong one (a pedestrian
+                // kept and the car beside him removed, in the app 2026-11-13).
+                eprintln!("remove: rewriter said {said:?}, named {:?}", said.as_ref().ok().and_then(|p| p.as_deref()).and_then(named_object));
+                if let Ok(Some(p)) = said
+                    && let Some(name) = named_object(&p)
                 {
                     job.rewritten = Some(removal_prompt(&name));
                     job.object = Some(name.clone());
