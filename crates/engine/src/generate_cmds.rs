@@ -857,15 +857,48 @@ pub(crate) const DEFAULT_EDIT_TEMPLATE: &str = "qwen-edit-2511/edit";
 /// What `auto` tries for an edit, fastest permissive tier first.
 pub(crate) const AUTO_EDIT_ORDER: &[&str] = &["qwen-edit-2511/edit-lightning-8", DEFAULT_EDIT_TEMPLATE];
 pub(crate) const BEST_EDIT_ORDER: &[&str] = &[DEFAULT_EDIT_TEMPLATE];
+/// MiniMax-H3-Image, the 16 MP model Quality `ultra` runs where its files are installed.
+pub const ULTRA_IMAGE_TEMPLATE: &str = "minimax-h3-image/image";
+pub const ULTRA_EDIT_TEMPLATE: &str = "minimax-h3-image/edit";
+/// Under `ultra`, an edit goes to MiniMax-H3-Image when the worker has it, else as under `best`.
+pub(crate) const ULTRA_EDIT_ORDER: &[&str] = &[ULTRA_EDIT_TEMPLATE, DEFAULT_EDIT_TEMPLATE];
 
 /// Preferences › AI Integrations › Quality, normalised (`best` unless it says `balanced` or
-/// `fast`).
+/// `fast`). `ultra` reads as `best` here: it is Best with the 16 MP model for new pictures and
+/// edits ([`ultra`]).
 pub fn quality(s: &Session) -> &'static str {
     match s.prefs().integrations.quality.trim() {
         "balanced" => "balanced",
         "fast" => "fast",
         _ => "best",
     }
+}
+
+/// Whether Quality is `ultra`: everything as under `best`, and where MiniMax-H3-Image's files
+/// are installed, new pictures ([`default_image_template`]) and edits ([`auto_quality`]) run
+/// on it at up to 16 MP.
+pub fn ultra(s: &Session) -> bool {
+    s.prefs().integrations.quality.trim() == "ultra"
+}
+
+/// The quality [`auto_order`] is asked with: [`quality`], or `ultra`.
+pub fn auto_quality(s: &Session) -> &'static str {
+    if ultra(s) { "ultra" } else { quality(s) }
+}
+
+/// Whether every file of `template` is in the models folder (as the template names them, in
+/// its folder or one subfolder below it, where the worker looks too).
+pub fn template_files_present(s: &Session, template: &str) -> bool {
+    let root = s.prefs().integrations.models_root();
+    if root.is_empty() {
+        return false;
+    }
+    let Ok(t) = template::find(template) else { return false };
+    t.meta.models.iter().all(|m| {
+        let dir = std::path::Path::new(&root).join(&m.folder);
+        dir.join(&m.default).is_file()
+            || std::fs::read_dir(&dir).is_ok_and(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().is_dir() && e.path().join(&m.default).is_file()))
+    })
 }
 
 /// The quality a removal (Content-Aware Fill, the Remove tool, Spot Healing through the
@@ -886,6 +919,9 @@ pub fn removal_quality(s: &Session) -> &'static str {
 /// tier then the base, `fast` = the 4-step tier where one exists.
 pub fn auto_order(command: &str, quality: &str) -> &'static [&'static str] {
     match (command, quality) {
+        (EDIT, "ultra") => ULTRA_EDIT_ORDER,
+        // the rest of `ultra` is `best`
+        (c, "ultra") => auto_order(c, "best"),
         (FILL, "best") => BEST_FILL_ORDER,
         (FILL, "fast") => FAST_FILL_ORDER,
         (FILL, _) => AUTO_FILL_ORDER,
@@ -1322,6 +1358,7 @@ pub(crate) fn short(prompt: &str) -> String {
 /// `auto` (or nothing) is the memory profile's ([`crate::memory_profile::image_template`]).
 pub fn default_image_template(s: &Session) -> String {
     match s.prefs().integrations.default_image_template.trim() {
+        "" | AUTO_TEMPLATE if ultra(s) && template_files_present(s, ULTRA_IMAGE_TEMPLATE) => ULTRA_IMAGE_TEMPLATE.to_string(),
         "" | AUTO_TEMPLATE => crate::memory_profile::image_template(crate::memory_profile::active(s)).to_string(),
         t => t.to_string(),
     }
@@ -2468,6 +2505,10 @@ pub const BEST_KREA_PIXELS: u64 = 1440 * 1440;
 /// the model for large canvases such as character sheets (Cody, 2026-11-12), and came to the
 /// app's 1024² default otherwise. 31.6 s on the 5090 at 28.8 GB peak (2048²: 14.6 s).
 pub const BEST_H3_PIXELS: u64 = 2912 * 2912;
+/// Pixels MiniMax-H3-Image renders at under Quality `best` and `ultra` (16 MP, what the model
+/// is for), and under the faster qualities (4 MP, the area it was tuned on).
+pub const ULTRA_PIXELS: u64 = 4096 * 4096;
+pub const ULTRA_FAST_PIXELS: u64 = 2048 * 2048;
 /// The same under Quality `balanced`: 1248², about 1.5 MP (to be confirmed in the app).
 pub const BALANCED_KREA_PIXELS: u64 = 1248 * 1248;
 
@@ -2479,6 +2520,8 @@ pub fn image_quality_size(template: &str, quality: &str, width: u32, height: u32
         ("krea2-turbo/image", "best") => BEST_KREA_PIXELS,
         ("krea2-turbo/image", "balanced") => BALANCED_KREA_PIXELS,
         ("p-h3-image/image", "best") => BEST_H3_PIXELS,
+        (ULTRA_IMAGE_TEMPLATE, "best") => ULTRA_PIXELS,
+        (ULTRA_IMAGE_TEMPLATE, _) => ULTRA_FAST_PIXELS,
         _ => return (width, height),
     };
     let area = u64::from(width) * u64::from(height);
@@ -2487,7 +2530,12 @@ pub fn image_quality_size(template: &str, quality: &str, width: u32, height: u32
     }
     let k = (target as f64 / area as f64).sqrt();
     // H3 on its guide's grid (multiples of 32: 2912², 3360×2496, 3552×2368, 3872×2176).
-    let (most, step) = if template == "p-h3-image/image" { (4096, 32) } else { (2048, SIZE_STEP) };
+    // MiniMax-H3-Image the same way, to 16 MP (9:16 is 3072×5440).
+    let (most, step) = match template {
+        "p-h3-image/image" => (4096, 32),
+        ULTRA_IMAGE_TEMPLATE => (5472, 32),
+        _ => (2048, SIZE_STEP),
+    };
     let fit = |v: u32| (((f64::from(v) * k) as u32) / step * step).clamp(MIN_SIDE, most);
     (fit(width), fit(height))
 }
@@ -4894,7 +4942,7 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
         command: EDIT,
         template_id: template.meta.id.clone(),
         auto,
-        auto_order: auto_order(EDIT, quality(s)),
+        auto_order: auto_order(EDIT, auto_quality(s)),
         prompt,
         negative,
         seed,
@@ -5423,7 +5471,7 @@ fn run_models(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // `async: true` probes on a worker (the picker's installed badges): a background job whose
     // result is this command's usual answer.
-    let q = quality(s);
+    let q = auto_quality(s);
     if probe && opt_bool(MODELS, p, "async", false)? {
         let backend = backend(s)?;
         let picks = native21_picks(s);
@@ -5577,7 +5625,7 @@ fn run_similar(s: &mut Session, p: &Value) -> Result<Value> {
     // fills run as what they were.
     let q = quality(s);
     let (command, auto, auto_order, template_id) = match (info.command.as_str(), native21_auto(s, FILL, false)) {
-        (c, _) if c == EDIT => (EDIT, false, auto_order(EDIT, q), info.template.clone()),
+        (c, _) if c == EDIT => (EDIT, false, auto_order(EDIT, auto_quality(s)), info.template.clone()),
         (c, _) if c == FILL => (FILL, false, auto_order(FILL, q), info.template.clone()),
         (_, Some(t)) => (FILL, false, auto_order(FILL, q), t.to_string()),
         _ => (FILL, true, auto_order(FILL, q), DEFAULT_FILL_TEMPLATE.to_string()),

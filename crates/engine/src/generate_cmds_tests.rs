@@ -380,7 +380,7 @@ fn the_quality_preference_decides_what_auto_picks() {
     s.execute("prefs.set", json!({"path": "integrations.quality", "value": "balanced"})).unwrap();
     let r = s.execute(FILL, json!({"prompt": "a kite", "seed": 1})).unwrap();
     assert_eq!(r["template"], "qwen-edit-2511/fill-lightning-8");
-    assert!(s.execute("prefs.set", json!({"path": "integrations.quality", "value": "ultra"})).is_err());
+    assert!(s.execute("prefs.set", json!({"path": "integrations.quality", "value": "maximum"})).is_err());
     let v = s.execute("generate.models", json!({})).unwrap();
     assert_eq!((v["quality"].as_str(), v["autoFill"].as_str()), (Some("balanced"), Some("qwen-edit-2511/fill-lightning-8")));
 }
