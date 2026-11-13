@@ -83,17 +83,18 @@ impl Mt19937 {
 /// redrawn when `n % 16 != 0`). Smaller tensors take torch's scalar path, not reproduced here.
 pub fn torch_randn(seed: u64, n: usize) -> Result<Vec<f32>, String> {
     let mut g = Mt19937::new(seed);
-    randn_from(&mut g, n)
+    randn_with(&mut g, n)
 }
 
 /// Several `torch.randn` calls in a row on one generator seeded with `seed` (ComfyUI's
 /// `prepare_noise` for a packed latent: one tensor after the other), each of 16+ elements.
 pub fn torch_randn_seq(seed: u64, sizes: &[usize]) -> Result<Vec<Vec<f32>>, String> {
     let mut g = Mt19937::new(seed);
-    sizes.iter().map(|&n| randn_from(&mut g, n)).collect()
+    sizes.iter().map(|&n| randn_with(&mut g, n)).collect()
 }
 
-fn randn_from(g: &mut Mt19937, n: usize) -> Result<Vec<f32>, String> {
+/// [`torch_randn`] continuing on `g`.
+pub fn randn_with(g: &mut Mt19937, n: usize) -> Result<Vec<f32>, String> {
     if n < 16 {
         return Err(format!("torch_randn reproduces tensors of 16+ elements, {n} asked"));
     }

@@ -32,6 +32,7 @@ pub mod fp8;
 pub mod fusednorm;
 pub mod gemm_tiles;
 pub mod h3;
+pub mod idol;
 pub mod int8_cache;
 pub mod klein;
 #[cfg(feature = "fusednorm")]
