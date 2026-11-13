@@ -71,10 +71,10 @@ fn t2i_first_step_matches_comfy() {
     run("h3_tiny_t2i.safetensors", None, &[1.0, 0.7, 0.0], false);
 }
 
-#[test]
-fn vae_matches_comfy() {
-    let Some(path) = fixture("h3_tiny_vae.safetensors") else {
-        eprintln!("H3_FIXTURES not set or h3_tiny_vae missing: skipped");
+/// Decode and encode of the fixture `name` against ComfyUI's outputs stored in it.
+fn vae_run(name: &str) {
+    let Some(path) = fixture(name) else {
+        eprintln!("H3_FIXTURES not set or {name} missing: skipped");
         return;
     };
     let w = Weights::open(&path, &Device::Cpu, DType::F32, false).unwrap();
@@ -82,14 +82,26 @@ fn vae_matches_comfy() {
     let z = vae.decode(&w.get_as("in.latent", DType::F32).unwrap().i(0).unwrap()).unwrap();
     let want = w.get_as("out.pixels", DType::F32).unwrap().i(0).unwrap().squeeze(1).unwrap();
     let e = max_rel(&z, &want);
-    eprintln!("vae decode rel err {e}");
+    eprintln!("{name}: vae decode rel err {e}");
     assert!(e < 1e-4, "decode rel err {e}");
     let px = w.get_as("in.pixels", DType::F32).unwrap().i(0).unwrap().squeeze(1).unwrap();
     let lat = vae.encode(&px).unwrap();
     let want = w.get_as("out.latent", DType::F32).unwrap().i(0).unwrap();
     let e = max_rel(&lat, &want);
-    eprintln!("vae encode rel err {e}");
+    eprintln!("{name}: vae encode rel err {e}");
     assert!(e < 1e-4, "encode rel err {e}");
+}
+
+#[test]
+fn vae_matches_comfy() {
+    vae_run("h3_tiny_vae.safetensors");
+}
+
+/// MiniMax-H3-Image's VAE (`MiniMaxH3ImageVAE`): the 2D-RoPE decoder, a 2D post-quant conv
+/// and the family's latent statistics, which its file does not carry.
+#[test]
+fn minimax_image_vae_matches_comfy() {
+    vae_run("h3_tiny_mm_vae.safetensors");
 }
 
 /// A LoRA beside the weights gives what the same LoRA merged into them gives (ComfyUI merges

@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "id": "minimax-h3-image/edit",
+    "name": "Generative Edit (MiniMax H3 Image)",
+    "family": "minimax-h3-image",
+    "task": "edit",
+    "license": "community",
+    "licenseNote": "MiniMax H3 Community License (MiniMax, 2026): the grant excludes the EU, the UK, South Korea and the USA; over USD 1M yearly revenue or a hosted service needs MiniMax's OK; show \"Powered by MiniMax H3\"; outputs may not train other models. Bring your own files. The app ships no weights.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 6,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "minimax_h3_image_pruned_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "minimax_h3_image_vae_fp16.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native gn-diffusion minimax-h3-image/edit): picture 1 is the one edited, up to seven more follow (Picture 2 ... in the prompt). The prompt is used as written. Each picture goes to the encoder with a short edge of 1024 and through the VAE with a short edge between 1024 and 2048 as reference tokens at t = 0.999; the output takes picture 1's size after that scaling unless one is asked. Six steps, no CFG.",
+    "creator": "MiniMax",
+    "description": "Edit by instruction with up to 8 pictures, up to 16 MP (5090 class)",
+    "badges": [],
+    "references": {
+      "max": 7
+    },
+    "estimatedSeconds": {
+      "base": 10,
+      "perMegapixel": 1.6,
+      "perReference": 3
+    },
+    "pages": [
+      "edit"
+    ],
+    "parameters": []
+  }
+}

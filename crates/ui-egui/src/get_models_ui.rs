@@ -60,6 +60,7 @@ const NEEDS_MODELS: &[&str] = &[
     "generate.splitLayers",
     "generate.clownPass",
     "generate.angles",
+    "generate.characterSheet",
     "generate.upscale",
     "select.byText",
 ];

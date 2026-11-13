@@ -100,6 +100,13 @@ impl TextConfig {
     pub fn qwen3vl_4b() -> Self {
         Self { hidden_size: 2560, intermediate_size: 9728, ..Self::default() }
     }
+
+    /// MiniMax H3's conditioning encoder: Qwen3-VL-32B cut to its first 50 layers (ComfyUI's
+    /// `Qwen3VL_32BConfig`): 5120 wide, 64 query heads over 8 key/value heads of 128, SwiGLU
+    /// 25600. It has no final norm; the stream after layer 50 is what the DiT reads.
+    pub fn qwen3vl_32b_h3() -> Self {
+        Self { hidden_size: 5120, intermediate_size: 25600, num_layers: 50, num_heads: 64, ..Self::default() }
+    }
 }
 
 /// Qwen3-VL's interleaved multimodal RoPE: 64 frequency pairs per head; pair `j` turns by the
@@ -169,6 +176,10 @@ fn repeat_kv(x: Tensor, groups: usize) -> Result<Tensor> {
     let x = x.unsqueeze(2)?.broadcast_as((b, kvh, groups, s, d))?.reshape((b, kvh * groups, s, d))?;
     Ok(x)
 }
+
+/// The f32 attention scores held at once ([`Attention::attend`] runs the heads in groups
+/// past it).
+const SCORE_BYTES: usize = 1 << 30;
 
 struct Attention {
     q_proj: QLinear,
@@ -246,13 +257,27 @@ impl Attention {
         // so the f32 pass costs nothing.
         let q32 = q.contiguous()?.to_dtype(DType::F32)?;
         let k32 = k.to_dtype(DType::F32)?;
-        let attn = (q32.matmul(&k32.transpose(2, 3)?)? * self.scale)?;
-        let attn = match mask {
-            Some(mask) => attn.broadcast_add(&mask.to_dtype(DType::F32)?)?,
-            None => attn,
+        let mask = match mask {
+            Some(mask) => Some(mask.to_dtype(DType::F32)?),
+            None => None,
         };
-        let attn = candle_nn::ops::softmax_last_dim(&attn)?.to_dtype(v.dtype())?;
-        let out = attn.matmul(&v)?; // (B,H,S,D)
+        // the heads a few at a time once their scores pass [`SCORE_BYTES`] (a prompt with
+        // several pictures is thousands of rows: 64 heads of 8k x 8k f32 would be 17 GB)
+        let keys = k32.dim(2)?;
+        let per_head = (b * s * keys * 4).max(1);
+        let step = (SCORE_BYTES / per_head).clamp(1, self.num_heads);
+        let mut outs = Vec::new();
+        for h0 in (0..self.num_heads).step_by(step) {
+            let n = step.min(self.num_heads - h0);
+            let attn = (q32.narrow(1, h0, n)?.matmul(&k32.narrow(1, h0, n)?.transpose(2, 3)?)? * self.scale)?;
+            let attn = match &mask {
+                Some(mask) => attn.broadcast_add(mask)?,
+                None => attn,
+            };
+            let attn = candle_nn::ops::softmax_last_dim(&attn)?.to_dtype(v.dtype())?;
+            outs.push(attn.matmul(&v.narrow(1, h0, n)?)?); // (B,n,S,D)
+        }
+        let out = if outs.len() == 1 { outs.remove(0) } else { Tensor::cat(&outs, 1)? };
         let out = out.transpose(1, 2)?.reshape((b, s, self.num_heads * self.head_dim))?;
         self.o_proj.forward(&out)
     }
@@ -296,6 +321,30 @@ impl DecoderLayer {
             input_ln: rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?,
             post_attn_ln: rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("post_attention_layernorm"))?,
         })
+    }
+
+    /// Layer `i` of the language model at `root` in a ComfyUI file (dense, INT8 ConvRot or
+    /// NVFP4 linears).
+    fn from_weights(cfg: &TextConfig, w: &crate::moss::weights::Weights, root: &str, i: usize) -> Result<Self> {
+        let rms = |name: &str| -> Result<RmsNorm> { Ok(RmsNorm::new(w.get(&format!("{name}.weight"))?, cfg.rms_norm_eps)) };
+        let lin = |name: &str| -> Result<QLinear> { Ok(QLinear::Comfy(w.linear(name)?)) };
+        let (nh, nkv, hd) = (cfg.num_heads, cfg.num_kv_heads, cfg.head_dim);
+        let p = format!("{root}.layers.{i}");
+        let attn = Attention {
+            q_proj: lin(&format!("{p}.self_attn.q_proj"))?,
+            k_proj: lin(&format!("{p}.self_attn.k_proj"))?,
+            v_proj: lin(&format!("{p}.self_attn.v_proj"))?,
+            o_proj: lin(&format!("{p}.self_attn.o_proj"))?,
+            q_norm: rms(&format!("{p}.self_attn.q_norm"))?,
+            k_norm: rms(&format!("{p}.self_attn.k_norm"))?,
+            num_heads: nh,
+            num_kv_heads: nkv,
+            head_dim: hd,
+            groups: nh / nkv,
+            scale: 1.0 / (hd as f64).sqrt(),
+        };
+        let mlp = Mlp { gate: lin(&format!("{p}.mlp.gate_proj"))?, up: lin(&format!("{p}.mlp.up_proj"))?, down: lin(&format!("{p}.mlp.down_proj"))? };
+        Ok(Self { attn, mlp, input_ln: rms(&format!("{p}.input_layernorm"))?, post_attn_ln: rms(&format!("{p}.post_attention_layernorm"))? })
     }
 
     fn forward(&self, xs: &Tensor, mask: &Tensor, rope: &(Tensor, Tensor)) -> Result<Tensor> {
@@ -433,7 +482,6 @@ impl QwenTextEncoder {
         let dev = w.device().clone();
         let dt = w.dtype();
         let rms = |name: &str| -> Result<RmsNorm> { Ok(RmsNorm::new(w.get(&format!("{name}.weight"))?, cfg.rms_norm_eps)) };
-        let lin = |name: &str| -> Result<QLinear> { Ok(QLinear::Comfy(w.linear(name)?)) };
         let embed = format!("{root}.embed_tokens");
         let (embed_tokens, embed_int8) = if w.is_quantized(&embed) {
             // a one-row placeholder: the rows come from the INT8 table
@@ -441,33 +489,61 @@ impl QwenTextEncoder {
         } else {
             (Embedding::new(w.get(&format!("{embed}.weight"))?.to_device(&Device::Cpu)?, cfg.hidden_size), None)
         };
-        let (nh, nkv, hd) = (cfg.num_heads, cfg.num_kv_heads, cfg.head_dim);
-        let mut layers = Vec::with_capacity(cfg.num_layers);
-        for i in 0..cfg.num_layers {
-            let p = format!("{root}.layers.{i}");
-            let attn = Attention {
-                q_proj: lin(&format!("{p}.self_attn.q_proj"))?,
-                k_proj: lin(&format!("{p}.self_attn.k_proj"))?,
-                v_proj: lin(&format!("{p}.self_attn.v_proj"))?,
-                o_proj: lin(&format!("{p}.self_attn.o_proj"))?,
-                q_norm: rms(&format!("{p}.self_attn.q_norm"))?,
-                k_norm: rms(&format!("{p}.self_attn.k_norm"))?,
-                num_heads: nh,
-                num_kv_heads: nkv,
-                head_dim: hd,
-                groups: nh / nkv,
-                scale: 1.0 / (hd as f64).sqrt(),
-            };
-            let mlp = Mlp { gate: lin(&format!("{p}.mlp.gate_proj"))?, up: lin(&format!("{p}.mlp.up_proj"))?, down: lin(&format!("{p}.mlp.down_proj"))? };
-            layers.push(DecoderLayer {
-                attn,
-                mlp,
-                input_ln: rms(&format!("{p}.input_layernorm"))?,
-                post_attn_ln: rms(&format!("{p}.post_attention_layernorm"))?,
-            });
-        }
+        let layers = (0..cfg.num_layers).map(|i| DecoderLayer::from_weights(cfg, w, root, i)).collect::<Result<Vec<_>>>()?;
         let norm = rms(&format!("{root}.norm"))?;
         Ok((Self { embed_tokens, embed_int8, layers, rope: RotaryEmbedding::new(cfg, &dev, dt)?, device: dev }, norm))
+    }
+
+    /// The encoder of a ComfyUI file without its layers on the card: the token table stays in
+    /// the file (plain INT8) or on the host and [`Self::forward_streamed`] loads each layer for
+    /// its turn. For an encoder too big to sit beside the model it conditions (MiniMax H3's
+    /// 32B next to the 21 GB DiT).
+    pub fn shell(cfg: &TextConfig, w: &crate::moss::weights::Weights, root: &str) -> Result<Self> {
+        let dev = w.device().clone();
+        let embed = format!("{root}.embed_tokens");
+        let table = if w.is_plain_int8(&embed) {
+            // a one-row placeholder: the rows are read from the file
+            Tensor::zeros((1, cfg.hidden_size), w.dtype(), &Device::Cpu)?
+        } else {
+            anyhow::ensure!(!w.is_quantized(&embed), "{embed}: a ConvRot token table");
+            w.host_tensor(&format!("{embed}.weight"))?
+        };
+        Ok(Self {
+            embed_tokens: Embedding::new(table, cfg.hidden_size),
+            embed_int8: None,
+            layers: Vec::new(),
+            rope: RotaryEmbedding::new(cfg, &dev, w.dtype())?,
+            device: dev,
+        })
+    }
+
+    /// [`Self::forward_with_images`] for a [`Self::shell`]: every layer is read from `w`, run
+    /// and dropped, so the card holds one layer at a time (the file's pages stay in the
+    /// system's cache between prompts). Returns the stream after the last layer, with no
+    /// final norm, `(1, S, hidden)`, and each picture's span.
+    pub fn forward_streamed(
+        &self,
+        cfg: &TextConfig,
+        w: &crate::moss::weights::Weights,
+        root: &str,
+        ids: &[u32],
+        images: &[&VisionFeatures],
+    ) -> Result<(Tensor, Vec<(usize, usize)>)> {
+        let embed = format!("{root}.embed_tokens");
+        let text = if w.is_plain_int8(&embed) {
+            w.plain_int8_rows(&embed, ids)?.to_dtype(w.dtype())?.to_device(&self.device)?
+        } else {
+            self.embed(&Tensor::from_vec(ids.to_vec(), (1, ids.len()), &self.device)?)?.squeeze(0)?.to_dtype(w.dtype())?
+        };
+        let (mut xs, spans, positions) = self.splice_rows(text, ids, images)?;
+        let rope = self.rope.tables(&positions)?;
+        let mask = self.causal_mask(positions[0].len(), xs.dtype())?;
+        for li in 0..cfg.num_layers {
+            let layer = DecoderLayer::from_weights(cfg, w, root, li)?;
+            xs = layer.forward(&xs, &mask, &rope)?;
+            xs = self.add_deepstack(xs, li, &spans, images)?;
+        }
+        Ok((xs, spans))
     }
 
     /// Keep the vocabulary on the host; only the requested rows need GPU memory.
@@ -673,10 +749,15 @@ impl QwenTextEncoder {
     /// The prompt's rows `(1, S, hidden)` with each `<|image_pad|>` replaced by its picture's
     /// merged vision rows, each picture's `(start, size)` span, and the rows' 3-axis positions.
     fn splice(&self, ids: &[u32], images: &[&VisionFeatures]) -> Result<Spliced> {
-        let placeholders: Vec<usize> = ids.iter().enumerate().filter(|(_, t)| **t == IMAGE_PAD).map(|(i, _)| i).collect();
-        anyhow::ensure!(placeholders.len() == images.len(), "{} <|image_pad|> tokens for {} pictures", placeholders.len(), images.len());
         let text = Tensor::from_vec(ids.to_vec(), (1, ids.len()), &self.device)?;
         let text = self.embed(&text)?.squeeze(0)?; // (S0, hidden)
+        self.splice_rows(text, ids, images)
+    }
+
+    /// [`Self::splice`] with the ids' embedded rows `text` `(S0, hidden)` given.
+    fn splice_rows(&self, text: Tensor, ids: &[u32], images: &[&VisionFeatures]) -> Result<Spliced> {
+        let placeholders: Vec<usize> = ids.iter().enumerate().filter(|(_, t)| **t == IMAGE_PAD).map(|(i, _)| i).collect();
+        anyhow::ensure!(placeholders.len() == images.len(), "{} <|image_pad|> tokens for {} pictures", placeholders.len(), images.len());
         let dt = text.dtype();
         // Splice: text rows between placeholders, the picture rows at each.
         let mut parts: Vec<Tensor> = Vec::new();

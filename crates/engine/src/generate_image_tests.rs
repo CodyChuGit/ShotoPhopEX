@@ -227,7 +227,7 @@ fn best_quality_tunes_qwen21_text_to_image() {
 #[test]
 fn balanced_and_best_run_krea2_detail_schedule() {
     assert_eq!(image_quality_tuning("krea2-turbo/image", "best"), Some((KREA_DETAIL_STEPS, 1.0)));
-    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some(KREA_DETAIL_SCHEDULE));
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some("beta"));
     assert_eq!(image_quality_schedule("krea2-turbo/image", "fast"), None);
     assert_eq!(image_quality_schedule("qwen-2.1/image", "best"), None);
     let fake = FakeNative::start().unwrap();
@@ -240,10 +240,14 @@ fn balanced_and_best_run_krea2_detail_schedule() {
     };
     s.edit_prefs(|p| p.integrations.quality = "best".into());
     let req = run(&mut s, json!({}));
-    assert_eq!((req["steps"].as_u64(), req["params"]["schedule"].as_str()), (Some(9), Some("krea-detail")), "{req}");
-    // Asked for the plain schedule: the template's steps, no schedule param.
+    // Best: er_sde over beta at 9 steps (the realism A/B of 2026-11-12).
+    assert_eq!((req["steps"].as_u64(), req["params"]["schedule"].as_str()), (Some(9), Some("beta")), "{req}");
+    assert_eq!(req["params"]["sampler"], "er_sde", "{req}");
+    // Asked for the plain schedule: the template's steps, sampler and schedule.
     let req = run(&mut s, json!({"schedule": "simple"}));
-    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(8), None), "{req}");
+    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule"), req["params"].get("sampler")), (Some(8), None, None), "{req}");
+    let req = run(&mut s, json!({"sampler": "euler"}));
+    assert_eq!((req["params"]["schedule"].as_str(), req["params"].get("sampler")), (Some("beta"), None), "{req}");
     s.edit_prefs(|p| p.integrations.quality = "fast".into());
     let req = run(&mut s, json!({}));
     assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(8), None), "{req}");
@@ -288,4 +292,144 @@ fn best_quality_renders_krea2_at_about_two_megapixels() {
     s.execute(IMAGE, json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024})).unwrap();
     let req = fake.state().runs.last().unwrap().request.clone();
     assert_eq!((req["width"].as_u64(), req["height"].as_u64()), (Some(1440), Some(1440)), "{req}");
+}
+
+/// `refine` asks the native engine for Krea 2's second pass at `scale` times the size, on the
+/// 16-px grid and at most 2560 a side; other templates refuse it.
+#[test]
+fn image_refine_sends_the_larger_size() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    let ask = |r: Value| json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024, "refine": r});
+    s.execute(IMAGE, ask(json!({"scale": 1.5, "denoise": 0.3, "steps": 4}))).unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!(req["params"]["refine"], json!({"width": 2160, "height": 2160, "denoise": 0.3, "steps": 4}), "{req}");
+    s.execute(IMAGE, ask(json!({"scale": 2.0, "denoise": 0.3, "steps": 4}))).unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!(req["params"]["refine"]["width"], 2560, "capped: {req}");
+    s.execute(IMAGE, ask(Value::Bool(false))).unwrap();
+    assert!(fake.state().runs.last().unwrap().request["params"].get("refine").is_none());
+    assert!(s.execute(IMAGE, ask(json!({"scale": 3.0, "denoise": 0.3, "steps": 4}))).is_err());
+    let r = s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "refine": {"scale": 1.5, "denoise": 0.3, "steps": 4}}));
+    assert!(r.is_err());
+}
+
+/// `sampler: "er_sde"` and `schedule: "beta"` reach the native engine on Krea 2 Turbo only.
+#[test]
+fn image_sampler_and_beta_schedule_pass_through() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.execute(IMAGE, json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "sampler": "er_sde", "schedule": "beta", "steps": 9}))
+        .unwrap();
+    let req = fake.state().runs.last().unwrap().request.clone();
+    assert_eq!(
+        (req["params"]["sampler"].as_str(), req["params"]["schedule"].as_str(), req["steps"].as_u64()),
+        (Some("er_sde"), Some("beta"), Some(9)),
+        "{req}"
+    );
+    assert!(s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "sampler": "er_sde"})).is_err());
+}
+
+#[test]
+fn best_runs_krea2_on_er_sde_and_beta_balanced_on_euler() {
+    use crate::generate_cmds::{image_quality_sampler, image_quality_schedule};
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "best"), Some("beta"));
+    assert_eq!(image_quality_sampler("krea2-turbo/image", "best"), Some("er_sde"));
+    assert_eq!(image_quality_schedule("krea2-turbo/image", "balanced"), Some("beta"));
+    assert_eq!(image_quality_sampler("krea2-turbo/image", "balanced"), Some("er_sde"));
+    assert_eq!(image_quality_sampler("krea2-turbo/image", "fast"), None);
+    assert_eq!(image_quality_sampler("qwen-2.1/image", "best"), None);
+}
+
+#[test]
+fn best_renders_h3_at_eight_megapixels() {
+    use crate::generate_cmds::image_quality_size;
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 1024), (2912, 2912));
+    // The guide's 8 MP sizes for the common shapes.
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 768), (3360, 2496));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1536, 1024), (3552, 2368));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1280, 720), (3872, 2176));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 768, 1024), (2496, 3360));
+    assert_eq!(image_quality_size("p-h3-image/image", "balanced", 1024, 1024), (1024, 1024));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 3200, 3200), (3200, 3200), "a larger ask is kept");
+}
+
+/// Quality `ultra` is `best` with MiniMax-H3-Image for new pictures and edits, where its files
+/// are in the models folder; without them it is `best`.
+#[test]
+fn ultra_is_best_with_the_16_mp_model_when_installed() {
+    let dir = std::env::temp_dir().join(format!("pc-ultra-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::new();
+    s.edit_prefs(|p| {
+        p.integrations.models_path = dir.to_string_lossy().into_owned();
+        p.integrations.quality = "ultra".into();
+    });
+    assert!(ultra(&s));
+    assert_eq!((quality(&s), auto_quality(&s)), ("best", "ultra"));
+    assert_eq!(auto_order(EDIT, "ultra"), &[ULTRA_EDIT_TEMPLATE, DEFAULT_EDIT_TEMPLATE]);
+    assert_eq!(auto_order(FILL, "ultra"), auto_order(FILL, "best"));
+    assert_eq!(auto_order(EXPAND, "ultra"), auto_order(EXPAND, "best"));
+    // no files: the profile's template
+    assert!(!template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
+    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
+    let t = template::find(ULTRA_IMAGE_TEMPLATE).unwrap();
+    for (i, m) in t.meta.models.iter().enumerate() {
+        // one of them a folder deeper, where the worker looks too
+        let folder = if i == 0 { dir.join(&m.folder).join("h3") } else { dir.join(&m.folder) };
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(&m.default), b"x").unwrap();
+    }
+    assert!(template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
+    assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
+    // `best` keeps the profile's template; Ultra wins over a saved default template
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
+    s.edit_prefs(|p| p.integrations.default_image_template = "qwen-2.1/image".into());
+    assert_eq!(default_image_template(&s), "qwen-2.1/image");
+    s.edit_prefs(|p| p.integrations.quality = "ultra".into());
+    assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MiniMax-H3-Image renders at 16 MP under `best` (and `ultra`, which reads as `best`), on its
+/// 32-px grid, and at 4 MP under the faster qualities.
+#[test]
+fn the_16_mp_model_renders_at_16_mp() {
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "best", 1024, 1024), (4096, 4096));
+    let (w, h) = image_quality_size(ULTRA_IMAGE_TEMPLATE, "best", 1024, 1536);
+    assert_eq!((w % 32, h % 32), (0, 0));
+    assert!((15_500_000..=16_777_216).contains(&(u64::from(w) * u64::from(h))), "{w}x{h}");
+    let (w, h) = image_quality_size(ULTRA_IMAGE_TEMPLATE, "best", 1280, 720);
+    assert!(w <= 5472 && (15_500_000..=16_777_216).contains(&(u64::from(w) * u64::from(h))), "{w}x{h}");
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "balanced", 1024, 1024), (2048, 2048));
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "fast", 1024, 1024), (2048, 2048));
+    // a larger request is left alone
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "fast", 3072, 3072), (3072, 3072));
+}
+
+/// Character Sheet: the layer is Picture 1 of a wide new picture on the 16 MP model; without
+/// the model's files it says so.
+#[test]
+fn a_character_sheet_asks_for_four_views_of_picture_1() {
+    use crate::generate_cmds::{CHARACTER_SHEET, character_sheet_prompt};
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    let e = s.execute(CHARACTER_SHEET, json!({})).unwrap_err().to_string();
+    assert!(e.contains("MiniMax H3 Image"), "{e}");
+    let plain = character_sheet_prompt("", "");
+    assert!(plain.contains("Picture 1") && plain.contains("plain white studio backdrop") && !plain.contains("these details"), "{plain}");
+    for view in ["from the front", "three-quarter", "side profile", "from behind"] {
+        assert!(plain.contains(view), "{view}: {plain}");
+    }
+    let full = character_sheet_prompt("blue jeans and white sneakers", "a neon street at night");
+    assert!(
+        full.contains("on a neon street at night.") && full.contains("these details, in every view where they can be seen: blue jeans and white sneakers."),
+        "{full}"
+    );
+    // the sheet's shape at the model's sizes
+    let (w, h) = image_quality_size(ULTRA_IMAGE_TEMPLATE, "best", 2048, 1024);
+    assert!(w <= 5472 && w % 32 == 0 && h % 32 == 0 && (1.9..=2.1).contains(&(f64::from(w) / f64::from(h))), "{w}x{h}");
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "fast", 2048, 1024), (2880, 1440));
 }

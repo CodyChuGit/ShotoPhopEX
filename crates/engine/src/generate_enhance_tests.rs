@@ -97,6 +97,23 @@ fn enhance_prompt_rewrites_an_instruction_with_the_picture_in_view() {
         assert!(system_prompt(g).starts_with("You are an expert prompt writer for a text-to-image model."));
         assert_eq!(text_prompt(g), "a fox in snow");
     }
+    // The photographic rewriter: written like a real photo's caption, no "8k" words.
+    s.execute(ENHANCE, json!({"prompt": "a fox in snow", "task": "photo"})).unwrap();
+    {
+        let st = fake.state();
+        let g = &st.runs.last().unwrap().request;
+        let sys = system_prompt(g);
+        assert!(g["image"].is_null());
+        assert!(sys.starts_with("You are an expert prompt writer for a photorealistic") && sys.contains("Never write photorealistic"), "{sys}");
+    }
+    // generate.image with enhanceStyle "photo" rewrites with it first.
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document", "enhance": true, "enhanceStyle": "photo"}))
+        .unwrap();
+    {
+        let st = fake.state();
+        assert!(st.runs.iter().any(|r| system_prompt(&r.request).starts_with("You are an expert prompt writer for a photorealistic")));
+    }
+    assert!(s.execute(IMAGE, json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "enhance": true, "enhanceStyle": "film"})).is_err());
     // Validation.
     for p in [json!({}), json!({"prompt": "  "}), json!({"prompt": "x", "task": "paint"}), json!({"prompt": "x", "useImage": "yes"})] {
         assert!(matches!(s.execute(ENHANCE, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
@@ -260,4 +277,67 @@ fn a_text_only_prompt_writer_rewrites_an_edit_from_its_words() {
     let st = fake.state();
     assert_eq!(st.runs.len(), 2, "refused with the picture, answered without");
     assert!(!system_prompt(&st.runs[1].request).contains("You can see the image."));
+}
+
+#[test]
+fn quality_best_rewrites_photo_style_only_when_enhance_is_on() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| {
+        p.integrations.quality = "best".into();
+        p.integrations.enhance_prompts = false;
+    });
+    let photo = |fake: &FakeNative| {
+        fake.state().runs.iter().filter(|r| system_prompt(&r.request).starts_with("You are an expert prompt writer for a photorealistic")).count()
+    };
+    let before = fake.state().runs.len();
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document"})).unwrap();
+    assert_eq!(fake.state().runs.len(), before + 1, "Enhance prompts off: the words go as typed, even on Best");
+    s.edit_prefs(|p| p.integrations.enhance_prompts = true);
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document"})).unwrap();
+    assert_eq!(photo(&fake), 1, "Best + Enhance prompts: the photo rewriter");
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document", "enhance": false})).unwrap();
+    assert_eq!(photo(&fake), 1, "an explicit enhance: false opts out");
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document", "enhanceStyle": "default"})).unwrap();
+    assert_eq!(photo(&fake), 1, "an explicit style wins");
+    s.execute(IMAGE, json!({"prompt": "an oil painting of a lighthouse", "template": "krea2-turbo/image", "target": "document"})).unwrap();
+    assert_eq!(photo(&fake), 1, "a painting gets the plain rewriter");
+    let last = fake.state().runs.iter().rev().find(|r| is_text_request(&r.request)).map(|r| system_prompt(&r.request)).unwrap();
+    assert!(!last.contains("photorealistic text-to-image"), "{last}");
+    s.edit_prefs(|p| p.integrations.quality = "balanced".into());
+    s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": "krea2-turbo/image", "target": "document"})).unwrap();
+    assert_eq!(photo(&fake), 1, "Balanced uses the plain rewriter");
+}
+
+#[test]
+fn other_media_are_recognised() {
+    use crate::generate_cmds::names_other_medium;
+    for p in ["an oil painting of a lighthouse", "Watercolour of a fox", "anime girl on a train", "a 3D render of a chair", "pencil sketch of hands"] {
+        assert!(names_other_medium(p), "{p}");
+    }
+    for p in ["a woman in a cafe", "a ceramic coffee mug on a wooden desk", "street at night, shot on 35mm"] {
+        assert!(!names_other_medium(p), "{p}");
+    }
+}
+
+#[test]
+fn a_text_to_image_rewrite_runs_on_the_pictures_own_encoder() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    let encoder_of = |s: &mut crate::Session, template: &str| {
+        s.execute(IMAGE, json!({"prompt": "a fox in snow", "template": template, "target": "document", "enhance": true})).unwrap();
+        let st = fake.state();
+        st.runs.iter().rev().find(|r| is_text_request(&r.request)).map(|r| r.request["params"]["encoder"].clone()).unwrap()
+    };
+    assert_eq!(encoder_of(&mut s, "krea2-turbo/image"), "krea2");
+    assert_eq!(encoder_of(&mut s, "moss-image/turbo"), "moss-image/turbo");
+    assert_eq!(encoder_of(&mut s, "moss-image/image"), "moss-image/image");
+    assert_eq!(encoder_of(&mut s, "flux3-klein/image"), "flux3-klein/image");
+    assert_eq!(encoder_of(&mut s, "qwen-2.1/image"), Value::Null, "the default encoder");
+    // the 16 MP model: its own writer, a longer caption planned for its resolution
+    assert_eq!(encoder_of(&mut s, "minimax-h3-image/image"), "minimax-h3-image/image");
+    let st = fake.state();
+    let last = st.runs.iter().rev().find(|r| is_text_request(&r.request)).unwrap();
+    assert!(system_prompt(&last.request).contains("150 to 300 words"), "{}", system_prompt(&last.request));
+    assert_eq!(last.request["params"]["max_tokens"], 640);
 }

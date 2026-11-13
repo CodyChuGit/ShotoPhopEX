@@ -132,6 +132,9 @@ pub struct KleinPipeline {
     vae: Flux2Decoder,
     encoder: Flux2Encoder,
     encoded: Mutex<Vec<Cached>>,
+    /// The chat head (the encoder's final norm and its tied token embedding), loaded on a
+    /// first chat ([`Self::chat`]).
+    head: Mutex<Option<Arc<crate::pipeline::ChatHead>>>,
 }
 
 impl KleinPipeline {
@@ -159,7 +162,7 @@ impl KleinPipeline {
         let vae = Flux2Decoder::load(vb.clone()).context("the FLUX.2 VAE")?;
         let encoder = Flux2Encoder::load(vb).context("the FLUX.2 VAE file has no encoder")?;
         progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, pad_id, files: files.clone(), low_vram, te, dit: d, vae, encoder, encoded: Mutex::new(Vec::new()) })
+        Ok(Self { dev, dtype, tok, pad_id, files: files.clone(), low_vram, te, dit: d, vae, encoder, encoded: Mutex::new(Vec::new()), head: Mutex::new(None) })
     }
 
     pub fn is_cuda(&self) -> bool {
@@ -177,6 +180,71 @@ impl KleinPipeline {
 
     pub fn low_vram(&self) -> bool {
         self.low_vram
+    }
+
+    /// A text answer from the encoder itself, Qwen3-VL-4B (the file Krea 2 also chats on):
+    /// the reply to `user` under `system`, so a Klein picture's prompt rewrite needs no other
+    /// model on the card.
+    pub fn chat(&self, system: &str, user: &str, opts: &crate::pipeline::ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
+        use crate::pipeline::{sample, ChatRng, END_OF_TEXT, IM_END};
+        crate::device::bind_thread(&self.dev);
+        let t0 = Instant::now();
+        let text = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n");
+        let prompt: Vec<u32> = self.tok.encode(text, false).map_err(|e| anyhow::anyhow!("encode the chat: {e}"))?.get_ids().to_vec();
+        let te = self.text_encoder()?;
+        let head = self.chat_head()?;
+        let mut rng = ChatRng::new(opts.seed);
+        let mut out = Vec::new();
+        let (mut last, mut cache) = te.prefill(&prompt, &[])?;
+        while out.len() < opts.max_new {
+            if cancel() {
+                return Err(Cancelled.into());
+            }
+            let logits = candle_core::Module::forward(&head.head, &last.apply(&head.norm)?)?;
+            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+            let next = sample(&logits, opts, &mut rng);
+            if next == IM_END || next == END_OF_TEXT {
+                break;
+            }
+            out.push(next);
+            last = te.step(next, &mut cache)?;
+        }
+        drop((head, cache, last));
+        if self.low_vram {
+            // 8 GB mode: the head goes again, so the DiT has its room back.
+            *self.head.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            crate::device::trim_pool(&self.dev);
+        }
+        let reply = self.tok.decode(&out, true).map_err(|e| anyhow::anyhow!("decode the reply: {e}"))?;
+        tracing::info!(tokens = out.len(), prompt_tokens = prompt.len(), chat_s = t0.elapsed().as_secs_f32(), "klein chat");
+        Ok(reply.trim().to_string())
+    }
+
+    /// The encoder's final norm and its head, the token embedding (tied), as Q8_0 on CUDA.
+    fn chat_head(&self) -> Result<Arc<crate::pipeline::ChatHead>> {
+        let mut slot = self.head.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(h) = slot.as_ref() {
+            return Ok(Arc::clone(h));
+        }
+        let t0 = Instant::now();
+        let cfg = TextConfig::qwen3vl_4b();
+        let files = std::slice::from_ref(&self.files.text);
+        let probe = crate::mapped::var_builder(files, self.dtype, &self.dev, |n| n.ends_with("norm.weight") && !n.contains("layers"))?;
+        let root = if probe.contains_tensor("model.language_model.norm.weight") { "model.language_model" } else { "model" };
+        let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, probe.pp(root).pp("norm"))?;
+        let embed = format!("{root}.embed_tokens.weight");
+        let head = if matches!(self.dev, Device::Cuda(_)) {
+            let q =
+                crate::q8::cached_q8_0(files, &embed, (cfg.vocab_size, cfg.hidden_size), self.dtype, &self.dev).context("the Qwen3-VL-4B token embedding")?;
+            candle_core::quantized::QMatMul::from_qtensor(q)?
+        } else {
+            let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(files, self.dtype, &self.dev)? };
+            candle_core::quantized::QMatMul::Tensor(vb.get((cfg.vocab_size, cfg.hidden_size), &embed).context("the Qwen3-VL-4B token embedding")?)
+        };
+        tracing::info!(load_s = t0.elapsed().as_secs_f32(), "klein language-model head loaded");
+        let h = Arc::new(crate::pipeline::ChatHead { norm, head });
+        *slot = Some(Arc::clone(&h));
+        Ok(h)
     }
 
     /// The text encoder, loaded when it is not on the card (in 8 GB mode the DiT goes first).

@@ -1380,7 +1380,7 @@ pub const EXPORT_NAME_TOKENS: &[&str] = &["{model}", "{template}", "{date}", "{s
 pub const ALERT_MODES: &[&str] = &["off", "done", "doneAndFailed"];
 
 /// `integrations.quality`: see [`Integrations::quality`].
-pub const QUALITY_MODES: &[&str] = &["best", "balanced", "fast"];
+pub const QUALITY_MODES: &[&str] = &["ultra", "best", "balanced", "fast"];
 
 /// `integrations.variationsStrip`: see [`Integrations::variations_strip`].
 pub const VARIATIONS_STRIP_PLACES: &[&str] = &["right", "bottom", "off"];

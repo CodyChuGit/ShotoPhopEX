@@ -531,17 +531,38 @@ impl Krea2Pipeline {
             },
         )
         .map_err(anyhow::Error::msg)?;
-        // The detail recipe swaps in the beta schedule over AuraFlow shift 1.25 (style keeps its own).
-        let schedule = if req.schedule == crate::pipeline::Schedule::KreaDetail && !style {
-            crate::comfy::FlowSchedule::beta(req.steps, crate::comfy::FlowSchedule::aura_flow(1.25)).map_err(anyhow::Error::msg)?
-        } else {
-            schedule
+        // The beta recipes (style keeps its own schedule).
+        let (schedule, shift) = match req.schedule {
+            crate::pipeline::Schedule::KreaDetail if !style => {
+                let shift = crate::comfy::FlowSchedule::aura_flow(1.25);
+                (crate::comfy::FlowSchedule::beta(req.steps, shift).map_err(anyhow::Error::msg)?, shift)
+            }
+            crate::pipeline::Schedule::KreaBeta if !style => {
+                (crate::comfy::FlowSchedule::beta(req.steps, crate::comfy::FlowSchedule::KREA2).map_err(anyhow::Error::msg)?, crate::comfy::FlowSchedule::KREA2)
+            }
+            _ => (schedule, crate::comfy::FlowSchedule::KREA2),
         };
         let steps = schedule.steps();
         let noise = crate::comfy::torch_randn(req.seed, wan_vae::LATENT_CHANNELS * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, wan_vae::LATENT_CHANNELS, lh, lw), &self.dev)?;
         let t0 = Instant::now();
-        for i in 0..steps {
+        if req.sampler == crate::pipeline::Sampler::ErSde && !style {
+            let seed = req.seed;
+            x = er_sde(x, &schedule.sigmas, shift, seed, &mut |x: &Tensor, sigma: f32, i: usize| -> Result<Tensor> {
+                check(cancel)?;
+                let v = self.dit.forward_edit(&x.to_dtype(self.dtype)?, sigma, &cond, edit.as_ref())?.to_dtype(DType::F32)?;
+                let denoised = (x - (&v * f64::from(sigma))?)?;
+                if let Some(p) = preview.as_deref_mut() {
+                    if p.wants(i + 1, steps) {
+                        p.show(i + 1, steps, &denoised);
+                    }
+                }
+                progress(0.05 + 0.85 * (i + 1) as f32 / steps as f32, "Sampling");
+                Ok(denoised)
+            })?;
+        }
+        let euler_steps = if req.sampler == crate::pipeline::Sampler::ErSde && !style { 0 } else { steps };
+        for i in 0..euler_steps {
             check(cancel)?;
             let input = x.to_dtype(self.dtype)?;
             let v = if style {
@@ -579,6 +600,100 @@ impl Krea2Pipeline {
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, rgba) = wan_vae::to_rgba_u8(&img)?;
         tracing::info!(encode_s = timings.encode_s, denoise_s = timings.denoise_s, decode_s = timings.decode_s, width = pw, height = ph, steps, "timings");
+        progress(1.0, "Done");
+        Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
+    }
+
+    /// A second pass over a finished picture (ComfyUI's "hires fix", the refine stage of the
+    /// Sick Ollie kit's Enhancement Core and of the top Krea 2 realism workflows): `picture`
+    /// resampled to `opts.width × opts.height`, through the VAE's encoder, noised to the
+    /// schedule's sigma at `opts.denoise` (KSampler's tail: `steps / denoise` steps, the last
+    /// `steps`) and sampled back with the request's prompt, LoRAs and schedule. The layout stays;
+    /// the model redraws fine detail at the larger size.
+    pub fn refine_previewed(
+        &self,
+        req: &Request,
+        picture: &Picture,
+        opts: &RefineOptions,
+        progress: &mut dyn FnMut(f32, &str),
+        mut preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
+        crate::device::bind_thread(&self.dev);
+        let (w, h) = (opts.width, opts.height);
+        anyhow::ensure!(w > 0 && h > 0 && w.is_multiple_of(16) && h.is_multiple_of(16), "the refine size must be positive multiples of 16 ({w}x{h} asked)");
+        anyhow::ensure!(opts.steps > 0 && opts.denoise > 0.0 && opts.denoise <= 1.0, "a refine takes at least one step and a denoise in (0, 1]");
+        let unmatched = self.dit.set_loras(&req.loras)?;
+        if !unmatched.is_empty() {
+            tracing::warn!(modules = unmatched.len(), first = unmatched[0], "LoRA modules this model does not have (a file for another model?)");
+        }
+        let check = || -> Result<()> {
+            if cancel() {
+                Err(Cancelled.into())
+            } else {
+                Ok(())
+            }
+        };
+        let mut timings = Timings::default();
+        check()?;
+        progress(0.02, "Encoding the picture");
+        let t0 = Instant::now();
+        let cond = self.condition(&req.prompt, None)?;
+        let source = RefImage { width: picture.width as usize, height: picture.height as usize, rgba: picture.rgba.clone(), offset: None };
+        let target = self.picture_latent(&source, w, h)?;
+        self.dev.synchronize()?;
+        timings.encode_s = t0.elapsed().as_secs_f32();
+
+        // KSampler at `denoise` < 1: the tail of the full schedule.
+        let full = ((opts.steps as f32 / opts.denoise).round() as usize).max(opts.steps);
+        let sched = if req.schedule == crate::pipeline::Schedule::KreaDetail {
+            crate::comfy::FlowSchedule::beta(full, crate::comfy::FlowSchedule::aura_flow(1.25))
+        } else if req.schedule == crate::pipeline::Schedule::KreaBeta {
+            crate::comfy::FlowSchedule::beta(full, crate::comfy::FlowSchedule::KREA2)
+        } else {
+            crate::comfy::FlowSchedule::simple(full, crate::comfy::FlowSchedule::KREA2)
+        }
+        .map_err(anyhow::Error::msg)?;
+        let n = opts.steps.min(sched.steps());
+        let sigmas = sched.sigmas[sched.sigmas.len() - n - 1..].to_vec();
+        let (lh, lw) = (h / wan_vae::SCALE, w / wan_vae::SCALE);
+        let noise = crate::comfy::torch_randn(req.seed, wan_vae::LATENT_CHANNELS * lh * lw).map_err(anyhow::Error::msg)?;
+        let noise = Tensor::from_vec(noise, (1, wan_vae::LATENT_CHANNELS, lh, lw), &self.dev)?;
+        let mut x = ((&noise * f64::from(sigmas[0]))? + (&target * f64::from(1.0 - sigmas[0]))?)?;
+        let t0 = Instant::now();
+        for i in 0..n {
+            check()?;
+            let v = self.dit.forward_edit(&x.to_dtype(self.dtype)?, sigmas[i], &cond, None)?.to_dtype(DType::F32)?;
+            if let Some(p) = preview.as_deref_mut() {
+                if p.wants(i + 1, n) {
+                    match (&v * f64::from(sigmas[i])).and_then(|sv| &x - sv) {
+                        Ok(x0) => p.show(i + 1, n, &x0),
+                        Err(e) => tracing::warn!(error = %e, "preview skipped"),
+                    }
+                }
+            }
+            x = (x + (v * f64::from(sigmas[i + 1] - sigmas[i]))?)?;
+            progress(0.05 + 0.85 * (i + 1) as f32 / n as f32, "Refining");
+        }
+        self.dev.synchronize()?;
+        timings.denoise_s = t0.elapsed().as_secs_f32();
+        check()?;
+        progress(0.92, "Decoding");
+        let t0 = Instant::now();
+        let img = self.vae.decode(&self.vae.denormalize(&x)?)?;
+        self.dev.synchronize()?;
+        timings.decode_s = t0.elapsed().as_secs_f32();
+        let (pw, ph, rgba) = wan_vae::to_rgba_u8(&img)?;
+        tracing::info!(
+            encode_s = timings.encode_s,
+            denoise_s = timings.denoise_s,
+            decode_s = timings.decode_s,
+            width = pw,
+            height = ph,
+            steps = n,
+            denoise = opts.denoise,
+            "refine timings"
+        );
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
@@ -782,6 +897,68 @@ fn resize_area(rgb: &Tensor, dh: usize, dw: usize) -> Result<Tensor> {
 
 /// A reference's pixels as RGB (its alpha dropped, as ComfyUI's `LoadImage` hands a picture to
 /// the VAE and the encoder).
+/// ComfyUI's `sample_er_sde` (k_diffusion, `max_stage` 3, `s_noise` 1) for a flow model
+/// (`alpha = 1 − σ`, `λ = σ / α`): `denoise(x, σ, i)` returns the model's clean estimate. A
+/// first sigma of 1 is moved to the table's sigma at 1e-4 as ComfyUI's
+/// `offset_first_sigma_for_snr` does. The step noise is `torch.randn` on `seed + 1 + i` (ComfyUI
+/// draws it from a device generator, so pictures match its character, not its pixels).
+fn er_sde(
+    mut x: Tensor,
+    sigmas: &[f32],
+    shift: crate::comfy::Shift,
+    seed: u64,
+    denoise: &mut dyn FnMut(&Tensor, f32, usize) -> Result<Tensor>,
+) -> Result<Tensor> {
+    let mut sig: Vec<f64> = sigmas.iter().map(|&v| f64::from(v)).collect();
+    if sig.len() > 1 && sig[0] >= 1.0 {
+        sig[0] = f64::from(crate::comfy::shifted_sigma(shift, 1.0 - 1e-4));
+    }
+    let lambda: Vec<f64> = sig.iter().map(|&v| v / (1.0 - v)).collect();
+    let scaler = |l: f64| l * ((l.powf(0.3)).exp() + 10.0);
+    const POINTS: usize = 200;
+    let mut old_denoised: Option<Tensor> = None;
+    let mut old_d: Option<Tensor> = None;
+    let n = sig.len() - 1;
+    for i in 0..n {
+        let denoised = denoise(&x, sig[i] as f32, i)?;
+        let stage = (i + 1).min(3);
+        if sig[i + 1] == 0.0 {
+            x = denoised.clone();
+        } else {
+            let (ls, lt) = (lambda[i], lambda[i + 1]);
+            let (alpha_s, alpha_t) = (sig[i] / ls, sig[i + 1] / lt);
+            let r_alpha = alpha_t / alpha_s;
+            let r = scaler(lt) / scaler(ls);
+            x = ((&x * (r_alpha * r))? + (&denoised * (alpha_t * (1.0 - r)))?)?;
+            if stage >= 2 {
+                let dt = lt - ls;
+                let step = -dt / POINTS as f64;
+                let pos: Vec<f64> = (0..POINTS).map(|k| lt + k as f64 * step).collect();
+                let s1: f64 = pos.iter().map(|&p| 1.0 / scaler(p)).sum::<f64>() * step;
+                let prev = old_denoised.as_ref().expect("stage 2 has a previous estimate");
+                let d = ((&denoised - prev)? / (ls - lambda[i - 1]))?;
+                x = (&x + (&d * (alpha_t * (dt + s1 * scaler(lt))))?)?;
+                if stage >= 3 {
+                    let su: f64 = pos.iter().map(|&p| (p - ls) / scaler(p)).sum::<f64>() * step;
+                    let prev_d = old_d.as_ref().expect("stage 3 has a previous derivative");
+                    let u = ((&d - prev_d)? / ((ls - lambda[i - 2]) / 2.0))?;
+                    x = (&x + (&u * (alpha_t * (dt * dt / 2.0 + su * scaler(lt))))?)?;
+                }
+                old_d = Some(d);
+            }
+            let var = lt * lt - ls * ls * r * r;
+            let amp = if var.is_finite() && var > 0.0 { var.sqrt() } else { 0.0 };
+            if amp > 0.0 {
+                let noise = crate::comfy::torch_randn(seed.wrapping_add(1 + i as u64), x.elem_count()).map_err(anyhow::Error::msg)?;
+                let noise = Tensor::from_vec(noise, x.shape(), x.device())?;
+                x = (&x + (noise * (alpha_t * amp))?)?;
+            }
+        }
+        old_denoised = Some(denoised);
+    }
+    Ok(x)
+}
+
 fn rgb_image(p: &RefImage) -> Result<image::RgbImage> {
     let rgba: image::RgbaImage = image::ImageBuffer::from_raw(p.width as u32, p.height as u32, p.rgba.clone())
         .ok_or_else(|| anyhow::anyhow!("a picture of {}x{} with {} bytes", p.width, p.height, p.rgba.len()))?;
@@ -792,6 +969,18 @@ fn load_text_encoder(files: &[PathBuf], dev: &Device, dtype: DType) -> Result<Qw
     // The language model faulted in on every core first ([`crate::mapped`]), not the vision tower.
     let vb = crate::mapped::var_builder(files, dtype, dev, |n| n.starts_with("model.") && !n.starts_with("model.visual."))?;
     QwenTextEncoder::load_at(&TextConfig::qwen3vl_4b(), false, vb.pp("model")).context("the Qwen3-VL-4B encoder")
+}
+
+/// A refine pass over a finished picture ([`Krea2Pipeline::refine_previewed`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefineOptions {
+    /// The size it is redrawn at (multiples of 16).
+    pub width: usize,
+    pub height: usize,
+    /// How much is redrawn: about 0.2 to 0.4 keeps the picture and adds detail.
+    pub denoise: f32,
+    /// Sampler steps of the pass.
+    pub steps: usize,
 }
 
 /// How a Krea 2 AnyPaint fill runs ([`Krea2Pipeline::fill_previewed`]).
@@ -993,5 +1182,24 @@ mod fill_tests {
             }
         }
         assert_eq!(latent_mask(&m, 2, 1), vec![0.5, 0.0]);
+    }
+
+    /// With a model that always knows the clean picture, er_sde lands on it.
+    #[test]
+    fn er_sde_reaches_a_known_clean_picture() {
+        let dev = Device::Cpu;
+        let clean = Tensor::from_vec((0..16).map(|i| i as f32 / 8.0 - 1.0).collect::<Vec<_>>(), (1, 16), &dev).unwrap();
+        let x = Tensor::from_vec(crate::comfy::torch_randn(3, 16).unwrap(), (1, 16), &dev).unwrap();
+        let sched = crate::comfy::FlowSchedule::beta(9, crate::comfy::FlowSchedule::KREA2).unwrap();
+        let mut calls = 0;
+        let out = er_sde(x, &sched.sigmas, crate::comfy::FlowSchedule::KREA2, 3, &mut |_, sigma, _| {
+            calls += 1;
+            assert!(sigma < 1.0, "the first sigma is offset below 1");
+            Ok(clean.clone())
+        })
+        .unwrap();
+        assert_eq!(calls, 9);
+        let diff: Vec<f32> = (out - &clean).unwrap().abs().unwrap().flatten_all().unwrap().to_vec1().unwrap();
+        assert!(diff.iter().all(|d| *d < 1e-5), "{diff:?}");
     }
 }
