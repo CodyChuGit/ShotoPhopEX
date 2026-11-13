@@ -14,7 +14,7 @@
          not to present themselves as ArtCraft products, and the shared code let either installer
          replace the other). This removes those two releases on upgrade; the version cap keeps it
          from touching upstream PhotoCraft, whose MSIs under that code are 0.2 and later. -->
-    <Upgrade Code="D9660F32-2D0A-4ABE-B73D-17BE25F1542C">
+    <Upgrade Id="D9660F32-2D0A-4ABE-B73D-17BE25F1542C">
       <UpgradeVersion Minimum="0.1.0" IncludeMinimum="yes" Maximum="0.1.1" IncludeMaximum="yes" Property="SHOTOPHOPEX_UNDER_UPSTREAM_CODE" />
     </Upgrade>
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
