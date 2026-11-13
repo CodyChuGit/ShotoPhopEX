@@ -2,6 +2,10 @@
 //! causal conv reduces to its last temporal tap), a posterior sample at seed 42, and a ViT
 //! decoder at a fixed RoPE time coordinate. Both run in 256-pixel tiles blended as ComfyUI
 //! blends them, so the pictures match its tiled output.
+//!
+//! MiniMax-H3-Image's VAE (`MiniMaxH3ImageVAE`) is the same encoder with a narrower decoder
+//! (16 heads, 2D RoPE over half of each head) and no latent statistics in its file: they are
+//! the H3 family's ([`LATENTS_MEAN`], [`LATENTS_STD`]).
 
 use candle_core::{DType, Device, Tensor, D};
 use candle_nn::Module;
@@ -24,6 +28,60 @@ const HEAD_DIM: usize = 64;
 /// still holds most of the card while the picture decodes).
 const TILE_BATCH: usize = 16;
 const REGISTERS: usize = 4;
+
+/// The H3 latents' statistics (ComfyUI `LATENTS_MEAN` / `LATENTS_STD`), for a file without them.
+pub const LATENTS_MEAN: [f32; 24] = [
+    0.858_090_34,
+    -0.960_659_15,
+    1.066_164,
+    -0.509_032_55,
+    -0.272_758_2,
+    -1.367_541_4,
+    -0.255_325_5,
+    -0.269_075_54,
+    -0.537_684_1,
+    -0.046_409_73,
+    0.665_737_03,
+    0.196_901_28,
+    -0.546_060_8,
+    -0.403_534_2,
+    -0.236_830_25,
+    0.259_284_53,
+    -0.301_339_45,
+    0.211_342,
+    -1.120_684_9,
+    0.358_193_34,
+    -0.042_251_438,
+    0.260_483,
+    0.228_640_93,
+    0.705_603_2,
+];
+pub const LATENTS_STD: [f32; 24] = [
+    1.222_377_4,
+    1.276_726_4,
+    1.683_177_5,
+    1.754_945_5,
+    1.563_621_6,
+    2.194_143_5,
+    0.965_313_8,
+    1.056_988_6,
+    0.841_948_9,
+    0.772_995_3,
+    1.895_593_8,
+    0.946_841_84,
+    0.799_680_95,
+    0.449_889,
+    0.719_74,
+    0.693_629_3,
+    2.961_095,
+    2.769_42,
+    3.049_618_5,
+    2.108_805_4,
+    3.276_226_3,
+    3.162_735_7,
+    2.281_681_3,
+    2.612_784_4,
+];
 
 // ---------------------------------------------------------------- encoder (f32)
 
@@ -253,6 +311,9 @@ pub struct Decoder {
     proj_out: QLinear,
     heads: usize,
     inv_freq: Vec<f32>,
+    /// The RoPE's axes: 3 (a fixed time coordinate, then h and w: P-H3-Image) or 2 (h and w:
+    /// MiniMax-H3-Image).
+    rope_axes: usize,
     dtype: DType,
 }
 
@@ -281,10 +342,13 @@ impl Decoder {
         let registers = w.get("decoder.register_tokens")?;
         let dim = registers.dim(2)?;
         let registers = registers.reshape((registers.dim(1)?, dim))?;
-        // RotaryEmbeddingND(48, 100, 3): 8 frequencies per axis
-        let rope_dim = HEAD_DIM * 3 / 4;
-        let step = 2.0 * 3.0 / rope_dim as f64;
-        let inv_freq: Vec<f32> = (0..rope_dim / 6).map(|i| (1.0 / 100f64.powf(i as f64 * step)) as f32).collect();
+        // P-H3-Image: RotaryEmbeddingND(48, 100, 3); MiniMax-H3-Image (width 1024, a
+        // `mask_token` P-H3-Image's file drops):
+        // RotaryEmbeddingND(32, 100, 2). Either way 8 frequencies per axis.
+        let rope_axes = if dim == 1024 || w.contains("decoder.mask_token") { 2 } else { 3 };
+        let rope_dim = if rope_axes == 2 { HEAD_DIM / 2 } else { HEAD_DIM * 3 / 4 };
+        let step = 2.0 * rope_axes as f64 / rope_dim as f64;
+        let inv_freq: Vec<f32> = (0..rope_dim / (2 * rope_axes)).map(|i| (1.0 / 100f64.powf(i as f64 * step)) as f32).collect();
         Ok(Self {
             post_quant: pq.reshape((c, c))?,
             post_quant_b: w.get_as("post_quant_conv.bias", DType::F32)?,
@@ -295,11 +359,12 @@ impl Decoder {
             proj_out: w.linear("decoder.proj_out")?,
             heads: dim / HEAD_DIM,
             inv_freq,
+            rope_axes,
             dtype: w.dtype(),
         })
     }
 
-    /// RoPE tables `(S, 24)` for an `h x w` tile and the five suffix rows: angles
+    /// RoPE tables `(S, axes · 8)` for an `h x w` tile and the five suffix rows: angles
     /// `2π · id · inv_freq` with the ids in the run dtype, as ComfyUI builds them.
     fn rope_tables(&self, h: usize, w: usize, dev: &Device) -> Result<(Tensor, Tensor)> {
         let round = |v: f64| -> f32 {
@@ -312,11 +377,12 @@ impl Decoder {
         let coord = |k: usize, n: usize| round(2.0 * ((k as f64 + 0.5) / n as f64) - 1.0);
         let t = round(FRAME_POSITION);
         let n = self.inv_freq.len();
+        let axes = self.rope_axes;
         let rows = h * w + REGISTERS + 1;
-        let mut cos = Vec::with_capacity(rows * 3 * n);
-        let mut sin = Vec::with_capacity(rows * 3 * n);
+        let mut cos = Vec::with_capacity(rows * axes * n);
+        let mut sin = Vec::with_capacity(rows * axes * n);
         let mut push = |ids: [f32; 3]| {
-            for id in ids {
+            for id in &ids[3 - axes..] {
                 for f in &self.inv_freq {
                     let a = 2.0 * std::f32::consts::PI * id * f;
                     cos.push(round(f64::from(a.cos())));
@@ -332,7 +398,7 @@ impl Decoder {
         for _ in 0..REGISTERS + 1 {
             push([0.0, 0.0, 0.0]);
         }
-        Ok((Tensor::from_vec(cos, (rows, 3 * n), dev)?, Tensor::from_vec(sin, (rows, 3 * n), dev)?))
+        Ok((Tensor::from_vec(cos, (rows, axes * n), dev)?, Tensor::from_vec(sin, (rows, axes * n), dev)?))
     }
 
     /// Denormalized latents `(24, h, w)` f32, all one size -> the raw decoder outputs
@@ -404,8 +470,21 @@ pub struct H3Vae {
 impl H3Vae {
     pub fn load(w: &Weights) -> Result<Self> {
         let encoder = if w.contains("encoder.conv_in.weight") { Some(Encoder::load(w)?) } else { None };
-        let vec = |n: &str| -> Result<Vec<f32>> { Ok(w.get_as(n, DType::F32)?.to_device(&Device::Cpu)?.to_vec1::<f32>()?) };
-        Ok(Self { encoder, decoder: Decoder::load(w)?, mean: vec("latents_mean")?, std: vec("latents_std")?, dev: w.device().clone() })
+        // MiniMax-H3-Image's release file has no statistics: the family's
+        let vec = |n: &str, default: &[f32]| -> Result<Vec<f32>> {
+            if w.contains(n) {
+                Ok(w.get_as(n, DType::F32)?.to_device(&Device::Cpu)?.to_vec1::<f32>()?)
+            } else {
+                Ok(default.to_vec())
+            }
+        };
+        Ok(Self {
+            encoder,
+            decoder: Decoder::load(w)?,
+            mean: vec("latents_mean", &LATENTS_MEAN)?,
+            std: vec("latents_std", &LATENTS_STD)?,
+            dev: w.device().clone(),
+        })
     }
 
     pub fn can_encode(&self) -> bool {
@@ -569,6 +648,7 @@ mod tests {
             proj_out: lin(dim, 3 * SCALE * SCALE)?,
             heads,
             inv_freq: (0..8).map(|i| 1.0 / 10f32.powf(i as f32 / 8.0)).collect(),
+            rope_axes: 3,
             dtype: DType::F32,
         };
         let zs = (0..3).map(|_| rnd(&[24, 3, 4], 1.0)).collect::<Result<Vec<_>>>()?;

@@ -32,7 +32,7 @@ use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, Preview, RunRequest
 use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::edit2511_pipeline::{self, Edit2511Pipeline, Edit2511Request};
-use qwen_image_rs::h3::pipeline::{self as h3, H3Pipeline};
+use qwen_image_rs::h3::pipeline::{self as h3, H3Kind, H3Pipeline};
 use qwen_image_rs::klein::pipeline::{self as klein_cuda, KleinPipeline};
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::layered_pipeline::LayeredPipeline;
@@ -162,6 +162,12 @@ pub const TEMPLATE_H3_EDIT: &str = "p-h3-image/edit";
 pub const H3_STEPS: u32 = 8;
 /// A P-H3 picture's side when the request names none (4 MP; the model's own default is 2912).
 pub const H3_DEFAULT_SIDE: usize = 2048;
+/// MiniMax-H3-Image (MiniMax H3 Community License, bring your own files): the 16 MP model, text
+/// to image and edits with up to eight pictures, on the six steps its output heads were
+/// distilled for (the app's Ultra).
+pub const TEMPLATE_MINIMAX_H3_IMAGE: &str = "minimax-h3-image/image";
+pub const TEMPLATE_MINIMAX_H3_EDIT: &str = "minimax-h3-image/edit";
+pub const MINIMAX_H3_STEPS: u32 = 6;
 
 /// The model families served, one resident at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,10 +181,14 @@ pub enum Family {
     Klein,
     /// P-H3-Image.
     H3,
+    /// MiniMax-H3-Image.
+    MiniMaxH3,
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 38] = [
+pub const TEMPLATES: [(&str, &str, Family); 40] = [
+    (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
+    (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
     (TEMPLATE_H3_EDIT, "edit", Family::H3),
     (TEMPLATE_KLEIN_IMAGE, "image", Family::Klein),
@@ -295,7 +305,7 @@ fn latent_space(f: Family) -> LatentSpace {
         Family::Krea2 | Family::Edit2511 => LatentSpace::Wan21,
         Family::Layered => LatentSpace::Layered,
         // H3 has no preview (its runs show none); the arm only completes the match.
-        Family::Moss(_) | Family::Klein | Family::H3 => LatentSpace::Flux2,
+        Family::Moss(_) | Family::Klein | Family::H3 | Family::MiniMaxH3 => LatentSpace::Flux2,
     }
 }
 
@@ -777,6 +787,7 @@ impl DiffusionEngine {
             Family::Edit2511 => self.edit2511_available(),
             Family::Moss(v) => moss::find_files(&self.models_root, v).is_some(),
             Family::H3 => cfg!(not(feature = "mlx")) && h3::find_files(&self.models_root).is_some(),
+            Family::MiniMaxH3 => cfg!(not(feature = "mlx")) && h3::find_minimax_files(&self.models_root).is_some(),
             Family::Klein if cfg!(feature = "mlx") => self.klein_dir().is_some() && self.models_root.join(KLEIN_VAE).is_file(),
             Family::Klein => klein_cuda::find_files(&self.models_root, false).is_some(),
         }
@@ -825,7 +836,8 @@ impl DiffusionEngine {
             (Resident::Krea2(p), Family::Krea2) if p.is_nvfp4() == self.krea2_nvfp4() => return Ok(()),
             (Resident::Qwen(_), Family::QwenImage21) | (Resident::Layered(_), Family::Layered) | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
             (Resident::Moss(_, held), Family::Moss(v)) if *held == v => return Ok(()),
-            (Resident::H3(_), Family::H3) => return Ok(()),
+            (Resident::H3(p), Family::H3) if p.kind() == H3Kind::PH3 => return Ok(()),
+            (Resident::H3(p), Family::MiniMaxH3) if p.kind() == H3Kind::MiniMax => return Ok(()),
             (Resident::KleinCuda(_), Family::Klein) => return Ok(()),
             #[cfg(feature = "mlx")]
             (Resident::Mlx(_), Family::Moss(_)) => return Ok(()),
@@ -961,6 +973,18 @@ impl DiffusionEngine {
                             "no P-H3-Image in {}: diffusion_models/p-h3-image_int8_convrot (or _bf16), \
                              text_encoders/p-h3-image_text_encoder_int8_convrot (or _bf16), vae/p-h3-image_vae_bf16 (or _int8_convrot) \
                              and ComfyUI's qwen25_tokenizer",
+                            self.models_root.display()
+                        ),
+                    ));
+                };
+                Resident::H3(H3Pipeline::load(&files, &mut report).map_err(err)?)
+            }
+            Family::MiniMaxH3 => {
+                let Some(files) = h3::find_minimax_files(&self.models_root) else {
+                    return Err(EngineError::new(
+                        ErrorKind::ModelMissing,
+                        format!(
+                            "no MiniMax-H3-Image in {}: diffusion_models/minimax_h3_image_pruned_int8_convrot,                              text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq, vae/minimax_h3_image_vae_fp16 and ComfyUI's qwen25_tokenizer",
                             self.models_root.display()
                         ),
                     ));
@@ -1340,7 +1364,11 @@ impl Engine for DiffusionEngine {
             Resident::Layered(p) => (vec!["qwen-image-layered".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Edit2511(p) => (vec!["qwen-image-edit-2511".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Moss(p, _) => (vec!["moss-image".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
-            Resident::H3(p) => (vec!["p-h3-image".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::H3(p) => (
+                vec![if p.kind() == H3Kind::MiniMax { "minimax-h3-image" } else { "p-h3-image" }.to_string()],
+                p.device().is_cuda(),
+                qwen_image_rs::device::free_vram(p.device()),
+            ),
             Resident::KleinCuda(p) => (vec!["flux3-klein".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) => (vec!["moss-image".to_string()], false, None),
@@ -1521,6 +1549,7 @@ impl Engine for DiffusionEngine {
             // Klein's own (its checkpoint's 16).
             Family::Klein => 0,
             Family::H3 => H3_STEPS,
+            Family::MiniMaxH3 => MINIMAX_H3_STEPS,
         };
         let default_guidance = match family {
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => 1.0,
@@ -1535,7 +1564,9 @@ impl Engine for DiffusionEngine {
             }
             let (width, height) = match canvas {
                 Some(c) => c,
-                None if references.is_empty() && family == Family::H3 && (req.width == 0 || req.height == 0) => (H3_DEFAULT_SIDE, H3_DEFAULT_SIDE),
+                None if references.is_empty() && matches!(family, Family::H3 | Family::MiniMaxH3) && (req.width == 0 || req.height == 0) => {
+                    (H3_DEFAULT_SIDE, H3_DEFAULT_SIDE)
+                }
                 None if references.is_empty() => (side(req.width), side(req.height)),
                 None => (0, 0),
             };
@@ -1604,7 +1635,7 @@ impl Engine for DiffusionEngine {
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             let stop = || cancel.load(Ordering::SeqCst);
             let err = |e: anyhow::Error| EngineError::new(kind_of(&e), e.to_string());
-            let mode = if family == Family::H3 { PreviewMode::Off } else { preview_mode(req.preview) };
+            let mode = if matches!(family, Family::H3 | Family::MiniMaxH3) { PreviewMode::Off } else { preview_mode(req.preview) };
             self.ensure_tiny(mode, latent_space(family));
             let mut sink = |f: Frame| preview(engine_preview(f));
             let mut viewer = Previewer::new(mode, latent_space(family), self.tiny.as_ref(), &mut sink);

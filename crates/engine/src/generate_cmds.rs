@@ -1063,7 +1063,7 @@ fn warm_need(template: &str) -> u64 {
     match template.split('/').next().unwrap_or("") {
         t if t.starts_with("krea2") => WARM_KREA2_GB * GB,
         t if t.starts_with("moss") => WARM_MOSS_GB * GB,
-        t if t.starts_with("p-h3") => WARM_H3_GB * GB,
+        t if t.starts_with("p-h3") || t.starts_with("minimax-h3") => WARM_H3_GB * GB,
         _ => WARM_QWEN21_GB * GB,
     }
 }

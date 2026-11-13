@@ -1,10 +1,18 @@
-//! P-H3-Image text to image and edits, with PrunaAI's ComfyUI conventions: the raw prompt
+//! The H3 image models, text to image and edits.
+//!
+//! P-H3-Image, with PrunaAI's ComfyUI conventions: the raw prompt
 //! (pictures as `<Picture n>: ` blocks) through Qwen3-VL-4B and the text connector, torch's CPU
 //! noise for the seed over the packed still (one video latent frame and two audio latents),
 //! Euler on the 8 fixed sigmas at shift 1 with no CFG, and the tiled VAE decode. The encoder
 //! and the VAE take turns beside the resident DiT (int8: 21 GB): the encoder loads for a new
 //! prompt and goes, the VAE loads when a picture is read or decoded and stays until the next
 //! new prompt, so the card never holds both (peak about 28 GB at 4 MP).
+//!
+//! MiniMax-H3-Image (ComfyUI `MiniMaxH3ImageConditioning`): the raw prompt with pictures as
+//! `Picture n: ` blocks through Qwen3-VL-32B's first 50 layers (the stream after the last
+//! one, no connector), one image latent with no audio, Euler on the six sigmas its output
+//! heads were distilled on, no shift and no CFG. Its encoder is 15.7 GB in NVFP4 and the DiT
+//! 21 GB, so the encoder's layers take the card one at a time ([`H3Text32`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -16,7 +24,7 @@ use tokenizers::Tokenizer;
 
 use super::dit::{H3Dit, AUDIO_CHANNELS, LATENT_CHANNELS};
 use super::layout::Layout;
-use super::text::{self, H3Text};
+use super::text::{self, H3Text, H3Text32, PictureLabel};
 use super::vae::{self, H3Vae};
 use super::PH3_SIGMAS;
 use crate::model::vision::{self, VisionConfig, VisionFeatures, VisionTower};
@@ -32,9 +40,27 @@ pub const EDIT_AREA: usize = 2048 * 2048;
 /// At most one picture to edit and seven references.
 pub const MAX_PICTURES: usize = 8;
 
-/// P-H3-Image's files in a ComfyUI-layout `models` folder (PrunaAI/P-H3-Image-Comfy's names).
+/// MiniMax-H3-Image's canvas side when a request names no size (the model's tuned area).
+pub const MINIMAX_SIZE: usize = 2048;
+/// MiniMax-H3-Image's pictures: the encoder's copy has this short edge, the VAE's a short
+/// edge between it and [`MINIMAX_REF_MAX`].
+pub const MINIMAX_REF_SHORT: usize = 1024;
+pub const MINIMAX_REF_MAX: usize = 2048;
+
+/// Which H3 image model a set of files is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum H3Kind {
+    /// PrunaAI's P-H3-Image: Qwen3-VL-4B and a text connector, eight sigmas.
+    PH3,
+    /// MiniMax-H3-Image: Qwen3-VL-32B, six distilled steps, 16 MP.
+    MiniMax,
+}
+
+/// An H3 image model's files in a ComfyUI-layout `models` folder (PrunaAI/P-H3-Image-Comfy's
+/// and Comfy-Org's names).
 #[derive(Clone, Debug)]
 pub struct H3Files {
+    pub kind: H3Kind,
     pub dit: PathBuf,
     pub text: PathBuf,
     pub vae: PathBuf,
@@ -64,9 +90,26 @@ fn find(dir: &Path, names: &[&str], env: &str) -> Option<PathBuf> {
 /// `QIR_H3_VAE` pick other files (the quality comparisons).
 pub fn find_files(root: &Path) -> Option<H3Files> {
     Some(H3Files {
+        kind: H3Kind::PH3,
         dit: find(&root.join("diffusion_models"), DIT, "QIR_H3_DIT")?,
         text: find(&root.join("text_encoders"), TEXT, "QIR_H3_TEXT")?,
         vae: find(&root.join("vae"), VAE, "QIR_H3_VAE")?,
+        tokenizer: crate::comfy_files::tokenizer_dir(root)?,
+    })
+}
+
+const MM_DIT: &[&str] = &["minimax_h3_image_pruned_int8_convrot.safetensors", "minimax_h3_image_int8_convrot.safetensors", "minimax_h3_image_bf16.safetensors"];
+const MM_TEXT: &[&str] = &["qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"];
+const MM_VAE: &[&str] = &["minimax_h3_image_vae_fp16.safetensors", "minimax_h3_image_vae_bf16.safetensors"];
+
+/// MiniMax-H3-Image under `root`, when every file is there. `QIR_MMH3_DIT`, `QIR_MMH3_TEXT`
+/// and `QIR_MMH3_VAE` pick other files.
+pub fn find_minimax_files(root: &Path) -> Option<H3Files> {
+    Some(H3Files {
+        kind: H3Kind::MiniMax,
+        dit: find(&root.join("diffusion_models"), MM_DIT, "QIR_MMH3_DIT")?,
+        text: find(&root.join("text_encoders"), MM_TEXT, "QIR_MMH3_TEXT")?,
+        vae: find(&root.join("vae"), MM_VAE, "QIR_MMH3_VAE")?,
         tokenizer: crate::comfy_files::tokenizer_dir(root)?,
     })
 }
@@ -95,10 +138,18 @@ impl H3Pipeline {
         let tok = crate::comfy_files::qwen_tokenizer(&files.tokenizer)?;
         progress(0.0, "Loading the transformer");
         let t0 = Instant::now();
-        let dit = H3Dit::load(&Weights::open(&files.dit, &dev, dtype, true)?).context("the P-H3-Image DiT")?;
+        let dit = H3Dit::load(&Weights::open(&files.dit, &dev, dtype, true)?).context("the H3 image DiT")?;
+        if files.kind == H3Kind::MiniMax {
+            anyhow::ensure!(dit.pdd_sigmas().is_some() && !dit.config().audio, "{}: not a MiniMax-H3-Image transformer", files.dit.display());
+        }
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "H3 DiT loaded");
         progress(1.0, "Loaded");
         Ok(Self { dev, dtype, tok, files: files.clone(), dit, vae: Mutex::new(None), cond: Mutex::new(None) })
+    }
+
+    /// Which model is loaded.
+    pub fn kind(&self) -> H3Kind {
+        self.files.kind
     }
 
     pub fn device(&self) -> &Device {
@@ -115,7 +166,7 @@ impl H3Pipeline {
         let mut slot = self.vae.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             let t0 = Instant::now();
-            *slot = Some(H3Vae::load(&Weights::open(&self.files.vae, &self.dev, self.dtype, true)?).context("the P-H3-Image VAE")?);
+            *slot = Some(H3Vae::load(&Weights::open(&self.files.vae, &self.dev, self.dtype, true)?).context("the H3 image VAE")?);
             tracing::info!(load_s = t0.elapsed().as_secs_f32(), "H3 VAE loaded");
         }
         run(slot.as_ref().ok_or_else(|| anyhow::anyhow!("no VAE"))?)
@@ -133,29 +184,10 @@ impl H3Pipeline {
         *self.vae.lock().unwrap_or_else(|e| e.into_inner()) = None;
         crate::device::trim_pool(&self.dev);
         let t0 = Instant::now();
-        let features = if pictures.is_empty() {
-            Vec::new()
-        } else {
-            let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&self.files.text], DType::F32, &self.dev)? };
-            let tower = VisionTower::load(&VisionConfig::qwen3vl_4b(), vb.pp("model").pp("visual")).context("the Qwen3-VL-4B vision tower")?;
-            pictures
-                .iter()
-                .map(|p| -> Result<VisionFeatures> {
-                    let (w, h) = text::size_within_area(p.width, p.height, text::VISION_PIXELS);
-                    let rgb = resized_rgb(p, w, h)?;
-                    let rgb = Tensor::from_vec(rgb, (h, w, 3), &self.dev)?.permute((2, 0, 1))?.to_dtype(DType::F32)?.affine(1.0 / 255.0, 0.0)?;
-                    let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
-                    let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
-                    let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
-                    tower.forward(&patches, gh, gw)
-                })
-                .collect::<Result<Vec<_>>>()?
+        let c = match self.files.kind {
+            H3Kind::PH3 => self.condition_ph3(prompt, pictures)?,
+            H3Kind::MiniMax => self.condition_minimax(prompt, pictures)?,
         };
-        let te = H3Text::load(&Weights::open(&self.files.text, &self.dev, self.dtype, true)?).context("the P-H3-Image text encoder")?;
-        let ids = text::token_ids(&self.tok, prompt, pictures.len())?;
-        let c = te.encode(&ids, &features.iter().collect::<Vec<_>>())?;
-        drop(te);
-        drop(features);
         self.dev.synchronize()?;
         crate::device::trim_pool(&self.dev);
         tracing::info!(encode_s = t0.elapsed().as_secs_f32(), rows = c.tags.len(), "H3 prompt encoded");
@@ -163,12 +195,62 @@ impl H3Pipeline {
         Ok((c.states, c.tags))
     }
 
+    /// A picture's rows from `tower`, the picture first scaled to `size` (the model's rule for
+    /// the encoder's copy) and then to the tower's own grid.
+    fn vision_rows(&self, tower: &VisionTower, p: &RefImage, size: (usize, usize)) -> Result<VisionFeatures> {
+        let (w, h) = size;
+        let rgb = resized_rgb(p, w, h)?;
+        let rgb = Tensor::from_vec(rgb, (h, w, 3), &self.dev)?.permute((2, 0, 1))?.to_dtype(DType::F32)?.affine(1.0 / 255.0, 0.0)?;
+        let (vw, vh) = vision::vit_size(w, h, 3136, 12_845_056);
+        let rgb = if (vw, vh) == (w, h) { rgb } else { vision::resize_bilinear(&rgb, vh, vw)? };
+        let (patches, gh, gw) = vision::patchify(&rgb, tower.config())?;
+        tower.forward(&patches, gh, gw)
+    }
+
+    /// P-H3-Image: Qwen3-VL-4B's five taps through the text connector, the encoder loaded
+    /// for it and dropped after.
+    fn condition_ph3(&self, prompt: &str, pictures: &[RefImage]) -> Result<text::Conditioning> {
+        let features = if pictures.is_empty() {
+            Vec::new()
+        } else {
+            let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&self.files.text], DType::F32, &self.dev)? };
+            let tower = VisionTower::load(&VisionConfig::qwen3vl_4b(), vb.pp("model").pp("visual")).context("the Qwen3-VL-4B vision tower")?;
+            pictures.iter().map(|p| self.vision_rows(&tower, p, text::size_within_area(p.width, p.height, text::VISION_PIXELS))).collect::<Result<Vec<_>>>()?
+        };
+        let te = H3Text::load(&Weights::open(&self.files.text, &self.dev, self.dtype, true)?).context("the P-H3-Image text encoder")?;
+        let ids = text::token_ids(&self.tok, prompt, pictures.len())?;
+        te.encode(&ids, &features.iter().collect::<Vec<_>>())
+    }
+
+    /// MiniMax-H3-Image: the stream after Qwen3-VL-32B's layer 50, its layers on the card one
+    /// at a time.
+    fn condition_minimax(&self, prompt: &str, pictures: &[RefImage]) -> Result<text::Conditioning> {
+        let features = if pictures.is_empty() {
+            Vec::new()
+        } else {
+            let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[&self.files.text], DType::F32, &self.dev)? };
+            let root = if vb.contains_tensor("model.visual.pos_embed.weight") { vb.pp("model").pp("visual") } else { vb.pp("visual") };
+            let tower = VisionTower::load(&VisionConfig::qwen3vl_32b(), root).context("the Qwen3-VL-32B vision tower")?;
+            let rows = pictures
+                .iter()
+                .map(|p| self.vision_rows(&tower, p, text::size_short_edge(p.width, p.height, MINIMAX_REF_SHORT, MINIMAX_REF_SHORT)))
+                .collect::<Result<Vec<_>>>()?;
+            drop(tower);
+            crate::device::trim_pool(&self.dev);
+            rows
+        };
+        let w = Weights::open(&self.files.text, &self.dev, self.dtype, true)?;
+        let te = H3Text32::load(&w).context("the MiniMax-H3-Image text encoder")?;
+        let ids = text::token_ids_labelled(&self.tok, prompt, pictures.len(), PictureLabel::Plain)?;
+        te.encode(&w, &ids, &features.iter().collect::<Vec<_>>())
+    }
+
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
     /// `req.steps` 8 runs the fixed sigmas; any other count the `simple` schedule at shift
     /// [`crate::h3::LORA_SHIFT`] (the 2-step LoRA's).
     pub fn generate(&self, req: &Request, progress: &mut dyn FnMut(f32, &str), cancel: &dyn Fn() -> bool) -> Result<Picture> {
         crate::device::bind_thread(&self.dev);
-        anyhow::ensure!(req.references.len() <= MAX_PICTURES, "P-H3-Image takes at most {MAX_PICTURES} pictures ({} given)", req.references.len());
+        anyhow::ensure!(req.references.len() <= MAX_PICTURES, "an H3 image model takes at most {MAX_PICTURES} pictures ({} given)", req.references.len());
         let check = || -> Result<()> {
             if cancel() {
                 Err(Cancelled.into())
@@ -177,31 +259,43 @@ impl H3Pipeline {
             }
         };
         let mut timings = Timings::default();
-        let area = if req.width > 0 && req.height > 0 {
+        let minimax = self.files.kind == H3Kind::MiniMax;
+        let sized = req.width > 0 && req.height > 0;
+        let area = if sized {
             req.width * req.height
         } else if req.references.is_empty() {
             text::IMAGE_SIZE * text::IMAGE_SIZE
         } else {
             EDIT_AREA
         };
+        // what the VAE reads of a picture: within the output's area (P-H3-Image), or its
+        // short edge between 1024 and 2048 whatever the output (MiniMax-H3-Image)
+        let ref_size = |p: &RefImage| -> (usize, usize) {
+            if minimax {
+                text::size_short_edge(p.width, p.height, MINIMAX_REF_SHORT, MINIMAX_REF_MAX)
+            } else {
+                text::size_within_area(p.width, p.height, area)
+            }
+        };
         let (w, h) = match req.references.first() {
-            Some(p) if req.width == 0 || req.height == 0 => text::size_within_area(p.width, p.height, area),
-            _ if req.width == 0 || req.height == 0 => (text::IMAGE_SIZE, text::IMAGE_SIZE),
-            _ => (req.width, req.height),
+            _ if sized => (req.width, req.height),
+            Some(p) => ref_size(p),
+            None if minimax => (MINIMAX_SIZE, MINIMAX_SIZE),
+            None => (text::IMAGE_SIZE, text::IMAGE_SIZE),
         };
         anyhow::ensure!(w.is_multiple_of(32) && h.is_multiple_of(32), "the picture's sides must be multiples of 32 ({w}x{h} asked)");
 
         check()?;
         progress(0.02, "Encoding the prompt");
         let t0 = Instant::now();
-        let prompt = text::edit_prompt(&req.prompt, !req.references.is_empty());
+        let prompt = if minimax { req.prompt.clone() } else { text::edit_prompt(&req.prompt, !req.references.is_empty()) };
         let (states, tags) = self.condition(&prompt, &req.references)?;
         // the references through the VAE, each within the output's area
         let mut refs = Vec::new();
         if !req.references.is_empty() {
             progress(0.04, "Reading the pictures");
             for p in &req.references {
-                let (rw, rh) = text::size_within_area(p.width, p.height, area);
+                let (rw, rh) = ref_size(p);
                 let rgb = resized_rgb(p, rw, rh)?;
                 let x = Tensor::from_vec(rgb, (rh, rw, 3), &self.dev)?.permute((2, 0, 1))?.to_dtype(DType::F32)?.affine(2.0 / 255.0, -1.0)?;
                 refs.push(self.with_vae(|v| v.encode(&x))?);
@@ -227,7 +321,11 @@ impl H3Pipeline {
             Some(t) => Some(Tensor::from_vec(noise.next().unwrap_or_default(), (AUDIO_CHANNELS, 2, t), &self.dev)?),
             None => None,
         };
-        let sig = sigmas(req.steps)?;
+        let sig = match self.dit.pdd_sigmas() {
+            // the grid the heads were distilled on; another count is the 2-step LoRA's
+            Some(grid) if req.steps == 0 || req.steps == grid.len() - 1 => grid.to_vec(),
+            _ => sigmas(req.steps)?,
+        };
         if !req.loras.is_empty() {
             tracing::info!(loras = ?req.loras, steps = sig.len() - 1, "H3 LoRAs on");
         }
