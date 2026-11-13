@@ -497,7 +497,9 @@ pub(crate) fn list_things(backend: &dyn GenerativeBackend, picture: &Rgba8, k: u
         let t = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ');
         let t = t.strip_prefix("the ").or_else(|| t.strip_prefix("a ")).or_else(|| t.strip_prefix("an ")).unwrap_or(t).trim();
         let words = t.split_whitespace().count();
-        if t.is_empty() || words > 4 || t.chars().count() > 40 || out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
+        // "None": nothing to list (one-word answers count since 2026-11-12).
+        let nothing = ["none", "nothing", "n/a", "no", "unknown"].iter().any(|n| t.eq_ignore_ascii_case(n));
+        if t.is_empty() || nothing || words > 4 || t.chars().count() > 40 || out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
             continue;
         }
         out.push(t.to_lowercase());
