@@ -637,13 +637,15 @@ pub(crate) fn write_reply(
     Ok((reply.trim().to_string(), out.len(), prompt.len()))
 }
 
-/// A Qwen3.5-9B file that can write (first of `names` under `root`'s `text_encoders`) and its
-/// tokenizer, for a model that borrows it as a prompt writer.
-pub fn find_writer(root: &Path, names: &[&str]) -> Option<(PathBuf, PathBuf)> {
-    let text = find(&root.join("text_encoders"), names)?;
-    let own = root.join("text_encoders").join(TOKENIZER_DIR).join("tokenizer.json");
-    let beside = text.parent().map(|d| d.join("tokenizer.json"));
-    Some((text, std::iter::once(own).chain(beside).find(|p| p.is_file())?))
+/// The Qwen3.5-9B files that can write (those of `names` under `root`'s `text_encoders`, in
+/// that order) and their tokenizer, for a model that borrows one as a prompt writer.
+pub fn find_writers(root: &Path, names: &[&str]) -> Option<(Vec<PathBuf>, PathBuf)> {
+    let dir = root.join("text_encoders");
+    let texts: Vec<PathBuf> = names.iter().filter_map(|n| find(&dir, &[n])).collect();
+    let own = dir.join(TOKENIZER_DIR).join("tokenizer.json");
+    let beside = texts.iter().filter_map(|t| t.parent().map(|d| d.join("tokenizer.json")));
+    let tokenizer = std::iter::once(own).chain(beside).find(|p| p.is_file())?;
+    (!texts.is_empty()).then_some((texts, tokenizer))
 }
 
 /// The `lm_head` of a Qwen3.5-9B file, under any of its roots.

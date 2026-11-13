@@ -66,9 +66,10 @@ pub struct H3Files {
     pub vae: PathBuf,
     /// ComfyUI's `qwen25_tokenizer` folder.
     pub tokenizer: PathBuf,
-    /// A Qwen3.5-9B file that writes prompts and its `tokenizer.json`, where there is one
-    /// (MiniMax's own W4A8 file, else MOSS-Image's encoder: the same model).
-    pub writer: Option<(PathBuf, PathBuf)>,
+    /// The Qwen3.5-9B files that can write prompts, in the order they are tried, and their
+    /// `tokenizer.json`, where there are any (MOSS-Image's encoder, MiniMax's own W4A8 file:
+    /// the same model).
+    pub writer: Option<(Vec<PathBuf>, PathBuf)>,
 }
 
 const DIT: &[&str] = &["p-h3-image_int8_convrot.safetensors", "p-h3-image_bf16.safetensors"];
@@ -105,7 +106,7 @@ pub fn find_files(root: &Path) -> Option<H3Files> {
 const MM_DIT: &[&str] = &["minimax_h3_image_pruned_int8_convrot.safetensors", "minimax_h3_image_int8_convrot.safetensors", "minimax_h3_image_bf16.safetensors"];
 const MM_TEXT: &[&str] = &["qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"];
 const MM_VAE: &[&str] = &["minimax_h3_image_vae_fp16.safetensors", "minimax_h3_image_vae_bf16.safetensors"];
-const MM_WRITER: &[&str] = &["qwen3.5_9b_w4a8_gptq.safetensors", "qwen3.5_9b_int8_convrot.safetensors"];
+const MM_WRITER: &[&str] = &["qwen3.5_9b_int8_convrot.safetensors", "qwen3.5_9b_w4a8_gptq.safetensors"];
 /// With less free memory than this the transformer leaves the card while the writer answers.
 const WRITER_ROOM: usize = 12 << 30;
 
@@ -118,7 +119,7 @@ pub fn find_minimax_files(root: &Path) -> Option<H3Files> {
         text: find(&root.join("text_encoders"), MM_TEXT, "QIR_MMH3_TEXT")?,
         vae: find(&root.join("vae"), MM_VAE, "QIR_MMH3_VAE")?,
         tokenizer: crate::comfy_files::tokenizer_dir(root)?,
-        writer: crate::moss::pipeline::find_writer(root, MM_WRITER),
+        writer: crate::moss::pipeline::find_writers(root, MM_WRITER),
     })
 }
 
@@ -181,7 +182,7 @@ impl H3Pipeline {
     pub fn chat(&self, system: &str, user: &str, opts: &crate::pipeline::ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
         use crate::moss::pipeline::{load_lm_head, write_reply};
         use crate::moss::text::{Qwen35Text, TextConfig};
-        let (file, tokenizer) = self.files.writer.as_ref().context("no Qwen3.5-9B prompt writer file beside this model")?;
+        let (files, tokenizer) = self.files.writer.as_ref().context("no Qwen3.5-9B prompt writer file beside this model")?;
         crate::device::bind_thread(&self.dev);
         let t0 = Instant::now();
         let tok = Tokenizer::from_file(tokenizer).map_err(|e| anyhow::anyhow!("load {}: {e}", tokenizer.display()))?;
@@ -190,9 +191,29 @@ impl H3Pipeline {
         if swapped {
             crate::device::trim_pool(&self.dev);
         }
-        let w = Weights::open(file, &self.dev, self.dtype, true)?;
-        let te = Qwen35Text::load(&TextConfig::qwen35_9b(), &w).context("the Qwen3.5-9B prompt writer")?;
-        let head = load_lm_head(&w)?;
+        // the first file that loads; one that does not is named in the log and the error
+        let load = |file: &PathBuf| -> Result<(Weights, Qwen35Text, crate::moss::weights::QLinear)> {
+            let w = Weights::open(file, &self.dev, self.dtype, true)?;
+            let te = Qwen35Text::load(&TextConfig::qwen35_9b(), &w)?;
+            let head = load_lm_head(&w)?;
+            Ok((w, te, head))
+        };
+        let mut loaded = None;
+        let mut failed = Vec::new();
+        for file in files {
+            match load(file) {
+                Ok(l) => {
+                    loaded = Some(l);
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(file = %file.display(), error = %format!("{e:#}"), "this prompt writer file did not load");
+                    failed.push(format!("{}: {e:#}", file.display()));
+                    crate::device::trim_pool(&self.dev);
+                }
+            }
+        }
+        let (w, te, head) = loaded.with_context(|| format!("no Qwen3.5-9B prompt writer loaded ({})", failed.join("; ")))?;
         let load_s = t0.elapsed().as_secs_f32();
         let reply = write_reply(&tok, &te, &head, system, user, opts, cancel);
         drop((te, head, w));

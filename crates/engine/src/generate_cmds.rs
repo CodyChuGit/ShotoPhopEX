@@ -414,7 +414,7 @@ const ENHANCE_IMAGE_MAX_TOKENS: u64 = 220;
 /// and every word spelled out.
 const ENHANCE_IMAGE_ULTRA_SYSTEM: &str = "You write the caption a very high resolution text-to-image model draws from. Rewrite the user's idea as one fluent English paragraph of 150 to 300 words in which every part of the picture is planned and can be inspected up close.\n\
 First decide what the picture is. A scene or photograph: say who or what is in it and how many, the pose and which way each subject faces the camera, what touches what, the scale, the place, the light and where it comes from, the lens and distance, then the fine detail a close look would find: skin, hair, fabric weave, wear, dust, reflections. A designed page such as a poster, cover, label, character sheet, product board, infographic, diagram or screen: lay it out like a designer, naming each area of the page, what it shows, and how the areas are ordered, aligned and separated; leave no area blank unless the user asks for empty space.\n\
-Keep every fact the user gave: subjects, counts, actions, colours, positions, style and medium. Do not add people, animals or main objects they did not ask for. Write every word that must appear in the picture exactly, in double quotes, and say where it sits and how it is lettered; invent wording only where a designed page needs it, and keep it short and real. Replace mood words and praise with things that can be seen. Never write masterpiece, best quality, 8k, 4k or hyperrealistic.\n\
+Keep every fact the user gave: subjects, counts, actions, colours, positions, style and medium. Do not add people, animals or main objects they did not ask for. Write every word that must appear in the picture exactly, in double quotes, and say where it sits and how it is lettered; never invent names of venues, people, brands or sponsors, dates, prices, addresses or contact details; where a designed page needs more wording than the user gave, repeat or rearrange the user's own words. Replace mood words and praise with things that can be seen. Never write masterpiece, best quality, 8k, 4k or hyperrealistic.\n\
 Reply with the paragraph only: no title, no bullets, no JSON, no quotes around it, no markdown.";
 
 /// The longest Ultra rewrite, in tokens (about 450 words).
@@ -5505,6 +5505,10 @@ pub fn likely_auto(command: &str, quality: &str) -> &'static str {
 /// [`likely_auto`] in this session: the Qwen-Image-2.1 template where `auto` runs it on the
 /// native worker ([`native21_auto`]), else the first of the server's order.
 pub fn likely_auto_in(s: &Session, command: &str, quality: &str) -> &'static str {
+    // Quality Ultra edits on the 16 MP model where it is installed (as `plan_edit` does).
+    if command == EDIT && ultra(s) && template_files_present(s, ULTRA_EDIT_TEMPLATE) {
+        return ULTRA_EDIT_TEMPLATE;
+    }
     auto_shown(s, command, false).unwrap_or_else(|| likely_auto(command, quality))
 }
 
@@ -5529,7 +5533,9 @@ fn auto_shown(s: &Session, command: &str, removal: bool) -> Option<&'static str>
 pub fn estimate_seconds(template: &str, width: u32, height: u32, count: u32, references: u32) -> Option<f32> {
     let t = template::find(template).ok()?;
     let (w, h) = match t.meta.task {
-        Task::Fill | Task::Expand | Task::Edit => request_size(width, height),
+        // an H3 edit goes at its own, larger size
+        Task::Edit => request_size_within(width, height, edit_request_pixels(template, template == ULTRA_EDIT_TEMPLATE)),
+        Task::Fill | Task::Expand => request_size(width, height),
         _ => (width, height),
     };
     Some(t.meta.estimate_seconds(w, h, count, references))
