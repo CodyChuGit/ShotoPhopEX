@@ -346,7 +346,11 @@ fn best_runs_krea2_on_er_sde_and_beta_balanced_on_euler() {
 fn best_renders_h3_at_eight_megapixels() {
     use crate::generate_cmds::image_quality_size;
     assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 1024), (2912, 2912));
-    assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 512), (4096, 2048));
+    // The guide's 8 MP sizes for the common shapes.
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 768), (3360, 2496));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1536, 1024), (3552, 2368));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1280, 720), (3872, 2176));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 768, 1024), (2496, 3360));
     assert_eq!(image_quality_size("p-h3-image/image", "balanced", 1024, 1024), (1024, 1024));
     assert_eq!(image_quality_size("p-h3-image/image", "best", 3200, 3200), (3200, 3200), "a larger ask is kept");
 }

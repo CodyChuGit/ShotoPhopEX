@@ -2478,8 +2478,9 @@ pub fn image_quality_size(template: &str, quality: &str, width: u32, height: u32
         return (width, height);
     }
     let k = (target as f64 / area as f64).sqrt();
-    let most = if template == "p-h3-image/image" { 4096 } else { 2048 };
-    let fit = |v: u32| (((f64::from(v) * k) as u32) / SIZE_STEP * SIZE_STEP).clamp(MIN_SIDE, most);
+    // H3 on its guide's grid (multiples of 32: 2912², 3360×2496, 3552×2368, 3872×2176).
+    let (most, step) = if template == "p-h3-image/image" { (4096, 32) } else { (2048, SIZE_STEP) };
+    let fit = |v: u32| (((f64::from(v) * k) as u32) / step * step).clamp(MIN_SIDE, most);
     (fit(width), fit(height))
 }
 
