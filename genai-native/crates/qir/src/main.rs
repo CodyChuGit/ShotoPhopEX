@@ -37,6 +37,28 @@ impl ConvrotCacheArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Picture to 3D gaussian splat (.ply) with Idol: an RGBA picture (alpha = the object) or an
+    /// RGB picture plus a mask picture.
+    Idol {
+        /// A ComfyUI-layout `models` folder holding Idol's files.
+        #[arg(long)]
+        models: std::path::PathBuf,
+        #[arg(long)]
+        image: std::path::PathBuf,
+        /// A mask picture (white = object) when the picture has no alpha.
+        #[arg(long)]
+        mask: Option<std::path::PathBuf>,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        #[arg(long, default_value_t = 50)]
+        steps: usize,
+        #[arg(long, default_value_t = 4.0)]
+        cfg: f32,
+        #[arg(long, default_value_t = 262_144)]
+        gaussians: usize,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// GPU/CPU smoke test: allocate, matmul, reduce — proves the backend end to end.
     Smoke {
         /// Square matrix dimension.
@@ -578,6 +600,7 @@ fn main() -> Result<()> {
 
     match Cli::parse().command {
         Command::Smoke { n } => smoke(n),
+        Command::Idol { models, image, mask, seed, steps, cfg, gaussians, out } => idol(&models, &image, mask.as_deref(), seed, steps, cfg, gaussians, &out),
         Command::ConvrotTest => convrot_test(),
         Command::GemmBench { iters, layered: true, m, .. } => layered_gemm_bench(iters, m),
         Command::GemmBench { iters, batch, txt, .. } => gemm_bench(iters, batch, txt),
@@ -2274,5 +2297,29 @@ fn info(weights: &std::path::Path) -> Result<()> {
     for f in &set.files {
         println!("  {}", f.display());
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn idol(models: &std::path::Path, image: &std::path::Path, mask: Option<&std::path::Path>, seed: u64, steps: usize, cfg: f32, gaussians: usize, out: &std::path::Path) -> Result<()> {
+    use qwen_image_rs::idol::{decoder, pipeline};
+    let files = pipeline::find_files(models).with_context(|| format!("Idol's files not found under {}", models.display()))?;
+    let mut pic = image::open(image)?.to_rgba8();
+    if let Some(m) = mask {
+        let m = image::open(m)?.to_luma8();
+        anyhow::ensure!(m.dimensions() == pic.dimensions(), "the mask is {:?}, the picture {:?}", m.dimensions(), pic.dimensions());
+        for (p, a) in pic.pixels_mut().zip(m.pixels()) {
+            p.0[3] = a.0[0];
+        }
+    }
+    let mut req = pipeline::Request::new(pic, seed);
+    req.steps = steps;
+    req.cfg = cfg;
+    req.num_gaussians = gaussians;
+    let t0 = std::time::Instant::now();
+    let pipe = pipeline::IdolPipeline::new(files)?;
+    let splat = pipe.generate(&req, &mut |p, s| eprintln!("{:5.1}% {s} ({:.1} s)", p * 100.0, t0.elapsed().as_secs_f32()), &|| false)?;
+    std::fs::write(out, decoder::ply_bytes(&splat))?;
+    eprintln!("{} gaussians to {} in {:.1} s", splat.len(), out.display(), t0.elapsed().as_secs_f32());
     Ok(())
 }
