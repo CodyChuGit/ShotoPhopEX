@@ -1009,9 +1009,16 @@ pub(crate) fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, current: &T, op
         } else {
             t.text_dim
         };
-        let font = crate::theme::medium(12.0);
-        let galley = ui.painter().layout_no_wrap(o.label.to_string(), font, color);
         let icon_w = if o.icon.is_some() { 18.0 } else { 0.0 };
+        // A text-only label too wide for its segment (four segments in a narrow dock) is set
+        // smaller instead of being clipped at both ends.
+        let lay = |size: f32| ui.painter().layout_no_wrap(o.label.to_string(), crate::theme::medium(size), color);
+        let mut galley = lay(12.0);
+        for size in [11.0, 10.0] {
+            if o.icon.is_none() && galley.size().x + 4.0 > rect.width() {
+                galley = lay(size);
+            }
+        }
         let fits = icon_w + galley.size().x + 8.0 <= rect.width();
         let show_label = fits || o.icon.is_none();
         let content_w = if show_label { icon_w + galley.size().x } else { 14.0 };
