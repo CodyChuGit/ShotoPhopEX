@@ -131,6 +131,26 @@ packaging/macos/package.sh --arch aarch64     # quicker, host-only
 open dist/release/shotophopex-*-macos-*.dmg
 ```
 
+#### Signed and notarized on your own Mac (ShotoPhopEX releases)
+
+ShotoPhopEX's DMG is built on a Mac, not in CI. With a Developer ID Application certificate in the
+login keychain (Xcode > Settings > Accounts > Manage Certificates > + > Developer ID Application)
+and a notarytool profile saved once, the same script signs, notarizes and staples everything:
+
+```sh
+# once: prompts for the Apple ID's app-specific password and keeps it in the login keychain
+xcrun notarytool store-credentials shotophopex-notary --apple-id <apple id> --team-id <team id>
+
+# every release
+export MACOS_SIGN_IDENTITY="Developer ID Application" NOTARY_PROFILE=shotophopex-notary APPLE_TEAM_ID=<team id>
+packaging/macos/package.sh --arch aarch64
+packaging/macos/verify.sh --arch aarch64
+```
+
+`MACOS_SIGN_IDENTITY` can be any unique part of the certificate's name (`security find-identity
+-v -p codesigning` lists them). `APPLE_TEAM_ID` is optional here; `verify.sh` uses it to check that
+the binaries carry that team's signature.
+
 ### Windows
 
 `packaging/windows/package.ps1 -Arch x64|x86` builds with `-C target-feature=+crt-static`.

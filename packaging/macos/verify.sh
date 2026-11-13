@@ -9,7 +9,8 @@
 # Usage: packaging/macos/verify.sh [--arch aarch64]  (Apple Silicon only, as package.sh)
 #
 # With a real signing identity and notarization credentials in the environment (the same
-# MACOS_SIGN_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID that package.sh uses), every
+# MACOS_SIGN_IDENTITY plus NOTARY_PROFILE, or APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID, that
+# package.sh uses), every
 # check is strict and a failure exits non-zero. Without them (local ad-hoc builds, or a release run
 # whose secrets are missing) only the signature's integrity is checked and the rest is a warning,
 # matching package.sh. Nothing here reads or prints a secret's value; it only tests whether one is set.
@@ -26,7 +27,7 @@ ARCH=aarch64
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;
-    -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -41,8 +42,11 @@ DMG="$DIST/shotophopex-$VERSION-macos-$ARCH.dmg"
 CLI_ZIP="$DIST/shotophopex-cli-$VERSION-macos-$ARCH.zip"
 IDENTITY="${MACOS_SIGN_IDENTITY:--}"
 STRICT=0
-if [[ "$IDENTITY" != "-" ]] && [[ -n "${APPLE_ID:-}" ]] && [[ -n "${APPLE_PASSWORD:-}" ]] && [[ -n "${APPLE_TEAM_ID:-}" ]]; then
-  STRICT=1
+if [[ "$IDENTITY" != "-" ]]; then
+  if [[ -n "${NOTARY_PROFILE:-}" ]] \
+    || { [[ -n "${APPLE_ID:-}" ]] && [[ -n "${APPLE_PASSWORD:-}" ]] && [[ -n "${APPLE_TEAM_ID:-}" ]]; }; then
+    STRICT=1
+  fi
 fi
 
 FAILED=0
