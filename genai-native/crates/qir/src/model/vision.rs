@@ -54,6 +54,12 @@ impl VisionConfig {
         Self { hidden_size: 1024, intermediate_size: 4096, depth: 24, deepstack_visual_indexes: vec![5, 11, 17], out_hidden_size: 2560, ..Self::default() }
     }
 
+    /// Qwen3-VL-32B's tower (MiniMax H3's encoder; ComfyUI's `QWEN3VL_VISION["qwen3vl_32b"]`):
+    /// the 8B's tower into the 5120-wide language model.
+    pub fn qwen3vl_32b() -> Self {
+        Self { out_hidden_size: 5120, ..Self::default() }
+    }
+
     /// Values per flattened patch: `C · T · P · P`.
     pub fn patch_dim(&self) -> usize {
         self.in_channels * self.temporal_patch_size * self.patch_size * self.patch_size

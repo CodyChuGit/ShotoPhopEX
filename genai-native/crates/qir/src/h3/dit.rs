@@ -446,6 +446,12 @@ impl H3Dit {
         })
     }
 
+    /// The sigma grid the PDD heads were distilled on (MiniMax-H3-Image: the file's six steps),
+    /// `None` for a single-head model.
+    pub fn pdd_sigmas(&self) -> Option<&[f32]> {
+        (self.cfg.pdd_steps > 1).then_some(self.pdd_grid.as_slice())
+    }
+
     pub fn config(&self) -> &H3Config {
         &self.cfg
     }

@@ -57,6 +57,7 @@ pub fn family_style(family: &str) -> FamilyStyle {
         "qwen3-vl" => FamilyStyle { name: "Qwen3-VL", color: hex(0x64748b), initial: 'V' },
         "moss-image" => FamilyStyle { name: "MOSS-Image", color: hex(0x0d9488), initial: 'M' },
         "p-h3-image" => FamilyStyle { name: "H3 Image", color: hex(0xe11d48), initial: 'H' },
+        "minimax-h3-image" => FamilyStyle { name: "MiniMax H3 Image", color: hex(0xbe123c), initial: 'H' },
         f if f.starts_with("flux") => FamilyStyle { name: "FLUX", color: hex(0x0ea5e9), initial: 'F' },
         _ => FamilyStyle { name: "Other", color: None, initial: '•' },
     }
