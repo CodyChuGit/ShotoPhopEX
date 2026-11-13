@@ -215,8 +215,12 @@ fn a_swap_sends_the_bfs_lora_and_prompt() {
 
 #[test]
 fn an_h3_edit_is_sent_at_four_megapixels() {
-    assert_eq!(edit_request_pixels("p-h3-image/edit"), 2048 * 2048);
-    assert_eq!(edit_request_pixels("qwen-edit-2511/edit"), 1024 * 1024);
-    assert_eq!(request_size_within(4000, 3000, edit_request_pixels("p-h3-image/edit")), (2352, 1760));
-    assert_eq!(request_size_within(1600, 1200, edit_request_pixels("p-h3-image/edit")), (1600, 1200), "a picture under 4 MP goes as it is");
+    assert_eq!(edit_request_pixels("p-h3-image/edit", false), 2048 * 2048);
+    assert_eq!(edit_request_pixels("qwen-edit-2511/edit", true), 1024 * 1024);
+    assert_eq!(request_size_within(4000, 3000, edit_request_pixels("p-h3-image/edit", false)), (2352, 1760));
+    assert_eq!(request_size_within(1600, 1200, edit_request_pixels("p-h3-image/edit", false)), (1600, 1200), "a picture under 4 MP goes as it is");
+    // Quality Ultra: the 16 MP model edits a large picture whole
+    assert_eq!(edit_request_pixels("minimax-h3-image/edit", false), 2048 * 2048);
+    assert_eq!(request_size_within(4000, 3000, edit_request_pixels("minimax-h3-image/edit", true)), (4000, 3000));
+    assert_eq!(edit_request_pixels("p-h3-image/edit", true), 2048 * 2048);
 }

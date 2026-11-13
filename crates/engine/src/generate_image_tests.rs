@@ -383,14 +383,13 @@ fn ultra_is_best_with_the_16_mp_model_when_installed() {
     }
     assert!(template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
     assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
-    // a chosen template stays, and so does `best`
+    // `best` keeps the profile's template; Ultra wins over a saved default template
     s.edit_prefs(|p| p.integrations.quality = "best".into());
     assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
-    s.edit_prefs(|p| {
-        p.integrations.quality = "ultra".into();
-        p.integrations.default_image_template = "qwen-2.1/image".into();
-    });
+    s.edit_prefs(|p| p.integrations.default_image_template = "qwen-2.1/image".into());
     assert_eq!(default_image_template(&s), "qwen-2.1/image");
+    s.edit_prefs(|p| p.integrations.quality = "ultra".into());
+    assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

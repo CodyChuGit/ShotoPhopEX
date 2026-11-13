@@ -72,9 +72,14 @@ const MAX_FILL_REQUEST_PIXELS: u64 = 1024 * 1024;
 /// guide's working size, the native pipeline's own default), where the other editing models
 /// work at one.
 const H3_EDIT_REQUEST_PIXELS: u64 = 2048 * 2048;
-/// The pixels an edit on `template` is downscaled to before it is sent.
-pub(crate) fn edit_request_pixels(template: &str) -> u64 {
-    if matches!(template, "p-h3-image/edit" | "minimax-h3-image/edit") { H3_EDIT_REQUEST_PIXELS } else { MAX_FILL_REQUEST_PIXELS }
+/// The pixels an edit on `template` is downscaled to before it is sent. Under Quality Ultra
+/// (`ultra`) the 16 MP model edits a large picture at its own size, up to 16 MP.
+pub(crate) fn edit_request_pixels(template: &str, ultra: bool) -> u64 {
+    match template {
+        "minimax-h3-image/edit" if ultra => MAX_REQUEST_PIXELS,
+        "p-h3-image/edit" | "minimax-h3-image/edit" => H3_EDIT_REQUEST_PIXELS,
+        _ => MAX_FILL_REQUEST_PIXELS,
+    }
 }
 /// A small request is upscaled until its longer side is this long: the 2511 templates sample at
 /// the request's own size, and a handful of latent tokens cannot carry structure.
@@ -1376,8 +1381,12 @@ pub(crate) fn short(prompt: &str) -> String {
 /// The image template a run with none named uses: Preferences › Default Image Template, where
 /// `auto` (or nothing) is the memory profile's ([`crate::memory_profile::image_template`]).
 pub fn default_image_template(s: &Session) -> String {
+    // Quality Ultra is the 16 MP model: it wins over a saved default (a request's own
+    // `template` still wins over both).
+    if ultra(s) && template_files_present(s, ULTRA_IMAGE_TEMPLATE) {
+        return ULTRA_IMAGE_TEMPLATE.to_string();
+    }
     match s.prefs().integrations.default_image_template.trim() {
-        "" | AUTO_TEMPLATE if ultra(s) && template_files_present(s, ULTRA_IMAGE_TEMPLATE) => ULTRA_IMAGE_TEMPLATE.to_string(),
         "" | AUTO_TEMPLATE => crate::memory_profile::image_template(crate::memory_profile::active(s)).to_string(),
         t => t.to_string(),
     }
@@ -4905,6 +4914,11 @@ fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
     if auto && let Some(o) = q.as_object_mut() {
         o.remove("template");
     }
+    // Quality Ultra edits on the 16 MP model where it is installed, before any other route.
+    if auto && ultra(s) && template_files_present(s, ULTRA_EDIT_TEMPLATE) {
+        requested = ULTRA_EDIT_TEMPLATE.to_string();
+        auto = false;
+    }
     if auto && let Some(t) = native21_auto(s, EDIT, false) {
         requested = t.to_string();
         auto = false;
@@ -4935,7 +4949,7 @@ fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
     let tuning = Tuning {
         loras: loras_of(EDIT, p)?,
         fast_draft: s.prefs().integrations.fast_draft,
-        max_pixels: edit_request_pixels(&template.meta.id),
+        max_pixels: edit_request_pixels(&template.meta.id, ultra(s)),
         ..Tuning::default()
     };
     Ok(FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow: 0, erase: false, tuning })

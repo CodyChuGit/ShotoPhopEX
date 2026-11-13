@@ -50,8 +50,8 @@
       "step": 32
     },
     "estimatedSeconds": {
-      "base": 6,
-      "perMegapixel": 1.0
+      "base": 0,
+      "perMegapixel": 2.2
     },
     "pages": [
       "image"
