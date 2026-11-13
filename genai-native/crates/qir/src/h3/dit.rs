@@ -205,6 +205,20 @@ struct Attn {
     out: Lin,
     q_norm: Rms,
     k_norm: Rms,
+    /// INT8 SageAttention2 instead of exact attention ([`int8_attention`]).
+    #[cfg_attr(not(feature = "sage2"), allow(dead_code))]
+    int8: bool,
+}
+
+/// Whether a block's attention runs as INT8 SageAttention2: when its file asks for INT8
+/// attention (MiniMax-H3-Image's `comfy_attention.config`, as ComfyUI runs it; exact bf16
+/// attention is 20 of 47 s at 16 MP), unless `QIR_H3_ATTN` says `exact` or `int8`.
+fn int8_attention(file_asks: bool) -> bool {
+    match std::env::var("QIR_H3_ATTN").ok().as_deref().map(str::trim) {
+        Some("exact") => false,
+        Some("int8") => true,
+        _ => file_asks,
+    }
 }
 
 impl Attn {
@@ -214,6 +228,7 @@ impl Attn {
             out: Lin::load(w, format!("{p}.out_proj"))?,
             q_norm: Rms::load(w, &format!("{p}.q_norm.weight"), eps)?,
             k_norm: Rms::load(w, &format!("{p}.k_norm.weight"), eps)?,
+            int8: int8_attention(w.contains(&format!("{p}.comfy_attention.config"))),
         })
     }
 
@@ -235,6 +250,21 @@ impl Attn {
                     Ok(y.squeeze(0)?)
                 };
                 let (q, k) = crate::profile::scope("h3 q/k norm + rope", 0.0, dev, || Ok((norm(0, qw, self.q_norm.eps)?, norm(1, kw, self.k_norm.eps)?)))?;
+                #[cfg(feature = "sage2")]
+                if let (true, crate::sage2::AttentionImpl::Sage2(accum)) = (self.int8, crate::sage2::attention_impl()?) {
+                    // SageAttention2 on the rows as they are (already normed and turned):
+                    // quantized under the identity rotation, V in FP8
+                    use crate::sage2::{attention as sage, quant_v, rope_quant, Role};
+                    let a = crate::profile::scope("h3 attention (int8)", 0.0, dev, || {
+                        let half = head_dim / 2;
+                        let (one, zero) = (Tensor::ones((s, half), DType::BF16, dev)?, Tensor::zeros((s, half), DType::BF16, dev)?);
+                        let q = rope_quant(&q.unsqueeze(0)?, &one, &zero, Role::Query)?;
+                        let k = rope_quant(&k.unsqueeze(0)?, &one, &zero, Role::Key)?;
+                        let v = quant_v(&part(2)?.to_dtype(DType::F16)?.contiguous()?, accum)?;
+                        Ok(sage(&q, &k, &v, 1.0 / (head_dim as f32).sqrt(), false)?.reshape((s, inner))?)
+                    })?;
+                    return crate::profile::scope("h3 out linear", 0.0, dev, || self.out.forward(&a));
+                }
                 let a = crate::profile::scope("h3 attention", 0.0, dev, || attention(&q, &k, &part(2)?.squeeze(0)?.contiguous()?))?;
                 return crate::profile::scope("h3 out linear", 0.0, dev, || self.out.forward(&a));
             }
