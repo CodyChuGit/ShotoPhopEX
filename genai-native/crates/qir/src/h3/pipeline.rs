@@ -252,6 +252,7 @@ impl H3Pipeline {
         }
         self.dev.synchronize()?;
         timings.denoise_s = t0.elapsed().as_secs_f32();
+        crate::profile::report("h3 sampling");
 
         check()?;
         progress(0.92, "Decoding");
