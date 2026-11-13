@@ -99,7 +99,7 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("generate.getModels", "Get AI Models…", &["Help"], None),
     ("edit.appIcon", "App Icon…", &["Edit", "Preferences"], None),
     ("edit.search", "Search…", &["Edit"], Some("Cmd+F")),
-    ("help.artcraftWebsite", "ArtCraft Website", &["Help"], None),
+    ("help.upstreamProject", "Upstream Project on GitHub", &["Help"], None),
     ("help.github", "PhotoCraft on GitHub", &["Help"], None),
     ("help.reportIssue", "Report an Issue…", &["Help"], None),
     ("help.systemInfo", "System Info…", &["Help"], None),

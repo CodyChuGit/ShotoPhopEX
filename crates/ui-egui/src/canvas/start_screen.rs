@@ -151,9 +151,11 @@ fn render_start_rail(app: &mut PhotocraftApp, ui: &mut egui::Ui, rail_w: f32) {
 
     ui.add_space(8.0);
 
-    // ShotoPhopEX has no website or Discord of its own: its GitHub repository and ArtCraft.
+    // ShotoPhopEX has no website or Discord of its own: its GitHub repository and the upstream
+    // project. The upstream name is a placeholder, so branding leaves it as PhotoCraft.
     render_rail_link(app, ui, rail_w, tl!("GitHub"), "link-2", crate::links::GITHUB);
-    render_rail_link(app, ui, rail_w, tl!("ArtCraft"), "link", crate::links::ARTCRAFT_WEBSITE);
+    let based_on = crate::i18n::fmt(tl!("Based on {upstream}"), &[("upstream", photocraft_engine::build_info::UPSTREAM_NAME)]);
+    render_rail_link(app, ui, rail_w, &based_on, "link", crate::links::UPSTREAM);
 }
 
 fn render_rail_link(app: &mut PhotocraftApp, ui: &mut egui::Ui, rail_w: f32, label: &str, icon_name: &str, url: &str) {

@@ -1,16 +1,18 @@
 //! Project links: the Help menu, the About dialog and the start screen open these. ShotoPhopEX has
-//! no website or Discord of its own, so the links are its GitHub repository and ArtCraft.
+//! no website or Discord of its own, so the links are its GitHub repository and the upstream
+//! PhotoCraft project it is based on. The ArtCraft name is not used as a link: its brand licence
+//! asks forks not to present themselves as ArtCraft products.
 
 use serde_json::{Value, json};
 
 use crate::PhotocraftApp;
 
-pub const ARTCRAFT_WEBSITE: &str = "https://getartcraft.com";
+pub const UPSTREAM: &str = "https://github.com/storytold/photocraft";
 pub const GITHUB: &str = "https://github.com/CodyChuGit/ShotoPhopEX";
 pub const ISSUES: &str = "https://github.com/CodyChuGit/ShotoPhopEX/issues";
 
 /// Help-menu link commands: (id, url). Labels live in `menus::UI_COMMANDS`.
-pub const COMMANDS: &[(&str, &str)] = &[("help.artcraftWebsite", ARTCRAFT_WEBSITE), ("help.github", GITHUB), ("help.reportIssue", ISSUES)];
+pub const COMMANDS: &[(&str, &str)] = &[("help.upstreamProject", UPSTREAM), ("help.github", GITHUB), ("help.reportIssue", ISSUES)];
 
 pub fn url_for(id: &str) -> Option<&'static str> {
     COMMANDS.iter().find(|c| c.0 == id).map(|c| c.1)
@@ -28,11 +30,12 @@ pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context, url: &str) -> Value {
     json!({"url": url})
 }
 
-/// "GitHub · ArtCraft" as links, centred. Clicks route through [`open`] (the
+/// "GitHub · PhotoCraft" as links, centred. Clicks route through [`open`] (the
 /// platform browser service) rather than `ui.hyperlink_to`, which uses the unreliable `ctx.open_url`.
 pub fn link_row(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get(ui.ctx());
-    let links = [(tl!("GitHub"), GITHUB), (tl!("ArtCraft"), ARTCRAFT_WEBSITE)];
+    // The upstream name is used as written: `tl!` would brand it as ShotoPhopEX.
+    let links = [(tl!("GitHub"), GITHUB), (photocraft_engine::build_info::UPSTREAM_NAME, UPSTREAM)];
     let font = egui::FontId::proportional(12.5);
     let sep = "  ·  ";
     let width: f32 = links.iter().map(|(l, _)| ui.painter().layout_no_wrap((*l).into(), font.clone(), t.text).size().x).sum::<f32>()
@@ -94,7 +97,7 @@ mod tests {
             [
                 "help.generativeFeatures",
                 "generate.getModels",
-                "help.artcraftWebsite",
+                "help.upstreamProject",
                 "help.github",
                 "help.reportIssue",
                 "help.checkForUpdates",
@@ -113,7 +116,7 @@ mod tests {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
         let ctx = egui::Context::default();
         for (id, url) in [
-            ("help.artcraftWebsite", "https://getartcraft.com"),
+            ("help.upstreamProject", "https://github.com/storytold/photocraft"),
             ("help.github", "https://github.com/CodyChuGit/ShotoPhopEX"),
             ("help.reportIssue", "https://github.com/CodyChuGit/ShotoPhopEX/issues"),
         ] {

@@ -210,7 +210,7 @@ pub(crate) mod windows {
 
     /// The install folder the launcher's per-user wizard records in HKCU, when it recorded one.
     fn recorded_dir(app: &App) -> Option<PathBuf> {
-        let key = RegKey::predef(HKEY_CURRENT_USER).open_subkey(format!(r"Software\Learning Machines LLC\{}", app.name)).ok()?;
+        let key = RegKey::predef(HKEY_CURRENT_USER).open_subkey(format!(r"Software\{}\{}", crate::detect::PUBLISHER, app.name)).ok()?;
         let dir: String = key.get_value("InstallDir").ok()?;
         let dir = dir.trim();
         (!dir.is_empty()).then(|| PathBuf::from(dir))

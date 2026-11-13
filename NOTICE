@@ -73,6 +73,13 @@ The ArtCraft name, wordmark and logos in docs/brand/ are trademarks of the ArtCr
 not open source and are not covered by the license above; their terms are in
 docs/brand/LICENSE-brand.txt.
 
+[ShotoPhopEX: as that licence asks of modified versions, this fork does not include docs/brand/
+(removed in 0.1.2) and does not use the ArtCraft marks. The terms are at
+https://github.com/storytold/photocraft/blob/main/docs/brand/LICENSE-brand.txt
+
+ShotoPhopEX modifies some PhotoCraft files and adds its own; docs/comfy/ownership.md lists which
+parts are PhotoCraft's, which are the fork's and which PhotoCraft files the fork changes.]
+
 Third-party material
 
 This product bundles third-party material under its own licenses, listed below. The per-file
