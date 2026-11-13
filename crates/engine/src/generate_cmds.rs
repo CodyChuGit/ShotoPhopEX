@@ -68,13 +68,13 @@ pub const AUTO_EXPAND_ORDER: &[&str] = &["qwen-edit-2511/expand-lightning-8", DE
 /// from a 1 MP run that pushed the 40-step tier into offloading, 45 s instead of 18 s, in
 /// 2026-10); 1.5 MP put a seam in a lawn. `maxPixels` on the fill commands overrides it.
 const MAX_FILL_REQUEST_PIXELS: u64 = 1024 * 1024;
-/// The pixels a P-H3-Image edit is sent at: the model edits at 4 MP (its maker's and AusBoss's
+/// The pixels a P-H3-Image or MiniMax-H3-Image edit is sent at: the model edits at 4 MP (its maker's and AusBoss's
 /// guide's working size, the native pipeline's own default), where the other editing models
 /// work at one.
 const H3_EDIT_REQUEST_PIXELS: u64 = 2048 * 2048;
 /// The pixels an edit on `template` is downscaled to before it is sent.
 pub(crate) fn edit_request_pixels(template: &str) -> u64 {
-    if template == "p-h3-image/edit" { H3_EDIT_REQUEST_PIXELS } else { MAX_FILL_REQUEST_PIXELS }
+    if matches!(template, "p-h3-image/edit" | "minimax-h3-image/edit") { H3_EDIT_REQUEST_PIXELS } else { MAX_FILL_REQUEST_PIXELS }
 }
 /// A small request is upscaled until its longer side is this long: the 2511 templates sample at
 /// the request's own size, and a handful of latent tokens cannot carry structure.
