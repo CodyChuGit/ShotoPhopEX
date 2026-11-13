@@ -819,6 +819,15 @@ impl DiffusionEngine {
                 if *f == Family::QwenImage21 && t.starts_with("enhance/") {
                     return self.has_family(Family::Moss(MossVariant::Sft));
                 }
+                // A prompt writer answers on any installed encoder that can write
+                // (`params.encoder`), not on Qwen-Image-2.1's alone.
+                if t.starts_with("enhance/") {
+                    return self.has_family(Family::QwenImage21)
+                        || self.has_family(Family::Krea2)
+                        || self.has_family(Family::Klein)
+                        || [MossVariant::Sft, MossVariant::Kromoss].into_iter().any(|v| self.has_family(Family::Moss(v)))
+                        || h3::find_minimax_files(&self.models_root).is_some_and(|f| f.writer.is_some());
+                }
                 (if *f == Family::Edit2511 { edit2511 } else { self.has_family(*f) })
                     && (*f != Family::Edit2511
                         || edit2511_defaults(t).is_some_and(|(_, _, names)| names.iter().all(|n| self.models_root.join("loras").join(n).is_file())))
