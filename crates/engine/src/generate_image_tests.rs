@@ -343,9 +343,10 @@ fn best_runs_krea2_on_er_sde_and_beta_balanced_on_euler() {
 }
 
 #[test]
-fn best_renders_h3_at_four_megapixels() {
+fn best_renders_h3_at_eight_megapixels() {
     use crate::generate_cmds::image_quality_size;
-    assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 1024), (2048, 2048));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 1024), (2912, 2912));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 512), (4096, 2048));
     assert_eq!(image_quality_size("p-h3-image/image", "balanced", 1024, 1024), (1024, 1024));
-    assert_eq!(image_quality_size("p-h3-image/image", "best", 2912, 2912), (2912, 2912), "a larger ask is kept");
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 3200, 3200), (3200, 3200), "a larger ask is kept");
 }

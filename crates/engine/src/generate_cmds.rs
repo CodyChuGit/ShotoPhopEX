@@ -2456,10 +2456,10 @@ pub fn image_quality_sampler(template: &str, quality: &str) -> Option<&'static s
 /// 1-2 MP). Measured in the app 2026-11-05: visibly finer skin and texture at 100 % than 1024²,
 /// about 10 s warm against 3 s.
 pub const BEST_KREA_PIXELS: u64 = 1440 * 1440;
-/// Pixels P-H3-Image renders at under Quality `best` (2048², 4 MP): the model is made for
-/// 4-8 MP and came to the app's 1024² default otherwise. 14.6 s on the 5090 (8 MP: 31.6 s for
-/// detail only visible at full size), 2026-11-12.
-pub const BEST_H3_PIXELS: u64 = 2048 * 2048;
+/// Pixels P-H3-Image renders at under Quality `best` (2912², 8 MP, its official target): H3 is
+/// the model for large canvases such as character sheets (Cody, 2026-11-12), and came to the
+/// app's 1024² default otherwise. 31.6 s on the 5090 at 28.8 GB peak (2048²: 14.6 s).
+pub const BEST_H3_PIXELS: u64 = 2912 * 2912;
 /// The same under Quality `balanced`: 1248², about 1.5 MP (to be confirmed in the app).
 pub const BALANCED_KREA_PIXELS: u64 = 1248 * 1248;
 
@@ -2478,7 +2478,8 @@ pub fn image_quality_size(template: &str, quality: &str, width: u32, height: u32
         return (width, height);
     }
     let k = (target as f64 / area as f64).sqrt();
-    let fit = |v: u32| (((f64::from(v) * k) as u32) / SIZE_STEP * SIZE_STEP).clamp(MIN_SIDE, 2048);
+    let most = if template == "p-h3-image/image" { 4096 } else { 2048 };
+    let fit = |v: u32| (((f64::from(v) * k) as u32) / SIZE_STEP * SIZE_STEP).clamp(MIN_SIDE, most);
     (fit(width), fit(height))
 }
 
