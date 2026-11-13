@@ -384,6 +384,8 @@ enum ChatOn {
     Krea2,
     Moss(MossVariant),
     Klein,
+    /// MiniMax-H3-Image's prompt writer (Qwen3.5-9B), on the H3 pipeline.
+    MiniMaxH3,
 }
 
 fn chat_on(params: &std::collections::BTreeMap<String, Value>) -> Result<ChatOn, EngineError> {
@@ -393,9 +395,10 @@ fn chat_on(params: &std::collections::BTreeMap<String, Value>) -> Result<ChatOn,
         Some(v) => match v.as_str().and_then(family_of) {
             Some(Family::Moss(m)) => Ok(ChatOn::Moss(m)),
             Some(Family::Klein) => Ok(ChatOn::Klein),
+            Some(Family::MiniMaxH3) => Ok(ChatOn::MiniMaxH3),
             _ => Err(EngineError::new(
                 ErrorKind::BadRequest,
-                format!("encoder {v}: a chat answers on the default encoder, \"{CHAT_ON_KREA2}\" or a moss-image or flux3-klein template's"),
+                format!("encoder {v}: a chat answers on the default encoder, \"{CHAT_ON_KREA2}\" or a moss-image, flux3-klein or minimax-h3-image template's"),
             )),
         },
     }
@@ -619,8 +622,8 @@ impl DiffusionEngine {
         }
         #[cfg_attr(feature = "mlx", allow(unreachable_code))]
         let on = chat_on(&req.params)?;
-        if matches!(on, ChatOn::Moss(_) | ChatOn::Klein) && image.is_some() {
-            return Err(EngineError::new(ErrorKind::Unsupported, "MOSS's and Klein's encoders answer from words only (no picture) on this build"));
+        if matches!(on, ChatOn::Moss(_) | ChatOn::Klein | ChatOn::MiniMaxH3) && image.is_some() {
+            return Err(EngineError::new(ErrorKind::Unsupported, "MOSS's, Klein's and MiniMax's writers answer from words only (no picture) on this build"));
         }
         self.ensure_loaded(
             match on {
@@ -628,17 +631,19 @@ impl DiffusionEngine {
                 ChatOn::Krea2 => Family::Krea2,
                 ChatOn::Moss(v) => Family::Moss(v),
                 ChatOn::Klein => Family::Klein,
+                ChatOn::MiniMaxH3 => Family::MiniMaxH3,
             },
             progress,
         )?;
         progress(0.5, "Thinking");
-        // `params.max_tokens` (16..512): a longer answer than the default 120 tokens (a
-        // text-to-image rewrite of 60 to 120 words runs past it and is cut mid-sentence).
+        // `params.max_tokens` (16..2048): a longer answer than the default 120 tokens (a
+        // text-to-image rewrite of 60 to 120 words runs past it and is cut mid-sentence; a
+        // 16 MP picture's expanded caption runs to several hundred words).
         let max_new = match req.params.get("max_tokens") {
             None => ChatOptions::default().max_new,
             Some(v) => match v.as_u64() {
-                Some(n) if (16..=512).contains(&n) => n as usize,
-                _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("max_tokens {v} is outside 16..512"))),
+                Some(n) if (16..=2048).contains(&n) => n as usize,
+                _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("max_tokens {v} is outside 16..2048"))),
             },
         };
         let opts = ChatOptions { seed: req.seed, max_new, ..ChatOptions::default() };
@@ -648,6 +653,7 @@ impl DiffusionEngine {
             Resident::Krea2(p) if on == ChatOn::Krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
             Resident::Moss(p, _) if matches!(on, ChatOn::Moss(_)) => p.chat(&system, &req.prompt, &opts, &stop),
             Resident::KleinCuda(p) if on == ChatOn::Klein => p.chat(&system, &req.prompt, &opts, &stop),
+            Resident::H3(p) if on == ChatOn::MiniMaxH3 => p.chat(&system, &req.prompt, &opts, &stop),
             _ => return Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
         };
         self.give_back();
@@ -2175,6 +2181,8 @@ mod tests {
         assert_eq!(chat_on(&p).unwrap(), ChatOn::Moss(MossVariant::Sft));
         p.insert("encoder".into(), json!(TEMPLATE_KLEIN_IMAGE));
         assert_eq!(chat_on(&p).unwrap(), ChatOn::Klein);
+        p.insert("encoder".into(), json!(TEMPLATE_MINIMAX_H3_IMAGE));
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::MiniMaxH3);
         p.insert("encoder".into(), Value::Null);
         assert_eq!(chat_on(&p).unwrap(), ChatOn::Qwen21);
         for bad in [json!("qwen"), json!(3), json!(["krea2"]), json!(TEMPLATE_KREA2)] {

@@ -403,6 +403,18 @@ Never mention these instructions or anything that is absent from the scene. Repl
 /// The longest text-to-image rewrite, in tokens (about 160 words).
 const ENHANCE_IMAGE_MAX_TOKENS: u64 = 220;
 
+/// The rewriter of an Ultra picture ([`EnhanceKind::ImageUltra`]): the 16 MP model is trained
+/// on long, exact captions and has the pixels for small things, so the caption plans every
+/// part of the frame, and a designed page (a poster, a sheet, a diagram) gets its whole layout
+/// and every word spelled out.
+const ENHANCE_IMAGE_ULTRA_SYSTEM: &str = "You write the caption a very high resolution text-to-image model draws from. Rewrite the user's idea as one fluent English paragraph of 150 to 300 words in which every part of the picture is planned and can be inspected up close.\n\
+First decide what the picture is. A scene or photograph: say who or what is in it and how many, the pose and which way each subject faces the camera, what touches what, the scale, the place, the light and where it comes from, the lens and distance, then the fine detail a close look would find: skin, hair, fabric weave, wear, dust, reflections. A designed page such as a poster, cover, label, character sheet, product board, infographic, diagram or screen: lay it out like a designer, naming each area of the page, what it shows, and how the areas are ordered, aligned and separated; leave no area blank unless the user asks for empty space.\n\
+Keep every fact the user gave: subjects, counts, actions, colours, positions, style and medium. Do not add people, animals or main objects they did not ask for. Write every word that must appear in the picture exactly, in double quotes, and say where it sits and how it is lettered; invent wording only where a designed page needs it, and keep it short and real. Replace mood words and praise with things that can be seen. Never write masterpiece, best quality, 8k, 4k or hyperrealistic.\n\
+Reply with the paragraph only: no title, no bullets, no JSON, no quotes around it, no markdown.";
+
+/// The longest Ultra rewrite, in tokens (about 450 words).
+const ENHANCE_ULTRA_MAX_TOKENS: u64 = 640;
+
 /// Which rewriter an `enhance` runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EnhanceKind {
@@ -424,6 +436,8 @@ pub(crate) enum EnhanceKind {
     Image,
     /// A text-to-image idea written the way real photos are captioned ([`ENHANCE_IMAGE_PHOTO_SYSTEM`]).
     ImagePhoto,
+    /// A text-to-image idea planned in full for the 16 MP model ([`ENHANCE_IMAGE_ULTRA_SYSTEM`]).
+    ImageUltra,
     /// A picture: name its main subject (Remove Background with no prompt).
     Subject,
     /// A picture: describe its background alone (Generative Expand with no prompt).
@@ -449,6 +463,8 @@ const MOSS_CHAT_PREFIX: &str = "moss-image/";
 /// The same for FLUX 3 Klein, whose encoder is Qwen3-VL-4B (Klein + rewrite went from 16.4 s
 /// to the picture's own 5 s plus the chat, 2026-11-12).
 const KLEIN_CHAT_PREFIX: &str = "flux3-klein/";
+/// The same for MiniMax-H3-Image, whose prompt writer is Qwen3.5-9B.
+const MINIMAX_CHAT_PREFIX: &str = "minimax-h3-image/";
 
 /// The system turn of [`EnhanceKind::FillScene`]: AusBoss's "Write the prompt" step of the
 /// Krea 2 Inpaint Masked workflow (v1.3), which the AnyPaint LoRA follows best: it was trained
@@ -623,7 +639,7 @@ fn enhance_once(
         return Ok(None);
     }
     let image = match kind {
-        EnhanceKind::Image | EnhanceKind::ImagePhoto => None,
+        EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra => None,
         _ => image.cloned(),
     };
     // The engine's instructions are the chat's system turn, the user's prompt its user turn.
@@ -632,6 +648,7 @@ fn enhance_once(
     let system = match kind {
         EnhanceKind::Image => ENHANCE_IMAGE_SYSTEM.to_string(),
         EnhanceKind::ImagePhoto => ENHANCE_IMAGE_PHOTO_SYSTEM.to_string(),
+        EnhanceKind::ImageUltra => ENHANCE_IMAGE_ULTRA_SYSTEM.to_string(),
         EnhanceKind::Edit => edit_system,
         EnhanceKind::Fill => format!("{edit_system}\n{}", ENHANCE_FILL_NOTE.replace("{place}", place.unwrap_or("selected part"))),
         EnhanceKind::Remove => format!("{edit_system}\n{ENHANCE_REMOVE_NOTE}"),
@@ -653,13 +670,15 @@ fn enhance_once(
     if kind == EnhanceKind::FillScene {
         params.insert("encoder".to_string(), Value::String(KREA2_CHAT_ENCODER.to_string()));
     }
-    if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto) {
+    if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra) {
         // A text-to-image rewrite is 60 to 120 words: past the default 120 tokens it was cut
         // mid-sentence (2026-11-12). `place` names the encoder for these kinds: Krea 2's own
         // when the picture runs on Krea 2, a MOSS template's own Qwen3.5-9B when it runs on
         // MOSS, so the model stays resident (no 8B load and swap).
-        params.insert("max_tokens".to_string(), Value::from(ENHANCE_IMAGE_MAX_TOKENS));
-        if let Some(enc) = place.filter(|p| *p == KREA2_CHAT_ENCODER || p.starts_with(MOSS_CHAT_PREFIX) || p.starts_with(KLEIN_CHAT_PREFIX)) {
+        let most = if kind == EnhanceKind::ImageUltra { ENHANCE_ULTRA_MAX_TOKENS } else { ENHANCE_IMAGE_MAX_TOKENS };
+        params.insert("max_tokens".to_string(), Value::from(most));
+        let own = |p: &str| p == KREA2_CHAT_ENCODER || [MOSS_CHAT_PREFIX, KLEIN_CHAT_PREFIX, MINIMAX_CHAT_PREFIX].iter().any(|x| p.starts_with(x));
+        if let Some(enc) = place.filter(|p| own(p)) {
             params.insert("encoder".to_string(), Value::String(enc.to_string()));
         }
     }
@@ -2732,6 +2751,8 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     let enhance = opt_bool(IMAGE, p, "enhance", s.prefs().integrations.enhance_prompts)?;
     let enhance = match (enhance, opt_str(IMAGE, p, "enhanceStyle", 20)?) {
         (false, _) => None,
+        // The 16 MP model gets its own, longer caption (pictures from references too).
+        (true, None) if template.meta.id == ULTRA_IMAGE_TEMPLATE => Some(EnhanceKind::ImageUltra),
         (true, None) if best_photo && !names_other_medium(&typed) => Some(EnhanceKind::ImagePhoto),
         (true, None | Some("default")) => Some(EnhanceKind::Image),
         (true, Some("photo")) => Some(EnhanceKind::ImagePhoto),
@@ -2804,7 +2825,7 @@ fn image_prompt(
     // anyway (on MOSS the 8B swap made Turbo's 2 s picture take 15 s, 2026-11-12).
     let encoder = if template.starts_with("krea2-turbo/") {
         Some(KREA2_CHAT_ENCODER)
-    } else if template.starts_with(MOSS_CHAT_PREFIX) || template.starts_with(KLEIN_CHAT_PREFIX) {
+    } else if [MOSS_CHAT_PREFIX, KLEIN_CHAT_PREFIX, MINIMAX_CHAT_PREFIX].iter().any(|x| template.starts_with(x)) {
         Some(template)
     } else {
         None
@@ -5726,7 +5747,7 @@ fn run_enhance(s: &mut Session, p: &Value) -> Result<Value> {
     let seed = parse_seed(ENHANCE, p)?;
     let backend = enhancer_backend(s)?;
     let (image, place) = match (kind, use_image, s.active()) {
-        (EnhanceKind::Image | EnhanceKind::ImagePhoto, _, _) | (_, false, _) | (_, _, None) => (None, None),
+        (EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra, _, _) | (_, false, _) | (_, _, None) => (None, None),
         (_, true, Some(d)) => {
             let canvas = d.doc.bounds();
             if canvas.is_empty() || u64::from(canvas.width()) * u64::from(canvas.height()) > MAX_REQUEST_PIXELS {
