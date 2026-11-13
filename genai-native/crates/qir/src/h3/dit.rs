@@ -202,16 +202,15 @@ impl Attn {
     fn forward(&self, x: &Tensor, heads: usize, head_dim: usize, rope_cs: Option<(&Tensor, &Tensor)>) -> Result<Tensor> {
         let s = x.dim(0)?;
         let inner = heads * head_dim;
-        let qkv = self.qkv.forward(x)?;
+        let dev = x.device();
+        let qkv = crate::profile::scope("h3 qkv linear", 0.0, dev, || self.qkv.forward(x))?;
         let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, i * inner, inner)?.reshape((s, heads, head_dim))?) };
-        let mut q = self.q_norm.forward(&part(0)?)?;
-        let mut k = self.k_norm.forward(&part(1)?)?;
+        let (mut q, mut k) = crate::profile::scope("h3 q/k norm", 0.0, dev, || Ok((self.q_norm.forward(&part(0)?)?, self.k_norm.forward(&part(1)?)?)))?;
         if let Some((c, sn)) = rope_cs {
-            q = rope(&q, c, sn)?;
-            k = rope(&k, c, sn)?;
+            (q, k) = crate::profile::scope("h3 rope", 0.0, dev, || Ok((rope(&q, c, sn)?, rope(&k, c, sn)?)))?;
         }
-        let a = attention(&q.contiguous()?, &k.contiguous()?, &part(2)?.contiguous()?)?;
-        self.out.forward(&a)
+        let a = crate::profile::scope("h3 attention", 0.0, dev, || attention(&q.contiguous()?, &k.contiguous()?, &part(2)?.contiguous()?))?;
+        crate::profile::scope("h3 out linear", 0.0, dev, || self.out.forward(&a))
     }
 }
 
@@ -560,12 +559,12 @@ impl H3Dit {
         for b in &self.blocks {
             let m = b.adaln.forward(&t_emb, self.dtype)?;
             let (shift_a, scale_a, gate_a, shift_f, scale_f, gate_f) = (&m[0], &m[1], &m[2], &m[3], &m[4], &m[5]);
-            let y = modulate(&b.norm1.forward(&h)?, shift_a, scale_a, &segs)?;
+            let y = crate::profile::scope("h3 norm + modulate", 0.0, &self.dev, || modulate(&b.norm1.forward(&h)?, shift_a, scale_a, &segs))?;
             let a = b.attn.forward(&y, self.cfg.heads, self.cfg.head_dim, rope_cs)?;
-            h = gated_add(&h, gate_a, &a, &segs)?;
-            let y = modulate(&b.norm2.forward(&h)?, shift_f, scale_f, &segs)?;
-            let f = b.mlp.forward(&y)?;
-            h = gated_add(&h, gate_f, &f, &segs)?;
+            h = crate::profile::scope("h3 gated add", 0.0, &self.dev, || gated_add(&h, gate_a, &a, &segs))?;
+            let y = crate::profile::scope("h3 norm + modulate", 0.0, &self.dev, || modulate(&b.norm2.forward(&h)?, shift_f, scale_f, &segs))?;
+            let f = crate::profile::scope("h3 mlp", 0.0, &self.dev, || b.mlp.forward(&y))?;
+            h = crate::profile::scope("h3 gated add", 0.0, &self.dev, || gated_add(&h, gate_f, &f, &segs))?;
         }
 
         // final layer: per target stream, its own timestep row (modality 1 of 1)
