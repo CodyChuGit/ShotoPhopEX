@@ -1510,6 +1510,12 @@ impl Engine for DiffusionEngine {
                     canvas = Some((picture.width / 16 * 16, picture.height / 16 * 16));
                     references.push(placed_picture(&picture, &req.params)?);
                 } else {
+                    // A MiniMax-H3-Image edit of a large picture renders at the picture's own
+                    // size (the app sends at most 16 MP); a small one at the model's default,
+                    // short edge 1024.
+                    if family == Family::MiniMaxH3 && task == "edit" && picture.width.min(picture.height) >= 1024 {
+                        canvas = Some((picture.width / 32 * 32, picture.height / 32 * 32));
+                    }
                     references.push(picture);
                 }
                 if task == "fill" {

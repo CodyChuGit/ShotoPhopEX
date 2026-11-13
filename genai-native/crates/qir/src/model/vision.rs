@@ -266,6 +266,9 @@ fn pos_embed_grid(table: &Tensor, cfg: &VisionConfig, gh: usize, gw: usize, torc
     Ok(out.ok_or_else(|| anyhow::anyhow!("no position embedding"))?.to_dtype(DType::F32)?)
 }
 
+/// The f32 attention scores a block holds at once (its heads run in groups past it).
+const SCORE_BYTES: usize = 512 << 20;
+
 struct Block {
     norm1: LayerNorm,
     norm2: LayerNorm,
@@ -298,9 +301,18 @@ impl Block {
         let q = candle_nn::rotary_emb::rope(&q, cos, sin)?;
         let k = candle_nn::rotary_emb::rope(&k, cos, sin)?;
         let scale = 1.0 / (hd as f64).sqrt();
-        let attn = (q.matmul(&k.transpose(2, 3)?)? * scale)?;
-        let attn = candle_nn::ops::softmax_last_dim(&attn)?;
-        let out = attn.matmul(&v)?.squeeze(0)?.transpose(0, 1)?.reshape((n, h))?;
+        // The heads a few at a time once their scores pass [`SCORE_BYTES`]: a tall 1024-wide
+        // picture is 8k patches, 16 heads of 8k x 8k f32 scores are 4.5 GB (twice that through
+        // the softmax), which beside a 21 GB transformer pushed a 32 GB card into paging.
+        let step = (SCORE_BYTES / (n * n * 4).max(1)).clamp(1, heads);
+        let mut outs = Vec::new();
+        for h0 in (0..heads).step_by(step) {
+            let m = step.min(heads - h0);
+            let attn = (q.narrow(1, h0, m)?.matmul(&k.narrow(1, h0, m)?.transpose(2, 3)?)? * scale)?;
+            outs.push(candle_nn::ops::softmax_last_dim(&attn)?.matmul(&v.narrow(1, h0, m)?)?);
+        }
+        let out = if outs.len() == 1 { outs.remove(0) } else { Tensor::cat(&outs, 1)? };
+        let out = out.squeeze(0)?.transpose(0, 1)?.reshape((n, h))?;
         let x = (x + self.proj.forward(&out)?)?;
         let m = self.fc2.forward(&self.fc1.forward(&self.norm2.forward(&x)?)?.gelu()?)?;
         Ok((x + m)?)

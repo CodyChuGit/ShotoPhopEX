@@ -37,8 +37,8 @@
       "max": 7
     },
     "estimatedSeconds": {
-      "base": 9,
-      "perMegapixel": 5,
+      "base": 10,
+      "perMegapixel": 1.6,
       "perReference": 3
     },
     "pages": [
