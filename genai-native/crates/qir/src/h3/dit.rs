@@ -89,11 +89,29 @@ impl H3Config {
 struct Rms {
     weight: Tensor,
     eps: f64,
+    /// The weight in f32 for the one-pass kernels (see [`use_fused`]).
+    #[cfg_attr(not(feature = "fusednorm"), allow(dead_code))]
+    w32: Option<Tensor>,
+}
+
+/// Whether the blocks take the one-pass kernels of `crate::krea2_fused` (modulated RMSNorm,
+/// per-head q/k norm with RoPE, gated residual): a CUDA bf16 run with `fusednorm`, unless
+/// `QIR_H3_FUSED=0` asks for the candle chains (to compare). At 8 MP the chains were more than
+/// half of a step: each makes several passes, in f32, over 33k rows of 5376.
+fn use_fused(w: &Weights) -> bool {
+    cfg!(feature = "fusednorm") && w.device().is_cuda() && w.dtype() == DType::BF16 && std::env::var("QIR_H3_FUSED").map_or(true, |v| v.trim() != "0")
 }
 
 impl Rms {
     fn load(w: &Weights, name: &str, eps: f64) -> Result<Self> {
-        Ok(Self { weight: w.get(name)?, eps })
+        let w32 = if use_fused(w) { Some(w.get_as(name, DType::F32)?) } else { None };
+        Ok(Self { weight: w.get(name)?, eps, w32 })
+    }
+
+    /// The f32 weight when `x` can go through the one-pass kernels.
+    #[cfg(feature = "fusednorm")]
+    fn fused(&self, x: &Tensor) -> Option<&Tensor> {
+        self.w32.as_ref().filter(|_| x.dtype() == DType::BF16 && x.device().is_cuda())
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -199,9 +217,30 @@ impl Attn {
         })
     }
 
-    fn forward(&self, x: &Tensor, heads: usize, head_dim: usize, rope_cs: Option<(&Tensor, &Tensor)>) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor, heads: usize, head_dim: usize, rope_cs: Option<(&Tensor, &Tensor)>, cs: Option<&Tensor>) -> Result<Tensor> {
         let s = x.dim(0)?;
         let inner = heads * head_dim;
+        #[cfg(feature = "fusednorm")]
+        if head_dim == 128 && (rope_cs.is_none() || cs.is_some()) {
+            if let (Some(qw), Some(kw)) = (self.q_norm.fused(x), self.k_norm.fused(x)) {
+                use crate::krea2_fused::{head_rope, head_rope_split};
+                let dev = x.device();
+                let qkv = crate::profile::scope("h3 qkv linear", 0.0, dev, || self.qkv.forward(x))?;
+                let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, i * inner, inner)?.reshape((1, s, heads, head_dim))?) };
+                let norm = |i: usize, w: &Tensor, eps: f64| -> Result<Tensor> {
+                    let y = match cs {
+                        Some(cs) => head_rope_split(&part(i)?, w, cs, eps)?,
+                        None => head_rope(&part(i)?, w, None, eps)?,
+                    };
+                    Ok(y.squeeze(0)?)
+                };
+                let (q, k) = crate::profile::scope("h3 q/k norm + rope", 0.0, dev, || Ok((norm(0, qw, self.q_norm.eps)?, norm(1, kw, self.k_norm.eps)?)))?;
+                let a = crate::profile::scope("h3 attention", 0.0, dev, || attention(&q, &k, &part(2)?.squeeze(0)?.contiguous()?))?;
+                return crate::profile::scope("h3 out linear", 0.0, dev, || self.out.forward(&a));
+            }
+        }
+        #[cfg(not(feature = "fusednorm"))]
+        let _ = cs;
         let dev = x.device();
         let qkv = crate::profile::scope("h3 qkv linear", 0.0, dev, || self.qkv.forward(x))?;
         let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, i * inner, inner)?.reshape((s, heads, head_dim))?) };
@@ -325,6 +364,9 @@ pub struct Prepared {
     /// RoPE `cos`/`sin` `(S, 3 * rope_len)` f32.
     pub cos: Tensor,
     pub sin: Tensor,
+    /// `cos` and `sin` stacked `(2, S, 3 * rope_len)` for the one-pass q/k kernel (when the
+    /// rotated channels fit a head).
+    pub cs: Option<Tensor>,
     pub layout: crate::h3::layout::Layout,
 }
 
@@ -436,7 +478,7 @@ impl H3Dit {
     pub fn refine_text(&self, states: &Tensor) -> Result<Tensor> {
         let mut x = self.condition_proj.forward(&states.to_dtype(self.dtype)?)?;
         for b in &self.refiner {
-            x = (b.attn.forward(&b.norm1.forward(&x)?, self.cfg.heads, self.cfg.head_dim, None)? + &x)?;
+            x = (b.attn.forward(&b.norm1.forward(&x)?, self.cfg.heads, self.cfg.head_dim, None, None)? + &x)?;
             x = (b.mlp.forward(&b.norm2.forward(&x)?)? + &x)?;
         }
         self.refiner_norm.forward(&x)
@@ -465,7 +507,41 @@ impl H3Dit {
         anyhow::ensure!(text_states.dim(0)? == layout.text_len, "text rows {} vs layout {}", text_states.dim(0)?, layout.text_len);
         let text = self.refine_text(text_states)?;
         let (cos, sin) = self.rope_tables(&layout)?;
-        Ok(Prepared { text, cos, sin, layout })
+        let cs = if 2 * cos.dim(1)? <= self.cfg.head_dim { Some(Tensor::stack(&[&cos, &sin], 0)?.contiguous()?) } else { None };
+        Ok(Prepared { text, cos, sin, cs, layout })
+    }
+
+    /// One block through the one-pass kernels: `m` the block's six modulation tensors
+    /// (shift, scale, gate for attention, then for the MLP), each `(rows, hidden)` bf16. A
+    /// segment of rows shares one modulation row, so each kernel runs once per segment.
+    #[cfg(feature = "fusednorm")]
+    #[allow(clippy::too_many_arguments)]
+    fn block_fused(
+        &self,
+        b: &Block,
+        h: &Tensor,
+        m: &[Tensor],
+        (w1, w2): (&Tensor, &Tensor),
+        segs: &[ModSeg],
+        rope_cs: Option<(&Tensor, &Tensor)>,
+        cs: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        use crate::krea2_fused::{gate_add, rms_mod};
+        use crate::profile::scope;
+        let dev = &self.dev;
+        let mods = Tensor::cat(m, 1)?.contiguous()?; // (rows, 6 * hidden)
+        let per_seg = |f: &dyn Fn(&ModSeg, &Tensor) -> Result<Tensor>| -> Result<Tensor> {
+            let mut parts =
+                segs.iter().map(|g| -> Result<Tensor> { Ok(f(g, &mods.narrow(0, g.row, 1)?.unsqueeze(1)?)?.squeeze(0)?) }).collect::<Result<Vec<_>>>()?;
+            Ok(if parts.len() == 1 { parts.remove(0) } else { Tensor::cat(&parts, 0)? })
+        };
+        let rows = |x: &Tensor, g: &ModSeg| -> Result<Tensor> { Ok(x.narrow(0, g.start, g.len)?.unsqueeze(0)?) };
+        let y = scope("h3 norm + modulate", 0.0, dev, || per_seg(&|g, md| rms_mod(&rows(h, g)?, w1, Some((md, 1, 0)), b.norm1.eps)))?;
+        let a = b.attn.forward(&y, self.cfg.heads, self.cfg.head_dim, rope_cs, cs)?;
+        let h = scope("h3 gated add", 0.0, dev, || per_seg(&|g, md| gate_add(&rows(h, g)?, &rows(&a, g)?, md, 2)))?;
+        let y = scope("h3 norm + modulate", 0.0, dev, || per_seg(&|g, md| rms_mod(&rows(&h, g)?, w2, Some((md, 4, 3)), b.norm2.eps)))?;
+        let f = scope("h3 mlp", 0.0, dev, || b.mlp.forward(&y))?;
+        scope("h3 gated add", 0.0, dev, || per_seg(&|g, md| gate_add(&rows(&h, g)?, &rows(&f, g)?, md, 5)))
     }
 
     /// `t_emb (M, k)` f32 for the timesteps `ts`.
@@ -558,9 +634,14 @@ impl H3Dit {
         let rope_cs = Some((&p.cos, &p.sin));
         for b in &self.blocks {
             let m = b.adaln.forward(&t_emb, self.dtype)?;
+            #[cfg(feature = "fusednorm")]
+            if let (Some(w1), Some(w2)) = (b.norm1.fused(&h), b.norm2.fused(&h)) {
+                h = self.block_fused(b, &h, &m, (w1, w2), &segs, rope_cs, p.cs.as_ref())?;
+                continue;
+            }
             let (shift_a, scale_a, gate_a, shift_f, scale_f, gate_f) = (&m[0], &m[1], &m[2], &m[3], &m[4], &m[5]);
             let y = crate::profile::scope("h3 norm + modulate", 0.0, &self.dev, || modulate(&b.norm1.forward(&h)?, shift_a, scale_a, &segs))?;
-            let a = b.attn.forward(&y, self.cfg.heads, self.cfg.head_dim, rope_cs)?;
+            let a = b.attn.forward(&y, self.cfg.heads, self.cfg.head_dim, rope_cs, p.cs.as_ref())?;
             h = crate::profile::scope("h3 gated add", 0.0, &self.dev, || gated_add(&h, gate_a, &a, &segs))?;
             let y = crate::profile::scope("h3 norm + modulate", 0.0, &self.dev, || modulate(&b.norm2.forward(&h)?, shift_f, scale_f, &segs))?;
             let f = crate::profile::scope("h3 mlp", 0.0, &self.dev, || b.mlp.forward(&y))?;
