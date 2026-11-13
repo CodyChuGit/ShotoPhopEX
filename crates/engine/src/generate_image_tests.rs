@@ -354,3 +354,58 @@ fn best_renders_h3_at_eight_megapixels() {
     assert_eq!(image_quality_size("p-h3-image/image", "balanced", 1024, 1024), (1024, 1024));
     assert_eq!(image_quality_size("p-h3-image/image", "best", 3200, 3200), (3200, 3200), "a larger ask is kept");
 }
+
+/// Quality `ultra` is `best` with MiniMax-H3-Image for new pictures and edits, where its files
+/// are in the models folder; without them it is `best`.
+#[test]
+fn ultra_is_best_with_the_16_mp_model_when_installed() {
+    let dir = std::env::temp_dir().join(format!("pc-ultra-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::new();
+    s.edit_prefs(|p| {
+        p.integrations.models_path = dir.to_string_lossy().into_owned();
+        p.integrations.quality = "ultra".into();
+    });
+    assert!(ultra(&s));
+    assert_eq!((quality(&s), auto_quality(&s)), ("best", "ultra"));
+    assert_eq!(auto_order(EDIT, "ultra"), &[ULTRA_EDIT_TEMPLATE, DEFAULT_EDIT_TEMPLATE]);
+    assert_eq!(auto_order(FILL, "ultra"), auto_order(FILL, "best"));
+    assert_eq!(auto_order(EXPAND, "ultra"), auto_order(EXPAND, "best"));
+    // no files: the profile's template
+    assert!(!template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
+    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
+    let t = template::find(ULTRA_IMAGE_TEMPLATE).unwrap();
+    for (i, m) in t.meta.models.iter().enumerate() {
+        // one of them a folder deeper, where the worker looks too
+        let folder = if i == 0 { dir.join(&m.folder).join("h3") } else { dir.join(&m.folder) };
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(&m.default), b"x").unwrap();
+    }
+    assert!(template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
+    assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
+    // a chosen template stays, and so does `best`
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
+    s.edit_prefs(|p| {
+        p.integrations.quality = "ultra".into();
+        p.integrations.default_image_template = "qwen-2.1/image".into();
+    });
+    assert_eq!(default_image_template(&s), "qwen-2.1/image");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MiniMax-H3-Image renders at 16 MP under `best` (and `ultra`, which reads as `best`), on its
+/// 32-px grid, and at 4 MP under the faster qualities.
+#[test]
+fn the_16_mp_model_renders_at_16_mp() {
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "best", 1024, 1024), (4096, 4096));
+    let (w, h) = image_quality_size(ULTRA_IMAGE_TEMPLATE, "best", 1024, 1536);
+    assert_eq!((w % 32, h % 32), (0, 0));
+    assert!((15_500_000..=16_777_216).contains(&(u64::from(w) * u64::from(h))), "{w}x{h}");
+    let (w, h) = image_quality_size(ULTRA_IMAGE_TEMPLATE, "best", 1280, 720);
+    assert!(w <= 5472 && (15_500_000..=16_777_216).contains(&(u64::from(w) * u64::from(h))), "{w}x{h}");
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "balanced", 1024, 1024), (2048, 2048));
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "fast", 1024, 1024), (2048, 2048));
+    // a larger request is left alone
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "fast", 3072, 3072), (3072, 3072));
+}
