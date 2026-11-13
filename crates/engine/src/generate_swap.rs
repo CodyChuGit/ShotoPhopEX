@@ -27,11 +27,13 @@ pub struct Swap {
 }
 
 /// Head swap v1.1 (Civitai 2027766 version 3356102): the face, hair and head shape from image 2,
-/// the gaze, head turn and expression from image 1.
+/// the gaze, head turn and expression from image 1. The author's prompt with image 2's facial
+/// hair added to what it keeps: without it, image 1's beard stayed on 2 of 5 seeds and partly on
+/// a third (in the app 2026-11-13; the same words typed after the prompt left none whole).
 pub const HEAD: Swap = Swap {
     kind: "head",
     lora: "bfs_head_v1.1_qwen_2.1.safetensors",
-    prompt: "head_swap: start with <image1> as the base image, keeping its lighting, environment, and background. remove the head from <image1> completely and replace it with the head from <image2>, strictly preserving the hair, eye color, nose structure from <image2>. copy the direction of the eye, head rotation, micro expressions from <image1>, high quality, sharp details, 4k",
+    prompt: "head_swap: start with <image1> as the base image, keeping its lighting, environment, and background. remove the head from <image1> completely and replace it with the head from <image2>, strictly preserving the hair, facial hair (or the clean-shaven face), eye color, nose structure from <image2>. copy the direction of the eye, head rotation, micro expressions from <image1>, high quality, sharp details, 4k",
 };
 
 /// Body swap v1.0 (version 3363725): the clothes, body shape and face from image 2 in image 1's

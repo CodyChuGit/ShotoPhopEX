@@ -2789,11 +2789,12 @@ fn find_subjects(
 /// is no real person (animal) is renamed by what the model calls it ([`list_things`] on the
 /// crop, which names things, not people or animals), so its layer is "Pear" and its removal asks
 /// for a pear. One the model sees, does not answer about, or cannot name keeps its word.
-fn name_lookalikes(thinker: &dyn GenerativeBackend, picture: &[u8], area: Rect, out: &mut [Subject], seed: u64, ctx: &JobCtx) -> Result<()> {
+fn name_lookalikes(thinker: &dyn GenerativeBackend, picture: &[u8], area: Rect, out: &mut Vec<Subject>, seed: u64, ctx: &JobCtx) -> Result<()> {
     let progress = JobProgress::span(ctx, 0.03, 0.04);
-    for s in out.iter_mut().filter(|s| !s.asked) {
+    let mut gone = vec![false; out.len()];
+    for (s, gone) in out.iter_mut().zip(gone.iter_mut()) {
         let word = bare(&s.term).to_ascii_lowercase();
-        if word != PERSON && word != ANIMAL {
+        if s.asked || (word != PERSON && word != ANIMAL) {
             continue;
         }
         ctx.check()?;
@@ -2802,10 +2803,18 @@ fn name_lookalikes(thinker: &dyn GenerativeBackend, picture: &[u8], area: Rect, 
         if sees(thinker, &view, &question, seed, &progress) != Some(false) {
             continue;
         }
-        if let Some(name) = list_things(thinker, &view, 1, seed, &progress).into_iter().next() {
-            s.term = name;
+        match list_things(thinker, &view, 1, seed, &progress).into_iter().next() {
+            Some(name) => s.term = name,
+            // No real person and nothing the model can name (a speck it called "None", in the
+            // app 2026-11-13): no subject, it stays in the background.
+            None => *gone = true,
         }
     }
+    let mut k = 0;
+    out.retain(|_| {
+        k += 1;
+        !gone[k - 1]
+    });
     Ok(())
 }
 
