@@ -6,12 +6,12 @@ published ShotoPhopEX release; v0.1.0 is already public.
 
 | ID | Item | Type | Severity | Blocks the next release? |
 |---|---|---|---|---|
-| U-1 | MSI installs as upstream PhotoCraft's product | MAINTAINER | High | **BLOCKER** for the next MSI |
+| U-1 | MSI installs as upstream PhotoCraft's product | MAINTAINER | High | Mostly fixed for 0.1.2 (own UpgradeCode, publisher, folder); exe name and ProgIDs still shared, needs a Windows upgrade test |
 | U-2 | MOSS Edit adapter has no stated licence, and the 12/16 GB pack downloads it | LEGAL + MAINTAINER | High | No, but decide before promoting the low-VRAM pack |
 | U-3 | In-app acceptance replaces the licensor's own gate for repacked models | LEGAL | Medium | No |
 | U-12 | Native-engine ports were written against GPL-3.0 reference code | LEGAL | Medium | No |
 | U-14 | Name and icon resemble Adobe Photoshop's | LEGAL | Medium | No |
-| U-15 | ArtCraft name used as a link in the app | MAINTAINER (+ LEGAL) | Medium | No |
+| U-15 | ArtCraft name used as a link in the app | MAINTAINER (+ LEGAL) | Medium | Fixed for 0.1.2 |
 | U-16 | NVIDIA EULA distribution conditions | LEGAL | Medium | No |
 | U-19 | Copyright in AI-assisted contributions | LEGAL | Medium | No |
 | U-13 | Apache-2.0 §4(b) change notices in `qir` | MAINTAINER | Low | No |
@@ -20,6 +20,17 @@ published ShotoPhopEX release; v0.1.0 is already public.
 ---
 
 ### U-1. The MSI installs as upstream PhotoCraft's product (BLOCKER for the next MSI)
+
+**Status (2026-11-13, owner chose to remove the branding).** From 0.1.2 the MSI has its own
+UpgradeCode `{7A30FAE6-70CF-4CB3-A7C7-384E37ECCBB2}`, Manufacturer "ShotoPhopEX", install folder
+`Programs\ShotoPhopEX` / `Program Files\ShotoPhopEX` and remembered-folder key
+`Software\ShotoPhopEX`; the vendored craft-update matches Publisher "ShotoPhopEX". An `<Upgrade>`
+row removes ShotoPhopEX 0.1.0 and 0.1.1, which used upstream's UpgradeCode. Residual: that row
+matches any product under the old code at 0.1.0–0.1.1, which would include an upstream PhotoCraft
+0.1.x install from early October 2026 (upstream is on 0.23); the exe is still `photocraft.exe`, so
+the `App Paths` key and the ProgIDs `Photocraft.Image` / `Photocraft.PhotoshopDocument` are still
+shared with upstream. Needs a real upgrade test from a 0.1.1 install on Windows before release.
+The text below is the original finding.
 
 **Evidence.** `packaging/windows/photocraft.wxs` and the v0.1.0 MSI (`msiinfo export … Property`):
 `UpgradeCode {D9660F32-2D0A-4ABE-B73D-17BE25F1542C}` is upstream PhotoCraft's own (same value in
@@ -145,6 +156,11 @@ any Adobe affiliation. **Question:** trademark or trade-dress confusion risk. Th
 nothing (the name and icon are the owner's decisions).
 
 ### U-15. ArtCraft name in the app
+
+**Status (2026-11-13, owner chose to remove the branding).** Fixed for 0.1.2: the link is now
+**Help › Upstream Project on GitHub** and "Based on PhotoCraft" on the start screen, both to
+<https://github.com/storytold/photocraft>; the About link row reads "GitHub · PhotoCraft". The
+logo files in `docs/brand/` were removed from the repository. The text below is the original finding.
 
 The start screen's link rail and **Help › ArtCraft Website** show "ArtCraft" linking to
 getartcraft.com (`crates/ui-egui/src/links.rs`, `canvas/start_screen.rs`, `engine/src/shell_commands.rs`).

@@ -3,12 +3,20 @@
   <?ifndef HasCraftFontLicences ?>
   <?define HasCraftFontLicences=0 ?>
   <?endif?>
-  <Package Name="ShotoPhopEX" Manufacturer="Learning Machines LLC" Version="$(var.Version)" UpgradeCode="D9660F32-2D0A-4ABE-B73D-17BE25F1542C" Scope="perUserOrMachine" Compressed="yes" Language="1033">
-    <SummaryInformation Description="ShotoPhopEX image editor" Manufacturer="Learning Machines LLC" />
+  <Package Name="ShotoPhopEX" Manufacturer="ShotoPhopEX" Version="$(var.Version)" UpgradeCode="7A30FAE6-70CF-4CB3-A7C7-384E37ECCBB2" Scope="perUserOrMachine" Compressed="yes" Language="1033">
+    <SummaryInformation Description="ShotoPhopEX image editor" Manufacturer="ShotoPhopEX" />
     <?include $(sys.SOURCEFILEDIR)install-policy.wxi?>
     <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
          (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
     <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of ShotoPhopEX is already installed." />
+    <!-- ShotoPhopEX 0.1.0 and 0.1.1 installed under upstream PhotoCraft's UpgradeCode, publisher and
+         folder. From 0.1.2 the package has its own identity (the ArtCraft brand licence asks forks
+         not to present themselves as ArtCraft products, and the shared code let either installer
+         replace the other). This removes those two releases on upgrade; the version cap keeps it
+         from touching upstream PhotoCraft, whose MSIs under that code are 0.2 and later. -->
+    <Upgrade Code="D9660F32-2D0A-4ABE-B73D-17BE25F1542C">
+      <UpgradeVersion Minimum="0.1.0" IncludeMinimum="yes" Maximum="0.1.1" IncludeMaximum="yes" Property="SHOTOPHOPEX_UNDER_UPSTREAM_CODE" />
+    </Upgrade>
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <!-- MSI caches this icon using its Id as the filename. Advertised shortcuts to an
@@ -20,9 +28,7 @@
     <Property Id="ARPHELPLINK" Value="https://github.com/CodyChuGit/ShotoPhopEX/issues" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="CraftSuiteFolder" Name="ArtCraft">
-        <Directory Id="INSTALLFOLDER" Name="PhotoCraft" />
-      </Directory>
+      <Directory Id="INSTALLFOLDER" Name="ShotoPhopEX" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
@@ -139,7 +145,7 @@
         <RegistryValue Root="HKMU" Key="Software\Classes\Applications\photocraft.exe\SupportedTypes" Name=".qoi" Value="" Type="string" />
         <RegistryValue Root="HKMU" Key="Software\Classes\Applications\photocraft.exe\SupportedTypes" Name=".ico" Value="" Type="string" />
         <RegistryValue Root="HKMU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\photocraft.exe" Value="[#PhotocraftExe]" Type="string" />
-        <RegistryValue Root="HKMU" Key="Software\PhotoCraft" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\ShotoPhopEX" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
       </Component>
 
       <Component Id="PhotocraftCli">

@@ -108,7 +108,6 @@ The other built-in ICC profiles and the generated LUT looks are produced by code
 
 | Path | Title | Author | Source | License |
 |---|---|---|---|---|
-| `docs/brand/` (all files) | ArtCraft name, wordmark and mark | ArtCraft Team | getartcraft.com | Not open source; trademarks of the ArtCraft Team, [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt) |
 | `docs/images/sp-logo.png` | ShotoPhopEX "Sp" logo for the README | Cody Chu (ShotoPhopEX) | Rendered from `assets/app-icon/` | MIT OR Apache-2.0 |
 | `docs/images/genai/*.gif`, `quality.jpg`, `bench-5090-*.svg` | ShotoPhopEX feature recordings and benchmark charts | Cody Chu (ShotoPhopEX) (UI captures and charts) | Recorded in the app; the pictures shown were generated or edited with the models named in the README (Krea 2, Qwen-Image-2.1, Qwen-Image-Edit-2511, MOSS, SAM 3.1) | UI captures and charts: MIT OR Apache-2.0. The source photos the edits start from are not recorded here (see `docs/compliance/UNRESOLVED_RISKS.md`); generated pictures follow each model's output terms |
 | `docs/images/photocraft-*.jpg` | PhotoCraft screenshots | PhotoCraft contributors (UI) | Rendered offscreen with the `snapshot` example | MIT OR Apache-2.0 (UI); the artwork in each is public domain, listed below |

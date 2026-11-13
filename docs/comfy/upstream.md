@@ -42,6 +42,10 @@ entry, never anyone else's.
 
 ## Brand licence obligations (read before publishing a build)
 
+**Status (2026-11-13):** done for 0.1.2. `docs/brand/` is removed, the ArtCraft links are now
+"Based on PhotoCraft" / Help › Upstream Project on GitHub, and the installers carry ShotoPhopEX's
+own publisher, folder and upgrade code. See [ownership.md](ownership.md).
+
 `docs/brand/LICENSE-brand.txt` says the ArtCraft name, wordmark and logos are trademarks, not
 open source, and:
 
