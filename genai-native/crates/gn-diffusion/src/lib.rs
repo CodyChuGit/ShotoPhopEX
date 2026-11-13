@@ -373,6 +373,7 @@ enum ChatOn {
     Qwen21,
     Krea2,
     Moss(MossVariant),
+    Klein,
 }
 
 fn chat_on(params: &std::collections::BTreeMap<String, Value>) -> Result<ChatOn, EngineError> {
@@ -381,9 +382,10 @@ fn chat_on(params: &std::collections::BTreeMap<String, Value>) -> Result<ChatOn,
         Some(v) if v.as_str() == Some(CHAT_ON_KREA2) => Ok(ChatOn::Krea2),
         Some(v) => match v.as_str().and_then(family_of) {
             Some(Family::Moss(m)) => Ok(ChatOn::Moss(m)),
+            Some(Family::Klein) => Ok(ChatOn::Klein),
             _ => Err(EngineError::new(
                 ErrorKind::BadRequest,
-                format!("encoder {v}: a chat answers on the default encoder, \"{CHAT_ON_KREA2}\" or a moss-image template's"),
+                format!("encoder {v}: a chat answers on the default encoder, \"{CHAT_ON_KREA2}\" or a moss-image or flux3-klein template's"),
             )),
         },
     }
@@ -607,14 +609,15 @@ impl DiffusionEngine {
         }
         #[cfg_attr(feature = "mlx", allow(unreachable_code))]
         let on = chat_on(&req.params)?;
-        if matches!(on, ChatOn::Moss(_)) && image.is_some() {
-            return Err(EngineError::new(ErrorKind::Unsupported, "MOSS's encoder answers from words only (no picture) on this build"));
+        if matches!(on, ChatOn::Moss(_) | ChatOn::Klein) && image.is_some() {
+            return Err(EngineError::new(ErrorKind::Unsupported, "MOSS's and Klein's encoders answer from words only (no picture) on this build"));
         }
         self.ensure_loaded(
             match on {
                 ChatOn::Qwen21 => Family::QwenImage21,
                 ChatOn::Krea2 => Family::Krea2,
                 ChatOn::Moss(v) => Family::Moss(v),
+                ChatOn::Klein => Family::Klein,
             },
             progress,
         )?;
@@ -634,6 +637,7 @@ impl DiffusionEngine {
             Resident::Qwen(p) if on == ChatOn::Qwen21 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
             Resident::Krea2(p) if on == ChatOn::Krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
             Resident::Moss(p, _) if matches!(on, ChatOn::Moss(_)) => p.chat(&system, &req.prompt, &opts, &stop),
+            Resident::KleinCuda(p) if on == ChatOn::Klein => p.chat(&system, &req.prompt, &opts, &stop),
             _ => return Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
         };
         self.give_back();
@@ -2138,6 +2142,8 @@ mod tests {
         assert_eq!(chat_on(&p).unwrap(), ChatOn::Moss(MossVariant::Kromoss));
         p.insert("encoder".into(), json!(TEMPLATE_MOSS));
         assert_eq!(chat_on(&p).unwrap(), ChatOn::Moss(MossVariant::Sft));
+        p.insert("encoder".into(), json!(TEMPLATE_KLEIN_IMAGE));
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Klein);
         p.insert("encoder".into(), Value::Null);
         assert_eq!(chat_on(&p).unwrap(), ChatOn::Qwen21);
         for bad in [json!("qwen"), json!(3), json!(["krea2"]), json!(TEMPLATE_KREA2)] {
