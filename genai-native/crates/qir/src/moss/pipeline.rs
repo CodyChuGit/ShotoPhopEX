@@ -288,46 +288,19 @@ impl MossPipeline {
     /// under `system`, sampled as the other chats are ([`crate::pipeline::ChatOptions`]). The
     /// prompt rewriter of a MOSS picture then needs no other model on the card.
     pub fn chat(&self, system: &str, user: &str, opts: &crate::pipeline::ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
-        use crate::pipeline::{sample, Cancelled, ChatRng};
         crate::device::bind_thread(&self.dev);
         let t0 = Instant::now();
-        let text = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
-        let prompt: Vec<u32> = self.tok.encode(text, false).map_err(|e| anyhow::anyhow!("encode the chat: {e}"))?.get_ids().to_vec();
-        let stops: Vec<u32> = ["<|im_end|>", "<|endoftext|>"].iter().filter_map(|t| self.tok.token_to_id(t)).collect();
-        anyhow::ensure!(!stops.is_empty(), "the Qwen3.5 tokenizer has no <|im_end|>");
         let te = self.text_encoder()?;
         let head = self.lm_head()?;
-        let mut out = Vec::new();
-        let mut rng = ChatRng::new(opts.seed);
-        let (mut last, mut st) = te.prefill(&prompt)?;
-        let tp = Instant::now();
-        while out.len() < opts.max_new {
-            if cancel() {
-                return Err(Cancelled.into());
-            }
-            let logits = head.forward(&last)?.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
-            let next = sample(&logits, opts, &mut rng);
-            if stops.contains(&next) {
-                break;
-            }
-            out.push(next);
-            last = te.step(next, &mut st)?;
-        }
-        drop((head, st, last));
+        let (reply, tokens, prompt_tokens) = write_reply(&self.tok, &te, &head, system, user, opts, cancel)?;
+        drop(head);
         if self.low_vram {
             // 12 GB mode: the head (1-2 GB) goes again, so the DiT has its room back.
             *self.head.lock().unwrap_or_else(|e| e.into_inner()) = None;
             crate::device::trim_pool(&self.dev);
         }
-        let reply = self.tok.decode(&out, true).map_err(|e| anyhow::anyhow!("decode the reply: {e}"))?;
-        tracing::info!(
-            tokens = out.len(),
-            prompt_tokens = prompt.len(),
-            decode_s = tp.elapsed().as_secs_f32(),
-            chat_s = t0.elapsed().as_secs_f32(),
-            "moss chat"
-        );
-        Ok(reply.trim().to_string())
+        tracing::info!(tokens, prompt_tokens, chat_s = t0.elapsed().as_secs_f32(), "moss chat");
+        Ok(reply)
     }
 
     /// The encoder file's `lm_head` (248320 × 4096), on the card from the first chat on.
@@ -337,13 +310,9 @@ impl MossPipeline {
             return Ok(Arc::clone(h));
         }
         let w = Weights::open(&self.files.text, &self.dev, self.dtype, true)?;
-        let name = ["lm_head", "model.lm_head", "model.language_model.lm_head"]
-            .into_iter()
-            .find(|n| w.contains(&format!("{n}.weight")))
-            .context("this Qwen3.5-9B encoder file has no lm_head, so it cannot write text")?;
         let t0 = Instant::now();
-        let h = Arc::new(w.linear(name)?);
-        tracing::info!(load_s = t0.elapsed().as_secs_f32(), name, "MOSS chat head loaded");
+        let h = Arc::new(load_lm_head(&w)?);
+        tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS chat head loaded");
         *slot = Some(Arc::clone(&h));
         Ok(h)
     }
@@ -633,6 +602,59 @@ pub fn res2s_step(sigma: f64, next: f64) -> Res2sStep {
 }
 
 /// 12 GB mode on a card under [`LOW_VRAM_BELOW`], or as `QIR_MOSS_LOW_VRAM=1` / `0` says.
+/// Qwen3.5-9B's reply to `user` under `system` (thinking off), with the tokens it wrote and
+/// read: the loop of [`MossPipeline::chat`], for any holder of the encoder and its `lm_head`.
+pub(crate) fn write_reply(
+    tok: &Tokenizer,
+    te: &Qwen35Text,
+    head: &QLinear,
+    system: &str,
+    user: &str,
+    opts: &crate::pipeline::ChatOptions,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(String, usize, usize)> {
+    use crate::pipeline::{sample, Cancelled, ChatRng};
+    let text = format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
+    let prompt: Vec<u32> = tok.encode(text, false).map_err(|e| anyhow::anyhow!("encode the chat: {e}"))?.get_ids().to_vec();
+    let stops: Vec<u32> = ["<|im_end|>", "<|endoftext|>"].iter().filter_map(|t| tok.token_to_id(t)).collect();
+    anyhow::ensure!(!stops.is_empty(), "the Qwen3.5 tokenizer has no <|im_end|>");
+    let mut out = Vec::new();
+    let mut rng = ChatRng::new(opts.seed);
+    let (mut last, mut st) = te.prefill(&prompt)?;
+    while out.len() < opts.max_new {
+        if cancel() {
+            return Err(Cancelled.into());
+        }
+        let logits = head.forward(&last)?.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+        let next = sample(&logits, opts, &mut rng);
+        if stops.contains(&next) {
+            break;
+        }
+        out.push(next);
+        last = te.step(next, &mut st)?;
+    }
+    let reply = tok.decode(&out, true).map_err(|e| anyhow::anyhow!("decode the reply: {e}"))?;
+    Ok((reply.trim().to_string(), out.len(), prompt.len()))
+}
+
+/// A Qwen3.5-9B file that can write (first of `names` under `root`'s `text_encoders`) and its
+/// tokenizer, for a model that borrows it as a prompt writer.
+pub fn find_writer(root: &Path, names: &[&str]) -> Option<(PathBuf, PathBuf)> {
+    let text = find(&root.join("text_encoders"), names)?;
+    let own = root.join("text_encoders").join(TOKENIZER_DIR).join("tokenizer.json");
+    let beside = text.parent().map(|d| d.join("tokenizer.json"));
+    Some((text, std::iter::once(own).chain(beside).find(|p| p.is_file())?))
+}
+
+/// The `lm_head` of a Qwen3.5-9B file, under any of its roots.
+pub(crate) fn load_lm_head(w: &Weights) -> Result<QLinear> {
+    let name = ["lm_head", "model.lm_head", "model.language_model.lm_head"]
+        .into_iter()
+        .find(|n| w.contains(&format!("{n}.weight")))
+        .context("this Qwen3.5-9B encoder file has no lm_head, so it cannot write text")?;
+    w.linear(name)
+}
+
 fn low_vram_mode(dev: &Device) -> bool {
     match std::env::var("QIR_MOSS_LOW_VRAM").ok().as_deref().map(str::trim) {
         Some("1") => true,

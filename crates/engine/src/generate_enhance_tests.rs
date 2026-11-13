@@ -334,4 +334,10 @@ fn a_text_to_image_rewrite_runs_on_the_pictures_own_encoder() {
     assert_eq!(encoder_of(&mut s, "moss-image/image"), "moss-image/image");
     assert_eq!(encoder_of(&mut s, "flux3-klein/image"), "flux3-klein/image");
     assert_eq!(encoder_of(&mut s, "qwen-2.1/image"), Value::Null, "the default encoder");
+    // the 16 MP model: its own writer, a longer caption planned for its resolution
+    assert_eq!(encoder_of(&mut s, "minimax-h3-image/image"), "minimax-h3-image/image");
+    let st = fake.state();
+    let last = st.runs.iter().rev().find(|r| is_text_request(&r.request)).unwrap();
+    assert!(system_prompt(&last.request).contains("150 to 300 words"), "{}", system_prompt(&last.request));
+    assert_eq!(last.request["params"]["max_tokens"], 640);
 }

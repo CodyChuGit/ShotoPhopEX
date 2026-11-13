@@ -15,7 +15,7 @@
 //! 21 GB, so the encoder's layers take the card one at a time ([`H3Text32`]).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Context;
@@ -66,6 +66,9 @@ pub struct H3Files {
     pub vae: PathBuf,
     /// ComfyUI's `qwen25_tokenizer` folder.
     pub tokenizer: PathBuf,
+    /// A Qwen3.5-9B file that writes prompts and its `tokenizer.json`, where there is one
+    /// (MiniMax's own W4A8 file, else MOSS-Image's encoder: the same model).
+    pub writer: Option<(PathBuf, PathBuf)>,
 }
 
 const DIT: &[&str] = &["p-h3-image_int8_convrot.safetensors", "p-h3-image_bf16.safetensors"];
@@ -95,12 +98,16 @@ pub fn find_files(root: &Path) -> Option<H3Files> {
         text: find(&root.join("text_encoders"), TEXT, "QIR_H3_TEXT")?,
         vae: find(&root.join("vae"), VAE, "QIR_H3_VAE")?,
         tokenizer: crate::comfy_files::tokenizer_dir(root)?,
+        writer: None,
     })
 }
 
 const MM_DIT: &[&str] = &["minimax_h3_image_pruned_int8_convrot.safetensors", "minimax_h3_image_int8_convrot.safetensors", "minimax_h3_image_bf16.safetensors"];
 const MM_TEXT: &[&str] = &["qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"];
 const MM_VAE: &[&str] = &["minimax_h3_image_vae_fp16.safetensors", "minimax_h3_image_vae_bf16.safetensors"];
+const MM_WRITER: &[&str] = &["qwen3.5_9b_w4a8_gptq.safetensors", "qwen3.5_9b_int8_convrot.safetensors"];
+/// With less free memory than this the transformer leaves the card while the writer answers.
+const WRITER_ROOM: usize = 12 << 30;
 
 /// MiniMax-H3-Image under `root`, when every file is there. `QIR_MMH3_DIT`, `QIR_MMH3_TEXT`
 /// and `QIR_MMH3_VAE` pick other files.
@@ -111,6 +118,7 @@ pub fn find_minimax_files(root: &Path) -> Option<H3Files> {
         text: find(&root.join("text_encoders"), MM_TEXT, "QIR_MMH3_TEXT")?,
         vae: find(&root.join("vae"), MM_VAE, "QIR_MMH3_VAE")?,
         tokenizer: crate::comfy_files::tokenizer_dir(root)?,
+        writer: crate::moss::pipeline::find_writer(root, MM_WRITER),
     })
 }
 
@@ -126,7 +134,8 @@ pub struct H3Pipeline {
     dtype: DType,
     tok: Tokenizer,
     files: H3Files,
-    dit: H3Dit,
+    /// The transformer: off the card only while the prompt writer needs its room.
+    dit: Mutex<Option<Arc<H3Dit>>>,
     vae: Mutex<Option<H3Vae>>,
     cond: Mutex<Option<Cached>>,
 }
@@ -137,14 +146,60 @@ impl H3Pipeline {
         let dtype = if dev.is_cuda() { DType::BF16 } else { DType::F32 };
         let tok = crate::comfy_files::qwen_tokenizer(&files.tokenizer)?;
         progress(0.0, "Loading the transformer");
+        let this = Self { dev, dtype, tok, files: files.clone(), dit: Mutex::new(None), vae: Mutex::new(None), cond: Mutex::new(None) };
+        this.transformer()?;
+        progress(1.0, "Loaded");
+        Ok(this)
+    }
+
+    /// The transformer, loaded again when the prompt writer took its place.
+    fn transformer(&self) -> Result<Arc<H3Dit>> {
+        let mut slot = self.dit.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(d) = slot.as_ref() {
+            return Ok(Arc::clone(d));
+        }
         let t0 = Instant::now();
-        let dit = H3Dit::load(&Weights::open(&files.dit, &dev, dtype, true)?).context("the H3 image DiT")?;
-        if files.kind == H3Kind::MiniMax {
-            anyhow::ensure!(dit.pdd_sigmas().is_some() && !dit.config().audio, "{}: not a MiniMax-H3-Image transformer", files.dit.display());
+        let dit = H3Dit::load(&Weights::open(&self.files.dit, &self.dev, self.dtype, true)?).context("the H3 image DiT")?;
+        if self.files.kind == H3Kind::MiniMax {
+            anyhow::ensure!(dit.pdd_sigmas().is_some() && !dit.config().audio, "{}: not a MiniMax-H3-Image transformer", self.files.dit.display());
         }
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "H3 DiT loaded");
-        progress(1.0, "Loaded");
-        Ok(Self { dev, dtype, tok, files: files.clone(), dit, vae: Mutex::new(None), cond: Mutex::new(None) })
+        let d = Arc::new(dit);
+        *slot = Some(Arc::clone(&d));
+        Ok(d)
+    }
+
+    /// Whether a prompt writer's files are there ([`Self::chat`]).
+    pub fn can_write(&self) -> bool {
+        self.files.writer.is_some()
+    }
+
+    /// A text answer from Qwen3.5-9B (thinking off), the model MiniMax's own prompt writer is:
+    /// the reply to `user` under `system`. The writer is on the card for the answer only; with
+    /// too little room beside the transformer, the transformer leaves first and the next
+    /// picture loads it again.
+    pub fn chat(&self, system: &str, user: &str, opts: &crate::pipeline::ChatOptions, cancel: &dyn Fn() -> bool) -> Result<String> {
+        use crate::moss::pipeline::{load_lm_head, write_reply};
+        use crate::moss::text::{Qwen35Text, TextConfig};
+        let (file, tokenizer) = self.files.writer.as_ref().context("no Qwen3.5-9B prompt writer file beside this model")?;
+        crate::device::bind_thread(&self.dev);
+        let t0 = Instant::now();
+        let tok = Tokenizer::from_file(tokenizer).map_err(|e| anyhow::anyhow!("load {}: {e}", tokenizer.display()))?;
+        let swapped = crate::device::free_vram(&self.dev).is_some_and(|(free, _)| free < WRITER_ROOM)
+            && self.dit.lock().unwrap_or_else(|e| e.into_inner()).take().is_some();
+        if swapped {
+            crate::device::trim_pool(&self.dev);
+        }
+        let w = Weights::open(file, &self.dev, self.dtype, true)?;
+        let te = Qwen35Text::load(&TextConfig::qwen35_9b(), &w).context("the Qwen3.5-9B prompt writer")?;
+        let head = load_lm_head(&w)?;
+        let load_s = t0.elapsed().as_secs_f32();
+        let reply = write_reply(&tok, &te, &head, system, user, opts, cancel);
+        drop((te, head, w));
+        crate::device::trim_pool(&self.dev);
+        let (reply, tokens, prompt_tokens) = reply?;
+        tracing::info!(tokens, prompt_tokens, swapped, load_s, chat_s = t0.elapsed().as_secs_f32(), "h3 prompt writer");
+        Ok(reply)
     }
 
     /// Which model is loaded.
@@ -309,11 +364,12 @@ impl H3Pipeline {
         }
         let ref_sizes: Vec<(usize, usize)> = refs.iter().map(|r| -> Result<(usize, usize)> { Ok((r.dim(2)?, r.dim(3)?)) }).collect::<Result<_>>()?;
         let (lh, lw) = (h / vae::SCALE, w / vae::SCALE);
-        let audio_t = self.dit.config().audio.then_some(AUDIO_T);
+        let dit = self.transformer()?;
+        let audio_t = dit.config().audio.then_some(AUDIO_T);
         let layout = Layout::new(tags, &ref_sizes, audio_t, lh, lw);
         // the request's adapters, before the text is refined (none takes the previous ones off)
-        self.dit.set_loras(&req.loras)?;
-        let prepared = self.dit.prepare(&states, layout)?;
+        dit.set_loras(&req.loras)?;
+        let prepared = dit.prepare(&states, layout)?;
         self.dev.synchronize()?;
         timings.encode_s = t0.elapsed().as_secs_f32();
 
@@ -327,7 +383,7 @@ impl H3Pipeline {
             Some(t) => Some(Tensor::from_vec(noise.next().unwrap_or_default(), (AUDIO_CHANNELS, 2, t), &self.dev)?),
             None => None,
         };
-        let sig = match self.dit.pdd_sigmas() {
+        let sig = match dit.pdd_sigmas() {
             // the grid the heads were distilled on; another count is the 2-step LoRA's
             Some(grid) if req.steps == 0 || req.steps == grid.len() - 1 => grid.to_vec(),
             _ => sigmas(req.steps)?,
@@ -346,7 +402,7 @@ impl H3Pipeline {
                 Some(a) => Some(a.to_dtype(self.dtype)?),
                 None => None,
             };
-            let (v, va) = self.dit.forward(&prepared, &xin, ain.as_ref(), &refs, req.seed, s.max(1e-6), &sig)?;
+            let (v, va) = dit.forward(&prepared, &xin, ain.as_ref(), &refs, req.seed, s.max(1e-6), &sig)?;
             let dt = f64::from(sig[i + 1] - sig[i]);
             x = (x + (v * dt)?)?;
             if let (Some(av), Some(va)) = (a.as_mut(), va) {
