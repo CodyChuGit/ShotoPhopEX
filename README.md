@@ -42,9 +42,9 @@
 <br>
 
 <p align="center">
-  <img src="docs/images/genai/split-layers.gif" alt="Split into Layers on a studio photo of a red apple, a yellow rubber duck and a blue mug on a grey table: each object comes out on its own layer, the Layers panel fills up, and hiding the layers one by one leaves an empty table and wall" width="100%">
+  <img src="docs/images/genai/split-layers.gif" alt="Split into Layers on a Paris sidewalk café photo: three people at a small round table, a man behind them, a dog, a bicycle and wicker chairs each come out on their own layer, the Layers panel fills up, and hiding the layers one by one leaves the empty sidewalk, planters and café front" width="100%">
   <br>
-  <sub><b>Split into Layers</b>: name the subjects (here "apple, rubber duck, mug") and the apple, the duck and the mug each come out as a whole cut-out layer over a repainted background, shown here hidden one by one until only the empty table and wall are left. Recorded in the app on an RTX 5090; the 21-second wait is sped up.</sub>
+  <sub><b>Split into Layers</b>: on a busy café scene, with Detail Medium and no subjects typed, the three people at the table, the man behind them, the dog, the bicycle, the chairs, tables and a cup each come out as their own cut-out layer over a repainted background, shown here hidden one by one until only the empty sidewalk is left. Recorded in the app on an RTX 5090; the 2.5-minute wait is sped up.</sub>
 </p>
 
 <br>
