@@ -20,6 +20,9 @@ pub struct Options {
     pub missing_files: Vec<String>,
     pub matte: Option<[f32; 4]>,
     pub enhanced_text: Option<String>,
+    /// Answers to a `text` request whose prompt or system turn holds the key, before
+    /// `enhanced_text`: a Yes or No to one question, a name for one picture.
+    pub enhanced_for: Vec<(String, String)>,
     /// A chat that shows a picture is refused, as a Mac's prompt writer refuses one.
     pub text_only: bool,
     /// The card's free memory as the health reports it (none: a card it cannot tell about).
@@ -63,6 +66,7 @@ impl Default for Options {
             missing_files: Vec::new(),
             matte: None,
             enhanced_text: None,
+            enhanced_for: Vec::new(),
             text_only: false,
             vram_free: None,
             no_batch: false,
@@ -294,7 +298,11 @@ impl Engine for FakeEngine {
         }
         if req.task == "text" {
             let prompt = req.prompt.rsplit("Instruction: ").next().unwrap_or(&req.prompt).rsplit("Idea: ").next().unwrap_or(&req.prompt);
-            let text = self.options.enhanced_text.clone().unwrap_or_else(|| format!("Enhanced: {prompt}"));
+            let whole = serde_json::to_string(&req.params).unwrap_or_default() + &req.prompt;
+            let text = match self.options.enhanced_for.iter().find(|(k, _)| whole.contains(k.as_str())) {
+                Some((_, said)) => said.clone(),
+                None => self.options.enhanced_text.clone().unwrap_or_else(|| format!("Enhanced: {prompt}")),
+            };
             return Ok((DoneInfo { images: Vec::new(), texts: vec![text], seed: req.seed, elapsed_ms: 0 }, Vec::new()));
         }
         // A batch of edits, as the real worker answers one: each picture drawn alone.

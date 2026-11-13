@@ -653,7 +653,7 @@ fn the_time_estimate_is_one_formula_everywhere() {
     let two = estimate_seconds("qwen-edit-2511/edit-lightning-8", 1000, 1000, 1, 2).unwrap();
     assert!((f64::from(two) - (7.5 + 5.5 * mp + 18.0)).abs() < 0.01, "{two}");
     // An image template counts the size asked for.
-    assert!((estimate_seconds("krea2-turbo/image", 1000, 1000, 1, 0).unwrap() - 7.0).abs() < 0.01);
+    assert!((estimate_seconds("krea2-turbo/image", 1000, 1000, 1, 0).unwrap() - 3.8).abs() < 0.01);
     assert!(estimate_seconds("nope/x", 1, 1, 1, 0).is_none());
     // The native Qwen-Image-2.1 edit (Edit's `auto`): three variations of a 1024² photo took
     // 17.7 s in the app on the 5090 (2026-11-03); the ComfyUI-era numbers said about 2 min.
@@ -663,7 +663,7 @@ fn the_time_estimate_is_one_formula_everywhere() {
     let mut s = Session::new();
     let v = s.execute("generate.models", json!({"probe": false, "width": 1000, "height": 1000, "count": 1})).unwrap();
     let krea = v["templates"].as_array().unwrap().iter().find(|t| t["id"] == "krea2-turbo/image").unwrap().clone();
-    assert!((krea["eta"].as_f64().unwrap() - 7.0).abs() < 0.01);
+    assert!((krea["eta"].as_f64().unwrap() - 3.8).abs() < 0.01);
     assert_eq!(krea["pages"], json!(["image"]));
     assert_eq!(krea["creator"], "Krea");
     let edit = v["templates"].as_array().unwrap().iter().find(|t| t["id"] == "qwen-edit-2511/edit-lightning-8").unwrap().clone();

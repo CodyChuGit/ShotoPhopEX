@@ -1505,3 +1505,53 @@ fn split_method_is_simple_or_classic() {
         assert!(matches!(s.execute(SPLIT, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
 }
+
+#[test]
+fn a_thing_the_detector_takes_for_an_animal_is_named_by_what_it_is() {
+    // The detector's "animal" fires on a pear; the vision model, shown the crop, says there is no
+    // real animal and names it a pear. The person it does see keeps its word.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: Vec::new(),
+        segments_for: vec![("person".into(), vec![[0.0, 0.0, 0.4, 0.5]]), ("animal".into(), vec![[0.6, 0.5, 0.9, 0.9]])],
+        enhanced_for: vec![("real animal".into(), "No".into()), ("real person".into(), "Yes".into()), ("List the things".into(), "pear".into())],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session(&fake.url);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 3, "seed": 1})).unwrap();
+    let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    let mut names: Vec<String> = ids.iter().map(|id| layer_name(&s, *id)).collect();
+    names.sort();
+    assert_eq!(names, ["Pear", "Person", "Split background"], "{r}");
+    let st = fake.state();
+    let removals: Vec<String> = st
+        .runs
+        .iter()
+        .filter(|r| r.request["task"] != "segment" && r.request["task"] != "text")
+        .map(|r| r.request["prompt"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(!removals.iter().any(|p| p.to_ascii_lowercase().contains("animal")), "the removal asks for the pear: {removals:?}");
+}
+
+#[test]
+fn a_lookalike_the_vision_model_cannot_name_stays_in_the_background() {
+    // The detector's "person" is a speck the vision model says is no real person and names
+    // "None": no layer for it.
+    let fake = FakeNative::start_with(photocraft_genai::fake::Options {
+        segments: Vec::new(),
+        segments_for: vec![("person".into(), vec![[0.0, 0.0, 0.3, 0.3]]), ("cup".into(), vec![[0.5, 0.5, 0.9, 0.9]])],
+        enhanced_for: vec![("real person".into(), "No".into()), ("at most 1 of them".into(), "None".into()), ("List the things".into(), "cup".into())],
+        color: [10, 200, 10, 255],
+        occlusion: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = session(&fake.url);
+    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    let r = s.execute(SPLIT, json!({"method": "classic", "layers": 3, "seed": 1})).unwrap();
+    let names: Vec<String> = r["subjects"].as_array().unwrap().iter().map(|v| v["name"].as_str().unwrap_or("").to_string()).collect();
+    assert_eq!(names, ["Cup"], "{r}");
+}

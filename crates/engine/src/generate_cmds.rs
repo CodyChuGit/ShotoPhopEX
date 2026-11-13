@@ -458,6 +458,12 @@ pub(crate) fn place_in_words(region: Rect, canvas: Rect) -> String {
 /// leading "assistant" echo, surrounding quotes or markdown emphasis; `None` when the model
 /// said nothing usable.
 pub(crate) fn clean_enhanced(texts: &[String]) -> Option<String> {
+    clean_answer(texts, 3)
+}
+
+/// [`clean_enhanced`] for an answer of at least `min_words` words: a Yes or No, or one thing's
+/// name, is one word, where a rewritten prompt of fewer than three is a failed one.
+fn clean_answer(texts: &[String], min_words: usize) -> Option<String> {
     for t in texts {
         let mut s = t.trim();
         for prefix in ["assistant:", "Assistant:", "assistant", "Assistant", "**Final Prompt:**", "Final Prompt:", "Rewritten:", "Instruction:"] {
@@ -466,7 +472,7 @@ pub(crate) fn clean_enhanced(texts: &[String]) -> Option<String> {
             }
         }
         let s = s.trim_matches(|c: char| c == '"' || c == '*' || c == '`' || c == '\u{201c}' || c == '\u{201d}').trim();
-        if s.split_whitespace().count() >= 3 {
+        if s.split_whitespace().count() >= min_words.max(1) {
             return Some(s.to_string());
         }
     }
@@ -491,7 +497,9 @@ pub(crate) fn list_things(backend: &dyn GenerativeBackend, picture: &Rgba8, k: u
         let t = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ');
         let t = t.strip_prefix("the ").or_else(|| t.strip_prefix("a ")).or_else(|| t.strip_prefix("an ")).unwrap_or(t).trim();
         let words = t.split_whitespace().count();
-        if t.is_empty() || words > 4 || t.chars().count() > 40 || out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
+        // "None": nothing to list (one-word answers count since 2026-11-12).
+        let nothing = ["none", "nothing", "n/a", "no", "unknown"].iter().any(|n| t.eq_ignore_ascii_case(n));
+        if t.is_empty() || nothing || words > 4 || t.chars().count() > 40 || out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
             continue;
         }
         out.push(t.to_lowercase());
@@ -584,7 +592,11 @@ fn enhance_once(
             references: Vec::new(),
         };
         let resp = backend.run(&req, progress)?;
-        if let Some(s) = clean_enhanced(&resp.texts) {
+        // A Yes or No and a list of things can be a single word ("No", "pear"): before
+        // 2026-11-12 both needed three, so a one-thing list and every presence answer came back
+        // as nothing.
+        let min_words = if matches!(kind, EnhanceKind::Presence | EnhanceKind::Things) { 1 } else { 3 };
+        if let Some(s) = clean_answer(&resp.texts, min_words) {
             return Ok(Some(s));
         }
     }
@@ -1569,7 +1581,10 @@ pub(crate) fn named_object(rewritten: &str) -> Option<String> {
     ]
     .iter()
     .any(|w| lower.split(|c: char| !c.is_alphanumeric()).any(|t| t == *w));
-    (!name.is_empty() && !not_a_thing && name.split_whitespace().count() <= 6).then(|| name.to_string())
+    // Two things in the selection ("the man in a white shirt and the black car") name both: a
+    // longer name is a sentence, but each part of one joined by "and" may be six words.
+    let fits = name.split(" and ").all(|part| part.split_whitespace().count() <= 6) && name.split_whitespace().count() <= 13;
+    (!name.is_empty() && !not_a_thing && fits).then(|| name.to_string())
 }
 
 /// The fill's prompt for a removal the rewriter named: [`REMOVE_PROMPT`] with the name in it.
@@ -1796,7 +1811,7 @@ pub(crate) fn generative_remove(
                 // rewriter's own closing clauses listed the scene's neighbours and the model
                 // painted them: a rock for the boat, the table over a wrist).
                 dump_views(&seen);
-                if let Ok(Some(p)) = enhance_prompt(
+                let said = enhance_prompt(
                     job.thinker.as_ref(),
                     EnhanceKind::Remove,
                     &job.prompt,
@@ -1804,7 +1819,13 @@ pub(crate) fn generative_remove(
                     Some(&place),
                     job.seed,
                     &JobProgress::span(ctx, 0.01, 0.04),
-                ) && let Some(name) = named_object(&p)
+                );
+                // What the rewriter said and what was taken from it: when nothing is named the
+                // fill gets the generic "the object" and may take the wrong one (a pedestrian
+                // kept and the car beside him removed, in the app 2026-11-13).
+                eprintln!("remove: rewriter said {said:?}, named {:?}", said.as_ref().ok().and_then(|p| p.as_deref()).and_then(named_object));
+                if let Ok(Some(p)) = said
+                    && let Some(name) = named_object(&p)
                 {
                     job.rewritten = Some(removal_prompt(&name));
                     job.object = Some(name.clone());
@@ -3741,9 +3762,7 @@ const PRESENCE_CHECK: bool = false;
 /// ([`ENHANCE_PRESENCE_SYSTEM`]): `Some(true)` yes, `Some(false)` no, `None` when it could
 /// not be asked or did not answer.
 fn still_there(backend: &dyn GenerativeBackend, result: &Rgba8, object: &str, seed: u64, progress: &JobProgress) -> Option<bool> {
-    let seen = judge_view(result);
-    let question = format!("Is there a {object}, or any part of one, in this photo?");
-    let answer = enhance_prompt(backend, EnhanceKind::Presence, &question, Some(&seen), None, seed, progress).ok()??.to_lowercase();
+    let answer = presence_answer(backend, result, &format!("Is there a {object}, or any part of one, in this photo?"), seed, progress)?;
     let first = answer.trim().split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
     match first {
         "yes" => Some(true),
@@ -3755,6 +3774,24 @@ fn still_there(backend: &dyn GenerativeBackend, result: &Rgba8, object: &str, se
             (None, None) => None,
         },
     }
+}
+
+/// The vision-language model's Yes or No to `question` about `picture` (enlarged as for the
+/// judge, [`judge_view`]), read from its first word only: `None` when it could not be asked or
+/// its answer does not start with Yes or No.
+pub(crate) fn sees(backend: &dyn GenerativeBackend, picture: &Rgba8, question: &str, seed: u64, progress: &JobProgress) -> Option<bool> {
+    let answer = presence_answer(backend, picture, question, seed, progress)?;
+    match answer.trim().split(|c: char| !c.is_alphanumeric()).next().unwrap_or("") {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// The model's answer (lower case) to a [`EnhanceKind::Presence`] question about `picture`.
+fn presence_answer(backend: &dyn GenerativeBackend, picture: &Rgba8, question: &str, seed: u64, progress: &JobProgress) -> Option<String> {
+    let seen = judge_view(picture);
+    Some(enhance_prompt(backend, EnhanceKind::Presence, question, Some(&seen), None, seed, progress).ok()??.to_lowercase())
 }
 
 /// A judged crop enlarged until its shorter side is at least [`JUDGE_VIEW_MIN_SIDE`], its

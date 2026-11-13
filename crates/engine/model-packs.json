@@ -439,7 +439,8 @@
    "bytes": 2224003,
    "sha256": "a83e0809aa4c3af7208b2df632a7a69668c6d48775b3c3fe4e1b1199d1f8b8f4",
    "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/32bd64288804d66eefd0ccbe215aa642df71cc41/tokenizer.json",
-   "license": "openai-clip-tokenizer"
+   "license": "openai-clip-tokenizer",
+   "comfyCopy": ["comfy/sd1_tokenizer/vocab.json", "comfy/sd1_tokenizer/merges.txt"]
   },
   {
    "id": "qwen25-tokenizer-vocab",
@@ -449,7 +450,8 @@
    "bytes": 2776833,
    "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
    "url": "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct/resolve/cc594898137f460bfe9f0759e9844b3ce807cfb5/vocab.json",
-   "license": "qwen-tokenizer"
+   "license": "qwen-tokenizer",
+   "comfyCopy": ["comfy/text_encoders/qwen25_tokenizer/vocab.json", "comfy/text_encoders/qwen25_tokenizer/merges.txt", "comfy/text_encoders/qwen25_tokenizer/tokenizer_config.json"]
   },
   {
    "id": "qwen25-tokenizer-merges",
@@ -459,7 +461,8 @@
    "bytes": 1671853,
    "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
    "url": "https://raw.githubusercontent.com/comfyanonymous/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy/text_encoders/qwen25_tokenizer/merges.txt",
-   "license": "qwen-tokenizer"
+   "license": "qwen-tokenizer",
+   "comfyCopy": ["comfy/text_encoders/qwen25_tokenizer/vocab.json", "comfy/text_encoders/qwen25_tokenizer/merges.txt", "comfy/text_encoders/qwen25_tokenizer/tokenizer_config.json"]
   },
   {
    "id": "qwen25-tokenizer-config",
@@ -469,7 +472,8 @@
    "bytes": 8018,
    "sha256": "49292bd4a58a43382bf01311bc3ed7a151a7f16fe07d155e900ea1af281555db",
    "url": "https://raw.githubusercontent.com/comfyanonymous/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy/text_encoders/qwen25_tokenizer/tokenizer_config.json",
-   "license": "qwen-tokenizer"
+   "license": "qwen-tokenizer",
+   "comfyCopy": ["comfy/text_encoders/qwen25_tokenizer/vocab.json", "comfy/text_encoders/qwen25_tokenizer/merges.txt", "comfy/text_encoders/qwen25_tokenizer/tokenizer_config.json"]
   },
   {
    "id": "flux3-klein-q4-transformer-0",
