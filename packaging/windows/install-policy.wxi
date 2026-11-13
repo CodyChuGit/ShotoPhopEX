@@ -4,26 +4,30 @@
   <!-- Only for me leaves ALLUSERS unset. Publishing ALLUSERS=2 here makes FindRelatedProducts treat the run as
        per-machine and skip the existing per-user copy, so an interactive upgrade installs beside it
        (two registered products, and uninstall leaves files behind). Checked with real msiexec runs. -->
+  <!-- ShotoPhopEX: upstream also finds an existing copy through App Paths\photocraft.exe. That key
+       is shared with upstream PhotoCraft (and with ShotoPhopEX 0.1.0/0.1.1, which lived in
+       Programs\ArtCraft\PhotoCraft), so it would install this app into their folder. Only this
+       app's own Software\ShotoPhopEX key is searched; the PATH/EXE properties stay, unset. -->
   <Property Id="INSTALLFOLDER" Secure="yes" />
   <Property Id="CRAFT_SCOPE" Value="user" Secure="yes" />
   <Property Id="CRAFT_U_DIR" Secure="yes"><RegistrySearch Id="CRAFT_U_DIRSearch" Root="HKCU" Key="Software\ShotoPhopEX" Name="InstallDir" Type="raw" /></Property>
   <SetProperty Id="CRAFT_USER_DIR" Action="CraftUFromDIR" Value="[CRAFT_U_DIR]" After="AppSearch" Sequence="both" Condition="NOT CRAFT_USER_DIR AND CRAFT_U_DIR" />
   <Property Id="CRAFT_U_FOLDER" Secure="yes"><RegistrySearch Id="CRAFT_U_FOLDERSearch" Root="HKCU" Key="Software\ShotoPhopEX" Name="InstallFolder" Type="raw" /></Property>
   <SetProperty Id="CRAFT_USER_DIR" Action="CraftUFromFOLDER" Value="[CRAFT_U_FOLDER]" After="CraftUFromDIR" Sequence="both" Condition="NOT CRAFT_USER_DIR AND CRAFT_U_FOLDER" />
-  <Property Id="CRAFT_U_PATH" Secure="yes"><RegistrySearch Id="CRAFT_U_PATHSearch" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\photocraft.exe" Name="Path" Type="raw" /></Property>
+  <Property Id="CRAFT_U_PATH" Secure="yes" />
   <SetProperty Id="CRAFT_USER_DIR" Action="CraftUFromPATH" Value="[CRAFT_U_PATH]" After="CraftUFromFOLDER" Sequence="both" Condition="NOT CRAFT_USER_DIR AND CRAFT_U_PATH" />
-  <Property Id="CRAFT_U_EXEFOLDER" Secure="yes"><RegistrySearch Id="CRAFT_ULegacyFolder" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\photocraft.exe" Type="file" /></Property>
-  <Property Id="CRAFT_U_EXE" Secure="yes"><RegistrySearch Id="CRAFT_ULegacyExe" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\photocraft.exe" Type="file"><FileSearch Id="CRAFT_ULegacyFile" Name="photocraft.exe" /></RegistrySearch></Property>
+  <Property Id="CRAFT_U_EXEFOLDER" Secure="yes" />
+  <Property Id="CRAFT_U_EXE" Secure="yes" />
   <SetProperty Id="CRAFT_USER_DIR" Action="CraftUFromLegacyExe" Value="[CRAFT_U_EXEFOLDER]" After="CraftUFromPATH" Sequence="both" Condition="NOT CRAFT_USER_DIR AND CRAFT_U_EXEFOLDER AND CRAFT_U_EXE" />
   <Property Id="CRAFT_USER_DIR" Secure="yes" />
   <Property Id="CRAFT_M_DIR" Secure="yes"><RegistrySearch Id="CRAFT_M_DIRSearch" Root="HKLM" Key="Software\ShotoPhopEX" Name="InstallDir" Type="raw" /></Property>
   <SetProperty Id="CRAFT_MACHINE_DIR" Action="CraftMFromDIR" Value="[CRAFT_M_DIR]" After="CraftUFromLegacyExe" Sequence="both" Condition="NOT CRAFT_MACHINE_DIR AND CRAFT_M_DIR" />
   <Property Id="CRAFT_M_FOLDER" Secure="yes"><RegistrySearch Id="CRAFT_M_FOLDERSearch" Root="HKLM" Key="Software\ShotoPhopEX" Name="InstallFolder" Type="raw" /></Property>
   <SetProperty Id="CRAFT_MACHINE_DIR" Action="CraftMFromFOLDER" Value="[CRAFT_M_FOLDER]" After="CraftMFromDIR" Sequence="both" Condition="NOT CRAFT_MACHINE_DIR AND CRAFT_M_FOLDER" />
-  <Property Id="CRAFT_M_PATH" Secure="yes"><RegistrySearch Id="CRAFT_M_PATHSearch" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\photocraft.exe" Name="Path" Type="raw" /></Property>
+  <Property Id="CRAFT_M_PATH" Secure="yes" />
   <SetProperty Id="CRAFT_MACHINE_DIR" Action="CraftMFromPATH" Value="[CRAFT_M_PATH]" After="CraftMFromFOLDER" Sequence="both" Condition="NOT CRAFT_MACHINE_DIR AND CRAFT_M_PATH" />
-  <Property Id="CRAFT_M_EXEFOLDER" Secure="yes"><RegistrySearch Id="CRAFT_MLegacyFolder" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\photocraft.exe" Type="file" /></Property>
-  <Property Id="CRAFT_M_EXE" Secure="yes"><RegistrySearch Id="CRAFT_MLegacyExe" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\photocraft.exe" Type="file"><FileSearch Id="CRAFT_MLegacyFile" Name="photocraft.exe" /></RegistrySearch></Property>
+  <Property Id="CRAFT_M_EXEFOLDER" Secure="yes" />
+  <Property Id="CRAFT_M_EXE" Secure="yes" />
   <SetProperty Id="CRAFT_MACHINE_DIR" Action="CraftMFromLegacyExe" Value="[CRAFT_M_EXEFOLDER]" After="CraftMFromPATH" Sequence="both" Condition="NOT CRAFT_MACHINE_DIR AND CRAFT_M_EXEFOLDER AND CRAFT_M_EXE" />
   <Property Id="CRAFT_MACHINE_DIR" Secure="yes" />
   <SetProperty Id="CRAFT_SCOPE" Action="CraftPreferMachineScope" Value="machine" After="CraftMFromLegacyExe" Sequence="ui" Condition="ALLUSERS = 1 OR (CRAFT_MACHINE_DIR AND NOT CRAFT_USER_DIR)" />

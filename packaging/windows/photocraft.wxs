@@ -32,7 +32,9 @@
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
-    <!-- An upgrade installs where the user put the previous version (written by PhotocraftApp). -->
+    <!-- An upgrade installs where the user put the previous version, as recorded in
+         Software\ShotoPhopEX (written by PhotocraftApp). 0.1.0/0.1.1 recorded nothing there, so
+         upgrading them moves the app from Programs\ArtCraft\PhotoCraft to Programs\ShotoPhopEX. -->
 
     <Feature Id="Main" Title="ShotoPhopEX" Level="1">
       <?if $(var.HasCraftFontLicences) = 1 ?>

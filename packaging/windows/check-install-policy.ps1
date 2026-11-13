@@ -222,10 +222,9 @@ try {
   # Suffix, how to match the key, key, value name, locator type (2 = raw value, 1 = file; the 64-bit flag is masked off).
   $searchContract = @(
     @('DIR',       'exact', "Software\$($policy.name)", 'InstallDir',    '2'),
-    @('FOLDER',    'exact', "Software\$($policy.name)", 'InstallFolder', '2'),
-    @('PATH',      'regex', $appPaths,                  'Path',          '2'),
-    @('EXEFOLDER', 'regex', $appPaths,                  '',              '1'),
-    @('EXE',       'regex', $appPaths,                  '',              '1'))
+    @('FOLDER',    'exact', "Software\$($policy.name)", 'InstallFolder', '2'))
+  # ShotoPhopEX: no App Paths searches (the key is shared with upstream PhotoCraft); PATH and EXE stay
+  # unset properties, so the resolver chain below still runs them in order.
   $resolverCases = @(
     @{ name = 'every record, DIR wins';        dir = 'D:\Dir\'; folder = 'D:\Folder\'; path = 'D:\Path\'; exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = '';            expected = 'D:\Dir\' },
     @{ name = 'FOLDER wins without DIR';       dir = '';        folder = 'D:\Folder\'; path = 'D:\Path\'; exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = '';            expected = 'D:\Folder\' },
