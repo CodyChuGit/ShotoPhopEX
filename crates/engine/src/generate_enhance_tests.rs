@@ -332,5 +332,6 @@ fn a_text_to_image_rewrite_runs_on_the_pictures_own_encoder() {
     assert_eq!(encoder_of(&mut s, "krea2-turbo/image"), "krea2");
     assert_eq!(encoder_of(&mut s, "moss-image/turbo"), "moss-image/turbo");
     assert_eq!(encoder_of(&mut s, "moss-image/image"), "moss-image/image");
+    assert_eq!(encoder_of(&mut s, "flux3-klein/image"), "flux3-klein/image");
     assert_eq!(encoder_of(&mut s, "qwen-2.1/image"), Value::Null, "the default encoder");
 }

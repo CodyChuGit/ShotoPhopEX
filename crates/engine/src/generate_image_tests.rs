@@ -341,3 +341,11 @@ fn best_runs_krea2_on_er_sde_and_beta_balanced_on_euler() {
     assert_eq!(image_quality_sampler("krea2-turbo/image", "fast"), None);
     assert_eq!(image_quality_sampler("qwen-2.1/image", "best"), None);
 }
+
+#[test]
+fn best_renders_h3_at_four_megapixels() {
+    use crate::generate_cmds::image_quality_size;
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 1024, 1024), (2048, 2048));
+    assert_eq!(image_quality_size("p-h3-image/image", "balanced", 1024, 1024), (1024, 1024));
+    assert_eq!(image_quality_size("p-h3-image/image", "best", 2912, 2912), (2912, 2912), "a larger ask is kept");
+}

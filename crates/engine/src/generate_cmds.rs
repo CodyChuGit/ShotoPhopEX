@@ -438,6 +438,9 @@ pub(crate) enum EnhanceKind {
 const KREA2_CHAT_ENCODER: &str = "krea2";
 /// A chat's `encoder` that names a MOSS template answers on that template's own Qwen3.5-9B.
 const MOSS_CHAT_PREFIX: &str = "moss-image/";
+/// The same for FLUX 3 Klein, whose encoder is Qwen3-VL-4B (Klein + rewrite went from 16.4 s
+/// to the picture's own 5 s plus the chat, 2026-11-12).
+const KLEIN_CHAT_PREFIX: &str = "flux3-klein/";
 
 /// The system turn of [`EnhanceKind::FillScene`]: AusBoss's "Write the prompt" step of the
 /// Krea 2 Inpaint Masked workflow (v1.3), which the AnyPaint LoRA follows best: it was trained
@@ -648,7 +651,7 @@ fn enhance_once(
         // when the picture runs on Krea 2, a MOSS template's own Qwen3.5-9B when it runs on
         // MOSS, so the model stays resident (no 8B load and swap).
         params.insert("max_tokens".to_string(), Value::from(ENHANCE_IMAGE_MAX_TOKENS));
-        if let Some(enc) = place.filter(|p| *p == KREA2_CHAT_ENCODER || p.starts_with(MOSS_CHAT_PREFIX)) {
+        if let Some(enc) = place.filter(|p| *p == KREA2_CHAT_ENCODER || p.starts_with(MOSS_CHAT_PREFIX) || p.starts_with(KLEIN_CHAT_PREFIX)) {
             params.insert("encoder".to_string(), Value::String(enc.to_string()));
         }
     }
@@ -2453,6 +2456,10 @@ pub fn image_quality_sampler(template: &str, quality: &str) -> Option<&'static s
 /// 1-2 MP). Measured in the app 2026-11-05: visibly finer skin and texture at 100 % than 1024²,
 /// about 10 s warm against 3 s.
 pub const BEST_KREA_PIXELS: u64 = 1440 * 1440;
+/// Pixels P-H3-Image renders at under Quality `best` (2048², 4 MP): the model is made for
+/// 4-8 MP and came to the app's 1024² default otherwise. 14.6 s on the 5090 (8 MP: 31.6 s for
+/// detail only visible at full size), 2026-11-12.
+pub const BEST_H3_PIXELS: u64 = 2048 * 2048;
 /// The same under Quality `balanced`: 1248², about 1.5 MP (to be confirmed in the app).
 pub const BALANCED_KREA_PIXELS: u64 = 1248 * 1248;
 
@@ -2463,6 +2470,7 @@ pub fn image_quality_size(template: &str, quality: &str, width: u32, height: u32
     let target = match (template, quality) {
         ("krea2-turbo/image", "best") => BEST_KREA_PIXELS,
         ("krea2-turbo/image", "balanced") => BALANCED_KREA_PIXELS,
+        ("p-h3-image/image", "best") => BEST_H3_PIXELS,
         _ => return (width, height),
     };
     let area = u64::from(width) * u64::from(height);
@@ -2738,7 +2746,7 @@ fn image_prompt(
     // anyway (on MOSS the 8B swap made Turbo's 2 s picture take 15 s, 2026-11-12).
     let encoder = if template.starts_with("krea2-turbo/") {
         Some(KREA2_CHAT_ENCODER)
-    } else if template.starts_with(MOSS_CHAT_PREFIX) {
+    } else if template.starts_with(MOSS_CHAT_PREFIX) || template.starts_with(KLEIN_CHAT_PREFIX) {
         Some(template)
     } else {
         None
