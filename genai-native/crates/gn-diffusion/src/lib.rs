@@ -242,6 +242,8 @@ pub const KREA2_STEPS: u32 = 8;
 pub const DEFAULT_SIDE: u32 = 1024;
 /// How many pictures an edit may carry: the picture and the template's nine references.
 pub const MAX_PICTURES: usize = 10;
+/// The pictures a MiniMax-H3-Image prompt can name.
+pub const MINIMAX_H3_PICTURES: usize = 8;
 
 /// What is on the device. One per engine, so the variants' sizes do not matter.
 #[allow(clippy::large_enum_variant)]
@@ -1537,6 +1539,17 @@ impl Engine for DiffusionEngine {
                     return Err(EngineError::new(ErrorKind::BadRequest, format!("{} references; at most {}", references.len(), MAX_PICTURES - 1)));
                 }
                 canvas = Some((side(req.width), side(req.height)));
+            }
+            // A new MiniMax-H3-Image picture from up to 8 pictures ("Picture 1" to "Picture 8"
+            // in the prompt): the target at the asked size, 2048² where none is given.
+            "image" if family == Family::MiniMaxH3 && !req.references.is_empty() => {
+                if req.references.len() > MINIMAX_H3_PICTURES {
+                    return Err(EngineError::new(ErrorKind::BadRequest, format!("{} references; at most {MINIMAX_H3_PICTURES}", req.references.len())));
+                }
+                for (i, r) in req.references.iter().enumerate() {
+                    references.push(reference_of(r, blobs, &format!("reference {}", i + 1))?);
+                }
+                canvas = Some(if req.width == 0 || req.height == 0 { (H3_DEFAULT_SIDE, H3_DEFAULT_SIDE) } else { (side(req.width), side(req.height)) });
             }
             _ => {}
         }

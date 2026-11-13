@@ -770,6 +770,8 @@ pub fn generative_info(layer: &Layer) -> Option<GenerativeInfo> {
 pub(crate) const EDIT: &str = "generate.edit";
 /// The picture seen from another camera (the Multiple Angles LoRA), as an edit.
 pub const ANGLES: &str = "generate.angles";
+/// Character Sheet: four views of the character on a layer, as a new document.
+pub const CHARACTER_SHEET: &str = "generate.characterSheet";
 /// The template `generate.angles` runs.
 pub const ANGLES_TEMPLATE: &str = "qwen-edit-2511/angles";
 /// `generate.angles` `rotation` (degrees around the subject, 0 = from the front) and the Multiple
@@ -5095,6 +5097,54 @@ fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
     run_edit(s, &q)
 }
 
+/// `generate.characterSheet`: a turnaround sheet of the character on a layer, as a new
+/// document: four full-body views in a row (front, three-quarter, profile, back), drawn by
+/// MiniMax-H3-Image from the layer as Picture 1. 16 MP under Quality Ultra and Best, 4 MP
+/// under the faster ones.
+fn run_character_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    if !template_files_present(s, ULTRA_IMAGE_TEMPLATE) {
+        return Err(EngineError::Other("Character Sheet needs MiniMax H3 Image: its files are not in the Models folder".into()));
+    }
+    let layer = layer_param(s, p)?;
+    let words = |key: &str| -> Result<String> { Ok(opt_str(CHARACTER_SHEET, p, key, 500)?.unwrap_or("").trim().trim_end_matches('.').trim().to_string()) };
+    let prompt = character_sheet_prompt(&words("details")?, &words("background")?);
+    let mut q = json!({
+        "prompt": prompt,
+        "template": ULTRA_IMAGE_TEMPLATE,
+        "references": [{"layer": layer.0}],
+        "width": SHEET_SIZE.0,
+        "height": SHEET_SIZE.1,
+        "target": "document",
+        "enhance": false,
+        "name": "Character Sheet",
+    });
+    if let Some(v) = p.get("seed") {
+        q["seed"] = v.clone();
+    }
+    run_image(s, &q)
+}
+
+/// The sheet's shape, four upright views in a row; the quality scales it to the model's size.
+const SHEET_SIZE: (u32, u32) = (2048, 1024);
+
+/// The words of a character sheet: the layer is Picture 1; `details` names what the picture
+/// does not show (the shoes of a waist-up portrait), `background` the backdrop (plain white
+/// when empty).
+pub(crate) fn character_sheet_prompt(details: &str, background: &str) -> String {
+    let background = if background.is_empty() { "one plain white studio backdrop with soft even light" } else { background };
+    let details =
+        if details.is_empty() { String::new() } else { format!(" The character also has these details, in every view where they can be seen: {details}.") };
+    format!(
+        "A character turnaround sheet of the character in Picture 1: four full-body views of the same character side by side in one row, each the same width, clearly separated and never overlapping, on {background}. \
+         The face, hair, skin, body, clothing and accessories are exactly as in Picture 1 and identical in all four views, in the same style and medium as Picture 1.{details} \
+         From left to right: first, the character straight from the front, facing the camera. \
+         Second, a three-quarter view from the character's left side, the face turned toward the left edge of the picture. \
+         Third, a strict side profile at exactly 90 degrees, the nose pointing to the left edge of the picture, the far arm and far leg hidden behind the near ones. \
+         Fourth, on the far right, the character straight from behind: the back of the head and the back are visible, the face is not. \
+         The character holds the same relaxed standing pose in all four views, framed the same way in each, from the top of the head to the feet. Sharp focus and fine detail in the face, the hair and the clothing."
+    )
+}
+
 fn doc_enabled(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
@@ -5851,6 +5901,17 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it)"#,
             enabled: angles_enabled,
             run: run_angles,
+            journal: true,
+        },
+        CommandSpec {
+            id: CHARACTER_SHEET,
+            label: "Character Sheet",
+            // Placed by the menu catalogue under Edit, with the other generative items.
+            menu: &[],
+            shortcut: None,
+            params: r#"{"details":text,"background":text,"layer":{id?=active},"seed":{u64?=random}} → as generate.image (a turnaround sheet of the character on the layer as a new document: four full-body views in one row, front, three-quarter, side profile and back, drawn by minimax-h3-image/image with the layer as Picture 1; details = what the picture does not show, named as things ("blue jeans and white sneakers"); background = the backdrop, plain white when empty; about 16 MP under Preferences › Quality ultra and best, 4 MP under balanced and fast; needs MiniMax H3 Image's files in the Models folder; a background job; needs the native worker)"#,
+            enabled: edit_enabled,
+            run: run_character_sheet,
             journal: true,
         },
         CommandSpec {

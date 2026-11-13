@@ -408,3 +408,28 @@ fn the_16_mp_model_renders_at_16_mp() {
     // a larger request is left alone
     assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "fast", 3072, 3072), (3072, 3072));
 }
+
+/// Character Sheet: the layer is Picture 1 of a wide new picture on the 16 MP model; without
+/// the model's files it says so.
+#[test]
+fn a_character_sheet_asks_for_four_views_of_picture_1() {
+    use crate::generate_cmds::{CHARACTER_SHEET, character_sheet_prompt};
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    let e = s.execute(CHARACTER_SHEET, json!({})).unwrap_err().to_string();
+    assert!(e.contains("MiniMax H3 Image"), "{e}");
+    let plain = character_sheet_prompt("", "");
+    assert!(plain.contains("Picture 1") && plain.contains("plain white studio backdrop") && !plain.contains("these details"), "{plain}");
+    for view in ["from the front", "three-quarter", "side profile", "from behind"] {
+        assert!(plain.contains(view), "{view}: {plain}");
+    }
+    let full = character_sheet_prompt("blue jeans and white sneakers", "a neon street at night");
+    assert!(
+        full.contains("on a neon street at night.") && full.contains("these details, in every view where they can be seen: blue jeans and white sneakers."),
+        "{full}"
+    );
+    // the sheet's shape at the model's sizes
+    let (w, h) = image_quality_size(ULTRA_IMAGE_TEMPLATE, "best", 2048, 1024);
+    assert!(w <= 5472 && w % 32 == 0 && h % 32 == 0 && (1.9..=2.1).contains(&(f64::from(w) / f64::from(h))), "{w}x{h}");
+    assert_eq!(image_quality_size(ULTRA_IMAGE_TEMPLATE, "fast", 2048, 1024), (2880, 1440));
+}

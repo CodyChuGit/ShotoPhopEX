@@ -39,7 +39,7 @@ pub struct Card {
 }
 
 /// The cards, Create first.
-pub const CARDS: [Card; 9] = [
+pub const CARDS: [Card; 10] = [
     Card {
         id: "image",
         icon: "image",
@@ -119,6 +119,15 @@ pub const CARDS: [Card; 9] = [
         sentence: "See the subject from another camera angle",
         create: false,
         target: Target::Command("generate.angles"),
+        badge: Some("NEW"),
+    },
+    Card {
+        id: "characterSheet",
+        icon: "grid-2x2",
+        label: "Character Sheet",
+        sentence: "Four views of your character: front, three-quarter, side and back",
+        create: false,
+        target: Target::Command("generate.characterSheet"),
         badge: Some("NEW"),
     },
 ];
