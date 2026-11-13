@@ -4,6 +4,7 @@
 //
 //   qir_k2_rms_mod   y = rms(x) · w [· (1 + scale_b) + shift_b]     rows of C, one block a row
 //   qir_k2_head_rope y = rope(rms(x) · w)                          rows of 128, one warp a row
+//   qir_k2_head_rope_split  the same with rotate-half pairs (i, i + half), channels past 2·half kept
 //   qir_k2_swiglu    y = silu(g) · u
 //   qir_k2_sig_mul   y = a · sigmoid(g)
 //   qir_k2_gate_add  y = x + v · gate_b                             gate per batch and column
@@ -106,6 +107,46 @@ __global__ void head_rope_kernel(__nv_bfloat16* __restrict__ y, const __nv_bfloa
     reinterpret_cast<uint2*>(y + row * 128)[lane] = *reinterpret_cast<const uint2*>(o);
 }
 
+// As head_rope_kernel, with the RoPE pairs split in halves: pair i is channels i and i + half
+// (i < half ≤ 64); channels from 2·half on are only normalised. `cos`/`sin` are (S, half) f32.
+// A channel's partner sits in another lane, so it is read again from `x` and normalised here.
+__global__ void head_rope_split_kernel(__nv_bfloat16* __restrict__ y, const __nv_bfloat16* __restrict__ x, const float* __restrict__ w,
+                                       const float* __restrict__ cs, const float* __restrict__ sn, long rows, int heads, int S, int half, float eps) {
+    const long row = static_cast<long>(blockIdx.x) * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    if (row >= rows) return;
+    const int lane = threadIdx.x & 31;
+    const __nv_bfloat16* xr = x + row * 128;
+    const uint2 raw = reinterpret_cast<const uint2*>(xr)[lane];
+    const __nv_bfloat16* e = reinterpret_cast<const __nv_bfloat16*>(&raw);
+    float f[4];
+    float ss = 0.f;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        f[j] = __bfloat162float(e[j]);
+        ss += f[j] * f[j];
+    }
+    ss = warp_sum(ss);
+    const float r = rsqrtf(ss / 128.f + eps);
+    const long s = (row / heads) % S;
+    __align__(8) __nv_bfloat16 o[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int c = lane * 4 + j;
+        const float a = f[j] * r * w[c];
+        float out = a;
+        if (c < half) {
+            const float b = __bfloat162float(xr[c + half]) * r * w[c + half];
+            out = a * cs[s * half + c] - b * sn[s * half + c];
+        } else if (c < 2 * half) {
+            const int i = c - half;
+            const float p = __bfloat162float(xr[i]) * r * w[i];
+            out = p * sn[s * half + i] + a * cs[s * half + i];
+        }
+        o[j] = __float2bfloat16(out);
+    }
+    reinterpret_cast<uint2*>(y + row * 128)[lane] = *reinterpret_cast<const uint2*>(o);
+}
+
 __global__ void swiglu_kernel(__nv_bfloat16* __restrict__ y, const __nv_bfloat16* __restrict__ g, const __nv_bfloat16* __restrict__ u, size_t n) {
     for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < n; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
         const float a = __bfloat162float(g[i]);
@@ -159,6 +200,16 @@ extern "C" int qir_k2_head_rope(void* y, const void* x, const float* w, const fl
     const unsigned blocks = static_cast<unsigned>((rows + 7) / 8);
     head_rope_kernel<<<blocks, 256, 0, static_cast<cudaStream_t>(stream)>>>(static_cast<__nv_bfloat16*>(y), static_cast<const __nv_bfloat16*>(x), w, cs, sn,
                                                                            rows, heads, S, eps);
+    return static_cast<int>(cudaGetLastError());
+}
+
+extern "C" int qir_k2_head_rope_split(void* y, const void* x, const float* w, const float* cs, const float* sn, long rows, int heads, int S, int half,
+                                      float eps, void* stream) {
+    if (rows <= 0 || heads <= 0 || S <= 0 || half <= 0 || half > 64 || cs == nullptr || sn == nullptr) return 1;
+    if (misaligned(y, 8) || misaligned(x, 8)) return 2;
+    const unsigned blocks = static_cast<unsigned>((rows + 7) / 8);
+    head_rope_split_kernel<<<blocks, 256, 0, static_cast<cudaStream_t>(stream)>>>(static_cast<__nv_bfloat16*>(y), static_cast<const __nv_bfloat16*>(x), w, cs,
+                                                                                 sn, rows, heads, S, half, eps);
     return static_cast<int>(cudaGetLastError());
 }
 
