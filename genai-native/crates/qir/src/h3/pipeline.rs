@@ -191,6 +191,12 @@ impl H3Pipeline {
         self.dev.synchronize()?;
         crate::device::trim_pool(&self.dev);
         tracing::info!(encode_s = t0.elapsed().as_secs_f32(), rows = c.tags.len(), "H3 prompt encoded");
+        // a parity check against another runtime: the conditioning as a safetensors file
+        if let Some(path) = std::env::var_os("QIR_H3_DUMP_COND") {
+            let tags = Tensor::from_vec(c.tags.iter().map(|&t| t as u32).collect::<Vec<_>>(), c.tags.len(), &Device::Cpu)?;
+            let states = c.states.to_device(&Device::Cpu)?.to_dtype(DType::F32)?;
+            candle_core::safetensors::save(&std::collections::HashMap::from([("states".to_string(), states), ("tags".to_string(), tags)]), &path)?;
+        }
         *slot = Some(Cached { key, states: c.states.clone(), tags: c.tags.clone() });
         Ok((c.states, c.tags))
     }
