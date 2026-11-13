@@ -20,6 +20,9 @@ const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 /// The decoded frame's RoPE time coordinate (`PH3_IMAGE_FRAME_POSITION`).
 const FRAME_POSITION: f64 = 2.0 * (0.5 / 7.0) - 1.0;
 const HEAD_DIM: usize = 64;
+/// Tiles the decoder takes at once: 16 keeps the f32 attention scores near 140 MB (the DiT
+/// still holds most of the card while the picture decodes).
+const TILE_BATCH: usize = 16;
 const REGISTERS: usize = 4;
 
 // ---------------------------------------------------------------- encoder (f32)
@@ -332,25 +335,32 @@ impl Decoder {
         Ok((Tensor::from_vec(cos, (rows, 3 * n), dev)?, Tensor::from_vec(sin, (rows, 3 * n), dev)?))
     }
 
-    /// Denormalized latent `(24, h, w)` f32 -> raw decoder output `(3, 16h, 16w)` f32.
-    fn tile(&self, z: &Tensor) -> Result<Tensor> {
-        let (c, h, w) = z.dims3()?;
-        let n = h * w;
-        let x = z.reshape((c, n))?.t()?.matmul(&self.post_quant.t()?)?.broadcast_add(&self.post_quant_b)?; // (n, 24)
+    /// Denormalized latents `(24, h, w)` f32, all one size -> the raw decoder outputs
+    /// `(3, 16h, 16w)` f32. The tiles go through the blocks as one batch (rows `B·S`), only
+    /// the attention keeps them apart: an 8 MP picture is 225 tiles of 261 rows, and one tile
+    /// at a time the decode was 8.5 s of kernel launches.
+    fn tiles(&self, zs: &[Tensor]) -> Result<Vec<Tensor>> {
+        let Some(first) = zs.first() else { return Ok(Vec::new()) };
+        let (c, h, w) = first.dims3()?;
+        let (n, bn) = (h * w, zs.len());
+        let flat = zs.iter().map(|z| -> Result<Tensor> { Ok(z.reshape((c, n))?.t()?) }).collect::<Result<Vec<_>>>()?;
+        let x = Tensor::cat(&flat, 0)?.contiguous()?.matmul(&self.post_quant.t()?)?.broadcast_add(&self.post_quant_b)?; // (B·n, 24)
         let x = self.x_embedder.forward(&x.to_dtype(self.dtype)?)?.to_dtype(self.dtype)?;
         let dim = x.dim(1)?;
-        let zero = Tensor::zeros((1, dim), self.dtype, x.device())?;
-        let mut hs = Tensor::cat(&[x, self.registers.to_dtype(self.dtype)?, zero], 0)?;
-        let rows = hs.dim(0)?;
+        let rows = n + REGISTERS + 1;
+        let suffix = Tensor::cat(&[self.registers.to_dtype(self.dtype)?, Tensor::zeros((1, dim), self.dtype, x.device())?], 0)?;
+        let suffix = suffix.unsqueeze(0)?.broadcast_as((bn, REGISTERS + 1, dim))?;
+        let mut hs = Tensor::cat(&[x.reshape((bn, n, dim))?, suffix], 1)?.reshape((bn * rows, dim))?;
         let (cos, sin) = self.rope_tables(h, w, hs.device())?;
-        let (cos, sin) = (cos.to_dtype(DType::F32)?, sin.to_dtype(DType::F32)?);
+        let tile_rows = |t: Tensor| -> Result<Tensor> { Ok(t.to_dtype(DType::F32)?.repeat((bn, 1))?) };
+        let (cos, sin) = (tile_rows(cos)?, tile_rows(sin)?);
         for b in &self.blocks {
             let y = rms(&hs, Some(&b.norm1), 1e-5)?;
-            let qkv = b.qkv.forward(&y)?.to_dtype(self.dtype)?.reshape((rows, self.heads, 3 * HEAD_DIM))?;
+            let qkv = b.qkv.forward(&y)?.to_dtype(self.dtype)?.reshape((bn * rows, self.heads, 3 * HEAD_DIM))?;
             let q = rope(&rms(&qkv.narrow(2, 0, HEAD_DIM)?, None, 1e-5)?, &cos, &sin)?;
             let k = rope(&rms(&qkv.narrow(2, HEAD_DIM, HEAD_DIM)?, None, 1e-5)?, &cos, &sin)?;
-            let v = qkv.narrow(2, 2 * HEAD_DIM, HEAD_DIM)?.contiguous()?;
-            let o = attention(&q.contiguous()?, &k.contiguous()?, &v)?;
+            let v = qkv.narrow(2, 2 * HEAD_DIM, HEAD_DIM)?;
+            let o = if bn == 1 { attention(&q.contiguous()?, &k.contiguous()?, &v.contiguous()?)? } else { tile_attention(&q, &k, &v, bn)? };
             let o = b.out.forward(&o)?.to_dtype(self.dtype)?;
             hs = (&hs + o.broadcast_mul(&b.scale1)?)?;
             let y = rms(&hs, Some(&b.norm2), 1e-5)?;
@@ -358,11 +368,27 @@ impl Decoder {
             let f = swiglu_down(&b.w2, &gu)?.to_dtype(self.dtype)?;
             hs = (&hs + f.broadcast_mul(&b.scale2)?)?;
         }
-        let out = self.proj_out.forward(&self.norm_out.forward(&hs.narrow(0, 0, n)?)?)?.to_dtype(DType::F32)?;
+        let tokens = hs.reshape((bn, rows, dim))?.narrow(1, 0, n)?.contiguous()?.reshape((bn * n, dim))?;
+        let out = self.proj_out.forward(&self.norm_out.forward(&tokens)?)?.to_dtype(DType::F32)?;
         let oc = out.dim(1)? / (SCALE * SCALE);
-        let img = out.reshape((h, w, oc, SCALE, SCALE))?.permute((2, 0, 3, 1, 4))?; // c, h, py, w, px
-        Ok(img.contiguous()?.reshape((oc, h * SCALE, w * SCALE))?)
+        let img = out.reshape(&[bn, h, w, oc, SCALE, SCALE][..])?.permute(&[0, 3, 1, 4, 2, 5][..])?; // b, c, h, py, w, px
+        let img = img.contiguous()?.reshape((bn, oc, h * SCALE, w * SCALE))?;
+        (0..bn).map(|i| Ok(img.get(i)?)).collect()
     }
+}
+
+/// [`attention`] for `tiles` equal runs of rows that attend only within themselves:
+/// `q`, `k`, `v` `(tiles·S, H, D)`; `(tiles·S, H·D)` in `q`'s dtype. The same f32 math as
+/// [`attention`]'s chain, one batched product per tile and head.
+fn tile_attention(q: &Tensor, k: &Tensor, v: &Tensor, tiles: usize) -> Result<Tensor> {
+    let (rows, h, d) = q.dims3()?;
+    let s = rows / tiles;
+    let scale = 1.0 / (d as f64).sqrt();
+    let split = |t: &Tensor| -> Result<Tensor> { Ok(t.reshape((tiles, s, h, d))?.transpose(1, 2)?.to_dtype(DType::F32)?.contiguous()?) }; // (B, H, S, D)
+    let (qh, kh, vh) = (split(q)?, split(k)?, split(v)?);
+    let scores = (qh.matmul(&kh.transpose(2, 3)?.contiguous()?)? * scale)?;
+    let out = candle_nn::ops::softmax_last_dim(&scores)?.matmul(&vh)?; // (B, H, S, D)
+    Ok(out.transpose(1, 2)?.contiguous()?.reshape((rows, h * d))?.to_dtype(q.dtype())?)
 }
 
 // ---------------------------------------------------------------- the VAE
@@ -398,15 +424,28 @@ impl H3Vae {
         let (height, width) = (lh * SCALE, lw * SCALE);
         let (y_idx, y_len, y_ov) = split_tiles(height);
         let (x_idx, x_len, x_ov) = split_tiles(width);
+        // every tile's latent, row by row; they are all one size (`split_tiles`), so they
+        // decode in batches
+        let mut latents = Vec::with_capacity(y_idx.len() * x_idx.len());
+        for i in 0..y_idx.len() {
+            let zrow = z.narrow(1, y_idx[i] / SCALE, y_len[i] / SCALE)?;
+            for j in 0..x_idx.len() {
+                latents.push(zrow.narrow(2, x_idx[j] / SCALE, x_len[j] / SCALE)?);
+            }
+        }
+        let mut decoded = Vec::with_capacity(latents.len());
+        for batch in latents.chunks(TILE_BATCH) {
+            decoded.extend(self.decoder.tiles(batch)?);
+        }
+        let mut decoded = decoded.into_iter();
         let mut out_rows: Vec<Tensor> = Vec::new();
         let mut strip: Option<Tensor> = None;
         for i in 0..y_idx.len() {
-            let zrow = z.narrow(1, y_idx[i] / SCALE, y_len[i] / SCALE)?;
             let mut new_strip: Vec<Tensor> = Vec::new();
             let mut row: Vec<Tensor> = Vec::new();
             let mut left_tail: Option<Tensor> = None;
             for j in 0..x_idx.len() {
-                let mut tile = self.decoder.tile(&zrow.narrow(2, x_idx[j] / SCALE, x_len[j] / SCALE)?)?;
+                let mut tile = decoded.next().ok_or_else(|| anyhow::anyhow!("a decoded tile is missing"))?;
                 if i > 0 {
                     let s = strip.as_ref().ok_or_else(|| anyhow::anyhow!("tile strip"))?;
                     tile = blend(&s.narrow(2, x_idx[j], x_len[j])?, &tile, y_ov[i - 1], 1)?;
@@ -498,5 +537,50 @@ mod tests {
         assert_eq!(l.len(), s.len());
         assert_eq!(s.last().copied().unwrap() + 256, 2912);
         assert!(o.iter().all(|v| v % 16 == 0 && *v >= 64));
+    }
+
+    /// A small random decoder: tiles decoded as one batch are the tiles decoded one by one.
+    #[test]
+    fn batched_tiles_are_the_single_tiles() -> Result<()> {
+        let dev = Device::Cpu;
+        let (heads, ffn, blocks) = (2, 96, 2);
+        let dim = heads * HEAD_DIM;
+        let rnd = |shape: &[usize], std: f32| -> Result<Tensor> { Ok(Tensor::randn(0f32, std, shape, &dev)?) };
+        let lin = |i: usize, o: usize| -> Result<QLinear> { Ok(QLinear::Dense(candle_nn::Linear::new(rnd(&[o, i], 0.08)?, Some(rnd(&[o], 0.02)?)))) };
+        let block = || -> Result<DecBlock> {
+            Ok(DecBlock {
+                norm1: (rnd(&[dim], 0.1)? + 1.0)?,
+                qkv: lin(dim, 3 * dim)?,
+                out: lin(dim, dim)?,
+                scale1: rnd(&[dim], 0.3)?,
+                norm2: (rnd(&[dim], 0.1)? + 1.0)?,
+                w1: lin(dim, 2 * ffn)?,
+                w2: lin(ffn, dim)?,
+                scale2: rnd(&[dim], 0.3)?,
+            })
+        };
+        let dec = Decoder {
+            post_quant: rnd(&[24, 24], 0.2)?,
+            post_quant_b: rnd(&[24], 0.1)?,
+            x_embedder: lin(24, dim)?,
+            registers: rnd(&[REGISTERS, dim], 0.5)?,
+            blocks: (0..blocks).map(|_| block()).collect::<Result<_>>()?,
+            norm_out: candle_nn::LayerNorm::new((rnd(&[dim], 0.1)? + 1.0)?, rnd(&[dim], 0.1)?, 1e-6),
+            proj_out: lin(dim, 3 * SCALE * SCALE)?,
+            heads,
+            inv_freq: (0..8).map(|i| 1.0 / 10f32.powf(i as f32 / 8.0)).collect(),
+            dtype: DType::F32,
+        };
+        let zs = (0..3).map(|_| rnd(&[24, 3, 4], 1.0)).collect::<Result<Vec<_>>>()?;
+        let batched = dec.tiles(&zs)?;
+        assert_eq!(batched.len(), 3);
+        for (z, got) in zs.iter().zip(&batched) {
+            let want = dec.tiles(std::slice::from_ref(z))?.remove(0);
+            assert_eq!(got.dims(), &[3, 3 * SCALE, 4 * SCALE]);
+            let err = (got - &want)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+            let size = want.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+            assert!(err < 1e-4 * size.max(1.0), "batched tile off by {err} (values up to {size})");
+        }
+        Ok(())
     }
 }
