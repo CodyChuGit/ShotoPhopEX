@@ -566,7 +566,21 @@ impl H3Dit {
         use crate::profile::scope;
         let dev = &self.dev;
         let mods = Tensor::cat(m, 1)?.contiguous()?; // (rows, 6 * hidden)
+        let total = h.dim(0)?;
+        let covered = segs.iter().map(|g| g.len).sum::<usize>() == total;
+        let big = segs.iter().max_by_key(|g| g.len).copied();
         let per_seg = |f: &dyn Fn(&ModSeg, &Tensor) -> Result<Tensor>| -> Result<Tensor> {
+            let md = |row: usize| -> Result<Tensor> { Ok(mods.narrow(0, row, 1)?.unsqueeze(1)?) };
+            // One launch over every row with the largest segment's modulation row, then the
+            // other segments (the text rows, any reference rows) written over their own rows:
+            // no per-segment results concatenated into a third full-size tensor.
+            if let (true, Some(big)) = (covered, big) {
+                let out = f(&ModSeg { start: 0, len: total, row: big.row }, &md(big.row)?)?.squeeze(0)?;
+                for g in segs.iter().filter(|g| **g != big) {
+                    out.slice_set(&f(g, &md(g.row)?)?.squeeze(0)?, 0, g.start)?;
+                }
+                return Ok(out);
+            }
             let mut parts =
                 segs.iter().map(|g| -> Result<Tensor> { Ok(f(g, &mods.narrow(0, g.row, 1)?.unsqueeze(1)?)?.squeeze(0)?) }).collect::<Result<Vec<_>>>()?;
             Ok(if parts.len() == 1 { parts.remove(0) } else { Tensor::cat(&parts, 0)? })

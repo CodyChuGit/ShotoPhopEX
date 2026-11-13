@@ -392,6 +392,14 @@ impl H3Pipeline {
             tracing::info!(loras = ?req.loras, steps = sig.len() - 1, "H3 LoRAs on");
         }
         let n = sig.len() - 1;
+        // Keep the blocks' freed activations in the CUDA pool across syncs (qkv, fc1 and the
+        // row-sized intermediates of a block, with room to spare), as the VAE does. With the
+        // default threshold 0 every sync hands them back to the driver and the next block maps
+        // them again: under QIR_PROFILE (a sync per scope) that tripled the 16 MP denoise.
+        let cfg = dit.config();
+        let rows = x.elem_count() / LATENT_CHANNELS / 4 + 4096;
+        let per_row = (4 * cfg.hidden + 2 * cfg.ffn + 8 * cfg.hidden).saturating_mul(2);
+        crate::device::retain_pool(&self.dev, rows.saturating_mul(per_row));
         let t0 = Instant::now();
         for i in 0..n {
             check()?;
