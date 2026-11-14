@@ -41,7 +41,7 @@ REPO_NOTICES = [
     ("SCOWL English word list (assets/dict/en_US-scowl-50.txt.gz)", "assets/dict/LICENSE-SCOWL.txt"),
     ("libfacedetection weights and network (crates/algo)", "crates/algo/data/LICENSE-libfacedetection.txt"),
     ("Solarized colour scheme (Solarized Dark theme)", "crates/ui-egui/src/LICENSE-solarized.txt"),
-    ("UI translations", "crates/ui-egui/src/i18n/LICENSE-translations.txt"),
+    ("UI translations", "crates/ui-egui/src/i18n/shotophopex/LICENSE-translations.txt"),
     ("NVIDIA CUTLASS templates compiled into the native engine's kernels", "packaging/third-party/LICENSE-cutlass.txt"),
     ("qwen-image-rs (genai-native/crates/qir), Apache-2.0: NOTICE", "genai-native/crates/qir/NOTICE"),
     ("genai-native: ported and vendored code", "genai-native/NOTICE"),

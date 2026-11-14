@@ -1,0 +1,12 @@
+UI translations
+
+PhotoCraft's interface catalogs are embedded at build time from storytold/craft-i18n
+(https://github.com/storytold/craft-i18n, `locales/<code>/common.tsv` and `photocraft.tsv`, at the
+commit in craft-i18n.rev). Its code and translations are licensed under MIT OR Apache-2.0, at your
+option; its ATTRIBUTION.md names the translators.
+
+ShotoPhopEX's own rows in this folder (the generative features' strings) are licensed under
+MIT OR Apache-2.0, at your option. They are original translations of ShotoPhopEX's English labels;
+no proprietary application localization resources were used.
+
+The full license texts are in ../../../../../LICENSE-MIT and ../../../../../LICENSE-APACHE.

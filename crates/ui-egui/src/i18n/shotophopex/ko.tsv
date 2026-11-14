@@ -1,0 +1,234 @@
+# ShotoPhopEX's own interface rows for ko: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/ko/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	생성형 채우기…
+	Generate Image…	이미지 생성…
+	Select by Text…	텍스트로 선택…
+	Allow research models	연구용 모델 허용
+	Default edit model	기본 편집 모델
+	Default fill template	기본 채우기 템플릿
+	Default generate model	기본 생성 모델
+	Default image template	기본 이미지 템플릿
+	Generative timeout (seconds)	생성 시간 제한(초)
+	Show generative bar	생성 막대 표시
+	Describe what to generate…	생성할 내용을 설명하세요…
+	Variations	변형
+	Generating…	생성 중…
+	Previous variation	이전 변형
+	Next variation	다음 변형
+	Generative Models	생성 모델
+	Generative Expand…	생성형 확장…
+	Remove Background (Generative)…	배경 제거(생성형)…
+	As Selection	선택 영역으로
+	Generative Edit…	생성형 편집…
+	Generate Similar	유사하게 생성
+	Generative Expand	생성형 확장
+	not installed	설치되지 않음
+	Split into Layers (Generative)…	레이어로 분할(생성형)…
+	Changing what is there? Switch to Edit	있는 것을 바꾸려면 편집으로 전환하세요
+	Describe the change…	변경 내용을 설명하세요…
+	Enhance prompts	프롬프트 자동 개선
+	Warm up AI models at launch	시작할 때 AI 모델 미리 불러오기
+	Fast draft (faster, slightly softer detail)	빠른 초안(더 빠르게, 디테일은 약간 부드럽게)
+	Enhance prompt	프롬프트 개선
+	Enhancing…	개선 중…
+	The model could not improve this prompt	모델이 이 프롬프트를 개선하지 못했습니다
+	Select by text…	텍스트로 선택…
+	Click an object, or drag a rectangle around it	개체를 클릭하거나 주위에 사각형을 드래그하세요
+	Select by Point	점으로 선택
+	Select by Text	텍스트로 선택
+	{done} results	결과 {done}개
+	{running} running · {done} results	실행 중 {running}개 · 결과 {done}개
+	Cancelled	취소됨
+	Clear completed…	완료된 항목 지우기…
+	Clear failed…	실패한 항목 지우기…
+	Completed	완료됨
+	Copy prompt	프롬프트 복사
+	Delete every completed result and its files?	완료된 모든 결과와 해당 파일을 삭제할까요?
+	Delete every generation and its files? Running jobs stay.	모든 생성 항목과 해당 파일을 삭제할까요? 실행 중인 작업은 유지됩니다.
+	Dismiss failed	실패한 항목 닫기
+	Failed	실패
+	Generations	생성 기록
+	Generative Fill, Edit and Generate Image results appear here.	생성형 채우기, 생성형 편집, 이미지 생성 결과가 여기에 표시됩니다.
+	In progress	진행 중
+	Interrupted	중단됨
+	Invalid request	잘못된 요청
+	Model files missing	모델 파일 없음
+	More	더 보기
+	No generations yet	아직 생성 기록이 없습니다
+	Open as Document	문서로 열기
+	Out of memory on the server	서버 메모리 부족
+	Pin	고정
+	Place	배치
+	Place as Layer	레이어로 배치
+	Prompt copied	프롬프트를 복사했습니다
+	Recreate	다시 만들기
+	Remove all…	모두 제거…
+	Remove every failed and cancelled row?	실패하거나 취소된 행을 모두 제거할까요?
+	Result discarded	결과 폐기됨
+	Saved {n} file(s)	파일 {n}개를 저장했습니다
+	Saving files is not available here	여기서는 파일을 저장할 수 없습니다
+	Server error	서버 오류
+	Server unreachable	서버에 연결할 수 없음
+	Timed out	시간 초과
+	Unpin	고정 해제
+	Active layer ({name})	활성 레이어({name})
+	Add a reference image	참조 이미지 추가
+	Clear all	모두 지우기
+	Clear the prompt and remove the reference images?	프롬프트를 지우고 참조 이미지를 제거할까요?
+	Describe what continues the scene…	장면이 이어지는 모습을 설명하세요…
+	Describe what to generate in the selection…	선택 영역에 생성할 내용을 설명하세요…
+	Describe what you want in the image…	이미지에 원하는 내용을 설명하세요…
+	File: {name}	파일: {name}
+	File…	파일…
+	Fill needs a selection	채우기에는 선택 영역이 필요합니다
+	From Generations	생성 기록에서
+	Generation: {name}	생성: {name}
+	Give the expand at least one side	확장할 면을 하나 이상 지정하세요
+	Hide negative prompt	부정 프롬프트 숨기기
+	Layer: {name}	레이어: {name}
+	More than this model takes	이 모델이 받는 수보다 많습니다
+	Move left	왼쪽으로 이동
+	Move right	오른쪽으로 이동
+	Negative prompt	부정 프롬프트
+	Only files with a path can be references here	여기서는 경로가 있는 파일만 참조로 쓸 수 있습니다
+	Open a document first	먼저 문서를 여세요
+	Open the prompt in a larger editor	프롬프트를 큰 편집기에서 열기
+	Reference images (optional)	참조 이미지(선택)
+	This model takes at most {n} reference images	이 모델은 참조 이미지를 최대 {n}개까지 받습니다
+	Type a prompt first	먼저 프롬프트를 입력하세요
+	Type what to generate first	먼저 생성할 내용을 입력하세요
+	What to avoid…	피할 내용…
+	a layer that is gone	없어진 레이어
+	Enter to generate	Enter 키로 생성
+	research	연구용
+	The fastest permissive model the server has	서버에 있는 가장 빠른 허용 라이선스 모델
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	연구용 라이선스: 환경설정 › AI 통합에서 '연구 전용 모델 허용'을 켜세요
+	Uses: {name}	사용: {name}
+	Group models by family	모델을 계열별로 묶기
+	Variation {n} of {count}	변형 {n}/{count}
+	Delete this variation	이 변형 삭제
+	Keep this one	이것 유지
+	Keep this one and delete the other variations	이것을 유지하고 다른 변형 삭제
+	Click to retry	클릭하여 다시 시도
+	Retry	다시 시도
+	Variations strip	변형 스트립
+	{n} selected	{n}개 선택됨
+	Save selected	선택 항목 저장
+	Save results dir	결과 저장 폴더
+	Save results naming	저장 결과 이름 규칙
+	Alerts	알림음
+	Done and failed	완료 및 실패
+	Preview while generating	생성 중 미리 보기
+	Not in this build yet	이 빌드에는 아직 없음
+	Open a picture first	먼저 이미지를 여세요
+	Generative Features	생성 기능
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	곧 제공
+	Split into Layers	레이어로 분리
+	Angles	앵글
+	A new picture from a prompt, with up to three references	프롬프트로 새 이미지 만들기(참조 최대 3개)
+	Paint the selection from a prompt	프롬프트로 선택 영역 채우기
+	Change the picture by instruction	지시로 이미지 변경
+	Grow the canvas and continue the scene	캔버스를 넓히고 장면 이어 그리기
+	Cut the subject out onto transparency	피사체를 투명 배경으로 잘라내기
+	Separate the picture into editable layers	이미지를 편집 가능한 레이어로 분리
+	Select what you name in a few words	몇 단어로 말한 것을 선택
+	See the subject from another camera angle	다른 카메라 앵글에서 피사체 보기
+	Generative Features…	생성 기능…
+	Generative Angles…	생성 앵글…
+	front	정면
+	Camera	카메라
+	Generative Angles	생성 앵글
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	정면 뷰
+	front-right quarter view	오른쪽 앞 사분 뷰
+	right side view	오른쪽 측면 뷰
+	back-right quarter view	오른쪽 뒤 사분 뷰
+	back view	후면 뷰
+	back-left quarter view	왼쪽 뒤 사분 뷰
+	left side view	왼쪽 측면 뷰
+	front-left quarter view	왼쪽 앞 사분 뷰
+	low-angle shot	로우 앵글
+	eye-level shot	눈높이
+	elevated shot	약간 높은 앵글
+	high-angle shot	하이 앵글
+	wide shot	와이드 샷
+	medium shot	미디엄 샷
+	close-up	클로즈업
+	CREATE	만들기
+	EDIT	편집
+	Balanced	균형
+	Auto takes the full-step model and keeps the 4-bit weights off	자동은 전체 단계 모델을 사용하고 4비트 가중치를 끕니다
+	Auto takes the 8-step Lightning tier when the server has it	자동은 서버에 있으면 8단계 Lightning 등급을 사용합니다
+	Auto takes the 4-step tier where there is one	자동은 4단계 등급이 있으면 사용합니다
+	Object finder	개체 찾기
+	Show what a click would select while the pointer rests	포인터가 멈춰 있는 동안 클릭하면 선택될 영역 표시
+	Refine edge	가장자리 다듬기
+	Soften the detector's hard edge from the pixels (hair, fur)	검출기의 딱딱한 가장자리를 픽셀 기준으로 부드럽게 (머리카락, 털)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	개체를 클릭하거나 주위에 상자를 드래그하세요. Ctrl+클릭으로 제외할 지점 지정
+	Select by Box	상자로 선택
+	Click or drag a box around an object	개체를 클릭하거나 주위에 상자를 드래그하세요
+	Click a spot the object must include; Alt-click one it must not	포함할 지점을 클릭하고, 제외할 지점은 Alt+클릭
+	Click to include a spot, Alt-click to exclude one	클릭으로 지점 포함, Alt+클릭으로 제외
+	Click an object, or drag a box around it	개체를 클릭하거나 주위에 상자를 드래그하세요
+	Fast	빠름
+	Paint over an object to select it	개체 위를 칠하면 선택됩니다
+	Engine: not configured	엔진: 구성되지 않음
+	Engine: starting…	엔진: 시작 중…
+	Engine: ready	엔진: 준비됨
+	Engine: running outside the app	엔진: 앱 외부에서 실행 중
+	Engine: failed	엔진: 실패
+	Engine: stopped	엔진: 중지됨
+	Start engine	엔진 시작
+	Stop engine	엔진 중지
+	Restart engine	엔진 다시 시작
+	Show log	로그 표시
+	Engine	엔진
+	Native	네이티브
+	Native runtime folders	네이티브 런타임 폴더
+	Models folder	네이티브 모델 폴더
+	Instance	인스턴스
+	Intersect	교차
+	Prompt	프롬프트
+	Template	템플릿
+	Widen	넓히기
+	Fill Holes	구멍 채우기
+	Widen the object's mask by this many pixels (negative shrinks it)	개체 마스크를 이 픽셀 수만큼 넓힙니다(음수는 줄입니다)
+	Fill the gaps the object's mask encloses	개체 마스크가 둘러싼 빈틈을 채웁니다
+	Feather the mask's edge by this many pixels	마스크 가장자리를 이 픽셀 수만큼 부드럽게 합니다
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	칠하기 전에 선택 영역을 이 픽셀 수만큼 넓혀 더 큰 대체물이 들어갈 자리를 만듭니다
+	Generative	생성형
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	미리 보기는 기존 채우기를 보여 줍니다. 확인과 적용은 모델을 새 레이어에 실행합니다.
+	Best of two	둘 중 더 나은 것
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	후보 두 개를 생성해 손대지 않은 것처럼 보이는 쪽을 표시합니다. 끄면 후보 하나, 시간은 약 절반입니다
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	모델 폴더의 loras 하위 폴더에 있는 어댑터로, 네이티브 엔진이 적용합니다
+	Generative Upscale	생성형 업스케일
+	Denoise	디노이즈
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	선택 영역을 얼마나 다시 그릴지: 1은 대체하고, 약 0.9은 원래 형태를 유지합니다
+	Native engine	네이티브 엔진
+	Native engine: not configured	네이티브 엔진: 구성되지 않음
+	Native engine: starting…	네이티브 엔진: 시작 중…
+	Native engine: working	네이티브 엔진: 작업 중
+	Native engine: ready	네이티브 엔진: 준비됨
+	Native engine: failed	네이티브 엔진: 실패
+	Native engine: stopped	네이티브 엔진: 중지됨
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	네이티브 엔진을 사용하려면 환경설정 › AI 연동에서 런타임 폴더와 모델 폴더를 설정하세요
+	{free} of {total} free	{total} 중 {free} 사용 가능
+	Loaded: {models}	로드됨: {models}
+	Purge models	모델 비우기
+	Choose the folder that holds your model weights to use the generative tools	생성 도구를 사용하려면 모델 가중치가 있는 폴더를 선택하세요
+	Set Models Folder…	모델 폴더 설정…
+	App Icon…	앱 아이콘…
+	App Icon	앱 아이콘
+	Built-in	기본 제공
+	Choose Image…	이미지 선택…
+	Paste Image	이미지 붙여넣기
+	Image address (https://…)	이미지 주소 (https://…)
+	Download	다운로드
+	Downloading…	다운로드 중…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	어떤 그림이든 사용할 수 있으며 정사각형에 맞춰집니다. 아이콘을 마우스 오른쪽 버튼으로 클릭하면 제거됩니다.

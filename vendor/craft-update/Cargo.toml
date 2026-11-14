@@ -1,5 +1,5 @@
 # ShotoPhopEX: a copy of craft-update from storytold/craft-libs at rev
-# 1b34eba41e62138fc2438d2734523b302840b45d (crates/update), used through [patch] in the root
+# 6e03f65bf45181db77ba6229716e6624db9eb25b (crates/update), used through [patch] in the root
 # Cargo.toml. The only change: self_update::update picks the download by every stem the app
 # lists (App::stems), not just App::id, so ShotoPhopEX finds its shotophopex-<ver>-<os>-<arch>
 # release files. Bumping craft-libs' rev upstream does NOT update this copy: re-copy it and
@@ -59,3 +59,6 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 flate2 = "1"
 winsafe = { version = "0.0.29", features = ["advapi", "kernel", "shell", "version"] }
 verifysign = "1"
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }

@@ -71,7 +71,7 @@ against the files.
 | libfacedetection weights + network | https://github.com/ShiqiYu/libfacedetection | BSD-3-Clause | Embedded | Reproduce notice | VERIFIED | `crates/algo/data/LICENSE-libfacedetection.txt` |
 | X11 colour names | X.Org | MIT (X.Org) | Embedded | Keep notice | VERIFIED | `ATTRIBUTION.md` |
 | Solarized palette | Ethan Schoonover | MIT | Embedded values | Keep notice | VERIFIED | `crates/ui-egui/src/LICENSE-solarized.txt` |
-| UI translations (22 languages) | PhotoCraft contributors (some AI-assisted) | MIT OR Apache-2.0 | Embedded | As project | VERIFIED | `crates/ui-egui/src/i18n/LICENSE-translations.txt` |
+| UI translations (craft-i18n catalogs plus ShotoPhopEX rows) | PhotoCraft contributors and ShotoPhopEX (some AI-assisted) | MIT OR Apache-2.0 | Embedded | As project | VERIFIED | `crates/ui-egui/src/i18n/shotophopex/LICENSE-translations.txt` |
 | Synthetic ICC profile, LUTs | PhotoCraft contributors | CC0-1.0 | Embedded | None | VERIFIED | `ATTRIBUTION.md` |
 | ShotoPhopEX "Sp" icon | Cody Chu | MIT OR Apache-2.0 | Embedded; installers | — | VERIFIED licence; U-14 trademark question | `assets/app-icon/LICENSE.txt` |
 | README screenshots (public-domain artworks) | Wikimedia Commons | Public domain | Repository only | None | VERIFIED | `docs/images/SOURCES.md` |
