@@ -139,7 +139,9 @@ pub struct GeneratePanel {
     /// (`denoise`; 1 replaces it).
     pub denoise: f32,
     /// Edit mode: `head` or `body` puts that from the first reference onto the person in the
-    /// picture (`generate.edit` `swap`, the BFS LoRAs); empty = an ordinary edit.
+    /// picture (`generate.edit` `swap`, the BFS LoRAs); `pose` redraws the person from the first
+    /// reference in the pose of the mannequin in the picture (`generate.edit` `repose`, the
+    /// PoseStudio LoRA); empty = an ordinary edit.
     pub swap: String,
 }
 
@@ -344,6 +346,7 @@ pub fn default_template(app: &PhotocraftApp, mode: &str) -> String {
             if !app.ui.generate.references.is_empty() && !takes_refs { g::fill_ref_template(q).to_string() } else { t }
         }
         "edit" if swapping(app) => g::swap::SWAP_TEMPLATE.to_string(),
+        "edit" if reposing(app) => g::repose::REPOSE_TEMPLATE.to_string(),
         m => g::likely_auto_in(&app.session, command_of(m), g::quality(&app.session)).to_string(),
     }
 }
@@ -351,6 +354,14 @@ pub fn default_template(app: &PhotocraftApp, mode: &str) -> String {
 /// Edit mode with Swap on (Face or Body).
 pub fn swapping(app: &PhotocraftApp) -> bool {
     app.ui.generate.mode == "edit" && photocraft_engine::generate_cmds::swap::find(&app.ui.generate.swap).is_some()
+}
+
+/// The `swap` value that means Repose rather than a swap.
+pub const POSE: &str = "pose";
+
+/// Edit mode with Pose on: the open picture is the posed mannequin, the first reference who to draw.
+pub fn reposing(app: &PhotocraftApp) -> bool {
+    app.ui.generate.mode == "edit" && app.ui.generate.swap == POSE
 }
 
 /// The name the picker shows for [`default_template`], for its Auto row.
@@ -438,11 +449,15 @@ pub fn request(app: &PhotocraftApp) -> Result<(&'static str, Value), String> {
     let mode = p.mode.as_str();
     let prompt = p.prompt.trim();
     let swap = swapping(app);
-    if prompt.is_empty() && mode != "expand" && !swap {
+    let repose = reposing(app);
+    if prompt.is_empty() && mode != "expand" && !swap && !repose {
         return Err(tl!("Type what to generate first").to_string());
     }
     if swap && p.references.is_empty() {
         return Err(tl!("Add a picture of who to swap in as a reference").to_string());
+    }
+    if repose && p.references.is_empty() {
+        return Err(tl!("Add a picture of who to draw as a reference; the open picture is the pose").to_string());
     }
     if let Some(why) = blocked(app, mode) {
         return Err(why.to_string());
@@ -479,6 +494,9 @@ pub fn request(app: &PhotocraftApp) -> Result<(&'static str, Value), String> {
             q["variations"] = json!(count);
             if swap {
                 q["swap"] = json!(p.swap);
+            }
+            if repose {
+                q["repose"] = json!(true);
             }
         }
         _ => {
@@ -1304,14 +1322,16 @@ fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, mode: &str, 
     }
     if mode == "edit" {
         // Swap: the head (face and hair) or the whole person from the first reference, onto the
-        // person in the picture (the BFS LoRAs on Qwen-Image-2.1).
-        setting_row(ui, tl!("Swap"), |ui| {
-            let cur = if swapping(app) { app.ui.generate.swap.clone() } else { String::new() };
+        // person in the picture (the BFS LoRAs on Qwen-Image-2.1); or Pose: the person from the
+        // first reference redrawn in the pose of the mannequin in the picture (PoseStudio).
+        setting_row(ui, tl!("Person"), |ui| {
+            let cur = if swapping(app) || reposing(app) { app.ui.generate.swap.clone() } else { String::new() };
             let options = [
                 Seg::new(String::new(), tl!("Off")).tip(tl!("An ordinary edit by instruction")),
                 Seg::new("head".to_string(), tl!("Face")).tip(tl!("Put the face and hair from the first reference onto the person in the picture")),
                 Seg::new("body".to_string(), tl!("Body"))
                     .tip(tl!("Put the whole person from the first reference (clothes, build, face) into the picture, in the same pose")),
+                Seg::new(POSE.to_string(), tl!("Pose")).tip(tl!("Draw the person from the first reference in the pose of the mannequin in the open picture")),
             ];
             if let Some(x) = segmented(ui, &cur, &options, 0.0) {
                 app.ui.generate.swap = x;
@@ -1326,6 +1346,20 @@ fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, mode: &str, 
                 ui.allocate_ui_with_layout(vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.set_max_width(w);
                     ui.add(egui::Label::new(RichText::new(tl!("Add a picture of who to swap in as a reference")).small().color(t.text_faint)).wrap());
+                });
+            });
+        }
+        if reposing(app) && app.ui.generate.references.is_empty() {
+            setting_row(ui, "", |ui| {
+                let w = ui.available_width();
+                ui.allocate_ui_with_layout(vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_max_width(w);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(tl!("Add a picture of who to draw as a reference; the open picture is the pose")).small().color(t.text_faint),
+                        )
+                        .wrap(),
+                    );
                 });
             });
         }
@@ -1742,8 +1776,9 @@ pub fn set(app: &mut PhotocraftApp, p: &Value) -> Result<(), String> {
         next.swap = match x {
             Value::Null => String::new(),
             Value::String(k) if k.is_empty() || k == "off" => String::new(),
-            Value::String(k) => photocraft_engine::generate_cmds::swap::find(k).ok_or("generatePanel.swap must be head, body or off")?.kind.to_string(),
-            _ => return Err("generatePanel.swap must be head, body or off".into()),
+            Value::String(k) if k == POSE => POSE.to_string(),
+            Value::String(k) => photocraft_engine::generate_cmds::swap::find(k).ok_or("generatePanel.swap must be head, body, pose or off")?.kind.to_string(),
+            _ => return Err("generatePanel.swap must be head, body, pose or off".into()),
         };
     }
     if let Some(x) = o.get("loras") {
