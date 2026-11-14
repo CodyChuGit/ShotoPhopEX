@@ -1,0 +1,230 @@
+# ShotoPhopEX's own interface rows for tr: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/tr/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Instance	Örnek
+	Intersect	Kesişim
+	Prompt	İstem
+	Template	Şablon
+	Select by Text…	Metinle Seç…
+	Generative Fill…	Üretken Doldurma…
+	Generate Image…	Görüntü Oluştur…
+	Allow research models	Araştırma modellerine izin ver
+	Default edit model	Varsayılan düzenleme modeli
+	Default fill template	Varsayılan doldurma şablonu
+	Default generate model	Varsayılan oluşturma modeli
+	Default image template	Varsayılan görüntü şablonu
+	Generative timeout (seconds)	Oluşturma zaman aşımı (saniye)
+	Show generative bar	Üretken çubuğu göster
+	Describe what to generate…	Ne oluşturulacağını açıklayın…
+	Variations	Varyasyonlar
+	Generating…	Oluşturuluyor…
+	Previous variation	Önceki varyasyon
+	Next variation	Sonraki varyasyon
+	Generative Models	Üretken Modeller
+	Generative Expand…	Üretken Genişletme…
+	Remove Background (Generative)…	Arka Planı Kaldır (Üretken)…
+	As Selection	Seçim Olarak
+	Generative Edit…	Üretken Düzenleme…
+	Generate Similar	Benzerini Oluştur
+	Generative Expand	Üretken Genişletme
+	not installed	yüklü değil
+	Split into Layers (Generative)…	Katmanlara Ayır (Üretken)…
+	Changing what is there? Switch to Edit	Var olanı mı değiştiriyorsunuz? Düzenleme’ye geçin
+	Describe the change…	Değişikliği açıklayın…
+	Enhance prompts	İstemleri iyileştir
+	Warm up AI models at launch	Başlangıçta yapay zekâ modellerini önceden yükle
+	Fast draft (faster, slightly softer detail)	Hızlı taslak (daha hızlı, ayrıntılar biraz daha yumuşak)
+	Enhance prompt	İstemi iyileştir
+	Enhancing…	İyileştiriliyor…
+	The model could not improve this prompt	Model bu istemi iyileştiremedi
+	Select by text…	Metinle seç…
+	Click an object, or drag a rectangle around it	Bir nesneye tıklayın veya çevresine dikdörtgen sürükleyin
+	Select by Point	Noktayla Seç
+	Select by Text	Metinle Seç
+	{done} results	{done} sonuç
+	{running} running · {done} results	{running} çalışıyor · {done} sonuç
+	Cancelled	İptal edildi
+	Clear completed…	Tamamlananları temizle…
+	Clear failed…	Başarısızları temizle…
+	Completed	Tamamlandı
+	Copy prompt	İstemi kopyala
+	Delete every completed result and its files?	Tamamlanan tüm sonuçlar ve dosyaları silinsin mi?
+	Delete every generation and its files? Running jobs stay.	Tüm oluşturmalar ve dosyaları silinsin mi? Çalışan işler kalır.
+	Dismiss failed	Başarısızları kaldır
+	Generations	Oluşturmalar
+	Generative Fill, Edit and Generate Image results appear here.	Üretken Doldurma, Düzenleme ve Görüntü Oluşturma sonuçları burada görünür.
+	In progress	Devam ediyor
+	Interrupted	Kesildi
+	Invalid request	Geçersiz istek
+	Model files missing	Model dosyaları eksik
+	No generations yet	Henüz oluşturma yok
+	Open as Document	Belge Olarak Aç
+	Out of memory on the server	Sunucuda bellek yetersiz
+	Pin	Sabitle
+	Place	Yerleştir
+	Place as Layer	Katman Olarak Yerleştir
+	Prompt copied	İstem kopyalandı
+	Recreate	Yeniden oluştur
+	Remove all…	Tümünü kaldır…
+	Remove every failed and cancelled row?	Tüm başarısız ve iptal edilen satırlar kaldırılsın mı?
+	Result discarded	Sonuç atıldı
+	Saved {n} file(s)	{n} dosya kaydedildi
+	Saving files is not available here	Dosya kaydetme burada kullanılamaz
+	Server error	Sunucu hatası
+	Server unreachable	Sunucuya ulaşılamıyor
+	Timed out	Zaman aşımı
+	Unpin	Sabitlemeyi kaldır
+	Active layer ({name})	Etkin katman ({name})
+	Add a reference image	Referans görüntü ekle
+	Clear all	Tümünü temizle
+	Clear the prompt and remove the reference images?	İstem temizlenip referans görüntüler kaldırılsın mı?
+	Describe what continues the scene…	Sahnenin nasıl devam ettiğini açıklayın…
+	Describe what to generate in the selection…	Seçimde ne oluşturulacağını açıklayın…
+	Describe what you want in the image…	Görüntüde ne istediğinizi açıklayın…
+	File: {name}	Dosya: {name}
+	File…	Dosya…
+	Fill needs a selection	Doldurma için seçim gerekir
+	From Generations	Oluşturmalardan
+	Generation: {name}	Oluşturma: {name}
+	Give the expand at least one side	Genişletme için en az bir kenar verin
+	Hide negative prompt	Negatif istemi gizle
+	Layer: {name}	Katman: {name}
+	More than this model takes	Bu modelin kabul ettiğinden fazla
+	Move left	Sola taşı
+	Move right	Sağa taşı
+	Negative prompt	Negatif istem
+	Only files with a path can be references here	Burada yalnızca yolu olan dosyalar referans olabilir
+	Open a document first	Önce bir belge açın
+	Open the prompt in a larger editor	İstemi daha büyük bir düzenleyicide aç
+	Reference images (optional)	Referans görüntüler (isteğe bağlı)
+	This model takes at most {n} reference images	Bu model en fazla {n} referans görüntü kabul eder
+	Type a prompt first	Önce bir istem yazın
+	Type what to generate first	Önce ne oluşturulacağını yazın
+	What to avoid…	Kaçınılacaklar…
+	a layer that is gone	artık var olmayan bir katman
+	Enter to generate	Oluşturmak için Enter
+	research	araştırma
+	The fastest permissive model the server has	Sunucudaki serbest lisanslı en hızlı model
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Araştırma lisansı: Tercihler › Yapay Zekâ Entegrasyonları’nda “Araştırma modellerine izin ver” seçeneğini açın
+	Uses: {name}	Kullanır: {name}
+	Group models by family	Modelleri aileye göre grupla
+	Variation {n} of {count}	Varyasyon {n} / {count}
+	Delete this variation	Bu varyasyonu sil
+	Keep this one	Bunu tut
+	Keep this one and delete the other variations	Bunu tut ve diğer varyasyonları sil
+	Click to retry	Yeniden denemek için tıklayın
+	Variations strip	Varyasyon şeridi
+	{n} selected	{n} seçili
+	Save selected	Seçilenleri kaydet
+	Save results dir	Kaydedilen sonuçlar klasörü
+	Save results naming	Kaydedilen sonuçların adlandırması
+	Alerts	Uyarılar
+	Done and failed	Tamamlanan ve başarısız
+	Preview while generating	Oluşturma sırasında önizleme
+	Not in this build yet	Bu sürümde henüz yok
+	Open a picture first	Önce bir resim açın
+	Generative Features	Üretken Özellikler
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	YAKINDA
+	Split into Layers	Katmanlara Ayır
+	Angles	Açılar
+	A new picture from a prompt, with up to three references	İstemden yeni bir resim, en fazla üç referansla
+	Paint the selection from a prompt	Seçimi bir isteme göre doldurur
+	Change the picture by instruction	Resmi talimatla değiştirir
+	Grow the canvas and continue the scene	Tuvali büyütür ve sahneyi sürdürür
+	Cut the subject out onto transparency	Nesneyi saydam zemine keser
+	Separate the picture into editable layers	Resmi düzenlenebilir katmanlara ayırır
+	Select what you name in a few words	Birkaç sözcükle adlandırdığınızı seçer
+	See the subject from another camera angle	Nesneyi başka bir kamera açısından gösterir
+	Generative Features…	Üretken Özellikler…
+	Generative Angles…	Üretken Açılar…
+	front	ön
+	Camera	Kamera
+	Generative Angles	Üretken Açılar
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	ön görünüm
+	front-right quarter view	ön sağ çeyrek görünüm
+	right side view	sağ yan görünüm
+	back-right quarter view	arka sağ çeyrek görünüm
+	back view	arka görünüm
+	back-left quarter view	arka sol çeyrek görünüm
+	left side view	sol yan görünüm
+	front-left quarter view	ön sol çeyrek görünüm
+	low-angle shot	alt açı çekimi
+	eye-level shot	göz hizası çekimi
+	elevated shot	yüksekten çekim
+	high-angle shot	üst açı çekimi
+	wide shot	geniş plan
+	medium shot	orta plan
+	close-up	yakın plan
+	CREATE	OLUŞTUR
+	EDIT	DÜZENLE
+	Balanced	Dengeli
+	Auto takes the full-step model and keeps the 4-bit weights off	Otomatik, tam adımlı modeli alır ve 4 bit ağırlıkları kullanmaz
+	Auto takes the 8-step Lightning tier when the server has it	Otomatik, sunucuda varsa 8 adımlı Lightning katmanını alır
+	Auto takes the 4-step tier where there is one	Otomatik, varsa 4 adımlı katmanı alır
+	Object finder	Nesne bulucu
+	Show what a click would select while the pointer rests	İmleç dururken tıklamanın neyi seçeceğini göster
+	Refine edge	Kenarı iyileştir
+	Soften the detector's hard edge from the pixels (hair, fur)	Dedektörün sert kenarını piksellere göre yumuşat (saç, kürk)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Bir nesneye tıklayın veya çevresine kutu sürükleyin; bir noktayı dışlamak için Ctrl+tıklayın
+	Select by Box	Kutuyla Seç
+	Click or drag a box around an object	Bir nesneye tıklayın veya çevresine kutu sürükleyin
+	Click a spot the object must include; Alt-click one it must not	Nesnenin içermesi gereken bir noktaya tıklayın; içermemesi gereken birine Alt+tıklayın
+	Click to include a spot, Alt-click to exclude one	Nokta eklemek için tıklayın, dışlamak için Alt+tıklayın
+	Click an object, or drag a box around it	Bir nesneye tıklayın veya çevresine kutu sürükleyin
+	Paint over an object to select it	Seçmek için nesnenin üzerini boyayın
+	Engine: not configured	Motor: yapılandırılmadı
+	Engine: starting…	Motor: başlatılıyor…
+	Engine: ready	Motor: hazır
+	Engine: running outside the app	Motor: uygulama dışında çalışıyor
+	Engine: failed	Motor: başarısız
+	Engine: stopped	Motor: durduruldu
+	Start engine	Motoru başlat
+	Stop engine	Motoru durdur
+	Restart engine	Motoru yeniden başlat
+	Show log	Günlüğü göster
+	Engine	Motor
+	Native	Yerleşik
+	Native runtime folders	Yerleşik çalışma zamanı klasörleri
+	Models folder	Yerleşik modeller klasörü
+	Widen	Genişlet
+	Fill Holes	Boşlukları Doldur
+	Widen the object's mask by this many pixels (negative shrinks it)	Nesnenin maskesini bu kadar piksel genişlet (negatif değer daraltır)
+	Fill the gaps the object's mask encloses	Nesne maskesinin çevrelediği boşlukları doldur
+	Feather the mask's edge by this many pixels	Maskenin kenarını bu kadar piksel yumuşat
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Doldurmadan önce seçimi bu kadar piksel genişlet; daha hacimli bir değiştirmeye yer açılsın
+	Generative	Üretken
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Önizleme klasik doldurmayı gösterir; Tamam ve Uygula, modeli yeni bir katmana çalıştırır.
+	Best of two	İkisinden iyisi
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	İki aday üretir ve dokunulmamış görüneni gösterir; kapalıyken tek aday, yaklaşık yarı süre
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Modeller klasörünün loras alt klasöründeki bağdaştırıcılar, yerel motor tarafından uygulanır
+	Generative Upscale	Üretken Büyütme
+	Denoise	Gürültü giderme
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Seçimin ne kadarının yeniden çizileceği: 1 onu değiştirir, yaklaşık 0,9 eski şekli korur
+	Native engine	Yerel motor
+	Native engine: not configured	Yerel motor: yapılandırılmadı
+	Native engine: starting…	Yerel motor: başlatılıyor…
+	Native engine: working	Yerel motor: çalışıyor
+	Native engine: ready	Yerel motor: hazır
+	Native engine: failed	Yerel motor: başarısız
+	Native engine: stopped	Yerel motor: durduruldu
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Yerel motoru kullanmak için Tercihler › Yapay Zekâ Entegrasyonları’nda çalışma zamanı ve model klasörlerini ayarlayın
+	{free} of {total} free	{total} içinde {free} boş
+	Loaded: {models}	Yüklü: {models}
+	Purge models	Modelleri boşalt
+	Choose the folder that holds your model weights to use the generative tools	Üretken araçları kullanmak için model ağırlıklarınızın bulunduğu klasörü seçin
+	Set Models Folder…	Modeller klasörünü ayarla…
+	App Icon…	Uygulama Simgesi…
+	App Icon	Uygulama Simgesi
+	Built-in	Yerleşik
+	Choose Image…	Görüntü Seç…
+	Paste Image	Görüntüyü Yapıştır
+	Image address (https://…)	Görüntü adresi (https://…)
+	Download	İndir
+	Downloading…	İndiriliyor…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Her resim olur; bir kareye sığdırılır. Kaldırmak için simgeye sağ tıklayın.

@@ -1,0 +1,238 @@
+# ShotoPhopEX's own interface rows for zh-hans: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/zh-hans/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	生成式填充…
+	Generate Image…	生成图像…
+	Select by Text…	按文本选择…
+	Allow research models	允许研究用模型
+	Default edit model	默认编辑模型
+	Default fill template	默认填充模板
+	Default generate model	默认生成模型
+	Default image template	默认图像模板
+	Generative timeout (seconds)	生成超时（秒）
+	Show generative bar	显示生成栏
+	Describe what to generate…	描述要生成的内容…
+	Variations	变体
+	Generating…	正在生成…
+	Previous variation	上一个变体
+	Next variation	下一个变体
+	Generative Models	生成模型
+	Generative Expand…	生成式扩展…
+	Remove Background (Generative)…	移除背景（生成式）…
+	As Selection	作为选区
+	Generative Edit…	生成式编辑…
+	Generate Similar	生成相似内容
+	Generative Expand	生成式扩展
+	not installed	未安装
+	Split into Layers (Generative)…	拆分为图层（生成式）…
+	Changing what is there? Switch to Edit	要改变现有内容？请切换到“编辑”
+	Describe the change…	描述要做的更改…
+	Enhance prompts	自动优化提示词
+	Warm up AI models at launch	启动时预加载 AI 模型
+	Fast draft (faster, slightly softer detail)	快速草稿（更快，细节略柔和）
+	Enhance prompt	优化提示词
+	Enhancing…	正在优化…
+	The model could not improve this prompt	模型无法优化此提示词
+	Select by text…	按文字选择…
+	Click an object, or drag a rectangle around it	点击对象，或在其周围拖出矩形
+	Select by Point	按点选择
+	Select by Text	按文字选择
+	{done} results	{done} 个结果
+	{running} running · {done} results	{running} 个进行中 · {done} 个结果
+	Cancelled	已取消
+	Clear completed…	清除已完成…
+	Clear failed…	清除失败项…
+	Completed	已完成
+	Copy prompt	复制提示词
+	Delete every completed result and its files?	删除所有已完成的结果及其文件？
+	Delete every generation and its files? Running jobs stay.	删除所有生成内容及其文件？正在运行的任务会保留。
+	Dismiss failed	关闭失败项
+	Failed	失败
+	Generations	生成记录
+	Generative Fill, Edit and Generate Image results appear here.	生成式填充、生成式编辑和生成图像的结果会显示在这里。
+	In progress	进行中
+	Interrupted	已中断
+	Invalid request	无效请求
+	List	列表
+	Model files missing	缺少模型文件
+	More	更多
+	No generations yet	暂无生成记录
+	Open as Document	作为文档打开
+	Out of memory on the server	服务器内存不足
+	Pin	固定
+	Place	置入
+	Place as Layer	作为图层置入
+	Prompt copied	已复制提示词
+	Recreate	重新生成
+	Remove all…	全部移除…
+	Remove every failed and cancelled row?	移除所有失败和已取消的行？
+	Result discarded	结果已丢弃
+	Saved {n} file(s)	已保存 {n} 个文件
+	Saving files is not available here	此处无法保存文件
+	Server error	服务器错误
+	Server unreachable	无法连接服务器
+	Timed out	已超时
+	Unpin	取消固定
+	Active layer ({name})	当前图层（{name}）
+	Add a reference image	添加参考图像
+	Clear all	全部清除
+	Clear the prompt and remove the reference images?	清除提示词并移除参考图像？
+	Describe what continues the scene…	描述场景如何延续…
+	Describe what to generate in the selection…	描述要在选区中生成的内容…
+	Describe what you want in the image…	描述你想要的图像内容…
+	File: {name}	文件：{name}
+	File…	文件…
+	Fill needs a selection	填充需要选区
+	From Generations	来自生成记录
+	Generation: {name}	生成：{name}
+	Give the expand at least one side	请至少为扩展指定一侧
+	Hide negative prompt	隐藏负面提示词
+	Layer: {name}	图层：{name}
+	More than this model takes	超出此模型可接受的数量
+	Move left	左移
+	Move right	右移
+	Negative prompt	负面提示词
+	New document	新建文档
+	Only files with a path can be references here	此处只有带路径的文件才能作为参考
+	Open a document first	请先打开文档
+	Open the prompt in a larger editor	在更大的编辑器中打开提示词
+	Reference images (optional)	参考图像（可选）
+	This model takes at most {n} reference images	此模型最多接受 {n} 张参考图像
+	Type a prompt first	请先输入提示词
+	Type what to generate first	请先输入要生成的内容
+	What to avoid…	要避免的内容…
+	a layer that is gone	已不存在的图层
+	Enter to generate	按 Enter 键生成
+	research	研究用
+	The fastest permissive model the server has	服务器上最快的宽松许可模型
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	研究许可：请在 偏好设置 › AI 集成 中开启“允许仅限研究的模型”
+	Uses: {name}	使用：{name}
+	Group models by family	按系列分组模型
+	Variation {n} of {count}	变体 {n}/{count}
+	Delete this variation	删除此变体
+	Keep this one	保留此项
+	Keep this one and delete the other variations	保留此项并删除其他变体
+	Click to retry	点击重试
+	Retry	重试
+	Variations strip	变体条
+	{n} selected	已选择 {n} 个
+	Save selected	保存所选
+	Save results dir	结果保存文件夹
+	Save results naming	保存结果的命名
+	Alerts	提示音
+	Done and failed	完成和失败
+	Preview while generating	生成时预览
+	Not in this build yet	此版本尚未提供
+	Open a picture first	请先打开一张图片
+	Generative Features	生成式功能
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	即将推出
+	Split into Layers	拆分为图层
+	Angles	视角
+	A new picture from a prompt, with up to three references	根据提示词生成新图片，最多三张参考图
+	Paint the selection from a prompt	根据提示词填充选区
+	Change the picture by instruction	按指令修改图片
+	Grow the canvas and continue the scene	扩展画布并延续场景
+	Cut the subject out onto transparency	将主体抠到透明背景上
+	Separate the picture into editable layers	将图片分离为可编辑的图层
+	Select what you name in a few words	选择你用几个词说出的内容
+	See the subject from another camera angle	从另一个相机角度查看主体
+	Generative Features…	生成式功能…
+	Generative Angles…	生成式视角…
+	front	正面
+	Camera	相机
+	Generative Angles	生成式视角
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	正视图
+	front-right quarter view	右前四分之三视图
+	right side view	右侧视图
+	back-right quarter view	右后四分之三视图
+	back view	后视图
+	back-left quarter view	左后四分之三视图
+	left side view	左侧视图
+	front-left quarter view	左前四分之三视图
+	low-angle shot	低角度
+	eye-level shot	平视
+	elevated shot	略高角度
+	high-angle shot	高角度
+	wide shot	远景
+	medium shot	中景
+	close-up	特写
+	CREATE	创建
+	EDIT	编辑
+	Best	最佳
+	Balanced	均衡
+	Auto takes the full-step model and keeps the 4-bit weights off	自动使用完整步数的模型，不使用 4 位权重
+	Auto takes the 8-step Lightning tier when the server has it	服务器有 8 步 Lightning 档位时自动使用它
+	Auto takes the 4-step tier where there is one	有 4 步档位时自动使用它
+	Object finder	对象查找器
+	Show what a click would select while the pointer rests	指针停留时显示点击将选中的内容
+	Refine edge	调整边缘
+	Soften the detector's hard edge from the pixels (hair, fur)	根据像素柔化检测器的硬边缘（头发、毛发）
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	点击对象或拖出一个框围住它；按住 Ctrl 点击可排除某处
+	Select by Box	框选
+	Click or drag a box around an object	点击对象或拖出一个框围住它
+	Click a spot the object must include; Alt-click one it must not	点击对象应包含的位置；按住 Alt 点击要排除的位置
+	Click to include a spot, Alt-click to exclude one	点击包含某处，按住 Alt 点击排除某处
+	Click an object, or drag a box around it	点击对象，或拖出一个框围住它
+	Fast	快速
+	Paint over an object to select it	在对象上涂抹即可选择它
+	Engine: not configured	引擎：未配置
+	Engine: starting…	引擎：正在启动…
+	Engine: ready	引擎：就绪
+	Engine: running outside the app	引擎：在应用外运行
+	Engine: failed	引擎：失败
+	Engine: stopped	引擎：已停止
+	Start engine	启动引擎
+	Stop engine	停止引擎
+	Restart engine	重启引擎
+	Show log	显示日志
+	Engine	引擎
+	Native	原生
+	Native runtime folders	原生运行时文件夹
+	Models folder	原生模型文件夹
+	Instance	实例
+	Intersect	交叉
+	Prompt	提示词
+	Template	模板
+	Widen	加宽
+	Fill Holes	填补孔洞
+	Widen the object's mask by this many pixels (negative shrinks it)	将对象蒙版加宽这么多像素（负值则收缩）
+	Fill the gaps the object's mask encloses	填补对象蒙版所包围的空隙
+	Feather the mask's edge by this many pixels	将蒙版边缘羽化这么多像素
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	填充前将选区加宽这么多像素，让更大的替换物有空间
+	Generative	生成式
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	预览显示的是经典填充；“确定”和“应用”会把模型结果放到新图层上。
+	Best of two	二选一
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	生成两个候选结果，显示看起来未经修改的那个；关闭后只生成一个，耗时约减半
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	模型文件夹 loras 子文件夹中的适配器，由原生引擎应用
+	Strength	强度
+	Generative Upscale	生成式放大
+	Denoise	降噪强度
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	重绘选区的程度：1 完全替换，约 0.9 保留原有形状
+	Native engine	原生引擎
+	Native engine: not configured	原生引擎：未配置
+	Native engine: starting…	原生引擎：正在启动…
+	Native engine: working	原生引擎：正在工作
+	Native engine: ready	原生引擎：就绪
+	Native engine: failed	原生引擎：失败
+	Native engine: stopped	原生引擎：已停止
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	在 偏好设置 › AI 集成 中设置运行时文件夹和模型文件夹，即可使用原生引擎
+	{free} of {total} free	{total} 中可用 {free}
+	Loaded: {models}	已加载：{models}
+	Purge models	清除模型
+	Choose the folder that holds your model weights to use the generative tools	要使用生成工具，请选择存放模型权重的文件夹
+	Set Models Folder…	设置模型文件夹…
+	App Icon…	应用图标…
+	App Icon	应用图标
+	Built-in	内置
+	Choose Image…	选择图像…
+	Paste Image	粘贴图像
+	Image address (https://…)	图像地址 (https://…)
+	Download	下载
+	Downloading…	正在下载…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	任何图片都可以，会被放入正方形中。右键单击图标可将其删除。

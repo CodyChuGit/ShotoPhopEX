@@ -449,6 +449,12 @@ pub fn mask_stack(app: &PhotocraftApp, q: &mut Value) {
 }
 
 pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) {
+    // Indexed Color and Bitmap: the reference application's alert with OK (#12867), and nothing runs.
+    if let Some(why) = app.session.active().and_then(|st| photocraft_engine::smartselect_cmds::object_mode_refusal(st.doc.mode)) {
+        crate::object_finder::clear(app);
+        crate::brush_refusal::prompt(app, tl!(why));
+        return;
+    }
     let (x, y) = (start[0].min(end[0]), start[1].min(end[1]));
     let (w, h) = ((end[0] - start[0]).abs(), (end[1] - start[1]).abs());
     let click = w < 2.0 || h < 2.0;

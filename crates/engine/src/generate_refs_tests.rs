@@ -384,7 +384,9 @@ fn a_generative_stroke_takes_the_object_under_it_whole_when_it_covers_enough_of_
         .unwrap();
     let made = LayerId(r["layer"].as_u64().unwrap());
     let info = generative_info(s.active().unwrap().doc.layer(made).unwrap()).unwrap();
-    assert_eq!((info.grow, info.enhanced.as_str()), (23, ""), "the stroke and the point object, x 85 to 235: {info:?}");
+    // The stroke stops short of its last point since upstream 0.23 turned Catch-up on Stroke
+    // End off by default (#11887), so the hole is x 84 to 223 (139 px, grown 21).
+    assert_eq!((info.grow, info.enhanced.as_str()), (21, ""), "the stroke and the point object, x 84 to 223: {info:?}");
     assert_eq!(fake.state().runs.len(), 11, "the detector by point, the fill");
 }
 
@@ -653,7 +655,7 @@ fn the_time_estimate_is_one_formula_everywhere() {
     let two = estimate_seconds("qwen-edit-2511/edit-lightning-8", 1000, 1000, 1, 2).unwrap();
     assert!((f64::from(two) - (7.5 + 5.5 * mp + 18.0)).abs() < 0.01, "{two}");
     // An image template counts the size asked for.
-    assert!((estimate_seconds("krea2-turbo/image", 1000, 1000, 1, 0).unwrap() - 7.0).abs() < 0.01);
+    assert!((estimate_seconds("krea2-turbo/image", 1000, 1000, 1, 0).unwrap() - 3.8).abs() < 0.01);
     assert!(estimate_seconds("nope/x", 1, 1, 1, 0).is_none());
     // The native Qwen-Image-2.1 edit (Edit's `auto`): three variations of a 1024² photo took
     // 17.7 s in the app on the 5090 (2026-11-03); the ComfyUI-era numbers said about 2 min.
@@ -663,7 +665,7 @@ fn the_time_estimate_is_one_formula_everywhere() {
     let mut s = Session::new();
     let v = s.execute("generate.models", json!({"probe": false, "width": 1000, "height": 1000, "count": 1})).unwrap();
     let krea = v["templates"].as_array().unwrap().iter().find(|t| t["id"] == "krea2-turbo/image").unwrap().clone();
-    assert!((krea["eta"].as_f64().unwrap() - 7.0).abs() < 0.01);
+    assert!((krea["eta"].as_f64().unwrap() - 3.8).abs() < 0.01);
     assert_eq!(krea["pages"], json!(["image"]));
     assert_eq!(krea["creator"], "Krea");
     let edit = v["templates"].as_array().unwrap().iter().find(|t| t["id"] == "qwen-edit-2511/edit-lightning-8").unwrap().clone();

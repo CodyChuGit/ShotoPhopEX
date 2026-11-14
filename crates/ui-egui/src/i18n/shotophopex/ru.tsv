@@ -1,0 +1,232 @@
+# ShotoPhopEX's own interface rows for ru: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/ru/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	Генеративная заливка…
+	Generate Image…	Создать изображение…
+	Select by Text…	Выделить по тексту…
+	Allow research models	Разрешить исследовательские модели
+	Default edit model	Модель редактирования по умолчанию
+	Default fill template	Шаблон заливки по умолчанию
+	Default generate model	Модель генерации по умолчанию
+	Default image template	Шаблон изображения по умолчанию
+	Generative timeout (seconds)	Тайм-аут генерации (секунды)
+	Show generative bar	Показывать генеративную панель
+	Describe what to generate…	Опишите, что сгенерировать…
+	Variations	Варианты
+	Generating…	Генерация…
+	Previous variation	Предыдущий вариант
+	Next variation	Следующий вариант
+	Generative Models	Генеративные модели
+	Generative Expand…	Генеративное расширение…
+	Remove Background (Generative)…	Удалить фон (генеративно)…
+	As Selection	Как выделение
+	Generative Edit…	Генеративное редактирование…
+	Generate Similar	Генерировать похожее
+	Generative Expand	Генеративное расширение
+	not installed	не установлено
+	Split into Layers (Generative)…	Разделить на слои (генеративно)…
+	Changing what is there? Switch to Edit	Меняете то, что уже есть? Переключитесь на Редактирование
+	Describe the change…	Опишите изменение…
+	Enhance prompts	Улучшать запросы
+	Warm up AI models at launch	Прогревать модели ИИ при запуске
+	Fast draft (faster, slightly softer detail)	Быстрый черновик (быстрее, детали чуть мягче)
+	Enhance prompt	Улучшить запрос
+	Enhancing…	Улучшение…
+	The model could not improve this prompt	Модель не смогла улучшить этот запрос
+	Select by text…	Выделить по тексту…
+	Click an object, or drag a rectangle around it	Щёлкните объект или обведите его прямоугольником
+	Select by Point	Выделить по точке
+	Select by Text	Выделить по тексту
+	{done} results	Результатов: {done}
+	{running} running · {done} results	Выполняется: {running} · результатов: {done}
+	Cancelled	Отменено
+	Clear completed…	Очистить завершённые…
+	Clear failed…	Очистить неудачные…
+	Completed	Завершённые
+	Copy prompt	Копировать запрос
+	Delete every completed result and its files?	Удалить все завершённые результаты и их файлы?
+	Delete every generation and its files? Running jobs stay.	Удалить все генерации и их файлы? Выполняющиеся задания останутся.
+	Dismiss failed	Скрыть неудачные
+	Failed	Неудачные
+	Generations	Генерации
+	Generative Fill, Edit and Generate Image results appear here.	Здесь появляются результаты генеративной заливки, генеративного редактирования и создания изображений.
+	In progress	Выполняется
+	Interrupted	Прервано
+	Invalid request	Недопустимый запрос
+	Model files missing	Отсутствуют файлы модели
+	No generations yet	Генераций пока нет
+	Open as Document	Открыть как документ
+	Out of memory on the server	На сервере не хватает памяти
+	Pin	Закрепить
+	Place	Поместить
+	Place as Layer	Поместить как слой
+	Prompt copied	Запрос скопирован
+	Recreate	Создать заново
+	Remove all…	Удалить все…
+	Remove every failed and cancelled row?	Удалить все неудачные и отменённые строки?
+	Result discarded	Результат отброшен
+	Saved {n} file(s)	Сохранено файлов: {n}
+	Saving files is not available here	Сохранение файлов здесь недоступно
+	Server error	Ошибка сервера
+	Server unreachable	Сервер недоступен
+	Timed out	Время ожидания истекло
+	Unpin	Открепить
+	Active layer ({name})	Активный слой ({name})
+	Add a reference image	Добавить эталонное изображение
+	Clear all	Очистить всё
+	Clear the prompt and remove the reference images?	Очистить запрос и убрать эталонные изображения?
+	Describe what continues the scene…	Опишите, как продолжается сцена…
+	Describe what to generate in the selection…	Опишите, что создать в выделении…
+	Describe what you want in the image…	Опишите, что должно быть на изображении…
+	File: {name}	Файл: {name}
+	File…	Файл…
+	Fill needs a selection	Для заливки нужно выделение
+	From Generations	Из генераций
+	Generation: {name}	Генерация: {name}
+	Give the expand at least one side	Укажите хотя бы одну сторону для расширения
+	Hide negative prompt	Скрыть отрицательный запрос
+	Layer: {name}	Слой: {name}
+	More than this model takes	Больше, чем принимает эта модель
+	Move left	Сдвинуть влево
+	Move right	Сдвинуть вправо
+	Negative prompt	Отрицательный запрос
+	Only files with a path can be references here	Здесь эталонами могут быть только файлы с путём
+	Open a document first	Сначала откройте документ
+	Open the prompt in a larger editor	Открыть запрос в большом редакторе
+	Reference images (optional)	Эталонные изображения (необязательно)
+	This model takes at most {n} reference images	Эта модель принимает не более {n} эталонных изображений
+	Type a prompt first	Сначала введите запрос
+	Type what to generate first	Сначала введите, что создать
+	What to avoid…	Чего избегать…
+	a layer that is gone	удалённый слой
+	Enter to generate	Генерировать клавишей Enter
+	research	исследовательская
+	The fastest permissive model the server has	Самая быстрая модель со свободной лицензией на сервере
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Исследовательская лицензия: включите «Разрешить модели только для исследований» в Настройки › Интеграции ИИ
+	Uses: {name}	Использует: {name}
+	Group models by family	Группировать модели по семействам
+	Variation {n} of {count}	Вариант {n} из {count}
+	Delete this variation	Удалить этот вариант
+	Keep this one	Оставить этот
+	Keep this one and delete the other variations	Оставить этот и удалить остальные варианты
+	Click to retry	Нажмите, чтобы повторить
+	Variations strip	Полоса вариантов
+	{n} selected	Выбрано: {n}
+	Save selected	Сохранить выбранное
+	Save results dir	Папка для сохранённых результатов
+	Save results naming	Имена сохранённых результатов
+	Alerts	Звуковые оповещения
+	Done and failed	Готово и сбой
+	Preview while generating	Просмотр во время генерации
+	Not in this build yet	Пока нет в этой сборке
+	Open a picture first	Сначала откройте изображение
+	Generative Features	Генеративные функции
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	СКОРО
+	Split into Layers	Разделить на слои
+	Angles	Ракурсы
+	A new picture from a prompt, with up to three references	Новое изображение по промпту, до трёх референсов
+	Paint the selection from a prompt	Заполняет выделение по промпту
+	Change the picture by instruction	Меняет изображение по инструкции
+	Grow the canvas and continue the scene	Расширяет холст и продолжает сцену
+	Cut the subject out onto transparency	Вырезает объект на прозрачный фон
+	Separate the picture into editable layers	Разделяет изображение на редактируемые слои
+	Select what you name in a few words	Выделяет то, что вы назовёте несколькими словами
+	See the subject from another camera angle	Показывает объект с другого ракурса
+	Generative Features…	Генеративные функции…
+	Generative Angles…	Генеративные ракурсы…
+	front	спереди
+	Camera	Камера
+	Generative Angles	Генеративные ракурсы
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	вид спереди
+	front-right quarter view	вид в три четверти спереди справа
+	right side view	вид справа
+	back-right quarter view	вид в три четверти сзади справа
+	back view	вид сзади
+	back-left quarter view	вид в три четверти сзади слева
+	left side view	вид слева
+	front-left quarter view	вид в три четверти спереди слева
+	low-angle shot	нижний ракурс
+	eye-level shot	на уровне глаз
+	elevated shot	слегка сверху
+	high-angle shot	верхний ракурс
+	wide shot	общий план
+	medium shot	средний план
+	close-up	крупный план
+	CREATE	СОЗДАТЬ
+	EDIT	ИЗМЕНИТЬ
+	Best	Лучшее
+	Balanced	Сбалансированное
+	Auto takes the full-step model and keeps the 4-bit weights off	Авто берёт модель с полным числом шагов и не использует 4-битные веса
+	Auto takes the 8-step Lightning tier when the server has it	Авто берёт 8-шаговый уровень Lightning, если он есть на сервере
+	Auto takes the 4-step tier where there is one	Авто берёт 4-шаговый уровень, где он есть
+	Object finder	Поиск объектов
+	Show what a click would select while the pointer rests	Показывать, что выделит щелчок, пока указатель неподвижен
+	Refine edge	Уточнить край
+	Soften the detector's hard edge from the pixels (hair, fur)	Смягчить жёсткий край детектора по пикселям (волосы, шерсть)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Щёлкните объект или обведите его рамкой; Ctrl+щелчок исключает место
+	Select by Box	Выделение рамкой
+	Click or drag a box around an object	Щёлкните объект или обведите его рамкой
+	Click a spot the object must include; Alt-click one it must not	Щёлкните точку, которую объект должен включать; Alt+щелчок — исключить
+	Click to include a spot, Alt-click to exclude one	Щелчок включает точку, Alt+щелчок исключает
+	Click an object, or drag a box around it	Щёлкните объект или обведите его рамкой
+	Paint over an object to select it	Проведите по объекту, чтобы выделить его
+	Engine: not configured	Движок: не настроен
+	Engine: starting…	Движок: запускается…
+	Engine: ready	Движок: готов
+	Engine: running outside the app	Движок: запущен вне приложения
+	Engine: failed	Движок: сбой
+	Engine: stopped	Движок: остановлен
+	Start engine	Запустить движок
+	Stop engine	Остановить движок
+	Restart engine	Перезапустить движок
+	Show log	Показать журнал
+	Engine	Движок
+	Native	Встроенный
+	Native runtime folders	Папки нативной среды выполнения
+	Models folder	Папка нативных моделей
+	Instance	Экземпляр
+	Intersect	Пересечение
+	Prompt	Запрос
+	Template	Шаблон
+	Widen	Расширить
+	Fill Holes	Заполнить дыры
+	Widen the object's mask by this many pixels (negative shrinks it)	Расширить маску объекта на столько пикселей (отрицательное значение сужает её)
+	Fill the gaps the object's mask encloses	Заполнить пустоты, которые окружает маска объекта
+	Feather the mask's edge by this many pixels	Растушевать край маски на столько пикселей
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Расширить выделение на столько пикселей перед заливкой, чтобы более объёмной замене хватило места
+	Generative	Генеративно
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Предпросмотр показывает классическую заливку; ОК и Применить запускают модель на новом слое.
+	Best of two	Лучший из двух
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Создаёт два варианта и показывает тот, что выглядит нетронутым; выключено: один вариант, примерно вдвое быстрее
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Адаптеры из подпапки loras папки моделей, применяемые встроенным движком
+	Generative Upscale	Генеративное масштабирование
+	Denoise	Шумоподавление
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Насколько перерисовывается выделение: 1 заменяет его, около 0,9 сохраняет прежнюю форму
+	Native engine	Встроенный движок
+	Native engine: not configured	Встроенный движок: не настроен
+	Native engine: starting…	Встроенный движок: запускается…
+	Native engine: working	Встроенный движок: работает
+	Native engine: ready	Встроенный движок: готов
+	Native engine: failed	Встроенный движок: сбой
+	Native engine: stopped	Встроенный движок: остановлен
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Укажите папки среды выполнения и моделей в Настройки › Интеграции ИИ, чтобы использовать встроенный движок
+	{free} of {total} free	свободно {free} из {total}
+	Loaded: {models}	Загружено: {models}
+	Purge models	Выгрузить модели
+	Choose the folder that holds your model weights to use the generative tools	Чтобы пользоваться генеративными инструментами, выберите папку с весами моделей
+	Set Models Folder…	Указать папку моделей…
+	App Icon…	Значок приложения…
+	App Icon	Значок приложения
+	Built-in	Встроенный
+	Choose Image…	Выбрать изображение…
+	Paste Image	Вставить изображение
+	Image address (https://…)	Адрес изображения (https://…)
+	Download	Загрузить
+	Downloading…	Загрузка…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Подойдёт любое изображение: оно вписывается в квадрат. Щёлкните значок правой кнопкой, чтобы удалить его.

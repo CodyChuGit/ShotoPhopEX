@@ -185,6 +185,9 @@ pub fn need_gb(template: &str) -> Option<f32> {
         // P-H3-Image: int8 DiT 21.2 GB resident, the 4B encoder (5.1 GB) and the VAE (5.6 GB)
         // taking turns beside it, plus 4 MP activations (an estimate, not measured yet).
         f if f.starts_with("p-h3") => 29.0,
+        // MiniMax-H3-Image: int8 DiT 21 GB resident, the 32B encoder's layers one at a time
+        // and the VAE beside it, plus 16 MP activations (an estimate until measured).
+        f if f.starts_with("minimax-h3") => 30.0,
         // 12 GB mode: encoder then DiT, 11.4–12.0 GiB peak.
         f if f.starts_with("moss") => 11.0,
         // 8 GB mode: the fp8 encoder (about 4.5 GB), then the INT8 DiT (5.8 GB) with the VAE.

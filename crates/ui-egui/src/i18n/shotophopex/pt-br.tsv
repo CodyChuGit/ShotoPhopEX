@@ -1,0 +1,230 @@
+# ShotoPhopEX's own interface rows for pt-br: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/pt-br/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	Preenchimento generativo…
+	Generate Image…	Gerar imagem…
+	Select by Text…	Selecionar por texto…
+	Allow research models	Permitir modelos de pesquisa
+	Default edit model	Modelo de edição padrão
+	Default fill template	Modelo de preenchimento padrão
+	Default generate model	Modelo de geração padrão
+	Default image template	Modelo de imagem padrão
+	Generative timeout (seconds)	Tempo limite generativo (segundos)
+	Show generative bar	Mostrar barra generativa
+	Describe what to generate…	Descreva o que gerar…
+	Variations	Variações
+	Generating…	Gerando…
+	Previous variation	Variação anterior
+	Next variation	Próxima variação
+	Generative Models	Modelos generativos
+	Generative Expand…	Expansão generativa…
+	Remove Background (Generative)…	Remover plano de fundo (generativo)…
+	As Selection	Como seleção
+	Generative Edit…	Edição generativa…
+	Generate Similar	Gerar semelhante
+	Generative Expand	Expansão generativa
+	not installed	não instalado
+	Split into Layers (Generative)…	Dividir em camadas (generativo)…
+	Changing what is there? Switch to Edit	Mudar o que já existe? Mude para Editar
+	Describe the change…	Descreva a alteração…
+	Enhance prompts	Aprimorar prompts
+	Warm up AI models at launch	Pré-carregar os modelos de IA ao iniciar
+	Fast draft (faster, slightly softer detail)	Rascunho rápido (mais rápido, detalhes um pouco mais suaves)
+	Enhance prompt	Aprimorar prompt
+	Enhancing…	Aprimorando…
+	The model could not improve this prompt	O modelo não conseguiu aprimorar este prompt
+	Select by text…	Selecionar por texto…
+	Click an object, or drag a rectangle around it	Clique em um objeto ou arraste um retângulo ao redor dele
+	Select by Point	Selecionar por ponto
+	Select by Text	Selecionar por texto
+	{done} results	{done} resultados
+	{running} running · {done} results	{running} em andamento · {done} resultados
+	Cancelled	Cancelado
+	Clear completed…	Limpar concluídos…
+	Clear failed…	Limpar com falha…
+	Completed	Concluídos
+	Copy prompt	Copiar prompt
+	Delete every completed result and its files?	Excluir todos os resultados concluídos e seus arquivos?
+	Delete every generation and its files? Running jobs stay.	Excluir todas as gerações e seus arquivos? Os trabalhos em andamento permanecem.
+	Dismiss failed	Dispensar com falha
+	Generations	Gerações
+	Generative Fill, Edit and Generate Image results appear here.	Os resultados de Preenchimento generativo, Edição generativa e Gerar imagem aparecem aqui.
+	In progress	Em andamento
+	Interrupted	Interrompido
+	Invalid request	Solicitação inválida
+	Model files missing	Arquivos do modelo ausentes
+	No generations yet	Nenhuma geração ainda
+	Open as Document	Abrir como documento
+	Out of memory on the server	Sem memória no servidor
+	Pin	Fixar
+	Place	Inserir
+	Place as Layer	Inserir como camada
+	Prompt copied	Prompt copiado
+	Recreate	Recriar
+	Remove all…	Remover tudo…
+	Remove every failed and cancelled row?	Remover todas as linhas com falha e canceladas?
+	Result discarded	Resultado descartado
+	Saved {n} file(s)	{n} arquivo(s) salvo(s)
+	Saving files is not available here	Salvar arquivos não está disponível aqui
+	Server error	Erro do servidor
+	Server unreachable	Servidor inacessível
+	Timed out	Tempo esgotado
+	Unpin	Desafixar
+	Active layer ({name})	Camada ativa ({name})
+	Add a reference image	Adicionar uma imagem de referência
+	Clear all	Limpar tudo
+	Clear the prompt and remove the reference images?	Limpar o prompt e remover as imagens de referência?
+	Describe what continues the scene…	Descreva como a cena continua…
+	Describe what to generate in the selection…	Descreva o que gerar na seleção…
+	Describe what you want in the image…	Descreva o que você quer na imagem…
+	File: {name}	Arquivo: {name}
+	File…	Arquivo…
+	Fill needs a selection	O preenchimento precisa de uma seleção
+	From Generations	De Gerações
+	Generation: {name}	Geração: {name}
+	Give the expand at least one side	Informe pelo menos um lado para expandir
+	Hide negative prompt	Ocultar prompt negativo
+	Layer: {name}	Camada: {name}
+	More than this model takes	Mais do que este modelo aceita
+	Move left	Mover para a esquerda
+	Move right	Mover para a direita
+	Negative prompt	Prompt negativo
+	Only files with a path can be references here	Aqui só arquivos com caminho podem ser referências
+	Open a document first	Abra um documento primeiro
+	Open the prompt in a larger editor	Abrir o prompt em um editor maior
+	Reference images (optional)	Imagens de referência (opcional)
+	This model takes at most {n} reference images	Este modelo aceita no máximo {n} imagens de referência
+	Type a prompt first	Digite um prompt primeiro
+	Type what to generate first	Digite primeiro o que gerar
+	What to avoid…	O que evitar…
+	a layer that is gone	uma camada que não existe mais
+	Enter to generate	Enter para gerar
+	research	pesquisa
+	The fastest permissive model the server has	O modelo de licença permissiva mais rápido do servidor
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Licença de pesquisa: ative Permitir modelos só para pesquisa em Preferências › Integrações de IA
+	Uses: {name}	Usa: {name}
+	Group models by family	Agrupar modelos por família
+	Variation {n} of {count}	Variação {n} de {count}
+	Delete this variation	Excluir esta variação
+	Keep this one	Manter esta
+	Keep this one and delete the other variations	Manter esta e excluir as outras variações
+	Click to retry	Clique para tentar de novo
+	Variations strip	Faixa de variações
+	{n} selected	{n} selecionados
+	Save selected	Salvar selecionados
+	Save results dir	Pasta dos resultados salvos
+	Save results naming	Nomes dos resultados salvos
+	Alerts	Alertas
+	Done and failed	Concluídos e com falha
+	Preview while generating	Visualizar durante a geração
+	Not in this build yet	Ainda não está nesta versão
+	Open a picture first	Abra uma imagem primeiro
+	Generative Features	Recursos generativos
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	EM BREVE
+	Split into Layers	Dividir em camadas
+	Angles	Ângulos
+	A new picture from a prompt, with up to three references	Uma imagem nova a partir de um prompt, com até três referências
+	Paint the selection from a prompt	Preenche a seleção a partir de um prompt
+	Change the picture by instruction	Muda a imagem por instrução
+	Grow the canvas and continue the scene	Aumenta a tela e continua a cena
+	Cut the subject out onto transparency	Recorta o assunto sobre transparência
+	Separate the picture into editable layers	Separa a imagem em camadas editáveis
+	Select what you name in a few words	Seleciona o que você nomear em poucas palavras
+	See the subject from another camera angle	Mostra o assunto de outro ângulo de câmera
+	Generative Features…	Recursos generativos…
+	Generative Angles…	Ângulos generativos…
+	front	frente
+	Camera	Câmera
+	Generative Angles	Ângulos generativos
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	vista frontal
+	front-right quarter view	vista três quartos frontal direita
+	right side view	vista lateral direita
+	back-right quarter view	vista três quartos traseira direita
+	back view	vista traseira
+	back-left quarter view	vista três quartos traseira esquerda
+	left side view	vista lateral esquerda
+	front-left quarter view	vista três quartos frontal esquerda
+	low-angle shot	contra-plongée
+	eye-level shot	na altura dos olhos
+	elevated shot	plano elevado
+	high-angle shot	plongée
+	wide shot	plano geral
+	medium shot	plano médio
+	close-up	close-up
+	CREATE	CRIAR
+	EDIT	EDITAR
+	Balanced	Equilibrada
+	Auto takes the full-step model and keeps the 4-bit weights off	Auto usa o modelo de passos completos e deixa os pesos de 4 bits desligados
+	Auto takes the 8-step Lightning tier when the server has it	Auto usa o nível Lightning de 8 passos quando o servidor o tem
+	Auto takes the 4-step tier where there is one	Auto usa o nível de 4 passos onde existe
+	Object finder	Localizador de objetos
+	Show what a click would select while the pointer rests	Mostrar o que um clique selecionaria enquanto o ponteiro descansa
+	Refine edge	Refinar borda
+	Soften the detector's hard edge from the pixels (hair, fur)	Suavizar a borda dura do detector a partir dos pixels (cabelo, pelo)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Clique ou arraste uma caixa ao redor de um objeto; Ctrl+clique em um ponto para excluí-lo
+	Select by Box	Selecionar por caixa
+	Click or drag a box around an object	Clique ou arraste uma caixa ao redor de um objeto
+	Click a spot the object must include; Alt-click one it must not	Clique em um ponto que o objeto deve incluir; Alt+clique em um que não
+	Click to include a spot, Alt-click to exclude one	Clique para incluir um ponto, Alt+clique para excluir um
+	Click an object, or drag a box around it	Clique em um objeto ou arraste uma caixa ao redor dele
+	Paint over an object to select it	Pinte sobre um objeto para selecioná-lo
+	Engine: not configured	Motor: não configurado
+	Engine: starting…	Motor: iniciando…
+	Engine: ready	Motor: pronto
+	Engine: running outside the app	Motor: em execução fora do app
+	Engine: failed	Motor: falhou
+	Engine: stopped	Motor: parado
+	Start engine	Iniciar motor
+	Stop engine	Parar motor
+	Restart engine	Reiniciar motor
+	Show log	Mostrar registro
+	Engine	Motor
+	Native	Nativo
+	Native runtime folders	Pastas do runtime nativo
+	Models folder	Pasta de modelos nativos
+	Instance	Instância
+	Intersect	Interseção
+	Prompt	Prompt
+	Template	Modelo
+	Widen	Alargar
+	Fill Holes	Preencher buracos
+	Widen the object's mask by this many pixels (negative shrinks it)	Alargar a máscara do objeto nesta quantidade de pixels (um valor negativo a reduz)
+	Fill the gaps the object's mask encloses	Preencher as lacunas que a máscara do objeto envolve
+	Feather the mask's edge by this many pixels	Suavizar a borda da máscara nesta quantidade de pixels
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Alargar a seleção nesta quantidade de pixels antes do preenchimento, para que uma substituição mais volumosa tenha espaço
+	Generative	Generativo
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	A pré-visualização mostra o preenchimento clássico; OK e Aplicar executam o modelo em uma nova camada.
+	Best of two	O melhor de dois
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Gera dois candidatos e mostra o que parece intocado; desativado: um candidato, cerca de metade do tempo
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Adaptadores na subpasta loras da pasta de modelos, aplicados pelo mecanismo nativo
+	Generative Upscale	Ampliação generativa
+	Denoise	Redução de ruído
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Quanto da seleção é redesenhado: 1 a substitui, cerca de 0,9 mantém a forma antiga
+	Native engine	Motor nativo
+	Native engine: not configured	Motor nativo: não configurado
+	Native engine: starting…	Motor nativo: iniciando…
+	Native engine: working	Motor nativo: trabalhando
+	Native engine: ready	Motor nativo: pronto
+	Native engine: failed	Motor nativo: falhou
+	Native engine: stopped	Motor nativo: parado
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Defina as pastas de runtime e de modelos em Preferências › Integrações de IA para usar o motor nativo
+	{free} of {total} free	{free} livres de {total}
+	Loaded: {models}	Carregados: {models}
+	Purge models	Descarregar modelos
+	Choose the folder that holds your model weights to use the generative tools	Escolha a pasta com os pesos dos seus modelos para usar as ferramentas generativas
+	Set Models Folder…	Definir pasta de modelos…
+	App Icon…	Ícone do aplicativo…
+	App Icon	Ícone do aplicativo
+	Built-in	Integrado
+	Choose Image…	Escolher imagem…
+	Paste Image	Colar imagem
+	Image address (https://…)	Endereço da imagem (https://…)
+	Download	Baixar
+	Downloading…	Baixando…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Qualquer imagem serve; ela é ajustada em um quadrado. Clique com o botão direito em um ícone para removê-lo.

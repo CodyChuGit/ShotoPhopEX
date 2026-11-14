@@ -7,6 +7,8 @@
 
 use candle_core::{DType, Device, Tensor, D};
 
+use anyhow::Context;
+
 use super::weights::{QLinear, Weights};
 use crate::comfy_int8::Prequantized;
 use crate::Result;
@@ -194,13 +196,37 @@ impl Qwen35Text {
     /// The last hidden state `(tokens, hidden)` in the run dtype.
     pub fn forward(&self, ids: &[u32]) -> Result<Tensor> {
         anyhow::ensure!(!ids.is_empty(), "no tokens to encode");
+        self.run(ids, 0, None)
+    }
+
+    /// The prompt `ids` through the layers with a fresh decoding state: the last row's hidden
+    /// state `(1, hidden)` (after the final norm) and the state for [`Self::step`].
+    pub fn prefill(&self, ids: &[u32]) -> Result<(Tensor, ChatState)> {
+        anyhow::ensure!(!ids.is_empty(), "no tokens to encode");
+        let mut st = ChatState { layers: (0..self.cfg.layers).map(|_| LayerState::default()).collect(), pos: 0 };
+        let h = self.run(ids, 0, Some(&mut st.layers))?;
+        st.pos = ids.len();
+        Ok((h.narrow(0, ids.len() - 1, 1)?, st))
+    }
+
+    /// One more token after [`Self::prefill`]: its hidden state `(1, hidden)`.
+    pub fn step(&self, id: u32, st: &mut ChatState) -> Result<Tensor> {
+        let h = self.run(&[id], st.pos, Some(&mut st.layers))?;
+        st.pos += 1;
+        Ok(h)
+    }
+
+    /// The layers over `ids` at positions `pos0..`, each layer's state carried in `states` when
+    /// given (decoding), the final norm applied.
+    fn run(&self, ids: &[u32], pos0: usize, mut states: Option<&mut [LayerState]>) -> Result<Tensor> {
         let mut x = self.embed.gather_cpu(ids)?.to_dtype(self.dtype)?.to_device(&self.dev)?;
-        let (cos, sin) = self.rope(ids.len())?;
-        for layer in &self.layers {
+        let (cos, sin) = self.rope(pos0, ids.len())?;
+        for (i, layer) in self.layers.iter().enumerate() {
+            let state = states.as_deref_mut().and_then(|s| s.get_mut(i));
             let h = layer.input_norm.forward(&x)?;
             let h = match &layer.mixer {
-                Mixer::Full(a) => self.full_attention(a, &h, &cos, &sin)?,
-                Mixer::Linear(d) => self.delta_net(d, &h)?,
+                Mixer::Full(a) => self.full_attention(a, &h, &cos, &sin, pos0, state)?,
+                Mixer::Linear(d) => self.delta_net(d, &h, state)?,
             };
             x = (x + h)?;
             let h = layer.mlp.forward(&layer.post_norm.forward(&x)?)?;
@@ -209,13 +235,13 @@ impl Qwen35Text {
         self.norm.forward(&x)
     }
 
-    /// cos/sin `(tokens, rotary_dim)` f32 for positions `0..n` (text-only: Qwen3.5's three
+    /// cos/sin `(tokens, rotary_dim)` f32 for positions `pos0..pos0 + n` (text-only: Qwen3.5's three
     /// interleaved M-RoPE sections see one position, the plain rotation).
-    fn rope(&self, n: usize) -> Result<(Tensor, Tensor)> {
+    fn rope(&self, pos0: usize, n: usize) -> Result<(Tensor, Tensor)> {
         let half = self.cfg.rotary_dim / 2;
         let inv: Vec<f32> = (0..half).map(|j| (1.0 / self.cfg.rope_theta.powf((2 * j) as f64 / self.cfg.rotary_dim as f64)) as f32).collect();
         let mut angles = Vec::with_capacity(n * self.cfg.rotary_dim);
-        for p in 0..n {
+        for p in pos0..pos0 + n {
             for _ in 0..2 {
                 angles.extend(inv.iter().map(|f| p as f32 * f));
             }
@@ -224,7 +250,7 @@ impl Qwen35Text {
         Ok((a.cos()?, a.sin()?))
     }
 
-    fn full_attention(&self, a: &GatedAttention, x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
+    fn full_attention(&self, a: &GatedAttention, x: &Tensor, cos: &Tensor, sin: &Tensor, pos0: usize, state: Option<&mut LayerState>) -> Result<Tensor> {
         let c = &self.cfg;
         let s = x.dim(0)?;
         let qg = a.q.forward(x)?.reshape((s, c.heads, 2 * c.head_dim))?;
@@ -234,31 +260,58 @@ impl Qwen35Text {
         let v = a.v.forward(x)?.reshape((s, c.kv_heads, c.head_dim))?;
         let q = partial_rope(&q, cos, sin, c.rotary_dim)?;
         let k = partial_rope(&k, cos, sin, c.rotary_dim)?;
-        // (H, S, D) in f32, the KV heads repeated for their query groups; causal.
+        // Decoding: the keys and values so far, then these.
+        let (k, v) = match state {
+            Some(st) => {
+                let (k, v) = match (st.k.take(), st.v.take()) {
+                    (Some(pk), Some(pv)) => (Tensor::cat(&[pk, k], 0)?, Tensor::cat(&[pv, v], 0)?),
+                    _ => (k, v),
+                };
+                st.k = Some(k.clone());
+                st.v = Some(v.clone());
+                (k, v)
+            }
+            None => (k, v),
+        };
+        let t = k.dim(0)?;
+        // (H, ·, D) in f32, the KV heads repeated for their query groups; causal.
         let rep = c.heads / c.kv_heads;
         let q = q.transpose(0, 1)?.to_dtype(DType::F32)?.contiguous()?;
-        let expand = |t: Tensor| -> Result<Tensor> {
-            let t = t.transpose(0, 1)?.to_dtype(DType::F32)?; // (KVH, S, D)
-            Ok(t.unsqueeze(1)?.expand((c.kv_heads, rep, s, c.head_dim))?.reshape((c.heads, s, c.head_dim))?.contiguous()?)
+        let expand = |x: Tensor| -> Result<Tensor> {
+            let x = x.transpose(0, 1)?.to_dtype(DType::F32)?; // (KVH, T, D)
+            Ok(x.unsqueeze(1)?.expand((c.kv_heads, rep, t, c.head_dim))?.reshape((c.heads, t, c.head_dim))?.contiguous()?)
         };
         let (k, v) = (expand(k)?, expand(v)?);
         let scores = (q.matmul(&k.transpose(1, 2)?.contiguous()?)? * (1.0 / (c.head_dim as f64).sqrt()))?;
-        let mask: Vec<f32> = (0..s).flat_map(|i| (0..s).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 })).collect();
-        let scores = scores.broadcast_add(&Tensor::from_vec(mask, (1, s, s), &self.dev)?)?;
+        // Query `i` sits at position `pos0 + i` and sees keys up to it.
+        let scores = if s > 1 {
+            let mask: Vec<f32> = (0..s).flat_map(|i| (0..t).map(move |j| if j > pos0 + i { f32::NEG_INFINITY } else { 0.0 })).collect();
+            scores.broadcast_add(&Tensor::from_vec(mask, (1, s, t), &self.dev)?)?
+        } else {
+            scores
+        };
         let out = candle_nn::ops::softmax_last_dim(&scores)?.matmul(&v)?; // (H, S, D)
         let out = out.transpose(0, 1)?.reshape((s, c.heads * c.head_dim))?.to_dtype(self.dtype)?;
         let out = (out * candle_nn::ops::sigmoid(&gate)?)?;
         a.o.forward(&out)
     }
 
-    fn delta_net(&self, d: &DeltaNet, x: &Tensor) -> Result<Tensor> {
+    fn delta_net(&self, d: &DeltaNet, x: &Tensor, mut state: Option<&mut LayerState>) -> Result<Tensor> {
         let c = &self.cfg;
         let s = x.dim(0)?;
         let (kd, vd) = (c.linear_key_heads * c.linear_key_dim, c.linear_value_heads * c.linear_value_dim);
-        // The causal depthwise conv (kernel `K`, left zero padding), then SiLU.
+        // The causal depthwise conv (kernel `K`, left zero padding or, decoding, the last
+        // `K − 1` rows so far), then SiLU.
         let proj = d.qkv.forward(x)?.to_dtype(DType::F32)?; // (S, conv_dim)
         let k_len = c.conv_kernel;
-        let padded = Tensor::cat(&[Tensor::zeros((k_len - 1, proj.dim(1)?), DType::F32, &self.dev)?, proj], 0)?;
+        let head = match state.as_deref_mut().and_then(|st| st.conv.take()) {
+            Some(tail) => tail,
+            None => Tensor::zeros((k_len - 1, proj.dim(1)?), DType::F32, &self.dev)?,
+        };
+        let padded = Tensor::cat(&[head, proj], 0)?;
+        if let Some(st) = state.as_deref_mut() {
+            st.conv = Some(padded.narrow(0, s, k_len - 1)?);
+        }
         let mut conv = padded.narrow(0, 0, s)?.broadcast_mul(&d.conv.narrow(1, 0, 1)?.t()?)?;
         for j in 1..k_len {
             conv = (conv + padded.narrow(0, j, s)?.broadcast_mul(&d.conv.narrow(1, j, 1)?.t()?)?)?;
@@ -276,8 +329,22 @@ impl Qwen35Text {
             Ok(t.unsqueeze(2)?.expand((s, c.linear_key_heads, rep, c.linear_key_dim))?.reshape((s, c.linear_value_heads, c.linear_key_dim))?)
         };
         let (q, k) = (widen(l2norm(&q)?)?, widen(l2norm(&k)?)?);
-        let out = chunk_gated_delta_rule(&q, &k, &v, &g, &beta)?; // (S, VH, VD) f32
-                                                                  // The gated RMSNorm per head: plain weight, times SiLU of `z`.
+        let out = match state {
+            // Decoding one token from the state so far: the recurrence itself.
+            Some(st) if st.m.is_some() => {
+                let m = st.m.take().context("no delta state")?;
+                let (o, m) = gated_delta_step(&q, &k, &v, &g, &beta, m)?;
+                st.m = Some(m);
+                o
+            }
+            Some(st) => {
+                let (o, m) = chunk_gated_delta_rule_state(&q, &k, &v, &g, &beta)?;
+                st.m = Some(m);
+                o
+            }
+            None => chunk_gated_delta_rule(&q, &k, &v, &g, &beta)?,
+        }; // (S, VH, VD) f32
+           // The gated RMSNorm per head: plain weight, times SiLU of `z`.
         let out = out.to_dtype(self.dtype)?.to_dtype(DType::F32)?;
         let rms = (out.sqr()?.mean_keepdim(D::Minus1)? + c.eps)?.sqrt()?;
         let normed = out.broadcast_div(&rms)?.to_dtype(self.dtype)?.to_dtype(DType::F32)?.broadcast_mul(&d.norm)?;
@@ -320,6 +387,12 @@ const CHUNK: usize = 64;
 /// f32. Per head the state `M (Dk, Dv)` follows `M ← e^g·M + k (β(v − kᵀ e^g M))ᵀ` and each output
 /// is `qᵀ M / √Dk`. Returns `(S, H, Dv)`.
 pub fn chunk_gated_delta_rule(q: &Tensor, k: &Tensor, v: &Tensor, g: &Tensor, beta: &Tensor) -> Result<Tensor> {
+    Ok(chunk_gated_delta_rule_state(q, k, v, g, beta)?.0)
+}
+
+/// [`chunk_gated_delta_rule`] and the state `M (H, Dk, Dv)` after the last token (the zero
+/// padding of the last chunk has `β = 0` and no decay, so it leaves the state as it was).
+pub fn chunk_gated_delta_rule_state(q: &Tensor, k: &Tensor, v: &Tensor, g: &Tensor, beta: &Tensor) -> Result<(Tensor, Tensor)> {
     let (s, h, dk) = q.dims3()?;
     let dv = v.dim(2)?;
     let dev = q.device();
@@ -369,7 +442,39 @@ pub fn chunk_gated_delta_rule(q: &Tensor, k: &Tensor, v: &Tensor, g: &Tensor, be
         state = (state.broadcast_mul(&g_last.exp()?.unsqueeze(2)?)? + k_w.transpose(1, 2)?.contiguous()?.matmul(&v_new)?)?;
     }
     let out = Tensor::cat(&outs, 1)?.narrow(1, 0, s)?; // (H, S, Dv)
-    Ok(out.transpose(0, 1)?.contiguous()?)
+    Ok((out.transpose(0, 1)?.contiguous()?, state))
+}
+
+/// One token of the gated delta rule from the state `m (H, Dk, Dv)`: `q`, `k` `(1, H, Dk)`
+/// (l2-normalised), `v (1, H, Dv)`, `g`, `beta` `(1, H)`, f32. Returns the output `(1, H, Dv)`
+/// and the next state.
+pub fn gated_delta_step(q: &Tensor, k: &Tensor, v: &Tensor, g: &Tensor, beta: &Tensor, m: Tensor) -> Result<(Tensor, Tensor)> {
+    let dk = q.dim(2)?;
+    let (q, k, v) = (q.transpose(0, 1)?.contiguous()?, k.transpose(0, 1)?.contiguous()?, v.transpose(0, 1)?.contiguous()?); // (H, 1, ·)
+    let decay = g.transpose(0, 1)?.exp()?.unsqueeze(2)?; // (H, 1, 1)
+    let beta = beta.transpose(0, 1)?.unsqueeze(2)?; // (H, 1, 1)
+    let m = m.broadcast_mul(&decay)?;
+    let kv_mem = k.matmul(&m)?; // (H, 1, Dv)
+    let delta = (v - kv_mem)?.broadcast_mul(&beta)?;
+    let m = (m + k.transpose(1, 2)?.contiguous()?.matmul(&delta)?)?;
+    let o = (q * (1.0 / (dk as f64).sqrt()))?.matmul(&m)?; // (H, 1, Dv)
+    Ok((o.transpose(0, 1)?.contiguous()?, m))
+}
+
+/// A chat's decoding state ([`Qwen35Text::prefill`], [`Qwen35Text::step`]).
+pub struct ChatState {
+    layers: Vec<LayerState>,
+    pos: usize,
+}
+
+/// One layer's decoding state: an attention layer's keys and values `(T, KVH, D)` so far
+/// (after RoPE), or a DeltaNet's last `K − 1` projected rows and its recurrent state.
+#[derive(Default)]
+pub struct LayerState {
+    k: Option<Tensor>,
+    v: Option<Tensor>,
+    conv: Option<Tensor>,
+    m: Option<Tensor>,
 }
 
 /// `(I − A)⁻¹` for each strictly lower triangular `A (…, C, C)`: the unit lower triangular `T`
@@ -436,6 +541,30 @@ mod tests {
             }
         }
         assert!(worst < 1e-4, "chunked vs recurrent: max abs {worst}");
+        Ok(())
+    }
+
+    /// Decoding carries the state: the chunked rule over a prefix, then one-token steps from
+    /// its state, equals the chunked rule over the whole sequence.
+    #[test]
+    fn delta_rule_state_carries_into_steps() -> Result<()> {
+        let dev = Device::Cpu;
+        let (s, cut, h, dk, dv) = (70, 66, 2, 8, 4);
+        let wave = |n: usize, f: f32| -> Vec<f32> { (0..n).map(|i| (i as f32 * f).sin() * 0.7 + (i as f32 * 0.013).cos() * 0.3).collect() };
+        let q = l2norm(&Tensor::from_vec(wave(s * h * dk, 0.37), (s, h, dk), &dev)?)?;
+        let k = l2norm(&Tensor::from_vec(wave(s * h * dk, 0.91), (s, h, dk), &dev)?)?;
+        let v = Tensor::from_vec(wave(s * h * dv, 0.53), (s, h, dv), &dev)?;
+        let g = (Tensor::from_vec(wave(s * h, 1.7), (s, h), &dev)?.abs()? * -0.2)?;
+        let beta = candle_nn::ops::sigmoid(&Tensor::from_vec(wave(s * h, 2.3), (s, h), &dev)?)?;
+        let whole = chunk_gated_delta_rule(&q, &k, &v, &g, &beta)?;
+        let n = |t: &Tensor, a: usize, l: usize| t.narrow(0, a, l);
+        let (_, mut m) = chunk_gated_delta_rule_state(&n(&q, 0, cut)?, &n(&k, 0, cut)?, &n(&v, 0, cut)?, &n(&g, 0, cut)?, &n(&beta, 0, cut)?)?;
+        for t in cut..s {
+            let (o, next) = gated_delta_step(&n(&q, t, 1)?, &n(&k, t, 1)?, &n(&v, t, 1)?, &n(&g, t, 1)?, &n(&beta, t, 1)?, m)?;
+            m = next;
+            let worst = (o - whole.narrow(0, t, 1)?)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+            assert!(worst < 1e-4, "step {t}: max abs {worst}");
+        }
         Ok(())
     }
 }

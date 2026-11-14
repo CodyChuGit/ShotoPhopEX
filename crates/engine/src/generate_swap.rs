@@ -27,11 +27,12 @@ pub struct Swap {
 }
 
 /// Head swap v1.1 (Civitai 2027766 version 3356102): the face, hair and head shape from image 2,
-/// the gaze, head turn and expression from image 1.
+/// the gaze, head turn and expression from image 1, the author's prompt with
+/// [`HEAD_FACIAL_HAIR`] after it.
 pub const HEAD: Swap = Swap {
     kind: "head",
     lora: "bfs_head_v1.1_qwen_2.1.safetensors",
-    prompt: "head_swap: start with <image1> as the base image, keeping its lighting, environment, and background. remove the head from <image1> completely and replace it with the head from <image2>, strictly preserving the hair, eye color, nose structure from <image2>. copy the direction of the eye, head rotation, micro expressions from <image1>, high quality, sharp details, 4k",
+    prompt: "head_swap: start with <image1> as the base image, keeping its lighting, environment, and background. remove the head from <image1> completely and replace it with the head from <image2>, strictly preserving the hair, eye color, nose structure from <image2>. copy the direction of the eye, head rotation, micro expressions from <image1>, high quality, sharp details, 4k with the facial hair, or the clean-shaven chin, of <image2>",
 };
 
 /// Body swap v1.0 (version 3363725): the clothes, body shape and face from image 2 in image 1's
@@ -41,6 +42,11 @@ pub const BODY: Swap = Swap {
     lora: "bfs_body_swap_v1.0_qwen_2.1.safetensors",
     prompt: "body_swap: start with <image1> as the base image, keeping its lighting, environment, and background. replace the body from <image1> with the body from <image2>, strictly preserving the clothing, body shape and proportions from <image2>. strictly replicate the exact pose, arm positions, leg positions, hand gestures, head rotation, eye direction and micro expressions from <image1>",
 };
+
+/// What [`HEAD`] adds to the author's prompt: image 1's beard stayed on 2 of 5 seeds and partly
+/// on a third without it, on none with it (2 partly), in the app 2026-11-13. The same words
+/// placed among what the prompt preserves ("hair, facial hair, …") drew a beard on 4 of 5.
+pub const HEAD_FACIAL_HAIR: &str = "with the facial hair, or the clean-shaven chin, of <image2>";
 
 pub const SWAPS: [Swap; 2] = [HEAD, BODY];
 

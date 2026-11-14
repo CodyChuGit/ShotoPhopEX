@@ -83,17 +83,18 @@ impl Mt19937 {
 /// redrawn when `n % 16 != 0`). Smaller tensors take torch's scalar path, not reproduced here.
 pub fn torch_randn(seed: u64, n: usize) -> Result<Vec<f32>, String> {
     let mut g = Mt19937::new(seed);
-    randn_from(&mut g, n)
+    randn_with(&mut g, n)
 }
 
 /// Several `torch.randn` calls in a row on one generator seeded with `seed` (ComfyUI's
 /// `prepare_noise` for a packed latent: one tensor after the other), each of 16+ elements.
 pub fn torch_randn_seq(seed: u64, sizes: &[usize]) -> Result<Vec<Vec<f32>>, String> {
     let mut g = Mt19937::new(seed);
-    sizes.iter().map(|&n| randn_from(&mut g, n)).collect()
+    sizes.iter().map(|&n| randn_with(&mut g, n)).collect()
 }
 
-fn randn_from(g: &mut Mt19937, n: usize) -> Result<Vec<f32>, String> {
+/// [`torch_randn`] continuing on `g`.
+pub fn randn_with(g: &mut Mt19937, n: usize) -> Result<Vec<f32>, String> {
     if n < 16 {
         return Err(format!("torch_randn reproduces tensors of 16+ elements, {n} asked"));
     }
@@ -154,6 +155,14 @@ fn time_snr_shift(alpha: f32, t: f32) -> f32 {
 fn flux_time_shift(mu: f32, t: f32) -> f32 {
     let e = (mu as f64).exp() as f32;
     e / (e + (1.0 / t - 1.0))
+}
+
+/// The sigma a model's table gives at time `t` in (0, 1] (`percent_to_sigma(1 − t)`).
+pub fn shifted_sigma(shift: Shift, t: f32) -> f32 {
+    match shift {
+        Shift::Flux { shift, .. } => flux_time_shift(shift, t),
+        Shift::Snr { shift, .. } => time_snr_shift(shift, t),
+    }
 }
 
 /// How a ComfyUI model type builds its sigma table.

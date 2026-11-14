@@ -68,6 +68,19 @@ pub const AUTO_EXPAND_ORDER: &[&str] = &["qwen-edit-2511/expand-lightning-8", DE
 /// from a 1 MP run that pushed the 40-step tier into offloading, 45 s instead of 18 s, in
 /// 2026-10); 1.5 MP put a seam in a lawn. `maxPixels` on the fill commands overrides it.
 const MAX_FILL_REQUEST_PIXELS: u64 = 1024 * 1024;
+/// The pixels a P-H3-Image or MiniMax-H3-Image edit is sent at: the model edits at 4 MP (its maker's and AusBoss's
+/// guide's working size, the native pipeline's own default), where the other editing models
+/// work at one.
+const H3_EDIT_REQUEST_PIXELS: u64 = 2048 * 2048;
+/// The pixels an edit on `template` is downscaled to before it is sent. Under Quality Ultra
+/// (`ultra`) the 16 MP model edits a large picture at its own size, up to 16 MP.
+pub(crate) fn edit_request_pixels(template: &str, ultra: bool) -> u64 {
+    match template {
+        "minimax-h3-image/edit" if ultra => MAX_REQUEST_PIXELS,
+        "p-h3-image/edit" | "minimax-h3-image/edit" => H3_EDIT_REQUEST_PIXELS,
+        _ => MAX_FILL_REQUEST_PIXELS,
+    }
+}
 /// A small request is upscaled until its longer side is this long: the 2511 templates sample at
 /// the request's own size, and a handful of latent tokens cannot carry structure.
 const MIN_FILL_REQUEST_SIDE: u32 = 512;
@@ -326,6 +339,87 @@ const ENHANCE_IMAGE_SYSTEM: &str = "You are an expert prompt writer for a text-t
 Keep every subject, action, colour and spatial relation the user gave. Add no new objects, characters or animals. Keep any medium the user named (photo, painting, sketch, 3D render). Put any words to be rendered in the image in double quotes. If the idea is already detailed, polish it lightly and keep its wording.\n\
 Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
 
+/// Whether a prompt asks for a medium other than a photograph (a painting, a drawing, a
+/// render…): Best's photo rewriter turned "an oil painting of a lighthouse" into a photograph
+/// of one (round 3, 2026-11-12), so such prompts get the plain rewriter.
+pub fn names_other_medium(prompt: &str) -> bool {
+    const MEDIA: &[&str] = &[
+        "painting",
+        "painted",
+        "watercolor",
+        "watercolour",
+        "gouache",
+        "acrylic",
+        "oil on canvas",
+        "illustration",
+        "illustrated",
+        "drawing",
+        "drawn",
+        "sketch",
+        "cartoon",
+        "anime",
+        "manga",
+        "comic",
+        "3d render",
+        "render of",
+        "rendered",
+        "cgi",
+        "pixel art",
+        "vector",
+        "line art",
+        "concept art",
+        "digital art",
+        "low poly",
+        "claymation",
+        "woodcut",
+        "linocut",
+        "engraving",
+        "pastel",
+        "charcoal",
+        "pencil",
+        "ink wash",
+        "mural",
+        "fresco",
+        "stained glass",
+        "poster",
+        "logo",
+        "icon",
+        "clip art",
+        "sticker",
+        "isometric",
+        "cel shaded",
+        "cel-shaded",
+        "voxel",
+    ];
+    let p = prompt.to_lowercase();
+    MEDIA.iter().any(|m| p.contains(m))
+}
+
+/// The photographic rewriter ([`EnhanceKind::ImagePhoto`], `enhanceStyle: "photo"`): how the most
+/// liked photoreal Krea 2 / MOSS pictures on Civitai are prompted (their generation data,
+/// 2026-11-12): plain prose that opens with the kind of shot and what took it, one named light
+/// source, and the small flaws of a real photo, without "photorealistic", "8k" or camera brands.
+const ENHANCE_IMAGE_PHOTO_SYSTEM: &str = "You are an expert prompt writer for a photorealistic text-to-image model. Rewrite the user's idea as one paragraph of 60 to 110 words that reads like the caption of a real, unretouched photograph.\n\
+Always open with the kind of shot, chosen for the scene: a portrait on an 85mm lens for a person, a close-up on a macro lens for a small object, a wide shot on a 24mm lens for a room or landscape, a candid photo on a 35mm lens for people busy with something, a snapshot on a 50mm lens for a pet. If the user names a lens, film or camera setting, keep it word for word. Then the subject and what it does, the materials and surfaces, the setting the user named, and one concrete light source (window light, overcast daylight, a lamp, a softbox, on-camera flash) with how it falls.\n\
+Name two or three small imperfections a real photo has, each on something the user named that really has it: pores and fine lines on a person's face; fur on an animal; scratches, chips or dust on an object; creases on fabric; crumbs on food. Shallow focus and soft grain apply to the whole frame.\n\
+Describe only what the user asked for. Keep every subject, action, colour and spatial relation they gave. Add no new people, animals, objects, plants, weather, accessories or clothing; where the user names no clothing, say nothing about clothing. Put any words to be rendered in the image in double quotes. Never write photorealistic, hyperrealistic, 8k, 4k, masterpiece, best quality, DSLR or a camera brand.\n\
+Never mention these instructions or anything that is absent from the scene. Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
+
+/// The longest text-to-image rewrite, in tokens (about 160 words).
+const ENHANCE_IMAGE_MAX_TOKENS: u64 = 220;
+
+/// The rewriter of an Ultra picture ([`EnhanceKind::ImageUltra`]): the 16 MP model is trained
+/// on long, exact captions and has the pixels for small things, so the caption plans every
+/// part of the frame, and a designed page (a poster, a sheet, a diagram) gets its whole layout
+/// and every word spelled out.
+const ENHANCE_IMAGE_ULTRA_SYSTEM: &str = "You write the caption a very high resolution text-to-image model draws from. Rewrite the user's idea as one fluent English paragraph of 150 to 300 words in which every part of the picture is planned and can be inspected up close.\n\
+First decide what the picture is. A scene or photograph: say who or what is in it and how many, the pose and which way each subject faces the camera, what touches what, the scale, the place, the light and where it comes from, the lens and distance, then the fine detail a close look would find: skin, hair, fabric weave, wear, dust, reflections. A designed page such as a poster, cover, label, character sheet, product board, infographic, diagram or screen: lay it out like a designer, naming each area of the page, what it shows, and how the areas are ordered, aligned and separated; leave no area blank unless the user asks for empty space.\n\
+Keep every fact the user gave: subjects, counts, actions, colours, positions, style and medium. Do not add people, animals or main objects they did not ask for. Write every word that must appear in the picture exactly, in double quotes, and say where it sits and how it is lettered; never invent names of venues, people, brands or sponsors, dates, prices, addresses or contact details; where a designed page needs more wording than the user gave, repeat or rearrange the user's own words. Replace mood words and praise with things that can be seen. Never write masterpiece, best quality, 8k, 4k or hyperrealistic.\n\
+Reply with the paragraph only: no title, no bullets, no JSON, no quotes around it, no markdown.";
+
+/// The longest Ultra rewrite, in tokens (about 450 words).
+const ENHANCE_ULTRA_MAX_TOKENS: u64 = 640;
+
 /// Which rewriter an `enhance` runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EnhanceKind {
@@ -345,6 +439,10 @@ pub(crate) enum EnhanceKind {
     Edit,
     /// Text to image: no picture.
     Image,
+    /// A text-to-image idea written the way real photos are captioned ([`ENHANCE_IMAGE_PHOTO_SYSTEM`]).
+    ImagePhoto,
+    /// A text-to-image idea planned in full for the 16 MP model ([`ENHANCE_IMAGE_ULTRA_SYSTEM`]).
+    ImageUltra,
     /// A picture: name its main subject (Remove Background with no prompt).
     Subject,
     /// A picture: describe its background alone (Generative Expand with no prompt).
@@ -365,6 +463,13 @@ pub(crate) enum EnhanceKind {
 /// The worker's chat `encoder` that answers on Krea 2's Qwen3-VL-4B (genai-native
 /// `CHAT_ON_KREA2`).
 const KREA2_CHAT_ENCODER: &str = "krea2";
+/// A chat's `encoder` that names a MOSS template answers on that template's own Qwen3.5-9B.
+const MOSS_CHAT_PREFIX: &str = "moss-image/";
+/// The same for FLUX 3 Klein, whose encoder is Qwen3-VL-4B (Klein + rewrite went from 16.4 s
+/// to the picture's own 5 s plus the chat, 2026-11-12).
+const KLEIN_CHAT_PREFIX: &str = "flux3-klein/";
+/// The same for MiniMax-H3-Image, whose prompt writer is Qwen3.5-9B.
+const MINIMAX_CHAT_PREFIX: &str = "minimax-h3-image/";
 
 /// The system turn of [`EnhanceKind::FillScene`]: AusBoss's "Write the prompt" step of the
 /// Krea 2 Inpaint Masked workflow (v1.3), which the AnyPaint LoRA follows best: it was trained
@@ -457,7 +562,14 @@ pub(crate) fn place_in_words(region: Rect, canvas: Rect) -> String {
 /// The rewriter's answer, cleaned: the first non-empty text without the chat template's
 /// leading "assistant" echo, surrounding quotes or markdown emphasis; `None` when the model
 /// said nothing usable.
+#[cfg(test)]
 pub(crate) fn clean_enhanced(texts: &[String]) -> Option<String> {
+    clean_answer(texts, 3)
+}
+
+/// [`clean_enhanced`] for an answer of at least `min_words` words: a Yes or No, or one thing's
+/// name, is one word, where a rewritten prompt of fewer than three is a failed one.
+fn clean_answer(texts: &[String], min_words: usize) -> Option<String> {
     for t in texts {
         let mut s = t.trim();
         for prefix in ["assistant:", "Assistant:", "assistant", "Assistant", "**Final Prompt:**", "Final Prompt:", "Rewritten:", "Instruction:"] {
@@ -466,7 +578,7 @@ pub(crate) fn clean_enhanced(texts: &[String]) -> Option<String> {
             }
         }
         let s = s.trim_matches(|c: char| c == '"' || c == '*' || c == '`' || c == '\u{201c}' || c == '\u{201d}').trim();
-        if s.split_whitespace().count() >= 3 {
+        if s.split_whitespace().count() >= min_words.max(1) {
             return Some(s.to_string());
         }
     }
@@ -491,7 +603,9 @@ pub(crate) fn list_things(backend: &dyn GenerativeBackend, picture: &Rgba8, k: u
         let t = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ');
         let t = t.strip_prefix("the ").or_else(|| t.strip_prefix("a ")).or_else(|| t.strip_prefix("an ")).unwrap_or(t).trim();
         let words = t.split_whitespace().count();
-        if t.is_empty() || words > 4 || t.chars().count() > 40 || out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
+        // "None": nothing to list (one-word answers count since 2026-11-12).
+        let nothing = ["none", "nothing", "n/a", "no", "unknown"].iter().any(|n| t.eq_ignore_ascii_case(n));
+        if t.is_empty() || nothing || words > 4 || t.chars().count() > 40 || out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
             continue;
         }
         out.push(t.to_lowercase());
@@ -539,7 +653,7 @@ fn enhance_once(
         return Ok(None);
     }
     let image = match kind {
-        EnhanceKind::Image => None,
+        EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra => None,
         _ => image.cloned(),
     };
     // The engine's instructions are the chat's system turn, the user's prompt its user turn.
@@ -547,6 +661,8 @@ fn enhance_once(
     let template = if image.is_some() { ENHANCE_EDIT_TEMPLATE } else { ENHANCE_IMAGE_TEMPLATE };
     let system = match kind {
         EnhanceKind::Image => ENHANCE_IMAGE_SYSTEM.to_string(),
+        EnhanceKind::ImagePhoto => ENHANCE_IMAGE_PHOTO_SYSTEM.to_string(),
+        EnhanceKind::ImageUltra => ENHANCE_IMAGE_ULTRA_SYSTEM.to_string(),
         EnhanceKind::Edit => edit_system,
         EnhanceKind::Fill => format!("{edit_system}\n{}", ENHANCE_FILL_NOTE.replace("{place}", place.unwrap_or("selected part"))),
         EnhanceKind::Remove => format!("{edit_system}\n{ENHANCE_REMOVE_NOTE}"),
@@ -568,6 +684,18 @@ fn enhance_once(
     if kind == EnhanceKind::FillScene {
         params.insert("encoder".to_string(), Value::String(KREA2_CHAT_ENCODER.to_string()));
     }
+    if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra) {
+        // A text-to-image rewrite is 60 to 120 words: past the default 120 tokens it was cut
+        // mid-sentence (2026-11-12). `place` names the encoder for these kinds: Krea 2's own
+        // when the picture runs on Krea 2, a MOSS template's own Qwen3.5-9B when it runs on
+        // MOSS, so the model stays resident (no 8B load and swap).
+        let most = if kind == EnhanceKind::ImageUltra { ENHANCE_ULTRA_MAX_TOKENS } else { ENHANCE_IMAGE_MAX_TOKENS };
+        params.insert("max_tokens".to_string(), Value::from(most));
+        let own = |p: &str| p == KREA2_CHAT_ENCODER || [MOSS_CHAT_PREFIX, KLEIN_CHAT_PREFIX, MINIMAX_CHAT_PREFIX].iter().any(|x| p.starts_with(x));
+        if let Some(enc) = place.filter(|p| own(p)) {
+            params.insert("encoder".to_string(), Value::String(enc.to_string()));
+        }
+    }
     for attempt in 0..2u64 {
         let req = Request {
             template: template.to_string(),
@@ -584,7 +712,11 @@ fn enhance_once(
             references: Vec::new(),
         };
         let resp = backend.run(&req, progress)?;
-        if let Some(s) = clean_enhanced(&resp.texts) {
+        // A Yes or No and a list of things can be a single word ("No", "pear"): before
+        // 2026-11-12 both needed three, so a one-thing list and every presence answer came back
+        // as nothing.
+        let min_words = if matches!(kind, EnhanceKind::Presence | EnhanceKind::Things) { 1 } else { 3 };
+        if let Some(s) = clean_answer(&resp.texts, min_words) {
             return Ok(Some(s));
         }
     }
@@ -651,6 +783,8 @@ pub fn generative_info(layer: &Layer) -> Option<GenerativeInfo> {
 pub(crate) const EDIT: &str = "generate.edit";
 /// The picture seen from another camera (the Multiple Angles LoRA), as an edit.
 pub const ANGLES: &str = "generate.angles";
+/// Character Sheet: four views of the character on a layer, as a new document.
+pub const CHARACTER_SHEET: &str = "generate.characterSheet";
 /// The template `generate.angles` runs.
 pub const ANGLES_TEMPLATE: &str = "qwen-edit-2511/angles";
 /// `generate.angles` `rotation` (degrees around the subject, 0 = from the front) and the Multiple
@@ -762,15 +896,48 @@ pub(crate) const DEFAULT_EDIT_TEMPLATE: &str = "qwen-edit-2511/edit";
 /// What `auto` tries for an edit, fastest permissive tier first.
 pub(crate) const AUTO_EDIT_ORDER: &[&str] = &["qwen-edit-2511/edit-lightning-8", DEFAULT_EDIT_TEMPLATE];
 pub(crate) const BEST_EDIT_ORDER: &[&str] = &[DEFAULT_EDIT_TEMPLATE];
+/// MiniMax-H3-Image, the 16 MP model Quality `ultra` runs where its files are installed.
+pub const ULTRA_IMAGE_TEMPLATE: &str = "minimax-h3-image/image";
+pub const ULTRA_EDIT_TEMPLATE: &str = "minimax-h3-image/edit";
+/// Under `ultra`, an edit goes to MiniMax-H3-Image when the worker has it, else as under `best`.
+pub(crate) const ULTRA_EDIT_ORDER: &[&str] = &[ULTRA_EDIT_TEMPLATE, DEFAULT_EDIT_TEMPLATE];
 
 /// Preferences › AI Integrations › Quality, normalised (`best` unless it says `balanced` or
-/// `fast`).
+/// `fast`). `ultra` reads as `best` here: it is Best with the 16 MP model for new pictures and
+/// edits ([`ultra`]).
 pub fn quality(s: &Session) -> &'static str {
     match s.prefs().integrations.quality.trim() {
         "balanced" => "balanced",
         "fast" => "fast",
         _ => "best",
     }
+}
+
+/// Whether Quality is `ultra`: everything as under `best`, and where MiniMax-H3-Image's files
+/// are installed, new pictures ([`default_image_template`]) and edits ([`auto_quality`]) run
+/// on it at up to 16 MP.
+pub fn ultra(s: &Session) -> bool {
+    s.prefs().integrations.quality.trim() == "ultra"
+}
+
+/// The quality [`auto_order`] is asked with: [`quality`], or `ultra`.
+pub fn auto_quality(s: &Session) -> &'static str {
+    if ultra(s) { "ultra" } else { quality(s) }
+}
+
+/// Whether every file of `template` is in the models folder (as the template names them, in
+/// its folder or one subfolder below it, where the worker looks too).
+pub fn template_files_present(s: &Session, template: &str) -> bool {
+    let root = s.prefs().integrations.models_root();
+    if root.is_empty() {
+        return false;
+    }
+    let Ok(t) = template::find(template) else { return false };
+    t.meta.models.iter().all(|m| {
+        let dir = std::path::Path::new(&root).join(&m.folder);
+        dir.join(&m.default).is_file()
+            || std::fs::read_dir(&dir).is_ok_and(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().is_dir() && e.path().join(&m.default).is_file()))
+    })
 }
 
 /// The quality a removal (Content-Aware Fill, the Remove tool, Spot Healing through the
@@ -791,6 +958,9 @@ pub fn removal_quality(s: &Session) -> &'static str {
 /// tier then the base, `fast` = the 4-step tier where one exists.
 pub fn auto_order(command: &str, quality: &str) -> &'static [&'static str] {
     match (command, quality) {
+        (EDIT, "ultra") => ULTRA_EDIT_ORDER,
+        // the rest of `ultra` is `best`
+        (c, "ultra") => auto_order(c, "best"),
         (FILL, "best") => BEST_FILL_ORDER,
         (FILL, "fast") => FAST_FILL_ORDER,
         (FILL, _) => AUTO_FILL_ORDER,
@@ -968,7 +1138,7 @@ fn warm_need(template: &str) -> u64 {
     match template.split('/').next().unwrap_or("") {
         t if t.starts_with("krea2") => WARM_KREA2_GB * GB,
         t if t.starts_with("moss") => WARM_MOSS_GB * GB,
-        t if t.starts_with("p-h3") => WARM_H3_GB * GB,
+        t if t.starts_with("p-h3") || t.starts_with("minimax-h3") => WARM_H3_GB * GB,
         _ => WARM_QWEN21_GB * GB,
     }
 }
@@ -1226,6 +1396,11 @@ pub(crate) fn short(prompt: &str) -> String {
 /// The image template a run with none named uses: Preferences › Default Image Template, where
 /// `auto` (or nothing) is the memory profile's ([`crate::memory_profile::image_template`]).
 pub fn default_image_template(s: &Session) -> String {
+    // Quality Ultra is the 16 MP model: it wins over a saved default (a request's own
+    // `template` still wins over both).
+    if ultra(s) && template_files_present(s, ULTRA_IMAGE_TEMPLATE) {
+        return ULTRA_IMAGE_TEMPLATE.to_string();
+    }
     match s.prefs().integrations.default_image_template.trim() {
         "" | AUTO_TEMPLATE => crate::memory_profile::image_template(crate::memory_profile::active(s)).to_string(),
         t => t.to_string(),
@@ -1569,7 +1744,10 @@ pub(crate) fn named_object(rewritten: &str) -> Option<String> {
     ]
     .iter()
     .any(|w| lower.split(|c: char| !c.is_alphanumeric()).any(|t| t == *w));
-    (!name.is_empty() && !not_a_thing && name.split_whitespace().count() <= 6).then(|| name.to_string())
+    // Two things in the selection ("the man in a white shirt and the black car") name both: a
+    // longer name is a sentence, but each part of one joined by "and" may be six words.
+    let fits = name.split(" and ").all(|part| part.split_whitespace().count() <= 6) && name.split_whitespace().count() <= 13;
+    (!name.is_empty() && !not_a_thing && fits).then(|| name.to_string())
 }
 
 /// The fill's prompt for a removal the rewriter named: [`REMOVE_PROMPT`] with the name in it.
@@ -1796,7 +1974,7 @@ pub(crate) fn generative_remove(
                 // rewriter's own closing clauses listed the scene's neighbours and the model
                 // painted them: a rock for the boat, the table over a wrist).
                 dump_views(&seen);
-                if let Ok(Some(p)) = enhance_prompt(
+                let said = enhance_prompt(
                     job.thinker.as_ref(),
                     EnhanceKind::Remove,
                     &job.prompt,
@@ -1804,7 +1982,13 @@ pub(crate) fn generative_remove(
                     Some(&place),
                     job.seed,
                     &JobProgress::span(ctx, 0.01, 0.04),
-                ) && let Some(name) = named_object(&p)
+                );
+                // What the rewriter said and what was taken from it: when nothing is named the
+                // fill gets the generic "the object" and may take the wrong one (a pedestrian
+                // kept and the car beside him removed, in the app 2026-11-13).
+                eprintln!("remove: rewriter said {said:?}, named {:?}", said.as_ref().ok().and_then(|p| p.as_deref()).and_then(named_object));
+                if let Ok(Some(p)) = said
+                    && let Some(name) = named_object(&p)
                 {
                     job.rewritten = Some(removal_prompt(&name));
                     job.object = Some(name.clone());
@@ -2282,14 +2466,19 @@ struct ImagePlan {
     /// The template's wording around a transparent request (`{prompt}` inside), empty otherwise;
     /// a rewritten prompt is wrapped in it the same way.
     wrap: String,
-    /// Rewrite the prompt with the vision-language model first (`enhance`).
-    enhance: bool,
+    /// Rewrite the prompt with the vision-language model first (`enhance`), and how
+    /// (`enhanceStyle`: "default" or "photo").
+    enhance: Option<EnhanceKind>,
     negative: String,
     seed: u64,
     steps: u32,
     guidance: f32,
     /// The native engine's schedule (`params.schedule`), `None` for the template's own.
     schedule: Option<&'static str>,
+    /// Krea 2 Turbo's second pass at a larger size (`params.refine`), `None` for none.
+    refine: Option<Value>,
+    /// The native engine's sampler (`params.sampler`), `None` for Euler.
+    sampler: Option<&'static str>,
     name: String,
     models: Vec<(String, String)>,
     /// The size asked of the model (rounded to the latent grid).
@@ -2339,9 +2528,23 @@ pub const KREA_DETAIL_STEPS: u32 = 9;
 
 /// The schedule a text-to-image run of `template` asks for under `quality` (`None`: the
 /// template's own): Krea 2 Turbo under `best` and `balanced` runs [`KREA_DETAIL_SCHEDULE`].
+/// Best runs the plain beta schedule over Krea's own shift with er_sde
+/// ([`image_quality_sampler`]): the realism A/B of 2026-11-12 (6 prompts × 2 seeds in the app)
+/// found er_sde gives finer skin, hair and crumb and less plastic look than euler at the same
+/// time, with beta and simple hard to tell apart. Balanced too (round 5: crisper fur and wrinkles
+/// than its euler krea-detail run, same 7.3 s); Fast stays on euler (no visible gain at 8 steps).
 pub fn image_quality_schedule(template: &str, quality: &str) -> Option<&'static str> {
     match (template, quality) {
-        ("krea2-turbo/image", "best" | "balanced") => Some(KREA_DETAIL_SCHEDULE),
+        ("krea2-turbo/image", "best" | "balanced") => Some("beta"),
+        _ => None,
+    }
+}
+
+/// The sampler a text-to-image run of `template` uses under `quality` (`None`: euler, the
+/// template's): er_sde on Krea 2 Turbo under `best` and `balanced` (see [`image_quality_schedule`]).
+pub fn image_quality_sampler(template: &str, quality: &str) -> Option<&'static str> {
+    match (template, quality) {
+        ("krea2-turbo/image", "best" | "balanced") => Some("er_sde"),
         _ => None,
     }
 }
@@ -2350,6 +2553,14 @@ pub fn image_quality_schedule(template: &str, quality: &str) -> Option<&'static 
 /// 1-2 MP). Measured in the app 2026-11-05: visibly finer skin and texture at 100 % than 1024²,
 /// about 10 s warm against 3 s.
 pub const BEST_KREA_PIXELS: u64 = 1440 * 1440;
+/// Pixels P-H3-Image renders at under Quality `best` (2912², 8 MP, its official target): H3 is
+/// the model for large canvases such as character sheets (Cody, 2026-11-12), and came to the
+/// app's 1024² default otherwise. 31.6 s on the 5090 at 28.8 GB peak (2048²: 14.6 s).
+pub const BEST_H3_PIXELS: u64 = 2912 * 2912;
+/// Pixels MiniMax-H3-Image renders at under Quality `best` and `ultra` (16 MP, what the model
+/// is for), and under the faster qualities (4 MP, the area it was tuned on).
+pub const ULTRA_PIXELS: u64 = 4096 * 4096;
+pub const ULTRA_FAST_PIXELS: u64 = 2048 * 2048;
 /// The same under Quality `balanced`: 1248², about 1.5 MP (to be confirmed in the app).
 pub const BALANCED_KREA_PIXELS: u64 = 1248 * 1248;
 
@@ -2360,6 +2571,9 @@ pub fn image_quality_size(template: &str, quality: &str, width: u32, height: u32
     let target = match (template, quality) {
         ("krea2-turbo/image", "best") => BEST_KREA_PIXELS,
         ("krea2-turbo/image", "balanced") => BALANCED_KREA_PIXELS,
+        ("p-h3-image/image", "best") => BEST_H3_PIXELS,
+        (ULTRA_IMAGE_TEMPLATE, "best") => ULTRA_PIXELS,
+        (ULTRA_IMAGE_TEMPLATE, _) => ULTRA_FAST_PIXELS,
         _ => return (width, height),
     };
     let area = u64::from(width) * u64::from(height);
@@ -2367,7 +2581,14 @@ pub fn image_quality_size(template: &str, quality: &str, width: u32, height: u32
         return (width, height);
     }
     let k = (target as f64 / area as f64).sqrt();
-    let fit = |v: u32| (((f64::from(v) * k) as u32) / SIZE_STEP * SIZE_STEP).clamp(MIN_SIDE, 2048);
+    // H3 on its guide's grid (multiples of 32: 2912², 3360×2496, 3552×2368, 3872×2176).
+    // MiniMax-H3-Image the same way, to 16 MP (9:16 is 3072×5440).
+    let (most, step) = match template {
+        "p-h3-image/image" => (4096, 32),
+        ULTRA_IMAGE_TEMPLATE => (5472, 32),
+        _ => (2048, SIZE_STEP),
+    };
+    let fit = |v: u32| (((f64::from(v) * k) as u32) / step * step).clamp(MIN_SIDE, most);
     (fit(width), fit(height))
 }
 
@@ -2470,6 +2691,19 @@ fn side(cmd: &str, p: &Value, key: &str, default: u32) -> Result<u32> {
 }
 
 fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
+    // `"template": "auto"` is the default image template, as on fill, edit and expand (the
+    // 3090 benchmark's generate.image refused it, 2026-11-11).
+    let without_auto;
+    let p = if p.get("template").and_then(Value::as_str).is_some_and(|t| t.trim() == AUTO_TEMPLATE) {
+        let mut q = p.clone();
+        if let Some(o) = q.as_object_mut() {
+            o.remove("template");
+        }
+        without_auto = q;
+        &without_auto
+    } else {
+        p
+    };
     let (default_template, default_model) = {
         let integrations = &s.prefs().integrations;
         (default_image_template(s), integrations.default_generate_model.clone())
@@ -2490,8 +2724,9 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         None => None,
         Some("simple") => Some(None),
         Some(KREA_DETAIL_SCHEDULE) if template.meta.id == "krea2-turbo/image" => Some(Some(KREA_DETAIL_SCHEDULE)),
+        Some("beta") if template.meta.id == "krea2-turbo/image" => Some(Some("beta")),
         Some(other) => {
-            return Err(bad(IMAGE, format!("`schedule` must be \"simple\" or, on krea2-turbo/image, \"{KREA_DETAIL_SCHEDULE}\" (got `{other}`)")));
+            return Err(bad(IMAGE, format!("`schedule` must be \"simple\" or, on krea2-turbo/image, \"{KREA_DETAIL_SCHEDULE}\" or \"beta\" (got `{other}`)")));
         }
     };
     let schedule = asked_schedule.unwrap_or_else(|| image_quality_schedule(&template.meta.id, quality(s)));
@@ -2507,9 +2742,18 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
             negative = BEST_IMAGE_NEGATIVE.to_string();
         }
     }
-    if schedule == Some(KREA_DETAIL_SCHEDULE) && steps == 0 {
+    if matches!(schedule, Some(KREA_DETAIL_SCHEDULE | "beta")) && steps == 0 {
         steps = KREA_DETAIL_STEPS;
     }
+    // `sampler`: "euler" (the template's) or "er_sde" (Krea 2 Turbo only).
+    let sampler = match opt_str(IMAGE, p, "sampler", 20)? {
+        // Preferences › Quality, unless the request asks for Krea's plain schedule.
+        None if asked_schedule == Some(None) => None,
+        None => image_quality_sampler(&template.meta.id, quality(s)),
+        Some("euler") => None,
+        Some("er_sde") if template.meta.id == "krea2-turbo/image" => Some("er_sde"),
+        Some(other) => return Err(bad(IMAGE, format!("`sampler` must be \"euler\" or, on krea2-turbo/image, \"er_sde\" (got `{other}`)"))),
+    };
     crate::generate_refs::check_count(IMAGE, &template, ref_specs.len())?;
     let variations = parse_variations(IMAGE, p)?;
     let doc_size = s.active().map(|d| (d.doc.bounds().width(), d.doc.bounds().height()));
@@ -2528,6 +2772,7 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     // Quality `best` (`balanced`) renders Krea 2 at about 2 (1.5) MP: a new document keeps that size, a layer is
     // scaled to the canvas as any result of another size is.
     let (width, height) = image_quality_size(&template.meta.id, quality(s), side(IMAGE, p, "width", dw)?, side(IMAGE, p, "height", dh)?);
+    let refine = image_refine(p, &template.meta.id, width, height)?;
     let name = name.unwrap_or_else(|| format!("Generated: {}", short(&prompt)));
     // A transparent result: the template says how its model is asked for one (Qwen-Image-2.1
     // decodes RGBA); the layer keeps the alpha the PNG comes back with.
@@ -2544,7 +2789,21 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     } else {
         prompt
     };
+    // Under Quality Best the rewriter writes the prompt the way a real photo is captioned (the
+    // biggest realism gain of the Best A/B, 2026-11-12); Enhance prompts off still means no
+    // rewrite at all (Cody). An explicit `enhanceStyle` wins; transparent cut-outs and runs from
+    // references keep the plain rewriter.
+    let best_photo = quality(s) == "best" && !transparent && ref_specs.is_empty();
     let enhance = opt_bool(IMAGE, p, "enhance", s.prefs().integrations.enhance_prompts)?;
+    let enhance = match (enhance, opt_str(IMAGE, p, "enhanceStyle", 20)?) {
+        (false, _) => None,
+        // The 16 MP model gets its own, longer caption (pictures from references too).
+        (true, None) if template.meta.id == ULTRA_IMAGE_TEMPLATE => Some(EnhanceKind::ImageUltra),
+        (true, None) if best_photo && !names_other_medium(&typed) => Some(EnhanceKind::ImagePhoto),
+        (true, None | Some("default")) => Some(EnhanceKind::Image),
+        (true, Some("photo")) => Some(EnhanceKind::ImagePhoto),
+        (true, Some(other)) => return Err(bad(IMAGE, format!("`enhanceStyle` must be \"default\" or \"photo\" (got `{other}`)"))),
+    };
     let refs = crate::generate_refs::Refs { images: crate::generate_refs::resolve(s, &ref_specs)?, specs: ref_specs };
     let loras = loras_of(IMAGE, p)?;
     Ok(ImagePlan {
@@ -2560,6 +2819,8 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         steps,
         guidance,
         schedule,
+        refine,
+        sampler,
         name,
         models,
         width,
@@ -2570,15 +2831,53 @@ fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     })
 }
 
+/// The longest side a Krea 2 refine pass redraws at.
+pub const MAX_REFINE_SIDE: u32 = 2560;
+
+/// `refine: {"scale": 1..2, "denoise": 0.05..1, "steps": 1..20}` on `generate.image` with
+/// krea2-turbo/image: a second pass over the picture at `scale` times its size (on the 16-px
+/// grid, at most [`MAX_REFINE_SIDE`] a side) as `params.refine` for the native engine.
+fn image_refine(p: &Value, template: &str, width: u32, height: u32) -> Result<Option<Value>> {
+    let Some(r) = p.get("refine").filter(|v| !v.is_null() && **v != Value::Bool(false)) else { return Ok(None) };
+    if template != "krea2-turbo/image" {
+        return Err(bad(IMAGE, format!("`refine` is for krea2-turbo/image (not `{template}`)")));
+    }
+    let num = |k: &str, lo: f64, hi: f64| -> Result<f64> {
+        r.get(k).and_then(Value::as_f64).filter(|x| (lo..=hi).contains(x)).ok_or_else(|| bad(IMAGE, format!("`refine.{k}` must be {lo}..{hi}")))
+    };
+    let (scale, denoise, steps) = (num("scale", 1.0, 2.0)?, num("denoise", 0.05, 1.0)?, num("steps", 1.0, 20.0)?.round() as u64);
+    let long = f64::from(width.max(height));
+    let k = scale.min(f64::from(MAX_REFINE_SIDE) / long).max(1.0);
+    let fit = |v: u32| ((f64::from(v) * k) as u32 / SIZE_STEP * SIZE_STEP).max(SIZE_STEP);
+    Ok(Some(serde_json::json!({"width": fit(width), "height": fit(height), "denoise": denoise, "steps": steps})))
+}
+
 /// The prompt a `generate.image` job sends, and what the layer remembers as `enhanced`: the
 /// typed idea expanded by the vision-language model when asked (then wrapped for transparency
 /// as the typed one was), else the plan's prompt and an empty string.
-fn image_prompt(backend: &dyn GenerativeBackend, ctx: &JobCtx, enhance: bool, typed: &str, planned: String, wrap: &str, seed: u64) -> (String, String) {
-    if !enhance {
-        return (planned, String::new());
-    }
+#[allow(clippy::too_many_arguments)]
+fn image_prompt(
+    backend: &dyn GenerativeBackend,
+    ctx: &JobCtx,
+    enhance: Option<EnhanceKind>,
+    template: &str,
+    typed: &str,
+    planned: String,
+    wrap: &str,
+    seed: u64,
+) -> (String, String) {
+    let Some(kind) = enhance else { return (planned, String::new()) };
     ctx.progress(0.02, "Improving the prompt");
-    match enhance_prompt(backend, EnhanceKind::Image, typed, None, None, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
+    // On Krea 2 and MOSS the rewrite runs on the model's own encoder, which the picture loads
+    // anyway (on MOSS the 8B swap made Turbo's 2 s picture take 15 s, 2026-11-12).
+    let encoder = if template.starts_with("krea2-turbo/") {
+        Some(KREA2_CHAT_ENCODER)
+    } else if [MOSS_CHAT_PREFIX, KLEIN_CHAT_PREFIX, MINIMAX_CHAT_PREFIX].iter().any(|x| template.starts_with(x)) {
+        Some(template)
+    } else {
+        None
+    };
+    match enhance_prompt(backend, kind, typed, None, encoder, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
         Ok(Some(e)) => {
             let p = if wrap.is_empty() { e.clone() } else { wrap.replace("{prompt}", &e) };
             (p, e)
@@ -2608,6 +2907,8 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         steps,
         guidance,
         schedule,
+        refine,
+        sampler,
         name,
         models,
         width,
@@ -2623,6 +2924,12 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         Tuning { loras, ..Tuning::default() }.loras_param().map(|l| BTreeMap::from([("loras".to_string(), l)])).unwrap_or_default();
     if let Some(schedule) = schedule {
         params.insert("schedule".to_string(), Value::String(schedule.to_string()));
+    }
+    if let Some(refine) = refine {
+        params.insert("refine".to_string(), refine);
+    }
+    if let Some(sampler) = sampler {
+        params.insert("sampler".to_string(), Value::String(sampler.to_string()));
     }
     // What the result layer remembers (`generate.similar` re-runs it).
     let info = GenerativeInfo {
@@ -2657,6 +2964,8 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
     let n = variations.max(1);
     // A layer name per result: "Generated: …" alone, or with "(2/3)".
     let numbered = move |base: &str, i: u32| if n > 1 { format!("{base} ({}/{n})", i + 1) } else { base.to_string() };
+    // The rewriter runs on the template's own encoder where it has one.
+    let enhance_template = tid.clone();
     if to_document {
         let doc_name = name.clone();
         return crate::jobs::run(
@@ -2666,7 +2975,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
             move |ctx| {
                 // No canvas yet: the pictures are the new document's (the Generations panel's row).
                 ctx.preview_at(Rect::new(0, 0, width as i32, height as i32));
-                let (prompt, enhanced) = image_prompt(thinker.as_ref(), ctx, enhance, &typed, req.prompt, &wrap, seed);
+                let (prompt, enhanced) = image_prompt(thinker.as_ref(), ctx, enhance, &enhance_template, &typed, req.prompt, &wrap, seed);
                 req.prompt = prompt;
                 ctx.check()?;
                 let resps = run_variations(backend.as_ref(), &mut req, n, seed, ctx)?;
@@ -2708,7 +3017,7 @@ fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         move |doc, active, ctx| {
             // The new layer covers the canvas.
             ctx.preview_at(doc.bounds());
-            let (prompt, enhanced) = image_prompt(backend.as_ref(), ctx, enhance, &typed, req.prompt, &wrap, seed);
+            let (prompt, enhanced) = image_prompt(backend.as_ref(), ctx, enhance, &enhance_template, &typed, req.prompt, &wrap, seed);
             req.prompt = prompt;
             ctx.check()?;
             let resps = run_variations(backend.as_ref(), &mut req, n, seed, ctx)?;
@@ -3741,9 +4050,7 @@ const PRESENCE_CHECK: bool = false;
 /// ([`ENHANCE_PRESENCE_SYSTEM`]): `Some(true)` yes, `Some(false)` no, `None` when it could
 /// not be asked or did not answer.
 fn still_there(backend: &dyn GenerativeBackend, result: &Rgba8, object: &str, seed: u64, progress: &JobProgress) -> Option<bool> {
-    let seen = judge_view(result);
-    let question = format!("Is there a {object}, or any part of one, in this photo?");
-    let answer = enhance_prompt(backend, EnhanceKind::Presence, &question, Some(&seen), None, seed, progress).ok()??.to_lowercase();
+    let answer = presence_answer(backend, result, &format!("Is there a {object}, or any part of one, in this photo?"), seed, progress)?;
     let first = answer.trim().split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
     match first {
         "yes" => Some(true),
@@ -3755,6 +4062,24 @@ fn still_there(backend: &dyn GenerativeBackend, result: &Rgba8, object: &str, se
             (None, None) => None,
         },
     }
+}
+
+/// The vision-language model's Yes or No to `question` about `picture` (enlarged as for the
+/// judge, [`judge_view`]), read from its first word only: `None` when it could not be asked or
+/// its answer does not start with Yes or No.
+pub(crate) fn sees(backend: &dyn GenerativeBackend, picture: &Rgba8, question: &str, seed: u64, progress: &JobProgress) -> Option<bool> {
+    let answer = presence_answer(backend, picture, question, seed, progress)?;
+    match answer.trim().split(|c: char| !c.is_alphanumeric()).next().unwrap_or("") {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// The model's answer (lower case) to a [`EnhanceKind::Presence`] question about `picture`.
+fn presence_answer(backend: &dyn GenerativeBackend, picture: &Rgba8, question: &str, seed: u64, progress: &JobProgress) -> Option<String> {
+    let seen = judge_view(picture);
+    Some(enhance_prompt(backend, EnhanceKind::Presence, question, Some(&seen), None, seed, progress).ok()??.to_lowercase())
 }
 
 /// A judged crop enlarged until its shorter side is at least [`JUDGE_VIEW_MIN_SIDE`], its
@@ -4633,8 +4958,9 @@ fn edit_enabled(s: &Session) -> std::result::Result<(), String> {
 /// `generate.edit`: the whole picture goes to an edit model with an instruction; the result is
 /// a layer over the canvas, masked to the selection when there is one.
 fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
-    // `swap`: the BFS face or body swap (its template, LoRA and prompt), see `generate_swap.rs`.
-    let swapped = swap::apply(s, p)?;
+    // `swap`: the BFS face or body swap (its template, LoRA and prompt), see `generate_swap.rs`;
+    // `repose`: the PoseStudio repose, see `generate_repose.rs`.
+    let swapped = edit_rewrite(s, p)?;
     let p = swapped.as_ref().unwrap_or(p);
     let default_model = s.prefs().integrations.default_edit_model.clone();
     let mut requested = opt_str(EDIT, p, "template", 200)?.map(str::to_string).unwrap_or_else(|| AUTO_TEMPLATE.to_string());
@@ -4642,6 +4968,11 @@ fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
     let mut q = p.clone();
     if auto && let Some(o) = q.as_object_mut() {
         o.remove("template");
+    }
+    // Quality Ultra edits on the 16 MP model where it is installed, before any other route.
+    if auto && ultra(s) && template_files_present(s, ULTRA_EDIT_TEMPLATE) {
+        requested = ULTRA_EDIT_TEMPLATE.to_string();
+        auto = false;
     }
     if auto && let Some(t) = native21_auto(s, EDIT, false) {
         requested = t.to_string();
@@ -4668,8 +4999,14 @@ fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
     // References (image 2, image 3 …): checked against the planned template; `auto` only
     // picks among templates with the same slots.
     let refs = crate::generate_refs::plan(s, EDIT, p, &template)?;
-    // An edit tunes nothing but its LoRAs (its templates bind no sampler; the size cap is its own).
-    let tuning = Tuning { loras: loras_of(EDIT, p)?, fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
+    // An edit tunes nothing but its LoRAs (its templates bind no sampler; the size cap is its
+    // template's, see `edit_request_pixels`).
+    let tuning = Tuning {
+        loras: loras_of(EDIT, p)?,
+        fast_draft: s.prefs().integrations.fast_draft,
+        max_pixels: edit_request_pixels(&template.meta.id, ultra(s)),
+        ..Tuning::default()
+    };
     Ok(FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow: 0, erase: false, tuning })
 }
 
@@ -4680,7 +5017,7 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let label = name.clone();
     // `wholePicture` (Generative Angles, and a swap, whose rewrite sets it): the selection does
     // not confine the result.
-    let swapped = swap::apply(s, p)?;
+    let swapped = edit_rewrite(s, p)?;
     let whole = opt_bool(EDIT, swapped.as_ref().unwrap_or(p), "wholePicture", false)?;
     // An edit re-renders the whole picture; what shows of it is its subject (Select Subject on
     // the result), so a new thing (a Pikachu for the duck) sits in the untouched original. Not
@@ -4695,7 +5032,7 @@ fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
         command: EDIT,
         template_id: template.meta.id.clone(),
         auto,
-        auto_order: auto_order(EDIT, quality(s)),
+        auto_order: auto_order(EDIT, auto_quality(s)),
         prompt,
         negative,
         seed,
@@ -4811,6 +5148,54 @@ fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     run_edit(s, &q)
+}
+
+/// `generate.characterSheet`: a turnaround sheet of the character on a layer, as a new
+/// document: four full-body views in a row (front, three-quarter, profile, back), drawn by
+/// MiniMax-H3-Image from the layer as Picture 1. 16 MP under Quality Ultra and Best, 4 MP
+/// under the faster ones.
+fn run_character_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    if !template_files_present(s, ULTRA_IMAGE_TEMPLATE) {
+        return Err(EngineError::Other("Character Sheet needs MiniMax H3 Image: its files are not in the Models folder".into()));
+    }
+    let layer = layer_param(s, p)?;
+    let words = |key: &str| -> Result<String> { Ok(opt_str(CHARACTER_SHEET, p, key, 500)?.unwrap_or("").trim().trim_end_matches('.').trim().to_string()) };
+    let prompt = character_sheet_prompt(&words("details")?, &words("background")?);
+    let mut q = json!({
+        "prompt": prompt,
+        "template": ULTRA_IMAGE_TEMPLATE,
+        "references": [{"layer": layer.0}],
+        "width": SHEET_SIZE.0,
+        "height": SHEET_SIZE.1,
+        "target": "document",
+        "enhance": false,
+        "name": "Character Sheet",
+    });
+    if let Some(v) = p.get("seed") {
+        q["seed"] = v.clone();
+    }
+    run_image(s, &q)
+}
+
+/// The sheet's shape, four upright views in a row; the quality scales it to the model's size.
+const SHEET_SIZE: (u32, u32) = (2048, 1024);
+
+/// The words of a character sheet: the layer is Picture 1; `details` names what the picture
+/// does not show (the shoes of a waist-up portrait), `background` the backdrop (plain white
+/// when empty).
+pub(crate) fn character_sheet_prompt(details: &str, background: &str) -> String {
+    let background = if background.is_empty() { "one plain white studio backdrop with soft even light" } else { background };
+    let details =
+        if details.is_empty() { String::new() } else { format!(" The character also has these details, in every view where they can be seen: {details}.") };
+    format!(
+        "A character turnaround sheet of the character in Picture 1: four full-body views of the same character side by side in one row, each the same width, clearly separated and never overlapping, on {background}. \
+         The face, hair, skin, body, clothing and accessories are exactly as in Picture 1 and identical in all four views, in the same style and medium as Picture 1.{details} \
+         From left to right: first, the character straight from the front, facing the camera. \
+         Second, a three-quarter view from the character's left side, the face turned toward the left edge of the picture. \
+         Third, a strict side profile at exactly 90 degrees, the nose pointing to the left edge of the picture, the far arm and far leg hidden behind the near ones. \
+         Fourth, on the far right, the character straight from behind: the back of the head and the back are visible, the face is not. \
+         The character holds the same relaxed standing pose in all four views, framed the same way in each, from the top of the head to the feet. Sharp focus and fine detail in the face, the hair and the clothing."
+    )
 }
 
 fn doc_enabled(s: &Session) -> std::result::Result<(), String> {
@@ -5173,6 +5558,10 @@ pub fn likely_auto(command: &str, quality: &str) -> &'static str {
 /// [`likely_auto`] in this session: the Qwen-Image-2.1 template where `auto` runs it on the
 /// native worker ([`native21_auto`]), else the first of the server's order.
 pub fn likely_auto_in(s: &Session, command: &str, quality: &str) -> &'static str {
+    // Quality Ultra edits on the 16 MP model where it is installed (as `plan_edit` does).
+    if command == EDIT && ultra(s) && template_files_present(s, ULTRA_EDIT_TEMPLATE) {
+        return ULTRA_EDIT_TEMPLATE;
+    }
     auto_shown(s, command, false).unwrap_or_else(|| likely_auto(command, quality))
 }
 
@@ -5197,7 +5586,9 @@ fn auto_shown(s: &Session, command: &str, removal: bool) -> Option<&'static str>
 pub fn estimate_seconds(template: &str, width: u32, height: u32, count: u32, references: u32) -> Option<f32> {
     let t = template::find(template).ok()?;
     let (w, h) = match t.meta.task {
-        Task::Fill | Task::Expand | Task::Edit => request_size(width, height),
+        // an H3 edit goes at its own, larger size
+        Task::Edit => request_size_within(width, height, edit_request_pixels(template, template == ULTRA_EDIT_TEMPLATE)),
+        Task::Fill | Task::Expand => request_size(width, height),
         _ => (width, height),
     };
     Some(t.meta.estimate_seconds(w, h, count, references))
@@ -5224,7 +5615,7 @@ fn run_models(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // `async: true` probes on a worker (the picker's installed badges): a background job whose
     // result is this command's usual answer.
-    let q = quality(s);
+    let q = auto_quality(s);
     if probe && opt_bool(MODELS, p, "async", false)? {
         let backend = backend(s)?;
         let picks = native21_picks(s);
@@ -5378,7 +5769,7 @@ fn run_similar(s: &mut Session, p: &Value) -> Result<Value> {
     // fills run as what they were.
     let q = quality(s);
     let (command, auto, auto_order, template_id) = match (info.command.as_str(), native21_auto(s, FILL, false)) {
-        (c, _) if c == EDIT => (EDIT, false, auto_order(EDIT, q), info.template.clone()),
+        (c, _) if c == EDIT => (EDIT, false, auto_order(EDIT, auto_quality(s)), info.template.clone()),
         (c, _) if c == FILL => (FILL, false, auto_order(FILL, q), info.template.clone()),
         (_, Some(t)) => (FILL, false, auto_order(FILL, q), t.to_string()),
         _ => (FILL, true, auto_order(FILL, q), DEFAULT_FILL_TEMPLATE.to_string()),
@@ -5472,13 +5863,14 @@ fn run_enhance(s: &mut Session, p: &Value) -> Result<Value> {
         None | Some("fill") => EnhanceKind::Fill,
         Some("edit") => EnhanceKind::Edit,
         Some("image") => EnhanceKind::Image,
-        Some(other) => return Err(bad(ENHANCE, format!("`task` must be \"fill\", \"edit\" or \"image\" (got `{other}`)"))),
+        Some("photo") => EnhanceKind::ImagePhoto,
+        Some(other) => return Err(bad(ENHANCE, format!("`task` must be \"fill\", \"edit\", \"image\" or \"photo\" (got `{other}`)"))),
     };
     let use_image = opt_bool(ENHANCE, p, "useImage", true)?;
     let seed = parse_seed(ENHANCE, p)?;
     let backend = enhancer_backend(s)?;
     let (image, place) = match (kind, use_image, s.active()) {
-        (EnhanceKind::Image, _, _) | (_, false, _) | (_, _, None) => (None, None),
+        (EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra, _, _) | (_, false, _) | (_, _, None) => (None, None),
         (_, true, Some(d)) => {
             let canvas = d.doc.bounds();
             if canvas.is_empty() || u64::from(canvas.width()) * u64::from(canvas.height()) > MAX_REQUEST_PIXELS {
@@ -5532,7 +5924,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Generate Image…",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"schedule":{"simple"|"krea-detail"?=Preferences › Quality: krea-detail (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
+            params: r#"{"prompt":text,"negative":text,"target":"auto|layer|document","width":int=0,"height":int=0,"transparent":bool=false,"steps":0..250=0,"guidance":0..30=0,"refine":{{"scale":1..2,"denoise":0.05..1,"steps":1..20}?=none: krea2-turbo/image redrawn once more at scale times the size (at most 2560 a side)},"enhanceStyle":{"default"|"photo"?=photo under Preferences › Quality best (no references, not transparent), else default; photo = written like a real photo's caption},"sampler":{"euler"|"er_sde"?=Preferences › Quality: er_sde on krea2-turbo/image under best and balanced, else euler},"schedule":{"simple"|"krea-detail"|"beta"?=Preferences › Quality: beta (9 steps) on krea2-turbo/image under best and balanced},"seed":{u64?=random},"template":{id?=Preferences › Default Image Template},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"variations":int=1,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer"|"document","layers":[id],"seed","seeds":[u64],"template","runId","width","height","ms"} (target auto = a layer over the whole canvas when a document is open, else a new document; enhance = expand the idea into a detailed paragraph first with the vision-language model (generate.enhancePrompt); width/height 0 = the document's size or 1024, otherwise 64..4096 rounded down to multiples of 16; transparent = ask for the subject alone on a transparent background and keep the alpha the model returns (templates whose model can, such as qwen-2.1/image; others refuse); steps and guidance 0 = the template's defaults; variations 1..4 = results with consecutive seeds, each a layer (in the one new document with target document), only the first visible; references = images that guide the result (a pixel layer of the active document, an image file, or a stored result of the Generations library), at most the template's references.max (generate.models); with references and no template named, a default template that takes none gives way to qwen-edit-2511/image-ref; a background job; needs the native worker, see Preferences › AI Integrations)"#,
             enabled: image_enabled,
             run: run_image,
             journal: true,
@@ -5554,7 +5946,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"swap":{str?=none},"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; swap = put the head ("head", also "face") or the whole person ("body") from the first reference onto the person in the picture, with the BFS LoRAs for Qwen-Image-2.1 (MIT): runs qwen-2.1/edit unless a template is named, adds the LoRA (bfs_head_v1.1_qwen_2.1 or bfs_body_swap_v1.0_qwen_2.1, from the loras folder), sends the LoRA author's prompt with any typed text after it, Enhance off, and keeps the whole re-rendered picture (wholePicture: a subject mask left the old person's outline); a background job; needs the native worker)"#,
+            params: r#"{"prompt":text,"negative":text,"steps":0..250=0,"guidance":0..30=0,"edge":"soft|hard","variations":int=1,"seed":{u64?=random},"template":{id?="auto": the Lightning edit tier when its LoRA is installed, else the 40-step one},"model":{file?=Preferences},"enhance":{bool?=Preferences › Enhance prompts},"name":{str?},"wholePicture":bool=false,"swap":{str?=none},"repose":bool=false,"skeleton":bool=false,"references":[{"layer":id}|{"path":file}|{"job":id,"index":int=0}]?} → {"layer","layers":[id],"seed","seeds":[u64],"template","runId","width","height","requestWidth","requestHeight","ms","timings"} (edits the whole picture by instruction; enhance = rewrite the instruction first with the vision-language model, the picture in view, so it names what is there instead of "this" (generate.enhancePrompt): "make the sky stormy", "turn the boat blue", "remove the person"; a description such as "a stormy sky" is wrapped as "change this image so that it shows …"; the composite goes to the model and the result is a new layer above the active one; with a selection the layer is masked to it (edge soft = a dithered fade around it, hard = exactly) so only that part of the edit shows; variations 1..4 = results with consecutive seeds, each a layer, only the first visible; pictures over 0.75 megapixels are sent downscaled and come back resampled; references = extra images the instruction can name as image 2, image 3 (the 2511 templates take two, qwen-2.1/edit nine; see references.max in generate.models): a pixel layer, an image file or a stored generation; swap = put the head ("head", also "face") or the whole person ("body") from the first reference onto the person in the picture, with the BFS LoRAs for Qwen-Image-2.1 (MIT): runs qwen-2.1/edit unless a template is named, adds the LoRA (bfs_head_v1.1_qwen_2.1 or bfs_body_swap_v1.0_qwen_2.1, from the loras folder), sends the LoRA author's prompt with any typed text after it, Enhance off, and keeps the whole re-rendered picture (wholePicture: a subject mask left the old person's outline); repose = redraw the person in the first reference in the pose of the mannequin that is the open picture, with the VNCCS PoseStudio LoRA for Qwen-Image-2.1 (V3, else V2, else V1.1 from the loras folder): runs qwen-2.1/edit unless a template is named, sends the LoRA's prompt (plus a line telling it to leave out the skeleton when skeleton is true) with any typed text after it, Enhance off, the whole picture kept; a background job; needs the native worker)"#,
             enabled: edit_enabled,
             run: run_edit,
             journal: true,
@@ -5568,6 +5960,17 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it)"#,
             enabled: angles_enabled,
             run: run_angles,
+            journal: true,
+        },
+        CommandSpec {
+            id: CHARACTER_SHEET,
+            label: "Character Sheet",
+            // Placed by the menu catalogue under Edit, with the other generative items.
+            menu: &[],
+            shortcut: None,
+            params: r#"{"details":text,"background":text,"layer":{id?=active},"seed":{u64?=random}} → as generate.image (a turnaround sheet of the character on the layer as a new document: four full-body views in one row, front, three-quarter, side profile and back, drawn by minimax-h3-image/image with the layer as Picture 1; details = what the picture does not show, named as things ("blue jeans and white sneakers"); background = the backdrop, plain white when empty; about 16 MP under Preferences › Quality ultra and best, 4 MP under balanced and fast; needs MiniMax H3 Image's files in the Models folder; a background job; needs the native worker)"#,
+            enabled: edit_enabled,
+            run: run_character_sheet,
             journal: true,
         },
         CommandSpec {
@@ -5722,8 +6125,22 @@ pub fn specs() -> Vec<CommandSpec> {
 #[path = "generate_loras.rs"]
 pub(crate) mod loras;
 
+#[path = "generate_repose.rs"]
+pub mod repose;
 #[path = "generate_swap.rs"]
 pub mod swap;
+
+/// `p` rewritten by its `swap` or its `repose` (not both), or None when it asks for neither.
+pub(crate) fn edit_rewrite(s: &Session, p: &Value) -> Result<Option<Value>> {
+    let swapping = p.get("swap").and_then(Value::as_str).is_some_and(|k| !k.trim().is_empty() && !k.eq_ignore_ascii_case("none"));
+    if swapping && p.get("repose").and_then(Value::as_bool) == Some(true) {
+        return Err(bad(EDIT, "`swap` and `repose` can't be asked together"));
+    }
+    match swap::apply(s, p)? {
+        Some(q) => Ok(Some(q)),
+        None => repose::apply(s, p),
+    }
+}
 
 #[cfg(test)]
 #[path = "generate_cmds_tests.rs"]

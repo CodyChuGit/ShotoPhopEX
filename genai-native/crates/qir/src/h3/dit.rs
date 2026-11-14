@@ -89,11 +89,29 @@ impl H3Config {
 struct Rms {
     weight: Tensor,
     eps: f64,
+    /// The weight in f32 for the one-pass kernels (see [`use_fused`]).
+    #[cfg_attr(not(feature = "fusednorm"), allow(dead_code))]
+    w32: Option<Tensor>,
+}
+
+/// Whether the blocks take the one-pass kernels of `crate::krea2_fused` (modulated RMSNorm,
+/// per-head q/k norm with RoPE, gated residual): a CUDA bf16 run with `fusednorm`, unless
+/// `QIR_H3_FUSED=0` asks for the candle chains (to compare). At 8 MP the chains were more than
+/// half of a step: each makes several passes, in f32, over 33k rows of 5376.
+fn use_fused(w: &Weights) -> bool {
+    cfg!(feature = "fusednorm") && w.device().is_cuda() && w.dtype() == DType::BF16 && std::env::var("QIR_H3_FUSED").map_or(true, |v| v.trim() != "0")
 }
 
 impl Rms {
     fn load(w: &Weights, name: &str, eps: f64) -> Result<Self> {
-        Ok(Self { weight: w.get(name)?, eps })
+        let w32 = if use_fused(w) { Some(w.get_as(name, DType::F32)?) } else { None };
+        Ok(Self { weight: w.get(name)?, eps, w32 })
+    }
+
+    /// The f32 weight when `x` can go through the one-pass kernels.
+    #[cfg(feature = "fusednorm")]
+    fn fused(&self, x: &Tensor) -> Option<&Tensor> {
+        self.w32.as_ref().filter(|_| x.dtype() == DType::BF16 && x.device().is_cuda())
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -187,6 +205,20 @@ struct Attn {
     out: Lin,
     q_norm: Rms,
     k_norm: Rms,
+    /// INT8 SageAttention2 instead of exact attention ([`int8_attention`]).
+    #[cfg_attr(not(feature = "sage2"), allow(dead_code))]
+    int8: bool,
+}
+
+/// Whether a block's attention runs as INT8 SageAttention2: when its file asks for INT8
+/// attention (MiniMax-H3-Image's `comfy_attention.config`, as ComfyUI runs it; exact bf16
+/// attention is 20 of 47 s at 16 MP), unless `QIR_H3_ATTN` says `exact` or `int8`.
+fn int8_attention(file_asks: bool) -> bool {
+    match std::env::var("QIR_H3_ATTN").ok().as_deref().map(str::trim) {
+        Some("exact") => false,
+        Some("int8") => true,
+        _ => file_asks,
+    }
 }
 
 impl Attn {
@@ -196,22 +228,58 @@ impl Attn {
             out: Lin::load(w, format!("{p}.out_proj"))?,
             q_norm: Rms::load(w, &format!("{p}.q_norm.weight"), eps)?,
             k_norm: Rms::load(w, &format!("{p}.k_norm.weight"), eps)?,
+            int8: int8_attention(w.contains(&format!("{p}.comfy_attention.config"))),
         })
     }
 
-    fn forward(&self, x: &Tensor, heads: usize, head_dim: usize, rope_cs: Option<(&Tensor, &Tensor)>) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor, heads: usize, head_dim: usize, rope_cs: Option<(&Tensor, &Tensor)>, cs: Option<&Tensor>) -> Result<Tensor> {
         let s = x.dim(0)?;
         let inner = heads * head_dim;
-        let qkv = self.qkv.forward(x)?;
-        let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, i * inner, inner)?.reshape((s, heads, head_dim))?) };
-        let mut q = self.q_norm.forward(&part(0)?)?;
-        let mut k = self.k_norm.forward(&part(1)?)?;
-        if let Some((c, sn)) = rope_cs {
-            q = rope(&q, c, sn)?;
-            k = rope(&k, c, sn)?;
+        #[cfg(feature = "fusednorm")]
+        if head_dim == 128 && (rope_cs.is_none() || cs.is_some()) {
+            if let (Some(qw), Some(kw)) = (self.q_norm.fused(x), self.k_norm.fused(x)) {
+                use crate::krea2_fused::{head_rope, head_rope_split};
+                let dev = x.device();
+                let qkv = crate::profile::scope("h3 qkv linear", 0.0, dev, || self.qkv.forward(x))?;
+                let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, i * inner, inner)?.reshape((1, s, heads, head_dim))?) };
+                let norm = |i: usize, w: &Tensor, eps: f64| -> Result<Tensor> {
+                    let y = match cs {
+                        Some(cs) => head_rope_split(&part(i)?, w, cs, eps)?,
+                        None => head_rope(&part(i)?, w, None, eps)?,
+                    };
+                    Ok(y.squeeze(0)?)
+                };
+                let (q, k) = crate::profile::scope("h3 q/k norm + rope", 0.0, dev, || Ok((norm(0, qw, self.q_norm.eps)?, norm(1, kw, self.k_norm.eps)?)))?;
+                #[cfg(feature = "sage2")]
+                if let (true, crate::sage2::AttentionImpl::Sage2(accum)) = (self.int8, crate::sage2::attention_impl()?) {
+                    // SageAttention2 on the rows as they are (already normed and turned):
+                    // quantized under the identity rotation, V in FP8
+                    use crate::sage2::{attention as sage, quant_v, rope_quant, Role};
+                    let a = crate::profile::scope("h3 attention (int8)", 0.0, dev, || {
+                        let half = head_dim / 2;
+                        let (one, zero) = (Tensor::ones((s, half), DType::BF16, dev)?, Tensor::zeros((s, half), DType::BF16, dev)?);
+                        let q = rope_quant(&q.unsqueeze(0)?, &one, &zero, Role::Query)?;
+                        let k = rope_quant(&k.unsqueeze(0)?, &one, &zero, Role::Key)?;
+                        let v = quant_v(&part(2)?.to_dtype(DType::F16)?.contiguous()?, accum)?;
+                        Ok(sage(&q, &k, &v, 1.0 / (head_dim as f32).sqrt(), false)?.reshape((s, inner))?)
+                    })?;
+                    return crate::profile::scope("h3 out linear", 0.0, dev, || self.out.forward(&a));
+                }
+                let a = crate::profile::scope("h3 attention", 0.0, dev, || attention(&q, &k, &part(2)?.squeeze(0)?.contiguous()?))?;
+                return crate::profile::scope("h3 out linear", 0.0, dev, || self.out.forward(&a));
+            }
         }
-        let a = attention(&q.contiguous()?, &k.contiguous()?, &part(2)?.contiguous()?)?;
-        self.out.forward(&a)
+        #[cfg(not(feature = "fusednorm"))]
+        let _ = cs;
+        let dev = x.device();
+        let qkv = crate::profile::scope("h3 qkv linear", 0.0, dev, || self.qkv.forward(x))?;
+        let part = |i: usize| -> Result<Tensor> { Ok(qkv.narrow(1, i * inner, inner)?.reshape((s, heads, head_dim))?) };
+        let (mut q, mut k) = crate::profile::scope("h3 q/k norm", 0.0, dev, || Ok((self.q_norm.forward(&part(0)?)?, self.k_norm.forward(&part(1)?)?)))?;
+        if let Some((c, sn)) = rope_cs {
+            (q, k) = crate::profile::scope("h3 rope", 0.0, dev, || Ok((rope(&q, c, sn)?, rope(&k, c, sn)?)))?;
+        }
+        let a = crate::profile::scope("h3 attention", 0.0, dev, || attention(&q.contiguous()?, &k.contiguous()?, &part(2)?.contiguous()?))?;
+        crate::profile::scope("h3 out linear", 0.0, dev, || self.out.forward(&a))
     }
 }
 
@@ -326,6 +394,9 @@ pub struct Prepared {
     /// RoPE `cos`/`sin` `(S, 3 * rope_len)` f32.
     pub cos: Tensor,
     pub sin: Tensor,
+    /// `cos` and `sin` stacked `(2, S, 3 * rope_len)` for the one-pass q/k kernel (when the
+    /// rotated channels fit a head).
+    pub cs: Option<Tensor>,
     pub layout: crate::h3::layout::Layout,
 }
 
@@ -405,6 +476,12 @@ impl H3Dit {
         })
     }
 
+    /// The sigma grid the PDD heads were distilled on (MiniMax-H3-Image: the file's six steps),
+    /// `None` for a single-head model.
+    pub fn pdd_sigmas(&self) -> Option<&[f32]> {
+        (self.cfg.pdd_steps > 1).then_some(self.pdd_grid.as_slice())
+    }
+
     pub fn config(&self) -> &H3Config {
         &self.cfg
     }
@@ -437,7 +514,7 @@ impl H3Dit {
     pub fn refine_text(&self, states: &Tensor) -> Result<Tensor> {
         let mut x = self.condition_proj.forward(&states.to_dtype(self.dtype)?)?;
         for b in &self.refiner {
-            x = (b.attn.forward(&b.norm1.forward(&x)?, self.cfg.heads, self.cfg.head_dim, None)? + &x)?;
+            x = (b.attn.forward(&b.norm1.forward(&x)?, self.cfg.heads, self.cfg.head_dim, None, None)? + &x)?;
             x = (b.mlp.forward(&b.norm2.forward(&x)?)? + &x)?;
         }
         self.refiner_norm.forward(&x)
@@ -466,7 +543,55 @@ impl H3Dit {
         anyhow::ensure!(text_states.dim(0)? == layout.text_len, "text rows {} vs layout {}", text_states.dim(0)?, layout.text_len);
         let text = self.refine_text(text_states)?;
         let (cos, sin) = self.rope_tables(&layout)?;
-        Ok(Prepared { text, cos, sin, layout })
+        let cs = if 2 * cos.dim(1)? <= self.cfg.head_dim { Some(Tensor::stack(&[&cos, &sin], 0)?.contiguous()?) } else { None };
+        Ok(Prepared { text, cos, sin, cs, layout })
+    }
+
+    /// One block through the one-pass kernels: `m` the block's six modulation tensors
+    /// (shift, scale, gate for attention, then for the MLP), each `(rows, hidden)` bf16. A
+    /// segment of rows shares one modulation row, so each kernel runs once per segment.
+    #[cfg(feature = "fusednorm")]
+    #[allow(clippy::too_many_arguments)]
+    fn block_fused(
+        &self,
+        b: &Block,
+        h: &Tensor,
+        m: &[Tensor],
+        (w1, w2): (&Tensor, &Tensor),
+        segs: &[ModSeg],
+        rope_cs: Option<(&Tensor, &Tensor)>,
+        cs: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        use crate::krea2_fused::{gate_add, rms_mod};
+        use crate::profile::scope;
+        let dev = &self.dev;
+        let mods = Tensor::cat(m, 1)?.contiguous()?; // (rows, 6 * hidden)
+        let total = h.dim(0)?;
+        let covered = segs.iter().map(|g| g.len).sum::<usize>() == total;
+        let big = segs.iter().max_by_key(|g| g.len).copied();
+        let per_seg = |f: &dyn Fn(&ModSeg, &Tensor) -> Result<Tensor>| -> Result<Tensor> {
+            let md = |row: usize| -> Result<Tensor> { Ok(mods.narrow(0, row, 1)?.unsqueeze(1)?) };
+            // One launch over every row with the largest segment's modulation row, then the
+            // other segments (the text rows, any reference rows) written over their own rows:
+            // no per-segment results concatenated into a third full-size tensor.
+            if let (true, Some(big)) = (covered, big) {
+                let out = f(&ModSeg { start: 0, len: total, row: big.row }, &md(big.row)?)?.squeeze(0)?;
+                for g in segs.iter().filter(|g| **g != big) {
+                    out.slice_set(&f(g, &md(g.row)?)?.squeeze(0)?, 0, g.start)?;
+                }
+                return Ok(out);
+            }
+            let mut parts =
+                segs.iter().map(|g| -> Result<Tensor> { Ok(f(g, &mods.narrow(0, g.row, 1)?.unsqueeze(1)?)?.squeeze(0)?) }).collect::<Result<Vec<_>>>()?;
+            Ok(if parts.len() == 1 { parts.remove(0) } else { Tensor::cat(&parts, 0)? })
+        };
+        let rows = |x: &Tensor, g: &ModSeg| -> Result<Tensor> { Ok(x.narrow(0, g.start, g.len)?.unsqueeze(0)?) };
+        let y = scope("h3 norm + modulate", 0.0, dev, || per_seg(&|g, md| rms_mod(&rows(h, g)?, w1, Some((md, 1, 0)), b.norm1.eps)))?;
+        let a = b.attn.forward(&y, self.cfg.heads, self.cfg.head_dim, rope_cs, cs)?;
+        let h = scope("h3 gated add", 0.0, dev, || per_seg(&|g, md| gate_add(&rows(h, g)?, &rows(&a, g)?, md, 2)))?;
+        let y = scope("h3 norm + modulate", 0.0, dev, || per_seg(&|g, md| rms_mod(&rows(&h, g)?, w2, Some((md, 4, 3)), b.norm2.eps)))?;
+        let f = scope("h3 mlp", 0.0, dev, || b.mlp.forward(&y))?;
+        scope("h3 gated add", 0.0, dev, || per_seg(&|g, md| gate_add(&rows(&h, g)?, &rows(&f, g)?, md, 5)))
     }
 
     /// `t_emb (M, k)` f32 for the timesteps `ts`.
@@ -559,13 +684,18 @@ impl H3Dit {
         let rope_cs = Some((&p.cos, &p.sin));
         for b in &self.blocks {
             let m = b.adaln.forward(&t_emb, self.dtype)?;
+            #[cfg(feature = "fusednorm")]
+            if let (Some(w1), Some(w2)) = (b.norm1.fused(&h), b.norm2.fused(&h)) {
+                h = self.block_fused(b, &h, &m, (w1, w2), &segs, rope_cs, p.cs.as_ref())?;
+                continue;
+            }
             let (shift_a, scale_a, gate_a, shift_f, scale_f, gate_f) = (&m[0], &m[1], &m[2], &m[3], &m[4], &m[5]);
-            let y = modulate(&b.norm1.forward(&h)?, shift_a, scale_a, &segs)?;
-            let a = b.attn.forward(&y, self.cfg.heads, self.cfg.head_dim, rope_cs)?;
-            h = gated_add(&h, gate_a, &a, &segs)?;
-            let y = modulate(&b.norm2.forward(&h)?, shift_f, scale_f, &segs)?;
-            let f = b.mlp.forward(&y)?;
-            h = gated_add(&h, gate_f, &f, &segs)?;
+            let y = crate::profile::scope("h3 norm + modulate", 0.0, &self.dev, || modulate(&b.norm1.forward(&h)?, shift_a, scale_a, &segs))?;
+            let a = b.attn.forward(&y, self.cfg.heads, self.cfg.head_dim, rope_cs, p.cs.as_ref())?;
+            h = crate::profile::scope("h3 gated add", 0.0, &self.dev, || gated_add(&h, gate_a, &a, &segs))?;
+            let y = crate::profile::scope("h3 norm + modulate", 0.0, &self.dev, || modulate(&b.norm2.forward(&h)?, shift_f, scale_f, &segs))?;
+            let f = crate::profile::scope("h3 mlp", 0.0, &self.dev, || b.mlp.forward(&y))?;
+            h = crate::profile::scope("h3 gated add", 0.0, &self.dev, || gated_add(&h, gate_f, &f, &segs))?;
         }
 
         // final layer: per target stream, its own timestep row (modality 1 of 1)

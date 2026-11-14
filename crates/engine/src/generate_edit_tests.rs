@@ -212,3 +212,67 @@ fn a_swap_sends_the_bfs_lora_and_prompt() {
     assert!(swap::apply(&s, &json!({"swap": "head"})).is_err(), "a swap needs image 2");
     assert!(swap::apply(&s, &json!({"swap": "hands", "references": [{"layer": 2}]})).is_err());
 }
+
+#[test]
+fn the_head_swap_asks_for_the_reference_persons_facial_hair() {
+    assert!(swap::HEAD.prompt.ends_with(swap::HEAD_FACIAL_HAIR));
+}
+
+#[test]
+fn an_h3_edit_is_sent_at_four_megapixels() {
+    assert_eq!(edit_request_pixels("p-h3-image/edit", false), 2048 * 2048);
+    assert_eq!(edit_request_pixels("qwen-edit-2511/edit", true), 1024 * 1024);
+    assert_eq!(request_size_within(4000, 3000, edit_request_pixels("p-h3-image/edit", false)), (2352, 1760));
+    assert_eq!(request_size_within(1600, 1200, edit_request_pixels("p-h3-image/edit", false)), (1600, 1200), "a picture under 4 MP goes as it is");
+    // Quality Ultra: the 16 MP model edits a large picture whole
+    assert_eq!(edit_request_pixels("minimax-h3-image/edit", false), 2048 * 2048);
+    assert_eq!(request_size_within(4000, 3000, edit_request_pixels("minimax-h3-image/edit", true)), (4000, 3000));
+    assert_eq!(edit_request_pixels("p-h3-image/edit", true), 2048 * 2048);
+}
+
+/// `repose` pins the 2.1 edit, adds the best installed PoseStudio LoRA and its prompt, and needs
+/// the person as a reference (the open picture is the mannequin).
+#[test]
+fn a_repose_sends_the_posestudio_lora_and_prompt() {
+    let dir = std::env::temp_dir().join(format!("pex-repose-{}", std::process::id()));
+    let loras = dir.join("loras");
+    std::fs::create_dir_all(&loras).unwrap();
+    let mut s = Session::new();
+    s.edit_prefs(|p| p.integrations.models_path = dir.to_string_lossy().into_owned());
+
+    let p = json!({"repose": true, "references": [{"path": "who.png"}]});
+    let err = repose::apply(&s, &p).unwrap_err().to_string();
+    assert!(err.contains("PoseStudio"), "says what to download: {err}");
+
+    std::fs::write(loras.join(repose::REPOSE_LORAS[2]), b"x").unwrap();
+    std::fs::write(loras.join(repose::REPOSE_LORAS[1]), b"x").unwrap();
+    let p = json!({"repose": true, "skeleton": true, "prompt": "laughing", "references": [{"path": "who.png"}], "enhance": true});
+    let q = repose::apply(&s, &p).unwrap().unwrap();
+    assert_eq!(q["template"], repose::REPOSE_TEMPLATE);
+    assert_eq!(q["loras"][0]["file"], repose::REPOSE_LORAS[1], "V2 over V1.1 when V3 is missing");
+    assert_eq!(q["loras"][0]["strength"], 1.0);
+    assert_eq!(q["enhance"], false);
+    assert_eq!(q["wholePicture"], true);
+    assert_eq!(q["name"], "Repose");
+    let prompt = q["prompt"].as_str().unwrap();
+    assert!(prompt.starts_with("Draw character from image2.") && prompt.contains(repose::SKELETON_LINE) && prompt.ends_with("\nlaughing"), "{prompt}");
+    assert!(q.get("repose").is_none() && q.get("skeleton").is_none());
+
+    std::fs::write(loras.join(repose::REPOSE_LORAS[0]), b"x").unwrap();
+    let q = repose::apply(&s, &json!({"repose": true, "references": [{"layer": 2}]})).unwrap().unwrap();
+    assert_eq!(q["loras"][0]["file"], repose::REPOSE_LORAS[0], "V3 first");
+    assert!(!q["prompt"].as_str().unwrap().contains("skeleton"), "no skeleton line by default");
+
+    // A listed PoseStudio LoRA stays as asked and is not added twice.
+    let p = json!({"repose": true, "references": [{"layer": 2}], "loras": [{"file": repose::REPOSE_LORAS[2], "strength": 0.7}]});
+    let q = repose::apply(&s, &p).unwrap().unwrap();
+    assert_eq!(q["loras"].as_array().unwrap().len(), 1);
+    assert_eq!(q["loras"][0]["strength"], 0.7);
+
+    assert!(repose::apply(&s, &json!({"prompt": "x"})).unwrap().is_none(), "no repose, no change");
+    assert!(repose::apply(&s, &json!({"repose": false})).unwrap().is_none());
+    assert!(repose::apply(&s, &json!({"repose": true})).is_err(), "a repose needs image 2");
+    assert!(edit_rewrite(&s, &json!({"repose": true, "swap": "head", "references": [{"layer": 2}]})).is_err(), "not both");
+    assert_eq!(edit_rewrite(&s, &json!({"repose": true, "references": [{"layer": 2}]})).unwrap().unwrap()["name"], "Repose");
+    let _ = std::fs::remove_dir_all(&dir);
+}

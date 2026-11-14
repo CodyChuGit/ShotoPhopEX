@@ -53,6 +53,10 @@ pub struct Options {
     /// and load it again for the next request (about 7 s). Off, the driver pages instead,
     /// which made a two-reference edit twenty times slower on a 32 GB card.
     pub evict_text_encoder: bool,
+    /// Leave the vision tower off the card until a request carries a picture, and drop it
+    /// again after each encode (0.4 s to load). For cards under 28 GB, where its 2.4 GB beside
+    /// the encoder and the DiT left no room for the sampling.
+    pub lazy_vision: bool,
 }
 
 impl Default for Options {
@@ -67,6 +71,7 @@ impl Default for Options {
             vision: true,
             prefix_cache: true,
             evict_text_encoder: true,
+            lazy_vision: false,
         }
     }
 }
@@ -105,6 +110,19 @@ pub enum Schedule {
     /// ([`crate::comfy::FlowSchedule::beta`], [`crate::comfy::FlowSchedule::aura_flow`]), so
     /// the last steps refine low-noise detail. Only Krea 2's text to image and edit take it.
     KreaDetail,
+    /// Krea 2: ComfyUI's `beta` scheduler over the model's own table (shift 1.15).
+    KreaBeta,
+}
+
+/// The sampler a generation steps with (Krea 2 Turbo takes either; the rest run Euler).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Sampler {
+    /// Euler on the model's velocity.
+    #[default]
+    Euler,
+    /// ComfyUI's `er_sde` (ER-SDE-Solver-3, Cui et al. 2023): the stochastic extended-reverse-time
+    /// solver, up to third order, with fresh noise each step.
+    ErSde,
 }
 
 /// One text-to-image generation.
@@ -131,6 +149,8 @@ pub struct Request {
     /// An edit's pull toward its picture on the models that take one as in-context tokens (Krea 2's
     /// edit LoRAs: the target's attention to the picture multiplied by this; 1 = none).
     pub ref_boost: f32,
+    /// The sampler ([`Sampler::Euler`] unless the model takes another).
+    pub sampler: Sampler,
 }
 
 impl Request {
@@ -147,6 +167,7 @@ impl Request {
             references: Vec::new(),
             loras: crate::lora::LoraStack::default(),
             ref_boost: 1.0,
+            sampler: Sampler::Euler,
         }
     }
 }
@@ -458,7 +479,7 @@ impl Pipeline {
         };
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "VAE loaded");
 
-        let vision = if opts.vision {
+        let vision = if opts.vision && !opts.lazy_vision {
             progress(0.9, "Loading the vision tower");
             let t0 = Instant::now();
             let tower = load_vision(&src, &dev)?;
@@ -478,7 +499,7 @@ impl Pipeline {
             dit,
             vae,
             vision: std::sync::Mutex::new(vision),
-            vision_transient: std::sync::atomic::AtomicBool::new(false),
+            vision_transient: std::sync::atomic::AtomicBool::new(opts.lazy_vision),
             hold_vision: std::sync::atomic::AtomicBool::new(false),
             opts,
             conditioning: std::sync::Mutex::new(None),
@@ -721,12 +742,15 @@ impl Pipeline {
             let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&files, self.dtype, &self.dev)? };
             let cfg = TextConfig::default();
             let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp(self.src.lm_root()).pp("norm"))?;
+            // Only a missing tensor is a text-only repack: a card out of memory while the head
+            // went up read as one (RTX 3090, 2026-11-11, with the head on disk and quantized).
+            anyhow::ensure!(vb.contains_tensor("lm_head.weight"), "the text encoder has no lm_head (a text-only repack?)");
             let head = if matches!(self.dev, Device::Cuda(_)) {
                 // Read on the CPU and quantized on every core ([`crate::q8`]): candle's own
                 // quantize of the CUDA copy ran on one thread, 10.2 s a load. The blocks are
                 // kept on disk for the next load ([`crate::q8::cached_q8_0`]).
                 let q = crate::q8::cached_q8_0(&files, "lm_head.weight", (cfg.vocab_size, cfg.hidden_size), self.dtype, &self.dev)
-                    .context("the text encoder has no lm_head (a text-only repack?)")?;
+                    .context("loading the language-model head")?;
                 candle_core::quantized::QMatMul::from_qtensor(q)?
             } else {
                 candle_core::quantized::QMatMul::Tensor(
@@ -955,7 +979,7 @@ impl Pipeline {
                 let t: Vec<f32> = s.timesteps().iter().map(|t| (*t / 1000.0) as f32).collect();
                 (t.clone(), (0..req.steps).map(|i| s.dt(i) as f32).collect(), t)
             }
-            Schedule::KreaDetail => anyhow::bail!("the Krea detail schedule is for Krea 2 only"),
+            Schedule::KreaDetail | Schedule::KreaBeta => anyhow::bail!("the Krea schedules are for Krea 2 only"),
             Schedule::ViggleTurbo => {
                 use crate::comfy::{comfy_timestep, FlowSchedule};
                 let s = FlowSchedule::viggle_turbo(img_seq);
@@ -965,7 +989,7 @@ impl Pipeline {
         };
         let t0 = Instant::now();
         let mut latents = match req.schedule {
-            Schedule::Comfy | Schedule::ViggleTurbo | Schedule::KreaDetail => {
+            Schedule::Comfy | Schedule::ViggleTurbo | Schedule::KreaDetail | Schedule::KreaBeta => {
                 let noise = crate::comfy::noise_packed(req.seed, lh, lw).map_err(anyhow::Error::msg)?;
                 Tensor::from_vec(noise, (1, img_seq, 64), &self.dev)?
             }

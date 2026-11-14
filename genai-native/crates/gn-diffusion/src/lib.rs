@@ -32,13 +32,13 @@ use gn_engine::protocol::{Blob, DoneInfo, ErrorKind, Health, Preview, RunRequest
 use gn_engine::server::{Engine, EngineError};
 use qwen_image_rs::convrot_cache::CacheSpec;
 use qwen_image_rs::edit2511_pipeline::{self, Edit2511Pipeline, Edit2511Request};
-use qwen_image_rs::h3::pipeline::{self as h3, H3Pipeline};
+use qwen_image_rs::h3::pipeline::{self as h3, H3Kind, H3Pipeline};
 use qwen_image_rs::klein::pipeline::{self as klein_cuda, KleinPipeline};
 use qwen_image_rs::krea2_pipeline::{self, Krea2Options, Krea2Pipeline};
 use qwen_image_rs::layered_pipeline::LayeredPipeline;
 use qwen_image_rs::lora::{LoraFile, LoraStack};
 use qwen_image_rs::moss::pipeline::{self as moss, MossPipeline, Variant as MossVariant};
-use qwen_image_rs::pipeline::{Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Schedule, is_snapshot};
+use qwen_image_rs::pipeline::{Cancelled, ChatOptions, Options, Picture, Pipeline, RefImage, Request, Sampler, Schedule, is_snapshot};
 use qwen_image_rs::preview::{Frame, LatentSpace, PreviewMode, Previewer, StepPreview, TINY_DIR, TinyDecoder};
 use serde_json::{Value, json};
 
@@ -162,6 +162,12 @@ pub const TEMPLATE_H3_EDIT: &str = "p-h3-image/edit";
 pub const H3_STEPS: u32 = 8;
 /// A P-H3 picture's side when the request names none (4 MP; the model's own default is 2912).
 pub const H3_DEFAULT_SIDE: usize = 2048;
+/// MiniMax-H3-Image (MiniMax H3 Community License, bring your own files): the 16 MP model, text
+/// to image and edits with up to eight pictures, on the six steps its output heads were
+/// distilled for (the app's Ultra).
+pub const TEMPLATE_MINIMAX_H3_IMAGE: &str = "minimax-h3-image/image";
+pub const TEMPLATE_MINIMAX_H3_EDIT: &str = "minimax-h3-image/edit";
+pub const MINIMAX_H3_STEPS: u32 = 6;
 
 /// The model families served, one resident at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,10 +181,14 @@ pub enum Family {
     Klein,
     /// P-H3-Image.
     H3,
+    /// MiniMax-H3-Image.
+    MiniMaxH3,
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 38] = [
+pub const TEMPLATES: [(&str, &str, Family); 40] = [
+    (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
+    (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
     (TEMPLATE_H3_EDIT, "edit", Family::H3),
     (TEMPLATE_KLEIN_IMAGE, "image", Family::Klein),
@@ -232,6 +242,25 @@ pub const KREA2_STEPS: u32 = 8;
 pub const DEFAULT_SIDE: u32 = 1024;
 /// How many pictures an edit may carry: the picture and the template's nine references.
 pub const MAX_PICTURES: usize = 10;
+/// Cards with less memory than this (a 24 GB RTX 3090 or 4090, and smaller) run lean: the 2.1
+/// text encoder in Q8_0, Krea 2's encoder loaded per prompt, the 2.1 vision tower only when a
+/// picture needs it, and the resident model giving way to SAM when the card is short. With
+/// everything kept resident a 3090 ran out of memory on every diffusion task (2026-11-11).
+pub const LEAN_BELOW: usize = 28 << 30;
+/// Free card memory the perception engine (SAM 3.1 with its matte model, ~2 GB, and its
+/// working set) wants beside a resident diffusion model; with less, on a lean card, the
+/// diffusion model is unloaded for it ([`DiffusionEngine::yields`]).
+pub const PERCEPTION_ROOM: usize = 4 << 30;
+
+/// Whether a card of `total` bytes runs lean ([`LEAN_BELOW`]). `forced_mb` (the app's
+/// `PHOTOCRAFT_VRAM_MB`, in megabytes) stands in for the card's memory, to try the lean
+/// settings on a bigger card.
+pub fn lean_card(total: Option<usize>, forced_mb: Option<&str>) -> bool {
+    let forced = forced_mb.and_then(|v| v.trim().parse::<usize>().ok()).map(|mb| mb << 20);
+    forced.or(total).is_some_and(|t| t > 0 && t < LEAN_BELOW)
+}
+/// The pictures a MiniMax-H3-Image prompt can name.
+pub const MINIMAX_H3_PICTURES: usize = 8;
 
 /// What is on the device. One per engine, so the variants' sizes do not matter.
 #[allow(clippy::large_enum_variant)]
@@ -258,8 +287,10 @@ enum Resident {
 
 pub struct DiffusionEngine {
     models_root: PathBuf,
-    /// Q8_0 the 2.1 text encoder (for cards under 28 GB).
+    /// Q8_0 the 2.1 text encoder (`--text-quant`, or a lean card).
     quant_text: bool,
+    /// A card under [`LEAN_BELOW`]: see there.
+    lean: bool,
     resident: Resident,
     last_error: Option<String>,
     /// LoRA files on the device, by path, in the order they were loaded (the oldest goes when
@@ -295,7 +326,7 @@ fn latent_space(f: Family) -> LatentSpace {
         Family::Krea2 | Family::Edit2511 => LatentSpace::Wan21,
         Family::Layered => LatentSpace::Layered,
         // H3 has no preview (its runs show none); the arm only completes the match.
-        Family::Moss(_) | Family::Klein | Family::H3 => LatentSpace::Flux2,
+        Family::Moss(_) | Family::Klein | Family::H3 | Family::MiniMaxH3 => LatentSpace::Flux2,
     }
 }
 
@@ -365,13 +396,32 @@ fn with_style_lora(params: &std::collections::BTreeMap<String, Value>) -> Result
     Ok(out)
 }
 
-/// Whether a chat's `encoder` param asks for Krea 2's encoder ([`CHAT_ON_KREA2`]); absent or
-/// null is the default (Qwen-Image-2.1's 8B), anything else an error.
-fn chat_on_krea2(params: &std::collections::BTreeMap<String, Value>) -> Result<bool, EngineError> {
+/// Which encoder a chat answers on: Qwen-Image-2.1's 8B (the default), Krea 2's 4B
+/// ([`CHAT_ON_KREA2`]) or a MOSS template's own Qwen3.5-9B (`encoder` = that template's id, so
+/// the variant the picture will run on is the one that loads).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatOn {
+    Qwen21,
+    Krea2,
+    Moss(MossVariant),
+    Klein,
+    /// MiniMax-H3-Image's prompt writer (Qwen3.5-9B), on the H3 pipeline.
+    MiniMaxH3,
+}
+
+fn chat_on(params: &std::collections::BTreeMap<String, Value>) -> Result<ChatOn, EngineError> {
     match params.get("encoder") {
-        None | Some(Value::Null) => Ok(false),
-        Some(v) if v.as_str() == Some(CHAT_ON_KREA2) => Ok(true),
-        Some(v) => Err(EngineError::new(ErrorKind::BadRequest, format!("encoder {v}: a chat answers on the default encoder or \"{CHAT_ON_KREA2}\""))),
+        None | Some(Value::Null) => Ok(ChatOn::Qwen21),
+        Some(v) if v.as_str() == Some(CHAT_ON_KREA2) => Ok(ChatOn::Krea2),
+        Some(v) => match v.as_str().and_then(family_of) {
+            Some(Family::Moss(m)) => Ok(ChatOn::Moss(m)),
+            Some(Family::Klein) => Ok(ChatOn::Klein),
+            Some(Family::MiniMaxH3) => Ok(ChatOn::MiniMaxH3),
+            _ => Err(EngineError::new(
+                ErrorKind::BadRequest,
+                format!("encoder {v}: a chat answers on the default encoder, \"{CHAT_ON_KREA2}\" or a moss-image, flux3-klein or minimax-h3-image template's"),
+            )),
+        },
     }
 }
 
@@ -382,6 +432,15 @@ fn chat_on_krea2(params: &std::collections::BTreeMap<String, Value>) -> Result<b
 /// shift 1.25); absent or `"simple"` keeps ComfyUI's `simple` schedule.
 pub const KREA_DETAIL_SCHEDULE: &str = "krea-detail";
 
+/// `params.sampler`: `"euler"` (absent) or, on Krea 2 Turbo's text to image and edit, `"er_sde"`.
+fn sampler_for(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Sampler, EngineError> {
+    match params.get("sampler").and_then(Value::as_str) {
+        None | Some("euler") => Ok(Sampler::Euler),
+        Some("er_sde") if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Sampler::ErSde),
+        Some(other) => Err(EngineError::new(ErrorKind::BadRequest, format!("sampler {other:?} is not one {model} takes"))),
+    }
+}
+
 fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Schedule, EngineError> {
     if model == TEMPLATE_OUTPAINT_TURBO {
         return Ok(Schedule::ViggleTurbo);
@@ -389,8 +448,34 @@ fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>)
     match params.get("schedule").and_then(Value::as_str) {
         None | Some("simple") => Ok(Schedule::Comfy),
         Some(KREA_DETAIL_SCHEDULE) if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaDetail),
+        Some("beta") if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaBeta),
         Some(other) => Err(EngineError::new(ErrorKind::BadRequest, format!("schedule {other:?} is not one {model} takes"))),
     }
+}
+
+/// `params.refine: {"width", "height", "denoise", "steps"}` on Krea 2 Turbo's text to image: a
+/// second pass over the picture at that size ([`Krea2Pipeline::refine_previewed`]).
+fn krea2_refine_options(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Option<krea2_pipeline::RefineOptions>, EngineError> {
+    let Some(v) = params.get("refine").filter(|v| !v.is_null()) else { return Ok(None) };
+    let bad = |m: String| EngineError::new(ErrorKind::BadRequest, m);
+    if model != TEMPLATE_KREA2 {
+        return Err(bad(format!("refine is for {TEMPLATE_KREA2} only, not {model}")));
+    }
+    let side = |k: &str| -> Result<usize, EngineError> {
+        match v.get(k).and_then(Value::as_u64) {
+            Some(x) if (256..=4096).contains(&x) && x % 16 == 0 => Ok(x as usize),
+            _ => Err(bad(format!("refine.{k} must be a multiple of 16 in 256..4096"))),
+        }
+    };
+    let denoise = match v.get("denoise").and_then(Value::as_f64) {
+        Some(d) if d > 0.0 && d <= 1.0 => d as f32,
+        _ => return Err(bad("refine.denoise must be in (0, 1]".into())),
+    };
+    let steps = match v.get("steps").and_then(Value::as_u64) {
+        Some(n) if (1..=50).contains(&n) => n as usize,
+        _ => return Err(bad("refine.steps must be 1..50".into())),
+    };
+    Ok(Some(krea2_pipeline::RefineOptions { width: side("width")?, height: side("height")?, denoise, steps }))
 }
 
 fn krea2_fill_options(params: &std::collections::BTreeMap<String, Value>) -> Result<krea2_pipeline::FillOptions, EngineError> {
@@ -437,7 +522,12 @@ impl DiffusionEngine {
         if let Some(why) = &refused {
             eprintln!("gn-diffusion: {why}");
         }
-        Self { models_root, quant_text, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None, want_nvfp4: false }
+        let lean = cfg!(feature = "cuda") && lean_card(gpu.as_ref().map(|g| g.total_bytes), std::env::var("PHOTOCRAFT_VRAM_MB").ok().as_deref());
+        if lean {
+            eprintln!("gn-diffusion: lean memory mode (card under {} GB): Q8_0 text encoder, encoders loaded when needed", LEAN_BELOW >> 30);
+        }
+        let quant_text = quant_text || lean;
+        Self { models_root, quant_text, lean, resident: Resident::None, last_error: None, loras: Vec::new(), gpu, refused, tiny: None, want_nvfp4: false }
     }
 
     /// For a Sharp preview: `space`'s tiny decoder on the resident pipeline's device, loaded
@@ -557,14 +647,39 @@ impl DiffusionEngine {
             return Ok((DoneInfo { images: Vec::new(), texts: vec![reply], seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, Vec::new()));
         }
         #[cfg_attr(feature = "mlx", allow(unreachable_code))]
-        let on_krea2 = chat_on_krea2(&req.params)?;
-        self.ensure_loaded(if on_krea2 { Family::Krea2 } else { Family::QwenImage21 }, progress)?;
+        let on = chat_on(&req.params)?;
+        if matches!(on, ChatOn::Moss(_) | ChatOn::Klein | ChatOn::MiniMaxH3) && image.is_some() {
+            return Err(EngineError::new(ErrorKind::Unsupported, "MOSS's, Klein's and MiniMax's writers answer from words only (no picture) on this build"));
+        }
+        self.ensure_loaded(
+            match on {
+                ChatOn::Qwen21 => Family::QwenImage21,
+                ChatOn::Krea2 => Family::Krea2,
+                ChatOn::Moss(v) => Family::Moss(v),
+                ChatOn::Klein => Family::Klein,
+                ChatOn::MiniMaxH3 => Family::MiniMaxH3,
+            },
+            progress,
+        )?;
         progress(0.5, "Thinking");
-        let opts = ChatOptions { seed: req.seed, ..ChatOptions::default() };
+        // `params.max_tokens` (16..2048): a longer answer than the default 120 tokens (a
+        // text-to-image rewrite of 60 to 120 words runs past it and is cut mid-sentence; a
+        // 16 MP picture's expanded caption runs to several hundred words).
+        let max_new = match req.params.get("max_tokens") {
+            None => ChatOptions::default().max_new,
+            Some(v) => match v.as_u64() {
+                Some(n) if (16..=2048).contains(&n) => n as usize,
+                _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("max_tokens {v} is outside 16..2048"))),
+            },
+        };
+        let opts = ChatOptions { seed: req.seed, max_new, ..ChatOptions::default() };
         let stop = || cancel.load(Ordering::SeqCst);
         let reply = match &self.resident {
-            Resident::Qwen(p) if !on_krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
-            Resident::Krea2(p) if on_krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
+            Resident::Qwen(p) if on == ChatOn::Qwen21 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
+            Resident::Krea2(p) if on == ChatOn::Krea2 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
+            Resident::Moss(p, _) if matches!(on, ChatOn::Moss(_)) => p.chat(&system, &req.prompt, &opts, &stop),
+            Resident::KleinCuda(p) if on == ChatOn::Klein => p.chat(&system, &req.prompt, &opts, &stop),
+            Resident::H3(p) if on == ChatOn::MiniMaxH3 => p.chat(&system, &req.prompt, &opts, &stop),
             _ => return Err(EngineError::new(ErrorKind::Internal, "no pipeline")),
         };
         self.give_back();
@@ -591,6 +706,66 @@ impl DiffusionEngine {
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) | Resident::Klein(_) => {}
             Resident::None => {}
+        }
+    }
+
+    /// The driver's free memory on the resident pipeline's card; `None` with nothing resident.
+    fn free_now(&self) -> Option<usize> {
+        let dev = match &self.resident {
+            Resident::Qwen(p) => p.device(),
+            Resident::Krea2(p) => p.device(),
+            Resident::Layered(p) => p.device(),
+            Resident::Edit2511(p) => p.device(),
+            Resident::Moss(p, _) => p.device(),
+            Resident::H3(p) => p.device(),
+            Resident::KleinCuda(p) => p.device(),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) | Resident::Klein(_) => return None,
+            Resident::None => return None,
+        };
+        qwen_image_rs::device::free_vram(dev).map(|(free, _)| free)
+    }
+
+    /// Drop the resident pipeline and hand the memory it held back to the driver at once:
+    /// kept in the pool, the next family's loads (and SAM's, in the same worker) found the card
+    /// full and ran out of memory on a 24 GB card.
+    fn unload(&mut self) {
+        let dev = match &self.resident {
+            Resident::Qwen(p) => Some(p.device().clone()),
+            Resident::Krea2(p) => Some(p.device().clone()),
+            Resident::Layered(p) => Some(p.device().clone()),
+            Resident::Edit2511(p) => Some(p.device().clone()),
+            Resident::Moss(p, _) => Some(p.device().clone()),
+            Resident::H3(p) => Some(p.device().clone()),
+            Resident::KleinCuda(p) => Some(p.device().clone()),
+            #[cfg(feature = "mlx")]
+            Resident::Mlx(_) | Resident::Klein(_) => None,
+            Resident::None => None,
+        };
+        self.resident = Resident::None;
+        if let Some(dev) = dev {
+            qwen_image_rs::device::trim_pool(&dev);
+        }
+    }
+
+    /// After running out of memory: the resident pipeline goes, and so does the pool's hold on
+    /// whatever a load that failed half way had taken (with nothing resident to name the card,
+    /// the card's own context is asked).
+    fn unload_after_oom(&mut self) {
+        let held = !matches!(self.resident, Resident::None);
+        // The worker's log said nothing of these (they reached only the editor), so a 24 GB
+        // card's failures could not be placed (2026-11-11).
+        eprintln!(
+            "gn-diffusion: out of card memory ({} resident, {:.1} GB free by the driver's count); unloading",
+            if held { "a model" } else { "nothing" },
+            self.free_now().map_or(0.0, |f| f as f64 / 1e9)
+        );
+        self.unload();
+        if !held
+            && cfg!(feature = "cuda")
+            && let Ok(dev) = qwen_image_rs::device::best_device()
+        {
+            qwen_image_rs::device::trim_pool(&dev);
         }
     }
 
@@ -704,6 +879,7 @@ impl DiffusionEngine {
             Family::Edit2511 => self.edit2511_available(),
             Family::Moss(v) => moss::find_files(&self.models_root, v).is_some(),
             Family::H3 => cfg!(not(feature = "mlx")) && h3::find_files(&self.models_root).is_some(),
+            Family::MiniMaxH3 => cfg!(not(feature = "mlx")) && h3::find_minimax_files(&self.models_root).is_some(),
             Family::Klein if cfg!(feature = "mlx") => self.klein_dir().is_some() && self.models_root.join(KLEIN_VAE).is_file(),
             Family::Klein => klein_cuda::find_files(&self.models_root, false).is_some(),
         }
@@ -726,6 +902,15 @@ impl DiffusionEngine {
                 #[cfg(feature = "mlx")]
                 if *f == Family::QwenImage21 && t.starts_with("enhance/") {
                     return self.has_family(Family::Moss(MossVariant::Sft));
+                }
+                // A prompt writer answers on any installed encoder that can write
+                // (`params.encoder`), not on Qwen-Image-2.1's alone.
+                if t.starts_with("enhance/") {
+                    return self.has_family(Family::QwenImage21)
+                        || self.has_family(Family::Krea2)
+                        || self.has_family(Family::Klein)
+                        || [MossVariant::Sft, MossVariant::Kromoss].into_iter().any(|v| self.has_family(Family::Moss(v)))
+                        || h3::find_minimax_files(&self.models_root).is_some_and(|f| f.writer.is_some());
                 }
                 (if *f == Family::Edit2511 { edit2511 } else { self.has_family(*f) })
                     && (*f != Family::Edit2511
@@ -752,7 +937,8 @@ impl DiffusionEngine {
             (Resident::Krea2(p), Family::Krea2) if p.is_nvfp4() == self.krea2_nvfp4() => return Ok(()),
             (Resident::Qwen(_), Family::QwenImage21) | (Resident::Layered(_), Family::Layered) | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
             (Resident::Moss(_, held), Family::Moss(v)) if *held == v => return Ok(()),
-            (Resident::H3(_), Family::H3) => return Ok(()),
+            (Resident::H3(p), Family::H3) if p.kind() == H3Kind::PH3 => return Ok(()),
+            (Resident::H3(p), Family::MiniMaxH3) if p.kind() == H3Kind::MiniMax => return Ok(()),
             (Resident::KleinCuda(_), Family::Klein) => return Ok(()),
             #[cfg(feature = "mlx")]
             (Resident::Mlx(_), Family::Moss(_)) => return Ok(()),
@@ -761,7 +947,7 @@ impl DiffusionEngine {
             (Resident::None, _) => {}
             _ => {
                 progress(0.0, "Unloading the other models");
-                self.resident = Resident::None;
+                self.unload();
             }
         }
         let mut report = |f: f32, m: &str| progress(f * 0.3, m);
@@ -795,6 +981,7 @@ impl DiffusionEngine {
                     cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false),
                     quant_text: self.quant_text,
                     text_gguf,
+                    lazy_vision: self.lean,
                     ..Options::default()
                 };
                 Resident::Qwen(Pipeline::load(&dir, opts, &mut report).map_err(err)?)
@@ -813,6 +1000,7 @@ impl DiffusionEngine {
                 let opts = Krea2Options {
                     cache: CacheSpec::from_cli(Some(&self.cache_dir(&dir)), false, false),
                     nvfp4: self.krea2_nvfp4(),
+                    evict_text_encoder: self.lean,
                     ..Krea2Options::defaults()
                 };
                 Resident::Krea2(Krea2Pipeline::load(&dir, opts, &mut report).map_err(err)?)
@@ -894,7 +1082,22 @@ impl DiffusionEngine {
                 };
                 Resident::H3(H3Pipeline::load(&files, &mut report).map_err(err)?)
             }
+            Family::MiniMaxH3 => {
+                let Some(files) = h3::find_minimax_files(&self.models_root) else {
+                    return Err(EngineError::new(
+                        ErrorKind::ModelMissing,
+                        format!(
+                            "no MiniMax-H3-Image in {}: diffusion_models/minimax_h3_image_pruned_int8_convrot,                              text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq, vae/minimax_h3_image_vae_fp16 and ComfyUI's qwen25_tokenizer",
+                            self.models_root.display()
+                        ),
+                    ));
+                };
+                Resident::H3(H3Pipeline::load(&files, &mut report).map_err(err)?)
+            }
         };
+        if let Some(free) = self.free_now() {
+            eprintln!("gn-diffusion: {family:?} loaded{}, {:.1} GB of the card free", if self.lean { " (lean)" } else { "" }, free as f64 / 1e9);
+        }
         Ok(())
     }
 
@@ -949,7 +1152,7 @@ impl DiffusionEngine {
                     self.last_error = Some(e.message.clone());
                 }
                 if e.kind == ErrorKind::OutOfMemory {
-                    self.resident = Resident::None;
+                    self.unload_after_oom();
                 }
                 return Err(e);
             }
@@ -1023,7 +1226,7 @@ impl DiffusionEngine {
                     self.last_error = Some(e.message.clone());
                 }
                 if e.kind == ErrorKind::OutOfMemory {
-                    self.resident = Resident::None;
+                    self.unload_after_oom();
                 }
                 return Err(e);
             }
@@ -1267,7 +1470,11 @@ impl Engine for DiffusionEngine {
             Resident::Layered(p) => (vec!["qwen-image-layered".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Edit2511(p) => (vec!["qwen-image-edit-2511".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             Resident::Moss(p, _) => (vec!["moss-image".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
-            Resident::H3(p) => (vec!["p-h3-image".to_string()], p.device().is_cuda(), qwen_image_rs::device::free_vram(p.device())),
+            Resident::H3(p) => (
+                vec![if p.kind() == H3Kind::MiniMax { "minimax-h3-image" } else { "p-h3-image" }.to_string()],
+                p.device().is_cuda(),
+                qwen_image_rs::device::free_vram(p.device()),
+            ),
             Resident::KleinCuda(p) => (vec!["flux3-klein".to_string()], p.is_cuda(), qwen_image_rs::device::free_vram(p.device())),
             #[cfg(feature = "mlx")]
             Resident::Mlx(_) => (vec!["moss-image".to_string()], false, None),
@@ -1345,7 +1552,7 @@ impl Engine for DiffusionEngine {
             self.give_back();
             if let Err(e) = loaded {
                 if e.kind == ErrorKind::OutOfMemory {
-                    self.resident = Resident::None;
+                    self.unload_after_oom();
                 }
                 return Err(e);
             }
@@ -1401,6 +1608,12 @@ impl Engine for DiffusionEngine {
                     canvas = Some((picture.width / 16 * 16, picture.height / 16 * 16));
                     references.push(placed_picture(&picture, &req.params)?);
                 } else {
+                    // A MiniMax-H3-Image edit of a large picture renders at the picture's own
+                    // size (the app sends at most 16 MP); a small one at the model's default,
+                    // short edge 1024.
+                    if family == Family::MiniMaxH3 && task == "edit" && picture.width.min(picture.height) >= 1024 {
+                        canvas = Some((picture.width / 32 * 32, picture.height / 32 * 32));
+                    }
                     references.push(picture);
                 }
                 if task == "fill" {
@@ -1431,6 +1644,17 @@ impl Engine for DiffusionEngine {
                 }
                 canvas = Some((side(req.width), side(req.height)));
             }
+            // A new MiniMax-H3-Image picture from up to 8 pictures ("Picture 1" to "Picture 8"
+            // in the prompt): the target at the asked size, 2048² where none is given.
+            "image" if family == Family::MiniMaxH3 && !req.references.is_empty() => {
+                if req.references.len() > MINIMAX_H3_PICTURES {
+                    return Err(EngineError::new(ErrorKind::BadRequest, format!("{} references; at most {MINIMAX_H3_PICTURES}", req.references.len())));
+                }
+                for (i, r) in req.references.iter().enumerate() {
+                    references.push(reference_of(r, blobs, &format!("reference {}", i + 1))?);
+                }
+                canvas = Some(if req.width == 0 || req.height == 0 { (H3_DEFAULT_SIDE, H3_DEFAULT_SIDE) } else { (side(req.width), side(req.height)) });
+            }
             _ => {}
         }
         if req.model == TEMPLATE_KREA2_STYLE && (req.width == 0 || req.height == 0 || !(1..=2).contains(&references.len())) {
@@ -1448,6 +1672,7 @@ impl Engine for DiffusionEngine {
             // Klein's own (its checkpoint's 16).
             Family::Klein => 0,
             Family::H3 => H3_STEPS,
+            Family::MiniMaxH3 => MINIMAX_H3_STEPS,
         };
         let default_guidance = match family {
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => 1.0,
@@ -1462,7 +1687,9 @@ impl Engine for DiffusionEngine {
             }
             let (width, height) = match canvas {
                 Some(c) => c,
-                None if references.is_empty() && family == Family::H3 && (req.width == 0 || req.height == 0) => (H3_DEFAULT_SIDE, H3_DEFAULT_SIDE),
+                None if references.is_empty() && matches!(family, Family::H3 | Family::MiniMaxH3) && (req.width == 0 || req.height == 0) => {
+                    (H3_DEFAULT_SIDE, H3_DEFAULT_SIDE)
+                }
                 None if references.is_empty() => (side(req.width), side(req.height)),
                 None => (0, 0),
             };
@@ -1525,12 +1752,13 @@ impl Engine for DiffusionEngine {
                 references,
                 loras,
                 ref_boost,
+                sampler: sampler_for(&req.model, &req.params)?,
             };
             let fill_opts = if krea2_fill { Some(krea2_fill_options(&req.params)?) } else { None };
             let mut report = |f: f32, m: &str| progress(0.3 + 0.7 * f, m);
             let stop = || cancel.load(Ordering::SeqCst);
             let err = |e: anyhow::Error| EngineError::new(kind_of(&e), e.to_string());
-            let mode = if family == Family::H3 { PreviewMode::Off } else { preview_mode(req.preview) };
+            let mode = if matches!(family, Family::H3 | Family::MiniMaxH3) { PreviewMode::Off } else { preview_mode(req.preview) };
             self.ensure_tiny(mode, latent_space(family));
             let mut sink = |f: Frame| preview(engine_preview(f));
             let mut viewer = Previewer::new(mode, latent_space(family), self.tiny.as_ref(), &mut sink);
@@ -1549,7 +1777,14 @@ impl Engine for DiffusionEngine {
                 (Resident::Krea2(p), _) if req.model == TEMPLATE_KREA2_STYLE => {
                     p.generate_style_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
-                (Resident::Krea2(p), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                (Resident::Krea2(p), _) => match krea2_refine_options(&req.model, &req.params)? {
+                    None => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
+                    // A second pass at the larger size after the picture (Quality best).
+                    Some(opts) => {
+                        let base = p.generate_previewed(&ask, &mut |f, m| report(0.55 * f, m), None, &stop).map_err(err)?;
+                        p.refine_previewed(&ask, &base, &opts, &mut |f, m| report(0.55 + 0.45 * f, m), shown, &stop).map(|p| vec![p]).map_err(err)
+                    }
+                },
                 (Resident::Moss(p, _), _) if realism => {
                     p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
@@ -1586,7 +1821,7 @@ impl Engine for DiffusionEngine {
                 }
                 if e.kind == ErrorKind::OutOfMemory {
                     // Give the memory back: the next request reloads.
-                    self.resident = Resident::None;
+                    self.unload_after_oom();
                     self.loras.clear();
                 }
                 return Err(e);
@@ -1602,7 +1837,7 @@ impl Engine for DiffusionEngine {
 
     fn free(&mut self) {
         self.bind();
-        self.resident = Resident::None;
+        self.unload();
         self.loras.clear();
         self.tiny = None;
         #[cfg(feature = "mlx")]
@@ -1611,9 +1846,19 @@ impl Engine for DiffusionEngine {
 
     /// On a Mac (MLX) the models and the perception engine's SAM share one memory: the diffusion
     /// model gives it up when SAM runs (reloaded from the converted cache in a few seconds after),
-    /// where holding both pushed a 16 GB Mac into gigabytes of swap. On CUDA it stays.
+    /// where holding both pushed a 16 GB Mac into gigabytes of swap. On a CUDA card under
+    /// [`LEAN_BELOW`] it gives way only when the card has less than [`PERCEPTION_ROOM`] free
+    /// (Krea 2 warmed at launch filled a 3090, and the first Select Subject ran out of memory
+    /// instead of making room, 2026-11-11). On a bigger card it stays.
     fn yields(&self) -> bool {
-        cfg!(feature = "mlx")
+        if cfg!(feature = "mlx") {
+            return true;
+        }
+        if !self.lean || matches!(self.resident, Resident::None) {
+            return false;
+        }
+        self.give_back();
+        self.free_now().is_some_and(|free| free < PERCEPTION_ROOM)
     }
 
     fn index(&mut self, dir: &str) -> Value {
@@ -2005,6 +2250,17 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn krea2_refine_options_parse() {
+        let p = |v: Value| std::collections::BTreeMap::from([("refine".to_string(), v)]);
+        assert_eq!(krea2_refine_options(TEMPLATE_KREA2, &std::collections::BTreeMap::new()).unwrap(), None);
+        let o = krea2_refine_options(TEMPLATE_KREA2, &p(json!({"width": 2048, "height": 1536, "denoise": 0.3, "steps": 4}))).unwrap().unwrap();
+        assert_eq!((o.width, o.height, o.steps), (2048, 1536, 4));
+        assert!(krea2_refine_options(TEMPLATE_KREA2_EDIT, &p(json!({"width": 2048, "height": 1536, "denoise": 0.3, "steps": 4}))).is_err());
+        assert!(krea2_refine_options(TEMPLATE_KREA2, &p(json!({"width": 2050, "height": 1536, "denoise": 0.3, "steps": 4}))).is_err());
+        assert!(krea2_refine_options(TEMPLATE_KREA2, &p(json!({"width": 2048, "height": 1536, "denoise": 0.0, "steps": 4}))).is_err());
+    }
+
     /// `params.schedule` picks Krea 2's detail recipe, only where Krea 2 takes it.
     #[test]
     fn the_krea_detail_schedule_is_krea_only() {
@@ -2017,6 +2273,11 @@ mod tests {
         assert_eq!(schedule_for(TEMPLATE_OUTPAINT_TURBO, &none).unwrap(), Schedule::ViggleTurbo);
         assert!(schedule_for(TEMPLATE_KREA2_FILL, &p(KREA_DETAIL_SCHEDULE)).is_err());
         assert!(schedule_for(TEMPLATE_KREA2, &p("karras")).is_err());
+        assert_eq!(schedule_for(TEMPLATE_KREA2, &p("beta")).unwrap(), Schedule::KreaBeta);
+        let sp = |v: &str| std::collections::BTreeMap::from([("sampler".to_string(), Value::from(v))]);
+        assert_eq!(sampler_for(TEMPLATE_KREA2, &none).unwrap(), Sampler::Euler);
+        assert_eq!(sampler_for(TEMPLATE_KREA2, &sp("er_sde")).unwrap(), Sampler::ErSde);
+        assert!(sampler_for(TEMPLATE_KREA2_FILL, &sp("er_sde")).is_err());
     }
 
     /// A Krea 2 edit runs with its edit LoRA in front of the request's own, once.
@@ -2036,16 +2297,24 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_names_krea2s_encoder_or_none() {
+    fn a_chat_names_krea2s_or_a_moss_encoder_or_none() {
         let mut p = BTreeMap::new();
-        assert!(!chat_on_krea2(&p).unwrap());
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Qwen21);
         p.insert("encoder".into(), json!(CHAT_ON_KREA2));
-        assert!(chat_on_krea2(&p).unwrap());
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Krea2);
+        p.insert("encoder".into(), json!(TEMPLATE_MOSS_TURBO));
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Moss(MossVariant::Kromoss));
+        p.insert("encoder".into(), json!(TEMPLATE_MOSS));
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Moss(MossVariant::Sft));
+        p.insert("encoder".into(), json!(TEMPLATE_KLEIN_IMAGE));
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Klein);
+        p.insert("encoder".into(), json!(TEMPLATE_MINIMAX_H3_IMAGE));
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::MiniMaxH3);
         p.insert("encoder".into(), Value::Null);
-        assert!(!chat_on_krea2(&p).unwrap());
-        for bad in [json!("qwen"), json!(3), json!(["krea2"])] {
+        assert_eq!(chat_on(&p).unwrap(), ChatOn::Qwen21);
+        for bad in [json!("qwen"), json!(3), json!(["krea2"]), json!(TEMPLATE_KREA2)] {
             p.insert("encoder".into(), bad);
-            assert!(chat_on_krea2(&p).is_err());
+            assert!(chat_on(&p).is_err());
         }
     }
 
@@ -2129,6 +2398,28 @@ mod tests {
         let both = with_lora_first(&with_lora_first(&BTreeMap::new(), QWEN21_TURBO_LORA), QWEN21_OUTPAINT_LORA);
         assert_eq!((both["loras"][0]["file"].as_str(), both["loras"][1]["file"].as_str()), (Some(QWEN21_OUTPAINT_LORA), Some(QWEN21_TURBO_LORA)));
         assert_eq!(task_of(TEMPLATE_OUTPAINT_TURBO), Some("expand"));
+    }
+
+    #[test]
+    fn cards_under_28_gb_run_lean() {
+        const GIB: usize = 1 << 30;
+        // DXGI's and the driver's counts: a 5090 is about 31.5 GiB, a 3090 or 4090 about 23.6.
+        assert!(!lean_card(Some(32_607 << 20), None));
+        assert!(lean_card(Some(24_268 << 20), None));
+        assert!(lean_card(Some(16 * GIB), None));
+        assert!(!lean_card(None, None), "an unknown card keeps the usual settings");
+        assert!(!lean_card(Some(0), None));
+        // PHOTOCRAFT_VRAM_MB stands in for the card.
+        assert!(lean_card(Some(32_607 << 20), Some("24000")));
+        assert!(!lean_card(Some(24_268 << 20), Some(" 32768 ")));
+        assert!(lean_card(Some(24_268 << 20), Some("not a number")));
+    }
+
+    #[test]
+    fn a_cpu_engine_never_gives_way_to_sam() {
+        // Nothing resident (and no CUDA): the perception engine has the card to itself already.
+        let e = DiffusionEngine::new(PathBuf::from("m"), false);
+        assert_eq!(e.yields(), cfg!(feature = "mlx"));
     }
 
     #[test]
