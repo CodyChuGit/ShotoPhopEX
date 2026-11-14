@@ -56,6 +56,26 @@ extern "C" {
         bias: f32,
         stream: *mut c_void,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn qir_flash64_fwd_bias(
+        o: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        b: i32,
+        h: i32,
+        kvh: i32,
+        s: i32,
+        skv: i32,
+        head_dim: i32,
+        strides: *const std::ffi::c_long,
+        scale: f32,
+        bias_row: i32,
+        bias_k0: i32,
+        bias_k1: i32,
+        bias: f32,
+        stream: *mut c_void,
+    ) -> i32;
 }
 
 /// A `(B, heads, rows, 128)` view's batch, head and row strides and its start, in elements:
@@ -80,6 +100,8 @@ pub struct KeyBias {
 
 struct Flash {
     layered: bool,
+    /// The 64-wide-head build of the kernel (`kernels/flash/flash_fwd64.cu`).
+    d64: bool,
     scale: f32,
     bias: Option<KeyBias>,
 }
@@ -105,8 +127,9 @@ impl candle_core::CustomOp3 for Flash {
         let dev = q.device().clone();
         let (b, h, s, d) = q_l.shape().dims4()?;
         let (kb, kvh, skv, kd) = k_l.shape().dims4()?;
-        if v_l.shape().dims4()? != (kb, kvh, skv, kd) || kb != b || kd != d || d != HEAD_DIM || kvh == 0 || h % kvh != 0 {
-            candle_core::bail!("flash-attention: q {:?}, k {:?}, v {:?} (head dim {HEAD_DIM}, H a multiple of KVH)", q_l.shape(), k_l.shape(), v_l.shape());
+        let want = if self.d64 { 64 } else { HEAD_DIM };
+        if v_l.shape().dims4()? != (kb, kvh, skv, kd) || kb != b || kd != d || d != want || kvh == 0 || h % kvh != 0 {
+            candle_core::bail!("flash-attention: q {:?}, k {:?}, v {:?} (head dim {want}, H a multiple of KVH)", q_l.shape(), k_l.shape(), v_l.shape());
         }
         let (qst, qo) = bhs_strides(q_l, "flash q")?;
         let (kst, ko) = bhs_strides(k_l, "flash k")?;
@@ -126,7 +149,13 @@ impl candle_core::CustomOp3 for Flash {
                 None => (0, 0, 0, 0.0),
             };
             let rc = unsafe {
-                let launch = if self.layered { qir_layered_flash_fwd_bias } else { qir_flash_fwd_bias };
+                let launch = if self.d64 {
+                    qir_flash64_fwd_bias
+                } else if self.layered {
+                    qir_layered_flash_fwd_bias
+                } else {
+                    qir_flash_fwd_bias
+                };
                 launch(
                     op as *mut c_void,
                     (qp + qo) as *const c_void,
@@ -166,20 +195,46 @@ pub fn attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Result<Tenso
 pub fn attention_biased(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, bias: Option<KeyBias>) -> Result<Tensor> {
     anyhow::ensure!(q.dtype() == DType::BF16 && k.dtype() == DType::BF16 && v.dtype() == DType::BF16, "flash-attention takes bf16");
     let dense_rows = |t: &Tensor| -> Result<Tensor> { Ok(if t.stride().last() == Some(&1) { t.clone() } else { t.contiguous()? }) };
-    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: false, scale, bias })?)
+    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: false, d64: false, scale, bias })?)
+}
+
+/// [`attention`] for 64-wide heads: `q (B, H, S, 64)`, `k`, `v (B, KVH, Skv, 64)` in bf16, the
+/// result `(B, S, H, 64)`.
+pub fn attention64(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Result<Tensor> {
+    anyhow::ensure!(q.dtype() == DType::BF16 && k.dtype() == DType::BF16 && v.dtype() == DType::BF16, "flash-attention takes bf16");
+    let dense_rows = |t: &Tensor| -> Result<Tensor> { Ok(if t.stride().last() == Some(&1) { t.clone() } else { t.contiguous()? }) };
+    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: false, d64: true, scale, bias: None })?)
 }
 
 /// Layered-only shared-memory reuse; shared callers retain their original kernel.
 pub(crate) fn layered_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32, bias: Option<KeyBias>) -> Result<Tensor> {
     anyhow::ensure!(q.dtype() == DType::BF16 && k.dtype() == DType::BF16 && v.dtype() == DType::BF16, "Layered attention takes bf16");
     let dense_rows = |t: &Tensor| -> Result<Tensor> { Ok(if t.stride().last() == Some(&1) { t.clone() } else { t.contiguous()? }) };
-    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: true, scale, bias })?)
+    Ok(dense_rows(q)?.apply_op3_no_bwd(&dense_rows(k)?, &dense_rows(v)?, &Flash { layered: true, d64: false, scale, bias })?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use candle_core::Device;
+
+    /// The 64-wide build against the plain f32 attention (ragged tail). Skipped without CUDA.
+    #[test]
+    fn flash64_is_the_plain_attention() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let (b, h, s, d) = (2, 4, 333, 64);
+        let q = (Tensor::randn(0f32, 1.0, (b, s, h, d), &dev)? * 2.0)?.to_dtype(DType::BF16)?.transpose(1, 2)?;
+        let k = (Tensor::randn(0f32, 1.0, (b, s, h, d), &dev)? * 2.0)?.to_dtype(DType::BF16)?.transpose(1, 2)?;
+        let v = Tensor::randn(0f32, 1.0, (b, s, h, d), &dev)?.to_dtype(DType::BF16)?.transpose(1, 2)?;
+        let scale = 1.0 / (d as f32).sqrt();
+        let got = attention64(&q, &k, &v, scale)?.to_dtype(DType::F32)?; // (B,S,H,D)
+        let f = |t: &Tensor| -> Result<Tensor> { Ok(t.contiguous()?.to_dtype(DType::F32)?) };
+        let p = candle_nn::ops::softmax_last_dim(&(f(&q)?.matmul(&f(&k)?.t()?)? * f64::from(scale))?)?;
+        let want = p.matmul(&f(&v)?)?.transpose(1, 2)?;
+        let err = (got - want)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+        assert!(err < 2e-2, "flash64 max abs err {err}");
+        Ok(())
+    }
 
     /// The kernel against the plain f32 attention, on a shape with a ragged tail and grouped
     /// heads. Skipped without a CUDA device.

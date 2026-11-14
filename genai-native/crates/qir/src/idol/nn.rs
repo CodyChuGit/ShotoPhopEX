@@ -119,16 +119,11 @@ pub fn attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
     let lk = k.dim(1)?;
     let scale = 1.0 / (d as f64).sqrt();
     #[cfg(feature = "flash")]
-    if q.device().is_cuda() && d <= crate::flash::HEAD_DIM {
-        // The fused kernel takes 128-wide bf16 heads: zero-pad q, k and v (the scores and the
-        // first `d` output channels are unchanged) and keep the true scale.
-        let pad = |t: &Tensor| -> Result<Tensor> {
-            let t = t.to_dtype(DType::BF16)?;
-            let t = if d < crate::flash::HEAD_DIM { t.pad_with_zeros(3, 0, crate::flash::HEAD_DIM - d)? } else { t };
-            Ok(t.transpose(1, 2)?) // (B, H, L, 128) view
-        };
-        let out = crate::flash::attention(&pad(q)?, &pad(k)?, &pad(v)?, scale as f32)?; // (B, Lq, H, 128)
-        return Ok(out.narrow(3, 0, d)?.reshape((b, lq, h * d))?.to_dtype(q.dtype())?);
+    if q.device().is_cuda() && (d == 64 || d == crate::flash::HEAD_DIM) {
+        let bhsd = |t: &Tensor| -> Result<Tensor> { Ok(t.to_dtype(DType::BF16)?.transpose(1, 2)?) }; // (B, H, L, D) view
+        let (q2, k2, v2) = (bhsd(q)?, bhsd(k)?, bhsd(v)?);
+        let out = if d == 64 { crate::flash::attention64(&q2, &k2, &v2, scale as f32)? } else { crate::flash::attention(&q2, &k2, &v2, scale as f32)? };
+        return Ok(out.reshape((b, lq, h * d))?.to_dtype(q.dtype())?);
     }
     const ROWS: usize = 1024;
     let mut items = Vec::with_capacity(b);
