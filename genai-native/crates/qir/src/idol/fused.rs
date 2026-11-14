@@ -109,6 +109,136 @@ pub fn qkv_prep(qkv: &Tensor, delta: &Tensor, params: &(Tensor, usize, usize), h
     Ok((part(0)?, part(1)?, part(2)?))
 }
 
+// ---- AdaLN: LayerNorm + modulation, gated residuals ------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn qir_idol_ln_mod(h: *mut c_void, x: *const c_void, m: *const c_void, rows: i64, l: i32, c: i32, sh: i32, sc: i32, eps: f32, stream: *mut c_void) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn qir_idol_res_ln_mod(out: *mut c_void, x: *const c_void, a: *const c_void, m: *const c_void, rows: i64, l: i32, c: i32, g: i32, sh: i32, sc: i32, eps: f32, stream: *mut c_void) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn qir_idol_gate_res(out: *mut c_void, x: *const c_void, f: *const c_void, m: *const c_void, rows: i64, l: i32, c: i32, g: i32, stream: *mut c_void) -> i32;
+}
+
+/// Which modulation chunks (of the six in `m (B, 6C)`) a fused AdaLN op reads.
+#[derive(Clone, Copy)]
+enum AdaOp {
+    /// `LN(x)·(1 + m[sc]) + m[sh]`
+    LnMod { sh: usize, sc: usize },
+    /// `x + a·m[g]`, then `LN` of it modulated: both planes out.
+    ResLnMod { g: usize, sh: usize, sc: usize },
+    /// `x + f·m[g]`
+    GateRes { g: usize },
+}
+
+struct Ada {
+    op: AdaOp,
+    eps: f32,
+}
+
+impl Ada {
+    /// `x`'s rows, their length `L` per batch item and their width `C`; checks `m` is `(B, 6C)`.
+    fn dims(xl: &Layout, ml: &Layout) -> candle_core::Result<(usize, usize, usize)> {
+        let (b, l, c) = xl.shape().dims3()?;
+        if ml.shape().dims2()? != (b, 6 * c) || !c.is_multiple_of(8) || c / 8 > 1024 || c / 8 % 32 != 0 {
+            candle_core::bail!("idol AdaLN: x {:?}, m {:?} (m must be (B, 6C), C/8 a multiple of 32 up to 1024)", xl.shape(), ml.shape());
+        }
+        Ok((b * l, l, c))
+    }
+
+    fn run(&self, x: &CudaStorage, xl: &Layout, a: Option<(&CudaStorage, &Layout)>, m: &CudaStorage, ml: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+        let (rows, l, c) = Self::dims(xl, ml)?;
+        if [Some(x.dtype()), a.map(|(s, _)| s.dtype()), Some(m.dtype())].into_iter().flatten().any(|d| d != DType::F16) {
+            candle_core::bail!("idol AdaLN takes f16");
+        }
+        if let Some((_, al)) = a {
+            if al.shape() != xl.shape() {
+                candle_core::bail!("idol AdaLN: x {:?} and its update {:?} differ", xl.shape(), al.shape());
+            }
+        }
+        let dev = x.device().clone();
+        let stream = dev.cuda_stream();
+        let planes = if matches!(self.op, AdaOp::ResLnMod { .. }) { 2 } else { 1 };
+        let out = unsafe { dev.alloc::<half::f16>(planes * rows * c)? };
+        {
+            let xp = ptr::<half::f16>(x, xl, "x", &stream)? as *const c_void;
+            let ap = match a {
+                Some((s, al)) => ptr::<half::f16>(s, al, "update", &stream)? as *const c_void,
+                None => std::ptr::null(),
+            };
+            let mp = ptr::<half::f16>(m, ml, "modulation", &stream)? as *const c_void;
+            let (op, _go) = out.device_ptr(&stream);
+            let op = op as *mut c_void;
+            let s = stream.cu_stream() as *mut c_void;
+            let (rows_i, l_i, c_i) = (rows as i64, l as i32, c as i32);
+            let rc = unsafe {
+                match self.op {
+                    AdaOp::LnMod { sh, sc } => qir_idol_ln_mod(op, xp, mp, rows_i, l_i, c_i, sh as i32, sc as i32, self.eps, s),
+                    AdaOp::ResLnMod { g, sh, sc } => qir_idol_res_ln_mod(op, xp, ap, mp, rows_i, l_i, c_i, g as i32, sh as i32, sc as i32, self.eps, s),
+                    AdaOp::GateRes { g } => qir_idol_gate_res(op, xp, ap, mp, rows_i, l_i, c_i, g as i32, s),
+                }
+            };
+            if rc != 0 {
+                candle_core::bail!("idol AdaLN kernel failed, rc={rc}");
+            }
+        }
+        let shape: Shape = if planes == 2 { (2, rows / l, l, c).into() } else { xl.shape().clone() };
+        Ok((CudaStorage::wrap_cuda_slice(out, dev), shape))
+    }
+}
+
+impl candle_core::CustomOp2 for Ada {
+    fn name(&self) -> &'static str {
+        "idol-adaln"
+    }
+
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+        candle_core::bail!("idol AdaLN is CUDA-only")
+    }
+
+    fn cuda_fwd(&self, x: &CudaStorage, xl: &Layout, m: &CudaStorage, ml: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+        self.run(x, xl, None, m, ml)
+    }
+}
+
+impl candle_core::CustomOp3 for Ada {
+    fn name(&self) -> &'static str {
+        "idol-adaln"
+    }
+
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+        candle_core::bail!("idol AdaLN is CUDA-only")
+    }
+
+    fn cuda_fwd(&self, x: &CudaStorage, xl: &Layout, a: &CudaStorage, al: &Layout, m: &CudaStorage, ml: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+        self.run(x, xl, Some((a, al)), m, ml)
+    }
+}
+
+/// Whether the fused AdaLN ops take `x (B, L, C)`: CUDA, f16, `C/8` a multiple of 32 up to 1024.
+pub fn adaln_fits(x: &Tensor) -> bool {
+    let c = x.dims().last().copied().unwrap_or(0);
+    x.device().is_cuda() && x.dtype() == DType::F16 && x.rank() == 3 && c.is_multiple_of(8) && c / 8 <= 1024 && (c / 8).is_multiple_of(32)
+}
+
+/// `LN(x)·(1 + m[sc]) + m[sh]` for `x (B, L, C)` and the modulation `m (B, 6C)` (chunk `j` is
+/// `m[:, jC..(j+1)C]`), the LayerNorm without weights.
+pub fn ln_mod(x: &Tensor, m: &Tensor, sh: usize, sc: usize, eps: f64) -> Result<Tensor> {
+    Ok(x.contiguous()?.apply_op2_no_bwd(&m.contiguous()?, &Ada { op: AdaOp::LnMod { sh, sc }, eps: eps as f32 })?)
+}
+
+/// `(x2, h)` with `x2 = x + a·m[g]` (rounded to f16, the residual stream) and
+/// `h = LN(x2)·(1 + m[sc]) + m[sh]`.
+pub fn res_ln_mod(x: &Tensor, a: &Tensor, m: &Tensor, g: usize, sh: usize, sc: usize, eps: f64) -> Result<(Tensor, Tensor)> {
+    let out = x.contiguous()?.apply_op3_no_bwd(&a.contiguous()?, &m.contiguous()?, &Ada { op: AdaOp::ResLnMod { g, sh, sc }, eps: eps as f32 })?;
+    Ok((out.get(0)?, out.get(1)?))
+}
+
+/// `x + f·m[g]`.
+pub fn gate_res(x: &Tensor, f: &Tensor, m: &Tensor, g: usize) -> Result<Tensor> {
+    Ok(x.contiguous()?.apply_op3_no_bwd(&f.contiguous()?, &m.contiguous()?, &Ada { op: AdaOp::GateRes { g }, eps: 0.0 })?)
+}
+
 // ---- cuBLASLt linears with the bias (and GELU) in the epilogue -------------------------------
 //
 // `y = x Wᵀ + b` (and `gelu_tanh(x Wᵀ + b)`) in f16 with f32 accumulation, in one GEMM: candle's
@@ -325,6 +455,68 @@ pub fn linear_bias(x: &Tensor, weight: &Tensor, bias: &Tensor, gelu: bool) -> Re
 mod tests {
     use super::*;
     use candle_core::{Device, D};
+
+    /// The fused AdaLN ops against the plain ops the block runs (candle's LayerNorm, broadcast
+    /// mul/add), in f32. Skipped without CUDA.
+    #[test]
+    fn adaln_ops_match_the_plain_ops() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let (b, l, c) = (2, 53, 1024);
+        let x = Tensor::randn(0f32, 1.0, (b, l, c), &dev)?.to_dtype(DType::F16)?;
+        let a = Tensor::randn(0f32, 1.0, (b, l, c), &dev)?.to_dtype(DType::F16)?;
+        let m = Tensor::randn(0f32, 0.3, (b, 6 * c), &dev)?.to_dtype(DType::F16)?;
+        let f = |t: &Tensor| t.to_dtype(DType::F32);
+        let chunk = |j: usize| -> Result<Tensor> { Ok(f(&m)?.narrow(1, j * c, c)?.unsqueeze(1)?) };
+        let ln = |t: &Tensor| -> Result<Tensor> {
+            let mean = t.mean_keepdim(D::Minus1)?;
+            let d = t.broadcast_sub(&mean)?;
+            Ok(d.broadcast_div(&(d.sqr()?.mean_keepdim(D::Minus1)? + 1e-6)?.sqrt()?)?)
+        };
+        let modulate = |t: &Tensor, sh: usize, sc: usize| -> Result<Tensor> { Ok(ln(t)?.broadcast_mul(&(chunk(sc)? + 1.0)?)?.broadcast_add(&chunk(sh)?)?) };
+        let check = |name: &str, got: &Tensor, want: &Tensor, tol: f32| -> Result<()> {
+            let err = (f(got)? - want)?.abs()?.max_all()?.to_scalar::<f32>()?;
+            let scale = want.abs()?.max_all()?.to_scalar::<f32>()?;
+            eprintln!("adaln {name}: max abs err {err} (max |y| {scale})");
+            assert!(err <= scale * tol, "{name}: max abs err {err} against max |y| {scale}");
+            Ok(())
+        };
+        check("ln_mod", &ln_mod(&x, &m, 0, 1, 1e-6)?, &modulate(&f(&x)?, 0, 1)?, 2e-3)?;
+        let x2 = (f(&x)? + f(&a)?.broadcast_mul(&chunk(2)?)?)?;
+        let (gx, gh) = res_ln_mod(&x, &a, &m, 2, 3, 4, 1e-6)?;
+        check("res_ln_mod x", &gx, &x2, 2e-3)?;
+        check("res_ln_mod h", &gh, &modulate(&f(&gx)?, 3, 4)?, 2e-3)?;
+        check("gate_res", &gate_res(&x, &a, &m, 5)?, &(f(&x)? + f(&a)?.broadcast_mul(&chunk(5)?)?)?, 2e-3)?;
+        Ok(())
+    }
+
+    /// Each fused AdaLN op alone at Idol's joint-block shape (CFG batch 2, 12294 tokens, 1024).
+    #[test]
+    #[ignore = "exclusive CUDA benchmark"]
+    fn adaln_ops_time() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        let (b, l, c) = (2, 12294, 1024);
+        let x = Tensor::randn(0f32, 1.0, (b, l, c), &dev)?.to_dtype(DType::F16)?;
+        let a = Tensor::randn(0f32, 1.0, (b, l, c), &dev)?.to_dtype(DType::F16)?;
+        let m = Tensor::randn(0f32, 0.3, (b, 6 * c), &dev)?.to_dtype(DType::F16)?;
+        let mut bench = |name: &str, f: &mut dyn FnMut() -> Result<Tensor>| -> Result<()> {
+            for _ in 0..3 {
+                f()?;
+            }
+            dev.synchronize()?;
+            let t = std::time::Instant::now();
+            for _ in 0..50 {
+                f()?;
+            }
+            dev.synchronize()?;
+            eprintln!("{name:<12} {:.3} ms", t.elapsed().as_secs_f64() * 1000.0 / 50.0);
+            Ok(())
+        };
+        bench("ln_mod", &mut || ln_mod(&x, &m, 0, 1, 1e-6))?;
+        bench("res_ln_mod", &mut || Ok(res_ln_mod(&x, &a, &m, 2, 3, 4, 1e-6)?.1))?;
+        bench("gate_res", &mut || gate_res(&x, &a, &m, 5))?;
+        bench("plain add", &mut || Ok((&x + &a)?))?;
+        Ok(())
+    }
 
     /// The cuBLASLt linear (bias, and bias + GELU) against candle's matmul, bias add and GELU in
     /// f32. Skipped without CUDA.
