@@ -562,6 +562,7 @@ pub(crate) fn place_in_words(region: Rect, canvas: Rect) -> String {
 /// The rewriter's answer, cleaned: the first non-empty text without the chat template's
 /// leading "assistant" echo, surrounding quotes or markdown emphasis; `None` when the model
 /// said nothing usable.
+#[cfg(test)]
 pub(crate) fn clean_enhanced(texts: &[String]) -> Option<String> {
     clean_answer(texts, 3)
 }
@@ -2854,6 +2855,7 @@ fn image_refine(p: &Value, template: &str, width: u32, height: u32) -> Result<Op
 /// The prompt a `generate.image` job sends, and what the layer remembers as `enhanced`: the
 /// typed idea expanded by the vision-language model when asked (then wrapped for transparency
 /// as the typed one was), else the plan's prompt and an empty string.
+#[allow(clippy::too_many_arguments)]
 fn image_prompt(
     backend: &dyn GenerativeBackend,
     ctx: &JobCtx,
