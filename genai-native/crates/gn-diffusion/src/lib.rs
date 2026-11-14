@@ -1122,7 +1122,11 @@ impl DiffusionEngine {
         }
         let (_, _, names) = edit2511_defaults(&req.model).ok_or_else(|| EngineError::new(ErrorKind::BadRequest, "unknown 2511 template"))?;
         let mut params = req.params.clone();
-        let mut loras: Vec<Value> = names.iter().map(|n| json!({"file": n, "strength": 1.0})).collect();
+        let mut loras: Vec<Value> = if req.model == "qwen-edit-2511/angles" {
+            angles_setup(&req.params)?.2.into_iter().map(|(n, w)| json!({"file": n, "strength": w})).collect()
+        } else {
+            names.iter().map(|n| json!({"file": n, "strength": 1.0})).collect()
+        };
         if let Some(value) = params.get("loras") {
             let array = value.as_array().ok_or_else(|| EngineError::new(ErrorKind::BadRequest, "loras must be an array"))?;
             loras.extend(array.iter().cloned());
@@ -1310,10 +1314,39 @@ pub fn edit2511_defaults(template: &str) -> Option<(u32, f32, Vec<&'static str>)
     })
 }
 
+/// The Angles template's adapters and sampler defaults for a request: the Multiple Angles LoRA at
+/// `angles_strength` (0..2, default 1) and the Lightning LoRA `lightning` names (4 = the 4-step
+/// one, the template's own; 8 = the 8-step one; 0 = none, the base model's 40 steps at CFG 4)
+/// at `lightning_strength` (0..2, default 1). The steps and CFG are that Lightning's.
+pub fn angles_setup(params: &std::collections::BTreeMap<String, Value>) -> Result<(u32, f32, Vec<(&'static str, f64)>), EngineError> {
+    use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
+    let bad = |message: &str| EngineError::new(ErrorKind::BadRequest, message);
+    let strength = |key: &str| -> Result<f64, EngineError> {
+        match params.get(key) {
+            None | Some(Value::Null) => Ok(1.),
+            Some(v) => v.as_f64().filter(|x| (0. ..=2.).contains(x)).ok_or_else(|| bad(&format!("{key} must be a number from 0 to 2"))),
+        }
+    };
+    let angles = strength("angles_strength")?;
+    let lightning = strength("lightning_strength")?;
+    let (steps, cfg, speed) = match params.get("lightning").filter(|v| !v.is_null()).map(Value::as_u64) {
+        None | Some(Some(4)) => (4, 1., Some(A[0])),
+        Some(Some(8)) => (8, 1., Some(A[1])),
+        Some(Some(0)) => (40, 4., None),
+        _ => return Err(bad("lightning must be 4, 8 or 0")),
+    };
+    let mut adapters = vec![(A[3], angles)];
+    adapters.extend(speed.map(|f| (f, lightning)));
+    Ok((steps, cfg, adapters))
+}
+
 /// Resolve graph inputs before loading models so invalid requests fail without touching CUDA.
 fn edit2511_request(req: &RunRequest, blobs: &[Vec<u8>]) -> Result<Edit2511Request, EngineError> {
     let bad = |message: &str| EngineError::new(ErrorKind::BadRequest, message);
-    let (steps, cfg, _) = edit2511_defaults(&req.model).ok_or_else(|| bad("unknown 2511 template"))?;
+    let (mut steps, mut cfg, _) = edit2511_defaults(&req.model).ok_or_else(|| bad("unknown 2511 template"))?;
+    if req.model == "qwen-edit-2511/angles" {
+        (steps, cfg, _) = angles_setup(&req.params)?;
+    }
     for (key, expected) in [("sampler", "euler"), ("sampler_name", "euler"), ("scheduler", "simple")] {
         if req.params.get(key).is_some_and(|v| v.as_str() != Some(expected)) {
             return Err(bad("2511 supports Euler/simple only"));
@@ -2486,6 +2519,16 @@ mod edit2511_tests {
         assert_eq!(edit2511_defaults("qwen-edit-2511/angles"), Some((4, 1., vec![A[3], A[0]])));
         assert_eq!(edit2511_defaults("qwen-edit-2511/remove-lightning-8"), Some((8, 1., vec![A[1], A[2]])));
         assert_eq!(edit2511_defaults("qwen-edit-2511/edit"), Some((40, 4., vec![])));
+    }
+    #[test]
+    fn angles_setup_picks_the_lightning_and_strengths() {
+        use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
+        let p = |v: Value| v.as_object().unwrap().clone().into_iter().collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(angles_setup(&p(json!({}))).unwrap(), (4, 1., vec![(A[3], 1.), (A[0], 1.)]));
+        assert_eq!(angles_setup(&p(json!({"lightning": 8, "angles_strength": 0.8}))).unwrap(), (8, 1., vec![(A[3], 0.8), (A[1], 1.)]));
+        assert_eq!(angles_setup(&p(json!({"lightning": 0}))).unwrap(), (40, 4., vec![(A[3], 1.)]));
+        assert!(angles_setup(&p(json!({"lightning": 6}))).is_err());
+        assert!(angles_setup(&p(json!({"angles_strength": 3}))).is_err());
     }
     #[test]
     fn edit_rgb_inputs_preserve_coverage_and_ignore_alpha() -> anyhow::Result<()> {
