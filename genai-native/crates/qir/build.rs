@@ -150,7 +150,8 @@ fn main() {
         // Exact bf16 attention (src/flash.rs), no external deps.
         println!("cargo:rerun-if-changed=kernels/flash/flash_fwd.cu");
         println!("cargo:rerun-if-changed=kernels/flash/layered_flash_fwd.cu");
-        nvcc().file("kernels/flash/flash_fwd.cu").file("kernels/flash/layered_flash_fwd.cu").compile("qir_flash");
+        println!("cargo:rerun-if-changed=kernels/flash/flash_fwd64.cu");
+        nvcc().file("kernels/flash/flash_fwd.cu").file("kernels/flash/layered_flash_fwd.cu").file("kernels/flash/flash_fwd64.cu").compile("qir_flash");
         println!("cargo:rustc-link-lib=dylib=cudart");
     }
 
