@@ -1,7 +1,7 @@
 {
   "id": "photocraft",
-  "name": "PhotoCraft",
-  "upgradeCode": "D9660F32-2D0A-4ABE-B73D-17BE25F1542C",
+  "name": "ShotoPhopEX",
+  "upgradeCode": "7A30FAE6-70CF-4CB3-A7C7-384E37ECCBB2",
   "sources": [
     "photocraft.wxs"
   ],
@@ -296,7 +296,7 @@
     ],
     [
       "-1",
-      "Software\\PhotoCraft",
+      "Software\\ShotoPhopEX",
       "InstallDir",
       "[INSTALLFOLDER]"
     ]

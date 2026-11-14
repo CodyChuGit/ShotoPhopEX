@@ -875,9 +875,10 @@ requirement. The compliance notes are in [`docs/compliance/`](docs/compliance/).
 
 Built on [PhotoCraft](https://github.com/storytold/photocraft) by the ArtCraft team. ShotoPhopEX
 is an independent fork, not an official PhotoCraft release, and is not made or endorsed by them.
-Per [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt) it does not use the ArtCraft
-logos; the Windows installer still uses upstream's install folder and publisher name for
-compatibility, which is under review ([`docs/compliance/UNRESOLVED_RISKS.md`](docs/compliance/UNRESOLVED_RISKS.md)). Thanks to the authors of every open model
+As upstream's [brand licence](https://github.com/storytold/photocraft/blob/main/docs/brand/LICENSE-brand.txt)
+asks of forks, it does not include or use the ArtCraft name, wordmark or logos, and since 0.1.2
+its installers carry its own name, publisher and install folder. Which parts of this repository
+are upstream's and which are the fork's is mapped in [`docs/comfy/ownership.md`](docs/comfy/ownership.md). Thanks to the authors of every open model
 and LoRA listed in [Models](#-models).
 
 Model weights are not part of this repository and keep their own licences. Every artwork shown in

@@ -87,9 +87,12 @@ try {
   foreach ($row in (Read-Rows $database 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3)) {
     $directories[$row[0]] = @($row[1], $row[2])
   }
-  if ($directories['INSTALLFOLDER'][0] -ne 'CraftSuiteFolder' -or
-      $directories['CraftSuiteFolder'][1] -ne 'ArtCraft') { throw 'Expected the app under the ArtCraft suite folder.' }
-  $programs = $directories['CraftSuiteFolder'][0]
+  # ShotoPhopEX: its own folder straight under Program Files (or Programs), not upstream's ArtCraft
+  # suite folder. DefaultDir may carry a generated short name before the '|'.
+  if ($directories['INSTALLFOLDER'][1] -notmatch "(^|\|)$([regex]::Escape($policy.name))$") {
+    throw "Expected the app in its own $($policy.name) folder."
+  }
+  $programs = $directories['INSTALLFOLDER'][0]
   if ($programs -eq 'ProgramFiles6432Folder') { $programs = $directories[$programs][0] }
   if ($programs -notin 'ProgramFilesFolder', 'ProgramFiles64Folder') {
     throw 'Use Windows Installer native folder redirection, not a hard-coded profile path.'
@@ -162,7 +165,7 @@ try {
   $machineRoot = if ((Get-PackageTemplate $database) -match '^Intel') {
     if (Get-SessionProperty $session 'VersionNT64') { ${env:ProgramFiles(x86)} } else { $env:ProgramFiles }
   } elseif ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
-  $machineFolder = (Join-Path $machineRoot "ArtCraft\$($policy.name)") + '\'
+  $machineFolder = (Join-Path $machineRoot $policy.name) + '\'
   foreach ($scope in @('1', '')) {
     Set-SessionProperty $session 'ALLUSERS' $scope
     Set-SessionProperty $session 'INSTALLFOLDER' ''
@@ -172,14 +175,14 @@ try {
       if ($session.EvaluateCondition($row[2]) -eq 1 -and $session.DoAction($row[0]) -ne 1) { throw "$($row[0]) failed." }
     }
     $folder = Get-SessionProperty $session 'INSTALLFOLDER'
-    $wanted = if ($scope -eq '1') { $machineFolder } else { (Join-Path $env:LOCALAPPDATA "Programs\ArtCraft\$($policy.name)") + '\' }
+    $wanted = if ($scope -eq '1') { $machineFolder } else { (Join-Path $env:LOCALAPPDATA "Programs\$($policy.name)") + '\' }
     if ($folder -ine $wanted) { throw "Wizard default folder for ALLUSERS='$scope' is '$folder', expected '$wanted'." }
   }
   # Replay the wizard's compiled folder actions in sequence order, as the full UI runs them. A remembered
   # folder must win over the new-install default, and a folder the user typed must survive both.
   $uiFolderActions = @(Read-Rows $database 'SELECT `Action`, `Sequence`, `Condition` FROM `InstallUISequence`' 3 |
     Where-Object { $_[0] -match '^Craft(Restore|Default)' } | Sort-Object { [int]$_[1] })
-  $userDefault = (Join-Path $env:LOCALAPPDATA "Programs\ArtCraft\$($policy.name)") + '\'
+  $userDefault = (Join-Path $env:LOCALAPPDATA "Programs\$($policy.name)") + '\'
   foreach ($case in @(
       @('1', 'D:\Remembered user app', 'E:\Remembered machine app', '', 'E:\Remembered machine app'),
       @('', 'D:\Remembered user app', 'E:\Remembered machine app', '', 'D:\Remembered user app'),
@@ -219,10 +222,9 @@ try {
   # Suffix, how to match the key, key, value name, locator type (2 = raw value, 1 = file; the 64-bit flag is masked off).
   $searchContract = @(
     @('DIR',       'exact', "Software\$($policy.name)", 'InstallDir',    '2'),
-    @('FOLDER',    'exact', "Software\$($policy.name)", 'InstallFolder', '2'),
-    @('PATH',      'regex', $appPaths,                  'Path',          '2'),
-    @('EXEFOLDER', 'regex', $appPaths,                  '',              '1'),
-    @('EXE',       'regex', $appPaths,                  '',              '1'))
+    @('FOLDER',    'exact', "Software\$($policy.name)", 'InstallFolder', '2'))
+  # ShotoPhopEX: no App Paths searches (the key is shared with upstream PhotoCraft); PATH and EXE stay
+  # unset properties, so the resolver chain below still runs them in order.
   $resolverCases = @(
     @{ name = 'every record, DIR wins';        dir = 'D:\Dir\'; folder = 'D:\Folder\'; path = 'D:\Path\'; exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = '';            expected = 'D:\Dir\' },
     @{ name = 'FOLDER wins without DIR';       dir = '';        folder = 'D:\Folder\'; path = 'D:\Path\'; exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = '';            expected = 'D:\Folder\' },
