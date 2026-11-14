@@ -41,11 +41,17 @@ impl RePo {
         })
     }
 
-    /// `(cos, sin)`, each `(B, L, H, D/2)` in f32.
-    fn forward(&self, h: &Tensor) -> Result<(Tensor, Tensor)> {
+    /// The per-token, per-head 3D offsets `(B, L, HÂ·3)` in the run dtype.
+    fn delta(&self, h: &Tensor) -> Result<Tensor> {
         let x = self.norm.forward(h)?;
         let feat = (candle_nn::ops::silu(&self.gate.forward(&x)?)? * self.content.forward(&x)?)?;
-        let out = self.fin.forward(&feat)?.to_dtype(DType::F32)?;
+        self.fin.forward(&feat)
+    }
+
+    /// The offsets' `(cos, sin)`, each `(B, L, H, D/2)` in f32 (the plain path; the fused CUDA
+    /// path computes them inside its kernel).
+    fn cos_sin(&self, delta: &Tensor) -> Result<(Tensor, Tensor)> {
+        let out = delta.to_dtype(DType::F32)?;
         let (b, l, _) = out.dims3()?;
         let delta = out.reshape((b, l, self.heads, 3))?;
         let mut angs = Vec::with_capacity(3);
@@ -55,6 +61,18 @@ impl RePo {
         }
         let ang = Tensor::cat(&angs, 3)?;
         Ok((ang.cos()?, ang.sin()?))
+    }
+}
+
+/// A block's rotary positions: RePo's offsets for the block's input, and the RePo they came from.
+struct Rot<'a> {
+    delta: Tensor,
+    repo: &'a RePo,
+}
+
+impl<'a> Rot<'a> {
+    fn new(repo: &'a RePo, h: &Tensor) -> Result<Self> {
+        Ok(Self { delta: time(h.device(), "repo", || repo.delta(h))?, repo })
     }
 }
 
@@ -76,6 +94,10 @@ struct Attn {
     q_norm: HeadRms,
     k_norm: HeadRms,
     heads: usize,
+    /// The fused CUDA path's per-block constants (see [`super::fused::qkv_params`]); `None` runs
+    /// the plain ops.
+    #[cfg(feature = "flash")]
+    fused: Option<(Tensor, usize, usize)>,
 }
 
 impl Attn {
@@ -86,13 +108,37 @@ impl Attn {
             q_norm: HeadRms::load(w, &format!("{p}.q_norm"))?,
             k_norm: HeadRms::load(w, &format!("{p}.k_norm"))?,
             heads,
+            #[cfg(feature = "flash")]
+            fused: None,
         })
     }
 
-    fn forward(&self, x: &Tensor, rot: &(Tensor, Tensor)) -> Result<Tensor> {
+    /// Switch this attention to the fused CUDA path, with `repo`'s frequencies (CUDA, f16, 64-wide
+    /// heads only; otherwise it keeps the plain ops).
+    #[cfg(feature = "flash")]
+    fn fuse(&mut self, repo: &RePo, dev: &Device, dtype: DType) -> Result<()> {
+        if dev.is_cuda() && dtype == DType::F16 && self.q_norm.gamma.dim(1)? == super::fused::HEAD {
+            self.fused = Some(super::fused::qkv_params(&repo.freqs, &self.q_norm.gamma, &self.k_norm.gamma)?);
+        }
+        Ok(())
+    }
+
+    fn forward(&self, x: &Tensor, rot: &Rot) -> Result<Tensor> {
         let (b, l, c) = x.dims3()?;
         let hd = c / self.heads;
         let dev = x.device();
+        #[cfg(feature = "flash")]
+        if let Some(params) = &self.fused {
+            // One kernel for RoPE, the per-head RMSNorms and the bf16 casts, then the flash kernel.
+            let qkv = time(dev, "qkv linear", || self.qkv.forward(x))?;
+            let (q, k, v) = time(dev, "qkv prep", || super::fused::qkv_prep(&qkv, &rot.delta, params, self.heads))?;
+            let a = time(dev, "attention", || -> Result<_> {
+                let t = |t: &Tensor| t.transpose(1, 2);
+                Ok(crate::flash::attention64(&t(&q)?, &t(&k)?, &t(&v)?, 1.0 / (hd as f32).sqrt())?.reshape((b, l, c))?.to_dtype(x.dtype())?)
+            })?;
+            return time(dev, "out linear", || self.out.forward(&a));
+        }
+        let rot = time(dev, "rope", || rot.repo.cos_sin(&rot.delta))?;
         let qkv = time(dev, "qkv linear", || self.qkv.forward(x))?.reshape((b, l, 3, self.heads, hd))?;
         let q = qkv.narrow(2, 0, 1)?.squeeze(2)?;
         let k = qkv.narrow(2, 1, 1)?.squeeze(2)?;
@@ -127,7 +173,7 @@ impl Block {
     }
 
     /// `x (B, L, C)`; `m (B, 6C)` the shared modulation for modulated blocks.
-    fn forward(&self, x: &Tensor, m: Option<&Tensor>, rot: &(Tensor, Tensor)) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor, m: Option<&Tensor>, rot: &Rot) -> Result<Tensor> {
         match (&self.shift_table, m) {
             (Some(table), Some(m)) => {
                 let m = m.broadcast_add(&table.to_dtype(m.dtype())?)?;
@@ -188,7 +234,8 @@ impl IdolDit {
         let blocks = |p: &str, modulated: bool| -> Result<Vec<Block>> { (0..count(p)).map(|i| Block::load(w, &format!("{p}.{i}"), heads, modulated)).collect() };
         let nb = count("blocks");
         let nr = count("noise_refiner");
-        Ok(Self {
+        #[allow(unused_mut)]
+        let mut dit = Self {
             t_fc1: Lin::load(w, "t_embedder.mlp.0")?,
             t_fc2: Lin::load(w, "t_embedder.mlp.2")?,
             ada: Lin::load(w, "adaLN_modulation.1")?,
@@ -207,7 +254,18 @@ impl IdolDit {
             out: Lin::load(w, "out_layer")?,
             cam_out: Lin::load(w, "cam_out_layer")?,
             dtype: w.dtype(),
-        })
+        };
+        // The fused CUDA path for every attention (a no-op on the CPU or outside f16).
+        #[cfg(feature = "flash")]
+        {
+            let (dev, dt) = (w.device().clone(), w.dtype());
+            for (blocks, repos) in [(&mut dit.noise_refiner, &dit.noise_repo), (&mut dit.context_refiner, &dit.context_repo), (&mut dit.blocks, &dit.repo)] {
+                for (blk, repo) in blocks.iter_mut().zip(repos.iter()) {
+                    blk.attn.fuse(repo, &dev, dt)?;
+                }
+            }
+        }
+        Ok(dit)
     }
 
     pub fn dtype(&self) -> DType {
@@ -226,7 +284,7 @@ impl IdolDit {
         Ok(h)
     }
 
-    /// The velocity for `z (B, 8192, 16)` and `cam (B, 1, 5)` at `timestep` (sigma · 1000),
+    /// The velocity for `z (B, 8192, 16)` and `cam (B, 1, 5)` at `timestep` (sigma Â· 1000),
     /// given [`Self::context`]'s embedded `ctx`. The context refiner's output does not depend on
     /// the timestep, so the caller may pass it pre-refined (see [`Self::refine_context`]).
     pub fn forward(&self, z: &Tensor, cam: &Tensor, timestep: f32, ctx_refined: &Tensor) -> Result<(Tensor, Tensor)> {
@@ -238,7 +296,7 @@ impl IdolDit {
 
         let mut hx = self.input.forward(&z.to_dtype(self.dtype)?)?.broadcast_add(&self.pos_emb)?;
         for (blk, repo) in self.noise_refiner.iter().zip(&self.noise_repo) {
-            let rot = time(hx.device(), "repo", || repo.forward(&hx))?;
+            let rot = Rot::new(repo, &hx)?;
             hx = blk.forward(&hx, Some(&t_mod), &rot)?;
         }
         let hcam = self.cam_refiner.forward(&cam.to_dtype(self.dtype)?)?;
@@ -246,7 +304,7 @@ impl IdolDit {
         let lc = cam.dim(1)?;
         let mut h = Tensor::cat(&[&hx, ctx_refined, &hcam], 1)?;
         for (blk, repo) in self.blocks.iter().zip(&self.repo) {
-            let rot = time(h.device(), "repo", || repo.forward(&h))?;
+            let rot = Rot::new(repo, &h)?;
             h = blk.forward(&h, Some(&t_mod), &rot)?;
         }
         let total = h.dim(1)?;
@@ -266,7 +324,7 @@ impl IdolDit {
     pub fn refine_context(&self, ctx: &Tensor) -> Result<Tensor> {
         let mut h = ctx.clone();
         for (blk, repo) in self.context_refiner.iter().zip(&self.context_repo) {
-            let rot = repo.forward(&h)?;
+            let rot = Rot::new(repo, &h)?;
             h = blk.forward(&h, None, &rot)?;
         }
         Ok(h)
