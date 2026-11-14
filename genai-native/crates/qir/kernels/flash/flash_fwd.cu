@@ -20,7 +20,12 @@
 
 namespace {
 
-constexpr int D = 128;
+#ifndef QIR_FLASH_D
+#define QIR_FLASH_D 128
+#endif
+constexpr int D = QIR_FLASH_D;  // 128, or 64 (flash_fwd64.cu)
+constexpr int CHUNKS = D / 8;  // 16-byte chunks a row
+constexpr int TILE_ITERS = 64 * CHUNKS / 128;  // a 64-row tile's chunks a thread
 constexpr int BR = 64;
 constexpr int BC = 64;
 constexpr int LD = D + 8;
@@ -84,9 +89,9 @@ __device__ __forceinline__ uint32_t pack_f16(float lo, float hi) {
 // The 64-row tile this thread loaded (load_tile's chunks), bf16 -> fp16 in place.
 __device__ __forceinline__ void tile_to_f16(__nv_bfloat16* tile, int tid) {
 #pragma unroll
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < TILE_ITERS; ++i) {
         const int c = tid + i * THREADS;
-        uint4* p = reinterpret_cast<uint4*>(tile + (c >> 4) * LD + (c & 15) * 8);
+        uint4* p = reinterpret_cast<uint4*>(tile + (c / CHUNKS) * LD + (c % CHUNKS) * 8);
         uint4 raw = *p;
         __nv_bfloat16* e = reinterpret_cast<__nv_bfloat16*>(&raw);
         __align__(16) __half o[8];
@@ -105,10 +110,10 @@ __device__ __forceinline__ uint32_t pack(float lo, float hi) {
 // at or past `limit` read as zeros. 64 rows × 16 chunks of 16 bytes, eight chunks a thread.
 __device__ __forceinline__ void load_tile(__nv_bfloat16* tile, const __nv_bfloat16* src, long rs, int row0, int limit, int tid) {
 #pragma unroll
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < TILE_ITERS; ++i) {
         const int c = tid + i * THREADS;
-        const int r = c >> 4;
-        const int ch = c & 15;
+        const int r = c / CHUNKS;
+        const int ch = c % CHUNKS;
         const int row = row0 + r;
         const bool ok = row < limit;
         cp_async16(tile + r * LD + ch * 8, src + static_cast<size_t>(ok ? row : 0) * rs + ch * 8, ok);
@@ -147,15 +152,15 @@ __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __rest
     __syncthreads();
 
     // This warp's 16 query rows as A fragments, one per 16-wide slice of the head dim.
-    uint32_t qf[8][4];
+    uint32_t qf[D / 16][4];
 #pragma unroll
-    for (int kk = 0; kk < 8; ++kk) {
+    for (int kk = 0; kk < D / 16; ++kk) {
         ldsm_x4(qf[kk], sQ + (warp * 16 + (lane & 15)) * LD + kk * 16 + (lane >> 4) * 8);
     }
 
-    float acc[16][4];
+    float acc[D / 8][4];
 #pragma unroll
-    for (int j = 0; j < 16; ++j) {
+    for (int j = 0; j < D / 8; ++j) {
         acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.f;
     }
     // Each thread holds two rows (lane/4 and lane/4 + 8 of the warp's 16): their running max
@@ -178,7 +183,7 @@ __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __rest
         for (int j = 0; j < 8; ++j) {
             s[j][0] = s[j][1] = s[j][2] = s[j][3] = 0.f;
 #pragma unroll
-            for (int kc = 0; kc < 4; ++kc) {
+            for (int kc = 0; kc < D / 32; ++kc) {
                 uint32_t bk[4];
                 ldsm_x4(bk, sK + (j * 8 + (lane & 7)) * LD + kc * 32 + (lane >> 3) * 8);
                 mma(s[j], qf[2 * kc], bk[0], bk[1]);
@@ -238,7 +243,7 @@ __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __rest
         l0 = l0 * c0 + sum0;
         l1 = l1 * c1 + sum1;
 #pragma unroll
-        for (int j = 0; j < 16; ++j) {
+        for (int j = 0; j < D / 8; ++j) {
             acc[j][0] *= c0;
             acc[j][1] *= c0;
             acc[j][2] *= c1;
@@ -255,7 +260,7 @@ __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __rest
             const uint32_t a[4] = {pack_f16(s[2 * ks][0], s[2 * ks][1]), pack_f16(s[2 * ks][2], s[2 * ks][3]), pack_f16(s[2 * ks + 1][0], s[2 * ks + 1][1]),
                                    pack_f16(s[2 * ks + 1][2], s[2 * ks + 1][3])};
 #pragma unroll
-            for (int dj = 0; dj < 16; dj += 2) {
+            for (int dj = 0; dj < D / 8; dj += 2) {
                 uint32_t bv[4];
                 ldsm_x4_trans(bv, sV + (ks * 16 + (lane & 7) + ((lane >> 3) & 1) * 8) * LD + dj * 8 + (lane >> 4) * 8);
                 mma_f16(acc[dj], a, bv[0], bv[1]);
@@ -273,7 +278,7 @@ __global__ void __launch_bounds__(THREADS) flash_fwd(const __nv_bfloat16* __rest
     const int r0 = q0 + warp * 16 + (lane >> 2);
     const int r1 = r0 + 8;
 #pragma unroll
-    for (int dj = 0; dj < 16; ++dj) {
+    for (int dj = 0; dj < D / 8; ++dj) {
         const int d = dj * 8 + 2 * (lane & 3);
         if (r0 < S) *reinterpret_cast<uint32_t*>(o + (static_cast<size_t>(b * S + r0) * H + h) * D + d) = pack(acc[dj][0] * i0, acc[dj][1] * i0);
         if (r1 < S) *reinterpret_cast<uint32_t*>(o + (static_cast<size_t>(b * S + r1) * H + h) * D + d) = pack(acc[dj][2] * i1, acc[dj][3] * i1);
