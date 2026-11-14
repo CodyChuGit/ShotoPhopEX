@@ -40,9 +40,8 @@ pub struct IdolFiles {
 
 /// The first of `names` under `root/<dir>` for each part, or `None` if a part is missing.
 pub fn find_files(root: &Path) -> Option<IdolFiles> {
-    let pick = |dirs: &[&str], names: &[&str]| -> Option<PathBuf> {
-        dirs.iter().flat_map(|d| names.iter().map(move |n| root.join(d).join(n))).find(|p| p.is_file())
-    };
+    let pick =
+        |dirs: &[&str], names: &[&str]| -> Option<PathBuf> { dirs.iter().flat_map(|d| names.iter().map(move |n| root.join(d).join(n))).find(|p| p.is_file()) };
     Some(IdolFiles {
         dit: pick(&["diffusion_models", "unet"], &["idol_fp16.safetensors", "idol.safetensors"])?,
         decoder: pick(&["vae"], &["idol_decoder_fp16.safetensors", "idol_decoder.safetensors"])?,

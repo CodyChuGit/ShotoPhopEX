@@ -101,13 +101,7 @@ fn decoder_matches_comfy() {
 
     let fixed = vec(&get(&w, "in.fixed"));
     let s = dec.gaussians(&latent, &fixed).unwrap();
-    for (name, got) in [
-        ("positions", &s.positions),
-        ("scales", &s.scales),
-        ("rotations", &s.rotations),
-        ("opacities", &s.opacities),
-        ("sh", &s.sh_dc),
-    ] {
+    for (name, got) in [("positions", &s.positions), ("scales", &s.scales), ("rotations", &s.rotations), ("opacities", &s.opacities), ("sh", &s.sh_dc)] {
         let e = rel(got, &vec(&get(&w, &format!("out.{name}"))));
         eprintln!("gaussian {name} rel err {e}");
         assert!(e < 1e-4, "gaussian {name} rel err {e}");

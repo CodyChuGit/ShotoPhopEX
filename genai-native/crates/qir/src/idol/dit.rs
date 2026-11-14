@@ -6,8 +6,8 @@
 
 use candle_core::{DType, Device, Tensor, D};
 
-use super::prof::time;
 use super::nn::{attention, point_embedding, pow2_freqs, sinusoid, HeadRms, Lin, Mlp, Norm};
+use super::prof::time;
 use crate::moss::weights::Weights;
 use crate::Result;
 
@@ -242,7 +242,8 @@ impl IdolDit {
         let channels = w.shape("input_layer.weight")?[0];
         let heads = w.shape("blocks.0.attn.q_norm.gamma")?[0];
         let repos = |p: &str, n: usize| -> Result<Vec<RePo>> { (0..n).map(|i| RePo::load(w, &format!("{p}.{i}"), heads)).collect() };
-        let blocks = |p: &str, modulated: bool| -> Result<Vec<Block>> { (0..count(p)).map(|i| Block::load(w, &format!("{p}.{i}"), heads, modulated)).collect() };
+        let blocks =
+            |p: &str, modulated: bool| -> Result<Vec<Block>> { (0..count(p)).map(|i| Block::load(w, &format!("{p}.{i}"), heads, modulated)).collect() };
         let nb = count("blocks");
         let nr = count("noise_refiner");
         #[allow(unused_mut)]

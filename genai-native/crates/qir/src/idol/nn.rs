@@ -74,8 +74,14 @@ impl Norm {
             // candle's fused kernel (f32 accumulation) in the run dtype, as torch's LayerNorm.
             let c = x.dim(D::Minus1)?;
             let ones = Tensor::ones(c, dt, x.device())?;
-            let alpha = match &self.weight { Some(w) => w.to_dtype(dt)?, None => ones.clone() };
-            let beta = match &self.bias { Some(b) => b.to_dtype(dt)?, None => ones.zeros_like()? };
+            let alpha = match &self.weight {
+                Some(w) => w.to_dtype(dt)?,
+                None => ones.clone(),
+            };
+            let beta = match &self.bias {
+                Some(b) => b.to_dtype(dt)?,
+                None => ones.zeros_like()?,
+            };
             return Ok(candle_nn::ops::layer_norm(&x.contiguous()?, &alpha, &beta, self.eps as f32)?);
         }
         let x = x.to_dtype(DType::F32)?;

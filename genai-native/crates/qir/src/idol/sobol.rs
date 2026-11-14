@@ -50,7 +50,13 @@ pub fn scrambled_3d(n: usize, seed: u32) -> Vec<f32> {
         for (r, row) in m.iter_mut().enumerate() {
             for (c, v) in row.iter_mut().enumerate() {
                 let bit = u64::from(g.next_u32() % 2);
-                *v = if c < r { bit } else if c == r { 1 } else { 0 };
+                *v = if c < r {
+                    bit
+                } else if c == r {
+                    1
+                } else {
+                    0
+                };
             }
         }
     }

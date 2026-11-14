@@ -60,12 +60,29 @@ impl candle_core::CustomOp3 for QkvPrep {
         candle_core::bail!("idol-qkv-prep is CUDA-only")
     }
 
-    fn cuda_fwd(&self, qkv: &CudaStorage, qkv_l: &Layout, delta: &CudaStorage, delta_l: &Layout, params: &CudaStorage, params_l: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+    fn cuda_fwd(
+        &self,
+        qkv: &CudaStorage,
+        qkv_l: &Layout,
+        delta: &CudaStorage,
+        delta_l: &Layout,
+        params: &CudaStorage,
+        params_l: &Layout,
+    ) -> candle_core::Result<(CudaStorage, Shape)> {
         let dims = qkv_l.shape().dims();
         let rows: usize = dims[..dims.len() - 1].iter().product();
         let width = *dims.last().unwrap_or(&0);
-        if width != 3 * self.heads * HEAD || delta_l.shape().elem_count() != rows * self.heads * 3 || params_l.shape().elem_count() != 32 + 2 * self.heads * HEAD {
-            candle_core::bail!("idol-qkv-prep: qkv {:?}, delta {:?}, params {:?} for {} heads of {HEAD}", qkv_l.shape(), delta_l.shape(), params_l.shape(), self.heads);
+        if width != 3 * self.heads * HEAD
+            || delta_l.shape().elem_count() != rows * self.heads * 3
+            || params_l.shape().elem_count() != 32 + 2 * self.heads * HEAD
+        {
+            candle_core::bail!(
+                "idol-qkv-prep: qkv {:?}, delta {:?}, params {:?} for {} heads of {HEAD}",
+                qkv_l.shape(),
+                delta_l.shape(),
+                params_l.shape(),
+                self.heads
+            );
         }
         if qkv.dtype() != DType::F16 || delta.dtype() != DType::F16 || params.dtype() != DType::F32 {
             candle_core::bail!("idol-qkv-prep: qkv and delta f16, params f32");
@@ -79,7 +96,18 @@ impl candle_core::CustomOp3 for QkvPrep {
             let pp = ptr::<f32>(params, params_l, "params", &stream)?;
             let (op, _go) = out.device_ptr(&stream);
             let rc = unsafe {
-                qir_idol_qkv_prep(op as *mut c_void, qp as *const c_void, dp as *const c_void, pp as *const c_void, rows as i64, self.heads as i32, self.n0 as i32, self.n1 as i32, 1e-6, stream.cu_stream() as *mut c_void)
+                qir_idol_qkv_prep(
+                    op as *mut c_void,
+                    qp as *const c_void,
+                    dp as *const c_void,
+                    pp as *const c_void,
+                    rows as i64,
+                    self.heads as i32,
+                    self.n0 as i32,
+                    self.n1 as i32,
+                    1e-6,
+                    stream.cu_stream() as *mut c_void,
+                )
             };
             if rc != 0 {
                 candle_core::bail!("idol-qkv-prep failed, rc={rc}");
@@ -115,9 +143,23 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn qir_idol_ln_mod(h: *mut c_void, x: *const c_void, m: *const c_void, rows: i64, l: i32, c: i32, sh: i32, sc: i32, eps: f32, stream: *mut c_void) -> i32;
     #[allow(clippy::too_many_arguments)]
-    fn qir_idol_res_ln_mod(out: *mut c_void, x: *const c_void, a: *const c_void, m: *const c_void, rows: i64, l: i32, c: i32, g: i32, sh: i32, sc: i32, eps: f32, stream: *mut c_void) -> i32;
+    fn qir_idol_res_ln_mod(
+        out: *mut c_void,
+        x: *const c_void,
+        a: *const c_void,
+        m: *const c_void,
+        rows: i64,
+        l: i32,
+        c: i32,
+        g: i32,
+        sh: i32,
+        sc: i32,
+        eps: f32,
+        stream: *mut c_void,
+    ) -> i32;
     #[allow(clippy::too_many_arguments)]
-    fn qir_idol_gate_res(out: *mut c_void, x: *const c_void, f: *const c_void, m: *const c_void, rows: i64, l: i32, c: i32, g: i32, stream: *mut c_void) -> i32;
+    fn qir_idol_gate_res(out: *mut c_void, x: *const c_void, f: *const c_void, m: *const c_void, rows: i64, l: i32, c: i32, g: i32, stream: *mut c_void)
+        -> i32;
 }
 
 /// Which modulation chunks (of the six in `m (B, 6C)`) a fused AdaLN op reads.
@@ -320,7 +362,11 @@ mod lt_gemm {
             let set = |attr, p: *const c_void, size: usize| lt::set_matmul_desc_attribute(mm, attr, p, size).map_err(err);
             set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_TRANSA, &transpose as *const _ as *const c_void, std::mem::size_of_val(&transpose))?;
             set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_EPILOGUE, &epilogue as *const _ as *const c_void, std::mem::size_of_val(&epilogue))?;
-            set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE, &bias_type as *const _ as *const c_void, std::mem::size_of_val(&bias_type))?;
+            set(
+                sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE,
+                &bias_type as *const _ as *const c_void,
+                std::mem::size_of_val(&bias_type),
+            )?;
             for (attribute, alignment) in [
                 sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_A_BYTES,
                 sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_B_BYTES,

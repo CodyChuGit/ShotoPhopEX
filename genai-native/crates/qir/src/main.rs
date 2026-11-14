@@ -1399,7 +1399,11 @@ fn generate_krea2(
     use qwen_image_rs::pipeline::{RefImage, Request, Schedule};
     let mut report = |f: f32, m: &str| tracing::info!(progress = f, "{m}");
     let t0 = std::time::Instant::now();
-    let p = Krea2Pipeline::load(model, Krea2Options { convrot, cache: cache.clone(), nvfp4: std::env::var_os("QIR_KREA2_NVFP4").is_some(), evict_text_encoder: false }, &mut report)?;
+    let p = Krea2Pipeline::load(
+        model,
+        Krea2Options { convrot, cache: cache.clone(), nvfp4: std::env::var_os("QIR_KREA2_NVFP4").is_some(), evict_text_encoder: false },
+        &mut report,
+    )?;
     tracing::info!(load_s = t0.elapsed().as_secs_f32(), "pipeline loaded");
     let references = match image {
         Some(path) => {
@@ -2303,7 +2307,16 @@ fn info(weights: &std::path::Path) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn idol(models: &std::path::Path, image: &std::path::Path, mask: Option<&std::path::Path>, seed: u64, steps: usize, cfg: f32, gaussians: usize, out: &std::path::Path) -> Result<()> {
+fn idol(
+    models: &std::path::Path,
+    image: &std::path::Path,
+    mask: Option<&std::path::Path>,
+    seed: u64,
+    steps: usize,
+    cfg: f32,
+    gaussians: usize,
+    out: &std::path::Path,
+) -> Result<()> {
     use qwen_image_rs::idol::{decoder, pipeline};
     let files = pipeline::find_files(models).with_context(|| format!("Idol's files not found under {}", models.display()))?;
     let mut pic = image::open(image)?.to_rgba8();

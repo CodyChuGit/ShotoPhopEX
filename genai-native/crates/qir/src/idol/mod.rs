@@ -1,7 +1,7 @@
 //! Idol (TripoSplat): image to 3D gaussian splats, natively.
 
-pub mod dino;
 pub mod decoder;
+pub mod dino;
 pub mod dit;
 #[cfg(feature = "flash")]
 pub mod fused;
