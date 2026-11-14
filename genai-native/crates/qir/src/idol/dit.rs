@@ -177,6 +177,17 @@ impl Block {
         match (&self.shift_table, m) {
             (Some(table), Some(m)) => {
                 let m = m.broadcast_add(&table.to_dtype(m.dtype())?)?;
+                #[cfg(feature = "flash")]
+                if super::fused::adaln_fits(x) && m.dtype() == DType::F16 {
+                    // Three fused passes: norm1+modulate; gate+residual with norm2+modulate; gate+residual.
+                    use super::fused::{gate_res, ln_mod, res_ln_mod};
+                    let dev = x.device();
+                    let h = time(dev, "norm+mod", || ln_mod(x, &m, 0, 1, 1e-6))?;
+                    let a = self.attn.forward(&h, rot)?;
+                    let (x, h) = time(dev, "gate+res+norm+mod", || res_ln_mod(x, &a, &m, 2, 3, 4, 1e-6))?;
+                    let f = time(dev, "mlp", || self.mlp.forward(&h))?;
+                    return time(dev, "gate+residual", || gate_res(&x, &f, &m, 5));
+                }
                 let c = x.dim(2)?;
                 let part = |i: usize| -> Result<Tensor> { Ok(m.narrow(1, i * c, c)?.unsqueeze(1)?) };
                 let (sh1, sc1, g1, sh2, sc2, g2) = (part(0)?, part(1)?, part(2)?, part(3)?, part(4)?, part(5)?);

@@ -56,6 +56,140 @@ static __global__ void idol_qkv_prep_kernel(__nv_bfloat16* __restrict__ out, con
     *reinterpret_cast<__nv_bfloat162*>(out + 2 * plane + o) = __floats2bfloat162_rn(v.x, v.y);
 }
 
+// ---- AdaLN blocks: LayerNorm + modulation, gated residuals -----------------------------------
+//
+// Rows of C channels (C a multiple of 8, C/8 <= 1024 threads); row r belongs to batch r / L.
+// The modulation m is (B, 6C) f16: chunk j of batch b is m[b*6C + j*C .. + C]. LayerNorm has no
+// affine weights (eps given), as the modulated blocks. The arithmetic is f32, but every value the
+// reference (ComfyUI's f16 ops, and the plain candle path) rounds to f16 is rounded here too: the
+// normalised row, 1 + scale, the product, the gated update. Rounding once instead drifts the
+// 50-step sample measurably away from ComfyUI's.
+
+static __device__ __forceinline__ float r16(float x) {
+    return __half2float(__float2half_rn(x));
+}
+
+struct Half8 {
+    __half2 v[4];
+};
+
+static __device__ __forceinline__ void load8(const __half* p, float* f) {
+    const Half8 h = *reinterpret_cast<const Half8*>(p);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const float2 t = __half22float2(h.v[i]);
+        f[2 * i] = t.x;
+        f[2 * i + 1] = t.y;
+    }
+}
+
+static __device__ __forceinline__ void store8(__half* p, const float* f) {
+    Half8 h;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) h.v[i] = __floats2half2_rn(f[2 * i], f[2 * i + 1]);
+    *reinterpret_cast<Half8*>(p) = h;
+}
+
+// Sum over the block (blockDim.x threads, a multiple of 32).
+static __device__ __forceinline__ float block_sum(float v, float* shared) {
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, warps = blockDim.x >> 5;
+    __syncthreads();
+    if (lane == 0) shared[warp] = v;
+    __syncthreads();
+    float t = 0.f;
+    for (int w = 0; w < warps; ++w) t += shared[w];
+    return t;
+}
+
+// y = LN(v) * (1 + scale) + shift for this thread's 8 values; mod points at the batch's m row.
+static __device__ __forceinline__ void ln_modulate(float* v, const __half* mod, int C, int sh, int sc, float eps, float* shared, float* y) {
+    float s = 0.f;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) s += v[i];
+    const float mean = block_sum(s, shared) / C;
+    float q = 0.f;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const float d = v[i] - mean;
+        q += d * d;
+    }
+    const float inv = rsqrtf(block_sum(q, shared) / C + eps);
+    float shift[8], scale[8];
+    const int c0 = threadIdx.x * 8;
+    load8(mod + (long long)sh * C + c0, shift);
+    load8(mod + (long long)sc * C + c0, scale);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) y[i] = r16(r16((v[i] - mean) * inv) * r16(1.f + scale[i])) + shift[i];
+}
+
+// h = LN(x) * (1 + m[sc]) + m[sh]
+static __global__ void idol_ln_mod_kernel(__half* __restrict__ h, const __half* __restrict__ x, const __half* __restrict__ m,
+                                          int L, int C, int sh, int sc, float eps) {
+    __shared__ float shared[32];
+    const long long r = blockIdx.x;
+    const long long off = r * C + threadIdx.x * 8;
+    float v[8], y[8];
+    load8(x + off, v);
+    ln_modulate(v, m + (r / L) * 6LL * C, C, sh, sc, eps, shared, y);
+    store8(h + off, y);
+}
+
+// x2 = x + a * m[g];  h = LN(x2) * (1 + m[sc]) + m[sh]  (out: x2 plane, then h plane)
+static __global__ void idol_res_ln_mod_kernel(__half* __restrict__ out, const __half* __restrict__ x, const __half* __restrict__ a,
+                                              const __half* __restrict__ m, long long rows, int L, int C, int g, int sh, int sc, float eps) {
+    __shared__ float shared[32];
+    const long long r = blockIdx.x;
+    const long long off = r * C + threadIdx.x * 8;
+    const __half* mod = m + (r / L) * 6LL * C;
+    float xv[8], av[8], gv[8], y[8];
+    load8(x + off, xv);
+    load8(a + off, av);
+    load8(mod + (long long)g * C + threadIdx.x * 8, gv);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) xv[i] += r16(av[i] * gv[i]);
+    // The residual stream is kept in f16 as the reference does: normalise the rounded values.
+    store8(out + off, xv);
+    load8(out + off, xv);
+    ln_modulate(xv, mod, C, sh, sc, eps, shared, y);
+    store8(out + rows * C + off, y);
+}
+
+// x2 = x + f * m[g]
+static __global__ void idol_gate_res_kernel(__half* __restrict__ out, const __half* __restrict__ x, const __half* __restrict__ f,
+                                            const __half* __restrict__ m, int L, int C, int g) {
+    const long long r = blockIdx.x;
+    const long long off = r * C + threadIdx.x * 8;
+    float xv[8], fv[8], gv[8];
+    load8(x + off, xv);
+    load8(f + off, fv);
+    load8(m + (r / L) * 6LL * C + (long long)g * C + threadIdx.x * 8, gv);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) xv[i] += r16(fv[i] * gv[i]);
+    store8(out + off, xv);
+}
+
+extern "C" int qir_idol_ln_mod(void* h, const void* x, const void* m, long long rows, int L, int C, int sh, int sc, float eps, void* stream) {
+    if (rows <= 0) return 0;
+    idol_ln_mod_kernel<<<(unsigned)rows, C / 8, 0, (cudaStream_t)stream>>>((__half*)h, (const __half*)x, (const __half*)m, L, C, sh, sc, eps);
+    return (int)cudaGetLastError();
+}
+
+extern "C" int qir_idol_res_ln_mod(void* out, const void* x, const void* a, const void* m, long long rows, int L, int C, int g, int sh, int sc,
+                                   float eps, void* stream) {
+    if (rows <= 0) return 0;
+    idol_res_ln_mod_kernel<<<(unsigned)rows, C / 8, 0, (cudaStream_t)stream>>>((__half*)out, (const __half*)x, (const __half*)a,
+                                                                                (const __half*)m, rows, L, C, g, sh, sc, eps);
+    return (int)cudaGetLastError();
+}
+
+extern "C" int qir_idol_gate_res(void* out, const void* x, const void* f, const void* m, long long rows, int L, int C, int g, void* stream) {
+    if (rows <= 0) return 0;
+    idol_gate_res_kernel<<<(unsigned)rows, C / 8, 0, (cudaStream_t)stream>>>((__half*)out, (const __half*)x, (const __half*)f, (const __half*)m, L, C, g);
+    return (int)cudaGetLastError();
+}
+
 // params: 32 freqs, then gamma_q (H*64), then gamma_k (H*64), all f32. Returns a CUDA error code.
 extern "C" int qir_idol_qkv_prep(void* out, const void* qkv, const void* delta, const void* params, long long rows,
                                  int heads, int n0, int n1, float eps, void* stream) {
