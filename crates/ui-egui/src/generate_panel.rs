@@ -1009,9 +1009,16 @@ pub(crate) fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, current: &T, op
         } else {
             t.text_dim
         };
-        let font = crate::theme::medium(12.0);
-        let galley = ui.painter().layout_no_wrap(o.label.to_string(), font, color);
         let icon_w = if o.icon.is_some() { 18.0 } else { 0.0 };
+        // A text-only label too wide for its segment (four segments in a narrow dock) is set
+        // smaller instead of being clipped at both ends.
+        let lay = |size: f32| ui.painter().layout_no_wrap(o.label.to_string(), crate::theme::medium(size), color);
+        let mut galley = lay(12.0);
+        for size in [11.0, 10.0] {
+            if o.icon.is_none() && galley.size().x + 4.0 > rect.width() {
+                galley = lay(size);
+            }
+        }
         let fits = icon_w + galley.size().x + 8.0 <= rect.width();
         let show_label = fits || o.icon.is_none();
         let content_w = if show_label { icon_w + galley.size().x } else { 14.0 };
@@ -1184,10 +1191,13 @@ fn model_pill(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str, width: f32
 
 /// Preferences › AI Integrations › Quality beside the model: what Auto optimises for (Best = the
 /// full-step base templates and no 4-bit weights; Balanced = the 8-step Lightning tier; Fast =
-/// the 4-step tier where one exists). A chosen template is left alone.
+/// the 4-step tier where one exists; Ultra = Best with the 16 MP model for new pictures and
+/// edits). A chosen template is left alone.
 fn quality_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    let q = photocraft_engine::generate_cmds::quality(&app.session).to_string();
+    let q = photocraft_engine::generate_cmds::auto_quality(&app.session).to_string();
     let options = [
+        Seg::new("ultra".to_string(), tl!("Ultra"))
+            .tip(tl!("Best, with new pictures and edits on MiniMax H3 Image at up to 16 MP when its files are installed")),
         Seg::new("best".to_string(), tl!("Best")).tip(tl!("Auto takes the full-step model and keeps the 4-bit weights off")),
         Seg::new("balanced".to_string(), tl!("Balanced")).tip(tl!("Auto takes the 8-step Lightning tier when the server has it")),
         Seg::new("fast".to_string(), tl!("Fast")).tip(tl!("Auto takes the 4-step tier where there is one")),

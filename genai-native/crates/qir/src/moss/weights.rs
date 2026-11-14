@@ -33,6 +33,12 @@ struct Int8Index {
     /// The `asym_w4a8_int8` modules among `modules`, with their group size: 4-bit codes that
     /// decode to the same INT8 grid (comfy_kitchen's `_dequant_int4_grouped_to_int8`).
     w4a8: BTreeMap<String, usize>,
+    /// The `nvfp4` modules (read through [`crate::nvfp4`], not from here), with their
+    /// `full_precision_matrix_mult`.
+    nvfp4: BTreeMap<String, bool>,
+    /// `int8_tensorwise` without ConvRot (a token table): module → `[out, in]`. Rows times
+    /// their scale, no rotation.
+    plain: BTreeMap<String, (usize, usize)>,
 }
 
 #[derive(serde::Deserialize)]
@@ -44,6 +50,8 @@ struct Descriptor {
     convrot_groupsize: usize,
     #[serde(default)]
     group_size: Option<usize>,
+    #[serde(default)]
+    full_precision_matrix_mult: bool,
 }
 
 /// The descriptor of the INT8 grid a W4A8 module decodes to.
@@ -117,16 +125,36 @@ impl Int8Index {
         // SAFETY: an installed checkpoint stays unchanged while it is loaded (as for candle's
         // mapped VarBuilder of the same file); every read is bounds-checked against the map.
         let map = unsafe { memmap2::Mmap::map(&file)? };
-        let mut this = Self { map, metadata, data_start: usize::try_from(8 + len)?, modules: BTreeMap::new(), other: BTreeMap::new(), w4a8: BTreeMap::new() };
+        let mut this = Self {
+            map,
+            metadata,
+            data_start: usize::try_from(8 + len)?,
+            modules: BTreeMap::new(),
+            other: BTreeMap::new(),
+            w4a8: BTreeMap::new(),
+            nvfp4: BTreeMap::new(),
+            plain: BTreeMap::new(),
+        };
         let names: Vec<String> = this.metadata.tensors().keys().filter_map(|n| n.strip_suffix(".comfy_quant").map(str::to_owned)).collect();
         for name in names {
             let raw = this.read(&format!("{name}.comfy_quant"))?;
             anyhow::ensure!(raw.len() <= 4096, "{name}: comfy_quant descriptor too long");
             let d: Descriptor = serde_json::from_slice(raw).with_context(|| format!("{name}: comfy_quant descriptor"))?;
+            if d.format == "nvfp4" {
+                this.nvfp4.insert(name, d.full_precision_matrix_mult);
+                continue;
+            }
+            if d.format == "int8_tensorwise" && !d.convrot {
+                let w = this.metadata.info(&format!("{name}.weight")).with_context(|| format!("{name}.weight missing"))?;
+                anyhow::ensure!(w.dtype == Dtype::I8 && w.shape.len() == 2, "{name}.weight must be a 2-D I8 matrix");
+                let shape = (w.shape[0], w.shape[1]);
+                this.plain.insert(name, shape);
+                continue;
+            }
             let w4a8 = d.format == "asym_w4a8_int8";
             anyhow::ensure!(
                 (d.format == "int8_tensorwise" || w4a8) && d.convrot,
-                "{name}: {} (only int8_tensorwise and asym_w4a8_int8 ConvRot are read)",
+                "{name}: {} (only int8_tensorwise and asym_w4a8_int8 ConvRot and nvfp4 are read)",
                 d.format
             );
             if d.convrot_groupsize != GROUP {
@@ -193,6 +221,7 @@ pub struct Weights {
     /// The file's header (shapes and dtypes, no data).
     meta: Metadata,
     int8: Option<Int8Index>,
+    path: PathBuf,
     /// qir's ConvRot rotation, on the device (f32).
     #[cfg_attr(not(feature = "convrot"), allow(dead_code))]
     rot: Tensor,
@@ -211,9 +240,9 @@ impl Weights {
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&files, dtype, dev)? };
         let int8 = Int8Index::open(path).with_context(|| format!("{}: its INT8 ConvRot layers", path.display()))?;
         let meta = int8.metadata.clone();
-        let int8 = if int8.modules.is_empty() && int8.other.is_empty() { None } else { Some(int8) };
+        let int8 = if int8.modules.is_empty() && int8.other.is_empty() && int8.nvfp4.is_empty() && int8.plain.is_empty() { None } else { Some(int8) };
         let convrot = convrot && cfg!(feature = "convrot") && dev.is_cuda() && dtype == DType::BF16;
-        Ok(Self { vb, meta, int8, rot: regular_hadamard_256(dev)?, dev: dev.clone(), dtype, convrot })
+        Ok(Self { vb, meta, int8, path: path.to_path_buf(), rot: regular_hadamard_256(dev)?, dev: dev.clone(), dtype, convrot })
     }
 
     pub fn device(&self) -> &Device {
@@ -263,6 +292,49 @@ impl Weights {
         Ok(self.vb.get_unchecked_dtype(name, dtype)?)
     }
 
+    /// Whether `module` is an INT8 matrix without ConvRot (`int8_tensorwise`: rows of bytes and
+    /// a scale for each row), as ComfyUI stores a quantized token table.
+    pub fn is_plain_int8(&self, module: &str) -> bool {
+        self.int8.as_ref().is_some_and(|f| f.plain.contains_key(module))
+    }
+
+    /// Rows `rows` of the plain INT8 matrix `module`, dequantized: `(rows, in)` f32 on the host.
+    pub fn plain_int8_rows(&self, module: &str, rows: &[u32]) -> Result<Tensor> {
+        let f = self.int8.as_ref().with_context(|| format!("{module}: the file has no INT8 layers"))?;
+        let &(n, k) = f.plain.get(module).with_context(|| format!("{module}: not a plain INT8 matrix"))?;
+        let weight = f.read(&format!("{module}.weight"))?;
+        let scale = f.read(&format!("{module}.weight_scale"))?;
+        anyhow::ensure!(weight.len() == n * k, "{module}.weight: {} bytes for {n} x {k}", weight.len());
+        let per_row = scale.len() == n * 4;
+        anyhow::ensure!(per_row || scale.len() == 4, "{module}.weight_scale: {} bytes for {n} rows", scale.len());
+        let scale_of = |r: usize| -> f32 {
+            let at = if per_row { r * 4 } else { 0 };
+            f32::from_le_bytes([scale[at], scale[at + 1], scale[at + 2], scale[at + 3]])
+        };
+        let mut out = Vec::with_capacity(rows.len() * k);
+        for &r in rows {
+            let r = r as usize;
+            anyhow::ensure!(r < n, "{module}: row {r} of {n}");
+            let s = scale_of(r);
+            out.extend(weight[r * k..(r + 1) * k].iter().map(|&b| f32::from(b as i8) * s));
+        }
+        Ok(Tensor::from_vec(out, (rows.len(), k), &Device::Cpu)?)
+    }
+
+    /// A plain float tensor as the file has it, read on the host (a token table whose rows
+    /// are gathered there).
+    pub fn host_tensor(&self, name: &str) -> Result<Tensor> {
+        let info = self.meta.info(name).with_context(|| format!("missing tensor {name}"))?;
+        let dtype = match info.dtype {
+            Dtype::BF16 => DType::BF16,
+            Dtype::F16 => DType::F16,
+            Dtype::F32 => DType::F32,
+            other => anyhow::bail!("{name}: {other:?} is not a float tensor"),
+        };
+        let host = unsafe { VarBuilder::from_mmaped_safetensors(&[&self.path], dtype, &Device::Cpu)? };
+        Ok(host.get_unchecked_dtype(name, dtype)?)
+    }
+
     /// An INT8 module as the file has it (its groups already in qir's rotation basis).
     pub fn prequantized(&self, module: &str) -> Result<Prequantized> {
         self.prequantized_rows(module, None)
@@ -288,6 +360,17 @@ impl Weights {
         };
         if let (Some(b), Some(ix)) = (&bias, &index) {
             bias = Some(b.index_select(ix, 0)?);
+        }
+        if let Some(full) = self.int8.as_ref().and_then(|f| f.nvfp4.get(module).copied()) {
+            anyhow::ensure!(rows.is_none() && bias.is_none(), "{module}: an NVFP4 linear with a bias or reordered rows");
+            let shape = self.shape(&format!("{module}.weight"))?;
+            anyhow::ensure!(shape.len() == 2, "{module}.weight must be a matrix");
+            let l =
+                crate::nvfp4::load_linear(shape[1] * 2, shape[0], full, &self.vb.pp(module))?.with_context(|| format!("{module}: no NVFP4 global scale"))?;
+            // ModelOpt's AWQ smoothing: the input is scaled before the product
+            let pre = format!("{module}.pre_quant_scale");
+            let pre = if self.vb.contains_tensor(&pre) { Some(self.get(&pre)?) } else { None };
+            return Ok(QLinear::Nvfp4(l, pre));
         }
         if self.is_quantized(module) {
             let p = self.prequantized_rows(module, rows)?;
@@ -321,6 +404,8 @@ pub enum QLinear {
     Dense(candle_nn::Linear),
     #[cfg(feature = "convrot")]
     Convrot(crate::convrot::ConvRotLinear, Option<Tensor>),
+    /// An NVFP4 weight and the AWQ scale its input takes first (`pre_quant_scale`).
+    Nvfp4(crate::nvfp4::Nvfp4Linear, Option<Tensor>),
 }
 
 impl QLinear {
@@ -344,6 +429,10 @@ impl QLinear {
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         match self {
             Self::Dense(l) => Ok(l.forward(x)?),
+            Self::Nvfp4(l, pre) => match pre {
+                Some(p) => l.forward(&x.broadcast_mul(&p.to_dtype(x.dtype())?)?),
+                None => l.forward(x),
+            },
             #[cfg(feature = "convrot")]
             Self::Convrot(l, bias) => {
                 let y = l.forward(&x.to_dtype(DType::BF16)?)?;

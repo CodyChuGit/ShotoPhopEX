@@ -9,6 +9,8 @@ fn every_route_uses_the_native_worker() {
     s.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
+        // Best would rewrite the image prompt photo-style first (one more run).
+        p.integrations.quality = "balanced".into();
     });
     for id in ["qwen-2.1/image", "krea2-turbo/image", "qwen-edit-2511/fill", "sam3.1/segment", "enhance/edit"] {
         assert_eq!(s.execute("generate.health", json!({"template":id})).unwrap()["backend"], "native/fake");

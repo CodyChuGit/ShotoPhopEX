@@ -40,6 +40,20 @@ extern "C" {
         eps: f32,
         stream: *mut c_void,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn qir_k2_head_rope_split(
+        y: *mut c_void,
+        x: *const c_void,
+        w: *const f32,
+        cs: *const f32,
+        sn: *const f32,
+        rows: c_long,
+        heads: i32,
+        s: i32,
+        half: i32,
+        eps: f32,
+        stream: *mut c_void,
+    ) -> i32;
     fn qir_k2_swiglu(y: *mut c_void, g: *const c_void, u: *const c_void, n: usize, stream: *mut c_void) -> i32;
     fn qir_k2_sig_mul(y: *mut c_void, a: *const c_void, g: *const c_void, n: usize, stream: *mut c_void) -> i32;
     #[allow(clippy::too_many_arguments)]
@@ -185,6 +199,8 @@ pub fn rms_mod(x: &Tensor, w: &Tensor, mods: Option<(&Tensor, usize, usize)>, ep
 /// `cs (2, S, 64)` f32 (cos, sin) when given.
 struct HeadRope {
     eps: f32,
+    /// Rotate-half pairs `(i, i + half)` over `cs (2, S, half)` instead of interleaved ones.
+    split: bool,
 }
 
 impl candle_core::CustomOp3 for HeadRope {
@@ -209,6 +225,40 @@ impl candle_core::CustomOp3 for HeadRope {
             candle_core::bail!("k2 head rope takes head dim 128, got {d}");
         }
         let rows = x_l.shape().elem_count() / 128;
+        if self.split {
+            let (two, cs_s, pairs) = cs_l.shape().dims3()?;
+            if two != 2 || cs_s != s || pairs == 0 || pairs > 64 {
+                candle_core::bail!("k2 head rope (split): tables {:?} for {s} rows of 128", cs_l.shape());
+            }
+            let stream = dev.cuda_stream();
+            let out = unsafe { dev.alloc::<half::bf16>(rows * 128)? };
+            {
+                let mut guards = Vec::new();
+                let xp = ptr!(x, x_l, half::bf16, &stream, guards, "head rope x");
+                let wp = ptr!(w, w_l, f32, &stream, guards, "head rope w");
+                let cp = ptr!(cs, cs_l, f32, &stream, guards, "head rope tables");
+                let (op, _go) = out.device_ptr(&stream);
+                check(
+                    unsafe {
+                        qir_k2_head_rope_split(
+                            op as *mut c_void,
+                            xp as *const c_void,
+                            wp as *const f32,
+                            cp as *const f32,
+                            (cp + (s * pairs * 4) as u64) as *const f32,
+                            rows as c_long,
+                            h as i32,
+                            s as i32,
+                            pairs as i32,
+                            self.eps,
+                            stream.cu_stream() as *mut c_void,
+                        )
+                    },
+                    "k2 head rope split",
+                )?;
+            }
+            return Ok((CudaStorage::wrap_cuda_slice(out, dev), x_l.shape().clone()));
+        }
         let rotate = cs_l.shape().dims3().is_ok_and(|(two, cs_s, half)| two == 2 && cs_s == s && half == 64);
         let stream = dev.cuda_stream();
         let out = unsafe { dev.alloc::<half::bf16>(rows * 128)? };
@@ -251,7 +301,13 @@ pub fn head_rope(x: &Tensor, w: &Tensor, cs: Option<&Tensor>, eps: f64) -> Resul
             none
         }
     };
-    Ok(x.contiguous()?.apply_op3_no_bwd(w, &cs.contiguous()?, &HeadRope { eps: eps as f32 })?)
+    Ok(x.contiguous()?.apply_op3_no_bwd(w, &cs.contiguous()?, &HeadRope { eps: eps as f32, split: false })?)
+}
+
+/// [`head_rope`] with rotate-half RoPE: pair `i` is channels `i` and `i + half` of each head,
+/// `cs (2, S, half)` f32 (cos, sin), `half ≤ 64`; channels from `2·half` on are only normalised.
+pub fn head_rope_split(x: &Tensor, w: &Tensor, cs: &Tensor, eps: f64) -> Result<Tensor> {
+    Ok(x.contiguous()?.apply_op3_no_bwd(w, &cs.contiguous()?, &HeadRope { eps: eps as f32, split: true })?)
 }
 
 /// The elementwise pairs: `silu(a)·b` and `a·sigmoid(b)`.
@@ -416,6 +472,19 @@ mod tests {
         let want = candle_nn::rotary_emb::rope_i(&normed.transpose(1, 2)?.contiguous()?, &cos, &sin)?.transpose(1, 2)?;
         assert!(max_err(&head_rope(&q, &wq, Some(&cs), eps)?, &want)? < 0.05);
         assert!(max_err(&head_rope(&q, &wq, None, eps)?, &normed)? < 0.05);
+
+        // rotate-half pairs (i, i + half) on the first 2·half channels, the rest only normed
+        let half = 45;
+        let ang = Tensor::randn(0f32, 1.0, (s, half), &dev)?;
+        let (cos, sin) = (ang.cos()?.unsqueeze(1)?, ang.sin()?.unsqueeze(1)?); // (S, 1, half)
+        let n1 = normed.narrow(0, 0, 1)?.squeeze(0)?; // (S, H, D)
+        let (a, bb) = (n1.narrow(2, 0, half)?, n1.narrow(2, half, half)?);
+        let ra = (a.broadcast_mul(&cos)? - bb.broadcast_mul(&sin)?)?;
+        let rb = (a.broadcast_mul(&sin)? + bb.broadcast_mul(&cos)?)?;
+        let want = Tensor::cat(&[ra, rb, n1.narrow(2, 2 * half, d - 2 * half)?], 2)?;
+        let cs = Tensor::stack(&[&cos.squeeze(1)?, &sin.squeeze(1)?], 0)?;
+        let got = head_rope_split(&q.narrow(0, 0, 1)?, &wq, &cs, eps)?.squeeze(0)?;
+        assert!(max_err(&got, &want)? < 0.05);
         Ok(())
     }
 }

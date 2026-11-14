@@ -65,10 +65,33 @@ pub fn size_within_area(width: usize, height: usize, pixels: usize) -> (usize, u
     (side(width), side(height))
 }
 
+/// Aspect-preserving scale putting the short edge inside `[low, high]` (up as well as down),
+/// each side rounded to the 32 grid (`_size_short_edge`): MiniMax-H3-Image's pictures.
+pub fn size_short_edge(width: usize, height: usize, low: usize, high: usize) -> (usize, usize) {
+    let short = width.min(height).max(1);
+    let scale = short.clamp(low, high) as f64 / short as f64;
+    let side = |s: usize| ((round_even(s as f64 * scale / CANVAS_MULTIPLE as f64) as usize) * CANVAS_MULTIPLE).max(CANVAS_MULTIPLE);
+    (side(width), side(height))
+}
+
+/// How a model's presentation names its pictures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PictureLabel {
+    /// `<Picture n>: ` (P-H3-Image, the H3 video models).
+    Tagged,
+    /// `Picture n: ` (MiniMax-H3-Image).
+    Plain,
+}
+
 /// The token ids: per picture `<Picture n>: `, `<|vision_start|>`, one `<|image_pad|>` the
 /// picture's rows replace, `<|vision_end|>`; then the prompt. Text segments are tokenized one
 /// by one, as ComfyUI does.
 pub fn token_ids(tok: &Tokenizer, prompt: &str, pictures: usize) -> Result<Vec<u32>> {
+    token_ids_labelled(tok, prompt, pictures, PictureLabel::Tagged)
+}
+
+/// [`token_ids`] with the model's picture label.
+pub fn token_ids_labelled(tok: &Tokenizer, prompt: &str, pictures: usize, label: PictureLabel) -> Result<Vec<u32>> {
     let enc = |s: &str| -> Result<Vec<u32>> {
         if s.is_empty() {
             return Ok(Vec::new());
@@ -77,7 +100,10 @@ pub fn token_ids(tok: &Tokenizer, prompt: &str, pictures: usize) -> Result<Vec<u
     };
     let mut ids = Vec::new();
     for i in 1..=pictures {
-        ids.extend(enc(&format!("<Picture {i}>: "))?);
+        ids.extend(enc(&match label {
+            PictureLabel::Tagged => format!("<Picture {i}>: "),
+            PictureLabel::Plain => format!("Picture {i}: "),
+        })?);
         ids.extend([VISION_START, IMAGE_PAD, VISION_END]);
     }
     ids.extend(enc(prompt)?);
@@ -185,6 +211,32 @@ impl H3Text {
     }
 }
 
+/// MiniMax-H3-Image's encoder: Qwen3-VL-32B cut to 50 layers, read as the stream after the
+/// last layer with no final norm and no connector (ComfyUI `MiniMaxH3TEModel`). 15.7 GB in
+/// NVFP4, so its layers take the card one at a time beside the DiT.
+pub struct H3Text32 {
+    cfg: TextConfig,
+    te: QwenTextEncoder,
+    root: &'static str,
+}
+
+impl H3Text32 {
+    pub fn load(w: &Weights) -> Result<Self> {
+        // Comfy-Org's repack: `model.layers.*` and `visual.*`
+        let root = if w.contains("model.language_model.layers.0.input_layernorm.weight") { "model.language_model" } else { "model" };
+        let cfg = TextConfig::qwen3vl_32b_h3();
+        Ok(Self { te: QwenTextEncoder::shell(&cfg, w, root)?, cfg, root })
+    }
+
+    /// `ids` from [`token_ids_labelled`], `pictures` the vision tower's features.
+    pub fn encode(&self, w: &Weights, ids: &[u32], pictures: &[&VisionFeatures]) -> Result<Conditioning> {
+        let (states, spans) = self.te.forward_streamed(&self.cfg, w, self.root, ids, pictures)?;
+        let states = states.squeeze(0)?.to_dtype(DType::F32)?;
+        let rows = states.dim(0)?;
+        Ok(Conditioning { states, tags: row_tags(rows, &spans) })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +258,15 @@ mod tests {
         assert_eq!(size_within_area(512, 512, VISION_PIXELS), (512, 512));
         assert_eq!(round_even(2.5), 2.0);
         assert_eq!(round_even(3.5), 4.0);
+    }
+
+    #[test]
+    fn short_edge_sizes() {
+        // up to the low bound, down to the high one, untouched between
+        assert_eq!(size_short_edge(512, 768, 1024, 2048), (1024, 1536));
+        assert_eq!(size_short_edge(4096, 3072, 1024, 2048), (2720, 2048));
+        assert_eq!(size_short_edge(1504, 2016, 1024, 2048), (1504, 2016));
+        assert_eq!(size_short_edge(3000, 2000, 1024, 1024), (1536, 1024));
     }
 
     #[test]

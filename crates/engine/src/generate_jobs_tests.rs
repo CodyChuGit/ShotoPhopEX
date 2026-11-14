@@ -293,6 +293,8 @@ fn recreate_varies_in_place_while_the_layer_exists_and_falls_back_to_an_image_wh
     let fake = FakeNative::start().unwrap();
     let dir = temp_dir("recreate");
     let mut s = session(&fake.url, Some(&dir));
+    // Balanced: Best would rewrite the fallback image's prompt first (one more run to count).
+    s.edit_prefs(|p| p.integrations.quality = "balanced".into());
     s.execute(FILL, json!({"prompt": "a kite", "seed": 5})).unwrap();
     let id = jobs(&mut s)[0]["id"].as_u64().unwrap();
     // The result layer is open: Generate Similar, recorded as that.
