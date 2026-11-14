@@ -3,6 +3,8 @@
 pub mod dino;
 pub mod decoder;
 pub mod dit;
+#[cfg(feature = "flash")]
+pub mod fused;
 pub mod nn;
 pub mod pipeline;
 pub mod prof;

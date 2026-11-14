@@ -75,7 +75,7 @@ impl Norm {
 
 /// RMSNorm per head (`MultiHeadRMSNorm`): eps 1e-6, no weight, then times `gamma (H, D)`.
 pub struct HeadRms {
-    gamma: Tensor,
+    pub(super) gamma: Tensor,
 }
 
 impl HeadRms {
