@@ -212,3 +212,8 @@ fn a_swap_sends_the_bfs_lora_and_prompt() {
     assert!(swap::apply(&s, &json!({"swap": "head"})).is_err(), "a swap needs image 2");
     assert!(swap::apply(&s, &json!({"swap": "hands", "references": [{"layer": 2}]})).is_err());
 }
+
+#[test]
+fn the_head_swap_asks_for_the_reference_persons_facial_hair() {
+    assert!(swap::HEAD.prompt.ends_with(swap::HEAD_FACIAL_HAIR));
+}

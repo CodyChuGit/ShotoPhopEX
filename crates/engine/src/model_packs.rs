@@ -52,6 +52,13 @@ pub struct ModelFile {
     /// The page asks for a sign-in (and its licence accepted) before it serves the file.
     #[serde(default)]
     pub gated: bool,
+    /// Files in ComfyUI's own code tree, relative to the folder that holds `models`
+    /// (`comfy/sd1_tokenizer/vocab.json`), that the engine reads in place of this one. When all
+    /// of them are there the file counts as installed: the engine runs without it (the small
+    /// tokenizer files ComfyUI ships with its code, found there by `tokenizer_dir` and the SAM
+    /// engine's `candle_files`).
+    #[serde(default)]
+    pub comfy_copy: Vec<String>,
 }
 
 /// One of NVIDIA's redistributable archives and the libraries taken from it.
@@ -184,7 +191,7 @@ fn target_root(s: &Session) -> Option<std::path::PathBuf> {
 /// finds them too, so the same name at the same size there counts.
 pub fn installed(root: &std::path::Path, f: &ModelFile) -> bool {
     let full = |p: &std::path::Path| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() == f.bytes);
-    if full(&path_of(root, f)) {
+    if full(&path_of(root, f)) || in_comfy(root, f) {
         return true;
     }
     // Deeper down: under the file's top folder (`loras`), its listed subfolders and name
@@ -194,6 +201,20 @@ pub fn installed(root: &std::path::Path, f: &ModelFile) -> bool {
     let mut parts = rel.components();
     let Some(top) = parts.next() else { return false };
     in_subfolders(&root.join(top), parts.as_path(), 2, &full)
+}
+
+/// Whether ComfyUI, beside the `models` folder `root`, holds every file the engine reads in
+/// place of `f` ([`ModelFile::comfy_copy`]).
+fn in_comfy(root: &std::path::Path, f: &ModelFile) -> bool {
+    let Some(comfy) = root.parent() else { return false };
+    !f.comfy_copy.is_empty()
+        && f.comfy_copy.iter().all(|rel| {
+            let mut p = comfy.to_path_buf();
+            for part in rel.split('/').filter(|s| !s.is_empty() && *s != "." && *s != "..") {
+                p.push(part);
+            }
+            p.is_file()
+        })
 }
 
 /// Whether a subfolder of `dir`, up to `depth` levels down, holds `rel` that `ok` accepts.
@@ -736,6 +757,7 @@ mod tests {
             url: "https://example.invalid/x".into(),
             license: "apache-2.0".into(),
             gated: false,
+            comfy_copy: Vec::new(),
         };
         assert!(!installed(&dir, &f));
         assert_eq!(left(Some(&dir), &f), 3);
@@ -763,6 +785,7 @@ mod tests {
             url: "https://example.invalid/x".into(),
             license: "apache-2.0".into(),
             gated: false,
+            comfy_copy: Vec::new(),
         };
         let deep = dir.join("diffusion_models").join("moss").join("int8");
         std::fs::create_dir_all(&deep).unwrap();
@@ -780,6 +803,31 @@ mod tests {
         std::fs::write(held.join("a.safetensors"), b"abc").unwrap();
         assert!(installed(&dir, &g), "the listed subfolder one folder deeper under loras/");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tokenizer_comfyui_ships_with_its_code_counts_as_installed() {
+        let comfy = std::env::temp_dir().join(format!("pc-packs-comfy-{}", std::process::id()));
+        let root = comfy.join("models");
+        std::fs::create_dir_all(&root).unwrap();
+        let m = manifest();
+        for id in ["sam31-tokenizer", "qwen25-tokenizer-vocab", "qwen25-tokenizer-merges", "qwen25-tokenizer-config"] {
+            let f = m.file(id).unwrap();
+            let _ = std::fs::remove_dir_all(comfy.join("comfy"));
+            assert!(!f.comfy_copy.is_empty(), "{id} names ComfyUI's copy");
+            assert!(!installed(&root, f), "{id}: nothing there yet");
+            for (k, rel) in f.comfy_copy.iter().enumerate() {
+                let p = rel.split('/').fold(comfy.clone(), |p, part| p.join(part));
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(&p, b"{}").unwrap();
+                if k + 1 < f.comfy_copy.len() {
+                    assert!(!installed(&root, f), "{id}: only part of ComfyUI's copy");
+                }
+            }
+            assert!(installed(&root, f), "{id}: ComfyUI's own copy beside the models folder");
+            assert_eq!(left(Some(&root), f), 0);
+        }
+        let _ = std::fs::remove_dir_all(&comfy);
     }
 
     #[test]
