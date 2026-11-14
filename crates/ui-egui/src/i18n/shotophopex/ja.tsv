@@ -1,0 +1,233 @@
+# ShotoPhopEX's own interface rows for ja: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/ja/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	生成塗りつぶし…
+	Generate Image…	画像を生成…
+	Select by Text…	テキストで選択…
+	Allow research models	研究用モデルを許可
+	Default edit model	既定の編集モデル
+	Default fill template	既定の塗りつぶしテンプレート
+	Default generate model	既定の生成モデル
+	Default image template	既定の画像テンプレート
+	Generative timeout (seconds)	生成のタイムアウト（秒）
+	Show generative bar	生成バーを表示
+	Describe what to generate…	生成する内容を入力…
+	Variations	バリエーション
+	Generating…	生成中…
+	Previous variation	前のバリエーション
+	Next variation	次のバリエーション
+	Generative Models	生成モデル
+	Generative Expand…	生成拡張…
+	Remove Background (Generative)…	背景を削除（生成）…
+	As Selection	選択範囲として
+	Generative Edit…	生成編集…
+	Generate Similar	類似を生成
+	Generative Expand	生成拡張
+	not installed	未インストール
+	Split into Layers (Generative)…	レイヤーに分割（生成）…
+	Changing what is there? Switch to Edit	今あるものを変える場合は「編集」に切り替えてください
+	Describe the change…	変更内容を入力…
+	Enhance prompts	プロンプトを自動的に強化
+	Warm up AI models at launch	起動時にAIモデルを読み込んでおく
+	Fast draft (faster, slightly softer detail)	高速ドラフト（より速く、細部はやや柔らかめ）
+	Enhance prompt	プロンプトを強化
+	Enhancing…	強化中…
+	The model could not improve this prompt	モデルはこのプロンプトを改善できませんでした
+	Select by text…	テキストで選択…
+	Click an object, or drag a rectangle around it	オブジェクトをクリックするか、周囲を矩形で囲んでください
+	Select by Point	ポイントで選択
+	Select by Text	テキストで選択
+	{done} results	結果 {done} 件
+	{running} running · {done} results	実行中 {running} 件 · 結果 {done} 件
+	Cancelled	キャンセル済み
+	Clear completed…	完了したものを消去…
+	Clear failed…	失敗したものを消去…
+	Completed	完了
+	Copy prompt	プロンプトをコピー
+	Delete every completed result and its files?	完了したすべての結果とそのファイルを削除しますか？
+	Delete every generation and its files? Running jobs stay.	すべての生成結果とそのファイルを削除しますか？実行中のジョブは残ります。
+	Dismiss failed	失敗したものを閉じる
+	Failed	失敗
+	Generations	生成履歴
+	Generative Fill, Edit and Generate Image results appear here.	生成塗りつぶし、生成編集、画像を生成の結果がここに表示されます。
+	In progress	実行中
+	Interrupted	中断
+	Invalid request	無効なリクエスト
+	Model files missing	モデルファイルがありません
+	More	その他
+	No generations yet	まだ生成結果はありません
+	Open as Document	ドキュメントとして開く
+	Out of memory on the server	サーバーのメモリ不足
+	Pin	ピン留め
+	Place	配置
+	Place as Layer	レイヤーとして配置
+	Prompt copied	プロンプトをコピーしました
+	Recreate	再作成
+	Remove all…	すべて削除…
+	Remove every failed and cancelled row?	失敗およびキャンセルされた行をすべて削除しますか？
+	Result discarded	結果は破棄されました
+	Saved {n} file(s)	{n} 個のファイルを保存しました
+	Saving files is not available here	ここではファイルを保存できません
+	Server error	サーバーエラー
+	Server unreachable	サーバーに接続できません
+	Timed out	タイムアウト
+	Unpin	ピン留めを解除
+	Active layer ({name})	アクティブなレイヤー（{name}）
+	Add a reference image	参照画像を追加
+	Clear all	すべて消去
+	Clear the prompt and remove the reference images?	プロンプトを消去して参照画像を削除しますか？
+	Describe what continues the scene…	シーンの続きを説明…
+	Describe what to generate in the selection…	選択範囲に生成する内容を説明…
+	Describe what you want in the image…	画像に描きたい内容を説明…
+	File: {name}	ファイル：{name}
+	File…	ファイル…
+	Fill needs a selection	塗りつぶしには選択範囲が必要です
+	From Generations	生成履歴から
+	Generation: {name}	生成結果：{name}
+	Give the expand at least one side	拡張する辺を少なくとも1つ指定してください
+	Hide negative prompt	ネガティブプロンプトを隠す
+	Layer: {name}	レイヤー：{name}
+	More than this model takes	このモデルが受け付ける数を超えています
+	Move left	左へ移動
+	Move right	右へ移動
+	Negative prompt	ネガティブプロンプト
+	Only files with a path can be references here	ここで参照にできるのはパスのあるファイルだけです
+	Open a document first	まずドキュメントを開いてください
+	Open the prompt in a larger editor	プロンプトを大きなエディターで開く
+	Reference images (optional)	参照画像（任意）
+	This model takes at most {n} reference images	このモデルが受け付ける参照画像は最大 {n} 枚です
+	Type a prompt first	まずプロンプトを入力してください
+	Type what to generate first	まず生成する内容を入力してください
+	What to avoid…	避けたい内容…
+	a layer that is gone	存在しないレイヤー
+	Enter to generate	Enter キーで生成
+	research	研究用
+	The fastest permissive model the server has	サーバーにある最速の寛容ライセンスのモデル
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	研究用ライセンス: 環境設定 › AI 連携で「研究専用モデルを許可」をオンにしてください
+	Uses: {name}	使用: {name}
+	Group models by family	モデルをファミリーごとにまとめる
+	Variation {n} of {count}	バリエーション {n}/{count}
+	Delete this variation	このバリエーションを削除
+	Keep this one	これを残す
+	Keep this one and delete the other variations	これを残して他のバリエーションを削除
+	Click to retry	クリックして再試行
+	Retry	再試行
+	Variations strip	バリエーションストリップ
+	{n} selected	{n} 件を選択
+	Save selected	選択項目を保存
+	Save results dir	結果の保存先フォルダー
+	Save results naming	保存する結果の名前
+	Alerts	通知音
+	Done and failed	完了と失敗
+	Preview while generating	生成中にプレビュー
+	Not in this build yet	このビルドにはまだありません
+	Open a picture first	まず画像を開いてください
+	Generative Features	生成機能
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	近日
+	Split into Layers	レイヤーに分割
+	Angles	アングル
+	A new picture from a prompt, with up to three references	プロンプトから新しい画像を作成（参照画像は 3 枚まで）
+	Paint the selection from a prompt	選択範囲をプロンプトで塗りつぶします
+	Change the picture by instruction	指示で画像を変更します
+	Grow the canvas and continue the scene	カンバスを広げてシーンを続けます
+	Cut the subject out onto transparency	被写体を透明の背景に切り抜きます
+	Separate the picture into editable layers	画像を編集可能なレイヤーに分けます
+	Select what you name in a few words	数語で指定したものを選択します
+	See the subject from another camera angle	被写体を別のカメラアングルから見せます
+	Generative Features…	生成機能…
+	Generative Angles…	生成アングル…
+	front	正面
+	Camera	カメラ
+	Generative Angles	生成アングル
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	正面ビュー
+	front-right quarter view	右前方斜めビュー
+	right side view	右側面ビュー
+	back-right quarter view	右後方斜めビュー
+	back view	背面ビュー
+	back-left quarter view	左後方斜めビュー
+	left side view	左側面ビュー
+	front-left quarter view	左前方斜めビュー
+	low-angle shot	ローアングル
+	eye-level shot	アイレベル
+	elevated shot	やや俯瞰
+	high-angle shot	ハイアングル
+	wide shot	ワイドショット
+	medium shot	ミディアムショット
+	close-up	クローズアップ
+	CREATE	作成
+	EDIT	編集
+	Balanced	バランス
+	Auto takes the full-step model and keeps the 4-bit weights off	自動ではフルステップのモデルを使い、4 ビット重みは使いません
+	Auto takes the 8-step Lightning tier when the server has it	自動ではサーバーにあれば 8 ステップの Lightning 段階を使います
+	Auto takes the 4-step tier where there is one	自動では 4 ステップ段階があればそれを使います
+	Object finder	オブジェクトファインダー
+	Show what a click would select while the pointer rests	ポインターを止めている間、クリックで選択される範囲を表示
+	Refine edge	エッジを調整
+	Soften the detector's hard edge from the pixels (hair, fur)	検出器の硬いエッジをピクセルからなめらかにします（髪、毛）
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	オブジェクトをクリックするか、周りをドラッグして枠で囲みます。Ctrl+クリックで除外する場所を指定
+	Select by Box	ボックスで選択
+	Click or drag a box around an object	オブジェクトをクリックするか、周りをドラッグして枠で囲みます
+	Click a spot the object must include; Alt-click one it must not	含めたい場所をクリック、除外したい場所を Alt+クリック
+	Click to include a spot, Alt-click to exclude one	クリックで場所を含め、Alt+クリックで除外
+	Click an object, or drag a box around it	オブジェクトをクリックするか、周りをドラッグして枠で囲みます
+	Paint over an object to select it	オブジェクトの上をなぞると選択されます
+	Engine: not configured	エンジン: 未設定
+	Engine: starting…	エンジン: 起動中…
+	Engine: ready	エンジン: 準備完了
+	Engine: running outside the app	エンジン: アプリ外で実行中
+	Engine: failed	エンジン: 失敗
+	Engine: stopped	エンジン: 停止
+	Start engine	エンジンを起動
+	Stop engine	エンジンを停止
+	Restart engine	エンジンを再起動
+	Show log	ログを表示
+	Engine	エンジン
+	Native	ネイティブ
+	Native runtime folders	ネイティブ ランタイム フォルダー
+	Models folder	ネイティブ モデル フォルダー
+	Instance	インスタンス
+	Intersect	交差
+	Prompt	プロンプト
+	Template	テンプレート
+	Widen	広げる
+	Fill Holes	穴を埋める
+	Widen the object's mask by this many pixels (negative shrinks it)	オブジェクトのマスクをこのピクセル数だけ広げます（負の値は縮めます）
+	Fill the gaps the object's mask encloses	オブジェクトのマスクが囲む隙間を埋めます
+	Feather the mask's edge by this many pixels	マスクの境界をこのピクセル数だけぼかします
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	塗りつぶしの前に選択範囲をこのピクセル数だけ広げ、かさばる置き換えに余地を与えます
+	Generative	生成
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	プレビューは従来の塗りつぶしです。OK と適用はモデルを新しいレイヤーに実行します。
+	Best of two	2つから最良を選択
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	候補を2つ生成し、手を加えていないように見える方を表示します。オフにすると候補は1つで、所要時間は約半分です
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	モデルフォルダーの loras サブフォルダーにあるアダプター。ネイティブエンジンが適用します
+	Generative Upscale	生成アップスケール
+	Denoise	ノイズ除去強度
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	選択範囲をどれだけ描き直すか: 1 で置き換え、0.9 前後で元の形を保ちます
+	Native engine	ネイティブ エンジン
+	Native engine: not configured	ネイティブ エンジン: 未設定
+	Native engine: starting…	ネイティブ エンジン: 起動中…
+	Native engine: working	ネイティブ エンジン: 処理中
+	Native engine: ready	ネイティブ エンジン: 準備完了
+	Native engine: failed	ネイティブ エンジン: 失敗
+	Native engine: stopped	ネイティブ エンジン: 停止
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	ネイティブ エンジンを使うには、環境設定 › AI 連携でランタイムとモデルのフォルダーを設定します
+	{free} of {total} free	{total} 中 {free} 空き
+	Loaded: {models}	読み込み済み: {models}
+	Purge models	モデルを解放
+	Choose the folder that holds your model weights to use the generative tools	生成ツールを使うには、モデルの重みがあるフォルダーを選択してください
+	Set Models Folder…	モデル フォルダーを設定…
+	App Icon…	アプリアイコン…
+	App Icon	アプリアイコン
+	Built-in	内蔵
+	Choose Image…	画像を選択…
+	Paste Image	画像をペースト
+	Image address (https://…)	画像のアドレス (https://…)
+	Download	ダウンロード
+	Downloading…	ダウンロード中…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	どんな画像でも使えます。正方形に収められます。右クリックでアイコンを削除します。

@@ -1,0 +1,230 @@
+# ShotoPhopEX's own interface rows for fr: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/fr/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	Remplissage génératif…
+	Generate Image…	Générer une image…
+	Select by Text…	Sélectionner par texte…
+	Allow research models	Autoriser les modèles de recherche
+	Default edit model	Modèle d'édition par défaut
+	Default fill template	Modèle de remplissage par défaut
+	Default generate model	Modèle de génération par défaut
+	Default image template	Modèle d'image par défaut
+	Generative timeout (seconds)	Délai d'attente génératif (secondes)
+	Show generative bar	Afficher la barre générative
+	Describe what to generate…	Décrivez ce qu'il faut générer…
+	Variations	Variations
+	Generating…	Génération…
+	Previous variation	Variation précédente
+	Next variation	Variation suivante
+	Generative Models	Modèles génératifs
+	Generative Expand…	Extension générative…
+	Remove Background (Generative)…	Supprimer l'arrière-plan (génératif)…
+	As Selection	Comme sélection
+	Generative Edit…	Édition générative…
+	Generate Similar	Générer similaire
+	Generative Expand	Extension générative
+	not installed	non installé
+	Split into Layers (Generative)…	Séparer en calques (génératif)…
+	Changing what is there? Switch to Edit	Modifier ce qui existe ? Passez à Édition
+	Describe the change…	Décrivez la modification…
+	Enhance prompts	Améliorer les prompts
+	Warm up AI models at launch	Précharger les modèles d'IA au démarrage
+	Fast draft (faster, slightly softer detail)	Brouillon rapide (plus rapide, détails un peu plus doux)
+	Enhance prompt	Améliorer le prompt
+	Enhancing…	Amélioration…
+	The model could not improve this prompt	Le modèle n'a pas pu améliorer ce prompt
+	Select by text…	Sélectionner par texte…
+	Click an object, or drag a rectangle around it	Cliquez sur un objet ou tracez un rectangle autour
+	Select by Point	Sélectionner par point
+	Select by Text	Sélectionner par texte
+	{done} results	{done} résultats
+	{running} running · {done} results	{running} en cours · {done} résultats
+	Cancelled	Annulé
+	Clear completed…	Effacer les terminés…
+	Clear failed…	Effacer les échecs…
+	Completed	Terminés
+	Copy prompt	Copier le prompt
+	Delete every completed result and its files?	Supprimer tous les résultats terminés et leurs fichiers ?
+	Delete every generation and its files? Running jobs stay.	Supprimer toutes les générations et leurs fichiers ? Les tâches en cours sont conservées.
+	Dismiss failed	Masquer les échecs
+	Generations	Générations
+	Generative Fill, Edit and Generate Image results appear here.	Les résultats du remplissage génératif, de l'édition générative et de Générer une image apparaissent ici.
+	In progress	En cours
+	Interrupted	Interrompu
+	Invalid request	Requête non valide
+	Model files missing	Fichiers du modèle manquants
+	No generations yet	Aucune génération pour l'instant
+	Open as Document	Ouvrir comme document
+	Out of memory on the server	Mémoire insuffisante sur le serveur
+	Pin	Épingler
+	Place	Placer
+	Place as Layer	Placer comme calque
+	Prompt copied	Prompt copié
+	Recreate	Recréer
+	Remove all…	Tout supprimer…
+	Remove every failed and cancelled row?	Supprimer toutes les lignes en échec ou annulées ?
+	Result discarded	Résultat abandonné
+	Saved {n} file(s)	{n} fichier(s) enregistré(s)
+	Saving files is not available here	L'enregistrement de fichiers n'est pas disponible ici
+	Server error	Erreur du serveur
+	Server unreachable	Serveur injoignable
+	Timed out	Délai dépassé
+	Unpin	Désépingler
+	Active layer ({name})	Calque actif ({name})
+	Add a reference image	Ajouter une image de référence
+	Clear all	Tout effacer
+	Clear the prompt and remove the reference images?	Effacer le prompt et retirer les images de référence ?
+	Describe what continues the scene…	Décrivez la suite de la scène…
+	Describe what to generate in the selection…	Décrivez ce qu'il faut générer dans la sélection…
+	Describe what you want in the image…	Décrivez ce que vous voulez dans l'image…
+	File: {name}	Fichier : {name}
+	File…	Fichier…
+	Fill needs a selection	Le remplissage demande une sélection
+	From Generations	Depuis Générations
+	Generation: {name}	Génération : {name}
+	Give the expand at least one side	Indiquez au moins un côté à étendre
+	Hide negative prompt	Masquer le prompt négatif
+	Layer: {name}	Calque : {name}
+	More than this model takes	Plus que ce que ce modèle accepte
+	Move left	Déplacer à gauche
+	Move right	Déplacer à droite
+	Negative prompt	Prompt négatif
+	Only files with a path can be references here	Seuls les fichiers avec un chemin peuvent servir de référence ici
+	Open a document first	Ouvrez d'abord un document
+	Open the prompt in a larger editor	Ouvrir le prompt dans un éditeur plus grand
+	Reference images (optional)	Images de référence (facultatif)
+	This model takes at most {n} reference images	Ce modèle accepte au plus {n} images de référence
+	Type a prompt first	Saisissez d'abord un prompt
+	Type what to generate first	Saisissez d'abord ce qu'il faut générer
+	What to avoid…	Ce qu'il faut éviter…
+	a layer that is gone	un calque qui n'existe plus
+	Enter to generate	Générer avec Entrée
+	research	recherche
+	The fastest permissive model the server has	Le modèle à licence permissive le plus rapide du serveur
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Licence de recherche : activez Autoriser les modèles de recherche dans Préférences › Intégrations IA
+	Uses: {name}	Utilise : {name}
+	Group models by family	Grouper les modèles par famille
+	Variation {n} of {count}	Variante {n} sur {count}
+	Delete this variation	Supprimer cette variante
+	Keep this one	Garder celle-ci
+	Keep this one and delete the other variations	Garder celle-ci et supprimer les autres variantes
+	Click to retry	Cliquez pour réessayer
+	Variations strip	Bande des variantes
+	{n} selected	{n} sélectionné(s)
+	Save selected	Enregistrer la sélection
+	Save results dir	Dossier des résultats enregistrés
+	Save results naming	Nommage des résultats enregistrés
+	Alerts	Alertes
+	Done and failed	Terminés et échecs
+	Preview while generating	Aperçu pendant la génération
+	Not in this build yet	Pas encore dans cette version
+	Open a picture first	Ouvrez d'abord une image
+	Generative Features	Fonctions génératives
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	BIENTÔT
+	Split into Layers	Séparer en calques
+	Angles	Angles
+	A new picture from a prompt, with up to three references	Une nouvelle image à partir d'un prompt, avec jusqu'à trois références
+	Paint the selection from a prompt	Remplit la sélection d'après un prompt
+	Change the picture by instruction	Modifie l'image par instruction
+	Grow the canvas and continue the scene	Agrandit la zone de travail et prolonge la scène
+	Cut the subject out onto transparency	Détoure le sujet sur fond transparent
+	Separate the picture into editable layers	Sépare l'image en calques modifiables
+	Select what you name in a few words	Sélectionne ce que vous nommez en quelques mots
+	See the subject from another camera angle	Montre le sujet sous un autre angle de caméra
+	Generative Features…	Fonctions génératives…
+	Generative Angles…	Angles génératifs…
+	front	face
+	Camera	Caméra
+	Generative Angles	Angles génératifs
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	vue de face
+	front-right quarter view	vue de trois-quarts avant droite
+	right side view	vue de profil droit
+	back-right quarter view	vue de trois-quarts arrière droite
+	back view	vue de dos
+	back-left quarter view	vue de trois-quarts arrière gauche
+	left side view	vue de profil gauche
+	front-left quarter view	vue de trois-quarts avant gauche
+	low-angle shot	contre-plongée
+	eye-level shot	à hauteur des yeux
+	elevated shot	vue surélevée
+	high-angle shot	plongée
+	wide shot	plan large
+	medium shot	plan moyen
+	close-up	gros plan
+	CREATE	CRÉER
+	EDIT	MODIFIER
+	Balanced	Équilibrée
+	Auto takes the full-step model and keeps the 4-bit weights off	Auto prend le modèle à toutes les étapes et laisse les poids 4 bits de côté
+	Auto takes the 8-step Lightning tier when the server has it	Auto prend le palier Lightning 8 étapes quand le serveur l'a
+	Auto takes the 4-step tier where there is one	Auto prend le palier 4 étapes quand il existe
+	Object finder	Détecteur d'objets
+	Show what a click would select while the pointer rests	Montrer ce qu'un clic sélectionnerait pendant que le pointeur s'arrête
+	Refine edge	Affiner le contour
+	Soften the detector's hard edge from the pixels (hair, fur)	Adoucir le contour dur du détecteur d'après les pixels (cheveux, fourrure)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Cliquez sur un objet ou tracez un cadre autour ; Ctrl-clic sur un point pour l'exclure
+	Select by Box	Sélection par cadre
+	Click or drag a box around an object	Cliquez sur un objet ou tracez un cadre autour
+	Click a spot the object must include; Alt-click one it must not	Cliquez sur un point que l'objet doit inclure ; Alt-clic sur un point à exclure
+	Click to include a spot, Alt-click to exclude one	Clic pour inclure un point, Alt-clic pour en exclure un
+	Click an object, or drag a box around it	Cliquez sur un objet ou tracez un cadre autour
+	Paint over an object to select it	Peignez sur un objet pour le sélectionner
+	Engine: not configured	Moteur : non configuré
+	Engine: starting…	Moteur : démarrage…
+	Engine: ready	Moteur : prêt
+	Engine: running outside the app	Moteur : lancé hors de l'application
+	Engine: failed	Moteur : en échec
+	Engine: stopped	Moteur : arrêté
+	Start engine	Démarrer le moteur
+	Stop engine	Arrêter le moteur
+	Restart engine	Redémarrer le moteur
+	Show log	Afficher le journal
+	Engine	Moteur
+	Native	Natif
+	Native runtime folders	Dossiers du runtime natif
+	Models folder	Dossier des modèles natifs
+	Instance	Instance
+	Intersect	Intersection
+	Prompt	Invite
+	Template	Modèle
+	Widen	Élargir
+	Fill Holes	Remplir les trous
+	Widen the object's mask by this many pixels (negative shrinks it)	Élargir le masque de l'objet de ce nombre de pixels (une valeur négative le réduit)
+	Fill the gaps the object's mask encloses	Remplir les vides que le masque de l'objet entoure
+	Feather the mask's edge by this many pixels	Adoucir le bord du masque sur ce nombre de pixels
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Élargir la sélection de ce nombre de pixels avant le remplissage, pour laisser de la place à un remplacement plus volumineux
+	Generative	Génératif
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	L'aperçu montre le remplissage classique ; OK et Appliquer exécutent le modèle sur un nouveau calque.
+	Best of two	Le meilleur de deux
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Calcule deux candidats et affiche celui qui semble intact ; désactivé : un seul candidat, environ moitié moins de temps
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Adaptateurs du sous-dossier loras du dossier des modèles, appliqués par le moteur natif
+	Generative Upscale	Agrandissement génératif
+	Denoise	Débruitage
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Part de la sélection redessinée : 1 la remplace, environ 0,9 garde l'ancienne forme
+	Native engine	Moteur natif
+	Native engine: not configured	Moteur natif : non configuré
+	Native engine: starting…	Moteur natif : démarrage…
+	Native engine: working	Moteur natif : au travail
+	Native engine: ready	Moteur natif : prêt
+	Native engine: failed	Moteur natif : en échec
+	Native engine: stopped	Moteur natif : arrêté
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Indiquez les dossiers d'exécution et de modèles dans Préférences › Intégrations IA pour utiliser le moteur natif
+	{free} of {total} free	{free} libres sur {total}
+	Loaded: {models}	Chargés : {models}
+	Purge models	Décharger les modèles
+	Choose the folder that holds your model weights to use the generative tools	Choisissez le dossier contenant les poids de vos modèles pour utiliser les outils génératifs
+	Set Models Folder…	Définir le dossier des modèles…
+	App Icon…	Icône de l’application…
+	App Icon	Icône de l’application
+	Built-in	Intégrée
+	Choose Image…	Choisir une image…
+	Paste Image	Coller l’image
+	Image address (https://…)	Adresse de l’image (https://…)
+	Download	Télécharger
+	Downloading…	Téléchargement…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	N’importe quelle image convient ; elle est ajustée dans un carré. Clic droit sur une icône pour la supprimer.

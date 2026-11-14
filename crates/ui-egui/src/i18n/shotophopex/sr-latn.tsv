@@ -1,0 +1,230 @@
+# ShotoPhopEX's own interface rows for sr-latn: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/sr-latn/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Instance	Instanca
+	Intersect	Presek
+	Prompt	Upit
+	Template	Šablon
+	Select by Text…	Izaberi po tekstu…
+	Generative Fill…	Generativna popuna…
+	Generate Image…	Generiši sliku…
+	Allow research models	Dozvoli istraživačke modele
+	Default edit model	Podrazumevani model za izmenu
+	Default fill template	Podrazumevani šablon za popunu
+	Default generate model	Podrazumevani model za generisanje
+	Default image template	Podrazumevani šablon za sliku
+	Generative timeout (seconds)	Vremensko ograničenje generisanja (sekunde)
+	Show generative bar	Prikaži generativnu traku
+	Describe what to generate…	Opišite šta generisati…
+	Variations	Varijacije
+	Generating…	Generisanje…
+	Previous variation	Prethodna varijacija
+	Next variation	Sledeća varijacija
+	Generative Models	Generativni modeli
+	Generative Expand…	Generativno proširenje…
+	Remove Background (Generative)…	Ukloni pozadinu (generativno)…
+	As Selection	Kao izbor
+	Generative Edit…	Generativna izmena…
+	Generate Similar	Generiši slično
+	Generative Expand	Generativno proširenje
+	not installed	nije instalirano
+	Split into Layers (Generative)…	Podeli na slojeve (generativno)…
+	Changing what is there? Switch to Edit	Menjate postojeće? Pređite na Izmenu
+	Describe the change…	Opišite izmenu…
+	Enhance prompts	Poboljšaj upite
+	Warm up AI models at launch	Unapred učitaj AI modele pri pokretanju
+	Fast draft (faster, slightly softer detail)	Brza skica (brže, malo mekši detalji)
+	Enhance prompt	Poboljšaj upit
+	Enhancing…	Poboljšavanje…
+	The model could not improve this prompt	Model nije mogao da poboljša ovaj upit
+	Select by text…	Izaberi po tekstu…
+	Click an object, or drag a rectangle around it	Kliknite objekat ili prevucite pravougaonik oko njega
+	Select by Point	Izaberi po tački
+	Select by Text	Izaberi po tekstu
+	{done} results	Rezultata: {done}
+	{running} running · {done} results	U toku: {running} · rezultata: {done}
+	Cancelled	Otkazano
+	Clear completed…	Obriši završene…
+	Clear failed…	Obriši neuspele…
+	Completed	Završeno
+	Copy prompt	Kopiraj upit
+	Delete every completed result and its files?	Obrisati sve završene rezultate i njihove datoteke?
+	Delete every generation and its files? Running jobs stay.	Obrisati sve generacije i njihove datoteke? Poslovi u toku ostaju.
+	Dismiss failed	Ukloni neuspele
+	Generations	Generacije
+	Generative Fill, Edit and Generate Image results appear here.	Ovde se pojavljuju rezultati generativne popune, izmene i generisanja slika.
+	In progress	U toku
+	Interrupted	Prekinuto
+	Invalid request	Nevažeći zahtev
+	Model files missing	Nedostaju datoteke modela
+	No generations yet	Još nema generacija
+	Open as Document	Otvori kao dokument
+	Out of memory on the server	Nema dovoljno memorije na serveru
+	Pin	Zakači
+	Place	Postavi
+	Place as Layer	Postavi kao sloj
+	Prompt copied	Upit je kopiran
+	Recreate	Napravi ponovo
+	Remove all…	Ukloni sve…
+	Remove every failed and cancelled row?	Ukloniti sve neuspele i otkazane redove?
+	Result discarded	Rezultat je odbačen
+	Saved {n} file(s)	Sačuvano datoteka: {n}
+	Saving files is not available here	Čuvanje datoteka ovde nije dostupno
+	Server error	Greška servera
+	Server unreachable	Server nije dostupan
+	Timed out	Isteklo vreme
+	Unpin	Otkači
+	Active layer ({name})	Aktivni sloj ({name})
+	Add a reference image	Dodaj referentnu sliku
+	Clear all	Obriši sve
+	Clear the prompt and remove the reference images?	Obrisati upit i ukloniti referentne slike?
+	Describe what continues the scene…	Opišite kako se scena nastavlja…
+	Describe what to generate in the selection…	Opišite šta generisati u izboru…
+	Describe what you want in the image…	Opišite šta želite na slici…
+	File: {name}	Datoteka: {name}
+	File…	Datoteka…
+	Fill needs a selection	Za popunu je potreban izbor
+	From Generations	Iz generacija
+	Generation: {name}	Generacija: {name}
+	Give the expand at least one side	Zadajte bar jednu stranu za proširenje
+	Hide negative prompt	Sakrij negativni upit
+	Layer: {name}	Sloj: {name}
+	More than this model takes	Više nego što ovaj model prima
+	Move left	Pomeri ulevo
+	Move right	Pomeri udesno
+	Negative prompt	Negativni upit
+	Only files with a path can be references here	Ovde reference mogu biti samo datoteke sa putanjom
+	Open a document first	Prvo otvorite dokument
+	Open the prompt in a larger editor	Otvori upit u većem uređivaču
+	Reference images (optional)	Referentne slike (opciono)
+	This model takes at most {n} reference images	Ovaj model prima najviše {n} referentnih slika
+	Type a prompt first	Prvo unesite upit
+	Type what to generate first	Prvo unesite šta generisati
+	What to avoid…	Šta izbegavati…
+	a layer that is gone	sloj koji više ne postoji
+	Enter to generate	Enter za generisanje
+	research	istraživački
+	The fastest permissive model the server has	Najbrži model sa slobodnom licencom na serveru
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Istraživačka licenca: uključite „Dozvoli istraživačke modele“ u Podešavanja › AI integracije
+	Uses: {name}	Koristi: {name}
+	Group models by family	Grupiši modele po familiji
+	Variation {n} of {count}	Varijacija {n} od {count}
+	Delete this variation	Obriši ovu varijaciju
+	Keep this one	Zadrži ovu
+	Keep this one and delete the other variations	Zadrži ovu i obriši ostale varijacije
+	Click to retry	Kliknite za ponovni pokušaj
+	Variations strip	Traka varijacija
+	{n} selected	Izabrano: {n}
+	Save selected	Sačuvaj izabrane
+	Save results dir	Fascikla za sačuvane rezultate
+	Save results naming	Imenovanje sačuvanih rezultata
+	Alerts	Obaveštenja
+	Done and failed	Završeni i neuspeli
+	Preview while generating	Pregled tokom generisanja
+	Not in this build yet	Još nije u ovoj verziji
+	Open a picture first	Prvo otvorite sliku
+	Generative Features	Generativne funkcije
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	USKORO
+	Split into Layers	Podeli na slojeve
+	Angles	Uglovi
+	A new picture from a prompt, with up to three references	Nova slika iz upita, sa do tri reference
+	Paint the selection from a prompt	Popunjava izbor prema upitu
+	Change the picture by instruction	Menja sliku prema uputstvu
+	Grow the canvas and continue the scene	Proširuje platno i nastavlja scenu
+	Cut the subject out onto transparency	Iseca subjekat na providnu pozadinu
+	Separate the picture into editable layers	Razdvaja sliku na slojeve koji se mogu uređivati
+	Select what you name in a few words	Bira ono što imenujete u nekoliko reči
+	See the subject from another camera angle	Prikazuje subjekat iz drugog ugla kamere
+	Generative Features…	Generativne funkcije…
+	Generative Angles…	Generativni uglovi…
+	front	spreda
+	Camera	Kamera
+	Generative Angles	Generativni uglovi
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	pogled spreda
+	front-right quarter view	pogled spreda zdesna pod uglom
+	right side view	pogled zdesna
+	back-right quarter view	pogled otpozadi zdesna pod uglom
+	back view	pogled otpozadi
+	back-left quarter view	pogled otpozadi sleva pod uglom
+	left side view	pogled sleva
+	front-left quarter view	pogled spreda sleva pod uglom
+	low-angle shot	snimak iz donjeg rakursa
+	eye-level shot	snimak u visini očiju
+	elevated shot	snimak sa uzvišenja
+	high-angle shot	snimak iz gornjeg rakursa
+	wide shot	široki plan
+	medium shot	srednji plan
+	close-up	krupni plan
+	CREATE	NAPRAVI
+	EDIT	IZMENI
+	Balanced	Uravnoteženo
+	Auto takes the full-step model and keeps the 4-bit weights off	Auto uzima model sa punim brojem koraka i ne koristi 4-bitne težine
+	Auto takes the 8-step Lightning tier when the server has it	Auto uzima Lightning nivo od 8 koraka kada ga server ima
+	Auto takes the 4-step tier where there is one	Auto uzima nivo od 4 koraka tamo gde postoji
+	Object finder	Pronalazač objekata
+	Show what a click would select while the pointer rests	Prikaži šta bi klik izabrao dok pokazivač miruje
+	Refine edge	Doteraj ivicu
+	Soften the detector's hard edge from the pixels (hair, fur)	Omekšaj oštru ivicu detektora prema pikselima (kosa, krzno)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Kliknite objekat ili prevucite okvir oko njega; Ctrl+klik isključuje tačku
+	Select by Box	Izaberi okvirom
+	Click or drag a box around an object	Kliknite objekat ili prevucite okvir oko njega
+	Click a spot the object must include; Alt-click one it must not	Kliknite tačku koju objekat mora da sadrži; Alt+klik onu koju ne sme
+	Click to include a spot, Alt-click to exclude one	Klik uključuje tačku, Alt+klik je isključuje
+	Click an object, or drag a box around it	Kliknite objekat ili prevucite okvir oko njega
+	Paint over an object to select it	Prefarbajte objekat da biste ga izabrali
+	Engine: not configured	Mašina: nije podešena
+	Engine: starting…	Mašina: pokreće se…
+	Engine: ready	Mašina: spremna
+	Engine: running outside the app	Mašina: radi van aplikacije
+	Engine: failed	Mašina: neuspeh
+	Engine: stopped	Mašina: zaustavljena
+	Start engine	Pokreni mašinu
+	Stop engine	Zaustavi mašinu
+	Restart engine	Ponovo pokreni mašinu
+	Show log	Prikaži dnevnik
+	Engine	Mašina
+	Native	Ugrađeno
+	Native runtime folders	Fascikle ugrađenog izvršnog okruženja
+	Models folder	Fascikla ugrađenih modela
+	Widen	Proširi
+	Fill Holes	Popuni rupe
+	Widen the object's mask by this many pixels (negative shrinks it)	Proširi masku objekta za toliko piksela (negativna vrednost je sužava)
+	Fill the gaps the object's mask encloses	Popuni praznine koje maska objekta okružuje
+	Feather the mask's edge by this many pixels	Omekšaj ivicu maske za toliko piksela
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Proširi izbor za toliko piksela pre popune, da krupnija zamena ima mesta
+	Generative	Generativno
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Pregled prikazuje klasičnu popunu; OK i Primeni pokreću model na novom sloju.
+	Best of two	Bolji od dva
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Pravi dva kandidata i prikazuje onaj koji izgleda netaknuto; isključeno: jedan kandidat, otprilike pola vremena
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Adapteri u podfascikli loras fascikle modela, koje primenjuje izvorni mehanizam
+	Generative Upscale	Generativno uvećanje
+	Denoise	Uklanjanje šuma
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Koliko se izbora ponovo crta: 1 ga zamenjuje, oko 0,9 zadržava stari oblik
+	Native engine	Izvorna mašina
+	Native engine: not configured	Izvorna mašina: nije podešena
+	Native engine: starting…	Izvorna mašina: pokreće se…
+	Native engine: working	Izvorna mašina: radi
+	Native engine: ready	Izvorna mašina: spremna
+	Native engine: failed	Izvorna mašina: neuspeh
+	Native engine: stopped	Izvorna mašina: zaustavljena
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Podesite fascikle izvršnog okruženja i modela u Podešavanja › AI integracije da biste koristili izvornu mašinu
+	{free} of {total} free	slobodno {free} od {total}
+	Loaded: {models}	Učitano: {models}
+	Purge models	Isprazni modele
+	Choose the folder that holds your model weights to use the generative tools	Izaberite fasciklu sa težinama modela da biste koristili generativne alate
+	Set Models Folder…	Postavi fasciklu modela…
+	App Icon…	Ikona aplikacije…
+	App Icon	Ikona aplikacije
+	Built-in	Ugrađena
+	Choose Image…	Izaberi sliku…
+	Paste Image	Nalepi sliku
+	Image address (https://…)	Adresa slike (https://…)
+	Download	Preuzmi
+	Downloading…	Preuzimanje…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Odgovara bilo koja slika; uklapa se u kvadrat. Desni klik na ikonu je uklanja.

@@ -1,0 +1,237 @@
+# ShotoPhopEX's own interface rows for id: the generative features' strings, which
+# PhotoCraft's catalog (craft-i18n, `locales/id/photocraft.tsv`) doesn't have. build.rs appends
+# them to that catalog; a row PhotoCraft's catalog already has is skipped. Same columns:
+# context <TAB> English source text <TAB> translation.
+
+	Generative Fill…	Isian Generatif…
+	Generate Image…	Hasilkan Gambar…
+	Select by Text…	Pilih Berdasarkan Teks…
+	Allow research models	Izinkan model riset
+	Default edit model	Model edit default
+	Default fill template	Templat isian default
+	Default generate model	Model generasi default
+	Default image template	Templat gambar default
+	Generative timeout (seconds)	Batas waktu generatif (detik)
+	Show generative bar	Tampilkan bilah generatif
+	Describe what to generate…	Jelaskan apa yang akan dibuat…
+	Variations	Variasi
+	Generating…	Membuat…
+	Previous variation	Variasi sebelumnya
+	Next variation	Variasi berikutnya
+	Generative Models	Model generatif
+	Generative Expand…	Perluasan Generatif…
+	Remove Background (Generative)…	Hapus Background (Generatif)…
+	As Selection	Sebagai Seleksi
+	Generative Edit…	Edit Generatif…
+	Generate Similar	Generate Serupa
+	Generative Expand	Perluasan Generatif
+	not installed	belum terpasang
+	Split into Layers (Generative)…	Pisahkan menjadi Layer (Generatif)…
+	Changing what is there? Switch to Edit	Mengubah yang sudah ada? Beralih ke Edit
+	Describe the change…	Jelaskan perubahannya…
+	Enhance prompts	Sempurnakan semua prompt
+	Warm up AI models at launch	Panaskan model AI saat aplikasi dibuka
+	Fast draft (faster, slightly softer detail)	Draf cepat (lebih cepat, detail sedikit lebih lembut)
+	Enhance prompt	Sempurnakan prompt
+	Enhancing…	Menyempurnakan…
+	The model could not improve this prompt	Model tidak dapat menyempurnakan prompt ini
+	Select by text…	Pilih berdasarkan teks…
+	Click an object, or drag a rectangle around it	Klik objek, atau seret persegi panjang di sekitarnya
+	Select by Point	Pilih berdasarkan titik
+	Select by Text	Pilih berdasarkan teks
+	{done} results	{done} hasil
+	{running} running · {done} results	{running} berjalan · {done} hasil
+	Cancelled	Dibatalkan
+	Clear completed…	Hapus yang selesai…
+	Clear failed…	Hapus yang gagal…
+	Completed	Selesai
+	Copy prompt	Salin prompt
+	Delete every completed result and its files?	Hapus semua hasil yang selesai beserta filenya?
+	Delete every generation and its files? Running jobs stay.	Hapus semua generasi beserta filenya? Pekerjaan yang berjalan tetap ada.
+	Dismiss failed	Tutup yang gagal
+	Failed	Gagal
+	Generations	Generasi
+	Generative Fill, Edit and Generate Image results appear here.	Hasil Isian Generatif, Edit Generatif, dan Hasilkan Gambar muncul di sini.
+	In progress	Sedang berjalan
+	Interrupted	Terputus
+	Invalid request	Permintaan tidak valid
+	List	Daftar
+	Model files missing	File model tidak ada
+	More	Lainnya
+	No generations yet	Belum ada generasi
+	Open as Document	Buka sebagai Dokumen
+	Out of memory on the server	Memori server habis
+	Pin	Sematkan
+	Place	Tempatkan
+	Place as Layer	Tempatkan sebagai Layer
+	Prompt copied	Prompt disalin
+	Recreate	Buat ulang
+	Remove all…	Hapus semua…
+	Remove every failed and cancelled row?	Hapus semua baris yang gagal dan dibatalkan?
+	Result discarded	Hasil dibuang
+	Saved {n} file(s)	{n} file disimpan
+	Saving files is not available here	Menyimpan file tidak tersedia di sini
+	Server error	Kesalahan server
+	Server unreachable	Server tidak dapat dijangkau
+	Timed out	Waktu habis
+	Unpin	Lepas sematan
+	Active layer ({name})	Layer aktif ({name})
+	Add a reference image	Tambahkan gambar referensi
+	Clear all	Hapus semua
+	Clear the prompt and remove the reference images?	Hapus prompt dan buang gambar referensi?
+	Describe what continues the scene…	Jelaskan kelanjutan adegan…
+	Describe what to generate in the selection…	Jelaskan apa yang dihasilkan di seleksi…
+	Describe what you want in the image…	Jelaskan apa yang Anda inginkan dalam gambar…
+	File: {name}	File: {name}
+	File…	File…
+	Fill needs a selection	Isian memerlukan seleksi
+	From Generations	Dari Generasi
+	Generation: {name}	Generasi: {name}
+	Give the expand at least one side	Tentukan setidaknya satu sisi untuk diperluas
+	Hide negative prompt	Sembunyikan prompt negatif
+	Layer: {name}	Layer: {name}
+	More than this model takes	Lebih dari yang diterima model ini
+	Move left	Pindah ke kiri
+	Move right	Pindah ke kanan
+	Negative prompt	Prompt negatif
+	New document	Dokumen baru
+	Only files with a path can be references here	Hanya file dengan path yang bisa menjadi referensi di sini
+	Open a document first	Buka dokumen terlebih dahulu
+	Open the prompt in a larger editor	Buka prompt di editor yang lebih besar
+	Reference images (optional)	Gambar referensi (opsional)
+	This model takes at most {n} reference images	Model ini menerima paling banyak {n} gambar referensi
+	Type a prompt first	Ketik prompt terlebih dahulu
+	Type what to generate first	Ketik dulu apa yang akan dihasilkan
+	What to avoid…	Yang perlu dihindari…
+	a layer that is gone	layer yang sudah tidak ada
+	Enter to generate	Enter untuk menghasilkan
+	research	riset
+	The fastest permissive model the server has	Model berlisensi permisif tercepat yang dimiliki server
+	Research licence: turn on Allow research-only models in Preferences › AI Integrations	Lisensi riset: aktifkan Izinkan model khusus riset di Preferensi › Integrasi AI
+	Uses: {name}	Memakai: {name}
+	Group models by family	Kelompokkan model menurut keluarga
+	Variation {n} of {count}	Variasi {n} dari {count}
+	Delete this variation	Hapus variasi ini
+	Keep this one	Simpan yang ini
+	Keep this one and delete the other variations	Simpan yang ini dan hapus variasi lainnya
+	Click to retry	Klik untuk mencoba lagi
+	Retry	Coba lagi
+	Variations strip	Strip variasi
+	{n} selected	{n} dipilih
+	Save selected	Simpan yang dipilih
+	Save results dir	Folder hasil yang disimpan
+	Save results naming	Penamaan hasil yang disimpan
+	Alerts	Peringatan
+	Done and failed	Selesai dan gagal
+	Preview while generating	Pratinjau saat membuat
+	Not in this build yet	Belum ada di build ini
+	Open a picture first	Buka gambar terlebih dahulu
+	Generative Features	Fitur generatif
+	Runs on the native worker with the models you installed.	Runs on the native worker with the models you installed.
+	SOON	SEGERA
+	Split into Layers	Pisahkan ke layer
+	Angles	Sudut
+	A new picture from a prompt, with up to three references	Gambar baru dari prompt, dengan hingga tiga referensi
+	Paint the selection from a prompt	Mengisi seleksi dari prompt
+	Change the picture by instruction	Mengubah gambar dengan instruksi
+	Grow the canvas and continue the scene	Memperbesar kanvas dan melanjutkan adegan
+	Cut the subject out onto transparency	Memotong subjek ke latar transparan
+	Separate the picture into editable layers	Memisahkan gambar ke layer yang bisa diedit
+	Select what you name in a few words	Memilih apa yang Anda sebut dengan beberapa kata
+	See the subject from another camera angle	Melihat subjek dari sudut kamera lain
+	Generative Features…	Fitur generatif…
+	Generative Angles…	Sudut generatif…
+	front	depan
+	Camera	Kamera
+	Generative Angles	Sudut generatif
+	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)	Needs qwen-image-edit-2511-multiple-angles-lora.safetensors in the Models folder’s loras subfolder (fal, Apache-2.0)
+	front view	tampak depan
+	front-right quarter view	tampak tiga perempat depan kanan
+	right side view	tampak samping kanan
+	back-right quarter view	tampak tiga perempat belakang kanan
+	back view	tampak belakang
+	back-left quarter view	tampak tiga perempat belakang kiri
+	left side view	tampak samping kiri
+	front-left quarter view	tampak tiga perempat depan kiri
+	low-angle shot	sudut rendah
+	eye-level shot	setinggi mata
+	elevated shot	sudut agak tinggi
+	high-angle shot	sudut tinggi
+	wide shot	bidikan lebar
+	medium shot	bidikan sedang
+	close-up	close-up
+	CREATE	BUAT
+	EDIT	EDIT
+	Best	Terbaik
+	Balanced	Seimbang
+	Auto takes the full-step model and keeps the 4-bit weights off	Otomatis memakai model langkah penuh dan tidak memakai bobot 4-bit
+	Auto takes the 8-step Lightning tier when the server has it	Otomatis memakai tingkat Lightning 8 langkah jika server memilikinya
+	Auto takes the 4-step tier where there is one	Otomatis memakai tingkat 4 langkah jika ada
+	Object finder	Pencari objek
+	Show what a click would select while the pointer rests	Tampilkan apa yang akan dipilih klik saat penunjuk diam
+	Refine edge	Haluskan tepi
+	Soften the detector's hard edge from the pixels (hair, fur)	Lembutkan tepi keras detektor dari piksel (rambut, bulu)
+	Click or drag a box around an object; Ctrl-click a spot to exclude it	Klik atau seret kotak di sekeliling objek; Ctrl-klik titik untuk mengecualikannya
+	Select by Box	Pilih dengan Kotak
+	Click or drag a box around an object	Klik atau seret kotak di sekeliling objek
+	Click a spot the object must include; Alt-click one it must not	Klik titik yang harus termasuk objek; Alt-klik titik yang tidak
+	Click to include a spot, Alt-click to exclude one	Klik untuk menyertakan titik, Alt-klik untuk mengecualikan
+	Click an object, or drag a box around it	Klik objek, atau seret kotak di sekelilingnya
+	Paint over an object to select it	Sapukan di atas objek untuk memilihnya
+	Engine: not configured	Mesin: belum dikonfigurasi
+	Engine: starting…	Mesin: memulai…
+	Engine: ready	Mesin: siap
+	Engine: running outside the app	Mesin: berjalan di luar aplikasi
+	Engine: failed	Mesin: gagal
+	Engine: stopped	Mesin: berhenti
+	Start engine	Mulai mesin
+	Stop engine	Hentikan mesin
+	Restart engine	Mulai ulang mesin
+	Show log	Tampilkan log
+	Engine	Mesin
+	Native	Native
+	Native runtime folders	Folder runtime native
+	Models folder	Folder model native
+	Instance	Instans
+	Intersect	Irisan
+	Prompt	Prompt
+	Template	Templat
+	Widen	Perlebar
+	Fill Holes	Isi Lubang
+	Widen the object's mask by this many pixels (negative shrinks it)	Perlebar mask objek sebanyak piksel ini (nilai negatif mengecilkannya)
+	Fill the gaps the object's mask encloses	Isi celah yang dikelilingi mask objek
+	Feather the mask's edge by this many pixels	Haluskan tepi mask sebanyak piksel ini
+	Widen the selection by this many pixels before the fill, so a bulkier replacement has room	Perlebar seleksi sebanyak piksel ini sebelum pengisian, agar pengganti yang lebih besar punya ruang
+	Generative	Generatif
+	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)	Fill from the generative model: slower, far better on textures and patterns (needs the native worker)
+	The preview shows the classical fill; OK and Apply run the model onto a new layer.	Pratinjau menampilkan isian klasik; OK dan Terapkan menjalankan model ke layer baru.
+	Best of two	Terbaik dari dua
+	Run two candidates and show the one that looks untouched; off, one candidate, about half the time	Menjalankan dua kandidat dan menampilkan yang tampak tak tersentuh; nonaktif: satu kandidat, sekitar separuh waktu
+	LoRAs	LoRAs
+	Adapters in the models folder's loras subfolder, applied by the native engine	Adaptor di subfolder loras pada folder model, diterapkan oleh mesin native
+	Strength	Kekuatan
+	Generative Upscale	Peningkatan Skala Generatif
+	Denoise	Denoise
+	How much of the selection is redrawn: 1 replaces it, about 0.9 keeps the old shape	Seberapa banyak seleksi yang digambar ulang: 1 menggantinya, sekitar 0,9 mempertahankan bentuk lama
+	Native engine	Mesin native
+	Native engine: not configured	Mesin native: belum dikonfigurasi
+	Native engine: starting…	Mesin native: memulai…
+	Native engine: working	Mesin native: bekerja
+	Native engine: ready	Mesin native: siap
+	Native engine: failed	Mesin native: gagal
+	Native engine: stopped	Mesin native: berhenti
+	Set the runtime and model folders in Preferences › AI Integrations to use the native engine	Atur folder runtime dan model di Preferensi › Integrasi AI untuk memakai mesin native
+	{free} of {total} free	{free} dari {total} kosong
+	Loaded: {models}	Dimuat: {models}
+	Purge models	Kosongkan model
+	Choose the folder that holds your model weights to use the generative tools	Pilih folder berisi bobot model Anda untuk memakai alat generatif
+	Set Models Folder…	Atur Folder Model…
+	App Icon…	Ikon Aplikasi…
+	App Icon	Ikon Aplikasi
+	Built-in	Bawaan
+	Choose Image…	Pilih Gambar…
+	Paste Image	Tempel Gambar
+	Image address (https://…)	Alamat gambar (https://…)
+	Download	Unduh
+	Downloading…	Mengunduh…
+	Any picture works; it is fitted into a square. Right-click an icon to remove it.	Gambar apa pun bisa; gambar dimuat ke dalam persegi. Klik kanan ikon untuk menghapusnya.

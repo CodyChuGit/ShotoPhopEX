@@ -384,7 +384,9 @@ fn a_generative_stroke_takes_the_object_under_it_whole_when_it_covers_enough_of_
         .unwrap();
     let made = LayerId(r["layer"].as_u64().unwrap());
     let info = generative_info(s.active().unwrap().doc.layer(made).unwrap()).unwrap();
-    assert_eq!((info.grow, info.enhanced.as_str()), (23, ""), "the stroke and the point object, x 85 to 235: {info:?}");
+    // The stroke stops short of its last point since upstream 0.23 turned Catch-up on Stroke
+    // End off by default (#11887), so the hole is x 84 to 223 (139 px, grown 21).
+    assert_eq!((info.grow, info.enhanced.as_str()), (21, ""), "the stroke and the point object, x 84 to 223: {info:?}");
     assert_eq!(fake.state().runs.len(), 11, "the detector by point, the fill");
 }
 
