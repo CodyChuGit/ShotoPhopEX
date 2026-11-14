@@ -17,10 +17,30 @@ impl Lin {
 
     /// `x (..., in)` to `(..., out)`, any number of leading dims.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        self.forward_act(x, false)
+    }
+
+    /// [`Self::forward`], then the tanh GELU when `gelu`. On CUDA in f16 a dense linear with a
+    /// bias runs as one cuBLASLt GEMM with the bias and the GELU in its epilogue.
+    pub fn forward_act(&self, x: &Tensor, gelu: bool) -> Result<Tensor> {
         let dims = x.dims().to_vec();
         let k = *dims.last().unwrap_or(&0);
         let rows: usize = dims[..dims.len() - 1].iter().product();
+        // Irrefutable without the convrot feature (QLinear is then dense only).
+        #[cfg(feature = "flash")]
+        #[allow(irrefutable_let_patterns)]
+        if let QLinear::Dense(l) = &self.0 {
+            if let Some(b) = l.bias() {
+                if let Some(y) = super::fused::linear_bias(&x.reshape((rows, k))?, l.weight(), b, gelu)? {
+                    let n = y.dim(1)?;
+                    let mut out = dims[..dims.len() - 1].to_vec();
+                    out.push(n);
+                    return Ok(y.reshape(out)?);
+                }
+            }
+        }
         let y = self.0.forward(&x.reshape((rows, k))?)?;
+        let y = if gelu { y.gelu()? } else { y };
         let n = y.dim(1)?;
         let mut out = dims[..dims.len() - 1].to_vec();
         out.push(n);
@@ -109,7 +129,7 @@ impl Mlp {
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.fc2.forward(&self.fc1.forward(x)?.gelu()?)
+        self.fc2.forward(&self.fc1.forward_act(x, true)?)
     }
 }
 
