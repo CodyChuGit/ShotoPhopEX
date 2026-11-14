@@ -240,6 +240,7 @@ impl IdolPipeline {
             cam = (cam + (vc * dt)?)?;
             progress((i + 1) as f32 / n as f32, "Shaping");
         }
+        super::prof::report();
         Ok(z)
     }
 

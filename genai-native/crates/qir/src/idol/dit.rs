@@ -6,6 +6,7 @@
 
 use candle_core::{DType, Device, Tensor, D};
 
+use super::prof::time;
 use super::nn::{attention, point_embedding, pow2_freqs, sinusoid, HeadRms, Lin, Mlp, Norm};
 use crate::moss::weights::Weights;
 use crate::Result;
@@ -91,14 +92,16 @@ impl Attn {
     fn forward(&self, x: &Tensor, rot: &(Tensor, Tensor)) -> Result<Tensor> {
         let (b, l, c) = x.dims3()?;
         let hd = c / self.heads;
-        let qkv = self.qkv.forward(x)?.reshape((b, l, 3, self.heads, hd))?;
+        let dev = x.device();
+        let qkv = time(dev, "qkv linear", || self.qkv.forward(x))?.reshape((b, l, 3, self.heads, hd))?;
         let q = qkv.narrow(2, 0, 1)?.squeeze(2)?;
         let k = qkv.narrow(2, 1, 1)?.squeeze(2)?;
         let v = qkv.narrow(2, 2, 1)?.squeeze(2)?;
         // RoPE first, then the per-head norms (the model's order).
-        let q = self.q_norm.forward(&rope(&q, &rot.0, &rot.1)?)?;
-        let k = self.k_norm.forward(&rope(&k, &rot.0, &rot.1)?)?;
-        self.out.forward(&attention(&q, &k, &v.contiguous()?)?)
+        let (q, k) = time(dev, "rope", || -> Result<_> { Ok((rope(&q, &rot.0, &rot.1)?, rope(&k, &rot.0, &rot.1)?)) })?;
+        let (q, k) = time(dev, "head rms", || -> Result<_> { Ok((self.q_norm.forward(&q)?, self.k_norm.forward(&k)?)) })?;
+        let a = time(dev, "attention", || attention(&q, &k, &v.contiguous()?))?;
+        time(dev, "out linear", || self.out.forward(&a))
     }
 }
 
@@ -131,10 +134,13 @@ impl Block {
                 let c = x.dim(2)?;
                 let part = |i: usize| -> Result<Tensor> { Ok(m.narrow(1, i * c, c)?.unsqueeze(1)?) };
                 let (sh1, sc1, g1, sh2, sc2, g2) = (part(0)?, part(1)?, part(2)?, part(3)?, part(4)?, part(5)?);
-                let h = self.norm1.forward(x)?.broadcast_mul(&(sc1 + 1.0)?)?.broadcast_add(&sh1)?;
-                let x = (x + self.attn.forward(&h, rot)?.broadcast_mul(&g1)?)?;
-                let h = self.norm2.forward(&x)?.broadcast_mul(&(sc2 + 1.0)?)?.broadcast_add(&sh2)?;
-                Ok((&x + self.mlp.forward(&h)?.broadcast_mul(&g2)?)?)
+                let dev = x.device();
+                let h = time(dev, "norm+mod", || -> Result<_> { Ok(self.norm1.forward(x)?.broadcast_mul(&(sc1 + 1.0)?)?.broadcast_add(&sh1)?) })?;
+                let a = self.attn.forward(&h, rot)?;
+                let x = time(dev, "gate+residual", || -> Result<_> { Ok((x + a.broadcast_mul(&g1)?)?) })?;
+                let h = time(dev, "norm+mod", || -> Result<_> { Ok(self.norm2.forward(&x)?.broadcast_mul(&(sc2 + 1.0)?)?.broadcast_add(&sh2)?) })?;
+                let f = time(dev, "mlp", || self.mlp.forward(&h))?;
+                time(dev, "gate+residual", || -> Result<_> { Ok((&x + f.broadcast_mul(&g2)?)?) })
             }
             _ => {
                 let x = (x + self.attn.forward(&self.norm1.forward(x)?, rot)?)?;
@@ -232,7 +238,7 @@ impl IdolDit {
 
         let mut hx = self.input.forward(&z.to_dtype(self.dtype)?)?.broadcast_add(&self.pos_emb)?;
         for (blk, repo) in self.noise_refiner.iter().zip(&self.noise_repo) {
-            let rot = repo.forward(&hx)?;
+            let rot = time(hx.device(), "repo", || repo.forward(&hx))?;
             hx = blk.forward(&hx, Some(&t_mod), &rot)?;
         }
         let hcam = self.cam_refiner.forward(&cam.to_dtype(self.dtype)?)?;
@@ -240,7 +246,7 @@ impl IdolDit {
         let lc = cam.dim(1)?;
         let mut h = Tensor::cat(&[&hx, ctx_refined, &hcam], 1)?;
         for (blk, repo) in self.blocks.iter().zip(&self.repo) {
-            let rot = repo.forward(&h)?;
+            let rot = time(h.device(), "repo", || repo.forward(&h))?;
             h = blk.forward(&h, Some(&t_mod), &rot)?;
         }
         let total = h.dim(1)?;
