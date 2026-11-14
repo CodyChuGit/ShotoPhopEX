@@ -309,7 +309,7 @@ mod tests {
                 dev.synchronize()?;
                 let start = std::time::Instant::now();
                 for _ in 0..5 {
-                    let _ = q.apply_op3_no_bwd(&k, &v, &Flash { layered, scale, bias })?;
+                    let _ = q.apply_op3_no_bwd(&k, &v, &Flash { layered, d64: false, scale, bias })?;
                 }
                 dev.synchronize()?;
                 eprintln!("Layered tiles s={s} layered={layered}: {:.3} ms", start.elapsed().as_secs_f64() * 200.0);
