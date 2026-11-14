@@ -442,3 +442,23 @@ fn edit_mode_swap_needs_a_reference_and_sends_swap_without_a_prompt() {
     assert!(!swapping(&app));
     assert!(request(&app).is_err(), "no prompt, no swap");
 }
+
+#[test]
+fn edit_mode_pose_needs_a_reference_and_sends_repose_without_a_prompt() {
+    let fake = FakeNative::start().unwrap();
+    let (mut app, _base, hat) = app(&fake.url);
+    app.ui.generate.mode = "edit".into();
+    set(&mut app, &json!({"generatePanel": {"swap": "pose"}})).unwrap();
+    assert!(reposing(&app));
+    assert!(!swapping(&app), "Pose is not a swap");
+    assert_eq!(effective_template(&app, "edit"), photocraft_engine::generate_cmds::repose::REPOSE_TEMPLATE);
+    assert!(request(&app).is_err(), "a repose needs the picture of who to draw");
+    add_reference(&mut app, json!({"layer": hat}));
+    let (cmd, q) = request(&app).unwrap();
+    assert_eq!(cmd, "generate.edit");
+    assert_eq!(q["repose"], true);
+    assert!(q.get("swap").is_none());
+    assert_eq!(q["references"], json!([{"layer": hat}]));
+    set(&mut app, &json!({"generatePanel": {"swap": "off"}})).unwrap();
+    assert!(!reposing(&app));
+}
