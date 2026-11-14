@@ -213,6 +213,7 @@ impl IdolPipeline {
         let dit = IdolDit::load(&w)?;
         let ctx_pos = dit.refine_context(&dit.context(feat1, feat2)?)?;
         let ctx_neg = dit.refine_context(&dit.context(&feat1.zeros_like()?, &feat2.zeros_like()?)?)?;
+        let ctx_both = Tensor::cat(&[&ctx_pos, &ctx_neg], 0)?;
         let sched = FlowSchedule::simple(req.steps, SHIFT).map_err(anyhow::Error::msg)?;
         let (nz, nc) = noise(req.seed)?;
         let s0 = sched.sigma(0);
@@ -224,11 +225,13 @@ impl IdolPipeline {
                 return Err(Cancelled.into());
             }
             let t = sched.sigma(i) * 1000.0;
-            let (vz, vc) = dit.forward(&z, &cam, t, &ctx_pos)?;
             let (vz, vc) = if req.cfg == 1.0 {
-                (vz, vc)
+                dit.forward(&z, &cam, t, &ctx_pos)?
             } else {
-                let (uz, uc) = dit.forward(&z, &cam, t, &ctx_neg)?;
+                // Conditional and unconditional in one batch of two, as ComfyUI runs CFG.
+                let (v2, c2) = dit.forward(&Tensor::cat(&[&z, &z], 0)?, &Tensor::cat(&[&cam, &cam], 0)?, t, &ctx_both)?;
+                let (vz, uz) = (v2.narrow(0, 0, 1)?, v2.narrow(0, 1, 1)?);
+                let (vc, uc) = (c2.narrow(0, 0, 1)?, c2.narrow(0, 1, 1)?);
                 let g = f64::from(req.cfg);
                 ((&uz + ((vz - &uz)? * g)?)?, (&uc + ((vc - &uc)? * g)?)?)
             };

@@ -50,6 +50,14 @@ impl Norm {
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let dt = x.dtype();
+        if x.device().is_cuda() {
+            // candle's fused kernel (f32 accumulation) in the run dtype, as torch's LayerNorm.
+            let c = x.dim(D::Minus1)?;
+            let ones = Tensor::ones(c, dt, x.device())?;
+            let alpha = match &self.weight { Some(w) => w.to_dtype(dt)?, None => ones.clone() };
+            let beta = match &self.bias { Some(b) => b.to_dtype(dt)?, None => ones.zeros_like()? };
+            return Ok(candle_nn::ops::layer_norm(&x.contiguous()?, &alpha, &beta, self.eps as f32)?);
+        }
         let x = x.to_dtype(DType::F32)?;
         let mean = x.mean_keepdim(D::Minus1)?;
         let xc = x.broadcast_sub(&mean)?;
@@ -78,6 +86,11 @@ impl HeadRms {
     /// `x (B, L, H, D)`.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let dt = x.dtype();
+        if x.device().is_cuda() {
+            let ones = Tensor::ones(x.dim(D::Minus1)?, dt, x.device())?;
+            let y = candle_nn::ops::rms_norm(&x.contiguous()?, &ones, 1e-6)?;
+            return Ok(y.broadcast_mul(&self.gamma.to_dtype(dt)?)?);
+        }
         let x = x.to_dtype(DType::F32)?;
         let y = x.broadcast_div(&(x.sqr()?.mean_keepdim(D::Minus1)? + 1e-6)?.sqrt()?)?;
         Ok(y.broadcast_mul(&self.gamma)?.to_dtype(dt)?)
