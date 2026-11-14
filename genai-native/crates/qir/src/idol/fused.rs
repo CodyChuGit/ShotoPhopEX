@@ -109,10 +109,244 @@ pub fn qkv_prep(qkv: &Tensor, delta: &Tensor, params: &(Tensor, usize, usize), h
     Ok((part(0)?, part(1)?, part(2)?))
 }
 
+// ---- cuBLASLt linears with the bias (and GELU) in the epilogue -------------------------------
+//
+// `y = x Wᵀ + b` (and `gelu_tanh(x Wᵀ + b)`) in f16 with f32 accumulation, in one GEMM: candle's
+// Linear adds the bias in a second pass over the output, which for Idol's 24k-row activations
+// costs about as much as the GEMM itself. Idol-local on purpose: the shared QLinear is untouched.
+
+mod lt_gemm {
+    use std::collections::HashMap;
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+
+    use candle_core::cuda_backend::cudarc::cublaslt::{result as lt, sys};
+    use candle_core::cuda_backend::cudarc::driver::CudaSlice;
+
+    pub const WORKSPACE: usize = 4 << 20;
+
+    pub struct State {
+        pub handle: sys::cublasLtHandle_t,
+        pub plans: HashMap<(usize, usize, usize, bool, [u32; 4]), Plan>,
+        pub workspaces: HashMap<usize, CudaSlice<u8>>,
+        pub device: candle_core::cuda_backend::DeviceId,
+        pub owner: candle_core::CudaDevice,
+    }
+
+    // SAFETY: every use of the handle and of the plans' descriptors is serialized by STATE.
+    unsafe impl Send for State {}
+    pub static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+    impl Drop for State {
+        fn drop(&mut self) {
+            let _ = self.owner.cuda_stream().context().bind_to_thread();
+            unsafe {
+                let _ = lt::destroy_handle(self.handle);
+            }
+        }
+    }
+
+    pub struct Plan {
+        pub mm: sys::cublasLtMatmulDesc_t,
+        pub layouts: [sys::cublasLtMatrixLayout_t; 3],
+        pub pref: sys::cublasLtMatmulPreference_t,
+        pub algo: sys::cublasLtMatmulAlgo_t,
+    }
+
+    impl Drop for Plan {
+        fn drop(&mut self) {
+            unsafe {
+                for l in self.layouts {
+                    let _ = lt::destroy_matrix_layout(l);
+                }
+                let _ = lt::destroy_matmul_pref(self.pref);
+                let _ = lt::destroy_matmul_desc(self.mm);
+            }
+        }
+    }
+
+    pub fn err(e: impl std::fmt::Debug) -> candle_core::Error {
+        candle_core::Error::Msg(format!("Idol cuBLASLt: {e:?}"))
+    }
+
+    /// `D (n×m, col-major) = op(W) · X` with `W (k×n, col-major, transposed)` and `X (k×m)`, f16,
+    /// f32 accumulation, the bias (per output feature) and optionally GELU in the epilogue.
+    pub fn plan(m: usize, n: usize, k: usize, gelu: bool, alignments: [u32; 4], handle: sys::cublasLtHandle_t) -> candle_core::Result<Plan> {
+        let mm = lt::create_matmul_desc(sys::cublasComputeType_t::CUBLAS_COMPUTE_32F, sys::cudaDataType::CUDA_R_32F).map_err(err)?;
+        let f16 = sys::cudaDataType::CUDA_R_16F;
+        let layouts = [
+            lt::create_matrix_layout(f16, k as u64, n as u64, k as i64).map_err(err)?,
+            lt::create_matrix_layout(f16, k as u64, m as u64, k as i64).map_err(err)?,
+            lt::create_matrix_layout(f16, n as u64, m as u64, n as i64).map_err(err)?,
+        ];
+        let pref = lt::create_matmul_pref().map_err(err)?;
+        // Owned from here on, so the descriptors are freed on every error path below.
+        // SAFETY: cublasLtMatmulAlgo_t is plain data; the zeroed value is replaced before use.
+        let mut plan = Plan { mm, layouts, pref, algo: unsafe { std::mem::zeroed() } };
+        let transpose: i32 = 1;
+        let epilogue = if gelu { sys::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_GELU_BIAS } else { sys::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_BIAS };
+        let bias_type = f16;
+        unsafe {
+            let set = |attr, p: *const c_void, size: usize| lt::set_matmul_desc_attribute(mm, attr, p, size).map_err(err);
+            set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_TRANSA, &transpose as *const _ as *const c_void, std::mem::size_of_val(&transpose))?;
+            set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_EPILOGUE, &epilogue as *const _ as *const c_void, std::mem::size_of_val(&epilogue))?;
+            set(sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE, &bias_type as *const _ as *const c_void, std::mem::size_of_val(&bias_type))?;
+            for (attribute, alignment) in [
+                sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_A_BYTES,
+                sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_B_BYTES,
+                sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_C_BYTES,
+                sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_D_BYTES,
+            ]
+            .into_iter()
+            .zip(alignments)
+            {
+                lt::set_matmul_pref_attribute(pref, attribute, &alignment as *const _ as *const c_void, std::mem::size_of_val(&alignment)).map_err(err)?;
+            }
+            lt::set_matmul_pref_attribute(
+                pref,
+                sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+                &WORKSPACE as *const _ as *const c_void,
+                std::mem::size_of_val(&WORKSPACE),
+            )
+            .map_err(err)?;
+        }
+        let [a, b, d] = layouts;
+        let heuristic = unsafe { lt::get_matmul_algo_heuristic(handle, mm, a, b, d, d, pref) }.map_err(err)?;
+        plan.algo = heuristic.algo;
+        Ok(plan)
+    }
+}
+
+struct LtLinear {
+    gelu: bool,
+}
+
+impl candle_core::CustomOp3 for LtLinear {
+    fn name(&self) -> &'static str {
+        "idol-lt-linear"
+    }
+
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> candle_core::Result<(CpuStorage, Shape)> {
+        candle_core::bail!("idol-lt-linear is CUDA-only")
+    }
+
+    fn cuda_fwd(&self, x: &CudaStorage, xl: &Layout, w: &CudaStorage, wl: &Layout, b: &CudaStorage, bl: &Layout) -> candle_core::Result<(CudaStorage, Shape)> {
+        use candle_core::cuda_backend::cudarc::cublaslt::{result as lt, sys};
+        let (m, k) = xl.shape().dims2()?;
+        let (n, wk) = wl.shape().dims2()?;
+        if wk != k || bl.shape().elem_count() != n {
+            candle_core::bail!("idol-lt-linear: x {:?}, w {:?}, b {:?}", xl.shape(), wl.shape(), bl.shape());
+        }
+        let dev = x.device().clone();
+        let stream = dev.cuda_stream();
+        let out = unsafe { dev.alloc::<half::f16>(m * n)? };
+        {
+            let xp = ptr::<half::f16>(x, xl, "x", &stream)?;
+            let wp = ptr::<half::f16>(w, wl, "weight", &stream)?;
+            let bp = ptr::<half::f16>(b, bl, "bias", &stream)?;
+            let (op, _go) = out.device_ptr(&stream);
+            let alignments = [wp, xp, op, op].map(|p| 1u32 << p.trailing_zeros().min(8));
+            let key = (m, n, k, self.gelu, alignments);
+            let mut guard = lt_gemm::STATE.lock().map_err(lt_gemm::err)?;
+            if guard.as_ref().is_none_or(|s| s.device != dev.id()) {
+                *guard = Some(lt_gemm::State {
+                    handle: lt::create_handle().map_err(lt_gemm::err)?,
+                    plans: std::collections::HashMap::new(),
+                    workspaces: std::collections::HashMap::new(),
+                    device: dev.id(),
+                    owner: dev.clone(),
+                });
+            }
+            stream.context().bind_to_thread().map_err(lt_gemm::err)?;
+            let state = guard.as_mut().ok_or_else(|| lt_gemm::err("missing handle"))?;
+            if !state.plans.contains_key(&key) {
+                let p = lt_gemm::plan(m, n, k, self.gelu, alignments, state.handle)?;
+                state.plans.insert(key, p);
+            }
+            let stream_key = stream.cu_stream() as usize;
+            if let std::collections::hash_map::Entry::Vacant(slot) = state.workspaces.entry(stream_key) {
+                slot.insert(unsafe { dev.alloc::<u8>(lt_gemm::WORKSPACE)? });
+            }
+            let plan = state.plans.get(&key).ok_or_else(|| lt_gemm::err("missing plan"))?;
+            let work = state.workspaces.get(&stream_key).ok_or_else(|| lt_gemm::err("missing workspace"))?;
+            let (scratch, _gs) = work.device_ptr(&stream);
+            let [a, bl_, d] = plan.layouts;
+            let (alpha, beta) = (1f32, 0f32);
+            unsafe {
+                let bias = bp as *const c_void;
+                lt::set_matmul_desc_attribute(
+                    plan.mm,
+                    sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_BIAS_POINTER,
+                    &bias as *const _ as *const c_void,
+                    std::mem::size_of_val(&bias),
+                )
+                .map_err(lt_gemm::err)?;
+                lt::matmul(
+                    state.handle,
+                    plan.mm,
+                    &alpha as *const _ as *const c_void,
+                    &beta as *const _ as *const c_void,
+                    wp as *const c_void,
+                    a,
+                    xp as *const c_void,
+                    bl_,
+                    op as *const c_void,
+                    d,
+                    op as *mut c_void,
+                    d,
+                    &plan.algo,
+                    scratch as *mut c_void,
+                    lt_gemm::WORKSPACE,
+                    stream.cu_stream() as sys::cudaStream_t,
+                )
+                .map_err(lt_gemm::err)?;
+            }
+        }
+        Ok((CudaStorage::wrap_cuda_slice(out, dev), (m, n).into()))
+    }
+}
+
+/// `x (M, K) Wᵀ + b` for `weight (N, K)` and `bias (N)`, all f16 on CUDA, then the tanh GELU when
+/// `gelu`: one cuBLASLt GEMM with the bias (and GELU) in its epilogue. `None` when the shapes or
+/// dtypes do not fit (the caller then runs the plain ops).
+pub fn linear_bias(x: &Tensor, weight: &Tensor, bias: &Tensor, gelu: bool) -> Result<Option<Tensor>> {
+    let fits = x.device().is_cuda()
+        && [x.dtype(), weight.dtype(), bias.dtype()].iter().all(|&d| d == DType::F16)
+        && x.rank() == 2
+        && weight.dim(0)?.is_multiple_of(8)
+        && weight.dim(1)?.is_multiple_of(8);
+    if !fits {
+        return Ok(None);
+    }
+    Ok(Some(x.contiguous()?.apply_op3_no_bwd(&weight.contiguous()?, &bias.contiguous()?, &LtLinear { gelu })?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use candle_core::{Device, D};
+
+    /// The cuBLASLt linear (bias, and bias + GELU) against candle's matmul, bias add and GELU in
+    /// f32. Skipped without CUDA.
+    #[test]
+    fn lt_linear_matches_the_plain_ops() -> Result<()> {
+        let Ok(dev) = Device::new_cuda(0) else { return Ok(()) };
+        let (m, k, n) = (777, 256, 384);
+        let x = Tensor::randn(0f32, 1.0, (m, k), &dev)?.to_dtype(DType::F16)?;
+        let w = (Tensor::randn(0f32, 1.0, (n, k), &dev)? / (k as f64).sqrt())?.to_dtype(DType::F16)?;
+        let b = Tensor::randn(0f32, 0.5, n, &dev)?.to_dtype(DType::F16)?;
+        let f = |t: &Tensor| t.to_dtype(DType::F32);
+        let want = f(&x)?.matmul(&f(&w)?.t()?)?.broadcast_add(&f(&b)?)?;
+        for gelu in [false, true] {
+            let got = linear_bias(&x, &w, &b, gelu)?.expect("fits");
+            let want = if gelu { want.gelu()? } else { want.clone() };
+            let err = (f(&got)? - &want)?.abs()?.max_all()?.to_scalar::<f32>()?;
+            let scale = want.abs()?.max_all()?.to_scalar::<f32>()?;
+            eprintln!("lt linear gelu={gelu}: max abs err {err} (max |y| {scale})");
+            assert!(err <= scale * 4e-3, "gelu={gelu}: max abs err {err} against max |y| {scale}");
+        }
+        Ok(())
+    }
 
     /// The fused kernel against the plain ops in the model's order (RoPE, then the per-head
     /// RMSNorm and gamma), in f32. Skipped without CUDA.
