@@ -5469,13 +5469,7 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             if !segment {
-                if let Some(f) = finder.as_ref() {
-                    ctx.progress(0.96, "Checking the subject");
-                    if let Some(guide) = matte_guide::guide_for(f, &picture, area, guide_name.as_deref(), ctx)? {
-                        matte_guide::apply_guide(&mut cov, &guide, w as usize, h as usize);
-                    }
-                }
-                matte_guide::clear_speckle(&mut cov);
+                matte_guide::guide_and_clean(&mut cov, finder.as_ref(), &picture, area, guide_name.as_deref(), ctx)?;
             }
             // A detector's mask is hard-edged: the classical edge refinement (a narrow smart
             // radius, a little smoothing and feather, as after Select Subject) gives hair and

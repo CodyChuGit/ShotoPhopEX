@@ -51,6 +51,26 @@ pub(crate) fn guide_for(
     Ok(None)
 }
 
+/// The matte (`cov`, one value per pixel of `area`) cut to what `finder` finds for `name` (see
+/// [`apply_guide`]) when there is a finder, then its speckle cleared.
+pub(crate) fn guide_and_clean(
+    cov: &mut [f32],
+    finder: Option<&crate::select_ml_cmds::SubjectFinder>,
+    picture: &[u8],
+    area: Rect,
+    name: Option<&str>,
+    ctx: &JobCtx,
+) -> Result<()> {
+    if let Some(f) = finder {
+        ctx.progress(0.96, "Checking the subject");
+        if let Some(guide) = guide_for(f, picture, area, name, ctx)? {
+            apply_guide(cov, &guide, area.width() as usize, area.height() as usize);
+        }
+    }
+    clear_speckle(cov);
+    Ok(())
+}
+
 /// How many detector instances a guide joins (a named "the plates" may be several).
 const GUIDE_AT_MOST: usize = 3;
 
