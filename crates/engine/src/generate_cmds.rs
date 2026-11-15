@@ -985,6 +985,9 @@ pub(crate) mod upscale;
 #[path = "generate_template_tests.rs"]
 mod template_tests;
 
+#[path = "generate_matte_guide.rs"]
+mod matte_guide;
+
 #[cfg(test)]
 #[path = "generate_matte_tests.rs"]
 mod matte_tests;
