@@ -90,7 +90,9 @@ fn remove_background_masks_the_layer_with_the_models_alpha_and_keeps_its_pixels(
     // its own size and that name wrapped into the instruction.
     let st = fake.state();
     assert!(st.runs.len() >= 2, "the naming question, then the matte");
-    let g = &st.runs.last().unwrap().request;
+    // (After the matte, the detector is asked for the same name: see `matte_guide`.)
+    let g = &st.runs.iter().rev().find(|r| r.request["model"] == DEFAULT_MATTE_TEMPLATE).unwrap().request;
+    assert!(st.runs.iter().any(|r| r.request["model"] == "sam3.1/segment"), "the detector checks which thing the matte kept");
     assert!(g["mask"].is_null());
     assert!(g["references"].as_array().unwrap().is_empty());
     let instruction = g["prompt"].as_str().unwrap_or("");

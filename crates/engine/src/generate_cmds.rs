@@ -5332,6 +5332,10 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
     let Common { template, negative, seed, steps, guidance, models, .. } = common;
     let template_id = template.meta.id.clone();
     let label = if as_selection { "Select Subject (Generative)" } else { "Remove Background (Generative)" };
+    // The matte model picks its own subject; the detector, when set up, says which thing it is
+    // (see `matte_guide`). Not on the 8 GB Mac profile (SAM beside a model is over its budget).
+    let mac8 = crate::memory_profile::active(s) == Some(crate::memory_profile::Profile::Mac8);
+    let finder = if segment || mac8 { None } else { crate::select_ml_cmds::subject_finder(s, None).ok() };
     crate::jobs::edit_job(
         s,
         label,
@@ -5376,6 +5380,7 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 None => photocraft_compose::render(doc, area).to_rgba8().pixels,
             };
+            let picture = if finder.is_some() { rgba8.clone() } else { Vec::new() };
             let image = Rgba8::new(w, h, rgba8).map_err(gen_err)?;
             let (rw, rh) = if segment { fit_pixels(w, h, MAX_SEGMENT_REQUEST_PIXELS) } else { matte_request_size(w, h) };
             let image = if (rw, rh) == (w, h) { image } else { resize_rgba8(&image, rw, rh)? };
@@ -5396,6 +5401,7 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
             } else {
                 None
             };
+            let guide_name = if subject.is_empty() { named.clone() } else { Some(subject.clone()) };
             let prompt = match (segment, subject.is_empty(), named) {
                 (true, true, _) => SUBJECT_PROMPT.to_string(),
                 (false, true, Some(n)) => n,
@@ -5461,6 +5467,15 @@ fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 if !segment {
                     break;
                 }
+            }
+            if !segment {
+                if let Some(f) = finder.as_ref() {
+                    ctx.progress(0.96, "Checking the subject");
+                    if let Some(guide) = matte_guide::guide_for(f, &picture, area, guide_name.as_deref(), ctx)? {
+                        matte_guide::apply_guide(&mut cov, &guide, w as usize, h as usize);
+                    }
+                }
+                matte_guide::clear_speckle(&mut cov);
             }
             // A detector's mask is hard-edged: the classical edge refinement (a narrow smart
             // radius, a little smoothing and feather, as after Select Subject) gives hair and
@@ -6200,6 +6215,9 @@ pub(crate) mod upscale;
 #[cfg(test)]
 #[path = "generate_template_tests.rs"]
 mod template_tests;
+
+#[path = "generate_matte_guide.rs"]
+mod matte_guide;
 
 #[cfg(test)]
 #[path = "generate_matte_tests.rs"]
