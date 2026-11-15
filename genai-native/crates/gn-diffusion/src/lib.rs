@@ -1959,6 +1959,9 @@ fn painted_flat_grey(w: usize, h: usize, rgba: &[u8], mw: usize, mh: usize, mask
             }
         }
     }
+    if painted > 0 {
+        eprintln!("gn-diffusion: fill check: {grey} of {painted} painted pixels flat grey");
+    }
     painted >= 64 && grey * 5 >= painted
 }
 
