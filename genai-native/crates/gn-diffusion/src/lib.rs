@@ -1931,40 +1931,40 @@ fn cuda_default_steps(template: &str) -> Option<u32> {
 #[cfg_attr(not(feature = "mlx"), allow(dead_code))]
 const KLEIN_GREY_RETRIES: usize = 2;
 
-/// Whether a fill's result (`w × h` RGBA8) is flat mid-grey where its mask (`mw × mh` RGBA8,
-/// red = painted) is painted: the grey the model was shown there, copied back instead of
-/// painted. A real fill, even of a grey wall, has more texture than this.
+/// Whether a fill's result (`w × h` RGBA8) is partly flat mid-grey where its mask (`mw × mh`
+/// RGBA8, red = painted) paints: the grey the model was shown there, copied back instead of
+/// painted. Judged by the share of painted pixels that are flat #808080 (each channel within
+/// [`GREY_LEVELS`] of 128 and within 2 levels of its right and lower neighbours), a fifth or
+/// more, not by the whole area's spread: the editor's mask reaches past the hole, so real
+/// picture around a grey patch is in the area too (M1 Air, 2026-11-15: grey inside at SD 0.5,
+/// SD 2 to 3 with the ring, and a spread test never fired).
 #[cfg_attr(not(feature = "mlx"), allow(dead_code))]
 fn painted_flat_grey(w: usize, h: usize, rgba: &[u8], mw: usize, mh: usize, mask: &[u8]) -> bool {
-    if w == 0 || h == 0 || mw == 0 || mh == 0 || rgba.len() < w * h * 4 || mask.len() < mw * mh * 4 {
+    if w < 2 || h < 2 || mw == 0 || mh == 0 || rgba.len() < w * h * 4 || mask.len() < mw * mh * 4 {
         return false;
     }
-    let (mut n, mut sum, mut sq) = (0f64, [0f64; 3], [0f64; 3]);
-    for y in 0..h {
+    let px = |x: usize, y: usize| &rgba[(y * w + x) * 4..][..3];
+    let (mut painted, mut grey) = (0usize, 0usize);
+    for y in 0..h - 1 {
         let my = y * mh / h;
-        for x in 0..w {
-            let mx = x * mw / w;
-            if mask[(my * mw + mx) * 4] < 200 {
+        for x in 0..w - 1 {
+            if mask[(my * mw + x * mw / w) * 4] < 128 {
                 continue;
             }
-            let px = &rgba[(y * w + x) * 4..][..3];
-            n += 1.0;
-            for c in 0..3 {
-                let v = f64::from(px[c]);
-                sum[c] += v;
-                sq[c] += v * v;
+            painted += 1;
+            let (p, r, d) = (px(x, y), px(x + 1, y), px(x, y + 1));
+            let flat = (0..3).all(|c| p[c].abs_diff(128) <= GREY_LEVELS && p[c].abs_diff(r[c]) <= 2 && p[c].abs_diff(d[c]) <= 2);
+            if flat {
+                grey += 1;
             }
         }
     }
-    if n < 64.0 {
-        return false;
-    }
-    (0..3).all(|c| {
-        let mean = sum[c] / n;
-        let sd = (sq[c] / n - mean * mean).max(0.0).sqrt();
-        (mean - 128.0).abs() < 16.0 && sd < 4.0
-    })
+    painted >= 64 && grey * 5 >= painted
 }
+
+/// How many levels from 128 a channel may be and still count as the copied grey.
+#[cfg_attr(not(feature = "mlx"), allow(dead_code))]
+const GREY_LEVELS: u8 = 6;
 
 #[cfg(feature = "mlx")]
 fn cuda_default_guidance(template: &str) -> Option<f32> {
@@ -2032,13 +2032,15 @@ impl DiffusionEngine {
         let mut p = k.generate(&dir, &loras, &ask, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
         // A fill shows Klein its area flat grey; now and then it paints that grey straight back
         // ("a bowl of oranges", seed 42, every time on the M1 Air, 2026-11-15), and the job
-        // would hand the editor a grey square. Try the next seeds; still grey: say so.
+        // would hand the editor a grey square. Try the next seeds.
         let mut tries = 0;
         while let Some(m) = ask.mask.as_ref()
             && painted_flat_grey(p.width, p.height, &p.rgba, m.width, m.height, &m.rgba)
         {
             if tries == KLEIN_GREY_RETRIES {
-                return Err(EngineError::new(ErrorKind::Internal, "the fill came back as a flat grey patch: try another seed or reword the prompt"));
+                // Still grey: hand back the last try (a real grey surface is possible).
+                eprintln!("gn-diffusion: {} still flat grey after {tries} more seeds; keeping the last", req.model);
+                break;
             }
             tries += 1;
             eprintln!("gn-diffusion: {} painted its area flat grey (seed {}); trying seed {}", req.model, ask.seed, ask.seed.wrapping_add(1));
@@ -2204,9 +2206,14 @@ mod klein_grey_tests {
         assert!(painted_flat_grey(64, 64, &grey, 32, 32, &mask));
         let oranges = picture(64, 64, |x, y| [230, (100 + (x * 3 + y * 5) % 90) as u8, 20]);
         assert!(!painted_flat_grey(64, 64, &oranges, 32, 32, &mask));
-        // A grey wall with the slightest texture is a fill, not a copy.
+        // The grey patch inside a mask grown past it, the real picture in the ring: still a copy.
+        let wide = picture(32, 32, |x, y| if (4..28).contains(&x) && (4..28).contains(&y) { [255; 3] } else { [0; 3] });
+        assert!(painted_flat_grey(64, 64, &grey, 32, 32, &wide));
+        // The whole crop painted (a soft mask over all of it), the grey patch a quarter of it.
+        assert!(painted_flat_grey(64, 64, &grey, 32, 32, &picture(32, 32, |_, _| [255; 3])));
+        // A grey wall with some texture is a fill, not a copy.
         let wall = picture(64, 64, |x, y| {
-            let v = (120 + (x * 7 + y * 11) % 17) as u8;
+            let v = (100 + (x * 7 + y * 11) % 57) as u8;
             [v, v, v]
         });
         assert!(!painted_flat_grey(64, 64, &wall, 32, 32, &mask));
