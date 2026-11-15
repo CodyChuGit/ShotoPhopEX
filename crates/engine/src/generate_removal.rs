@@ -16,7 +16,7 @@ use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, EDIT, Edge, EnhanceKind, FILL, FillJob, JobProgress, KLEIN_FILL_TEMPLATE, KLEIN_REMOVAL_PIXELS,
     MAX_FILL_REQUEST_PIXELS, MAX_GROW, NATIVE21_REMOVAL_PIXELS, TONE_MATCH_INSIDE, Tuning, align_to_grid, auto_order, backend, crop_rgba8, edge_mismatch,
     embed_coverage, enhance_prompt, feather_outward, fill_rect, fill_region, gen_err, highlight_covered, judged_rect, made_json, native21_auto, paint_left,
-    place_in_words, plan_common, quality, removal_quality, request_size, resize_gray8, resize_rgba8, resolve_auto, side_by_side, template_or, tone_matched,
+    place_in_words, plan_common, quality, removal_quality, request_size, resize_gray8, resolve_auto, rgba8_at, side_by_side, template_or, tone_matched,
     write_rgba8,
 };
 
@@ -532,7 +532,7 @@ pub(crate) fn generative_remove(
                 };
                 let seen = side_by_side(&crop(wide_rect)?, &crop(close_rect)?)?;
                 let (rw, rh) = request_size(seen.width, seen.height);
-                let seen = if (rw, rh) == (seen.width, seen.height) { seen } else { resize_rgba8(&seen, rw, rh)? };
+                let seen = rgba8_at(seen, rw, rh)?;
                 let place = place_in_words(hole, wide_rect);
                 // The rewriter's sentence gives the object's name and what lies behind it; the
                 // fill's prompt is composed from them with the measured generic wording (the

@@ -16,7 +16,7 @@ use crate::{EngineError, Result, Session};
 use super::{
     AUTO_TEMPLATE, Common, EnhanceKind, GenerativeInfo, IMAGE, JobProgress, KLEIN_CHAT_PREFIX, KREA2_CHAT_ENCODER, MAX_SEED, MIN_SIDE, MINIMAX_CHAT_PREFIX,
     MOSS_CHAT_PREFIX, SIZE_STEP, Tuning, ULTRA_IMAGE_TEMPLATE, backend, bad, default_image_template, enhance_prompt, gen_err, loras, loras_of,
-    names_other_medium, opt_bool, opt_str, parse_variations, plan_common, quality, resize_rgba8, set_generative_info, short, side, web_unavailable,
+    names_other_medium, opt_bool, opt_str, parse_variations, plan_common, quality, resize_rgba8, rgba8_at, set_generative_info, short, side, web_unavailable,
     write_rgba8,
 };
 
@@ -530,7 +530,7 @@ pub(super) fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
             let mut made = Vec::new();
             for (i, resp) in resps.into_iter().enumerate() {
                 let out = resp.images.into_iter().next().ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;
-                let out = if (out.width, out.height) == (w, h) { out } else { resize_rgba8(&out, w, h)? };
+                let out = rgba8_at(out, w, h)?;
                 let mut layer = Layer::raster(numbered(&name, i as u32), doc.pixel_format());
                 write_rgba8(&mut layer, &out, canvas)?;
                 set_generative_info(

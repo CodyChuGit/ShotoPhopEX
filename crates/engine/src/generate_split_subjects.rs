@@ -26,8 +26,8 @@ use crate::{EngineError, Result};
 use super::{
     BACKGROUND_PROMPT, Common, DEFAULT_MATTE_TEMPLATE, FillJob, GenerativeInfo, Gray8, JobProgress, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, PEEL_PROMPT,
     PREFILL, REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, TONE_MATCH_MAX, Task, Tuning, Value, at_least, background_job, box_blur, dilate,
-    embed_coverage, fill_rect, fill_region, gen_err, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt,
-    remove_grow, request_size, resize_gray8, resize_rgba8, resolve_auto, sees, set_generative_info, write_rgba8,
+    embed_coverage, fill_rect, fill_region, gen_err, gray8_at, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt,
+    remove_grow, request_size, resize_rgba8, resolve_auto, sees, set_generative_info, write_rgba8,
 };
 
 /// The simple split: progressive subject removal, nearest first, until the detector finds nothing.
@@ -3273,7 +3273,7 @@ fn matte_alphas(
     let Ok(resp) = backend.run(&req, &JobProgress::span(ctx, 0.05, 0.3)) else { return Ok(None) };
     let Some(out) = resp.images.into_iter().next() else { return Ok(None) };
     let plane = Gray8::new(out.width, out.height, out.data.as_chunks::<4>().0.iter().map(|p| p[3]).collect()).map_err(gen_err)?;
-    let plane = if (plane.width, plane.height) == (w, h) { plane } else { resize_gray8(&plane, w, h)? };
+    let plane = gray8_at(plane, w, h)?;
     let matte: Vec<f32> = plane.data.iter().map(|v| f32::from(*v) / 255.0).collect();
     // Per subject, within a window around it: the distance to its mask (outside) and into it
     // (inside), and how far the matte decides (`reach`).

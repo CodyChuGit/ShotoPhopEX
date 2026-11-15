@@ -25,7 +25,7 @@ use photocraft_geom::Rect;
 use serde_json::{Map, Value, json};
 
 use crate::commands::CommandSpec;
-use crate::generate_cmds::{self, Common, JobProgress, bad, fit_pixels, gen_err, opt_bool, opt_num, opt_str, resize_gray8, resize_rgba8, short};
+use crate::generate_cmds::{self, Common, JobProgress, bad, fit_pixels, gen_err, gray8_at, opt_bool, opt_num, opt_str, resize_gray8, resize_rgba8, short};
 use crate::jobs::JobCtx;
 use crate::{EngineError, Result, Session};
 
@@ -1197,7 +1197,7 @@ pub(crate) fn vitmatte_alphas(
         };
         let Some(out) = resp.images.into_iter().next() else { return Ok(None) };
         let plane = Gray8::new(out.width, out.height, out.data.as_chunks::<4>().0.iter().map(|p| p[3]).collect()).map_err(gen_err)?;
-        let plane = if (plane.width, plane.height) == (cw as u32, ch as u32) { plane } else { resize_gray8(&plane, cw as u32, ch as u32)? };
+        let plane = gray8_at(plane, cw as u32, ch as u32)?;
         let mut alpha = vec![0.0f32; w * h];
         for (k, (a, t)) in plane.data.iter().zip(&trimap).enumerate() {
             let (x, y) = (crop.x0 as usize + k % cw, crop.y0 as usize + k / cw);

@@ -15,8 +15,8 @@ use crate::commands::layer_param;
 use crate::{EngineError, Result, Session};
 
 use super::{
-    AUTO_TEMPLATE, Common, ENHANCE_SUBJECT_REQUEST, EnhanceKind, JobProgress, MAX_PROMPT_CHARS, backend, bad, enhance_prompt, fit_pixels, gen_err, opt_bool,
-    opt_str, plan_common, resize_gray8, resize_rgba8, resolve_auto, web_unavailable,
+    AUTO_TEMPLATE, Common, ENHANCE_SUBJECT_REQUEST, EnhanceKind, JobProgress, MAX_PROMPT_CHARS, backend, bad, enhance_prompt, fit_pixels, gen_err, gray8_at,
+    opt_bool, opt_str, plan_common, resize_rgba8, resolve_auto, web_unavailable,
 };
 
 pub(crate) const REMOVE_BG: &str = "generate.removeBackground";
@@ -239,7 +239,7 @@ pub(super) fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
             for out in images {
                 let channel = if segment { 0 } else { 3 };
                 let plane = Gray8::new(out.width, out.height, out.data.as_chunks::<4>().0.iter().map(|p| p[channel]).collect()).map_err(gen_err)?;
-                let plane = if (plane.width, plane.height) == (w, h) { plane } else { resize_gray8(&plane, w, h)? };
+                let plane = gray8_at(plane, w, h)?;
                 for (c, v) in cov.iter_mut().zip(&plane.data) {
                     *c = c.max(f32::from(*v) / 255.0);
                 }

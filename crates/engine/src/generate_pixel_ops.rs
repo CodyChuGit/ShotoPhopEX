@@ -182,34 +182,49 @@ pub(super) fn taps(src_len: usize, dst_len: usize, f: Filter) -> Vec<(usize, Vec
 
 /// Separable resample of interleaved 8-bit samples (`ch` per pixel) from `sw`×`sh` to `dw`×`dh`.
 pub(super) fn resample_u8(src: &[u8], sw: usize, sh: usize, ch: usize, dw: usize, dh: usize, f: Filter) -> Vec<u8> {
+    if ch == 0 {
+        return Vec::new();
+    }
     let xt = taps(sw, dw, f);
     let yt = taps(sh, dh, f);
     // Horizontal pass into f32 rows, then vertical.
     let mut mid = vec![0.0f32; dw * sh * ch];
     for y in 0..sh {
         let row = &src[y * sw * ch..((y + 1) * sw * ch).min(src.len())];
-        for (x, (lo, ws)) in xt.iter().enumerate() {
-            let out = &mut mid[(y * dw + x) * ch..(y * dw + x + 1) * ch];
+        for ((lo, ws), out) in xt.iter().zip(mid[y * dw * ch..(y + 1) * dw * ch].chunks_exact_mut(ch)) {
             for (k, w) in ws.iter().enumerate() {
                 let start = ((lo + k) * ch).min(row.len().saturating_sub(ch));
-                for (o, p) in out.iter_mut().zip(row.iter().skip(start)) {
-                    *o += w * f32::from(*p);
+                match row.get(start..start + ch) {
+                    Some(px) => {
+                        for (o, p) in out.iter_mut().zip(px) {
+                            *o += w * f32::from(*p);
+                        }
+                    }
+                    // A row shorter than one pixel: what there is of it.
+                    None => {
+                        for (o, p) in out.iter_mut().zip(row.iter().skip(start)) {
+                            *o += w * f32::from(*p);
+                        }
+                    }
                 }
             }
         }
     }
-    let mut dst = vec![0u8; dw * dh * ch];
-    for (y, (lo, ws)) in yt.iter().enumerate() {
-        for x in 0..dw {
-            for c in 0..ch {
-                let mut acc = 0.0f32;
-                for (k, w) in ws.iter().enumerate() {
-                    acc += w * mid.get(((lo + k) * dw + x) * ch + c).copied().unwrap_or(0.0);
-                }
-                if let Some(d) = dst.get_mut((y * dw + x) * ch + c) {
-                    *d = (acc + 0.5).clamp(0.0, 255.0) as u8;
-                }
+    // The vertical pass a whole output row at a time: each sample sums the same taps in the
+    // same order as one by one, but reads the source rows in sequence instead of a column.
+    let row_len = dw * ch;
+    let mut dst = vec![0u8; row_len * dh];
+    let mut acc = vec![0.0f32; row_len];
+    for (out, (lo, ws)) in dst.chunks_exact_mut(row_len.max(1)).zip(&yt) {
+        acc.fill(0.0);
+        for (k, w) in ws.iter().enumerate() {
+            let Some(row) = mid.get((lo + k) * row_len..(lo + k + 1) * row_len) else { continue };
+            for (a, m) in acc.iter_mut().zip(row) {
+                *a += w * m;
             }
+        }
+        for (d, a) in out.iter_mut().zip(&acc) {
+            *d = (a + 0.5).clamp(0.0, 255.0) as u8;
         }
     }
     dst
@@ -226,6 +241,16 @@ pub(crate) fn resize_rgba8(src: &Rgba8, w: u32, h: u32) -> Result<Rgba8> {
     }
     let out = resample_u8(&src.data, src.width as usize, src.height as usize, 4, w as usize, h as usize, LANCZOS);
     Rgba8::new(w, h, out).map_err(gen_err)
+}
+
+/// `img` at `w`×`h`: as it is when it already has that size, else resampled ([`resize_rgba8`]).
+pub(crate) fn rgba8_at(img: Rgba8, w: u32, h: u32) -> Result<Rgba8> {
+    if (img.width, img.height) == (w, h) { Ok(img) } else { resize_rgba8(&img, w, h) }
+}
+
+/// A mask at `w`×`h`: as it is when it already has that size, else resampled ([`resize_gray8`]).
+pub(crate) fn gray8_at(mask: Gray8, w: u32, h: u32) -> Result<Gray8> {
+    if (mask.width, mask.height) == (w, h) { Ok(mask) } else { resize_gray8(&mask, w, h) }
 }
 
 /// Soften a mask outward: full coverage at its edge falling to nothing about `2 × radius` pixels
@@ -251,28 +276,45 @@ pub(crate) fn feather_outward(mask: &Gray8, radius: usize) -> Result<Gray8> {
 
 /// One box-blur pass of radius `r` along rows (`horizontal`) or columns, edges clamped.
 pub(super) fn box_blur(src: &[f32], w: usize, h: usize, r: usize, horizontal: bool) -> Vec<f32> {
-    let (len, lines) = if horizontal { (w, h) } else { (h, w) };
-    let at = |line: usize, i: usize| -> f32 {
-        let idx = if horizontal { line * w + i } else { i * w + line };
-        src.get(idx).copied().unwrap_or(0.0)
-    };
     let mut out = vec![0.0f32; src.len()];
+    if w == 0 || h == 0 || src.len() != w * h {
+        return out;
+    }
     let window = (2 * r + 1) as f32;
-    for line in 0..lines {
-        // Running sum over a window clamped to the line's ends.
-        let mut sum = 0.0f32;
-        for i in 0..=r.min(len.saturating_sub(1)) {
-            sum += at(line, i);
-        }
-        sum += at(line, 0) * r as f32;
-        for i in 0..len {
-            let idx = if horizontal { line * w + i } else { i * w + line };
-            if let Some(o) = out.get_mut(idx) {
-                *o = sum / window;
+    if horizontal {
+        for (row, out) in src.chunks_exact(w).zip(out.chunks_exact_mut(w)) {
+            // Running sum over a window clamped to the row's ends.
+            let mut sum = 0.0f32;
+            for v in &row[..=r.min(w - 1)] {
+                sum += v;
             }
-            let leaving = at(line, i.saturating_sub(r));
-            let entering = at(line, (i + r + 1).min(len.saturating_sub(1)));
-            sum += entering - leaving;
+            sum += row[0] * r as f32;
+            for (i, o) in out.iter_mut().enumerate() {
+                *o = sum / window;
+                sum += row[(i + r + 1).min(w - 1)] - row[i.saturating_sub(r)];
+            }
+        }
+    } else {
+        // Every column's running sum at once, a row at a time (the same sums as column by
+        // column, read in memory order).
+        let row = |y: usize| &src[y * w..(y + 1) * w];
+        let mut sum = vec![0.0f32; w];
+        for y in 0..=r.min(h - 1) {
+            for (s, v) in sum.iter_mut().zip(row(y)) {
+                *s += v;
+            }
+        }
+        for (s, v) in sum.iter_mut().zip(row(0)) {
+            *s += v * r as f32;
+        }
+        for (y, out) in out.chunks_exact_mut(w).enumerate() {
+            for (o, s) in out.iter_mut().zip(&sum) {
+                *o = s / window;
+            }
+            let (entering, leaving) = (row((y + r + 1).min(h - 1)), row(y.saturating_sub(r)));
+            for ((s, e), l) in sum.iter_mut().zip(entering).zip(leaving) {
+                *s += e - l;
+            }
         }
     }
     out
@@ -414,26 +456,77 @@ pub(crate) fn dilate(coverage: &[f32], w: usize, h: usize, r: usize) -> Vec<f32>
     if r == 0 || w == 0 || h == 0 || coverage.len() != w * h {
         return coverage.to_vec();
     }
-    let pass = |src: &[f32], horizontal: bool| -> Vec<f32> {
-        let mut out = vec![0.0f32; src.len()];
-        let (len, lines) = if horizontal { (w, h) } else { (h, w) };
-        let at = |line: usize, i: usize| if horizontal { line * w + i } else { i * w + line };
-        for line in 0..lines {
-            for i in 0..len {
-                let lo = i.saturating_sub(r);
-                let hi = (i + r).min(len - 1);
-                let mut m = 0.0f32;
-                for j in lo..=hi {
-                    m = m.max(src.get(at(line, j)).copied().unwrap_or(0.0));
-                }
-                if let Some(o) = out.get_mut(at(line, i)) {
-                    *o = m;
-                }
+    // Rows, then columns (separable), each in constant time a pixel whatever the radius.
+    let (mut fwd, mut bwd) = (Vec::new(), Vec::new());
+    let mut rows = vec![0.0f32; w * h];
+    for (src, out) in coverage.chunks_exact(w).zip(rows.chunks_exact_mut(w)) {
+        max_line(src, r, out, &mut fwd, &mut bwd);
+    }
+    max_columns(&rows, w, h, r)
+}
+
+/// [`max_line`] down every column at once, a row at a time.
+fn max_columns(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let k = 2 * r + 1;
+    let padded = h + 2 * r;
+    let zero = vec![0.0f32; w];
+    let row = |y: usize| if y < r || y >= r + h { &zero[..] } else { &src[(y - r) * w..(y - r + 1) * w] };
+    let mut fwd = vec![0.0f32; padded * w];
+    let mut bwd = vec![0.0f32; padded * w];
+    for y in 0..padded {
+        let (done, cur) = fwd.split_at_mut(y * w);
+        let cur = &mut cur[..w];
+        if y.is_multiple_of(k) {
+            cur.copy_from_slice(row(y));
+        } else {
+            for ((c, p), v) in cur.iter_mut().zip(&done[(y - 1) * w..]).zip(row(y)) {
+                *c = p.max(*v);
             }
         }
-        out
-    };
-    pass(&pass(coverage, true), false)
+    }
+    for y in (0..padded).rev() {
+        let (cur, done) = bwd.split_at_mut((y + 1) * w);
+        let cur = &mut cur[y * w..];
+        if y + 1 == padded || (y + 1).is_multiple_of(k) {
+            cur.copy_from_slice(row(y));
+        } else {
+            for ((c, n), v) in cur.iter_mut().zip(&done[..w]).zip(row(y)) {
+                *c = n.max(*v);
+            }
+        }
+    }
+    let mut out = vec![0.0f32; w * h];
+    for (y, o) in out.chunks_exact_mut(w).enumerate() {
+        for ((o, b), f) in o.iter_mut().zip(&bwd[y * w..(y + 1) * w]).zip(&fwd[(y + 2 * r) * w..(y + 2 * r + 1) * w]) {
+            *o = 0.0f32.max(b.max(*f));
+        }
+    }
+    out
+}
+
+/// The running maximum of `line` over a window of `r` either side (clamped to its ends, and
+/// never below 0) into `out`, in constant time a sample (van Herk / Gil-Werman: maxima within
+/// blocks of the window's width, forward and backward, then one of each per window).
+fn max_line(line: &[f32], r: usize, out: &mut [f32], fwd: &mut Vec<f32>, bwd: &mut Vec<f32>) {
+    let n = line.len();
+    let k = 2 * r + 1;
+    // The line padded with r zeros each side: a window clamped to the line is then a full
+    // window of the padded one, and the zeros are the 0 every maximum starts from.
+    let padded = n + 2 * r;
+    let at = |i: usize| if i < r || i >= r + n { 0.0 } else { line[i - r] };
+    fwd.clear();
+    bwd.clear();
+    fwd.resize(padded, 0.0);
+    bwd.resize(padded, 0.0);
+    for i in 0..padded {
+        fwd[i] = if i.is_multiple_of(k) { at(i) } else { fwd[i - 1].max(at(i)) };
+    }
+    for i in (0..padded).rev() {
+        bwd[i] = if i + 1 == padded || (i + 1).is_multiple_of(k) { at(i) } else { bwd[i + 1].max(at(i)) };
+    }
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = 0.0f32.max(bwd[i].max(fwd[i + 2 * r]));
+    }
 }
 
 /// `result` with its tone matched to `original`'s at the hole's edge: the hole is where
@@ -776,3 +869,7 @@ pub(super) fn prefill_outside(img: &mut Rgba8, inner: Rect) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "generate_pixel_ops_tests.rs"]
+mod tests;

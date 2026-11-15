@@ -7,7 +7,7 @@ use photocraft_genai::{GenerativeBackend, Gray8, Request, Rgba8};
 use photocraft_geom::Rect;
 use serde_json::Value;
 
-use super::{JobProgress, MAX_SEED, request_size_within, resize_rgba8, side_by_side};
+use super::{JobProgress, MAX_SEED, request_size_within, resize_rgba8, rgba8_at, side_by_side};
 
 pub(crate) const ENHANCE: &str = "generate.enhancePrompt";
 
@@ -482,7 +482,7 @@ pub(super) fn judge_pair(
 ) -> Option<bool> {
     let seen = side_by_side(&judge_view(left), &judge_view(right)).ok()?;
     let (rw, rh) = request_size_within(seen.width, seen.height, JUDGE_PAIR_MAX_PIXELS);
-    let seen = if (rw, rh) == (seen.width, seen.height) { seen } else { resize_rgba8(&seen, rw, rh).ok()? };
+    let seen = rgba8_at(seen, rw, rh).ok()?;
     let answer = enhance_prompt(backend, EnhanceKind::Judge, &judge_question(object), Some(&seen), None, seed, progress).ok()??.to_lowercase();
     match (answer.find("left"), answer.find("right")) {
         (Some(l), Some(r)) => Some(l < r),

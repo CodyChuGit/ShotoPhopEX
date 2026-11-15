@@ -19,10 +19,10 @@ use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, DEFAULT_SAMPLER, DEFAULT_SCHEDULER, EDIT, EDIT_BAND_CHANGE, EDIT_BAND_MAX_SHARE, Edge, EnhanceKind,
     FAST_DRAFT_STEP_CACHE, FILL, GenerativeInfo, HIGHLIGHT_GROW, HIGHLIGHT_REMOVE_PROMPT, JobProgress, KLEIN_FILL_TEMPLATE, MAX_GROW, MAX_SEED, MAX_VARIATIONS,
     NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate, dither_edge,
-    enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, grey_outside, grey_where,
-    judge_pair, krea2_fill, named_object, naming_views, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num, opt_str,
+    enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at, grey_outside,
+    grey_where, judge_pair, krea2_fill, named_object, naming_views, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num, opt_str,
     outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter, request_size, request_size_within,
-    resize_gray8, resize_rgba8, resolve_auto, set_generative_info, short, side_by_side, smooth_covered, still_there, template_or, tone_match_removal,
+    resize_gray8, resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there, template_or, tone_match_removal,
     web_unavailable, write_rgba8,
 };
 
@@ -251,7 +251,7 @@ pub(super) fn name_selected(doc: &Document, job: &FillJob, area: Rect, coverage:
     };
     let seen = side_by_side(&crop(wide_rect)?, &crop(close_rect)?)?;
     let (rw, rh) = request_size(seen.width, seen.height);
-    let seen = if (rw, rh) == (seen.width, seen.height) { seen } else { resize_rgba8(&seen, rw, rh)? };
+    let seen = rgba8_at(seen, rw, rh)?;
     let place = place_in_words(hole, wide_rect);
     let said =
         enhance_prompt(job.thinker.as_ref(), EnhanceKind::Remove, REMOVE_PROMPT, Some(&seen), Some(&place), job.seed, &JobProgress::span(ctx, 0.01, 0.04));
@@ -365,7 +365,7 @@ pub(super) fn change_band_coverage(
     let (band_share, band_change) = if removal { (SHADOW_MAX_SHARE, SHADOW_CHANGE) } else { (EDIT_BAND_MAX_SHARE, EDIT_BAND_CHANGE) };
     let Some(b) = change_band(out, original, run_mask, band_share, band_change) else { return Ok((None, None)) };
     let widened = Gray8::new(b.width, b.height, b.data.iter().zip(&run_mask.data).map(|(a, m)| (*a).max(*m)).collect()).ok();
-    let b = if (b.width, b.height) == (w, h) { b } else { resize_gray8(&b, w, h)? };
+    let b = gray8_at(b, w, h)?;
     let coverage = layer_coverage.iter().zip(&b.data).map(|(c, v)| c.max(f32::from(*v) / 255.0)).collect();
     Ok((widened, Some(coverage)))
 }
@@ -570,7 +570,7 @@ pub(super) fn fill_region(
         let (out, mismatch) =
             if removal { tone_match_removal(out, &image_plain, run_mask, this_adapter.is_some(), tone_most, &mut judged) } else { (out, 0.0) };
         mismatches.push(mismatch);
-        let out = if (out.width, out.height) == (w, h) { out } else { resize_rgba8(&out, w, h)? };
+        let out = rgba8_at(out, w, h)?;
         // The result becomes a layer in the document's own format, masked to the coverage.
         let layer_name = if n > 1 { format!("{name} ({}/{n})", i + 1) } else { name.clone() };
         let mut layer = Layer::raster(layer_name, doc.pixel_format());

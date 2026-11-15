@@ -13,7 +13,7 @@ use super::{
     AUTO_TEMPLATE, Common, DEFAULT_EXPAND_TEMPLATE, ENHANCE_BACKDROP_REQUEST, ENHANCE_CUT_REQUEST, ENHANCE_SCENE_REQUEST, ENHANCE_SUBJECT_REQUEST, EXPAND,
     EXPAND_CAPTION, EXPAND_CAPTION_SEED, EnhanceKind, FillJob, FillPlan, JobProgress, KLEIN_FILL_TEMPLATE, MAX_REQUEST_PIXELS, MAX_VARIATIONS, Made, Outpaint,
     Tuning, align_to_grid, auto_order, backend, bad, caption_key, enhance_prompt, fill_region, gen_err, loras, made_json, matte_request_size, native21_auto,
-    opt_num, opt_str, parse_edge, plan_common, quality, resize_rgba8, short, web_unavailable,
+    opt_num, opt_str, parse_edge, plan_common, quality, rgba8_at, short, web_unavailable,
 };
 
 /// What `generate.expand` asks for: how much canvas to add on each side.
@@ -470,7 +470,7 @@ pub(super) fn run_expand(s: &mut Session, p: &Value) -> Result<Value> {
                     let seen = photocraft_compose::render(doc, doc.bounds()).to_rgba8();
                     let seen = Rgba8::new(seen.width, seen.height, seen.pixels).map_err(gen_err)?;
                     let (rw, rh) = matte_request_size(seen.width, seen.height);
-                    let seen = if (rw, rh) == (seen.width, seen.height) { seen } else { resize_rgba8(&seen, rw, rh)? };
+                    let seen = rgba8_at(seen, rw, rh)?;
                     let key = caption_key(&seen);
                     let cached = EXPAND_CAPTION.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|(k, _)| *k == key).map(|(_, c)| c.clone());
                     if let Some(caption) = cached {
@@ -502,7 +502,7 @@ pub(super) fn run_expand(s: &mut Session, p: &Value) -> Result<Value> {
                 let seen = photocraft_compose::render(doc, doc.bounds()).to_rgba8();
                 let seen = Rgba8::new(seen.width, seen.height, seen.pixels).map_err(gen_err)?;
                 let (rw, rh) = matte_request_size(seen.width, seen.height);
-                let seen = if (rw, rh) == (seen.width, seen.height) { seen } else { resize_rgba8(&seen, rw, rh)? };
+                let seen = rgba8_at(seen, rw, rh)?;
                 let ask = |kind: EnhanceKind, request: &str, lo: f32, hi: f32| {
                     enhance_prompt(thinker.as_ref(), kind, request, Some(&seen), None, seed, &JobProgress::span(ctx, lo, hi)).ok().flatten()
                 };

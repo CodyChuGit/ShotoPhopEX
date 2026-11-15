@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use super::loras::runs_native;
 use super::{
     DEFAULT_EDIT_TEMPLATE, GenerativeInfo, JobProgress, backend_for, gen_err, loras_of, opt_num, opt_str, plan_common, request_size_within, resize_rgba8,
-    set_generative_info, write_rgba8,
+    rgba8_at, set_generative_info, write_rgba8,
 };
 use crate::jobs::now_ms;
 use crate::{EngineError, Result, Session};
@@ -301,7 +301,7 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
                 };
                 let request_ms = now_ms() - request;
                 let align = now_ms();
-                let out = if (out.width, out.height) == (src.width, src.height) { out } else { resize_rgba8(&out, src.width, src.height)? };
+                let out = rgba8_at(out, src.width, src.height)?;
                 let d = crate::generate_realign::drift(&out, &src, None, crate::generate_realign::max_shift(out.width, out.height));
                 let out = crate::generate_realign::shifted(&out, &src, d);
                 let align_ms = now_ms() - align;
