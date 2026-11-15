@@ -28,20 +28,15 @@ pub(crate) fn guide_for(
     picture: &[u8],
     area: Rect,
     name: Option<&str>,
-    typed: bool,
     ctx: &JobCtx,
 ) -> Result<Option<Vec<f32>>> {
     let names: Vec<&str> = match name.map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) => vec![n],
         None => crate::select_ml_cmds::SUBJECT_FALLBACKS.iter().take(2).copied().collect(),
     };
-    // A name the person typed may be several things ("the plates"); one the app chose is the
-    // one subject, the largest instance (the others were cabinet doors and loose fruit beside
-    // the kitchen's fridge on the 3090).
-    let at_most = if typed { GUIDE_AT_MOST } else { 1 };
     for n in names {
         ctx.check()?;
-        let found = finder.find_in(picture, area, n, at_most, ctx)?;
+        let found = finder.find_in(picture, area, n, GUIDE_AT_MOST, ctx)?;
         if found.is_empty() {
             continue;
         }
@@ -64,12 +59,11 @@ pub(crate) fn guide_and_clean(
     picture: &[u8],
     area: Rect,
     name: Option<&str>,
-    typed: bool,
     ctx: &JobCtx,
 ) -> Result<()> {
     if let Some(f) = finder {
         ctx.progress(0.96, "Checking the subject");
-        if let Some(guide) = guide_for(f, picture, area, name, typed, ctx)? {
+        if let Some(guide) = guide_for(f, picture, area, name, ctx)? {
             apply_guide(cov, &guide, area.width() as usize, area.height() as usize);
         }
     }
@@ -94,48 +88,16 @@ pub(crate) fn apply_guide(matte: &mut [f32], guide: &[f32], w: usize, h: usize) 
     let diag = ((w * w + h * h) as f64).sqrt();
     let reach = ((diag * REACH) as usize).max(4);
     let inset = ((diag * INSET) as usize).max(2);
-    // Both limits are softened over half their width: the detector's mask is coarse, and a
-    // hard cut along it left square steps in fruit tops and cabinet edges (3090, 2026-11-15).
     let near = photocraft_algo::remove::dilate(w, h, &found, reach);
-    let near = box_blur(&near.iter().map(|n| f32::from(u8::from(*n))).collect::<Vec<_>>(), w, h, reach / 2);
     let outside: Vec<bool> = found.iter().map(|f| !f).collect();
     let rim = photocraft_algo::remove::dilate(w, h, &outside, inset);
-    let solid = box_blur(&rim.iter().map(|r| f32::from(u8::from(!*r))).collect::<Vec<_>>(), w, h, inset / 2);
-    for ((c, n), s) in matte.iter_mut().zip(&near).zip(&solid) {
-        *c = c.max(*s) * n;
-    }
-}
-
-/// `src` (`w × h`) averaged over a `(2r+1)²` square, clipped at the edges: two running-sum
-/// passes, so the cost does not grow with `r`.
-fn box_blur(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
-    if r == 0 || src.len() != w * h {
-        return src.to_vec();
-    }
-    let pass = |src: &[f32], horizontal: bool| -> Vec<f32> {
-        let (len, lines) = if horizontal { (w, h) } else { (h, w) };
-        let at = |line: usize, i: usize| if horizontal { line * w + i } else { i * w + line };
-        let mut out = vec![0.0f32; src.len()];
-        for line in 0..lines {
-            let mut sum = 0.0f64;
-            let (mut lo, mut hi) = (0usize, 0usize);
-            for i in 0..len {
-                let want_hi = (i + r + 1).min(len);
-                while hi < want_hi {
-                    sum += f64::from(src[at(line, hi)]);
-                    hi += 1;
-                }
-                let want_lo = i.saturating_sub(r);
-                while lo < want_lo {
-                    sum -= f64::from(src[at(line, lo)]);
-                    lo += 1;
-                }
-                out[at(line, i)] = (sum / (hi - lo) as f64) as f32;
-            }
+    for (i, c) in matte.iter_mut().enumerate() {
+        if !near[i] {
+            *c = 0.0;
+        } else if !rim[i] {
+            *c = 1.0;
         }
-        out
-    };
-    pass(&pass(src, true), false)
+    }
 }
 
 /// The matte model's near-0 speckle cleared and its near-1 made solid.
@@ -162,18 +124,15 @@ mod tests {
         let (w, h) = (200, 100);
         // The matte keeps the subject (x 40..80) and a neighbour (x 140..180) and misses the
         // subject's left half; the detector found only the subject.
-        let mut matte = rect(w, h, 60, 20, 90, 80, 0.9);
+        let mut matte = rect(w, h, 60, 20, 80, 80, 0.9);
         for (m, n) in matte.iter_mut().zip(rect(w, h, 140, 20, 180, 80, 1.0)) {
             *m = m.max(n);
         }
         let guide = rect(w, h, 40, 20, 80, 80, 1.0);
         apply_guide(&mut matte, &guide, w, h);
         assert_eq!(matte[50 * w + 160], 0.0, "the neighbour is dropped");
-        assert!(matte[50 * w + 50] > 0.999, "the missed half is filled from the detector: {}", matte[50 * w + 50]);
-        assert!(matte[50 * w + 70] > 0.999);
-        // The cut past the detector's mask fades over a few pixels instead of a hard step.
-        let across: Vec<f32> = (80..92).map(|x| matte[50 * w + x]).collect();
-        assert!(across.windows(2).all(|p| p[1] <= p[0] + 1e-6), "{across:?}");
+        assert_eq!(matte[50 * w + 50], 1.0, "the missed half is filled from the detector");
+        assert_eq!(matte[50 * w + 70], 1.0);
         // The edge band keeps the matte's own soft value.
         assert!((matte[21 * w + 70] - 0.9).abs() < 1e-6, "{}", matte[21 * w + 70]);
     }
