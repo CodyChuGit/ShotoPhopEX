@@ -1,11 +1,14 @@
-## New in 0.1.1
+## New in 0.1.2
 
-- **ShotoPhopEX for Mac (Apple Silicon, M1 and newer).** A `.dmg` with the generative tools running on Apple's GPU through MLX, compiled into the app: no Python, Homebrew or Xcode. Tuned on an M1 MacBook Air with 16 GB.
-  - Generate Image (MOSS Turbo, or FLUX 3 Image Klein for higher quality), Generative Edit, Fill, Remove, Expand, Split into Layers, Clown Pass, Select Subject / by text / by point, Remove Background and Prompt Enhance.
-  - Not on the Mac yet: Generative Angles, Upscale, and the big Krea 2 and Qwen-Image-2.1 models.
-  - **Help › Get AI Models** offers a **Mac pack** sized for 16 GB.
-- **FLUX 3 Image Klein** (Mac) for text-to-image, edits, fills and expands, from mflux's 4-bit MLX files under the FLUX Kommunity License.
-- **Licences up front:** Get AI Models lists each model's licence and downloads nothing until you accept them. The Windows and Linux downloads now come with third-party notices and an SBOM (`.spdx.json`).
+- **24 GB cards work now (RTX 3090, 4090).** A lean memory mode loads the smaller text encoders and frees memory between models, so every generative tool runs on 24 GB without running out of memory.
+- **Face Swap, Body Swap and Pose** in Generative Edit: put a person from another picture into this one, or repose someone to match a pose picture (Qwen-Image-2.1 with the BFS and PoseStudio LoRAs).
+- **Better Angles:** Generative Angles always uses Qwen-Image-Edit-2511 with the Multiple Angles LoRA, and its default settings now give more believable hidden sides.
+- **New models:** H3 Image (MiniMax, 32 GB cards), FLUX 3 Image Klein on 8 to 16 GB NVIDIA cards (Edit and Expand), and NVFP4 Krea 2 Turbo on RTX 50-series cards.
+- **Quality:** MOSS-Image uses a realism recipe by default, and Krea 2 has a finer detail schedule on Quality Best and Balanced.
+- **Select Subject, High Quality:** a soft matte from Qwen-Image-2.1 for hair and fur. Cut Out now keeps the whole named object, and the background is fully transparent.
+- **Mac fixes:** better Select Subject and click selection, a Fill that sometimes came back as a flat grey square is caught and redone, and an experimental 8 GB Mac mode.
+- **Based on PhotoCraft 0.23.1**, with the installer and app now using the ShotoPhopEX name everywhere. Release files are named `shotophopex-*`; the in-app updater finds them.
+- **Known issues:** Generative Fill with Qwen-Image-2.1 on Quality Best can give a flat fill (use Fast or Krea 2). Cut Out with no prompt can keep small pieces next to the subject; naming the subject avoids it. Angles is not on the Mac yet.
 
 ## Highlights
 
