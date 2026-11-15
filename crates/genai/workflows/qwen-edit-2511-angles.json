@@ -9,7 +9,7 @@
     "needsImage": true,
     "needsMask": false,
     "defaults": {
-      "steps": 4,
+      "steps": 8,
       "guidance": 1.0
     },
     "models": [
@@ -36,17 +36,17 @@
       {
         "placeholder": "lightning",
         "folder": "loras",
-        "default": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+        "default": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
       }
     ],
-    "notes": "The LoRA authors' own ComfyUI graph (comfyui-workflow-multiple-angles.json in the model repo, read 2026-10-12): the Multiple Angles LoRA then the 4-step Lightning LoRA on the model (both at strength 1), ModelSamplingAuraFlow 3.1, CFGNorm, the picture scaled by FluxKontextImageScale into both TextEncodeQwenImageEditPlus encoders and VAE-encoded as the latent, 4 steps euler/simple at CFG 1. The prompt is the LoRA's fixed vocabulary, `<sks> [azimuth] [elevation] [distance]` (8 × 4 × 3 = 96 cameras), built by `generate.angles` from rotation, tilt and zoom, so it gets no prompt format. Needs `qwen-image-edit-2511-multiple-angles-lora.safetensors` in ComfyUI/models/loras (the app ships no weights).",
+    "notes": "The LoRA authors' own ComfyUI graph (comfyui-workflow-multiple-angles.json in the model repo, read 2026-10-12): the Multiple Angles LoRA then the 4-step Lightning LoRA on the model (both at strength 1), ModelSamplingAuraFlow 3.1, CFGNorm, the picture scaled by FluxKontextImageScale into both TextEncodeQwenImageEditPlus encoders and VAE-encoded as the latent, 4 steps euler/simple at CFG 1. The prompt is the LoRA's fixed vocabulary, `<sks> [azimuth] [elevation] [distance]` (8 × 4 × 3 = 96 cameras), built by `generate.angles` from rotation, tilt and zoom, so it gets no prompt format. Needs `qwen-image-edit-2511-multiple-angles-lora.safetensors` in ComfyUI/models/loras (the app ships no weights). Since 2026-11-14 the native engine runs it with the 8-step Lightning LoRA at strength 0.75, 8 steps (measured in the app: more believable hidden sides than the 4-step one, no crackle on fabric, about 12 s warm on an RTX 5090 against 10 s); `generate.angles` `lightning` 4 or 0 and the two strengths pick the others.",
     "creator": "fal (LoRA), Alibaba Qwen",
     "description": "Moves the camera around the subject: 8 directions, 4 heights, 3 distances",
     "badges": [
       "fast"
     ],
     "estimatedSeconds": {
-      "base": 5.5,
+      "base": 7.5,
       "perMegapixel": 3.5
     },
     "pages": [

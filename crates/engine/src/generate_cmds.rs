@@ -5151,13 +5151,13 @@ pub(crate) fn angles_extra(p: &Value) -> Result<BTreeMap<String, Value>> {
     Ok(out)
 }
 
-/// Steps and CFG for the Angles template's `lightning` (4 → 4 at CFG 1, 8 → 8 at CFG 1, 0 →
-/// the base model's 40 at CFG 4).
+/// Steps and CFG for the Angles template's `lightning` (8, the default → 8 at CFG 1, 4 → 4 at
+/// CFG 1, 0 → the base model's 40 at CFG 4).
 pub fn angles_sampling(lightning: u64) -> (u32, f64) {
     match lightning {
-        8 => (8, 1.0),
+        4 => (4, 1.0),
         0 => (40, 4.0),
-        _ => (4, 1.0),
+        _ => (8, 1.0),
     }
 }
 
@@ -5184,9 +5184,8 @@ fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
             q[key] = v.clone();
         }
     }
-    // The template's 4 steps at CFG 1 fit only its 4-step Lightning: another Lightning brings
-    // its own unless the request names them.
-    let (steps, guidance) = angles_sampling(p.get("lightning").and_then(Value::as_u64).unwrap_or(4));
+    // Each Lightning has its own steps and CFG unless the request names them.
+    let (steps, guidance) = angles_sampling(p.get("lightning").and_then(Value::as_u64).unwrap_or(8));
     for (key, v) in [("steps", json!(steps)), ("guidance", json!(guidance))] {
         if q.get(key).is_none() {
             q[key] = v;
@@ -6002,7 +6001,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit; the app opens its orbit dialog.
             menu: &[],
             shortcut: None,
-            params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1,"lightning":4|8|0=4,"anglesStrength":0..2=1,"lightningStrength":0..2=1,"steps":{0..250?},"guidance":{0..30?},"negative":text} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it; lightning = the speed LoRA under the Multiple Angles LoRA: 4 = the 4-step one (4 steps, CFG 1), 8 = the 8-step one (8 steps, CFG 1), 0 = none (40 steps, CFG 4 with the negative); steps and guidance override those; anglesStrength and lightningStrength = the two LoRAs' strengths)"#,
+            params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1,"lightning":8|4|0=8,"anglesStrength":0..2=1,"lightningStrength":{0..2?=0.75 on the 8-step, else 1},"steps":{0..250?},"guidance":{0..30?},"negative":text} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it; lightning = the speed LoRA under the Multiple Angles LoRA: 8 = the 8-step one (8 steps, CFG 1), 4 = the 4-step one (4 steps, CFG 1, faster, invents more on hidden sides), 0 = none (40 steps, CFG 4 with the negative); steps and guidance override those; anglesStrength and lightningStrength = the two LoRAs' strengths)"#,
             enabled: angles_enabled,
             run: run_angles,
             journal: true,

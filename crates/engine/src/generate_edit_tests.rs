@@ -127,8 +127,9 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     let g = &st.runs[0].request;
     assert_eq!(g["prompt"], "<sks> back-right quarter view high-angle shot medium shot", "the LoRA's words, no format");
     assert_eq!(g["params"]["models"]["lora"], "qwen-image-edit-2511-multiple-angles-lora.safetensors");
-    assert_eq!(g["params"]["models"]["lightning"], "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors");
-    assert_eq!((g["steps"].as_u64(), g["guidance"].as_f64()), (Some(4), Some(1.0)));
+    assert_eq!(g["params"]["models"]["lightning"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
+    assert_eq!((g["steps"].as_u64(), g["guidance"].as_f64()), (Some(8), Some(1.0)), "the 8-step Lightning's");
+    assert!(g["params"].get("lightning").is_none(), "the worker's own default (8 at 0.75)");
     drop(st);
     // The layer remembers an edit, so Generate Similar and Recreate run it again.
     let info = generative_info(s.active().unwrap().doc.layer(ids[0]).unwrap()).unwrap();
@@ -136,6 +137,21 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     assert_eq!(angle_prompt(0, 0, 10).as_deref(), Some("<sks> front view eye-level shot close-up"));
     assert_eq!(angle_prompt(315, -30, 0).as_deref(), Some("<sks> front-left quarter view low-angle shot wide shot"));
     for p in [json!({"rotation": 30}), json!({"rotation": 360}), json!({"tilt": 45}), json!({"zoom": 7}), json!({"zoom": 2.5}), json!({"variations": 9})] {
+        assert!(matches!(s.execute(ANGLES, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
+    }
+    // Another Lightning brings its steps and CFG; the strengths go to the worker as they are.
+    let before = fake.state().runs.len();
+    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 4})).unwrap();
+    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 0, "anglesStrength": 1.25, "lightningStrength": 0.5})).unwrap();
+    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 0, "steps": 30})).unwrap();
+    let st = fake.state();
+    let runs: Vec<&Value> = st.runs[before..].iter().map(|r| &r.request).collect();
+    assert_eq!((runs[0]["steps"].as_u64(), runs[0]["guidance"].as_f64(), runs[0]["params"]["lightning"].as_u64()), (Some(4), Some(1.0), Some(4)));
+    assert_eq!((runs[1]["steps"].as_u64(), runs[1]["guidance"].as_f64()), (Some(40), Some(4.0)));
+    assert_eq!((runs[1]["params"]["angles_strength"].as_f64(), runs[1]["params"]["lightning_strength"].as_f64()), (Some(1.25), Some(0.5)));
+    assert_eq!(runs[2]["steps"].as_u64(), Some(30), "steps given win");
+    drop(st);
+    for p in [json!({"lightning": 6}), json!({"anglesStrength": 3}), json!({"lightningStrength": -1})] {
         assert!(matches!(s.execute(ANGLES, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
     // Every camera has words: 8 × 4 × 3.
