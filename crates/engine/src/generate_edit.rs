@@ -1,0 +1,355 @@
+//! `generate.edit`, `generate.angles` and `generate.characterSheet`: whole-picture edits by
+//! instruction.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use photocraft_color::PixelFormat;
+use photocraft_doc::{Document, LayerId, LayerMask};
+use photocraft_genai::Task;
+use photocraft_geom::Rect;
+use photocraft_raster::Surface;
+use serde_json::{Value, json};
+
+use crate::commands::layer_param;
+use crate::jobs::JobCtx;
+use crate::{EngineError, Result, Session};
+
+use super::{
+    ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_TEMPLATE, AUTO_TEMPLATE, CHARACTER_SHEET, Common, DEFAULT_EDIT_TEMPLATE, EDIT, FillJob, FillPlan,
+    MAX_REQUEST_PIXELS, Tuning, ULTRA_EDIT_TEMPLATE, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend, bad, edit_request_pixels, edit_rewrite,
+    fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations, plan_common, run_image, short,
+    template_files_present, ultra, web_unavailable,
+};
+
+/// The Multiple Angles LoRA's prompt for a camera, `<sks> [azimuth] [elevation] [distance]`, or
+/// None for a value it has no words for.
+pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
+    let r = ANGLE_ROTATIONS.iter().find(|(d, _)| *d == rotation)?.1;
+    let t = ANGLE_TILTS.iter().find(|(d, _)| *d == tilt)?.1;
+    let z = ANGLE_ZOOMS.iter().find(|(d, _)| *d == zoom)?.1;
+    Some(format!("<sks> {r} {t} {z}"))
+}
+
+/// The template `generate.angles` runs: always 2511 with the Multiple Angles LoRA, which was
+/// trained on exactly these camera moves. Plain Qwen-Image-2.1 by instruction never turned the
+/// camera (0 of 4 at 45°, 2026-11-03 bench; barely on side views in the 2026-11-06 README
+/// recording), so it no longer stands in when the LoRA is missing: the Angles window says what
+/// to download instead. Bring-your-own: on a card below 2511's budget it still runs, with the
+/// window's `may not fit` note.
+pub fn angles_template(_s: &Session) -> &'static str {
+    ANGLES_TEMPLATE
+}
+
+/// The Mac build ([`photocraft_genai::MLX`]), for the UI.
+pub fn mlx_build() -> bool {
+    photocraft_genai::MLX
+}
+
+/// The tooltip of a tool the Mac build has no model for.
+pub const NOT_ON_MAC: &str = "Not on Mac yet";
+
+/// Generative Angles runs Qwen-Image-Edit with fal's LoRA, which has no MLX port.
+pub(super) fn angles_enabled(s: &Session) -> std::result::Result<(), String> {
+    if photocraft_genai::MLX {
+        return Err(NOT_ON_MAC.into());
+    }
+    edit_enabled(s)
+}
+
+pub(super) fn edit_enabled(s: &Session) -> std::result::Result<(), String> {
+    web_unavailable()?;
+    s.active().map(|_| ()).ok_or_else(|| "no document open".into())
+}
+
+/// `generate.edit`: the whole picture goes to an edit model with an instruction; the result is
+/// a layer over the canvas, masked to the selection when there is one.
+pub(super) fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
+    // `swap`: the BFS face or body swap (its template, LoRA and prompt), see `generate_swap.rs`;
+    // `repose`: the PoseStudio repose, see `generate_repose.rs`.
+    let swapped = edit_rewrite(s, p)?;
+    let p = swapped.as_ref().unwrap_or(p);
+    let default_model = s.prefs().integrations.default_edit_model.clone();
+    let mut requested = opt_str(EDIT, p, "template", 200)?.map(str::to_string).unwrap_or_else(|| AUTO_TEMPLATE.to_string());
+    let mut auto = requested == AUTO_TEMPLATE;
+    let mut q = p.clone();
+    if auto && let Some(o) = q.as_object_mut() {
+        o.remove("template");
+    }
+    // Quality Ultra edits on the 16 MP model where it is installed, before any other route.
+    if auto && ultra(s) && template_files_present(s, ULTRA_EDIT_TEMPLATE) {
+        requested = ULTRA_EDIT_TEMPLATE.to_string();
+        auto = false;
+    }
+    if auto && let Some(t) = native21_auto(s, EDIT, false) {
+        requested = t.to_string();
+        auto = false;
+    }
+    let Common { template, prompt, negative, seed, steps, guidance, models, name } =
+        plan_common(s, EDIT, &q, if auto { DEFAULT_EDIT_TEMPLATE } else { &requested }, Task::Edit, &default_model)?;
+    let edge = parse_edge(EDIT, p)?;
+    let variations = parse_variations(EDIT, p)?;
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let rect = d.doc.bounds();
+    if rect.is_empty() {
+        return Err(EngineError::Other("the document is empty".into()));
+    }
+    if u64::from(rect.width()) * u64::from(rect.height()) > MAX_REQUEST_PIXELS {
+        return Err(EngineError::Other(format!(
+            "the picture is {}×{} pixels; Generative Edit handles up to 16 megapixels at a time",
+            rect.width(),
+            rect.height()
+        )));
+    }
+    let name = name.unwrap_or_else(|| format!("Generative Edit: {}", short(&prompt)));
+    let enhance = opt_bool(EDIT, p, "enhance", s.prefs().integrations.enhance_prompts)?;
+    // References (image 2, image 3 …): checked against the planned template; `auto` only
+    // picks among templates with the same slots.
+    let refs = crate::generate_refs::plan(s, EDIT, p, &template)?;
+    // An edit tunes nothing but its LoRAs (its templates bind no sampler; the size cap is its
+    // template's, see `edit_request_pixels`).
+    let tuning = Tuning {
+        loras: loras_of(EDIT, p)?,
+        fast_draft: s.prefs().integrations.fast_draft,
+        max_pixels: edit_request_pixels(&template.meta.id, ultra(s)),
+        extra: angles_extra(p)?,
+        ..Tuning::default()
+    };
+    Ok(FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow: 0, erase: false, tuning })
+}
+
+pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
+    let plan = plan_edit(s, p)?;
+    let backend = backend(s)?;
+    let FillPlan { template, prompt, negative, seed, steps, guidance, name, models, rect, variations, auto, edge, enhance, refs, grow, erase, tuning } = plan;
+    let label = name.clone();
+    // `wholePicture` (Generative Angles, and a swap, whose rewrite sets it): the selection does
+    // not confine the result.
+    let swapped = edit_rewrite(s, p)?;
+    let whole = opt_bool(EDIT, swapped.as_ref().unwrap_or(p), "wholePicture", false)?;
+    // An edit re-renders the whole picture; what shows of it is its subject (Select Subject on
+    // the result), so a new thing (a Pikachu for the duck) sits in the untouched original. Not
+    // for Angles, whose camera move is the whole picture; no detector, no subject mask.
+    // Not on the 8 GB Mac profile either: the SAM pass took the edit from 5.3 to 10 GB at its peak
+    // (6.7 GB with f16 SAM; measured 2026-11-08).
+    let mac8 = crate::memory_profile::active(s) == Some(crate::memory_profile::Profile::Mac8);
+    let finder = if whole || mac8 { None } else { crate::select_ml_cmds::subject_finder(s, None).ok() };
+    let job = FillJob {
+        thinker: Arc::clone(&backend),
+        backend,
+        command: EDIT,
+        template_id: template.meta.id.clone(),
+        auto,
+        auto_order: auto_order(EDIT, auto_quality(s)),
+        prompt,
+        negative,
+        seed,
+        steps,
+        guidance,
+        name,
+        models,
+        variations,
+        edge,
+        enhance,
+        refs,
+        grow,
+        erase,
+        rewritten: None,
+        removal: false,
+        tone_most: 1.0,
+        prefill: false,
+        tuning,
+        object: None,
+    };
+    crate::jobs::edit_job(
+        s,
+        &label,
+        move |doc, active, ctx| {
+            // The whole canvas is re-rendered; a selection, when there is one, confines what
+            // of it shows (the edit template takes no mask, see `fill_region`).
+            let selected = doc.selection.is_some() && !whole;
+            let coverage: Vec<f32> = match doc.selection.as_ref().filter(|_| !whole) {
+                Some(sel) => {
+                    let k = sel.channels().max(1);
+                    sel.read_region(rect).chunks_exact(k).map(|c| c.first().copied().unwrap_or(0.0).clamp(0.0, 1.0)).collect()
+                }
+                None => vec![1.0; rect.width() as usize * rect.height() as usize],
+            };
+            let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
+            if let Some(finder) = finder.as_ref() {
+                for (id, ..) in &filled.0 {
+                    mask_to_subject(doc, *id, rect, selected, finder, ctx)?;
+                }
+            }
+            Ok(filled)
+        },
+        move |(made, w, h, request, template_id)| made_json(&made, w, h, request, &template_id),
+    )
+}
+
+/// An edit result's layer mask from its subject: Select Subject's prompts on the result in turn,
+/// the first that finds anything, its instances joined. With a selection the subject joins the
+/// selection's mask (the selected area changes, and a new subject larger than it still shows
+/// whole); without one it is the mask. Nothing found: the mask stays as it was.
+pub(super) fn mask_to_subject(
+    doc: &mut Document,
+    id: LayerId,
+    rect: Rect,
+    selected: bool,
+    finder: &crate::select_ml_cmds::SubjectFinder,
+    ctx: &JobCtx,
+) -> Result<()> {
+    let layer = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    let surf = layer.surface().ok_or(EngineError::NoLayer(id))?;
+    let mut px = vec![[0u8; 4]; rect.width() as usize * rect.height() as usize];
+    surf.read_rgba8_into(rect, &mut px);
+    let picture: Vec<u8> = px.into_iter().flatten().collect();
+    let Some(subject) = subject_in(&picture, rect, finder, ctx)? else { return Ok(()) };
+    let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+    let shown: Vec<f32> = match layer.mask.as_ref().filter(|_| selected) {
+        Some(m) => m.surface.read_region(rect).iter().zip(&subject).map(|(a, b)| a.max(*b)).collect(),
+        None => subject,
+    };
+    let mut surface = Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+    surface.write_region(rect, &shown);
+    layer.mask = Some(LayerMask { surface, enabled: true, linked: true, density: 1.0, feather: 0.0 });
+    Ok(())
+}
+
+/// The subjects (at most [`SUBJECT_MASK_AT_MOST`]) Select Subject finds in `picture` (RGBA8 of
+/// `rect`), joined into one coverage; None when nothing is found.
+pub(super) fn subject_in(picture: &[u8], rect: Rect, finder: &crate::select_ml_cmds::SubjectFinder, ctx: &JobCtx) -> Result<Option<Vec<f32>>> {
+    for prompt in crate::select_ml_cmds::SUBJECT_FALLBACKS.iter().take(2) {
+        ctx.check()?;
+        let found = finder.find_in(picture, rect, prompt, SUBJECT_MASK_AT_MOST, ctx)?;
+        if found.is_empty() {
+            continue;
+        }
+        let mut joined = vec![0.0f32; picture.len() / 4];
+        for (cov, ..) in &found {
+            for (j, c) in joined.iter_mut().zip(cov) {
+                *j = j.max(*c);
+            }
+        }
+        return Ok(Some(joined));
+    }
+    Ok(None)
+}
+
+/// How many subjects an edit result's mask may join.
+pub(super) const SUBJECT_MASK_AT_MOST: usize = 3;
+
+/// The Angles template's tuning from a request (`lightning` 4, 8 or 0 = none; `anglesStrength`
+/// and `lightningStrength` 0 to 2), as the worker's params; empty when none is given.
+pub(crate) fn angles_extra(p: &Value) -> Result<BTreeMap<String, Value>> {
+    let mut out = BTreeMap::new();
+    if let Some(v) = p.get("lightning").filter(|v| !v.is_null()) {
+        match v.as_u64() {
+            Some(n @ (0 | 4 | 8)) => {
+                out.insert("lightning".to_string(), json!(n));
+            }
+            _ => return Err(bad(ANGLES, "`lightning` must be 4, 8 or 0 (none)")),
+        }
+    }
+    for (key, wire) in [("anglesStrength", "angles_strength"), ("lightningStrength", "lightning_strength")] {
+        if let Some(x) = opt_num(ANGLES, p, key, 0.0, 2.0)? {
+            out.insert(wire.to_string(), json!(x));
+        }
+    }
+    Ok(out)
+}
+
+/// Steps and CFG for the Angles template's `lightning` (8, the default → 8 at CFG 1, 4 → 4 at
+/// CFG 1, 0 → the base model's 40 at CFG 4).
+pub fn angles_sampling(lightning: u64) -> (u32, f64) {
+    match lightning {
+        4 => (4, 1.0),
+        0 => (40, 4.0),
+        _ => (8, 1.0),
+    }
+}
+
+/// `generate.angles`: the whole picture from another camera position, as Generative Edit runs it
+/// with the Multiple Angles template and the LoRA's words for `rotation`, `tilt` and `zoom`.
+pub(super) fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
+    let whole = |key: &str, lo: f64, hi: f64, default: f64| -> Result<f64> {
+        match opt_num(ANGLES, p, key, lo, hi)? {
+            None => Ok(default),
+            Some(x) if x.fract() == 0.0 => Ok(x),
+            Some(_) => Err(bad(ANGLES, format!("`{key}` must be a whole number"))),
+        }
+    };
+    let rotation = whole("rotation", 0.0, 315.0, 0.0)? as u32;
+    let tilt = whole("tilt", -30.0, 60.0, 0.0)? as i32;
+    let zoom = whole("zoom", 0.0, 10.0, 5.0)? as u32;
+    let words = angle_prompt(rotation, tilt, zoom)
+        .ok_or_else(|| bad(ANGLES, "`rotation` must be 0, 45, … 315; `tilt` -30, 0, 30 or 60; `zoom` 0 (wide), 5 (medium) or 10 (close-up)"))?;
+    let camera = words.trim_start_matches("<sks> ").to_string();
+    let template = angles_template(s);
+    let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "name": format!("Angles: {camera}")});
+    for key in ["seed", "variations", "negative", "lightning", "anglesStrength", "lightningStrength", "steps", "guidance"] {
+        if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
+            q[key] = v.clone();
+        }
+    }
+    // Each Lightning has its own steps and CFG unless the request names them.
+    let (steps, guidance) = angles_sampling(p.get("lightning").and_then(Value::as_u64).unwrap_or(8));
+    for (key, v) in [("steps", json!(steps)), ("guidance", json!(guidance))] {
+        if q.get(key).is_none() {
+            q[key] = v;
+        }
+    }
+    run_edit(s, &q)
+}
+
+/// `generate.characterSheet`: a turnaround sheet of the character on a layer, as a new
+/// document: four full-body views in a row (front, three-quarter, profile, back), drawn by
+/// MiniMax-H3-Image from the layer as Picture 1. 16 MP under Quality Ultra and Best, 4 MP
+/// under the faster ones.
+pub(super) fn run_character_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    if !template_files_present(s, ULTRA_IMAGE_TEMPLATE) {
+        return Err(EngineError::Other("Character Sheet needs MiniMax H3 Image: its files are not in the Models folder".into()));
+    }
+    let layer = layer_param(s, p)?;
+    let words = |key: &str| -> Result<String> { Ok(opt_str(CHARACTER_SHEET, p, key, 500)?.unwrap_or("").trim().trim_end_matches('.').trim().to_string()) };
+    let prompt = character_sheet_prompt(&words("details")?, &words("background")?);
+    let mut q = json!({
+        "prompt": prompt,
+        "template": ULTRA_IMAGE_TEMPLATE,
+        "references": [{"layer": layer.0}],
+        "width": SHEET_SIZE.0,
+        "height": SHEET_SIZE.1,
+        "target": "document",
+        "enhance": false,
+        "name": "Character Sheet",
+    });
+    if let Some(v) = p.get("seed") {
+        q["seed"] = v.clone();
+    }
+    run_image(s, &q)
+}
+
+/// The sheet's shape, four upright views in a row; the quality scales it to the model's size.
+pub(super) const SHEET_SIZE: (u32, u32) = (2048, 1024);
+
+/// The words of a character sheet: the layer is Picture 1; `details` names what the picture
+/// does not show (the shoes of a waist-up portrait), `background` the backdrop (plain white
+/// when empty).
+pub(crate) fn character_sheet_prompt(details: &str, background: &str) -> String {
+    let background = if background.is_empty() { "one plain white studio backdrop with soft even light" } else { background };
+    let details =
+        if details.is_empty() { String::new() } else { format!(" The character also has these details, in every view where they can be seen: {details}.") };
+    format!(
+        "A character turnaround sheet of the character in Picture 1: four full-body views of the same character side by side in one row, each the same width, clearly separated and never overlapping, on {background}. \
+         The face, hair, skin, body, clothing and accessories are exactly as in Picture 1 and identical in all four views, in the same style and medium as Picture 1.{details} \
+         From left to right: first, the character straight from the front, facing the camera. \
+         Second, a three-quarter view from the character's left side, the face turned toward the left edge of the picture. \
+         Third, a strict side profile at exactly 90 degrees, the nose pointing to the left edge of the picture, the far arm and far leg hidden behind the near ones. \
+         Fourth, on the far right, the character straight from behind: the back of the head and the back are visible, the face is not. \
+         The character holds the same relaxed standing pose in all four views, framed the same way in each, from the top of the head to the feet. Sharp focus and fine detail in the face, the hair and the clothing."
+    )
+}
+
+pub(super) fn doc_enabled(s: &Session) -> std::result::Result<(), String> {
+    s.active().map(|_| ()).ok_or_else(|| "no document open".into())
+}
