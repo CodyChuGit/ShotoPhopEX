@@ -968,16 +968,6 @@ fn sparse_selection(q: &Tensor, k: &Tensor, scale: f32, tau: f32, min_ratio: f32
     Ok(selection)
 }
 
-#[cfg(not(feature = "sage2"))]
-fn sparse_config() -> Option<(f32, f32)> {
-    None
-}
-
-#[cfg(not(feature = "sage2"))]
-fn sparse_selection(_: &Tensor, _: &Tensor, _: f32, _: f32, _: f32, _: usize) -> Result<Tensor> {
-    anyhow::bail!("block-sparse attention needs the sage2 feature")
-}
-
 /// The bf16 flash kernel's joint attention; a shorter CFG lane masks its padded keys.
 #[cfg(feature = "flash")]
 fn flash_joint_attention(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>, scale: f32) -> Result<Tensor> {
@@ -1078,6 +1068,8 @@ fn joint_attention_mode(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usi
     crate::profile::scope("layered joint_attention", 0.0, q.device(), || joint_attention_impl(q, k, v, padding, sage_ok))
 }
 
+// `sage_ok` only steers the SageAttention2 path.
+#[cfg_attr(not(feature = "sage2"), allow(unused_variables))]
 fn joint_attention_impl(q: &Tensor, k: &Tensor, v: &Tensor, padding: Option<(usize, usize)>, sage_ok: bool) -> Result<Tensor> {
     let scale = 1.0 / (HEAD_DIM as f64).sqrt();
     if let Some((positive, negative)) = padding {

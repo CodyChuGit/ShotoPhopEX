@@ -45,7 +45,7 @@ pub fn report() {
         let all: f64 = m.values().map(|v| v.0.as_secs_f64()).sum();
         eprintln!("idol profile (device time, synced per part):");
         let mut rows: Vec<_> = m.iter().collect();
-        rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1 .0));
         for (k, (d, n)) in rows {
             eprintln!("  {k:<14} {:8.3} s  {:5.1}%  {n} calls", d.as_secs_f64(), 100.0 * d.as_secs_f64() / all.max(1e-9));
         }

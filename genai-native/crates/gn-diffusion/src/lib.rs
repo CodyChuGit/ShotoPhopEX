@@ -1314,6 +1314,9 @@ pub fn edit2511_defaults(template: &str) -> Option<(u32, f32, Vec<&'static str>)
     })
 }
 
+/// What [`angles_setup`] gives: the steps, the CFG and the LoRAs with their strengths.
+pub type AnglesSetup = (u32, f32, Vec<(&'static str, f64)>);
+
 /// The Angles template's adapters and sampler defaults for a request: the Multiple Angles LoRA at
 /// `angles_strength` (0..2, default 1) and the Lightning LoRA `lightning` names (8 = the 8-step
 /// one, the default; 4 = the 4-step one; 0 = none, the base model's 40 steps at CFG 4) at
@@ -1323,7 +1326,7 @@ pub fn edit2511_defaults(template: &str) -> Option<(u32, f32, Vec<&'static str>)
 /// against the 4-step's 10 s, which invented parts and over-turned; no Lightning was softer,
 /// lost prints and took 36 s; a stronger Angles LoRA (1.25, 1.5) turned barely further and
 /// invented furniture.
-pub fn angles_setup(params: &std::collections::BTreeMap<String, Value>) -> Result<(u32, f32, Vec<(&'static str, f64)>), EngineError> {
+pub fn angles_setup(params: &std::collections::BTreeMap<String, Value>) -> Result<AnglesSetup, EngineError> {
     use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
     let bad = |message: &str| EngineError::new(ErrorKind::BadRequest, message);
     let strength = |key: &str| -> Result<f64, EngineError> {

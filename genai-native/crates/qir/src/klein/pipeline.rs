@@ -341,7 +341,7 @@ impl KleinPipeline {
             Ok(if img.dimensions() == (w, h) { img } else { image::imageops::resize(&img, w, h, filter) })
         };
         let (orig, m) = (fit(canvas, image::imageops::FilterType::Lanczos3)?, fit(mask, image::imageops::FilterType::Triangle)?);
-        for ((px, o), mp) in pic.rgba.chunks_exact_mut(4).zip(orig.pixels()).zip(m.pixels()) {
+        for ((px, o), mp) in pic.rgba.as_chunks_mut::<4>().0.iter_mut().zip(orig.pixels()).zip(m.pixels()) {
             let a = f32::from(mp.0[0]) / 255.0;
             for (c, oc) in px.iter_mut().zip(o.0).take(3) {
                 *c = (f32::from(*c) * a + f32::from(oc) * (1.0 - a)).round() as u8;
@@ -501,7 +501,7 @@ fn greyed(r: &RefImage, m: &RefImage) -> Result<RefImage> {
         image::imageops::resize(&mask, u32::try_from(r.width)?, u32::try_from(r.height)?, image::imageops::FilterType::Triangle)
     };
     let mut rgba = r.rgba.clone();
-    for (px, mp) in rgba.chunks_exact_mut(4).zip(mask.pixels()) {
+    for (px, mp) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(mask.pixels()) {
         let a = f32::from(mp.0[0]) / 255.0;
         for c in px.iter_mut().take(3) {
             *c = (f32::from(*c) * (1.0 - a) + 128.0 * a).round() as u8;

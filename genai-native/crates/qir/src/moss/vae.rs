@@ -181,7 +181,7 @@ impl Flux2Encoder {
 pub fn from_rgba_u8(rgba: &[u8], w: usize, h: usize, dev: &Device) -> Result<Tensor> {
     anyhow::ensure!(rgba.len() == w * h * 4, "{} bytes for a {w}x{h} RGBA picture", rgba.len());
     let mut planes = vec![0f32; 3 * w * h];
-    for (i, px) in rgba.chunks_exact(4).enumerate() {
+    for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
         for c in 0..3 {
             planes[c * w * h + i] = f32::from(px[c]) / 127.5 - 1.0;
         }

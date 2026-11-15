@@ -492,7 +492,7 @@ fn to_rgba_u8(img: &Tensor) -> Result<Vec<u8>> {
     let (_, h, w) = img.dims3()?;
     let px = img.to_device(&Device::Cpu)?.to_dtype(DType::F32)?.permute((1, 2, 0))?.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
     let mut out = Vec::with_capacity(h * w * 4);
-    for c in px.chunks_exact(3) {
+    for c in px.as_chunks::<3>().0 {
         for v in c {
             out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
         }

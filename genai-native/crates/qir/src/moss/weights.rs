@@ -93,7 +93,7 @@ pub fn w4a8_to_int8(packed: &[u8], n: usize, k: usize, group: usize, s_rel: &[f3
             for (g, (out_g, in_g)) in row.chunks_exact_mut(group).zip(src.chunks_exact(group / 2)).enumerate() {
                 let s = s_rel[r * groups + g];
                 let lut: [u8; 16] = std::array::from_fn(|c| ((levels[c] * s).round_ties_even().clamp(-127.0, 127.0) as i8) as u8);
-                for (pair, &byte) in out_g.chunks_exact_mut(2).zip(in_g) {
+                for (pair, &byte) in out_g.as_chunks_mut::<2>().0.iter_mut().zip(in_g) {
                     pair[0] = lut[usize::from(byte & 0xf)];
                     pair[1] = lut[usize::from(byte >> 4)];
                 }
