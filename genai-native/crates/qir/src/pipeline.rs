@@ -745,7 +745,10 @@ impl Pipeline {
             // Only a missing tensor is a text-only repack: a card out of memory while the head
             // went up read as one (RTX 3090, 2026-11-11, with the head on disk and quantized).
             anyhow::ensure!(vb.contains_tensor("lm_head.weight"), "the text encoder has no lm_head (a text-only repack?)");
-            let head = if matches!(self.dev, Device::Cuda(_)) {
+            // `QIR_HEAD_BF16=1`: the head as it is (bf16), not Q8_0 (a diagnostic for the release
+            // build's garbled chat on an RTX 5090, 2026-11-16).
+            let bf16_head = std::env::var("QIR_HEAD_BF16").is_ok_and(|v| v.trim() == "1");
+            let head = if matches!(self.dev, Device::Cuda(_)) && !bf16_head {
                 // Read on the CPU and quantized on every core ([`crate::q8`]): candle's own
                 // quantize of the CUDA copy ran on one thread, 10.2 s a load. The blocks are
                 // kept on disk for the next load ([`crate::q8::cached_q8_0`]).
