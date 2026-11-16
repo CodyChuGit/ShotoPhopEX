@@ -248,7 +248,7 @@ impl QLinear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         match self {
             QLinear::Full(l) => Ok(l.forward(x)?),
-            QLinear::Quant(q) => Ok(q.forward(x)?),
+            QLinear::Quant(q) => Ok(crate::device::q_forward(q, x)?),
             #[cfg(feature = "convrot")]
             QLinear::Convrot(c) => c.forward(x),
         }

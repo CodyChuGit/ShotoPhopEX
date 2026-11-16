@@ -745,7 +745,7 @@ impl Pipeline {
             // Only a missing tensor is a text-only repack: a card out of memory while the head
             // went up read as one (RTX 3090, 2026-11-11, with the head on disk and quantized).
             anyhow::ensure!(vb.contains_tensor("lm_head.weight"), "the text encoder has no lm_head (a text-only repack?)");
-            let bf16_head = head_stays_bf16(std::env::var("QIR_HEAD_BF16").ok().as_deref(), crate::device::probe().ok().map(|g| g.compute_cap));
+            let bf16_head = head_stays_bf16(std::env::var("QIR_HEAD_BF16").ok().as_deref());
             let head = if matches!(self.dev, Device::Cuda(_)) && !bf16_head {
                 // Read on the CPU and quantized on every core ([`crate::q8`]): candle's own
                 // quantize of the CUDA copy ran on one thread, 10.2 s a load. The blocks are
@@ -806,7 +806,7 @@ impl Pipeline {
                 if cancel() {
                     return Err(Cancelled.into());
                 }
-                let logits: Tensor = self.with_head(|h| Ok(candle_core::Module::forward(&h.head, &last.apply(&h.norm)?)?))?;
+                let logits: Tensor = self.with_head(|h| Ok(crate::device::q_forward(&h.head, &last.apply(&h.norm)?)?))?;
                 let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
                 let next = sample(&logits, opts, &mut rng);
                 if next == IM_END || next == END_OF_TEXT {
@@ -1103,17 +1103,12 @@ impl Pipeline {
     }
 }
 
-/// Whether the chat's language-model head stays bf16 instead of Q8_0: on a card newer than the
-/// architecture candle's kernels were built for, which runs them by compiling their PTX, the
-/// Q8_0 matmul came out wrong and every answer was gibberish (the sm_86 release on an RTX 5090,
-/// 2026-11-16: the same binary chatted correctly with the head bf16, about 0.6 GB more).
-/// `QIR_HEAD_BF16` = `1` or `0` decides either way.
-pub(crate) fn head_stays_bf16(env: Option<&str>, card_cap: Option<u32>) -> bool {
-    match env.map(str::trim) {
-        Some("1") => true,
-        Some("0") => false,
-        _ => card_cap.is_some_and(|cap| cap != crate::device::built_compute_cap()),
-    }
+/// Whether the chat's language-model head stays bf16 instead of Q8_0: only when
+/// `QIR_HEAD_BF16=1` (about 0.6 GB more). A diagnostic: the head's garbled answers on an RTX 5090
+/// came from candle's fast Q8_0 kernels, which [`crate::device::guard_quantized_kernels`] now
+/// keeps off cards they were not built for.
+pub(crate) fn head_stays_bf16(env: Option<&str>) -> bool {
+    env.is_some_and(|v| v.trim() == "1")
 }
 
 /// The text encoder: a pre-quantized GGUF when given (Q8_0, no bf16 transient), else the
@@ -1157,14 +1152,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_chat_head_stays_bf16_on_a_card_the_kernels_were_not_built_for() {
-        let built = crate::device::built_compute_cap();
-        assert!(!head_stays_bf16(None, Some(built)));
-        assert!(head_stays_bf16(None, Some(built + 30)));
-        assert!(!head_stays_bf16(None, None));
-        assert!(head_stays_bf16(Some("1"), Some(built)));
-        assert!(!head_stays_bf16(Some(" 0 "), Some(built + 30)));
-        assert!(head_stays_bf16(Some("yes"), Some(built + 30)));
+    fn the_chat_head_stays_bf16_only_when_asked() {
+        assert!(head_stays_bf16(Some(" 1 ")));
+        assert!(!head_stays_bf16(Some("0")));
+        assert!(!head_stays_bf16(None));
     }
 
     #[test]
