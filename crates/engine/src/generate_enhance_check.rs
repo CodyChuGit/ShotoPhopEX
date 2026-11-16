@@ -69,6 +69,12 @@ pub(crate) fn check_rewrite(kind: EnhanceKind, typed: &str, said: &str, system: 
     {
         return Err(Refusal::LostIntent);
     }
+    // And no medium is chosen when none was named: MOSS's writer ended "portrait of an old
+    // fisherman" with "a realistic oil painting" (A/B round 3), Krea 2's turned a kitchen into a
+    // watercolour (round 1).
+    if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra) && !super::names_other_medium(typed) && invents_medium(said) {
+        return Err(Refusal::LostIntent);
+    }
     if normalised(said) == normalised(typed) {
         return Err(Refusal::Unchanged);
     }
@@ -468,4 +474,46 @@ pub(crate) fn copies_instructions(typed: &str, said: &str, system: &str) -> bool
     let runs: std::collections::HashSet<&[String]> = sys.windows(RUN).collect();
     let typed = tokens(typed).join(" ");
     tokens(said).windows(RUN).any(|w| runs.contains(w) && !typed.contains(&w.join(" ")))
+}
+
+/// Whether a rewrite names a painted, drawn or rendered medium. Narrower than
+/// `names_other_medium` on purpose: "rendered as a photograph", "pastel tones" and "a poster on
+/// the wall" are not a change of medium.
+fn invents_medium(said: &str) -> bool {
+    const MEDIA: &[&str] = &[
+        "painting",
+        "watercolor",
+        "watercolour",
+        "gouache",
+        "oil on canvas",
+        "impasto",
+        "brushstroke",
+        "brush stroke",
+        "illustration",
+        "drawing",
+        "sketch",
+        "cartoon",
+        "anime",
+        "manga",
+        "comic",
+        "3d render",
+        "cgi",
+        "pixel art",
+        "line art",
+        "concept art",
+        "digital art",
+        "low poly",
+        "claymation",
+        "woodcut",
+        "linocut",
+        "engraving",
+        "charcoal",
+        "pencil",
+        "ink wash",
+        "cel shaded",
+        "cel-shaded",
+        "voxel",
+    ];
+    let l = said.to_lowercase();
+    MEDIA.iter().any(|m| l.contains(m))
 }

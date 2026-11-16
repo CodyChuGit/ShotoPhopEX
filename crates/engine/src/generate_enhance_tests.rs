@@ -461,3 +461,26 @@ fn a_rewrite_that_copies_its_instructions_or_drops_the_medium_is_refused() {
         .is_ok()
     );
 }
+
+#[test]
+fn a_rewrite_that_invents_a_medium_is_refused() {
+    use crate::generate_cmds::{EnhanceKind as K, Refusal, check_rewrite};
+    assert_eq!(
+        check_rewrite(
+            K::Image,
+            "portrait of an old fisherman",
+            "A close-up portrait of an old fisherman with a weathered face. A realistic oil painting with rich brushstrokes.",
+            ""
+        ),
+        Err(Refusal::LostIntent)
+    );
+    assert!(
+        check_rewrite(
+            K::Image,
+            "portrait of an old fisherman",
+            "A close-up portrait of an old fisherman with a weathered face, soft window light. A photograph rendered in pastel tones.",
+            ""
+        )
+        .is_ok()
+    );
+}
