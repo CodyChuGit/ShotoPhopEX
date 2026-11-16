@@ -745,9 +745,7 @@ impl Pipeline {
             // Only a missing tensor is a text-only repack: a card out of memory while the head
             // went up read as one (RTX 3090, 2026-11-11, with the head on disk and quantized).
             anyhow::ensure!(vb.contains_tensor("lm_head.weight"), "the text encoder has no lm_head (a text-only repack?)");
-            // `QIR_HEAD_BF16=1`: the head as it is (bf16), not Q8_0 (a diagnostic for the release
-            // build's garbled chat on an RTX 5090, 2026-11-16).
-            let bf16_head = std::env::var("QIR_HEAD_BF16").is_ok_and(|v| v.trim() == "1");
+            let bf16_head = head_stays_bf16(std::env::var("QIR_HEAD_BF16").ok().as_deref(), crate::device::probe().ok().map(|g| g.compute_cap));
             let head = if matches!(self.dev, Device::Cuda(_)) && !bf16_head {
                 // Read on the CPU and quantized on every core ([`crate::q8`]): candle's own
                 // quantize of the CUDA copy ran on one thread, 10.2 s a load. The blocks are
@@ -1105,6 +1103,19 @@ impl Pipeline {
     }
 }
 
+/// Whether the chat's language-model head stays bf16 instead of Q8_0: on a card newer than the
+/// architecture candle's kernels were built for, which runs them by compiling their PTX, the
+/// Q8_0 matmul came out wrong and every answer was gibberish (the sm_86 release on an RTX 5090,
+/// 2026-11-16: the same binary chatted correctly with the head bf16, about 0.6 GB more).
+/// `QIR_HEAD_BF16` = `1` or `0` decides either way.
+pub(crate) fn head_stays_bf16(env: Option<&str>, card_cap: Option<u32>) -> bool {
+    match env.map(str::trim) {
+        Some("1") => true,
+        Some("0") => false,
+        _ => card_cap.is_some_and(|cap| cap != crate::device::built_compute_cap()),
+    }
+}
+
 /// The text encoder: a pre-quantized GGUF when given (Q8_0, no bf16 transient), else the
 /// snapshot's bf16 shards, quantized on load when asked.
 pub fn load_text_encoder(model: &Path, dev: &Device, dtype: DType, quant_text: bool, text_gguf: Option<&Path>) -> Result<QwenTextEncoder> {
@@ -1144,6 +1155,17 @@ fn load_text_from(src: &Source, dev: &Device, dtype: DType, quant_text: bool, te
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chat_head_stays_bf16_on_a_card_the_kernels_were_not_built_for() {
+        let built = crate::device::built_compute_cap();
+        assert!(!head_stays_bf16(None, Some(built)));
+        assert!(head_stays_bf16(None, Some(built + 30)));
+        assert!(!head_stays_bf16(None, None));
+        assert!(head_stays_bf16(Some("1"), Some(built)));
+        assert!(!head_stays_bf16(Some(" 0 "), Some(built + 30)));
+        assert!(head_stays_bf16(Some("yes"), Some(built + 30)));
+    }
 
     #[test]
     fn picture_conditioning_reuses_only_encoder_inputs() {
