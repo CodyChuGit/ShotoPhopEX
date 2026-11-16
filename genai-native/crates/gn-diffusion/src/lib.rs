@@ -1615,7 +1615,7 @@ impl Engine for DiffusionEngine {
                 Vec::new(),
             ));
         }
-        if req.prompt.trim().is_empty() {
+        if req.prompt.trim().is_empty() && req.model != TEMPLATE_MOSS_RESTORE {
             return Err(EngineError::new(ErrorKind::BadRequest, "a prompt is needed"));
         }
         if task == "text" {
