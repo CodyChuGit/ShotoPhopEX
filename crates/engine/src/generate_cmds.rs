@@ -42,6 +42,9 @@ pub(crate) use native::*;
 #[path = "generate_vision.rs"]
 mod vision;
 pub use vision::*;
+#[path = "generate_enhance_check.rs"]
+mod enhance_check;
+pub(crate) use enhance_check::*;
 #[path = "generate_pixel_ops.rs"]
 mod pixel_ops;
 pub(crate) use pixel_ops::*;
@@ -694,11 +697,29 @@ fn run_enhance(s: &mut Session, p: &Value) -> Result<Value> {
         Some("photo") => EnhanceKind::ImagePhoto,
         Some(other) => return Err(bad(ENHANCE, format!("`task` must be \"fill\", \"edit\", \"image\" or \"photo\" (got `{other}`)"))),
     };
+    // `template`: the text-to-image model the idea is for. The wand then writes what that run
+    // would (the 16 MP model's long caption, Best's photographic one) on the model's own
+    // encoder, which the run loads anyway; before 2026-11-16 it always wrote the plain caption
+    // on Qwen-Image-2.1's 8B, a model swap away from Krea 2 or MOSS.
+    let template = opt_str(ENHANCE, p, "template", 120)?.map(str::to_string);
+    let mut encoder: Option<String> = None;
+    let kind = match (kind, template.as_deref()) {
+        (EnhanceKind::Image, Some(t)) => {
+            encoder = own_chat_encoder(t).map(str::to_string);
+            image_enhance_kind(ENHANCE, s, t, &prompt, false, false, None)?
+        }
+        (EnhanceKind::ImagePhoto, Some(t)) => {
+            encoder = own_chat_encoder(t).map(str::to_string);
+            EnhanceKind::ImagePhoto
+        }
+        (k, _) => k,
+    };
     let use_image = opt_bool(ENHANCE, p, "useImage", true)?;
     let seed = parse_seed(ENHANCE, p)?;
     let backend = enhancer_backend(s)?;
     let (image, place) = match (kind, use_image, s.active()) {
-        (EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra, _, _) | (_, false, _) | (_, _, None) => (None, None),
+        (EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra, _, _) => (None, encoder),
+        (_, false, _) | (_, _, None) => (None, None),
         (_, true, Some(d)) => {
             let canvas = d.doc.bounds();
             if canvas.is_empty() || u64::from(canvas.width()) * u64::from(canvas.height()) > MAX_REQUEST_PIXELS {
@@ -860,7 +881,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Enhance Prompt",
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"task":"fill|edit|image","useImage":bool=true,"seed":{u64?=random}} → {"prompt","enhanced"} (rewrites a prompt the way the image models want it, with the native worker’s vision-language model: a fill or edit instruction becomes one sentence that leads with the verb, names what the picture shows instead of "this" or "it", says what the result looks like and what stays unchanged; an image idea becomes a paragraph of 60–120 words (subject, materials, pose, lighting, setting, style) keeping every subject, colour and medium given; useImage = the rewriter sees the composite (a fill is also told where the selection sits); enhanced false = the model said nothing usable and the prompt comes back as typed; a background job; the fill, edit and image commands take "enhance":true to do this on the way, and Preferences › AI Integrations › Enhance prompts makes it their default; needs the native worker’s chat model)"#,
+            params: r#"{"prompt":text,"task":"fill|edit|image|photo","template":{text?},"useImage":bool=true,"seed":{u64?=random}} → {"prompt","enhanced"} (rewrites a prompt the way the image models want it, with the native worker’s vision-language model: a fill or edit instruction becomes one sentence that leads with the verb, names what the picture shows instead of "this" or "it", says what the result looks like and what stays unchanged; an image idea becomes a paragraph of 60–120 words (subject, materials, pose, lighting, setting, style) keeping every subject, colour and medium given; template = the text-to-image template the idea is for: the rewrite is then the one that run would make (the 16 MP model's long caption, Quality Best's photographic caption for a photo idea) on that model's own encoder where it has one; every rewrite is checked before it is taken (not garbled, no talk about the task, not the prompt back unchanged, every quoted text, colour and count kept and most of the other words) and asked again up to three times; useImage = the rewriter sees the composite (a fill is also told where the selection sits); enhanced false = the model said nothing usable and the prompt comes back as typed; a background job; the fill, edit and image commands take "enhance":true to do this on the way, and Preferences › AI Integrations › Enhance prompts makes it their default; needs the native worker’s chat model)"#,
             enabled: |_| web_unavailable(),
             run: run_enhance,
             journal: false,

@@ -7,7 +7,7 @@ use photocraft_genai::{GenerativeBackend, Gray8, Request, Rgba8};
 use photocraft_geom::Rect;
 use serde_json::Value;
 
-use super::{JobProgress, MAX_SEED, request_size_within, resize_rgba8, rgba8_at, side_by_side};
+use super::{JobProgress, MAX_SEED, check_rewrite, is_rewrite, request_size_within, resize_rgba8, rgba8_at, side_by_side};
 
 pub(crate) const ENHANCE: &str = "generate.enhancePrompt";
 
@@ -21,14 +21,17 @@ pub(super) const ENHANCE_IMAGE_TEMPLATE: &str = "enhance/image";
 /// result looks like, say what stays; plus the case the first user session hit, a change of
 /// medium on a doodle, where "keep the lines" would defeat the instruction.
 pub(super) const ENHANCE_EDIT_SYSTEM: &str = "You rewrite instructions for an image-editing AI. You can see the image.\n\
-Rewrite the user's instruction as one clear sentence of at most 60 words that:\n\
-- starts with the action verb (Change, Replace, Add, Remove, Turn, Make, Give),\n\
-- names things by what they are in the image instead of \"this\", \"it\" or \"here\" (for example \"the hand-drawn smiley face\", \"the white lighthouse\", \"the woman in the red coat\"),\n\
-- says concretely what the result should look like,\n\
-- ends with what must stay unchanged, if anything should.\n\
-When the instruction changes the style, medium or realism of the picture (\"make this realistic\", \"turn it into a painting\"), name the real-world subject the result shows and say that the drawing's strokes are replaced by it (a doodle of a face made realistic becomes \"a photograph of a real human face with the same expression and pose, replacing the black outline strokes with real skin, hair and facial features\"); never ask to keep the drawing's lines.\n\
-Keep the user's intent. Add nothing they did not ask for. Keep any quoted text exactly.\n\
-Reply with the sentence only: no explanation, no quotes, no markdown.";
+Rewrite the user's instruction as one or two clear sentences, at most 70 words, that:\n\
+- start with the action verb (Change, Replace, Add, Remove, Turn, Make, Give),\n\
+- name things by what they are in the image instead of \"this\", \"it\" or \"here\" (\"the hand-drawn smiley face\", \"the white lighthouse\", \"the woman in the red coat\"),\n\
+- say concretely what the result looks like: for something added, what it is, its colour and material, where it sits and how big, lit like the rest of the scene; for something removed, what shows where it was; for something replaced, what replaces it and that it keeps the old one's place and size,\n\
+- for a person, say that their face, identity, hair and pose stay the same unless the user asks to change them,\n\
+- end with what must stay unchanged (the rest of the scene, the framing, the lighting), if anything should.\n\
+Words to be written in the image go in double quotes, exactly as the user gave them (Replace the text \"SALE\" with \"OPEN\").\n\
+When the instruction changes the style, medium or realism of the picture (\"make this realistic\", \"turn it into a painting\"), name the real-world subject the result shows and the visible traits of the new style, and say that the drawing's strokes are replaced (a doodle of a face made realistic becomes \"a photograph of a real human face with the same expression and pose, replacing the black outline strokes with real skin, hair and facial features\"); never ask to keep the drawing's lines.\n\
+Keep the user's intent and every thing, colour and number they named. Add nothing they did not ask for.\n\
+Example: \"make him wear sunglasses\" becomes \"Add a pair of black sunglasses to the man in the grey hoodie, resting naturally on his nose and lit like his face. Keep his face, expression, pose and the background exactly the same.\"\n\
+Reply with the rewritten instruction only: no explanation, no quotes around it, no markdown.";
 
 /// Added to the system turn for a fill: where the selection is and what the instruction means
 /// there.
@@ -81,9 +84,10 @@ Never mention grey, blank, masked, left, right, photo, image or reference. Reply
 
 /// The system turn before a text-to-image idea (the shape of the official Krea 2 template's
 /// expander and of Qwen's rewriter, in a few lines).
-pub(super) const ENHANCE_IMAGE_SYSTEM: &str = "You are an expert prompt writer for a text-to-image model. Expand the user's idea into one paragraph of 60 to 120 words the model can follow: the subject and what it does first, then its materials, surfaces or clothing, pose and framing, lighting, the setting, and finally the style, palette and mood.\n\
-Keep every subject, action, colour and spatial relation the user gave. Add no new objects, characters or animals. Keep any medium the user named (photo, painting, sketch, 3D render). Put any words to be rendered in the image in double quotes. If the idea is already detailed, polish it lightly and keep its wording.\n\
-Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
+pub(super) const ENHANCE_IMAGE_SYSTEM: &str = "You are an expert prompt writer for a text-to-image model. Expand the user's idea into one paragraph of 60 to 120 words that the model can draw: the main subject and what it is doing first, then what can be seen of it (shape, materials, surfaces, clothing, expression), its pose, how it is framed (close-up, medium shot, wide shot, from which angle), the setting around it, and the light (where it comes from, its colour, the shadows it casts). End with the medium and style.\n\
+Faithfulness first: keep every subject, count, action, colour, position and spatial relation the user gave, and the medium they named (photo, oil painting, watercolour, pencil sketch, 3D render, anime); if they named none, choose the one the idea suggests. Add no new people, animals or main objects; small supporting details that belong in the setting are fine. Write things that can be seen instead of mood words and praise (not \"beautiful\" or \"stunning\" but what makes it so). Give people natural anatomy: two hands of five fingers, a believable pose. Put any words to be written in the image in double quotes, exactly as given, and say where they sit. If the idea is already detailed, polish it lightly and keep its wording.\n\
+Example: \"a lighthouse in a storm, oil painting\" becomes \"An oil painting of a white stone lighthouse on a black rocky point, its lamp throwing a pale beam through driving rain. Huge grey-green waves break against the rocks below, white spray flung high into the wind. Low storm clouds fill the sky, lit from beneath by the beam. Seen from the water at a low angle, the lighthouse fills the right third of the frame. Thick visible brushstrokes and palette-knife texture, a muted palette of slate, teal and bone white.\"\n\
+Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown, no notes.";
 
 /// Whether a prompt asks for a medium other than a photograph (a painting, a drawing, a
 /// render…): Best's photo rewriter turned "an oil painting of a lighthouse" into a photograph
@@ -369,6 +373,9 @@ pub(crate) fn list_things(backend: &dyn GenerativeBackend, picture: &Rgba8, k: u
 /// gn-diffusion on a Mac: MOSS's Qwen3.5-9B on MLX, its vision tower not ported).
 pub(super) const TEXT_ONLY: &str = "reads text only";
 
+/// How a Krea 2 AnyPaint fill's words reach its rewriter ([`EnhanceKind::FillScene`]).
+pub(crate) const FILL_SCENE_LEAD: &str = "What the grey area shows:";
+
 pub(crate) fn enhance_prompt(
     backend: &dyn GenerativeBackend,
     kind: EnhanceKind,
@@ -445,7 +452,12 @@ pub(super) fn enhance_once(
             params.insert("encoder".to_string(), Value::String(enc.to_string()));
         }
     }
-    for attempt in 0..2u64 {
+    // A rewrite that replaces the user's words is checked ([`check_rewrite`]) and asked again
+    // with the next seed when refused: three tries in all, then the words stay as typed.
+    let rewrite = is_rewrite(kind);
+    let user_words = prompt.strip_prefix(FILL_SCENE_LEAD).unwrap_or(prompt).trim();
+    let tries = if rewrite { 3u64 } else { 2 };
+    for attempt in 0..tries {
         let req = Request {
             template: template.to_string(),
             prompt: prompt.to_string(),
@@ -465,8 +477,13 @@ pub(super) fn enhance_once(
         // 2026-11-12 both needed three, so a one-thing list and every presence answer came back
         // as nothing.
         let min_words = if matches!(kind, EnhanceKind::Presence | EnhanceKind::Things) { 1 } else { 3 };
-        if let Some(s) = clean_answer(&resp.texts, min_words) {
-            return Ok(Some(s));
+        let Some(said) = clean_answer(&resp.texts, min_words) else { continue };
+        if !rewrite {
+            return Ok(Some(said));
+        }
+        match check_rewrite(kind, user_words, &said) {
+            Ok(s) => return Ok(Some(s)),
+            Err(why) => eprintln!("enhance: try {} refused ({}): {:.200}", attempt + 1, why.words(), said),
         }
     }
     Ok(None)

@@ -296,16 +296,10 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     // biggest realism gain of the Best A/B, 2026-11-12); Enhance prompts off still means no
     // rewrite at all (Cody). An explicit `enhanceStyle` wins; transparent cut-outs and runs from
     // references keep the plain rewriter.
-    let best_photo = quality(s) == "best" && !transparent && ref_specs.is_empty();
     let enhance = opt_bool(IMAGE, p, "enhance", s.prefs().integrations.enhance_prompts)?;
-    let enhance = match (enhance, opt_str(IMAGE, p, "enhanceStyle", 20)?) {
-        (false, _) => None,
-        // The 16 MP model gets its own, longer caption (pictures from references too).
-        (true, None) if template.meta.id == ULTRA_IMAGE_TEMPLATE => Some(EnhanceKind::ImageUltra),
-        (true, None) if best_photo && !names_other_medium(&typed) => Some(EnhanceKind::ImagePhoto),
-        (true, None | Some("default")) => Some(EnhanceKind::Image),
-        (true, Some("photo")) => Some(EnhanceKind::ImagePhoto),
-        (true, Some(other)) => return Err(bad(IMAGE, format!("`enhanceStyle` must be \"default\" or \"photo\" (got `{other}`)"))),
+    let enhance = match enhance {
+        false => None,
+        true => Some(image_enhance_kind(IMAGE, s, &template.meta.id, &typed, transparent, !ref_specs.is_empty(), opt_str(IMAGE, p, "enhanceStyle", 20)?)?),
     };
     let refs = crate::generate_refs::Refs { images: crate::generate_refs::resolve(s, &ref_specs)?, specs: ref_specs };
     let loras = loras_of(IMAGE, p)?;
@@ -355,6 +349,44 @@ pub(super) fn image_refine(p: &Value, template: &str, width: u32, height: u32) -
     Ok(Some(serde_json::json!({"width": fit(width), "height": fit(height), "denoise": denoise, "steps": steps})))
 }
 
+/// Which rewriter a text-to-image idea for `template` gets: the 16 MP model its own long
+/// caption (pictures from references too); under Quality Best a photo idea the photographic
+/// rewriter (the biggest realism gain of the Best A/B, 2026-11-12); else the plain one. An
+/// explicit `style` ("default" or "photo") wins; transparent cut-outs and runs from references
+/// keep the plain rewriter. `generate.image` and the wand (`generate.enhancePrompt` with a
+/// `template`) both ask this, so the prompt the wand shows is the one the run would write.
+pub(crate) fn image_enhance_kind(
+    command: &str,
+    s: &Session,
+    template: &str,
+    typed: &str,
+    transparent: bool,
+    has_refs: bool,
+    style: Option<&str>,
+) -> Result<EnhanceKind> {
+    let best_photo = quality(s) == "best" && !transparent && !has_refs;
+    Ok(match style {
+        None if template == ULTRA_IMAGE_TEMPLATE => EnhanceKind::ImageUltra,
+        None if best_photo && !names_other_medium(typed) => EnhanceKind::ImagePhoto,
+        None | Some("default") => EnhanceKind::Image,
+        Some("photo") => EnhanceKind::ImagePhoto,
+        Some(other) => return Err(bad(command, format!("`enhanceStyle` must be \"default\" or \"photo\" (got `{other}`)"))),
+    })
+}
+
+/// The chat encoder a text-to-image rewrite for `template` runs on: on Krea 2, MOSS, Klein and
+/// H3 the model's own, which the picture loads anyway (on MOSS the 8B swap made Turbo's 2 s
+/// picture take 15 s, 2026-11-12); `None` for the default (Qwen-Image-2.1's).
+pub(crate) fn own_chat_encoder(template: &str) -> Option<&str> {
+    if template.starts_with("krea2-turbo/") {
+        Some(KREA2_CHAT_ENCODER)
+    } else if [MOSS_CHAT_PREFIX, KLEIN_CHAT_PREFIX, MINIMAX_CHAT_PREFIX].iter().any(|x| template.starts_with(x)) {
+        Some(template)
+    } else {
+        None
+    }
+}
+
 /// The prompt a `generate.image` job sends, and what the layer remembers as `enhanced`: the
 /// typed idea expanded by the vision-language model when asked (then wrapped for transparency
 /// as the typed one was), else the plan's prompt and an empty string.
@@ -371,15 +403,7 @@ pub(super) fn image_prompt(
 ) -> (String, String) {
     let Some(kind) = enhance else { return (planned, String::new()) };
     ctx.progress(0.02, "Improving the prompt");
-    // On Krea 2 and MOSS the rewrite runs on the model's own encoder, which the picture loads
-    // anyway (on MOSS the 8B swap made Turbo's 2 s picture take 15 s, 2026-11-12).
-    let encoder = if template.starts_with("krea2-turbo/") {
-        Some(KREA2_CHAT_ENCODER)
-    } else if [MOSS_CHAT_PREFIX, KLEIN_CHAT_PREFIX, MINIMAX_CHAT_PREFIX].iter().any(|x| template.starts_with(x)) {
-        Some(template)
-    } else {
-        None
-    };
+    let encoder = own_chat_encoder(template);
     match enhance_prompt(backend, kind, typed, None, encoder, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
         Ok(Some(e)) => {
             let p = if wrap.is_empty() { e.clone() } else { wrap.replace("{prompt}", &e) };
