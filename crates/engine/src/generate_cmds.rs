@@ -519,9 +519,15 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
     }
     // What `auto` would pick right now (needs the server's model lists).
     let auto = |order, fallback| backend.filter(|_| online).map(|b| resolve_auto(b, order, fallback));
-    // Remove Background: the matte model only with the research opt-in, else the detector.
+    // Remove Background, as its job routes `auto` (generate_matte.rs): the detector refined by
+    // ViTMatte when both are served, else the matte model with the research opt-in, else the
+    // detector.
     let auto_matte = backend.filter(|_| online).map(|b| {
-        if allow_research {
+        let seg = crate::select_ml_cmds::DEFAULT_SEGMENT_TEMPLATE;
+        let vit = crate::select_ml_cmds::VITMATTE_TEMPLATE;
+        if resolve_auto(b, &[vit], "") == vit && resolve_auto(b, &[seg], "") == seg {
+            seg.to_string()
+        } else if allow_research {
             resolve_auto(b, &[DEFAULT_MATTE_TEMPLATE], crate::select_ml_cmds::DEFAULT_SEGMENT_TEMPLATE)
         } else {
             crate::select_ml_cmds::DEFAULT_SEGMENT_TEMPLATE.to_string()
@@ -807,7 +813,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"asSelection":bool=false,"sampleAllLayers":bool=false,"refine":bool=true,"mode":"replace|add|subtract|intersect","layer":{id?=active},"seed":{u64?=random},"steps":{0..250=0},"guidance":{0..30=0},"template":{id?="auto": qwen-2.1/matte (a soft matte from Qwen-Image-2.1's alpha output; research licence, Preferences › AI Integrations › Allow Research-Only Models) when allowed and installed, else sam3.1/segment (the permissive detector)},"model":{file?}} → {"layer","selection","bounds":[x,y,w,h],"pixels","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (prompt = what to keep, e.g. "the lighthouse", empty = the model's own reading of the subject; the matte becomes the layer's mask (the Background becomes a normal layer; the pixels are never changed) or, with asSelection, the selection combined by mode; sampleAllLayers sends the composite instead of the layer alone; refine = soften the detector's hard mask with the classical edge refinement, as the Quick Action does; images over one megapixel are sent downscaled and the matte comes back resampled; a background job; needs the native worker; the classical Quick Action layer.removeBackground needs none)"#,
+            params: r#"{"prompt":text,"asSelection":bool=false,"sampleAllLayers":bool=false,"refine":bool=true,"mode":"replace|add|subtract|intersect","layer":{id?=active},"seed":{u64?=random},"steps":{0..250=0},"guidance":{0..30=0},"template":{id?="auto": sam3.1/segment refined by ViTMatte (hair strand by strand, about a second) when both are installed, else qwen-2.1/matte (a soft matte from Qwen-Image-2.1's alpha output; research licence, Preferences › AI Integrations › Allow Research-Only Models) when allowed and installed, else sam3.1/segment alone (the permissive detector)},"model":{file?}} → {"layer","selection","bounds":[x,y,w,h],"pixels","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (prompt = what to keep, e.g. "the lighthouse", empty = the model's own reading of the subject; the matte becomes the layer's mask (the Background becomes a normal layer; the pixels are never changed) or, with asSelection, the selection combined by mode; sampleAllLayers sends the composite instead of the layer alone; refine = soften the detector's hard mask with the classical edge refinement, as the Quick Action does; images over one megapixel are sent downscaled and the matte comes back resampled; a background job; needs the native worker; the classical Quick Action layer.removeBackground needs none)"#,
             enabled: remove_bg_enabled,
             run: run_remove_bg,
             journal: true,

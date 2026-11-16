@@ -54,8 +54,13 @@ pub(super) fn delete_and_fill(s: &mut Session, _: &Value) -> Result<Value> {
 /// the fill model, as the Remove tool does it generatively: what is selected is named by the
 /// vision-language model and repainted away, the result a masked layer above the active one, one
 /// undo step. Sampled from what the picture shows (all layers), as the Remove tool's default.
-pub(super) fn generative_remove(s: &mut Session, _: &Value) -> Result<Value> {
-    content_aware_fill_as(s, &json!({"generative": true, "sampleAllLayers": true}), "edit.generativeRemove", "Generative Remove")
+/// `seed` repeats a removal exactly (random when absent).
+pub(super) fn generative_remove(s: &mut Session, p: &Value) -> Result<Value> {
+    let mut q = json!({"generative": true, "sampleAllLayers": true});
+    if let Some(seed) = p.get("seed").and_then(Value::as_u64) {
+        q["seed"] = json!(seed);
+    }
+    content_aware_fill_as(s, &q, "edit.generativeRemove", "Generative Remove")
 }
 
 /// Generative Remove needs a selection on a pixel layer and the native worker set up.

@@ -251,6 +251,15 @@ pub const LEAN_BELOW: usize = 28 << 30;
 /// working set) wants beside a resident diffusion model; with less, on a lean card, the
 /// diffusion model is unloaded for it ([`DiffusionEngine::yields`]).
 pub const PERCEPTION_ROOM: usize = 4 << 30;
+/// The least free card memory SAM gets beside a resident model on a card that is not lean
+/// ([`DiffusionEngine::yields`]): its ~2 GB and a little working room.
+pub const PERCEPTION_MIN_ROOM: usize = 5 << 29;
+/// The least free card memory a request starts with on a card that is not lean: under it the
+/// resident model is loaded again from scratch ([`DiffusionEngine::ensure_loaded`]), since a
+/// session's growth past the card's memory makes Windows page it to the host instead of
+/// failing, and every step runs 5–400x slower (a 5090 beside 4–5 GB of desktop apps,
+/// 2026-11-16: Krea 2's decode 29 s instead of 1.8, Upscale's encode 35 s instead of 5.5).
+pub const RUN_MIN_ROOM: usize = 1 << 30;
 
 /// Whether a card of `total` bytes runs lean ([`LEAN_BELOW`]). `forced_mb` (the app's
 /// `PHOTOCRAFT_VRAM_MB`, in megabytes) stands in for the card's memory, to try the lean
@@ -933,6 +942,14 @@ impl DiffusionEngine {
     /// Load `family`'s pipeline if it is not resident, letting the other family's go first.
     fn ensure_loaded(&mut self, family: Family, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
         self.bind();
+        if cfg!(feature = "cuda") && !self.lean && !matches!(self.resident, Resident::None) {
+            self.give_back();
+            if let Some(free) = self.free_now().filter(|f| *f < RUN_MIN_ROOM) {
+                eprintln!("gn-diffusion: {:.2} GB of the card free before a request; reloading so Windows does not page the card", free as f64 / 1e9);
+                progress(0.0, "Making room on the graphics card");
+                self.unload();
+            }
+        }
         match (&self.resident, family) {
             (Resident::Krea2(p), Family::Krea2) if p.is_nvfp4() == self.krea2_nvfp4() => return Ok(()),
             (Resident::Qwen(_), Family::QwenImage21) | (Resident::Layered(_), Family::Layered) | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
@@ -1893,16 +1910,19 @@ impl Engine for DiffusionEngine {
     /// where holding both pushed a 16 GB Mac into gigabytes of swap. On a CUDA card under
     /// [`LEAN_BELOW`] it gives way only when the card has less than [`PERCEPTION_ROOM`] free
     /// (Krea 2 warmed at launch filled a 3090, and the first Select Subject ran out of memory
-    /// instead of making room, 2026-11-11). On a bigger card it stays.
+    /// instead of making room, 2026-11-11); on a bigger card under [`PERCEPTION_MIN_ROOM`]
+    /// (a 5090 beside 4–5 GB of desktop apps, Qwen-Image-2.1 resident: Windows paged the card and
+    /// SAM took 54–385 s a call instead of 0.2 s, 2026-11-16).
     fn yields(&self) -> bool {
         if cfg!(feature = "mlx") {
             return true;
         }
-        if !self.lean || matches!(self.resident, Resident::None) {
+        if matches!(self.resident, Resident::None) {
             return false;
         }
         self.give_back();
-        self.free_now().is_some_and(|free| free < PERCEPTION_ROOM)
+        let room = if self.lean { PERCEPTION_ROOM } else { PERCEPTION_MIN_ROOM };
+        self.free_now().is_some_and(|free| free < room)
     }
 
     fn index(&mut self, dir: &str) -> Value {
