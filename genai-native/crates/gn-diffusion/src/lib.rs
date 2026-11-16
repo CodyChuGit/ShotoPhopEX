@@ -1337,12 +1337,14 @@ pub type AnglesSetup = (u32, f32, Vec<(&'static str, f64)>);
 /// The Angles template's adapters and sampler defaults for a request: the Multiple Angles LoRA at
 /// `angles_strength` (0..2, default 1) and the Lightning LoRA `lightning` names (8 = the 8-step
 /// one, the default; 4 = the 4-step one; 0 = none, the base model's 40 steps at CFG 4) at
-/// `lightning_strength` (0..2; default 0.75 on the 8-step one, else 1). The steps and CFG are
+/// `lightning_strength` (0..2, default 1). The steps and CFG are
 /// that Lightning's. Measured in the app on 2026-11-14 (3 photos x 4 cameras, seed 7): the
 /// 8-step at 0.75 drew the most believable hidden sides with no crackle on fabric, 12 s warm
 /// against the 4-step's 10 s, which invented parts and over-turned; no Lightning was softer,
 /// lost prints and took 36 s; a stronger Angles LoRA (1.25, 1.5) turned barely further and
-/// invented furniture.
+/// invented furniture. Re-measured 2026-11-16 (portrait, camera and cat, two seeds, 45 and 90):
+/// at 0.75 and 0.9 a 45 turned the portrait's face only 15-25 degrees, at 1.0 about 35 (a real
+/// three-quarter view), with no artifacts and the same speed, so the 8-step runs at 1.
 pub fn angles_setup(params: &std::collections::BTreeMap<String, Value>) -> Result<AnglesSetup, EngineError> {
     use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
     let bad = |message: &str| EngineError::new(ErrorKind::BadRequest, message);
@@ -1366,7 +1368,7 @@ pub fn angles_setup(params: &std::collections::BTreeMap<String, Value>) -> Resul
 }
 
 /// The 8-step Lightning LoRA's strength under the Multiple Angles LoRA (see [`angles_setup`]).
-pub const ANGLES_LIGHTNING8_STRENGTH: f64 = 0.75;
+pub const ANGLES_LIGHTNING8_STRENGTH: f64 = 1.;
 
 /// Resolve graph inputs before loading models so invalid requests fail without touching CUDA.
 fn edit2511_request(req: &RunRequest, blobs: &[Vec<u8>]) -> Result<Edit2511Request, EngineError> {
@@ -2652,7 +2654,7 @@ mod edit2511_tests {
     fn angles_setup_picks_the_lightning_and_strengths() {
         use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
         let p = |v: Value| v.as_object().unwrap().clone().into_iter().collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(angles_setup(&p(json!({}))).unwrap(), (8, 1., vec![(A[3], 1.), (A[1], 0.75)]));
+        assert_eq!(angles_setup(&p(json!({}))).unwrap(), (8, 1., vec![(A[3], 1.), (A[1], 1.)]));
         assert_eq!(angles_setup(&p(json!({"lightning": 4}))).unwrap(), (4, 1., vec![(A[3], 1.), (A[0], 1.)]));
         assert_eq!(angles_setup(&p(json!({"lightning": 8, "angles_strength": 0.8, "lightning_strength": 1}))).unwrap(), (8, 1., vec![(A[3], 0.8), (A[1], 1.)]));
         assert_eq!(angles_setup(&p(json!({"lightning": 0}))).unwrap(), (40, 4., vec![(A[3], 1.)]));
