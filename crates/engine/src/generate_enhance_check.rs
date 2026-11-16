@@ -25,7 +25,7 @@ impl Refusal {
     pub(crate) fn words(self) -> &'static str {
         match self {
             Refusal::Garbled => "the model's answer was garbled",
-            Refusal::Chatter => "the model talked about the task instead of rewriting it",
+            Refusal::Chatter => "the model talked about the task or copied its instructions",
             Refusal::Unchanged => "the model gave the prompt back unchanged",
             Refusal::LostIntent => "the model's rewrite dropped part of what you asked for",
         }
@@ -49,13 +49,25 @@ pub(crate) fn is_rewrite(kind: EnhanceKind) -> bool {
 /// The rewriter's answer to `typed`, checked and tidied (a "Here is the prompt:" lead-in
 /// dropped, a text-to-image paragraph cut off mid-sentence ended at its last full sentence),
 /// or why it is refused.
-pub(crate) fn check_rewrite(kind: EnhanceKind, typed: &str, said: &str) -> Result<String, Refusal> {
+pub(crate) fn check_rewrite(kind: EnhanceKind, typed: &str, said: &str, system: &str) -> Result<String, Refusal> {
     let said = drop_lead_in(said.trim());
     if garbled(typed, said) {
         return Err(Refusal::Garbled);
     }
-    if chatter(said) {
+    // The photo and 16 MP captions are told to open with set phrases ("a portrait on an 85mm
+    // lens"), so only the other rewriters are held to not copying their instructions.
+    let copied = !matches!(kind, EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra | EnhanceKind::FillScene) && copies_instructions(typed, said, system);
+    if chatter(said) || copied {
         return Err(Refusal::Chatter);
+    }
+    // A medium the user named stays theirs: Krea 2's writer ended "an oil painting" idea with
+    // "A photograph with visible brushwork" (A/B round 2, 2026-11-16).
+    if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra)
+        && super::names_other_medium(typed)
+        && !typed.to_lowercase().contains("photo")
+        && said.to_lowercase().contains("photograph")
+    {
+        return Err(Refusal::LostIntent);
     }
     if normalised(said) == normalised(typed) {
         return Err(Refusal::Unchanged);
@@ -441,4 +453,19 @@ fn end_at_full_sentence(s: &str) -> &str {
         Some(i) if i + 1 >= t.len() * 2 / 3 => &t[..=i],
         _ => t,
     }
+}
+
+/// Whether the answer copies its instructions: a run of six words from the system turn that the
+/// user did not type ("keeping the yellow note, the fruit bowl and the cabinets unchanged" from
+/// the edit example in every edit, "without adding extra people or animals" from a rule; A/B
+/// round 2, 2026-11-16).
+pub(crate) fn copies_instructions(typed: &str, said: &str, system: &str) -> bool {
+    const RUN: usize = 6;
+    let sys = tokens(system);
+    if sys.len() < RUN {
+        return false;
+    }
+    let runs: std::collections::HashSet<&[String]> = sys.windows(RUN).collect();
+    let typed = tokens(typed).join(" ");
+    tokens(said).windows(RUN).any(|w| runs.contains(w) && !typed.contains(&w.join(" ")))
 }

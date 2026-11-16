@@ -345,7 +345,7 @@ fn a_text_to_image_rewrite_runs_on_the_pictures_own_encoder() {
 #[test]
 fn a_rewrite_is_checked_before_it_replaces_the_prompt() {
     use crate::generate_cmds::{EnhanceKind as K, Refusal, check_rewrite};
-    let ok = |k, t: &str, s: &str| check_rewrite(k, t, s);
+    let ok = |k, t: &str, s: &str| check_rewrite(k, t, s, "");
     // Good rewrites pass, tidied.
     assert_eq!(
         ok(K::Edit, "make the boat blue", "Change the white fishing boat to a deep blue, keeping the harbour and the sky unchanged.").as_deref(),
@@ -416,4 +416,48 @@ fn the_wand_rewrites_an_idea_for_the_model_it_will_run_on() {
     let g = last(&fake);
     assert_eq!(g["params"]["encoder"], Value::Null);
     assert!(system_prompt(&g).starts_with("You are an expert prompt writer for a text-to-image model."));
+}
+
+#[test]
+fn a_rewrite_that_copies_its_instructions_or_drops_the_medium_is_refused() {
+    use crate::generate_cmds::{EnhanceKind as K, Refusal, check_rewrite};
+    let sys = "End by naming things, for example keeping the yellow note, the fruit bowl and the cabinets unchanged.";
+    assert_eq!(
+        check_rewrite(
+            K::Edit,
+            "make it night",
+            "Turn the kitchen into a night scene with lamps on, keeping the yellow note, the fruit bowl and the cabinets unchanged.",
+            sys
+        ),
+        Err(Refusal::Chatter)
+    );
+    assert!(check_rewrite(K::Edit, "make it night", "Turn the kitchen into a night scene lit by warm lamps, keeping its layout and framing.", sys).is_ok());
+    // Words the user typed may repeat the instructions' words.
+    assert!(
+        check_rewrite(
+            K::Edit,
+            "keep the yellow note, the fruit bowl and the cabinets",
+            "Keep the yellow note, the fruit bowl and the cabinets exactly in place while brightening the room.",
+            sys
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        check_rewrite(
+            K::Image,
+            "a lighthouse in a storm, oil painting",
+            "A lighthouse on rocks in a storm, waves crashing. A photograph with visible brushwork.",
+            ""
+        ),
+        Err(Refusal::LostIntent)
+    );
+    assert!(
+        check_rewrite(
+            K::Image,
+            "a lighthouse in a storm, oil painting",
+            "A lighthouse on rocks in a storm, waves crashing. An oil painting with thick brushwork.",
+            ""
+        )
+        .is_ok()
+    );
 }
