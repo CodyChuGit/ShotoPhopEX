@@ -18,7 +18,7 @@
   <img alt="No Python" src="https://img.shields.io/badge/Python-none-3a3a3a?style=flat-square&logo=python&logoColor=white">
   <img alt="Faster than ComfyUI" src="https://img.shields.io/badge/vs%20ComfyUI-faster%20on%2010%20of%2012-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: beta, v0.1.1" src="https://img.shields.io/badge/status-beta%20v0.1.1-d69e2e?style=flat-square">
+  <img alt="Status: beta, v0.1.2" src="https://img.shields.io/badge/status-beta%20v0.1.2-d69e2e?style=flat-square">
   <a href="https://github.com/CodyChuGit/ShotoPhopEX/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/CodyChuGit/ShotoPhopEX?style=flat-square&logo=github"></a>
 </p>
 
@@ -63,7 +63,7 @@ an Apple Silicon Mac. Every result lands on its own masked layer, so the origina
 | **What it doesn't need** | No cloud, no account, no credits, no Python, no ComfyUI |
 | **Speed** | Matches or beats ComfyUI on the same GPU: a picture in 3 s, Upscale 2× in 24 s against ComfyUI's 44 s ([speed](#-speed-on-every-device)) |
 | **Models** | Open weights you bring yourself (Krea 2, Qwen-Image-2.1, MOSS, FLUX 3 Image Klein, H3 Image, SAM 3.1), in ComfyUI's folder layout |
-| **Status** | Beta, v0.1.1. Downloads for Windows, Linux and Apple Silicon Macs ([install](#-install)) |
+| **Status** | Beta, v0.1.2. Downloads for Windows, Linux and Apple Silicon Macs ([install](#-install)) |
 | **Licence** | MIT or Apache-2.0 (the native engine's `qir` crate is Apache-2.0 only). Each model keeps its own licence |
 
 - 🎨 **The tools artists use.** Start from a selection and a prompt; the app picks the model.
@@ -76,21 +76,21 @@ an Apple Silicon Mac. Every result lands on its own masked layer, so the origina
 
 ## 🚀 Install
 
-Download a build from the [**v0.1.1 release**](https://github.com/CodyChuGit/ShotoPhopEX/releases/latest).
+Download a build from the [**v0.1.2 release**](https://github.com/CodyChuGit/ShotoPhopEX/releases/latest).
 Pick one file; none of them includes models (you add those on first launch).
 
 | Download | For | Size |
 |---|---|---|
-| [`photocraft-0.1.1-windows-x64.msi`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-windows-x64.msi) | **Windows installer**: Start menu entry, uninstalls from Settings | 498 MB |
-| [`photocraft-0.1.1-windows-x64-portable.zip`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-windows-x64-portable.zip) | **Windows portable**: extract and run, nothing installed | 552 MB |
-| [`photocraft-0.1.1-linux-x86_64.tar.gz`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-linux-x86_64.tar.gz) | **Linux**: run from the folder, or install with `install.sh` | 620 MB |
-| [`photocraft-0.1.1-macos-aarch64.dmg`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/photocraft-0.1.1-macos-aarch64.dmg) | **Mac (Apple Silicon)**: drag to Applications | 119 MB |
-| [`SHA256SUMS`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.1/SHA256SUMS) | Checksums for the files above | |
+| [`shotophopex-0.1.2-windows-x64.msi`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.2/shotophopex-0.1.2-windows-x64.msi) | **Windows installer**: Start menu entry, uninstalls from Settings | 505 MB |
+| [`shotophopex-0.1.2-windows-x64-portable.zip`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.2/shotophopex-0.1.2-windows-x64-portable.zip) | **Windows portable**: extract and run, nothing installed | 562 MB |
+| [`shotophopex-0.1.2-linux-x86_64.tar.gz`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.2/shotophopex-0.1.2-linux-x86_64.tar.gz) | **Linux**: run from the folder, or install with `install.sh` | 630 MB |
+| [`shotophopex-0.1.2-macos-aarch64.dmg`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.2/shotophopex-0.1.2-macos-aarch64.dmg) | **Mac (Apple Silicon)**: drag to Applications | 127 MB |
+| [`SHA256SUMS`](https://github.com/CodyChuGit/ShotoPhopEX/releases/download/v0.1.2/SHA256SUMS) | Checksums for the files above | |
 
 **Check the download (optional).** Compare the file's hash with its line in `SHA256SUMS`:
 
 ```powershell
-Get-FileHash .\photocraft-0.1.1-windows-x64.msi   # Windows (PowerShell)
+Get-FileHash .\shotophopex-0.1.2-windows-x64.msi   # Windows (PowerShell)
 ```
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing          # Linux, in the folder with both files
@@ -118,7 +118,7 @@ See [Will it run on my computer?](#-will-it-run-on-my-computer) for what each se
 
 ### macOS (`.dmg`, Apple Silicon)
 
-`photocraft-0.1.1-macos-aarch64.dmg` (about 120 MB, MLX built in, nothing else to install)
+`shotophopex-0.1.2-macos-aarch64.dmg` (about 130 MB, MLX built in, nothing else to install)
 runs on an Apple Silicon Mac (M1 or newer) with macOS 14 or newer. It installs as **ShotoPhopEX**,
 with its own app id and settings, so it sits happily next to an official PhotoCraft. What runs on
 a Mac is in [Speed on every device](#-speed-on-every-device).
@@ -141,7 +141,7 @@ a Mac is in [Speed on every device](#-speed-on-every-device).
 
 ### Windows installer (`.msi`)
 
-1. Download `photocraft-0.1.1-windows-x64.msi` and open it.
+1. Download `shotophopex-0.1.2-windows-x64.msi` and open it.
 2. If SmartScreen shows **"Windows protected your PC"**, click **More info › Run anyway**.
 3. Click through the wizard. It installs for your account only (no administrator needed) into
    `%LOCALAPPDATA%\Programs\ArtCraft\PhotoCraft`; tick **Install for all users** on the first
@@ -153,7 +153,7 @@ stay in `%APPDATA%\Photocraft` until you delete them.
 
 ### Portable zip (`-portable.zip`)
 
-1. Download `photocraft-0.1.1-windows-x64-portable.zip`.
+1. Download `shotophopex-0.1.2-windows-x64-portable.zip`.
 2. Right-click it › **Properties**, tick **Unblock**, then **OK**. Otherwise Windows may block the
    app's files.
 3. Extract it anywhere (a USB drive works), for example `D:\ShotoPhopEX`.
@@ -175,12 +175,12 @@ folder**, leave **Native runtime folders** empty (the bundled `runtime` folder i
 
 ### Linux (`.tar.gz`)
 
-1. Download `photocraft-0.1.1-linux-x86_64.tar.gz` and extract it:
-   `tar -xzf photocraft-0.1.1-linux-x86_64.tar.gz`
-2. Run it from the folder with `./photocraft-0.1.1-linux-x86_64/bin/photocraft`, or install it
+1. Download `shotophopex-0.1.2-linux-x86_64.tar.gz` and extract it:
+   `tar -xzf shotophopex-0.1.2-linux-x86_64.tar.gz`
+2. Run it from the folder with `./shotophopex-0.1.2-linux-x86_64/bin/photocraft`, or install it
    with its menu entry and icon:
    ```sh
-   cd photocraft-0.1.1-linux-x86_64
+   cd shotophopex-0.1.2-linux-x86_64
    ./install.sh               # for your account, into ~/.local (no root)
    sudo ./install.sh /usr/local   # or for everyone
    ```
@@ -535,7 +535,7 @@ All three run the same test, compared in [Speed on every device](#-speed-on-ever
 | Your computer | What Auto uses | Status |
 |---|---|---|
 | **32 GB** (RTX 5090) | Krea 2 Turbo and Qwen-Image-2.1, everything resident, warm-up at launch | 🟢 the reference build |
-| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟢 tested on a 3090 in lean memory mode (next release); in v0.1.1 the image models run out of memory |
+| **24 GB** (RTX 3090, 4090) | the same models, one image family loaded at a time | 🟢 tested on a 3090 in lean memory mode since v0.1.2 (in v0.1.1 the image models ran out of memory) |
 | **12–16 GB** (3060 12 GB, 4070, 4080, 5080) | MOSS Turbo for pictures, MOSS Edit Turbo for edits, SAM 3.1 for selection; with the optional FLUX 3 Image Klein extra, Klein for Edit and Expand | 🟡 works in 12 GB mode; peak 11.4–12.0 GiB. Klein on CUDA is new: tested on an RTX 3090 (picture 21 s, edit 46 s, expand 33 s at about 1 MP), not yet at 12 GB |
 | **Mac, 16 GB** (Apple Silicon) | MOSS Turbo, MOSS Edit and FLUX 3 Image Klein on MLX ([speed](#-speed-on-every-device)) | 🟡 works on an M1 Air; `.dmg` since v0.1.1 |
 | **8 GB** | selection tools (SAM 3.1 needs about 1.6 GB); a smaller "super MOSS" is research | ⚪ research |
