@@ -1044,8 +1044,8 @@ pub fn prepare_fill(src: &RefImage, mask: &RefImage, w: usize, h: usize, opts: &
     let mut channels: [Vec<u8>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (p, &inside) in picture.pixels().zip(&hole) {
         if !inside {
-            for c in 0..3 {
-                channels[c].push(p.0[c]);
+            for (channel, v) in channels.iter_mut().zip(p.0) {
+                channel.push(v);
             }
         }
     }

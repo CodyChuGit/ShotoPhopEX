@@ -63,15 +63,15 @@ pub fn scrambled_3d(n: usize, seed: u32) -> Vec<f32> {
     // _sobol_engine_scramble_
     for d in 0..dim {
         let dots: Vec<u64> = (0..MAXBIT).map(|p| (0..MAXBIT).map(|k| ltm[d][p][k] << (MAXBIT - 1 - k)).sum()).collect();
-        for j in 0..MAXBIT {
-            let vdj = ss[d][j];
+        for s in ss[d].iter_mut().take(MAXBIT) {
+            let vdj = *s;
             let (mut l, mut t2) = (1u64, 0u64);
             for p in (0..MAXBIT).rev() {
                 let t1 = (dots[p] & vdj).count_ones() as u64 % 2;
                 t2 += t1 * l;
                 l <<= 1;
             }
-            ss[d][j] = t2;
+            *s = t2;
         }
     }
     // draw: the shift itself, then the Gray-code walk.

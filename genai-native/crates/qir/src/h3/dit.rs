@@ -47,7 +47,7 @@ pub struct H3Config {
 impl H3Config {
     pub fn from_weights(w: &Weights) -> Result<Self> {
         let count = |prefix: &str| -> usize { (0..).take_while(|i| w.contains(&format!("{prefix}{i}.norm1.weight"))).count() };
-        let shape = |name: &str| -> Result<Vec<usize>> { Ok(w.shape(name)?) };
+        let shape = |name: &str| -> Result<Vec<usize>> { w.shape(name) };
         let hidden = shape("video_patch_proj.weight")?[0];
         let head_dim = shape("blocks.0.attn.q_norm.weight")?[0];
         let qkv = w.out_features("blocks.0.attn.qkv_proj")?;

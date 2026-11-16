@@ -17,7 +17,7 @@ use photocraft_genai::Rgba8;
 use photocraft_geom::Rect;
 use serde_json::Value;
 
-use crate::generate_cmds::{bad, gen_err, resize_rgba8};
+use crate::generate_cmds::{bad, gen_err, rgba8_at};
 use crate::{EngineError, Result, Session};
 
 /// Most references any request may carry (the largest template's slots).
@@ -108,7 +108,7 @@ fn one(s: &Session, r: &Value) -> Result<Rgba8> {
 /// Scale `img` down to [`MAX_REFERENCE_PIXELS`] (aspect kept).
 fn fit(img: Rgba8) -> Result<Rgba8> {
     let (w, h) = crate::generate_cmds::fit_pixels(img.width, img.height, MAX_REFERENCE_PIXELS);
-    if (w, h) == (img.width, img.height) { Ok(img) } else { resize_rgba8(&img, w, h) }
+    rgba8_at(img, w, h)
 }
 
 fn layer(s: &Session, id: LayerId) -> Result<Rgba8> {
