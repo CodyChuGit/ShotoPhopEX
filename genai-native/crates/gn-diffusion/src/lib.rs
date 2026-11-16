@@ -140,6 +140,12 @@ pub const TEMPLATE_MOSS_EDIT_TURBO: &str = "moss-image/edit-turbo";
 /// The adapter as its repo names it, in its own folder; or renamed to a file of its own.
 pub const MOSS_EDIT_LORAS: [&str; 2] = ["moss-image-edit/adapter_model.safetensors", "moss_image_edit_lora.safetensors"];
 pub const MOSS_EDIT_STEPS: u32 = 30;
+/// An edit of MOSS-Image-Base in ai-toolkit's edit layout (`qir::moss::Sampling::OSTRIS_EDIT`),
+/// for edit LoRAs trained there that the request brings, such as NO8D's MOSS HighQuality
+/// restore (Civitai 2436859, non-commercial; bring your own): its author's 9 Euler steps at
+/// CFG 1, both prompts empty.
+pub const TEMPLATE_MOSS_RESTORE: &str = "moss-image/restore";
+pub const MOSS_RESTORE_STEPS: u32 = 9;
 /// FLUX 3 Image Klein on MLX (macOS; mflux-community's pre-quantized files): text to image
 /// (the Mac's quality pick next to MOSS Turbo), an edit by
 /// instruction (and, with AusBoss's outpaint LoRA in the request, the editor's Expand), and a
@@ -186,7 +192,7 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 40] = [
+pub const TEMPLATES: [(&str, &str, Family); 41] = [
     (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
     (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
@@ -196,6 +202,7 @@ pub const TEMPLATES: [(&str, &str, Family); 40] = [
     (TEMPLATE_KLEIN_FILL, "fill", Family::Klein),
     (TEMPLATE_MOSS_EDIT, "edit", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_EDIT_TURBO, "edit", Family::Moss(MossVariant::Sft)),
+    (TEMPLATE_MOSS_RESTORE, "edit", Family::Moss(MossVariant::Base)),
     (TEMPLATE_MOSS_TURBO, "image", Family::Moss(MossVariant::Kromoss)),
     (TEMPLATE_OUTPAINT_TURBO, "expand", Family::QwenImage21),
     (TEMPLATE_OUTPAINT, "expand", Family::QwenImage21),
@@ -1711,6 +1718,7 @@ impl Engine for DiffusionEngine {
             Family::Edit2511 => 40,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => MOSS_TURBO_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_RESTORE => MOSS_RESTORE_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS => MOSS_REALISM_STEPS,
             Family::Moss(_) => MOSS_STEPS,
             // Klein's own (its checkpoint's 16).
@@ -1719,7 +1727,7 @@ impl Engine for DiffusionEngine {
             Family::MiniMaxH3 => MINIMAX_H3_STEPS,
         };
         let default_guidance = match family {
-            Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => 1.0,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO || req.model == TEMPLATE_MOSS_RESTORE => 1.0,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_GUIDANCE,
             Family::Moss(_) => MOSS_GUIDANCE,
             _ => 1.0,
@@ -1832,6 +1840,9 @@ impl Engine for DiffusionEngine {
                 (Resident::Moss(p, _), _) if realism => {
                     p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
+                (Resident::Moss(p, _), _) if req.model == TEMPLATE_MOSS_RESTORE => {
+                    p.generate_sampled(&ask, moss::Sampling::OSTRIS_EDIT.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                }
                 (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::H3(p), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::KleinCuda(p), _) => {
@@ -1922,6 +1933,7 @@ fn cuda_default_steps(template: &str) -> Option<u32> {
     match template {
         TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(MOSS_TURBO_STEPS),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_STEPS),
+        TEMPLATE_MOSS_RESTORE => Some(MOSS_RESTORE_STEPS),
         // The realism recipe's res_2s is CUDA only: MLX keeps its 50 Euler steps.
         TEMPLATE_MOSS => Some(MOSS_REALISM_STEPS),
         TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
@@ -1975,7 +1987,7 @@ const GREY_LEVELS: u8 = 6;
 #[cfg(feature = "mlx")]
 fn cuda_default_guidance(template: &str) -> Option<f32> {
     match template {
-        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(1.0),
+        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO | TEMPLATE_MOSS_RESTORE => Some(1.0),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_GUIDANCE),
         TEMPLATE_MOSS | TEMPLATE_MOSS_BASE => Some(MOSS_GUIDANCE),
         _ => None,

@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "id": "moss-image/restore",
+    "name": "Restore Photo (MOSS, experimental)",
+    "family": "moss-image",
+    "task": "edit",
+    "license": "permissive",
+    "licenseNote": "MOSS-Image-Base is Apache-2.0 (OpenMOSS). The restore LoRA the request brings is the user's own: NO8D's MOSS HighQuality (Civitai 2436859) allows no commercial use and no derivatives. The app ships no weights.",
+    "needsImage": true,
+    "needsMask": false,
+    "defaults": {
+      "steps": 9,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "moss_image_base_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3.5_9b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "flux2-vae_small.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native gn-diffusion moss-image/restore). An edit of MOSS-Image-Base in ai-toolkit's edit layout (ostris' ComfyUI-MOSS-Image-Ostris-Edit with kv_cache), for an edit LoRA trained there that the request names in `loras`: the picture at the output's size (about 1 MP) encoded by the FLUX.2 VAE and run once through the DiT at t = 0 (frame 1, at the prompt's text index), \"Picture 1: \" ahead of the prompt, 9 Euler steps on the shift-5 schedule at CFG 1. Not yet the encoder's view of the picture (the Qwen3.5 vision tower). Experimental: on no page.",
+    "creator": "OpenMOSS · NO8D (LoRA)",
+    "description": "Restore a soft or old photo with a MOSS edit LoRA (experimental)",
+    "badges": [],
+    "estimatedSeconds": {
+      "base": 3,
+      "perMegapixel": 4
+    },
+    "pages": [],
+    "parameters": []
+  }
+}

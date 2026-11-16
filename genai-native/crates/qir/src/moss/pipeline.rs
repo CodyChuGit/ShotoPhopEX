@@ -56,17 +56,25 @@ pub struct Sampling {
     /// `res_2s`'s ancestral noise, RES4LYF's `eta` in its "hard" mode (0 = the plain ODE,
     /// `res_2s_ode`; the `res_2s` that KSamplerSelect lists runs 0.5 on steps and substeps).
     pub eta: f64,
+    /// An edit in ai-toolkit's MOSS edit layout (ostris' ComfyUI-MOSS-Image-Ostris-Edit, the
+    /// one its edit LoRAs train on): each prompt opens with `Picture N: ` per reference, the
+    /// references sit at the prompt's text index of the RoPE, encoded at the output's size.
+    /// MOSS Edit's own layout (text index 0, long edge [`REFERENCE_EDGE`]) otherwise.
+    pub ostris_refs: bool,
 }
 
 impl Sampling {
     /// The official pipeline: Euler on the shift-5 schedule, block 22 skipped in the negative.
-    pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true, eta: 0.0 };
+    pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true, eta: 0.0, ostris_refs: false };
     /// The app's MOSS-Image text to image, after RaymondLuxuryYacht's MOSS realism workflow
     /// (Civitai 3035895, 2026-11-04): RES4LYF's `res_2s` (ancestral, eta 0.5), 20 steps, plain CFG
     /// 3 (no skipped block) with a real negative ([`REALISM_NEGATIVE`]). The workflow's schedule
     /// is linear σ (shift 1); in the app (2026-11-11, three prompts) that came out dark and
     /// muddy with broken signs, so the official shift 5 stays. About 30 % faster than 50 Euler steps.
-    pub const REALISM: Self = Self { shift: SHIFT, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5 };
+    pub const REALISM: Self = Self { shift: SHIFT, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5, ostris_refs: false };
+    /// An ai-toolkit edit LoRA's run (NO8D's MOSS HighQuality restore, Civitai 2436859, as its
+    /// author's graph runs it): Euler, no skipped block, references in ostris' layout.
+    pub const OSTRIS_EDIT: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: false, eta: 0.0, ostris_refs: true };
 
     /// `self` with the A/B hooks applied: `QIR_MOSS_SHIFT`, `QIR_MOSS_SAMPLER` (`euler` /
     /// `res_2s`), `QIR_MOSS_SKIP` (`0` / `1`), `QIR_MOSS_ETA` (`res_2s`'s noise, 0..1).
@@ -345,6 +353,14 @@ impl MossPipeline {
         self.encoder.is_some()
     }
 
+    /// A reference resized (Lanczos) to `w × h` (multiples of 16) and encoded.
+    pub fn reference_latent_sized(&self, r: &RefImage, w: usize, h: usize) -> Result<Tensor> {
+        let enc = self.encoder.as_ref().context("the VAE file has no FLUX.2 encoder (Comfy-Org's flux2-vae_small has one)")?;
+        let img = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.rgba.clone()).context("a reference's pixels do not match its size")?;
+        let img = if (w, h) == (r.width, r.height) { img } else { image::imageops::resize(&img, w as u32, h as u32, image::imageops::FilterType::Lanczos3) };
+        enc.encode(&vae::from_rgba_u8(img.as_raw(), w, h, &self.dev)?)
+    }
+
     /// A reference as MOSS Edit takes it: its long edge at most `edge` (Lanczos, never enlarged,
     /// each side rounded to 16 independently, as the official `resize_image`), encoded.
     pub fn reference_latent(&self, r: &RefImage, edge: usize) -> Result<Tensor> {
@@ -404,9 +420,20 @@ impl MossPipeline {
         check()?;
         progress(0.02, "Encoding the prompt");
         let t0 = Instant::now();
-        let cond = self.cached(&self.positive, &req.prompt)?;
+        // ai-toolkit's edit layout names each reference ahead of the prompt.
+        let ostris = sampling.ostris_refs && !req.references.is_empty();
+        let named = |p: &str| -> String {
+            if ostris {
+                let mut s: String = (1..=req.references.len()).map(|i| format!("Picture {i}: ")).collect();
+                s.push_str(p);
+                s
+            } else {
+                p.to_string()
+            }
+        };
+        let cond = self.cached(&self.positive, &named(&req.prompt))?;
         let cfg = req.guidance != 1.0;
-        let uncond = if cfg { Some(self.cached(&self.negative, &req.negative)?) } else { None };
+        let uncond = if cfg { Some(self.cached(&self.negative, &named(&req.negative))?) } else { None };
         // The prompts are in hand: the DiT (back on the card in 12 GB mode) and its adapters.
         let dit = self.transformer()?;
         let unmatched = dit.set_loras(&req.loras)?;
@@ -421,8 +448,16 @@ impl MossPipeline {
             // 12 GB mode: references at 512 (the edit workflow's), their cache a quarter the size.
             let default_edge = if self.low_vram { LOW_VRAM_REFERENCE_EDGE } else { REFERENCE_EDGE };
             let edge = std::env::var("QIR_MOSS_REF_EDGE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default_edge);
-            let latents = req.references.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
-            Some(dit.prepare_references(&latents)?)
+            if ostris {
+                // At the output's size (the author's FluxKontextImageScale, about 1 MP), at the
+                // prompt's text index. One cache serves both prompts (a guided run with prompts
+                // of different lengths puts the negative's references at the prompt's index).
+                let latents = req.references.iter().map(|r| self.reference_latent_sized(r, w, h)).collect::<Result<Vec<_>>>()?;
+                Some(dit.prepare_references_at(&latents, cond.dim(0)?)?)
+            } else {
+                let latents = req.references.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
+                Some(dit.prepare_references(&latents)?)
+            }
         };
         // The edit's negative branch skips no block (the official edit sampler), unless
         // `QIR_MOSS_EDIT_SKIP` names one (the author's ComfyUI workflow skips 22).
