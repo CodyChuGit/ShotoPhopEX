@@ -1,7 +1,9 @@
 //! The pixel helpers' fast paths against the straightforward versions they replaced: the same
 //! bytes (and the same `f32` bits) for every size, channel count and radius tried.
 
-use super::{Filter, LANCZOS, TENT, box_blur, dilate, resample_u8, taps};
+use super::{Filter, LANCZOS, TENT, box_blur, dilate, dim_outside, resample_u8, taps};
+use photocraft_genai::Rgba8;
+use photocraft_geom::Rect;
 
 fn resample_u8_reference(src: &[u8], sw: usize, sh: usize, ch: usize, dw: usize, dh: usize, f: Filter) -> Vec<u8> {
     let xt = taps(sw, dw, f);
@@ -163,4 +165,21 @@ fn pixel_ops_speed() {
         time(&format!("dilate r{r} reference"), &|| dilate_reference(&cov, w, h, r).len());
         time(&format!("dilate r{r}"), &|| dilate(&cov, w, h, r).len());
     }
+}
+
+#[test]
+fn dim_outside_darkens_only_what_is_not_selected() {
+    // A 4×2 crop at (10, 20); the selection covers (11, 20) and (12, 21), its area (11, 20)-(13, 22).
+    let mut img = Rgba8::new(4, 2, [200u8, 100, 40, 255].repeat(8)).unwrap();
+    let area = Rect::new(11, 20, 13, 22);
+    let coverage = [1.0, 0.0, 0.2, 0.9];
+    dim_outside(&mut img, Rect::new(10, 20, 14, 22), &coverage, area);
+    let kept: Vec<bool> = img.data.chunks_exact(4).map(|p| p[0] == 200).collect();
+    assert_eq!(kept, [false, true, false, false, false, false, true, false]);
+    // Darkened to a quarter, the alpha untouched.
+    assert_eq!(&img.data[..4], &[50, 25, 10, 255]);
+    // A coverage of the wrong length leaves the picture as it is.
+    let mut same = Rgba8::new(1, 1, vec![9, 9, 9, 255]).unwrap();
+    dim_outside(&mut same, Rect::new(0, 0, 1, 1), &[1.0, 1.0], Rect::new(0, 0, 1, 1));
+    assert_eq!(same.data, [9, 9, 9, 255]);
 }
