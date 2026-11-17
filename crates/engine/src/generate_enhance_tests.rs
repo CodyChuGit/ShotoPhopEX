@@ -443,13 +443,28 @@ fn a_rewrite_that_copies_its_instructions_or_drops_the_medium_is_refused() {
         .is_ok()
     );
     assert_eq!(
+        check_rewrite(K::Image, "a lighthouse in a storm, oil painting", "A photograph of a lighthouse in a storm, an oil painting look.", ""),
+        Err(Refusal::PhotoForMedium)
+    );
+    // A closing "A photograph…" after a paragraph that kept the medium is dropped, not refused
+    // (round 5: island and anime rewrites on Krea 2, Qwen 2.1 and Klein), also when cut off.
+    assert_eq!(
         check_rewrite(
             K::Image,
             "a lighthouse in a storm, oil painting",
-            "A lighthouse on rocks in a storm, waves crashing. A photograph with visible brushwork.",
+            "An oil painting of a lighthouse on rocks in a storm, waves crashing against it under dark clouds. A photograph with visible brushwork.",
             ""
         ),
-        Err(Refusal::LostIntent)
+        Ok("An oil painting of a lighthouse on rocks in a storm, waves crashing against it under dark clouds.".to_string())
+    );
+    assert_eq!(
+        check_rewrite(
+            K::Image,
+            "isometric 3d render of a tiny island with a windmill",
+            "An isometric 3D render of a tiny island, viewed from a high angle, with a wooden windmill on green grass beside calm blue water. Soft daylight casts gentle shadows. A photograph",
+            ""
+        ),
+        Ok("An isometric 3D render of a tiny island, viewed from a high angle, with a wooden windmill on green grass beside calm blue water. Soft daylight casts gentle shadows.".to_string())
     );
     assert!(
         check_rewrite(
@@ -472,7 +487,7 @@ fn a_rewrite_that_invents_a_medium_is_refused() {
             "A close-up portrait of an old fisherman with a weathered face. A realistic oil painting with rich brushstrokes.",
             ""
         ),
-        Err(Refusal::LostIntent)
+        Err(Refusal::InventedMedium)
     );
     assert!(
         check_rewrite(

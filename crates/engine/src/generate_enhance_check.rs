@@ -17,8 +17,12 @@ pub(crate) enum Refusal {
     Chatter,
     /// It says what the user typed and nothing more.
     Unchanged,
-    /// It lost part of what the user asked for.
+    /// It lost part of what the user asked for: their subject, a colour, a count, quoted words.
     LostIntent,
+    /// It called the medium the user named (an oil painting, a 3D render) a photograph.
+    PhotoForMedium,
+    /// It chose a painted, drawn or rendered medium the user never named.
+    InventedMedium,
 }
 
 impl Refusal {
@@ -28,6 +32,8 @@ impl Refusal {
             Refusal::Chatter => "the model talked about the task or copied its instructions",
             Refusal::Unchanged => "the model gave the prompt back unchanged",
             Refusal::LostIntent => "the model's rewrite dropped part of what you asked for",
+            Refusal::PhotoForMedium => "the model's rewrite turned the medium you named into a photograph",
+            Refusal::InventedMedium => "the model's rewrite chose a painted or drawn look you didn't ask for",
         }
     }
 }
@@ -51,6 +57,23 @@ pub(crate) fn is_rewrite(kind: EnhanceKind) -> bool {
 /// or why it is refused.
 pub(crate) fn check_rewrite(kind: EnhanceKind, typed: &str, said: &str, system: &str) -> Result<String, Refusal> {
     let said = drop_lead_in(said.trim());
+    // A medium the user named stays theirs. The 4B writers kept "an isometric 3d render" or "an
+    // anime girl" through the paragraph and then closed with "A photograph with crisp 3d
+    // rendering textures" (28 of 29 refusals in round 5, 2026-11-17): that closing sentence is
+    // dropped rather than the whole rewrite refused. Before that, Krea 2's writer ended "an oil
+    // painting" idea with "A photograph with visible brushwork" (round 2).
+    let image = matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra);
+    let named_medium = image && super::names_other_medium(typed) && !typed.to_lowercase().contains("photo");
+    let without_photo;
+    let said = if named_medium && said.to_lowercase().contains("photograph") {
+        without_photo = drop_sentences_with(said, "photograph");
+        if without_photo.to_lowercase().contains("photograph") || without_photo.len() * 3 < said.len() * 2 {
+            return Err(Refusal::PhotoForMedium);
+        }
+        without_photo.as_str()
+    } else {
+        said
+    };
     if garbled(typed, said) {
         return Err(Refusal::Garbled);
     }
@@ -60,20 +83,11 @@ pub(crate) fn check_rewrite(kind: EnhanceKind, typed: &str, said: &str, system: 
     if chatter(said) || copied {
         return Err(Refusal::Chatter);
     }
-    // A medium the user named stays theirs: Krea 2's writer ended "an oil painting" idea with
-    // "A photograph with visible brushwork" (A/B round 2, 2026-11-16).
-    if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra)
-        && super::names_other_medium(typed)
-        && !typed.to_lowercase().contains("photo")
-        && said.to_lowercase().contains("photograph")
-    {
-        return Err(Refusal::LostIntent);
-    }
     // And no medium is chosen when none was named: MOSS's writer ended "portrait of an old
     // fisherman" with "a realistic oil painting" (A/B round 3), Krea 2's turned a kitchen into a
     // watercolour (round 1).
-    if matches!(kind, EnhanceKind::Image | EnhanceKind::ImagePhoto | EnhanceKind::ImageUltra) && !super::names_other_medium(typed) && invents_medium(said) {
-        return Err(Refusal::LostIntent);
+    if image && !super::names_other_medium(typed) && invents_medium(said) {
+        return Err(Refusal::InventedMedium);
     }
     if normalised(said) == normalised(typed) {
         return Err(Refusal::Unchanged);
@@ -446,6 +460,27 @@ pub(crate) fn keeps_intent(typed: &str, said: &str) -> bool {
         _ => (n * 3).div_ceil(5),
     };
     kept >= need
+}
+
+/// `s` without its sentences that contain `word` (any case), a sentence ending at a full stop,
+/// question or exclamation mark, or at the end of the text (a closing "A photograph" cut off by
+/// the token limit).
+fn drop_sentences_with(s: &str, word: &str) -> String {
+    let mut out = String::new();
+    let mut start = 0;
+    let bytes: Vec<(usize, char)> = s.char_indices().collect();
+    for (k, &(i, c)) in bytes.iter().enumerate() {
+        let last = k + 1 == bytes.len();
+        if matches!(c, '.' | '!' | '?') || last {
+            let end = i + c.len_utf8();
+            let sentence = &s[start..end];
+            if !sentence.to_lowercase().contains(word) {
+                out.push_str(sentence);
+            }
+            start = end;
+        }
+    }
+    out.trim().to_string()
 }
 
 /// A paragraph cut off mid-sentence (the token limit) ends at its last full stop instead, when
