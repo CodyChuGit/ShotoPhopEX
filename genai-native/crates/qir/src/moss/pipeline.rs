@@ -339,7 +339,7 @@ impl MossPipeline {
             return Ok(Arc::clone(v));
         }
         let t0 = Instant::now();
-        let vb = crate::mapped::var_builder(&[&self.files.text], DType::F32, &self.dev, |n| n.starts_with("model.visual."))?;
+        let vb = candle_nn::VarBuilder::from_tensors(visual_tensors(&self.files.text, &self.dev)?, DType::F32, &self.dev);
         let cfg = VisionConfig { deepstack_visual_indexes: Vec::new(), ..VisionConfig::default() };
         let v = Arc::new(VisionTower::load(&cfg, vb.pp("model").pp("visual")).context("the encoder file's Qwen3.5 vision tower (model.visual.*)")?);
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS vision tower loaded");
@@ -864,6 +864,97 @@ mod tests {
     }
 }
 
+/// The encoder file's `model.visual.*` tensors in f32 on `dev`: plain ones converted, ComfyUI's
+/// INT8 ConvRot linears (`int8_tensorwise` rows with a per-row `weight_scale`, `convrot` in
+/// groups of `convrot_groupsize` input features, 64 in Comfy-Org's file) dequantized and
+/// rotated back, as comfy-kitchen's `dequantize_int8_convrot_weight` does.
+fn visual_tensors(path: &Path, dev: &Device) -> Result<std::collections::HashMap<String, Tensor>> {
+    use safetensors::{Dtype, SafeTensors};
+    let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let map = unsafe { memmap2::Mmap::map(&file)? };
+    let st = SafeTensors::deserialize(&map)?;
+    let as_f32 = |name: &str| -> Result<Vec<f32>> {
+        let t = st.tensor(name)?;
+        let b = t.data();
+        Ok(match t.dtype() {
+            Dtype::F32 => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+            Dtype::BF16 => b.chunks_exact(2).map(|c| f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16)).collect(),
+            Dtype::F16 => b.chunks_exact(2).map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32()).collect(),
+            other => anyhow::bail!("{name}: {other:?} is not a float tensor"),
+        })
+    };
+    let mut out = std::collections::HashMap::new();
+    for (name, view) in st.tensors() {
+        if !name.starts_with("model.visual.") || name.ends_with(".weight_scale") || name.ends_with(".comfy_quant") || name.ends_with(".input_scale") {
+            continue;
+        }
+        let shape = view.shape().to_vec();
+        let values = if view.dtype() == Dtype::I8 {
+            let module = name.strip_suffix(".weight").with_context(|| format!("{name}: an INT8 tensor that is not a weight"))?;
+            anyhow::ensure!(shape.len() == 2, "{name}: an INT8 weight of shape {shape:?}");
+            let (n, k) = (shape[0], shape[1]);
+            let scale = as_f32(&format!("{module}.weight_scale"))?;
+            anyhow::ensure!(scale.len() == n || scale.len() == 1, "{module}.weight_scale: {} values for {n} rows", scale.len());
+            let group = match st.tensor(&format!("{module}.comfy_quant")) {
+                Ok(q) => {
+                    let d: serde_json::Value = serde_json::from_slice(q.data()).with_context(|| format!("{module}.comfy_quant"))?;
+                    if d.get("convrot").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+                        d.get("convrot_groupsize").and_then(serde_json::Value::as_u64).unwrap_or(256) as usize
+                    } else {
+                        0
+                    }
+                }
+                Err(_) => 0,
+            };
+            let mut w: Vec<f32> = view.data().iter().enumerate().map(|(i, &b)| f32::from(b as i8) * scale[if scale.len() == 1 { 0 } else { i / k }]).collect();
+            if group > 0 {
+                anyhow::ensure!(k.is_multiple_of(group), "{module}: {k} input features in ConvRot groups of {group}");
+                let h = regular_hadamard(group)?;
+                let mut tmp = vec![0f32; group];
+                for row in w.chunks_mut(k) {
+                    for g in row.chunks_mut(group) {
+                        // W = W_rot · Hᵀ per group (H is symmetric).
+                        for (j, t) in tmp.iter_mut().enumerate() {
+                            *t = g.iter().zip(&h[j * group..(j + 1) * group]).map(|(a, b)| a * b).sum();
+                        }
+                        g.copy_from_slice(&tmp);
+                    }
+                }
+            }
+            w
+        } else {
+            as_f32(&name)?
+        };
+        out.insert(name.clone(), Tensor::from_vec(values, shape, &Device::Cpu)?.to_device(dev)?);
+    }
+    anyhow::ensure!(!out.is_empty(), "{}: no model.visual.* tensors (an encoder file without the vision tower)", path.display());
+    Ok(out)
+}
+
+/// comfy-kitchen's `_build_hadamard`: the normalized regular Hadamard of `size` (a power of 4),
+/// Kronecker powers of `[[1,1,1,-1],[1,1,-1,1],[1,-1,1,1],[-1,1,1,1]]`, row-major.
+fn regular_hadamard(size: usize) -> Result<Vec<f32>> {
+    anyhow::ensure!(size >= 4 && size.is_power_of_two() && size.trailing_zeros() % 2 == 0, "a regular Hadamard of {size} (a power of 4)");
+    const H4: [f32; 16] = [1., 1., 1., -1., 1., 1., -1., 1., 1., -1., 1., 1., -1., 1., 1., 1.];
+    let mut h = H4.to_vec();
+    let mut n = 4;
+    while n < size {
+        let m = n * 4;
+        let mut next = vec![0f32; m * m];
+        for (i, a) in h.iter().enumerate() {
+            let (ar, ac) = (i / n, i % n);
+            for (j, b) in H4.iter().enumerate() {
+                let (br, bc) = (j / 4, j % 4);
+                next[(ar * 4 + br) * m + ac * 4 + bc] = a * b;
+            }
+        }
+        h = next;
+        n = m;
+    }
+    let norm = 1.0 / (size as f32).sqrt();
+    Ok(h.into_iter().map(|v| v * norm).collect())
+}
+
 /// A picture as the ViT takes it: area-downscaled (never enlarged) to fit 384² pixels (the
 /// edit encoder's `_fit_area`), then bilinearly to the 32-pixel grid (`process_qwen2vl_images`),
 /// patchified. Returns `(patches, grid_h, grid_w)`.
@@ -944,7 +1035,20 @@ pub fn wavelet_color_match(out: &mut [u8], style: &[u8], w: usize, h: usize) {
 
 #[cfg(test)]
 mod vision_tests {
-    use super::{area_resize, wavelet_color_match};
+    use super::{area_resize, regular_hadamard, wavelet_color_match};
+
+    #[test]
+    fn the_regular_hadamard_is_orthogonal_and_symmetric() {
+        let n = 64;
+        let h = regular_hadamard(n).unwrap();
+        for i in 0..n {
+            for j in 0..n {
+                assert_eq!(h[i * n + j], h[j * n + i]);
+                let dot: f32 = (0..n).map(|k| h[i * n + k] * h[j * n + k]).sum();
+                assert!((dot - if i == j { 1.0 } else { 0.0 }).abs() < 1e-5);
+            }
+        }
+    }
 
     #[test]
     fn wavelet_match_takes_flat_colour_from_the_style() {
