@@ -947,6 +947,17 @@ pub fn specs() -> Vec<CommandSpec> {
             run: upscale::run_upscale,
             journal: true,
         },
+        CommandSpec {
+            id: upscale::UPSCALE_FAST,
+            label: "Generative Upscale (Fast)",
+            // Placed by the menu catalogue under Edit, after Generative Upscale.
+            menu: &[],
+            shortcut: None,
+            params: r#"{as generate.upscale} → as generate.upscale (generate.upscale with turbo true: Viggle's 6-step Turbo LoRA over the Restore LoRA, about 2x faster at 2x, close-up faces a little less faithful; needs the native Qwen-Image-2.1 edit and Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors in the loras folder)"#,
+            enabled: upscale::upscale_fast_enabled,
+            run: upscale::run_upscale_fast,
+            journal: true,
+        },
     ]
 }
 

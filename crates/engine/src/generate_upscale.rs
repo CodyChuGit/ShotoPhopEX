@@ -21,6 +21,8 @@ use crate::jobs::now_ms;
 use crate::{EngineError, Result, Session};
 
 pub const UPSCALE: &str = "generate.upscale";
+/// Edit › Generative Upscale (Fast): [`UPSCALE`] with `turbo` on.
+pub const UPSCALE_FAST: &str = "generate.upscaleFast";
 
 /// AusBoss's restore wording (Tiled Upscale, Civitai, read 2026-10-26).
 pub(crate) const RESTORE_PROMPT: &str =
@@ -162,6 +164,33 @@ pub(crate) fn colour_matched(out: &Rgba8, src: &Rgba8) -> Rgba8 {
         }
     }
     Rgba8::new(out.width, out.height, data).unwrap_or_else(|_| out.clone())
+}
+
+/// [`UPSCALE_FAST`]: Generative Upscale with Viggle's Turbo LoRA (`turbo`), 2-2.5x faster at 2x
+/// in the app on 2026-11-17 (5090: 11-15 s against 18-30 s), a little crisper, close-up faces a
+/// little less faithful.
+pub(crate) fn run_upscale_fast(s: &mut Session, p: &Value) -> Result<Value> {
+    let mut q = p.clone();
+    match q.as_object_mut() {
+        Some(o) => {
+            o.insert("turbo".into(), json!(true));
+        }
+        None => q = json!({"turbo": true}),
+    }
+    run_upscale(s, &q)
+}
+
+/// Whether [`UPSCALE_FAST`] can run: the native engine and Viggle's Turbo LoRA in the loras folder.
+pub(crate) fn upscale_fast_enabled(s: &Session) -> std::result::Result<(), String> {
+    super::edit::edit_enabled(s)?;
+    let root = s.prefs().integrations.models_root();
+    if !runs_native(s, "qwen-2.1/edit") || !s.prefs().integrations.allow_research_models {
+        return Err("needs Qwen-Image-2.1 on the native engine".into());
+    }
+    if root.is_empty() || !std::path::Path::new(&root).join("loras").join(TURBO_LORA).is_file() {
+        return Err(format!("needs {TURBO_LORA} in the Models folder's loras subfolder"));
+    }
+    Ok(())
 }
 
 pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
@@ -426,6 +455,17 @@ mod tests {
         let w = |x| tile_weight(Rect::new(0, 0, 1024, 1000), [false, false, true, false], x, 10);
         assert_eq!(w(0), 1.0, "no neighbour on the left");
         assert!(w(1023) < 0.01 && w(1023 - 64) > 0.45 && w(1023 - 64) < 0.55, "fades out across the right strip");
+    }
+
+    #[test]
+    fn the_fast_upscale_needs_the_native_21_edit_and_the_turbo_lora() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        // No native engine: greyed out with the reason, and a direct call says the same.
+        let why = upscale_fast_enabled(&s).unwrap_err();
+        assert!(why.contains("Qwen-Image-2.1"), "{why}");
+        assert!(s.execute(UPSCALE_FAST, json!({})).is_err());
+        assert!(s.execute(UPSCALE, json!({"turbo": "yes"})).is_err(), "turbo is a bool");
     }
 
     #[test]
