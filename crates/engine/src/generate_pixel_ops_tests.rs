@@ -174,7 +174,7 @@ fn dim_outside_darkens_only_what_is_not_selected() {
     let area = Rect::new(11, 20, 13, 22);
     let coverage = [1.0, 0.0, 0.2, 0.9];
     dim_outside(&mut img, Rect::new(10, 20, 14, 22), &coverage, area);
-    let kept: Vec<bool> = img.data.chunks_exact(4).map(|p| p[0] == 200).collect();
+    let kept: Vec<bool> = img.data.as_chunks::<4>().0.iter().map(|p| p[0] == 200).collect();
     assert_eq!(kept, [false, true, false, false, false, false, true, false]);
     // Darkened to a quarter, the alpha untouched.
     assert_eq!(&img.data[..4], &[50, 25, 10, 255]);
