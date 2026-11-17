@@ -322,7 +322,7 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             write_rgba8(&mut layer, &Rgba8::new(w as u32, h as u32, keyed).map_err(gen_err)?, frame)?;
             let id = doc.insert_above(*active, layer);
             *active = Some(id);
-            Ok((id, has_screen.then(|| screen.name()).unwrap_or("none"), hint_name, despeckled, despilled, started.elapsed().as_millis() as u64))
+            Ok((id, if has_screen { screen.name() } else { "none" }, hint_name, despeckled, despilled, started.elapsed().as_millis() as u64))
         },
         |(id, screen, hint, despeckled, despilled, ms)| json!({"layer": id.0, "screen": screen, "hint": hint, "despeckled": despeckled, "despilled": despilled, "ms": ms}),
     )
