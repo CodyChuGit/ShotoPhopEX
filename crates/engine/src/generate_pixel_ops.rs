@@ -831,7 +831,7 @@ pub(super) const NAMING_DIM: f32 = 0.25;
 /// namer two identical crops with nothing marking the selected thing, and it named whatever
 /// stood out ("the Parental Advisory label" for a woman selected whole, 2026-11-16).
 pub(crate) fn dim_outside(img: &mut Rgba8, at: Rect, coverage: &[f32], area: Rect) {
-    let (aw, ah) = (area.width().max(0) as usize, area.height().max(0) as usize);
+    let (aw, ah) = (area.width() as usize, area.height() as usize);
     if aw * ah != coverage.len() {
         return;
     }
