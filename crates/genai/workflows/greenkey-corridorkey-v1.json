@@ -4,7 +4,7 @@
     "name": "Key Green Screen (CorridorKey)",
     "family": "CorridorKey",
     "task": "matte",
-    "license": "research",
+    "license": "community",
     "licenseNote": "CorridorKey (Corridor Digital) is licensed CC BY-NC-SA 4.0 with additional terms; the app ships no weights; you download them yourself from the authors' Hugging Face page.",
     "needsImage": true,
     "needsMask": true,
