@@ -1841,7 +1841,14 @@ impl Engine for DiffusionEngine {
                     p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Moss(p, _), _) if req.model == TEMPLATE_MOSS_RESTORE => {
-                    p.generate_sampled(&ask, moss::Sampling::OSTRIS_EDIT.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                    let mut sampling = moss::Sampling::OSTRIS_EDIT.with_env();
+                    if let Some(v) = req.params.get("denoise") {
+                        match v.as_f64() {
+                            Some(d) if d > 0.0 && d <= 1.0 => sampling = sampling.with_denoise(d as f32),
+                            _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("denoise {v} is outside 0..1"))),
+                        }
+                    }
+                    p.generate_sampled(&ask, sampling, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::H3(p), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),

@@ -63,20 +63,37 @@ pub struct Sampling {
     /// references sit at the prompt's text index of the RoPE, encoded at the output's size.
     /// MOSS Edit's own layout (text index 0, long edge [`REFERENCE_EDGE`]) otherwise.
     pub ostris_refs: bool,
+    /// How much of an [`Self::ostris_refs`] edit is redrawn: 1 starts from noise (the author's
+    /// empty latent), less starts from the picture's own latent noised that far (ComfyUI's
+    /// KSampler `denoise`).
+    pub denoise: f32,
+    /// An [`Self::ostris_refs`] edit takes the picture's colours back (the wavelet colour fix).
+    pub color_fix: bool,
 }
 
 impl Sampling {
     /// The official pipeline: Euler on the shift-5 schedule, block 22 skipped in the negative.
-    pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true, eta: 0.0, ostris_refs: false };
+    pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true, eta: 0.0, ostris_refs: false, denoise: 1.0, color_fix: false };
     /// The app's MOSS-Image text to image, after RaymondLuxuryYacht's MOSS realism workflow
     /// (Civitai 3035895, 2026-11-04): RES4LYF's `res_2s` (ancestral, eta 0.5), 20 steps, plain CFG
     /// 3 (no skipped block) with a real negative ([`REALISM_NEGATIVE`]). The workflow's schedule
     /// is linear σ (shift 1); in the app (2026-11-11, three prompts) that came out dark and
     /// muddy with broken signs, so the official shift 5 stays. About 30 % faster than 50 Euler steps.
-    pub const REALISM: Self = Self { shift: SHIFT, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5, ostris_refs: false };
-    /// An ai-toolkit edit LoRA's run (NO8D's MOSS HighQuality restore, Civitai 2436859, as its
-    /// author's graph runs it): Euler, no skipped block, references in ostris' layout.
-    pub const OSTRIS_EDIT: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: false, eta: 0.0, ostris_refs: true };
+    pub const REALISM: Self = Self { shift: SHIFT, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5, ostris_refs: false, denoise: 1.0, color_fix: false };
+    /// An ai-toolkit edit LoRA's run (NO8D's MOSS HighQuality restore, Civitai 2436859): Euler, no
+    /// skipped block, references in ostris' layout, as its author's graph; then, from the in-app
+    /// rounds of 2026-11-17 (three photos against the shipped Upscale), 45 % redrawn from the
+    /// picture's latent (from noise, 1.0, rewrites text and faces; 0.45 is the best cleanup,
+    /// 0.3 keeps faces) and the wavelet colour fix (brightness and colour back to the picture's,
+    /// ΔE down a third to a half, detail and edges unchanged).
+    pub const OSTRIS_EDIT: Self =
+        Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: false, eta: 0.0, ostris_refs: true, denoise: 0.45, color_fix: true };
+
+    /// `self` redrawing `denoise` (0..1] of an edit.
+    pub fn with_denoise(mut self, denoise: f32) -> Self {
+        self.denoise = denoise.clamp(0.01, 1.0);
+        self
+    }
 
     /// `self` with the A/B hooks applied: `QIR_MOSS_SHIFT`, `QIR_MOSS_SAMPLER` (`euler` /
     /// `res_2s`), `QIR_MOSS_SKIP` (`0` / `1`), `QIR_MOSS_ETA` (`res_2s`'s noise, 0..1).
@@ -99,6 +116,14 @@ impl Sampling {
         }
         if let Some(e) = var("QIR_MOSS_ETA").and_then(|v| v.parse::<f64>().ok()).filter(|e| (0.0..=1.0).contains(e)) {
             self.eta = e;
+        }
+        if let Some(d) = var("QIR_MOSS_DENOISE").and_then(|v| v.parse::<f32>().ok()).filter(|d| *d > 0.0 && *d <= 1.0) {
+            self.denoise = d;
+        }
+        match var("QIR_MOSS_COLORFIX").as_deref() {
+            Some("wavelet" | "1") => self.color_fix = true,
+            Some("none" | "0") => self.color_fix = false,
+            _ => {}
         }
         match var("QIR_MOSS_SKIP").as_deref() {
             Some("0") => self.skip_uncond = false,
@@ -516,7 +541,7 @@ impl MossPipeline {
             tracing::warn!(modules = unmatched.len(), first = %unmatched[0], "LoRA modules MOSS-Image does not have (a file for another model?)");
         }
         // MOSS Edit: the pictures encoded and run through the blocks once.
-        // A restore from the picture's own latent, noised to `QIR_MOSS_DENOISE` (0..1; 1 = the
+        // A restore from the picture's own latent, noised to `Sampling::denoise` (1 = the
         // author's empty latent), so less of the picture is redrawn.
         let mut start: Option<Tensor> = None;
         let refs = if req.references.is_empty() {
@@ -554,8 +579,7 @@ impl MossPipeline {
         let channels = dit.config().channels;
         let noise = crate::comfy::torch_randn(req.seed, channels * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, channels, lh, lw), &self.dev)?;
-        let denoise =
-            if ostris { std::env::var("QIR_MOSS_DENOISE").ok().and_then(|v| v.trim().parse::<f32>().ok()).filter(|d| *d > 0.0 && *d < 1.0) } else { None };
+        let denoise = Some(sampling.denoise).filter(|d| ostris && *d < 1.0);
         let sig = match (denoise, &start) {
             // ComfyUI's KSampler `denoise`: the last `steps` of a `steps / denoise` schedule,
             // the latent noised to its first σ.
@@ -651,9 +675,9 @@ impl MossPipeline {
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, mut rgba) = vae::to_rgba_u8(&img)?;
-        // A restore's colours from the picture itself (`QIR_MOSS_COLORFIX=wavelet`): the
+        // A restore's colours from the picture itself (`Sampling::color_fix`): the
         // author's wavelet colour match, the output's detail on the picture's low frequencies.
-        if ostris && std::env::var("QIR_MOSS_COLORFIX").is_ok_and(|v| v.trim().eq_ignore_ascii_case("wavelet")) {
+        if ostris && sampling.color_fix {
             if let Some(r) = req.references.first() {
                 let src = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.rgba.clone()).context("a reference's pixels do not match its size")?;
                 let src = image::imageops::resize(&src, pw as u32, ph as u32, image::imageops::FilterType::Lanczos3);
