@@ -372,8 +372,16 @@ impl Default for ChatOptions {
 pub(crate) struct ChatRng(u64);
 
 impl ChatRng {
+    /// The state is a splitmix64 of the seed, never zero (xorshift's one dead state). Before
+    /// 2026-11-17 it was `seed ^ C | 1`, which threw the seed's lowest bit away (C is odd):
+    /// seeds 12 and 13 wrote the same rewrite word for word, and the engine's retry with the
+    /// next seed repeated a refused answer (Enhance round 6 on the 5090).
     pub(crate) fn new(seed: u64) -> Self {
-        Self(seed ^ 0x9E37_79B9_7F4A_7C15 | 1)
+        let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        Self(if z == 0 { 0x9E37_79B9_7F4A_7C15 } else { z })
     }
 
     /// Uniform in `[0, 1)`.
@@ -1244,5 +1252,8 @@ mod tests {
             (0..20).map(|_| sample(&logits, &opts, &mut r)).collect::<Vec<_>>()
         };
         assert_eq!(draw(7), draw(7));
+        // Neighbouring seeds draw differently: an even seed and the next odd one were the same.
+        assert_ne!(draw(12), draw(13));
+        assert_ne!(ChatRng::new(12).0, ChatRng::new(13).0);
     }
 }
