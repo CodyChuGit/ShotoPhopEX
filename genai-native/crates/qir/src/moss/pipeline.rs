@@ -516,6 +516,9 @@ impl MossPipeline {
             tracing::warn!(modules = unmatched.len(), first = %unmatched[0], "LoRA modules MOSS-Image does not have (a file for another model?)");
         }
         // MOSS Edit: the pictures encoded and run through the blocks once.
+        // A restore from the picture's own latent, noised to `QIR_MOSS_DENOISE` (0..1; 1 = the
+        // author's empty latent), so less of the picture is redrawn.
+        let mut start: Option<Tensor> = None;
         let refs = if req.references.is_empty() {
             None
         } else {
@@ -528,6 +531,7 @@ impl MossPipeline {
                 // prompt's text index. One cache serves both prompts (a guided run with prompts
                 // of different lengths puts the negative's references at the prompt's index).
                 let latents = req.references.iter().map(|r| self.reference_latent_sized(r, w, h)).collect::<Result<Vec<_>>>()?;
+                start = latents.first().cloned();
                 Some(dit.prepare_references_at(&latents, cond.dim(0)?)?)
             } else {
                 let latents = req.references.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
@@ -550,7 +554,20 @@ impl MossPipeline {
         let channels = dit.config().channels;
         let noise = crate::comfy::torch_randn(req.seed, channels * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, channels, lh, lw), &self.dev)?;
-        let sig = dit::sigmas(req.steps, sampling.shift);
+        let denoise =
+            if ostris { std::env::var("QIR_MOSS_DENOISE").ok().and_then(|v| v.trim().parse::<f32>().ok()).filter(|d| *d > 0.0 && *d < 1.0) } else { None };
+        let sig = match (denoise, &start) {
+            // ComfyUI's KSampler `denoise`: the last `steps` of a `steps / denoise` schedule,
+            // the latent noised to its first σ.
+            (Some(d), Some(init)) => {
+                let full = dit::sigmas(((req.steps as f32) / d).round().max(req.steps as f32) as usize, sampling.shift);
+                let sig = full[full.len().saturating_sub(req.steps + 1)..].to_vec();
+                let s0 = f64::from(sig[0]);
+                x = ((init.to_dtype(x.dtype())? * (1.0 - s0))? + (x * s0)?)?;
+                sig
+            }
+            _ => dit::sigmas(req.steps, sampling.shift),
+        };
         let n = sig.len() - 1;
         tracing::info!(shift = sampling.shift, sampler = ?sampling.sampler, eta = sampling.eta, skip = ?skip, steps = n, guidance = req.guidance, "MOSS sampling");
         // The guided velocity at σ (the DiT's timestep is σ·1000).
