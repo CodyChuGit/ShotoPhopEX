@@ -74,6 +74,12 @@ pub(crate) fn check_rewrite(kind: EnhanceKind, typed: &str, said: &str, system: 
     } else {
         said
     };
+    // A named style gets the light touch (the typed words and 20 to 40 more); MOSS's writer once
+    // answered "a lighthouse in a storm, oil painting" with a 140-word repeating keyword list
+    // (round 7, 2026-11-17).
+    if kind == EnhanceKind::Image && super::names_other_medium(typed) && said.split_whitespace().count() > typed.split_whitespace().count() + 60 {
+        return Err(Refusal::Garbled);
+    }
     if garbled(typed, said) {
         return Err(Refusal::Garbled);
     }
@@ -101,7 +107,9 @@ pub(crate) fn check_rewrite(kind: EnhanceKind, typed: &str, said: &str, system: 
     } else {
         said
     };
-    Ok(said.to_string())
+    // One line with single spaces: the light-touch writer put a markdown line break ("  \n")
+    // after the typed words (round 7).
+    Ok(said.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// "Here is the enhanced prompt:" / "Rewritten prompt:" on a line or before a colon, dropped.
