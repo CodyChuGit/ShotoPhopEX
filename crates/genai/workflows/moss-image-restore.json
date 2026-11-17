@@ -29,7 +29,7 @@
         "default": "flux2-vae_small.safetensors"
       }
     ],
-    "notes": "Runs natively (genai-native gn-diffusion moss-image/restore). An edit of MOSS-Image-Base in ai-toolkit's edit layout (ostris' ComfyUI-MOSS-Image-Ostris-Edit with kv_cache), for an edit LoRA trained there that the request names in `loras`: the picture at the output's size (about 1 MP) encoded by the FLUX.2 VAE and run once through the DiT at t = 0 (frame 1, at the prompt's text index), \"Picture 1: \" ahead of the prompt, 9 Euler steps on the shift-5 schedule at CFG 1. Not yet the encoder's view of the picture (the Qwen3.5 vision tower). Experimental: on no page.",
+    "notes": "Runs natively (genai-native gn-diffusion moss-image/restore). An edit of MOSS-Image-Base in ai-toolkit's edit layout (ostris' ComfyUI-MOSS-Image-Ostris-Edit with kv_cache), for an edit LoRA trained there that the request names in `loras`: the picture at the output's size (about 1 MP) encoded by the FLUX.2 VAE and run once through the DiT at t = 0 (frame 1, at the prompt's text index), the encoder seeing the picture too (\"Picture 1: <vision>\" ahead of the prompt, Qwen3.5's vision tower on the picture fitted to 384² pixels), 9 Euler steps on the shift-5 schedule at CFG 1, the prompt may be empty. Experimental: on no page.",
     "creator": "OpenMOSS · NO8D (LoRA)",
     "description": "Restore a soft or old photo with a MOSS edit LoRA (experimental)",
     "badges": [],

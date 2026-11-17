@@ -218,14 +218,63 @@ impl Qwen35Text {
 
     /// The layers over `ids` at positions `pos0..`, each layer's state carried in `states` when
     /// given (decoding), the final norm applied.
-    fn run(&self, ids: &[u32], pos0: usize, mut states: Option<&mut [LayerState]>) -> Result<Tensor> {
-        let mut x = self.embed.gather_cpu(ids)?.to_dtype(self.dtype)?.to_device(&self.dev)?;
+    fn run(&self, ids: &[u32], pos0: usize, states: Option<&mut [LayerState]>) -> Result<Tensor> {
+        let x = self.embed_ids(ids)?;
         let (cos, sin) = self.rope(pos0, ids.len())?;
+        self.layers_over(x, &cos, &sin, pos0, states)
+    }
+
+    /// The token embeddings `(tokens, hidden)` in the run dtype, on the card.
+    pub fn embed_ids(&self, ids: &[u32]) -> Result<Tensor> {
+        Ok(self.embed.gather_cpu(ids)?.to_dtype(self.dtype)?.to_device(&self.dev)?)
+    }
+
+    /// The last hidden state `(rows, hidden)` for embedded rows `x` (text with pictures spliced
+    /// in) at 3-axis multimodal positions `pos` (`(T, H, W)`, one per row).
+    pub fn forward_rows(&self, x: Tensor, pos: &[Vec<f32>; 3]) -> Result<Tensor> {
+        anyhow::ensure!(pos.iter().all(|a| a.len() == x.dim(0).unwrap_or(0)), "{} rows for {} positions", x.dim(0)?, pos[0].len());
+        let (cos, sin) = self.mrope(pos)?;
+        self.layers_over(x.to_dtype(self.dtype)?, &cos, &sin, 0, None)
+    }
+
+    /// cos/sin `(rows, rotary_dim)` f32 of Qwen3.5's interleaved M-RoPE (`mrope_section [11, 11,
+    /// 10]`, ComfyUI's `precompute_freqs_cis` with `interleaved_mrope`): pair `j` turns by the
+    /// temporal position, except `j ≡ 1 (mod 3)` below 33 by the height and `j ≡ 2 (mod 3)`
+    /// below 30 by the width.
+    fn mrope(&self, pos: &[Vec<f32>; 3]) -> Result<(Tensor, Tensor)> {
+        const SECTION: [usize; 3] = [11, 11, 10];
+        let half = self.cfg.rotary_dim / 2;
+        let inv: Vec<f32> = (0..half).map(|j| (1.0 / self.cfg.rope_theta.powf((2 * j) as f64 / self.cfg.rotary_dim as f64)) as f32).collect();
+        let n = pos[0].len();
+        let mut angles = Vec::with_capacity(n * self.cfg.rotary_dim);
+        for t in 0..n {
+            let row: Vec<f32> = inv
+                .iter()
+                .enumerate()
+                .map(|(j, f)| {
+                    let axis = if j % 3 == 1 && j < SECTION[1] * 3 {
+                        1
+                    } else if j % 3 == 2 && j < SECTION[2] * 3 {
+                        2
+                    } else {
+                        0
+                    };
+                    pos[axis][t] * f
+                })
+                .collect();
+            angles.extend_from_slice(&row);
+            angles.extend_from_slice(&row);
+        }
+        let a = Tensor::from_vec(angles, (n, self.cfg.rotary_dim), &self.dev)?;
+        Ok((a.cos()?, a.sin()?))
+    }
+
+    fn layers_over(&self, mut x: Tensor, cos: &Tensor, sin: &Tensor, pos0: usize, mut states: Option<&mut [LayerState]>) -> Result<Tensor> {
         for (i, layer) in self.layers.iter().enumerate() {
             let state = states.as_deref_mut().and_then(|s| s.get_mut(i));
             let h = layer.input_norm.forward(&x)?;
             let h = match &layer.mixer {
-                Mixer::Full(a) => self.full_attention(a, &h, &cos, &sin, pos0, state)?,
+                Mixer::Full(a) => self.full_attention(a, &h, cos, sin, pos0, state)?,
                 Mixer::Linear(d) => self.delta_net(d, &h, state)?,
             };
             x = (x + h)?;

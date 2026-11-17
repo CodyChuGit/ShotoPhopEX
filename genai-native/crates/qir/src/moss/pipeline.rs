@@ -15,6 +15,8 @@ use super::dit::{self, MossConfig, MossDit};
 use super::text::{self, Qwen35Text, TextConfig};
 use super::vae::{self, Flux2Decoder, Flux2Encoder};
 use super::weights::{QLinear, Weights};
+use crate::model::text_encoder::mrope_positions;
+use crate::model::vision::{self as vit, VisionConfig, VisionTower};
 use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
 use crate::preview::StepPreview;
 use crate::Result;
@@ -188,6 +190,9 @@ pub struct MossPipeline {
     negative: Mutex<Option<Cached>>,
     /// The language-model head, loaded on a first chat ([`Self::chat`]).
     head: Mutex<Option<Arc<QLinear>>>,
+    /// The encoder file's Qwen3.5 vision tower (f32), loaded on a first prompt with pictures in
+    /// view ([`Sampling::ostris_refs`]).
+    vision: Mutex<Option<Arc<VisionTower>>>,
 }
 
 impl MossPipeline {
@@ -231,6 +236,7 @@ impl MossPipeline {
             positive: Mutex::new(None),
             negative: Mutex::new(None),
             head: Mutex::new(None),
+            vision: Mutex::new(None),
         })
     }
 
@@ -323,6 +329,66 @@ impl MossPipeline {
         tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS chat head loaded");
         *slot = Some(Arc::clone(&h));
         Ok(h)
+    }
+
+    /// The vision tower of the encoder file (`model.visual.*`, Qwen3.5-9B's: Qwen3-VL's ViT
+    /// without DeepStack), on the card from the first prompt with pictures on.
+    fn vision(&self) -> Result<Arc<VisionTower>> {
+        let mut slot = self.vision.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = slot.as_ref() {
+            return Ok(Arc::clone(v));
+        }
+        let t0 = Instant::now();
+        let vb = crate::mapped::var_builder(&[&self.files.text], DType::F32, &self.dev, |n| n.starts_with("model.visual."))?;
+        let cfg = VisionConfig { deepstack_visual_indexes: Vec::new(), ..VisionConfig::default() };
+        let v = Arc::new(VisionTower::load(&cfg, vb.pp("model").pp("visual")).context("the encoder file's Qwen3.5 vision tower (model.visual.*)")?);
+        tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS vision tower loaded");
+        *slot = Some(Arc::clone(&v));
+        Ok(v)
+    }
+
+    /// The encoder's last hidden state `(rows, 4096)` for `prompt` with `pictures` in view, as
+    /// ostris' `TextEncodeMOSSImageOstrisEdit` encodes it (the layout ai-toolkit's MOSS edit
+    /// LoRAs train on): `Picture N: <|vision_start|><|image_pad|><|vision_end|>` per picture
+    /// ahead of the prompt in MOSS's template, each picture downscaled (area, never enlarged)
+    /// to fit 384² pixels, then to the ViT's 32-pixel grid (bilinear), its merged rows in
+    /// place of `<|image_pad|>` at multimodal RoPE positions.
+    pub fn encode_with_pictures(&self, prompt: &str, pictures: &[RefImage]) -> Result<Tensor> {
+        let labels: String = (1..=pictures.len()).map(|i| format!("Picture {i}: <|vision_start|><|image_pad|><|vision_end|>")).collect();
+        let ids = self.tokens(format!("{labels}{prompt}").trim())?;
+        let pad = self.tok.token_to_id("<|image_pad|>").context("the tokenizer has no <|image_pad|>")?;
+        let tower = self.vision()?;
+        let feats = pictures
+            .iter()
+            .map(|r| {
+                let (patches, gh, gw) = vit_patches(r, tower.config(), &self.dev)?;
+                tower.forward_editplus(&patches, gh, gw)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let te = self.text_encoder()?;
+        let text = te.embed_ids(&ids)?;
+        let at: Vec<usize> = ids.iter().enumerate().filter(|(_, t)| **t == pad).map(|(i, _)| i).collect();
+        anyhow::ensure!(at.len() == feats.len(), "{} <|image_pad|> tokens for {} pictures", at.len(), feats.len());
+        let mut parts = Vec::new();
+        let mut spans = Vec::new();
+        let (mut cursor, mut len) = (0usize, 0usize);
+        for (&p, f) in at.iter().zip(&feats) {
+            if p > cursor {
+                parts.push(text.narrow(0, cursor, p - cursor)?);
+                len += p - cursor;
+            }
+            spans.push((len, f.tokens()));
+            parts.push(f.merged.to_dtype(text.dtype())?);
+            len += f.tokens();
+            cursor = p + 1;
+        }
+        if cursor < ids.len() {
+            parts.push(text.narrow(0, cursor, ids.len() - cursor)?);
+            len += ids.len() - cursor;
+        }
+        let grids: Vec<(usize, usize)> = feats.iter().map(|f| (f.rows, f.cols)).collect();
+        let pos = mrope_positions(&spans, &grids, len);
+        te.forward_rows(Tensor::cat(&parts, 0)?, &pos)
     }
 
     /// The encoder's last hidden state `(tokens, 4096)` for `prompt`.
@@ -431,9 +497,18 @@ impl MossPipeline {
                 p.to_string()
             }
         };
-        let cond = self.cached(&self.positive, &named(&req.prompt))?;
+        // ... and lets the encoder see them (`QIR_MOSS_VISION=0`: the names alone).
+        let vision = ostris && std::env::var("QIR_MOSS_VISION").map(|v| v.trim() != "0").unwrap_or(true);
+        let encode = |slot: &Mutex<Option<Cached>>, p: &str| -> Result<Tensor> {
+            if vision {
+                self.encode_with_pictures(p, &req.references)
+            } else {
+                self.cached(slot, &named(p))
+            }
+        };
+        let cond = encode(&self.positive, &req.prompt)?;
         let cfg = req.guidance != 1.0;
-        let uncond = if cfg { Some(self.cached(&self.negative, &named(&req.negative))?) } else { None };
+        let uncond = if cfg { Some(encode(&self.negative, &req.negative)?) } else { None };
         // The prompts are in hand: the DiT (back on the card in 12 GB mode) and its adapters.
         let dit = self.transformer()?;
         let unmatched = dit.set_loras(&req.loras)?;
@@ -777,5 +852,64 @@ mod tests {
             assert!(((a.alpha * a.down).powi(2) + a.up * a.up - next * next).abs() < 1e-9);
             assert!(a.down <= next + 1e-12);
         }
+    }
+}
+
+/// A picture as the ViT takes it: area-downscaled (never enlarged) to fit 384² pixels (the
+/// edit encoder's `_fit_area`), then bilinearly to the 32-pixel grid (`process_qwen2vl_images`),
+/// patchified. Returns `(patches, grid_h, grid_w)`.
+fn vit_patches(r: &RefImage, cfg: &VisionConfig, dev: &Device) -> Result<(Tensor, usize, usize)> {
+    const MAX_PIXELS: f64 = 384.0 * 384.0;
+    let (w, h) = (r.width, r.height);
+    anyhow::ensure!(w > 0 && h > 0 && r.rgba.len() == w * h * 4, "a picture of {w}x{h} with {} bytes", r.rgba.len());
+    let scale = (MAX_PIXELS / (w * h) as f64).sqrt().min(1.0);
+    let (aw, ah) = (((w as f64 * scale).round() as usize).max(1), ((h as f64 * scale).round() as usize).max(1));
+    let rgb = area_resize(&r.rgba, w, h, aw, ah);
+    let rgb = Tensor::from_vec(rgb, (3, ah, aw), &Device::Cpu)?;
+    let (vw, vh) = vit::vit_size(aw, ah, 3136, 12_845_056);
+    let rgb = if (vw, vh) == (aw, ah) { rgb } else { vit::resize_bilinear(&rgb, vh, vw)? };
+    let (p, gh, gw) = vit::patchify(&rgb, cfg)?;
+    Ok((p.to_device(dev)?, gh, gw))
+}
+
+/// torch's `interpolate(mode="area")` (adaptive average pooling) of RGBA bytes to `(3, dh, dw)`
+/// f32 in `[0, 1]`, alpha dropped.
+fn area_resize(rgba: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> Vec<f32> {
+    let span = |i: usize, n_src: usize, n_dst: usize| -> (usize, usize) { (i * n_src / n_dst, ((i + 1) * n_src).div_ceil(n_dst)) };
+    let mut out = vec![0f32; 3 * dh * dw];
+    for y in 0..dh {
+        let (y0, y1) = span(y, h, dh);
+        for x in 0..dw {
+            let (x0, x1) = span(x, w, dw);
+            let mut acc = [0f32; 3];
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let o = (sy * w + sx) * 4;
+                    for (c, a) in acc.iter_mut().enumerate() {
+                        *a += f32::from(rgba[o + c]);
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as f32 * 255.0;
+            for (c, a) in acc.iter().enumerate() {
+                out[(c * dh + y) * dw + x] = a / n;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod vision_tests {
+    use super::area_resize;
+
+    #[test]
+    fn area_resize_averages_blocks_and_keeps_a_same_size_picture() {
+        // 2x2 RGBA -> 1x1: the mean of the four pixels per channel.
+        let px = [0u8, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 255, 255, 255, 255];
+        let one = area_resize(&px, 2, 2, 1, 1);
+        assert_eq!(one, vec![0.5, 0.5, 0.25]);
+        let same = area_resize(&px, 2, 2, 2, 2);
+        assert_eq!(&same[0..4], &[0.0, 1.0, 0.0, 1.0]);
     }
 }
