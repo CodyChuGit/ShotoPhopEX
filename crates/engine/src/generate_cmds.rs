@@ -846,6 +846,17 @@ pub fn specs() -> Vec<CommandSpec> {
             journal: true,
         },
         CommandSpec {
+            id: KEY_GREEN,
+            label: "Key Green Screen (AI)…",
+            // Placed by the menu catalogue under Layer > Matting.
+            menu: &[],
+            shortcut: None,
+            params: r#"{"screen":"auto|green|blue","hint":"auto|subject|chroma","refinerStrength":0..4=1,"despill":0..1=1,"despeckle":bool=true,"sampleAllLayers":bool=false,"name":{str?="Keyed"}} → {"layer","screen","hint","despeckled","despilled","ms"} (a green- or blue-screen picture keyed into a new layer above the active one: the subject's straight, un-mixed colour and a clean alpha from the native worker's keyer (greenkey/corridorkey-v1, CorridorKey's design; bring CorridorKey's own weights, CC BY-NC-SA 4.0, into models/corridorkey/); hint = the rough subject the keyer starts from: chroma = the pixels far from the screen colour, slightly eroded; subject = SAM 3.1's main subject; auto = chroma when most of the frame's border is a screen colour, else the subject; screen = which screen to despill (auto: from the border); refinerStrength scales the full-resolution refiner (0 = coarse only); one undo step; a background job; needs the native worker)"#,
+            enabled: greenkey::enabled,
+            run: greenkey::run,
+            journal: true,
+        },
+        CommandSpec {
             id: INFO,
             label: "Generative Layer Info",
             menu: &[],
@@ -1006,6 +1017,9 @@ mod similar_tests;
 #[path = "generate_clown_pass.rs"]
 mod clown_pass;
 pub(crate) use clown_pass::CLOWN_PASS;
+#[path = "generate_greenkey.rs"]
+mod greenkey;
+pub(crate) use greenkey::KEY_GREEN;
 
 #[cfg(test)]
 #[path = "generate_clown_pass_tests.rs"]

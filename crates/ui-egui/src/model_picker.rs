@@ -53,6 +53,7 @@ pub fn family_style(family: &str) -> FamilyStyle {
         "krea2" => FamilyStyle { name: "Krea 2", color: hex(0xf97316), initial: 'K' },
         "sam3.1" => FamilyStyle { name: "SAM 3.1", color: hex(0x10b981), initial: 'S' },
         "vitmatte" => FamilyStyle { name: "ViTMatte", color: hex(0x06b6d4), initial: 'V' },
+        "CorridorKey" => FamilyStyle { name: "CorridorKey", color: hex(0x22c55e), initial: 'C' },
         "qwen-image-layered" => FamilyStyle { name: "Qwen Image Layered", color: hex(0xeab308), initial: 'L' },
         "qwen3-vl" => FamilyStyle { name: "Qwen3-VL", color: hex(0x64748b), initial: 'V' },
         "moss-image" => FamilyStyle { name: "MOSS-Image", color: hex(0x0d9488), initial: 'M' },
