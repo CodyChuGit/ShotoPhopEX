@@ -292,3 +292,24 @@ fn a_repose_sends_the_posestudio_lora_and_prompt() {
     assert_eq!(edit_rewrite(&s, &json!({"repose": true, "references": [{"layer": 2}]})).unwrap().unwrap()["name"], "Repose");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_edit_s_subject_mask_reaches_past_its_edge_and_fades_out() {
+    // A 20×20 square in a 64×64 result: full inside and a little beyond, then a ramp to nothing.
+    let (w, h) = (64usize, 64usize);
+    let mut subject = vec![0.0f32; w * h];
+    for y in 22..42 {
+        for x in 22..42 {
+            subject[y * w + x] = 1.0;
+        }
+    }
+    let soft = super::soft_subject_edge(&subject, w, h);
+    let r = super::subject_edge_radius(w, h);
+    assert_eq!(r, 3);
+    let at = |x: usize| soft[32 * w + x];
+    assert_eq!(at(32), 1.0, "the inside stays whole");
+    assert_eq!(at(42 + r - 1), 1.0, "the old outline is covered");
+    assert!(at(42 + r) > 0.0 && at(42 + r) < 1.0 && at(42 + r + 2) < at(42 + r), "then it fades");
+    assert!(at(42 + 4 * r) < 1e-3, "and stops");
+    assert_eq!(at(0), 0.0);
+}

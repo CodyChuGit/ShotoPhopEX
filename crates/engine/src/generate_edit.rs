@@ -168,6 +168,7 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
             // The whole canvas is re-rendered; a selection, when there is one, confines what
             // of it shows (the edit template takes no mask, see `fill_region`).
             let selected = doc.selection.is_some() && !whole;
+            let soft_edge = matches!(edge, super::params::Edge::Soft);
             let coverage: Vec<f32> = match doc.selection.as_ref().filter(|_| !whole) {
                 Some(sel) => {
                     let k = sel.channels().max(1);
@@ -178,7 +179,7 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
             let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
             if let Some(finder) = finder.as_ref() {
                 for (id, ..) in &filled.0 {
-                    mask_to_subject(doc, *id, rect, selected, finder, ctx)?;
+                    mask_to_subject(doc, *id, rect, selected, soft_edge, finder, ctx)?;
                 }
             }
             Ok(filled)
@@ -190,12 +191,15 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
 /// An edit result's layer mask from its subject: Select Subject's prompts on the result in turn,
 /// the first that finds anything, its instances joined. With a selection the subject joins the
 /// selection's mask (the selected area changes, and a new subject larger than it still shows
-/// whole); without one it is the mask. Nothing found: the mask stays as it was.
+/// whole); without one it is the mask. A soft edge (the default) grows and fades the subject's
+/// outline ([`soft_subject_edge`]); a hard one keeps Select Subject's. Nothing found: the mask
+/// stays as it was.
 pub(super) fn mask_to_subject(
     doc: &mut Document,
     id: LayerId,
     rect: Rect,
     selected: bool,
+    soft_edge: bool,
     finder: &crate::select_ml_cmds::SubjectFinder,
     ctx: &JobCtx,
 ) -> Result<()> {
@@ -205,6 +209,7 @@ pub(super) fn mask_to_subject(
     surf.read_rgba8_into(rect, &mut px);
     let picture: Vec<u8> = px.into_iter().flatten().collect();
     let Some(subject) = subject_in(&picture, rect, finder, ctx)? else { return Ok(()) };
+    let subject = if soft_edge { soft_subject_edge(&subject, rect.width() as usize, rect.height() as usize) } else { subject };
     let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     let shown: Vec<f32> = match layer.mask.as_ref().filter(|_| selected) {
         Some(m) => m.surface.read_region(rect).iter().zip(&subject).map(|(a, b)| a.max(*b)).collect(),
@@ -214,6 +219,32 @@ pub(super) fn mask_to_subject(
     surface.write_region(rect, &shown);
     layer.mask = Some(LayerMask { surface, enabled: true, linked: true, density: 1.0, feather: 0.0 });
     Ok(())
+}
+
+/// A subject's coverage grown [`subject_edge_radius`] pixels past Select Subject's edge, then
+/// faded out over about twice that again (the inside untouched). Select Subject's edge sits on
+/// the new subject; where the old one reached further (a bigger object, a different outline,
+/// edge pixels the model repainted) a hard mask there showed a stair-stepped sliver of the old
+/// one along the outline (tier bench, 2026-11-17: "make the fridge red" left a white rim on every
+/// model and card). Outside the subject the edit's picture is the original's, so the band costs
+/// nothing.
+pub(super) fn soft_subject_edge(subject: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let r = subject_edge_radius(w, h);
+    if w == 0 || h == 0 || subject.len() != w * h {
+        return subject.to_vec();
+    }
+    let grown = super::pixel_ops::dilate(subject, w, h, r);
+    let mut cur = grown.clone();
+    for _ in 0..2 {
+        cur = super::pixel_ops::box_blur(&cur, w, h, r, true);
+        cur = super::pixel_ops::box_blur(&cur, w, h, r, false);
+    }
+    grown.iter().zip(&cur).map(|(g, b)| g.max((b * 2.0).min(1.0))).collect()
+}
+
+/// How far an edit's subject mask reaches past its edge: 0.5% of the longer side, 3 to 8 pixels.
+pub(super) fn subject_edge_radius(w: usize, h: usize) -> usize {
+    ((w.max(h) as f64 * 0.005).round() as usize).clamp(3, 8)
 }
 
 /// The subjects (at most [`SUBJECT_MASK_AT_MOST`]) Select Subject finds in `picture` (RGBA8 of

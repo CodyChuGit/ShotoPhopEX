@@ -36,8 +36,10 @@ const FILL_REFERENCE_SHARE: f32 = 0.5;
 /// Each further reference at most this many pixels.
 const REFERENCE_PIXELS: usize = 1024 * 1024;
 /// Cards with less memory than this run in 8 GB mode (the int8 DiT 5.8 GB and the fp8 encoder
-/// about 4.5 GB do not fit together with room for the activations).
-pub const LOW_VRAM_BELOW: usize = 15 << 30;
+/// about 4.5 GB do not fit together with room for the activations). 16 GB cards included: a 3090
+/// held to 15 GiB spilled 3.5 GB into system memory on two of three edits with both resident
+/// (tier bench, 2026-11-17).
+pub const LOW_VRAM_BELOW: usize = 17 << 30;
 /// The hidden states the DiT reads (after this many layers), stacked into 20480-wide tokens.
 const TAPS: [usize; 8] = [4, 8, 12, 16, 20, 24, 28, 32];
 const PAD_MULTIPLE: usize = 80;

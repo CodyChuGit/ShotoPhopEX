@@ -157,6 +157,12 @@ pub(crate) fn colour_matched(out: &Rgba8, src: &Rgba8) -> Rgba8 {
     Rgba8::new(out.width, out.height, data).unwrap_or_else(|_| out.clone())
 }
 
+/// Whether Auto upscales with FLUX 3 Image Klein: a 12 or 8 GB profile on CUDA with Klein's files.
+fn small_card_upscales_with_klein(s: &Session) -> bool {
+    use crate::memory_profile::{Profile, active, cuda_klein};
+    matches!(active(s), Some(Profile::Gb12 | Profile::Gb8)) && cuda_klein(s) && runs_native(s, crate::memory_profile::KLEIN_EDIT_TEMPLATE)
+}
+
 pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     let started = now_ms();
     let scale = opt_num(UPSCALE, p, "scale", 1.0, 4.0)?.unwrap_or(2.0);
@@ -168,9 +174,18 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     if tw == 0 || th == 0 || u64::from(tw) * u64::from(th) > MAX_PIXELS {
         return Err(EngineError::Other(format!("{tw}×{th} is beyond what Generative Upscale makes (64 megapixels)")));
     }
-    // Under Auto: the 2.1 edit when the native engine serves it, else the edit default.
+    // Under Auto: the 2.1 edit when the native engine serves it, else the edit default. On a
+    // 12 GB card or smaller with FLUX 3 Image Klein installed, Klein's edit: the 2.1 tiles spilled
+    // into system memory there (224-308 s a picture on a 3090 held to 12 GB) where Klein's ran
+    // clean (167 s), with a picture as good (tier bench, 2026-11-17).
     let native21 = s.prefs().integrations.allow_research_models && runs_native(s, "qwen-2.1/edit");
-    let default_template = if native21 { "qwen-2.1/edit" } else { DEFAULT_EDIT_TEMPLATE };
+    let default_template = if small_card_upscales_with_klein(s) {
+        crate::memory_profile::KLEIN_EDIT_TEMPLATE
+    } else if native21 {
+        "qwen-2.1/edit"
+    } else {
+        DEFAULT_EDIT_TEMPLATE
+    };
     let mut q = p.clone();
     if let Some(o) = q.as_object_mut() {
         o.insert("prompt".into(), json!(prompt));
