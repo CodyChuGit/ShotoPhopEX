@@ -633,7 +633,16 @@ impl MossPipeline {
         let img = self.vae.decode(&x)?;
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
-        let (pw, ph, rgba) = vae::to_rgba_u8(&img)?;
+        let (pw, ph, mut rgba) = vae::to_rgba_u8(&img)?;
+        // A restore's colours from the picture itself (`QIR_MOSS_COLORFIX=wavelet`): the
+        // author's wavelet colour match, the output's detail on the picture's low frequencies.
+        if ostris && std::env::var("QIR_MOSS_COLORFIX").is_ok_and(|v| v.trim().eq_ignore_ascii_case("wavelet")) {
+            if let Some(r) = req.references.first() {
+                let src = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.rgba.clone()).context("a reference's pixels do not match its size")?;
+                let src = image::imageops::resize(&src, pw as u32, ph as u32, image::imageops::FilterType::Lanczos3);
+                wavelet_color_match(&mut rgba, src.as_raw(), pw, ph);
+            }
+        }
         tracing::info!(
             encode_s = timings.encode_s,
             denoise_s = timings.denoise_s,
@@ -899,9 +908,52 @@ fn area_resize(rgba: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> Vec<f32
     out
 }
 
+/// StableSR's wavelet colour fix (`wavelet_reconstruction`, the author's ComfyUI colour match):
+/// both pictures split into high and low frequencies by five à-trous blurs (radius 1, 2, 4, 8,
+/// 16, the 3×3 binomial kernel, edges replicated); `out` keeps its high frequencies on the
+/// low frequencies of `style` (same size, RGBA bytes; alpha left as it is).
+pub fn wavelet_color_match(out: &mut [u8], style: &[u8], w: usize, h: usize) {
+    let plane = |src: &[u8], c: usize| -> Vec<f32> { (0..w * h).map(|i| f32::from(src[i * 4 + c]) / 255.0).collect() };
+    let blur = |x: &[f32], r: usize| -> Vec<f32> {
+        const K: [f32; 3] = [0.25, 0.5, 0.25];
+        let at = |v: isize, n: usize| v.clamp(0, n as isize - 1) as usize;
+        let mut tmp = vec![0f32; w * h];
+        for y in 0..h {
+            for xx in 0..w {
+                tmp[y * w + xx] = (0..3).map(|k| K[k] * x[y * w + at(xx as isize + (k as isize - 1) * r as isize, w)]).sum();
+            }
+        }
+        let mut outp = vec![0f32; w * h];
+        for y in 0..h {
+            for xx in 0..w {
+                outp[y * w + xx] = (0..3).map(|k| K[k] * tmp[at(y as isize + (k as isize - 1) * r as isize, h) * w + xx]).sum();
+            }
+        }
+        outp
+    };
+    let low = |x: Vec<f32>| -> Vec<f32> { (0..5).fold(x, |cur, i| blur(&cur, 1 << i)) };
+    for c in 0..3 {
+        let content = plane(out, c);
+        let (cl, sl) = (low(content.clone()), low(plane(style, c)));
+        for i in 0..w * h {
+            let v = content[i] - cl[i] + sl[i];
+            out[i * 4 + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+}
+
 #[cfg(test)]
 mod vision_tests {
-    use super::area_resize;
+    use super::{area_resize, wavelet_color_match};
+
+    #[test]
+    fn wavelet_match_takes_flat_colour_from_the_style() {
+        let (w, h) = (8, 8);
+        let mut out: Vec<u8> = (0..w * h).flat_map(|_| [200u8, 100, 50, 255]).collect();
+        let style: Vec<u8> = (0..w * h).flat_map(|_| [10u8, 20, 30, 255]).collect();
+        wavelet_color_match(&mut out, &style, w, h);
+        assert!(out.chunks(4).all(|p| p == [10, 20, 30, 255]), "{:?}", &out[..4]);
+    }
 
     #[test]
     fn area_resize_averages_blocks_and_keeps_a_same_size_picture() {
