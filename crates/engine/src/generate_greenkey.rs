@@ -118,24 +118,36 @@ pub(crate) fn border_screen(px: &[[u8; 4]], w: usize, h: usize) -> (Screen, f32,
     (screen, count as f32 / n, mean)
 }
 
-/// A chroma hint: subject (255) where a pixel is far from the screen colour, thresholded, then
-/// eroded by a little so the hint stays inside the subject.
+/// A chroma hint: subject (255) where a pixel is far from the screen colour, eroded a little so
+/// the solid part stays inside the subject; what is only partly away from the screen colour (a
+/// see-through thing, motion blur, the eroded rim) gets a partial value that grows with its
+/// distance, so the keyer is told "maybe" there rather than "screen".
 pub(crate) fn chroma_hint(px: &[[u8; 4]], w: usize, h: usize, key: [f32; 3]) -> Vec<u8> {
     let norm = (key[0] * key[0] + key[1] * key[1] + key[2] * key[2]).sqrt().max(1.0);
-    // Far from the screen: at least 40 % of the screen colour's own length away.
+    // Far from the screen: at least 40 % of the screen colour's own length away; partly away
+    // from 15 % of it (noise and a little spill stay screen).
     let threshold = (0.4 * norm).max(48.0);
-    let on: Vec<bool> = px
-        .iter()
-        .map(|p| {
-            let d: f32 = (0..3).map(|c| (f32::from(p[c]) - key[c]).powi(2)).sum::<f32>().sqrt();
-            d > threshold
-        })
-        .collect();
-    let off: Vec<bool> = on.iter().map(|b| !*b).collect();
+    let low = (0.15 * norm).max(18.0).min(threshold * 0.5);
+    let dist: Vec<f32> = px.iter().map(|p| (0..3).map(|c| (f32::from(p[c]) - key[c]).powi(2)).sum::<f32>().sqrt()).collect();
+    let off: Vec<bool> = dist.iter().map(|d| *d <= threshold).collect();
     let depth = photocraft_algo::selection::edt(&off, w, h);
     let erode = (w.min(h) as f32 / 400.0).max(2.0);
-    on.iter().zip(depth.iter().chain(std::iter::repeat(&0.0))).map(|(o, d)| if *o && *d > erode { 255 } else { 0 }).collect()
+    dist.iter()
+        .zip(depth.iter().chain(std::iter::repeat(&0.0)))
+        .map(|(d, e)| {
+            if *d > threshold && *e > erode {
+                255
+            } else if *d > low {
+                (((d.min(threshold) - low) / (threshold - low)) * PARTIAL_HINT).round() as u8
+            } else {
+                0
+            }
+        })
+        .collect()
 }
+
+/// The highest hint value a pixel only partly away from the screen colour gets.
+const PARTIAL_HINT: f32 = 160.0;
 
 /// Drops the small alpha islands the keyer left (tracking markers, specks) and limits the alpha
 /// to a grown, softened garbage matte of what stays (`photocraft_algo::matting::despeckle`, its
@@ -212,15 +224,17 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             let px = picture.as_chunks::<4>().0;
             let (border, share, key) = border_screen(px, w, h);
             let screen = screen_arg.unwrap_or(border);
+            let screen_found = share >= BORDER_SCREEN_SHARE;
             let use_chroma = match hint_kind {
                 HintKind::Chroma => true,
                 HintKind::Subject => false,
-                HintKind::Auto => share >= BORDER_SCREEN_SHARE || finder.is_none(),
+                HintKind::Auto => screen_found || finder.is_none(),
             };
             ctx.progress(0.05, "Making the hint");
-            let hint: Vec<u8> = if use_chroma {
-                chroma_hint(px, w, h, key)
-            } else {
+            // SAM 3.1's main subject: the hint on a picture with no screen, and on a screen in Auto
+            // it joins the chroma hint, so a part close to the screen colour (a grey sleeve under
+            // green light) is still the subject's and does not come out with holes.
+            let subject = |ctx: &crate::jobs::JobCtx| -> Result<Vec<u8>> {
                 let Some(f) = finder.as_ref() else { return Err(EngineError::Other("no subject finder".into())) };
                 let found = f.find_in(&picture, frame, SUBJECT_PROMPT, 1, ctx)?;
                 let mut m = vec![0u8; w * h];
@@ -231,7 +245,20 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
                         }
                     }
                 }
-                m
+                Ok(m)
+            };
+            let (hint, hint_name): (Vec<u8>, &'static str) = if !use_chroma {
+                (subject(ctx)?, "subject")
+            } else {
+                let mut h = chroma_hint(px, w, h, key);
+                if hint_kind == HintKind::Auto && finder.is_some() {
+                    for (o, v) in h.iter_mut().zip(subject(ctx)?) {
+                        *o = (*o).max(v);
+                    }
+                    (h, "chroma+subject")
+                } else {
+                    (h, "chroma")
+                }
             };
             if !hint.iter().any(|v| *v > 0) {
                 return Err(EngineError::Other("found no subject to key in this picture".into()));
@@ -268,15 +295,17 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             for (p, a) in keyed.as_chunks_mut::<4>().0.iter_mut().zip(&alpha) {
                 p[3] = *a;
             }
-            let despilled = despill > 0.0 && despill_hook(&mut keyed, screen, despill);
+            // No screen round the picture (and none named): nothing to despill, and the subject's
+            // own greens (clothes, plants) must keep their colour.
+            let despilled = despill > 0.0 && (screen_found || screen_arg.is_some()) && despill_hook(&mut keyed, screen, despill);
             // The layer holds straight colour and alpha; the compositor premultiplies.
             let mut layer = Layer::raster(name.clone(), doc.pixel_format());
             write_rgba8(&mut layer, &Rgba8::new(w as u32, h as u32, keyed).map_err(gen_err)?, frame)?;
             let id = doc.insert_above(*active, layer);
             *active = Some(id);
-            Ok((id, screen, use_chroma, despeckled, despilled, started.elapsed().as_millis() as u64))
+            Ok((id, screen, hint_name, despeckled, despilled, started.elapsed().as_millis() as u64))
         },
-        |(id, screen, chroma, despeckled, despilled, ms)| json!({"layer": id.0, "screen": screen.name(), "hint": if chroma { "chroma" } else { "subject" }, "despeckled": despeckled, "despilled": despilled, "ms": ms}),
+        |(id, screen, hint, despeckled, despilled, ms)| json!({"layer": id.0, "screen": screen.name(), "hint": hint, "despeckled": despeckled, "despilled": despilled, "ms": ms}),
     )
 }
 
@@ -306,11 +335,16 @@ mod tests {
         let (w, h) = (80, 60);
         let px = frame(w, h, [10, 180, 60, 255], [200, 150, 120, 255]);
         let hint = chroma_hint(&px, w, h, [10.0, 180.0, 60.0]);
-        // Centre on, background off, the subject's edge (x = 21) eroded away.
+        // Centre on, background off, the subject's edge (x = 21) eroded to a partial "maybe".
         assert_eq!(hint[30 * w + 40], 255);
         assert_eq!(hint[5 * w + 5], 0);
-        assert_eq!(hint[30 * w + 21], 0);
+        assert_eq!(hint[30 * w + 21], PARTIAL_HINT as u8);
         assert_eq!(hint[30 * w + 25], 255);
+        // A half see-through grey over the screen is a partial hint, not screen.
+        let mix = [((10 + 128) / 2) as u8, ((180 + 128) / 2) as u8, ((60 + 128) / 2) as u8, 255];
+        let disc = frame(w, h, [10, 180, 60, 255], mix);
+        let v = chroma_hint(&disc, w, h, [10.0, 180.0, 60.0])[30 * w + 40];
+        assert!(v > 0 && v < 255, "{v}");
     }
 
     /// A 64x48 green-screen document (a skin-coloured block in the middle) on the fake worker.
@@ -344,12 +378,12 @@ mod tests {
     }
 
     #[test]
-    fn keying_sends_the_picture_and_a_chroma_hint_and_adds_a_layer() {
+    fn keying_sends_the_picture_and_a_chroma_and_subject_hint_and_adds_a_layer() {
         let fake = photocraft_genai::fake::FakeNative::start().unwrap();
         let mut s = green_session(&fake.url);
         let before = s.active().unwrap().doc.layer_count();
         let r = s.execute(KEY_GREEN, json!({"refinerStrength": 0.5})).unwrap();
-        assert_eq!((r["screen"].as_str(), r["hint"].as_str()), (Some("green"), Some("chroma")), "{r}");
+        assert_eq!((r["screen"].as_str(), r["hint"].as_str()), (Some("green"), Some("chroma+subject")), "{r}");
         assert_eq!(s.active().unwrap().doc.layer_count(), before + 1);
         assert_eq!(s.active().unwrap().active_layer.map(|l| l.0), r["layer"].as_u64());
         let st = fake.state();
