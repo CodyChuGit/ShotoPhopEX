@@ -8,7 +8,7 @@
 use std::f32::consts::PI;
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
-use photocraft_engine::generate_cmds::{ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_TEMPLATE, angle_prompt, angles_template};
+use photocraft_engine::generate_cmds::{ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_TEMPLATE, angle_prompt, angle_words, angles_template};
 use serde_json::{Value, json};
 
 use crate::PhotocraftApp;
@@ -106,9 +106,9 @@ fn orbit(ui: &mut egui::Ui, a: &mut AnglesUi, t: &Tokens) -> bool {
         a.rotation = rot;
         a.tilt = tilt;
     }
-    let words = angle_prompt(a.rotation, a.tilt, a.zoom).unwrap_or_default();
+    let words = angle_words(a.rotation, a.tilt, a.zoom).unwrap_or_default();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, tl!("Camera")));
-    resp.on_hover_text(words.trim_start_matches("<sks> "));
+    resp.on_hover_text(words);
     moved
 }
 

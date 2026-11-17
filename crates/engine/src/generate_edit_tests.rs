@@ -125,7 +125,11 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     assert!(name.starts_with("Angles: back-right quarter view high-angle shot medium shot"), "{name}");
     let st = fake.state();
     let g = &st.runs[0].request;
-    assert_eq!(g["prompt"], "<sks> back-right quarter view high-angle shot medium shot", "the LoRA's words, no format");
+    assert_eq!(
+        g["prompt"],
+        "<sks> back-right quarter view high-angle shot medium shot The camera has moved 135 degrees around to the subject's right: we see the subject's back and right side. The camera is raised high above the subject and looks down at it at 60 degrees.",
+        "the LoRA's words, then the move in plain words"
+    );
     assert_eq!(g["params"]["models"]["lora"], "qwen-image-edit-2511-multiple-angles-lora.safetensors");
     assert_eq!(g["params"]["models"]["lightning"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
     assert_eq!((g["steps"].as_u64(), g["guidance"].as_f64()), (Some(8), Some(1.0)), "the 8-step Lightning's");
@@ -134,8 +138,23 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     // The layer remembers an edit, so Generate Similar and Recreate run it again.
     let info = generative_info(s.active().unwrap().doc.layer(ids[0]).unwrap()).unwrap();
     assert_eq!((info.command.as_str(), info.template.as_str()), (EDIT, ANGLES_TEMPLATE));
-    assert_eq!(angle_prompt(0, 0, 10).as_deref(), Some("<sks> front view eye-level shot close-up"));
-    assert_eq!(angle_prompt(315, -30, 0).as_deref(), Some("<sks> front-left quarter view low-angle shot wide shot"));
+    assert_eq!(angle_prompt(0, 0, 5).as_deref(), Some("<sks> front view eye-level shot medium shot"), "no move, no sentence");
+    assert_eq!(
+        angle_prompt(0, 0, 10).as_deref(),
+        Some("<sks> front view eye-level shot close-up The camera has moved close: the subject's main part fills the frame.")
+    );
+    assert_eq!(
+        angle_prompt(270, 0, 5).as_deref(),
+        Some(
+            "<sks> left side view eye-level shot medium shot The camera has moved 90 degrees around to the subject's left: a true side profile, the subject seen exactly from its left side."
+        )
+    );
+    assert_eq!(
+        angle_prompt(315, -30, 0).as_deref(),
+        Some(
+            "<sks> front-left quarter view low-angle shot wide shot The camera has moved 45 degrees around to the subject's left: a three-quarter view. The camera is lowered below the subject and looks up at it at 30 degrees. The camera has moved back: the whole subject and its surroundings are in the frame."
+        )
+    );
     for p in [json!({"rotation": 30}), json!({"rotation": 360}), json!({"tilt": 45}), json!({"zoom": 7}), json!({"zoom": 2.5}), json!({"variations": 9})] {
         assert!(matches!(s.execute(ANGLES, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
