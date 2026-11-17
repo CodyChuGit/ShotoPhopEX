@@ -29,6 +29,10 @@ pub(crate) const RESTORE_PROMPT: &str =
 /// and the file is in its LoRA folder, at [`RESTORE_STRENGTH`] unless `loras` says otherwise.
 const RESTORE_LORA: &str = "qwen-image-2.1-restore.safetensors";
 const RESTORE_STRENGTH: f32 = 0.5;
+/// The 2.1 edit's steps per tile unless `steps` is named: in the app on 2026-11-17 (5090, 2x of
+/// 1024² and 864x1152) 16 steps looked the same as the template's 25 (drift 2.3-3.5 vs
+/// 2.4-3.7, sharpness 4 % lower) at 18-19 s against 26-30 s.
+pub(crate) const UPSCALE_STEPS: u64 = 16;
 /// `turbo`: Viggle's 6-step Turbo LoRA (Apache-2.0) stacked on the Restore LoRA, on its own
 /// six shifted sigmas, for the native 2.1 edit.
 const TURBO_LORA: &str = "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors";
@@ -177,6 +181,10 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     let mut q = p.clone();
     if let Some(o) = q.as_object_mut() {
         o.insert("prompt".into(), json!(prompt));
+        let on_21 = native21 && o.get("template").and_then(Value::as_str).is_none_or(|t| t == "auto" || t == "qwen-2.1/edit");
+        if on_21 && o.get("steps").and_then(Value::as_u64).unwrap_or(0) == 0 {
+            o.insert("steps".into(), json!(UPSCALE_STEPS));
+        }
     }
     let common = plan_common(s, UPSCALE, &q, default_template, Task::Edit, &s.prefs().integrations.default_edit_model.clone())?;
     let mut loras = loras_of(UPSCALE, p)?;
