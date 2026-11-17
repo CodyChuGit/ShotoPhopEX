@@ -89,6 +89,10 @@ pub(super) const ENHANCE_IMAGE_SYSTEM: &str = "You are an expert prompt writer f
 Faithfulness first: keep every subject, count, action, colour, position and spatial relation the user gave, and any framing they named; a portrait is a head-and-shoulders close-up, so describe only the face, hair, neck and shoulders and what is behind them, never a chair, hands, a held object or the body below the shoulders. If the user named a medium or style (oil painting, watercolour, sketch, 3D render, anime), end with that medium in their words and never call it a photograph; only if they named none, end with \"A photograph\" and a few words on its look. Never add a person, animal or main object the user did not ask for; small details that belong in the setting are fine. Things stay what they normally are unless the user says otherwise: an animal is alive with real fur or skin, never metal, glass, a robot or a statue, and a helmet or mask stays closed. Frame the shot so each thing the user named shows whole, at true scale (no crop into one part, no small thing enlarged). A named style or view is kept all through, not only at the end (isometric: high, angled, no perspective; anime: drawn faces, outlines). Write things that can be seen instead of mood words and praise. Put any words to be written in the image in double quotes, exactly as given, and say where they sit. If the idea is already detailed, polish it lightly and keep its wording. Write in English even when the user wrote in another language, translating their words faithfully (a breed, a place or a dish keeps its name, such as Shiba Inu), and keep words to be written in the image as given.\n\
 Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown, no notes, nothing about these rules.";
 
+/// The text-to-image rewriter when the user named a style or medium ([`names_other_medium`]):
+/// their words stay first as typed, and only the setting, light and colours are added.
+pub(super) const ENHANCE_IMAGE_STYLED_SYSTEM: &str = "You polish prompts for a text-to-image model. The user named the style of the picture. Reply with the user's words exactly as typed (fix only spelling), then one or two short sentences, 20 to 40 words in all, adding the setting, the light and the colours, written in that same style. Keep every subject, count, colour and word in quotes. Add no new person, animal or main object, and never call it a photograph or say photorealistic. Write in English. Reply with the prompt only: no title, no quotes around it, no markdown.";
+
 /// The chat's settings for one try: a retry after a refused rewrite samples warmer (0.7, then
 /// 1.0), since at the worker's 0.3 the next seed often wrote the refused answer again word for
 /// word and the third try was wasted (round 5 on the 5090, 2026-11-17).
@@ -427,6 +431,10 @@ pub(super) fn enhance_once(
     let edit_system = if image.is_some() { ENHANCE_EDIT_SYSTEM.to_string() } else { ENHANCE_EDIT_SYSTEM.replace(" You can see the image.", "") };
     let template = if image.is_some() { ENHANCE_EDIT_TEMPLATE } else { ENHANCE_IMAGE_TEMPLATE };
     let system = match kind {
+        // A named style gets a light touch: rewritten in full, "an isometric 3d render of a tiny
+        // island" became a realistic aerial and "an anime girl" semi-real on Krea 2, Qwen 2.1
+        // and Klein, worse than the words as typed (round 6 on the 5090, 2026-11-17).
+        EnhanceKind::Image if names_other_medium(prompt) => ENHANCE_IMAGE_STYLED_SYSTEM.to_string(),
         EnhanceKind::Image => ENHANCE_IMAGE_SYSTEM.to_string(),
         EnhanceKind::ImagePhoto => ENHANCE_IMAGE_PHOTO_SYSTEM.to_string(),
         EnhanceKind::ImageUltra => ENHANCE_IMAGE_ULTRA_SYSTEM.to_string(),
