@@ -327,7 +327,7 @@
    "folder": "loras",
    "file": "qwen-image-2.1-multiple-angles-v2.safetensors",
    "bytes": 318819792,
-   "sha256": "SHA_TODO",
+   "sha256": "548c57977c3f1c09c2c9e5f4e83e930cbc6f719c878a576ab8666ce29fef39b6",
    "url": "https://huggingface.co/akhaliq/Qwen-Image-2.1-Multiple-Angles-LoRA/resolve/main/checkpoints_v2/angles_v2_full_qwen21_multiple_angles_v2_qwen21_multiple_angles_v2_000001500.safetensors",
    "license": "apache-2.0"
   },
