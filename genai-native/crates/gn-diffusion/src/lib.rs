@@ -438,6 +438,9 @@ fn chat_on(params: &std::collections::BTreeMap<String, Value>) -> Result<ChatOn,
 /// recipe ([`Schedule::KreaDetail`]: the Sick Ollie Creator Kit's beta scheduler over AuraFlow
 /// shift 1.25); absent or `"simple"` keeps ComfyUI's `simple` schedule.
 pub const KREA_DETAIL_SCHEDULE: &str = "krea-detail";
+/// `params.schedule: "viggle-turbo"` on [`TEMPLATE_EDIT`]: Viggle's six shifted sigmas, for a
+/// request that stacks [`QWEN21_TURBO_LORA`].
+pub const VIGGLE_TURBO_SCHEDULE: &str = "viggle-turbo";
 
 /// `params.sampler`: `"euler"` (absent) or, on Krea 2 Turbo's text to image and edit, `"er_sde"`.
 fn sampler_for(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Sampler, EngineError> {
@@ -456,6 +459,8 @@ fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>)
         None | Some("simple") => Ok(Schedule::Comfy),
         Some(KREA_DETAIL_SCHEDULE) if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaDetail),
         Some("beta") if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaBeta),
+        // The 2.1 edit under Viggle's Turbo LoRA (Generative Upscale's fast restore).
+        Some(VIGGLE_TURBO_SCHEDULE) if model == TEMPLATE_EDIT => Ok(Schedule::ViggleTurbo),
         Some(other) => Err(EngineError::new(ErrorKind::BadRequest, format!("schedule {other:?} is not one {model} takes"))),
     }
 }
@@ -2431,6 +2436,8 @@ mod tests {
         assert_eq!(schedule_for(TEMPLATE_KREA2, &p(KREA_DETAIL_SCHEDULE)).unwrap(), Schedule::KreaDetail);
         assert_eq!(schedule_for(TEMPLATE_KREA2_EDIT, &p(KREA_DETAIL_SCHEDULE)).unwrap(), Schedule::KreaDetail);
         assert_eq!(schedule_for(TEMPLATE_OUTPAINT_TURBO, &none).unwrap(), Schedule::ViggleTurbo);
+        assert_eq!(schedule_for(TEMPLATE_EDIT, &p(VIGGLE_TURBO_SCHEDULE)).unwrap(), Schedule::ViggleTurbo);
+        assert!(schedule_for(TEMPLATE_KREA2, &p(VIGGLE_TURBO_SCHEDULE)).is_err());
         assert!(schedule_for(TEMPLATE_KREA2_FILL, &p(KREA_DETAIL_SCHEDULE)).is_err());
         assert!(schedule_for(TEMPLATE_KREA2, &p("karras")).is_err());
         assert_eq!(schedule_for(TEMPLATE_KREA2, &p("beta")).unwrap(), Schedule::KreaBeta);

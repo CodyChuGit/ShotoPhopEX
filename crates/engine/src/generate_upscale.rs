@@ -29,6 +29,9 @@ pub(crate) const RESTORE_PROMPT: &str =
 /// and the file is in its LoRA folder, at [`RESTORE_STRENGTH`] unless `loras` says otherwise.
 const RESTORE_LORA: &str = "qwen-image-2.1-restore.safetensors";
 const RESTORE_STRENGTH: f32 = 0.5;
+/// `turbo`: Viggle's 6-step Turbo LoRA (Apache-2.0) stacked on the Restore LoRA, on its own
+/// six shifted sigmas, for the native 2.1 edit.
+const TURBO_LORA: &str = "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors";
 /// The strip neighbouring tiles share and fade across.
 pub(crate) const OVERLAP: u32 = 128;
 /// The largest enlarged picture (a tile run per megapixel).
@@ -190,6 +193,20 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
         loras.push((RESTORE_LORA.to_string(), restore_strength));
     }
     let batch = common.template.meta.family == "qwen-image-2.1" && runs_native(s, &common.template.meta.id);
+    let turbo = match p.get("turbo") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(EngineError::BadParams { cmd: UPSCALE.into(), msg: "turbo is true or false".into() }),
+    };
+    if turbo {
+        if !(batch && common.template.meta.id == "qwen-2.1/edit") {
+            return Err(EngineError::BadParams { cmd: UPSCALE.into(), msg: "turbo needs the native Qwen-Image-2.1 edit".into() });
+        }
+        if !models_root.is_empty() && !std::path::Path::new(&models_root).join("loras").join(TURBO_LORA).is_file() {
+            return Err(EngineError::Other(format!("turbo needs {TURBO_LORA} in the Models folder's loras subfolder")));
+        }
+        loras.push((TURBO_LORA.to_string(), 1.0));
+    }
     let (backend, _server) = backend_for(s, &common.template.meta.id)?;
     let side = ((tile_mp * 1e6).sqrt() as u32 / 16 * 16).max(256);
     let grid = match p.get("grid") {
@@ -211,11 +228,14 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
     let label = common.name.clone().unwrap_or_else(|| "Generative Upscale".to_string());
     let template_id = common.template.meta.id.clone();
     let max_pixels = (side as u64) * (side as u64);
-    let params: BTreeMap<String, Value> = if loras.is_empty() {
+    let mut params: BTreeMap<String, Value> = if loras.is_empty() {
         BTreeMap::new()
     } else {
         BTreeMap::from([("loras".to_string(), Value::Array(loras.iter().map(|(f, s)| json!({"file": f, "strength": s})).collect()))])
     };
+    if turbo {
+        params.insert("schedule".into(), json!("viggle-turbo"));
+    }
     crate::jobs::edit_job(
         s,
         &label.clone(),
