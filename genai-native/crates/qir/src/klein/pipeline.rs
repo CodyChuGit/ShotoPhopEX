@@ -520,12 +520,12 @@ fn mask_tokens(m: &RefImage, lw: usize, lh: usize, dev: &Device) -> Result<Tenso
     Ok(Tensor::from_vec(v, (lh * lw, 1), dev)?)
 }
 
-/// 8 GB mode on a card under [`LOW_VRAM_BELOW`], or as `QIR_KLEIN_LOW_VRAM=1` / `0` says.
+/// 8 GB mode on a card under [`LOW_VRAM_BELOW`] (by [`crate::device::card_total`]), or as `QIR_KLEIN_LOW_VRAM=1` / `0` says.
 fn low_vram_mode(dev: &Device) -> bool {
     match std::env::var("QIR_KLEIN_LOW_VRAM").ok().as_deref().map(str::trim) {
         Some("1") => true,
         Some("0") => false,
-        _ => crate::device::free_vram(dev).is_some_and(|(_, total)| total < LOW_VRAM_BELOW),
+        _ => crate::device::card_total(dev).is_some_and(|total| total < LOW_VRAM_BELOW),
     }
 }
 
