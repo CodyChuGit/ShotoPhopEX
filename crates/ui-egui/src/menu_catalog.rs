@@ -464,6 +464,7 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Layer", "Matting"], "Defringe…", None, "layer.matting.defringe"),
     (&["Layer", "Matting"], "Remove Black Matte", None, "layer.matting.removeBlackMatte"),
     (&["Layer", "Matting"], "Remove White Matte", None, "layer.matting.removeWhiteMatte"),
+    (&["Layer", "Matting"], "Remove Spill…", None, "layer.matting.despill"),
     (&["Type", "Panels"], "Character Panel", None, "type.panels.character"),
     (&["Type", "Panels"], "Paragraph Panel", None, "type.panels.paragraph"),
     (&["Type", "Panels"], "Glyphs Panel", None, "type.panels.glyphs"),

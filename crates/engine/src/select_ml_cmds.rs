@@ -1241,7 +1241,9 @@ pub(crate) fn picture_rgba(doc: &Document, active: Option<LayerId>, all_layers: 
 }
 
 /// A detector mask's soft edge: ViTMatte's when the server has it (hair strand by strand),
-/// else the classical edge refinement ([`refine_coverage`]).
+/// else the classical edge refinement ([`refine_coverage`]). Specks the matting left away
+/// from the mask are cleared ([`despeckle_alpha`]); every part of the mask itself stays, so a
+/// small second subject the detector found is never lost.
 pub(crate) fn matte_or_refine(
     backend: &dyn photocraft_genai::GenerativeBackend,
     doc: &Document,
@@ -1254,12 +1256,30 @@ pub(crate) fn matte_or_refine(
     let (bounds, n) = coverage_bounds(&cov, area);
     if n > 0 {
         let picture = picture_rgba(doc, active, all_layers);
+        let keep: Vec<bool> = cov.iter().map(|c| *c >= 0.5).collect();
         let one = [(cov, bounds, n)];
-        if let Some(mut a) = vitmatte_alphas(backend, &picture, area, &one, None, ctx)? {
-            return Ok((a.swap_remove(0), true));
-        }
-        let [(cov, _, _)] = one;
-        return Ok((refine_coverage(doc, active, all_layers, cov, area), false));
+        let (mut alpha, matted) = match vitmatte_alphas(backend, &picture, area, &one, None, ctx)? {
+            Some(mut a) => (a.swap_remove(0), true),
+            None => {
+                let [(cov, _, _)] = one;
+                (refine_coverage(doc, active, all_layers, cov, area), false)
+            }
+        };
+        despeckle_alpha(&mut alpha, area, Some(&keep));
+        return Ok((alpha, matted));
     }
     Ok((cov, false))
+}
+
+/// A soft alpha (`area`-sized) without the stray specks and floating islands matting can leave
+/// away from a subject: an island goes only when it is tiny against both the picture and the
+/// alpha's largest part, and never one touching `keep` (see
+/// [`photocraft_algo::matting::despeckle`]). The subject's own soft edge is untouched.
+pub(crate) fn despeckle_alpha(alpha: &mut [f32], area: Rect, keep: Option<&[bool]>) {
+    let (w, h) = (area.width() as usize, area.height() as usize);
+    let p = photocraft_algo::matting::DespeckleParams::default();
+    match keep {
+        Some(keep) => photocraft_algo::matting::despeckle_keeping(alpha, w, h, &p, keep),
+        None => photocraft_algo::matting::despeckle(alpha, w, h, &p),
+    };
 }
