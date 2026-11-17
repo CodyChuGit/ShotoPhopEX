@@ -198,6 +198,11 @@ pub const ANGLES: &str = "generate.angles";
 pub const CHARACTER_SHEET: &str = "generate.characterSheet";
 /// The template `generate.angles` runs.
 pub const ANGLES_TEMPLATE: &str = "qwen-edit-2511/angles";
+/// The template `generate.angles` runs on a card without fp8 matrix cores (see
+/// [`angles_template`]): Qwen-Image-2.1 with akhaliq's Multiple Angles v2 LoRA.
+pub const ANGLES21_TEMPLATE: &str = "qwen-2.1/angles";
+/// The oldest card generation (compute capability) that runs 2511's fp8 file: RTX 40 (8.9).
+pub const ANGLES_2511_MIN_COMPUTE_CAP: u32 = 89;
 /// `generate.angles` `rotation` (degrees around the subject, 0 = from the front) and the Multiple
 /// Angles LoRA's word for it.
 pub const ANGLE_ROTATIONS: [(u32, &str); 8] = [
