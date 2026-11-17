@@ -127,6 +127,13 @@ pub const MOSS_GUIDANCE: f32 = 3.0;
 /// The low-VRAM turbo: lodestones' Kromoss (Apache-2.0, a full fine-tune of MOSS-Image-Base)
 /// with its 8-step DMD2 LoRA, at the card's 8 steps and CFG 1 (no negative pass).
 pub const TEMPLATE_MOSS_TURBO: &str = "moss-image/turbo";
+/// KandooAI's Juggernaut MOSS (Civitai 3042282, a full fine-tune of MOSS-Image-Base for
+/// photographs; bring your own): V1 on its card's recipe (30 Euler steps, CFG 3, block 22
+/// skipped, its negative) and its turbo beta (6 `euler_ancestral` steps, CFG 1).
+pub const TEMPLATE_MOSS_JUGGERNAUT: &str = "moss-image/juggernaut";
+pub const TEMPLATE_MOSS_JUGGERNAUT_TURBO: &str = "moss-image/juggernaut-turbo";
+pub const MOSS_JUGGERNAUT_STEPS: u32 = 30;
+pub const MOSS_JUGGERNAUT_TURBO_STEPS: u32 = 6;
 pub const MOSS_TURBO_LORA: &str = "kromoss-8-steps-dmd2-lora.safetensors";
 pub const MOSS_TURBO_STEPS: u32 = 8;
 /// akhaliq's MOSS-Image-SFT 4-step LoRA (Apache-2.0; stock Euler, 4 steps, CFG 1): MOSS Turbo
@@ -186,7 +193,7 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 40] = [
+pub const TEMPLATES: [(&str, &str, Family); 42] = [
     (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
     (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
@@ -202,6 +209,8 @@ pub const TEMPLATES: [(&str, &str, Family); 40] = [
     (TEMPLATE_KREA2_FILL, "fill", Family::Krea2),
     (TEMPLATE_MOSS, "image", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_BASE, "image", Family::Moss(MossVariant::Base)),
+    (TEMPLATE_MOSS_JUGGERNAUT, "image", Family::Moss(MossVariant::Juggernaut)),
+    (TEMPLATE_MOSS_JUGGERNAUT_TURBO, "image", Family::Moss(MossVariant::JuggernautTurbo)),
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
     (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
@@ -1062,6 +1071,8 @@ impl DiffusionEngine {
                                 MossVariant::Base => "moss_image_base",
                                 MossVariant::Sft => "moss_image_sft",
                                 MossVariant::Kromoss => "kromoss",
+                                MossVariant::Juggernaut => "juggernaut_moss_v1",
+                                MossVariant::JuggernautTurbo => "juggernaut_moss_turbo_v1",
                             }
                         ),
                     ));
@@ -1712,6 +1723,8 @@ impl Engine for DiffusionEngine {
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => MOSS_TURBO_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS => MOSS_REALISM_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_JUGGERNAUT => MOSS_JUGGERNAUT_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO => MOSS_JUGGERNAUT_TURBO_STEPS,
             Family::Moss(_) => MOSS_STEPS,
             // Klein's own (its checkpoint's 16).
             Family::Klein => 0,
@@ -1719,7 +1732,7 @@ impl Engine for DiffusionEngine {
             Family::MiniMaxH3 => MINIMAX_H3_STEPS,
         };
         let default_guidance = match family {
-            Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => 1.0,
+            Family::Moss(_) if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT_TURBO, TEMPLATE_MOSS_JUGGERNAUT_TURBO].contains(&req.model.as_str()) => 1.0,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_GUIDANCE,
             Family::Moss(_) => MOSS_GUIDANCE,
             _ => 1.0,
@@ -1782,8 +1795,16 @@ impl Engine for DiffusionEngine {
                 None => 1.0,
             };
             // MOSS-Image's text to image: the realism recipe's negative when none is typed.
+            // Juggernaut MOSS V1 likewise with its card's negative; its turbo runs at CFG 1.
             let realism = req.model == TEMPLATE_MOSS;
-            let negative = if realism && req.negative.trim().is_empty() { moss::REALISM_NEGATIVE.to_string() } else { req.negative.clone() };
+            let juggernaut = req.model == TEMPLATE_MOSS_JUGGERNAUT;
+            let juggernaut_turbo = req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO;
+            let negative = match () {
+                _ if !req.negative.trim().is_empty() => req.negative.clone(),
+                _ if realism => moss::REALISM_NEGATIVE.to_string(),
+                _ if juggernaut => moss::JUGGERNAUT_NEGATIVE.to_string(),
+                _ => req.negative.clone(),
+            };
             let ask = Request {
                 prompt: req.prompt.clone(),
                 negative,
@@ -1829,8 +1850,13 @@ impl Engine for DiffusionEngine {
                         p.refine_previewed(&ask, &base, &opts, &mut |f, m| report(0.55 + 0.45 * f, m), shown, &stop).map(|p| vec![p]).map_err(err)
                     }
                 },
-                (Resident::Moss(p, _), _) if realism => {
-                    p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                (Resident::Moss(p, _), _) if realism || juggernaut || juggernaut_turbo => {
+                    let sampling = match () {
+                        _ if juggernaut => moss::Sampling::JUGGERNAUT,
+                        _ if juggernaut_turbo => moss::Sampling::JUGGERNAUT_TURBO,
+                        _ => moss::Sampling::REALISM,
+                    };
+                    p.generate_sampled(&ask, sampling.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::H3(p), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
@@ -2362,6 +2388,8 @@ mod tests {
     fn moss_templates_find_their_files() -> anyhow::Result<()> {
         assert_eq!(task_of(TEMPLATE_MOSS), Some("image"));
         assert_eq!(family_of(TEMPLATE_MOSS_BASE), Some(Family::Moss(MossVariant::Base)));
+        assert_eq!(family_of(TEMPLATE_MOSS_JUGGERNAUT), Some(Family::Moss(MossVariant::Juggernaut)));
+        assert_eq!(family_of(TEMPLATE_MOSS_JUGGERNAUT_TURBO), Some(Family::Moss(MossVariant::JuggernautTurbo)));
         let root = std::env::temp_dir().join(format!("gn-moss-{}", std::process::id()));
         let mut e = DiffusionEngine::new(root.clone(), false);
         e.refused = None;
