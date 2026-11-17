@@ -149,6 +149,19 @@ pub(crate) fn chroma_hint(px: &[[u8; 4]], w: usize, h: usize, key: [f32; 3]) -> 
 /// The highest hint value a pixel only partly away from the screen colour gets.
 const PARTIAL_HINT: f32 = 160.0;
 
+/// Where the keyed alpha is solid (and fading in over the last few steps below solid), the
+/// picture's own colour replaces the keyer's guess; soft edges keep the keyer's un-mixed colour.
+fn keep_solid_pixels(keyed: &mut [u8], picture: &[u8]) {
+    for (k, p) in keyed.as_chunks_mut::<4>().0.iter_mut().zip(picture.as_chunks::<4>().0) {
+        let t = ((f32::from(k[3]) - 224.0) / 31.0).clamp(0.0, 1.0);
+        if t > 0.0 {
+            for c in 0..3 {
+                k[c] = (f32::from(k[c]) * (1.0 - t) + f32::from(p[c]) * t).round() as u8;
+            }
+        }
+    }
+}
+
 /// Drops the small alpha islands the keyer left (tracking markers, specks) and limits the alpha
 /// to a grown, softened garbage matte of what stays (`photocraft_algo::matting::despeckle`, its
 /// minimum area scaled with the picture). The subject's own soft edge is untouched.
@@ -297,15 +310,21 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             }
             // No screen round the picture (and none named): nothing to despill, and the subject's
             // own greens (clothes, plants) must keep their colour.
-            let despilled = despill > 0.0 && (screen_found || screen_arg.is_some()) && despill_hook(&mut keyed, screen, despill);
+            let has_screen = screen_found || screen_arg.is_some();
+            let despilled = despill > 0.0 && has_screen && despill_hook(&mut keyed, screen, despill);
+            if !has_screen {
+                // With no screen, the keyer's colour guess drifts on solid areas (it was taught
+                // to take a screen out): where the subject is solid it keeps its own pixels.
+                keep_solid_pixels(&mut keyed, &picture);
+            }
             // The layer holds straight colour and alpha; the compositor premultiplies.
             let mut layer = Layer::raster(name.clone(), doc.pixel_format());
             write_rgba8(&mut layer, &Rgba8::new(w as u32, h as u32, keyed).map_err(gen_err)?, frame)?;
             let id = doc.insert_above(*active, layer);
             *active = Some(id);
-            Ok((id, screen, hint_name, despeckled, despilled, started.elapsed().as_millis() as u64))
+            Ok((id, has_screen.then(|| screen.name()).unwrap_or("none"), hint_name, despeckled, despilled, started.elapsed().as_millis() as u64))
         },
-        |(id, screen, hint, despeckled, despilled, ms)| json!({"layer": id.0, "screen": screen.name(), "hint": hint, "despeckled": despeckled, "despilled": despilled, "ms": ms}),
+        |(id, screen, hint, despeckled, despilled, ms)| json!({"layer": id.0, "screen": screen, "hint": hint, "despeckled": despeckled, "despilled": despilled, "ms": ms}),
     )
 }
 
@@ -315,6 +334,15 @@ mod tests {
 
     fn frame(w: usize, h: usize, bg: [u8; 4], fg: [u8; 4]) -> Vec<[u8; 4]> {
         (0..w * h).map(|i| if (i % w).abs_diff(w / 2) < w / 4 && (i / w).abs_diff(h / 2) < h / 4 { fg } else { bg }).collect()
+    }
+
+    #[test]
+    fn solid_pixels_keep_the_picture_colour_and_soft_ones_the_keyer_colour() {
+        let picture = [200u8, 100, 50, 255, 200, 100, 50, 255];
+        let mut keyed = [180u8, 120, 70, 255, 180, 120, 70, 128];
+        keep_solid_pixels(&mut keyed, &picture);
+        assert_eq!(&keyed[..4], &[200, 100, 50, 255]);
+        assert_eq!(&keyed[4..], &[180, 120, 70, 128]);
     }
 
     #[test]
