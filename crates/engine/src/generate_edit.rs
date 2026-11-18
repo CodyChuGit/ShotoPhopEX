@@ -39,7 +39,9 @@ pub fn angle_words(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
 pub fn angle_sentence(rotation: u32, tilt: i32, zoom: u32) -> String {
     let side = if rotation > 180 { "left" } else { "right" };
     let turn = match rotation {
-        45 | 315 => format!("The camera has moved 45 degrees around to the subject's {side}: a three-quarter view."),
+        // "A little" and "most of the front still visible" keep it at 45: without them it went
+        // on to 60-90° on animals, objects, cars and buildings (2026-11-18, 10 kinds of photo).
+        45 | 315 => format!("The camera has moved a little, 45 degrees, to the subject's {side}: a three-quarter view with most of the front still visible."),
         90 | 270 => {
             format!("The camera has moved 90 degrees around to the subject's {side}: a true side profile, the subject seen exactly from its {side} side.")
         }
@@ -48,8 +50,10 @@ pub fn angle_sentence(rotation: u32, tilt: i32, zoom: u32) -> String {
         _ => String::new(),
     };
     let height = match tilt {
-        -30 => "The camera is lowered below the subject and looks up at it at 30 degrees.",
-        30 => "The camera is raised above the subject and looks down at it at 30 degrees.",
+        // Tuned 2026-11-18: the plain "lowered below" barely moved (5-20°); "raised above" went
+        // nearly top-down on objects and bent buildings like a fisheye.
+        -30 => "The camera is close to the ground, below the subject, and looks up at it: a low-angle view from 30 degrees below.",
+        30 => "The camera is a little higher than the subject and looks slightly down at it, 30 degrees.",
         60 => "The camera is raised high above the subject and looks down at it at 60 degrees.",
         _ => "",
     };
