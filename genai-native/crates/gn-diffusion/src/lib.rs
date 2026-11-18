@@ -206,7 +206,7 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 43] = [
+pub const TEMPLATES: [(&str, &str, Family); 44] = [
     (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
     (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
