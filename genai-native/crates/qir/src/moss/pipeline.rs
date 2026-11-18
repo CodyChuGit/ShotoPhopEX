@@ -45,9 +45,6 @@ pub enum Sampler {
     /// RES4LYF's `res_2s`: a two-stage exponential integrator on the denoised estimate
     /// (midpoint in log-SNR), two model calls a step. The last step to σ = 0 is one call.
     Res2s,
-    /// ComfyUI's `euler_ancestral` on a flow model (`sample_euler_ancestral_RF`, eta 1): an
-    /// Euler step down to σ'²/σ, then fresh noise back up to σ'. The last step lands on x̂₀.
-    EulerAncestral,
 }
 
 /// The sampling recipe of a text-to-image run.
@@ -83,12 +80,6 @@ impl Sampling {
     /// is linear σ (shift 1); in the app (2026-11-11, three prompts) that came out dark and
     /// muddy with broken signs, so the official shift 5 stays. About 30 % faster than 50 Euler steps.
     pub const REALISM: Self = Self { shift: SHIFT, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5, ostris_refs: false, denoise: 1.0, color_fix: false };
-    /// Juggernaut MOSS V1 (KandooAI, Civitai 3042282), as its card says: Euler on the shift-5
-    /// schedule, CFG 3, block 22 skipped in the negative (the official sampler), 30 steps.
-    pub const JUGGERNAUT: Self = Self::OFFICIAL;
-    /// Juggernaut MOSS Turbo (beta), as its card says: `euler_ancestral` / simple, 6 steps, CFG 1.
-    pub const JUGGERNAUT_TURBO: Self =
-        Self { shift: SHIFT, sampler: Sampler::EulerAncestral, skip_uncond: false, eta: 1.0, ostris_refs: false, denoise: 1.0, color_fix: false };
     /// An ai-toolkit edit LoRA's run (NO8D's MOSS HighQuality restore, Civitai 2436859): Euler, no
     /// skipped block, references in ostris' layout, as its author's graph; then, from the in-app
     /// rounds of 2026-11-17 (three photos against the shipped Upscale), 45 % redrawn from the
@@ -113,10 +104,6 @@ impl Sampling {
         }
         match var("QIR_MOSS_SAMPLER").as_deref() {
             Some("euler") => self.sampler = Sampler::Euler,
-            Some("euler_ancestral" | "euler_a") => {
-                self.sampler = Sampler::EulerAncestral;
-                self.eta = 1.0;
-            }
             Some("res_2s" | "res2s") => {
                 self.sampler = Sampler::Res2s;
                 self.eta = 0.5;
@@ -150,10 +137,6 @@ impl Sampling {
 /// The negative prompt of the realism recipe (the workflow's own).
 pub const REALISM_NEGATIVE: &str = "blur, smooth, anime, render, cartoon, 3d";
 
-/// Juggernaut MOSS's negative for photographs (its model card's).
-pub const JUGGERNAUT_NEGATIVE: &str = "worst quality, low quality, blurry, jpeg artifacts, watermark, signature, text artifacts, \
-deformed hands, extra fingers, bad anatomy, distorted face, plastic skin, oversaturated, cartoon, cgi, 3d render";
-
 /// Which fine-tune a template runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
@@ -164,11 +147,6 @@ pub enum Variant {
     /// lodestones' Kromoss (Apache-2.0), a full fine-tune of Base at 1024 px; its 8-step DMD2
     /// LoRA makes it the turbo model.
     Kromoss,
-    /// KandooAI's Juggernaut MOSS V1, a full fine-tune of Base for photographs and film looks
-    /// (Civitai 3042282 / Kandoo/Juggernaut-Moss; bring your own).
-    Juggernaut,
-    /// Its turbo (beta): the same fine-tune with a DMD2 distillation merged in, 6 steps at CFG 1.
-    JuggernautTurbo,
 }
 
 /// MOSS-Image's files in a ComfyUI-layout `models` folder (Comfy-Org/MOSS-Image's names; each
@@ -187,8 +165,6 @@ fn dit_names(v: Variant) -> [&'static str; 2] {
         Variant::Sft => ["moss_image_sft_int8_convrot.safetensors", "moss_image_sft_bf16.safetensors"],
         Variant::Base => ["moss_image_base_int8_convrot.safetensors", "moss_image_base_bf16.safetensors"],
         Variant::Kromoss => ["kromoss_int8_convrot.safetensors", "kromoss_bf16.safetensors"],
-        Variant::Juggernaut => ["juggernaut_moss_v1_int8_convrot.safetensors", "juggernaut_moss_v1_bf16.safetensors"],
-        Variant::JuggernautTurbo => ["juggernaut_moss_turbo_v1_int8_convrot.safetensors", "juggernaut_moss_turbo_v1_bf16.safetensors"],
     }
 }
 const TEXT: &[&str] = &["qwen3.5_9b_int8_convrot.safetensors", "qwen3.5_9b_bf16.safetensors"];
@@ -691,16 +667,6 @@ impl MossPipeline {
                         out
                     }
                 }
-                Sampler::EulerAncestral if sig[i + 1] > 0.0 => {
-                    let (s, next) = (f64::from(sig[i]), f64::from(sig[i + 1]));
-                    let st = euler_ancestral_rf(s, next, sampling.eta);
-                    let x0 = (&x - (&v * s)?)?;
-                    let down = ((&x * st.ratio)? + (x0 * (1.0 - st.ratio))?)?;
-                    let k = 0xA5A5_0000_u64 + i as u64;
-                    let eps = crate::comfy::torch_randn(req.seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15), channels * lh * lw).map_err(anyhow::Error::msg)?;
-                    let noise = Tensor::from_vec(eps, (1, channels, lh, lw), &self.dev)?.to_dtype(xdt)?;
-                    ((down * st.scale)? + (noise * st.renoise)?)?
-                }
                 _ => (x + (v * f64::from(sig[i + 1] - sig[i]))?)?,
             };
             progress(0.05 + 0.85 * (i + 1) as f32 / n as f32, "Sampling");
@@ -765,22 +731,6 @@ pub struct Ancestral {
     pub down: f64,
     pub alpha: f64,
     pub up: f64,
-}
-
-/// One ComfyUI `euler_ancestral` step on a flow model (`sample_euler_ancestral_RF`), σ to σ' > 0:
-/// `x ← scale·(ratio·x + (1 − ratio)·x̂₀) + renoise·ε`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EulerAncestralStep {
-    pub ratio: f64,
-    pub scale: f64,
-    pub renoise: f64,
-}
-
-pub fn euler_ancestral_rf(sigma: f64, next: f64, eta: f64) -> EulerAncestralStep {
-    let down = next * (1.0 + (next / sigma - 1.0) * eta);
-    let (alpha_next, alpha_down) = (1.0 - next, 1.0 - down);
-    let renoise = (next * next - down * down * alpha_next * alpha_next / (alpha_down * alpha_down)).max(0.0).sqrt();
-    EulerAncestralStep { ratio: down / sigma, scale: alpha_next / alpha_down, renoise }
 }
 
 pub fn ancestral(next: f64, eta: f64) -> Ancestral {
@@ -969,18 +919,6 @@ mod tests {
             assert!((mid - want).abs() < 2e-3, "{a}->{b}: mid {mid} vs {want}");
             let (cx, cx0) = exp_step(a, b);
             assert!((cx * x + cx0 * x0 - ((1.0 - b) * x0 + b * eps)).abs() < 2e-3);
-        }
-        for (a, b) in [(1.0, 0.95), (0.6, 0.55), (0.1, 0.05)] {
-            // A constant x̂₀ lands on the flow at σ': signal (1 − σ')·x̂₀, noise variance σ'².
-            let st = euler_ancestral_rf(a, b, 1.0);
-            let x0 = 0.7;
-            let signal = st.scale * ((st.ratio * (1.0 - a) + (1.0 - st.ratio)) * x0);
-            assert!((signal - (1.0 - b) * x0).abs() < 1e-9, "{a}->{b}: {signal}");
-            let noise = ((st.scale * st.ratio * a).powi(2) + st.renoise * st.renoise).sqrt();
-            assert!((noise - b).abs() < 1e-9, "{a}->{b}: noise {noise}");
-            // eta 0 is plain Euler.
-            let e = euler_ancestral_rf(a, b, 0.0);
-            assert!((e.ratio - b / a).abs() < 1e-12 && e.renoise.abs() < 1e-9 && (e.scale - 1.0).abs() < 1e-12);
         }
         for (next, eta) in [(0.9, 0.5), (0.3, 0.5), (0.05, 1.0), (0.4, 0.0)] {
             let a = ancestral(next, eta);
