@@ -302,6 +302,36 @@ fn best_quality_renders_krea2_at_about_two_megapixels() {
     assert_eq!((req["width"].as_u64(), req["height"].as_u64()), (Some(1440), Some(1440)), "{req}");
 }
 
+/// `supersample` renders at that many times the asked size (Quality's own sizes aside), within
+/// the template's longest side, and the new document has the asked size.
+#[test]
+fn supersample_renders_larger_and_keeps_the_asked_size() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    let ask = |k: f64, w: u32, h: u32| json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": w, "height": h, "supersample": k});
+    let sent = |s: &Session| {
+        let _ = s;
+        let req = fake.state().runs.last().unwrap().request.clone();
+        (req["width"].as_u64().unwrap(), req["height"].as_u64().unwrap())
+    };
+    // 1: exactly the asked size, even under Best (which alone renders Krea 2 at 1440²).
+    let r = s.execute(IMAGE, ask(1.0, 1024, 1024)).unwrap();
+    assert_eq!(sent(&s), (1024, 1024));
+    assert_eq!((r["width"].as_u64(), r["renderWidth"].as_u64()), (Some(1024), Some(1024)));
+    let r = s.execute(IMAGE, ask(2.0, 1024, 1024)).unwrap();
+    assert_eq!(sent(&s), (2048, 2048));
+    assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(1024), Some(1024)), "{r}");
+    assert_eq!(s.active().unwrap().doc.bounds().width(), 1024);
+    s.execute(IMAGE, ask(1.5, 1024, 768)).unwrap();
+    assert_eq!(sent(&s), (1536, 1152));
+    // Capped at the template's 2048: the factor shrinks, the aspect stays.
+    s.execute(IMAGE, ask(2.0, 1536, 1024)).unwrap();
+    let (w, h) = sent(&s);
+    assert!(w == 2048 && h.abs_diff(1365) <= 16 && h % 16 == 0, "{w}x{h}");
+    assert!(s.execute(IMAGE, ask(5.0, 1024, 1024)).is_err());
+}
+
 /// `refine` asks the native engine for Krea 2's second pass at `scale` times the size, on the
 /// 16-px grid and at most 2560 a side; other templates refuse it.
 #[test]

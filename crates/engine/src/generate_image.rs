@@ -16,8 +16,8 @@ use crate::{EngineError, Result, Session};
 use super::{
     AUTO_TEMPLATE, Common, EnhanceKind, GenerativeInfo, IMAGE, JobProgress, KLEIN_CHAT_PREFIX, KREA2_CHAT_ENCODER, MAX_SEED, MIN_SIDE, MINIMAX_CHAT_PREFIX,
     MOSS_CHAT_PREFIX, SIZE_STEP, Tuning, ULTRA_IMAGE_TEMPLATE, backend, bad, default_image_template, enhance_prompt, gen_err, loras, loras_of,
-    names_other_medium, opt_bool, opt_str, parse_variations, plan_common, quality, resize_rgba8, rgba8_at, set_generative_info, short, side, web_unavailable,
-    write_rgba8,
+    names_other_medium, opt_bool, opt_num, opt_str, parse_variations, plan_common, quality, resize_rgba8, rgba8_at, set_generative_info, short, side,
+    web_unavailable, write_rgba8,
 };
 
 /// Everything `generate.image` needs, validated before any network work.
@@ -49,6 +49,9 @@ pub(super) struct ImagePlan {
     /// The size asked of the model (rounded to the latent grid).
     pub(super) width: u32,
     pub(super) height: u32,
+    /// The size the result is brought down to under `supersample` (the asked size), `None`
+    /// to keep what the model returns.
+    pub(super) output: Option<(u32, u32)>,
     /// `true`: a new document of the result's size; `false`: a new layer over the whole canvas.
     pub(super) to_document: bool,
     /// How many results (consecutive seeds); only the first is visible.
@@ -274,7 +277,20 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     let (dw, dh) = if to_document { (1024, 1024) } else { doc_size.unwrap_or((1024, 1024)) };
     // Quality `best` (`balanced`) renders Krea 2 at about 2 (1.5) MP: a new document keeps that size, a layer is
     // scaled to the canvas as any result of another size is.
-    let (width, height) = image_quality_size(&template.meta.id, quality(s), side(IMAGE, p, "width", dw)?, side(IMAGE, p, "height", dh)?);
+    let (aw, ah) = (side(IMAGE, p, "width", dw)?, side(IMAGE, p, "height", dh)?);
+    // `supersample`: render at that many times the asked size and bring the result down to it
+    // (instead of Quality's own sizes); 1 renders exactly the asked size.
+    let supersample = opt_num(IMAGE, p, "supersample", 1.0, MAX_SUPERSAMPLE)?;
+    let (width, height, output) = match supersample {
+        Some(k) => {
+            let (w, h) = supersample_size(&template, aw, ah, k);
+            (w, h, ((w, h) != (aw, ah)).then_some((aw, ah)))
+        }
+        None => {
+            let (w, h) = image_quality_size(&template.meta.id, quality(s), aw, ah);
+            (w, h, None)
+        }
+    };
     let refine = image_refine(p, &template.meta.id, width, height)?;
     let name = name.unwrap_or_else(|| format!("Generated: {}", short(&prompt)));
     // A transparent result: the template says how its model is asked for one (Qwen-Image-2.1
@@ -322,10 +338,27 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
         models,
         width,
         height,
+        output,
         to_document,
         variations,
         refs,
     })
+}
+
+/// Most a text-to-image run may supersample (`supersample`).
+pub const MAX_SUPERSAMPLE: f64 = 4.0;
+
+/// The size `template` renders an asked `width × height` at under `supersample` `k`: `k` times
+/// each side, on the template's grid and within its longest side (the factor shrinks, same
+/// aspect, when a side would pass it), never below the asked size.
+pub fn supersample_size(template: &Template, width: u32, height: u32, k: f64) -> (u32, u32) {
+    let sizes = &template.meta.sizes;
+    let step = sizes.step.max(SIZE_STEP);
+    let most = if sizes.max == 0 { 2048 } else { sizes.max };
+    let long = f64::from(width.max(height).max(1));
+    let k = k.min(f64::from(most) / long).max(1.0);
+    let fit = |v: u32| ((f64::from(v) * k) as u32 / step * step).max(v.min(most)).max(MIN_SIDE);
+    (fit(width), fit(height))
 }
 
 /// The longest side a Krea 2 refine pass redraws at.
@@ -440,6 +473,7 @@ pub(super) fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
         models,
         width,
         height,
+        output,
         to_document,
         variations,
         refs,
@@ -511,7 +545,8 @@ pub(super) fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
             move |s, (resps, enhanced): (Vec<photocraft_genai::Response>, String)| {
                 // One document of the first result's size; every result a layer, the first visible.
                 let first = resps.first().and_then(|r| r.images.first()).ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;
-                let (w, h) = (first.width, first.height);
+                // Supersampled: the document has the asked size, the render brought down to it.
+                let (w, h) = output.unwrap_or((first.width, first.height));
                 let mut doc = Document::new(doc_name, Size::new(w, h), ColorMode::Rgb, SampleType::U8);
                 let mut ids = Vec::new();
                 let mut seeds = Vec::new();
@@ -534,6 +569,7 @@ pub(super) fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
                 Ok(json!({
                     "document": index, "layers": ids, "seed": first.map(|r| r.seed), "seeds": seeds, "template": tid,
                     "runId": first.map(|r| r.run_id.clone()), "width": w, "height": h, "ms": resps.iter().map(|r| r.elapsed_ms).sum::<u64>(),
+                    "renderWidth": width, "renderHeight": height,
                 }))
             },
         );
@@ -576,6 +612,7 @@ pub(super) fn run_image(s: &mut Session, p: &Value) -> Result<Value> {
                 "layer": first.map(|m| m.0), "layers": made.iter().map(|m| m.0).collect::<Vec<_>>(), "seed": first.map(|m| m.1),
                 "seeds": made.iter().map(|m| m.1).collect::<Vec<_>>(), "template": tid, "runId": first.map(|m| m.2.clone()),
                 "width": w, "height": h, "ms": made.iter().map(|m| m.3).sum::<u64>(),
+                "renderWidth": width, "renderHeight": height,
             })
         },
     )
