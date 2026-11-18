@@ -47,11 +47,33 @@ struct ConditioningKey {
     references: Vec<RgbImage>,
     prompt: String,
     negative: Option<String>,
+    /// The picture the first reference is encoded as ([`aligned_reference`]), when it is.
+    aligned: Option<RgbImage>,
 }
 impl ConditioningKey {
     fn new(req: &Edit2511Request) -> Self {
-        Self { references: req.references.clone(), prompt: req.prompt.clone(), negative: (req.cfg > 1.).then(|| req.negative.clone()) }
+        Self {
+            references: req.references.clone(),
+            prompt: req.prompt.clone(),
+            negative: (req.cfg > 1.).then(|| req.negative.clone()),
+            aligned: aligned_reference(req).cloned(),
+        }
     }
+}
+
+/// An edit's picture, when the first reference's VAE latent is encoded from it, on the output's
+/// own grid, instead of from the Kontext-scaled copy at about 1024²: an edit by instruction (no
+/// mask) whose picture has the reference's aspect (within 2 %) and is no bigger than 1024² in
+/// area. A tall picture's reference (768×1024 cropped and scaled to 880×1184) against its own
+/// 96×128 latent made 2511 redraw the whole frame a little off for "make her smile" or "give
+/// them sunglasses", so every small edit re-toned and shifted the picture; a square picture,
+/// whose reference already was its own size, kept the rest as it was (Enhance round 8 on the
+/// 5090, 2026-11-18). The same mismatch doubled MOSS Edit's heads.
+fn aligned_reference(req: &Edit2511Request) -> Option<&RgbImage> {
+    let (t, r) = (req.target.as_ref()?, req.references.first()?);
+    let (tw, th, rw, rh) = (t.width() as f64, t.height() as f64, r.width() as f64, r.height() as f64);
+    let (a, b) = (rw * th, rh * tw);
+    (req.mask.is_none() && tw * th > 0. && (a - b).abs() <= 0.02 * a.max(b) && tw * th <= 1024. * 1024.).then_some(t)
 }
 #[derive(Clone)]
 struct Conditioning {
@@ -189,11 +211,16 @@ impl Edit2511Pipeline {
         let mut mark = phase_marks(&self.device);
         let references = {
             let vae = self.vae()?;
+            let aligned = aligned_reference(req);
             req.references
                 .iter()
-                .map(|rgb| {
+                .enumerate()
+                .map(|(i, rgb)| {
                     check()?;
-                    self.encode(&vae, &resize_vae_reference(&pixels(rgb)?)?)
+                    match aligned.filter(|_| i == 0) {
+                        Some(picture) => self.encode(&vae, &crop_vae_target(&pixels(picture)?)?),
+                        None => self.encode(&vae, &resize_vae_reference(&pixels(rgb)?)?),
+                    }
                 })
                 .collect::<Result<Vec<_>>>()?
         };
@@ -554,5 +581,36 @@ mod tests {
         req.cfg = 1.;
         req.references[0].put_pixel(0, 0, image::Rgb([1, 0, 0]));
         assert!(key != ConditioningKey::new(&req));
+    }
+
+    #[test]
+    fn an_edit_encodes_its_picture_on_the_output_grid() {
+        let mut req = Edit2511Request {
+            prompt: "make her smile".into(),
+            negative: String::new(),
+            references: vec![RgbImage::new(880, 1184)],
+            target: Some(RgbImage::new(768, 1024)),
+            mask: None,
+            width: 768,
+            height: 1024,
+            seed: 42,
+            steps: 8,
+            cfg: 1.,
+            loras: LoraStack::default(),
+            step_cache: None,
+        };
+        // A tall picture against its Kontext copy (0.743 against 0.75): the picture itself.
+        assert!(aligned_reference(&req).is_some_and(|t| t.dimensions() == (768, 1024)));
+        // Another aspect (an expand's crop), a fill's mask, or a picture above 1024²: the reference.
+        req.references[0] = RgbImage::new(1024, 1024);
+        assert!(aligned_reference(&req).is_none());
+        req.references[0] = RgbImage::new(880, 1184);
+        req.mask = Some(RgbImage::new(768, 1024));
+        assert!(aligned_reference(&req).is_none());
+        req.mask = None;
+        req.target = Some(RgbImage::new(1536, 2048));
+        assert!(aligned_reference(&req).is_none());
+        req.target = None;
+        assert!(aligned_reference(&req).is_none());
     }
 }
