@@ -110,6 +110,25 @@ pub fn quality(s: &Session) -> &'static str {
     }
 }
 
+/// Preferences › Quality (`integrations.qualityLevel`), normalised: `basic`, `better`, `best`
+/// (the default and anything unknown) or `ultra`, which reads as `best` on a machine where
+/// [`ultra_allowed`] is false.
+pub fn quality_level(s: &Session) -> &'static str {
+    match s.prefs().integrations.quality_level.trim() {
+        "basic" => "basic",
+        "better" => "better",
+        "ultra" if ultra_allowed(s) => "ultra",
+        _ => "best",
+    }
+}
+
+/// Whether Quality Ultra is offered: an NVIDIA card of 24 GB or more (Cody, 2026-11-18). Its
+/// 2x render and refine pass do not fit smaller cards or a Mac.
+pub fn ultra_allowed(s: &Session) -> bool {
+    use crate::memory_profile::Profile;
+    matches!(crate::memory_profile::active(s), Some(Profile::Gb32 | Profile::Gb24))
+}
+
 /// Whether Quality is `ultra`: everything as under `best`, and where MiniMax-H3-Image's files
 /// are installed, new pictures ([`default_image_template`]) and edits ([`auto_quality`]) run
 /// on it at up to 16 MP.

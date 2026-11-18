@@ -23,8 +23,9 @@ fn session(url: &str) -> Session {
         p.integrations.models_path = url.to_string();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
-        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        // Sizes as asked: Quality above Basic renders Krea 2 larger (quality_factor).
         p.integrations.quality = "fast".into();
+        p.integrations.quality_level = "basic".into();
     });
     s
 }
@@ -84,8 +85,9 @@ fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
-        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        // Sizes as asked: Quality above Basic renders Krea 2 larger (quality_factor).
         p.integrations.quality = "fast".into();
+        p.integrations.quality_level = "basic".into();
     });
     assert!(s.is_enabled(IMAGE), "no document needed");
     let r = s.execute(IMAGE, json!({"prompt": "a poster", "width": 128, "height": 96})).unwrap();
@@ -114,8 +116,9 @@ fn sizes_default_round_and_validate() {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
-        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        // Sizes as asked: Quality above Basic renders Krea 2 larger (quality_factor).
         p.integrations.quality = "fast".into();
+        p.integrations.quality_level = "basic".into();
     });
     // 1000×700 rounds down to the 16-pixel grid.
     let r = s.execute(IMAGE, json!({"prompt": "x", "width": 1000, "height": 700})).unwrap();
@@ -141,8 +144,9 @@ fn sizes_default_round_and_validate() {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
-        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        // Sizes as asked: Quality above Basic renders Krea 2 larger (quality_factor).
         p.integrations.quality = "fast".into();
+        p.integrations.quality_level = "basic".into();
     });
     let e = empty.execute(IMAGE, json!({"prompt": "x", "target": "layer"})).unwrap_err();
     assert!(e.to_string().contains("open or create a document"), "{e}");
@@ -174,8 +178,9 @@ fn image_runs_as_a_background_job() {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
-        // Sizes as asked: Quality best and balanced render Krea 2 larger (image_quality_size).
+        // Sizes as asked: Quality above Basic renders Krea 2 larger (quality_factor).
         p.integrations.quality = "fast".into();
+        p.integrations.quality_level = "basic".into();
     });
     let id = match empty.start(IMAGE, json!({"prompt": "x", "width": 64, "height": 64})).unwrap() {
         Started::Job(id) => id,
@@ -286,20 +291,57 @@ fn best_quality_sends_qwen21_steps_guidance_and_negative() {
 }
 
 #[test]
-fn best_quality_renders_krea2_at_about_two_megapixels() {
-    assert_eq!(image_quality_size("krea2-turbo/image", "best", 1024, 1024), (1440, 1440));
-    assert_eq!(image_quality_size("krea2-turbo/image", "balanced", 1024, 1024), (1248, 1248));
-    assert_eq!(image_quality_size("krea2-turbo/image", "fast", 1024, 1024), (1024, 1024));
-    assert_eq!(image_quality_size("krea2-turbo/image", "best", 2048, 2048), (2048, 2048), "already larger: as asked");
-    assert_eq!(image_quality_size("qwen-2.1/image", "best", 1024, 1024), (1024, 1024));
-    let (w, h) = image_quality_size("krea2-turbo/image", "best", 1024, 576);
-    assert!(w % 16 == 0 && h % 16 == 0 && w <= 2048 && (u64::from(w) * u64::from(h)).abs_diff(BEST_KREA_PIXELS) < 120_000, "{w}x{h}");
+fn quality_levels_supersample_krea2_and_ultra_refines() {
+    assert_eq!(quality_factor("krea2-turbo/image", "basic"), 1.0);
+    assert_eq!(quality_factor("krea2-turbo/image", "better"), 1.25);
+    assert_eq!(quality_factor("krea2-turbo/image", "best"), 1.5);
+    assert_eq!(quality_factor("krea2-turbo/image", "ultra"), 1.0, "Ultra's 2x is its refine pass");
+    for level in ["basic", "better", "best", "ultra"] {
+        assert_eq!(quality_factor("moss-image/image", level), 1.0, "MOSS got softer supersampled");
+        assert_eq!(quality_factor("moss-image/turbo", level), 1.0);
+    }
+    // Krea's old 1440² Best size is gone from the legacy sizes.
+    assert_eq!(image_quality_size("krea2-turbo/image", "best", 1024, 1024), (1024, 1024));
+    assert_eq!(quality_render_size("krea2-turbo/image", "best", 1024, 1024), ((1536, 1536), None));
+    assert_eq!(quality_render_size("krea2-turbo/image", "better", 1024, 1024), ((1280, 1280), None));
+    assert_eq!(quality_render_size("krea2-turbo/image", "ultra", 1024, 1024), ((1024, 1024), Some((2048, 2048))));
+    assert_eq!(quality_render_size("moss-image/image", "best", 1024, 1024), ((1024, 1024), None));
+
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
-    s.edit_prefs(|p| p.integrations.quality = "best".into());
-    s.execute(IMAGE, json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024})).unwrap();
-    let req = fake.state().runs.last().unwrap().request.clone();
-    assert_eq!((req["width"].as_u64(), req["height"].as_u64()), (Some(1440), Some(1440)), "{req}");
+    let sent = || fake.state().runs.last().unwrap().request.clone();
+    let ask = json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024});
+    // Best (the default): rendered at 1.5x, the document at the asked size.
+    s.edit_prefs(|p| p.integrations.quality_level = "best".into());
+    let r = s.execute(IMAGE, ask.clone()).unwrap();
+    assert_eq!((sent()["width"].as_u64(), sent()["height"].as_u64()), (Some(1536), Some(1536)));
+    assert_eq!((r["width"].as_u64(), r["renderWidth"].as_u64()), (Some(1024), Some(1536)), "{r}");
+    assert_eq!(s.active().unwrap().doc.bounds().width(), 1024);
+    s.edit_prefs(|p| p.integrations.quality_level = "better".into());
+    s.execute(IMAGE, ask.clone()).unwrap();
+    assert_eq!(sent()["width"], 1280);
+    // Ultra on a card under 24 GB reads as Best.
+    s.edit_prefs(|p| {
+        p.integrations.quality_level = "ultra".into();
+        p.integrations.memory_profile = "16gb".into();
+    });
+    s.execute(IMAGE, ask.clone()).unwrap();
+    assert_eq!(sent()["width"], 1536);
+    assert!(sent()["params"].get("refine").is_none());
+    // Ultra on 24 GB+: the asked size, then the refine pass at 2x; the document at the asked size.
+    s.edit_prefs(|p| p.integrations.memory_profile = "24gb".into());
+    let r = s.execute(IMAGE, ask.clone()).unwrap();
+    let req = sent();
+    assert_eq!(req["width"], 1024, "{req}");
+    assert_eq!(req["params"]["refine"], json!({"width": 2048, "height": 2048, "denoise": ULTRA_REFINE_DENOISE, "steps": ULTRA_REFINE_STEPS}), "{req}");
+    assert_eq!(r["width"], 1024);
+    // MOSS stops at 1536 a side (it failed at 2048), same aspect.
+    s.execute(IMAGE, json!({"prompt": "x", "template": "moss-image/turbo", "target": "document", "width": 2048, "height": 1024})).unwrap();
+    assert_eq!((sent()["width"].as_u64(), sent()["height"].as_u64()), (Some(1536), Some(768)));
+    // MOSS is never supersampled.
+    s.edit_prefs(|p| p.integrations.quality_level = "best".into());
+    s.execute(IMAGE, json!({"prompt": "x", "template": "moss-image/image", "target": "document", "width": 1024, "height": 1024})).unwrap();
+    assert_eq!(sent()["width"], 1024);
 }
 
 /// `supersample` renders at that many times the asked size (Quality's own sizes aside), within
@@ -339,11 +381,15 @@ fn image_refine_sends_the_larger_size() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     s.edit_prefs(|p| p.integrations.quality = "best".into());
-    let ask = |r: Value| json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024, "refine": r});
+    let ask =
+        |r: Value| json!({"prompt": "x", "template": "krea2-turbo/image", "target": "document", "width": 1024, "height": 1024, "supersample": 1, "refine": r});
     s.execute(IMAGE, ask(json!({"scale": 1.5, "denoise": 0.3, "steps": 4}))).unwrap();
     let req = fake.state().runs.last().unwrap().request.clone();
-    assert_eq!(req["params"]["refine"], json!({"width": 2160, "height": 2160, "denoise": 0.3, "steps": 4}), "{req}");
-    s.execute(IMAGE, ask(json!({"scale": 2.0, "denoise": 0.3, "steps": 4}))).unwrap();
+    assert_eq!(req["params"]["refine"], json!({"width": 1536, "height": 1536, "denoise": 0.3, "steps": 4}), "{req}");
+    let mut big = ask(json!({"scale": 2.0, "denoise": 0.3, "steps": 4}));
+    big["width"] = json!(1536);
+    big["height"] = json!(1536);
+    s.execute(IMAGE, big).unwrap();
     let req = fake.state().runs.last().unwrap().request.clone();
     assert_eq!(req["params"]["refine"]["width"], 2560, "capped: {req}");
     s.execute(IMAGE, ask(Value::Bool(false))).unwrap();
