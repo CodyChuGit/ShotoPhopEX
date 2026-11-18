@@ -210,16 +210,18 @@ impl KLinear {
                 // The file's full-precision layers (attention gate, `wo`, `down`) on ConvRot INT8
                 // with a low-rank correction instead of bf16 ([`full_precision_int8`]).
                 #[cfg(feature = "convrot")]
-                if l.is_full_precision()
+                if fp8_layer_on_int8(l.is_full_precision(), full_precision_int8(), fp8_as_int8(crate::fp8::card_has_fp8_mma()))
                     && vb.device().is_cuda()
-                    && full_precision_int8()
                     && in_c.is_multiple_of(crate::model::rotation::GROUP)
                     && out_c.is_multiple_of(8)
                 {
                     let r = crate::model::rotation::regular_hadamard_256(vb.device())?;
+                    let full = l.is_full_precision();
                     let w = l.dequantized(DType::BF16)?;
                     drop(l);
-                    if let Some(rank) = full_precision_rank() {
+                    // The e4m3 layers already sit on a coarse grid: plain INT8 is enough for
+                    // them; the low-rank part is for the file's full-precision layers.
+                    if let Some(rank) = full_precision_rank().filter(|_| full) {
                         let (l1, l2, rest) = low_rank_split(&w, rank)?;
                         let c = crate::convrot::ConvRotLinear::from_weight(&rest, &r)?;
                         vb.device().synchronize()?;
@@ -276,6 +278,32 @@ impl KLinear {
 fn full_precision_int8() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("QIR_KREA2_FP_INT8").map_or(true, |v| v.trim() != "0"))
+}
+
+/// Whether an fp8 file's layer runs on ConvRot INT8: its full-precision layers when
+/// [`full_precision_int8`] says so, its e4m3 layers when [`fp8_as_int8`] does.
+#[cfg(feature = "convrot")]
+fn fp8_layer_on_int8(full_precision: bool, full_on_int8: bool, e4m3_on_int8: bool) -> bool {
+    if full_precision {
+        full_on_int8
+    } else {
+        e4m3_on_int8
+    }
+}
+
+/// The e4m3 layers on ConvRot INT8 (W8A8, the INT8 tensor cores) instead of the fp8 recipe:
+/// by default on a card without FP8 matrix cores (RTX 30, sm_86), where the fp8 recipe
+/// dequantizes each weight to bf16 at every call and multiplies in bf16, at a quarter of the
+/// INT8 rate. `QIR_KREA2_FP8_INT8=1` takes INT8 on every card, `=0` keeps the fp8 recipe.
+#[cfg(feature = "convrot")]
+fn fp8_as_int8(card_has_fp8_mma: bool) -> bool {
+    static ON: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    let forced = *ON.get_or_init(|| match std::env::var("QIR_KREA2_FP8_INT8").ok().as_deref().map(str::trim) {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    });
+    forced.unwrap_or(!card_has_fp8_mma)
 }
 
 /// `QIR_KREA2_FP_LOWRANK=<rank>`: the low-rank part's rank for the full-precision INT8 layers,
@@ -1261,6 +1289,16 @@ mod tests {
         assert_eq!((c.head_dim(), c.axes()), (128, [32, 48, 48]));
         assert_eq!(Krea2Config::mlp_dim(6144, 4), 16384);
         assert_eq!(Krea2Config::mlp_dim(2560, 4), 6912);
+    }
+
+    #[test]
+    #[cfg(feature = "convrot")]
+    fn fp8_layers_take_int8_where_asked() {
+        // Full-precision layers follow their own switch, e4m3 layers theirs.
+        assert!(super::fp8_layer_on_int8(true, true, false));
+        assert!(!super::fp8_layer_on_int8(true, false, true));
+        assert!(super::fp8_layer_on_int8(false, false, true));
+        assert!(!super::fp8_layer_on_int8(false, true, false));
     }
 
     #[test]
