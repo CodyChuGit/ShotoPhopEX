@@ -320,3 +320,42 @@ fn an_edit_shows_what_it_changed_not_only_its_subject() {
     let m = changed_area(&before, &night, w, h);
     assert!(m.iter().all(|v| *v > 0.99));
 }
+
+#[test]
+fn an_edit_s_subject_mask_reaches_past_its_edge_and_fades_out() {
+    // A 20×20 square in a 64×64 result: full inside and a little beyond, then a ramp to nothing.
+    let (w, h) = (64usize, 64usize);
+    let mut subject = vec![0.0f32; w * h];
+    for y in 22..42 {
+        for x in 22..42 {
+            subject[y * w + x] = 1.0;
+        }
+    }
+    let soft = super::soft_subject_edge(&subject, w, h);
+    let r = super::subject_edge_radius(w, h);
+    assert_eq!(r, 3);
+    let at = |x: usize| soft[32 * w + x];
+    assert_eq!(at(32), 1.0, "the inside stays whole");
+    assert_eq!(at(42 + r - 1), 1.0, "the old outline is covered");
+    assert!(at(42 + r) > 0.0 && at(42 + r) < 1.0 && at(42 + r + 2) < at(42 + r), "then it fades");
+    assert!(at(42 + 4 * r) < 1e-3, "and stops");
+    assert_eq!(at(0), 0.0);
+}
+
+#[test]
+fn angles_run_on_qwen_2_1_where_2511_s_fp8_file_cannot() {
+    // RTX 30 (8.6) and older: 2.1 with its own Angles LoRA; RTX 40 (8.9), RTX 50 and an unknown
+    // card: 2511 as ever.
+    assert_eq!(angles_template_for(Some(86)), ANGLES21_TEMPLATE);
+    assert_eq!(angles_template_for(Some(75)), ANGLES21_TEMPLATE);
+    assert_eq!(angles_template_for(Some(89)), ANGLES_TEMPLATE);
+    assert_eq!(angles_template_for(Some(120)), ANGLES_TEMPLATE);
+    assert_eq!(angles_template_for(None), ANGLES_TEMPLATE);
+    assert!(photocraft_genai::template::find(ANGLES21_TEMPLATE).is_ok(), "the 2.1 route has a template");
+    // The 2.1 LoRA's words: quarter views for our 45° steps, no low angle, close-up or not.
+    assert_eq!(angle_prompt_21(45, 0, 5).as_deref(), Some("<mva> front-right quarter view, eye-level shot"));
+    assert_eq!(angle_prompt_21(90, 30, 10).as_deref(), Some("<mva> right side view, elevated shot close-up"));
+    assert_eq!(angle_prompt_21(180, 60, 0).as_deref(), Some("<mva> back view, high-angle shot"));
+    assert_eq!(angle_prompt_21(270, -30, 5).as_deref(), Some("<mva> left side view, eye-level shot"));
+    assert_eq!(angle_prompt_21(30, 0, 5), None);
+}

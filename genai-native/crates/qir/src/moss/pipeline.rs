@@ -620,7 +620,6 @@ pub fn res2s_step(sigma: f64, next: f64) -> Res2sStep {
     }
 }
 
-/// 12 GB mode on a card under [`LOW_VRAM_BELOW`], or as `QIR_MOSS_LOW_VRAM=1` / `0` says.
 /// Qwen3.5-9B's reply to `user` under `system` (thinking off), with the tokens it wrote and
 /// read: the loop of [`MossPipeline::chat`], for any holder of the encoder and its `lm_head`.
 pub(crate) fn write_reply(
@@ -676,11 +675,12 @@ pub(crate) fn load_lm_head(w: &Weights) -> Result<QLinear> {
     w.linear(name)
 }
 
+/// 12 GB mode on a card under (by [`crate::device::card_total`]) [`LOW_VRAM_BELOW`], or as `QIR_MOSS_LOW_VRAM=1` / `0` says.
 fn low_vram_mode(dev: &Device) -> bool {
     match std::env::var("QIR_MOSS_LOW_VRAM").ok().as_deref().map(str::trim) {
         Some("1") => true,
         Some("0") => false,
-        _ => crate::device::free_vram(dev).is_some_and(|(_, total)| total < LOW_VRAM_BELOW),
+        _ => crate::device::card_total(dev).is_some_and(|total| total < LOW_VRAM_BELOW),
     }
 }
 
