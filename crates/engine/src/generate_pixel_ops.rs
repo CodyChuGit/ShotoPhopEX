@@ -78,7 +78,6 @@ pub(super) fn embed_coverage(bounds: Rect, cov: &[f32], rect: Rect) -> Vec<f32> 
 /// and down first, then left and up. A canvas too small for a side leaves that side as it is
 /// (the server crops to its grid and the result is resampled back).
 pub(crate) fn align_to_grid(rect: Rect, canvas: Rect) -> Rect {
-    let step = SIZE_STEP as i32;
     let grow = |lo: i32, hi: i32, clo: i32, chi: i32| -> (i32, i32) {
         let len = (hi - lo).max(1) as u32;
         let want = (len.div_ceil(SIZE_STEP) * SIZE_STEP) as i32;
@@ -89,7 +88,6 @@ pub(crate) fn align_to_grid(rect: Rect, canvas: Rect) -> Rect {
         let lo2 = (hi2 - want).max(clo);
         (lo2, lo2 + want)
     };
-    let _ = step;
     let (x0, x1) = grow(rect.x0, rect.x1, canvas.x0, canvas.x1);
     let (y0, y1) = grow(rect.y0, rect.y1, canvas.y0, canvas.y1);
     Rect::new(x0, y0, x1, y1)
