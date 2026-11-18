@@ -307,7 +307,11 @@ mod tests {
         assert_eq!(default_image_template(&s), "qwen-2.1/image", "a chosen template stays");
         // Quality Fast's own template, only when its files are in the models folder.
         let root = std::env::temp_dir().join(format!("pex-fast-image-{}", std::process::id()));
-        for f in ["diffusion_models/juggernaut-moss/juggernaut_moss_turbo_v1_int8_convrot.safetensors", "text_encoders/qwen3.5_9b_int8_convrot.safetensors", "vae/flux2-vae_small.safetensors"] {
+        for f in [
+            "diffusion_models/juggernaut-moss/juggernaut_moss_turbo_v1_int8_convrot.safetensors",
+            "text_encoders/qwen3.5_9b_int8_convrot.safetensors",
+            "vae/flux2-vae_small.safetensors",
+        ] {
             let path = root.join(f);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, b"").unwrap();

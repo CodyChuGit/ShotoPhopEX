@@ -1804,7 +1804,11 @@ impl Engine for DiffusionEngine {
             Family::MiniMaxH3 => MINIMAX_H3_STEPS,
         };
         let default_guidance = match family {
-            Family::Moss(_) if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT_TURBO, TEMPLATE_MOSS_RESTORE, TEMPLATE_MOSS_JUGGERNAUT_TURBO].contains(&req.model.as_str()) => 1.0,
+            Family::Moss(_)
+                if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT_TURBO, TEMPLATE_MOSS_RESTORE, TEMPLATE_MOSS_JUGGERNAUT_TURBO].contains(&req.model.as_str()) =>
+            {
+                1.0
+            }
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_GUIDANCE,
             Family::Moss(_) => MOSS_GUIDANCE,
             _ => 1.0,
@@ -2250,11 +2254,8 @@ impl DiffusionEngine {
             }
         }
         // Juggernaut MOSS V1 with its card's negative when none is typed, as on CUDA.
-        let negative = if req.model == TEMPLATE_MOSS_JUGGERNAUT && req.negative.trim().is_empty() {
-            moss::JUGGERNAUT_NEGATIVE.to_string()
-        } else {
-            req.negative.clone()
-        };
+        let negative =
+            if req.model == TEMPLATE_MOSS_JUGGERNAUT && req.negative.trim().is_empty() { moss::JUGGERNAUT_NEGATIVE.to_string() } else { req.negative.clone() };
         let ask = gn_mlx::pipeline::Request {
             prompt: req.prompt.clone(),
             negative,

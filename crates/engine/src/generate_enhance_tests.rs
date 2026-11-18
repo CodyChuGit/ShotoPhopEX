@@ -482,7 +482,12 @@ fn a_light_touch_rewrite_is_one_line_and_not_a_keyword_list() {
     use crate::generate_cmds::{EnhanceKind as K, Refusal, check_rewrite};
     let typed = "a lighthouse in a storm, oil painting";
     assert_eq!(
-        check_rewrite(K::Image, typed, "a lighthouse in a storm, oil painting  \nDark green waves break on black rocks under a bruised violet sky, thick strokes of white foam.", ""),
+        check_rewrite(
+            K::Image,
+            typed,
+            "a lighthouse in a storm, oil painting  \nDark green waves break on black rocks under a bruised violet sky, thick strokes of white foam.",
+            ""
+        ),
         Ok("a lighthouse in a storm, oil painting Dark green waves break on black rocks under a bruised violet sky, thick strokes of white foam.".to_string())
     );
     let list = format!("{typed}, {}", "storm, waves, rocks, oil, painting, dramatic, sky, lighthouse, ".repeat(10));

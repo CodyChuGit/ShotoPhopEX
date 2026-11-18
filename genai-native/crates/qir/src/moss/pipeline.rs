@@ -87,7 +87,8 @@ impl Sampling {
     /// schedule, CFG 3, block 22 skipped in the negative (the official sampler), 30 steps.
     pub const JUGGERNAUT: Self = Self::OFFICIAL;
     /// Juggernaut MOSS Turbo (beta), as its card says: `euler_ancestral` / simple, 6 steps, CFG 1.
-    pub const JUGGERNAUT_TURBO: Self = Self { shift: SHIFT, sampler: Sampler::EulerAncestral, skip_uncond: false, eta: 1.0, ostris_refs: false, denoise: 1.0, color_fix: false };
+    pub const JUGGERNAUT_TURBO: Self =
+        Self { shift: SHIFT, sampler: Sampler::EulerAncestral, skip_uncond: false, eta: 1.0, ostris_refs: false, denoise: 1.0, color_fix: false };
     /// An ai-toolkit edit LoRA's run (NO8D's MOSS HighQuality restore, Civitai 2436859): Euler, no
     /// skipped block, references in ostris' layout, as its author's graph; then, from the in-app
     /// rounds of 2026-11-17 (three photos against the shipped Upscale), 45 % redrawn from the

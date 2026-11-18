@@ -402,7 +402,8 @@ impl MossMlx {
                 let x0 = x.subtract(v.multiply(Array::from_f32(s0))?)?;
                 let down = x.multiply(Array::from_f32(st.ratio as f32))?.add(x0.multiply(Array::from_f32((1.0 - st.ratio) as f32))?)?;
                 let k = 0xA5A5_0000_u64 + i as u64;
-                let eps = qwen_image_rs::comfy::torch_randn(req.seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15), channels * lh * lw).map_err(anyhow::Error::msg)?;
+                let eps =
+                    qwen_image_rs::comfy::torch_randn(req.seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15), channels * lh * lw).map_err(anyhow::Error::msg)?;
                 let eps = Array::from_slice(&eps, &shape(&[1, channels, lh, lw])?).as_dtype(x.dtype())?;
                 down.multiply(Array::from_f32(st.scale as f32))?.add(eps.multiply(Array::from_f32(st.renoise as f32))?)?
             } else {
