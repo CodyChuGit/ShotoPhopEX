@@ -81,12 +81,35 @@ pub fn krea2_nvfp4(root: &Path) -> Option<PathBuf> {
 }
 
 /// The Qwen tokenizer's folder for a `models` root: a copy in `text_encoders/qwen25_tokenizer`,
-/// else ComfyUI's own beside the models folder (`<ComfyUI>/comfy/text_encoders/qwen25_tokenizer`).
+/// else ComfyUI's own (`<ComfyUI>/comfy/text_encoders/qwen25_tokenizer`) in a ComfyUI folder
+/// [`comfy_homes`] names.
 pub fn tokenizer_dir(root: &Path) -> Option<PathBuf> {
     let has = |d: &Path| ["vocab.json", "merges.txt", "tokenizer_config.json"].iter().all(|f| d.join(f).is_file());
     let own = root.join("text_encoders").join("qwen25_tokenizer");
-    let comfy = root.parent().map(|p| p.join("comfy").join("text_encoders").join("qwen25_tokenizer"));
+    let comfy = comfy_homes(root).into_iter().map(|h| h.join("comfy").join("text_encoders").join("qwen25_tokenizer"));
     std::iter::once(own).chain(comfy).find(|d| has(d))
+}
+
+/// The folders that may hold ComfyUI's code for a `models` root: beside it, beside the folder it
+/// links to, and above the `models` folder its `text_encoders` or `diffusion_models` links into,
+/// so a models folder made of links into a ComfyUI install, kept elsewhere, still finds
+/// ComfyUI's tokenizer files. Only beside it (until 2026-11-18): every Qwen 2511 edit on such a
+/// folder answered "no engine here serves qwen-edit-2511/edit-lightning-8" (round 10 on the 5090).
+pub fn comfy_homes(root: &Path) -> Vec<PathBuf> {
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let candidates = [
+        root.parent().map(Path::to_path_buf),
+        real(root).and_then(|r| r.parent().map(Path::to_path_buf)),
+        real(&root.join("text_encoders")).and_then(|d| d.ancestors().nth(2).map(Path::to_path_buf)),
+        real(&root.join("diffusion_models")).and_then(|d| d.ancestors().nth(2).map(Path::to_path_buf)),
+    ];
+    let mut homes: Vec<PathBuf> = Vec::new();
+    for c in candidates.into_iter().flatten() {
+        if !homes.contains(&c) {
+            homes.push(c);
+        }
+    }
+    homes
 }
 
 /// Qwen's byte-level BPE tokenizer from `dir`'s `vocab.json`, `merges.txt` and the added tokens
@@ -428,6 +451,17 @@ mod tests {
         let found = find_qwen21(&models).context("all there")?;
         assert_eq!(found.tokenizer, tok);
         assert!(find_krea2(&models).is_none());
+        // A models folder elsewhere whose text_encoders is a link into this ComfyUI's.
+        #[cfg(unix)]
+        {
+            let elsewhere = d.join("elsewhere").join("models");
+            std::fs::create_dir_all(&elsewhere)?;
+            for dir in ["diffusion_models", "text_encoders", "vae"] {
+                std::os::unix::fs::symlink(models.join(dir), elsewhere.join(dir))?;
+            }
+            assert_eq!(tokenizer_dir(&elsewhere), Some(std::fs::canonicalize(&d)?.join("comfy").join("text_encoders").join("qwen25_tokenizer")));
+            assert!(find_qwen21(&elsewhere).is_some(), "found through the links");
+        }
         let _ = std::fs::remove_dir_all(&d);
         Ok(())
     }

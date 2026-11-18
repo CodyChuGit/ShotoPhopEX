@@ -303,7 +303,18 @@ pub(super) fn mask_to_subject(
         // Most of the picture changed: the whole result shows, as the model made it.
         return Ok(());
     }
-    let subject = subject_in(&picture, rect, finder, ctx)?.map(|s| if soft_edge { soft_subject_edge(&s, w, h) } else { s });
+    // Select Subject unavailable (SAM's files not found) costs the subject, not the edit: what
+    // changed still shows. It made every edit fail with "no engine here serves sam3.1/segment"
+    // (round 9 on the 5090, 2026-11-18).
+    let subject = match subject_in(&picture, rect, finder, ctx) {
+        Ok(s) => s,
+        Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+        Err(e) => {
+            eprintln!("edit: no subject mask ({e}); showing what changed");
+            None
+        }
+    };
+    let subject = subject.map(|s| if soft_edge { soft_subject_edge(&s, w, h) } else { s });
     let subject = match (subject, changed) {
         (Some(mut s), Some(c)) => {
             for (a, b) in s.iter_mut().zip(&c) {
