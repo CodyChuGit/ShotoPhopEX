@@ -327,7 +327,7 @@ pub(super) fn rewritten_fill_prompt(
     // Krea 2 AnyPaint: the whole finished picture described, the area seen as flat grey.
     if let (Some(mask), true) = (scene, command == FILL && refs.images.is_empty()) {
         let grey = grey_where(image, mask);
-        let words = format!("What the grey area shows: {}", prompt.trim());
+        let words = format!("{} {}", super::FILL_SCENE_LEAD, prompt.trim());
         return match enhance_prompt(thinker, EnhanceKind::FillScene, &words, Some(&grey), None, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
             Ok(Some(p)) => p,
             Ok(None) | Err(_) => prompt,

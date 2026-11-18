@@ -273,6 +273,7 @@ pub(super) fn run_remove_bg(s: &mut Session, p: &Value) -> Result<Value> {
                 if !matted {
                     cov = crate::select_ml_cmds::refine_coverage(doc, Some(id), all_layers, cov, area);
                 }
+                crate::select_ml_cmds::despeckle_alpha(&mut cov, area, None);
             }
             if let Some(own) = own_alpha {
                 for (c, a) in cov.iter_mut().zip(own) {

@@ -1,0 +1,4 @@
+# NVIDIA's CCCL headers (CUB, Thrust, libcu++) for the Windows release job, which CUDA 13's redist
+# manifest no longer carries (.github/workflows/shotophopex-release.yml). Pinned by version and by
+# the SHA-256 of the win_amd64 wheel, so `pip download --require-hashes` refuses any other file.
+nvidia-cuda-cccl==13.3.5.0.6 --hash=sha256:6e1f96b71d582171cebd9ae1d7ffbfc726e112a0a41aef77b9ead500aad7e0a2

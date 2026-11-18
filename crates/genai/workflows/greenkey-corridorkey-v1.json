@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "id": "greenkey/corridorkey-v1",
+    "name": "Key Green Screen (CorridorKey)",
+    "family": "CorridorKey",
+    "task": "matte",
+    "license": "community",
+    "licenseNote": "CorridorKey (Corridor Digital) is licensed CC BY-NC-SA 4.0 with additional terms; the app ships no weights; you download them yourself from the authors' Hugging Face page.",
+    "needsImage": true,
+    "needsMask": true,
+    "defaults": {
+      "steps": 1,
+      "guidance": 0.0
+    },
+    "models": [
+      {
+        "placeholder": "model",
+        "folder": "corridorkey",
+        "default": "CorridorKey_v1.0.safetensors"
+      }
+    ],
+    "notes": "Native only (genai-native's perception engine, a clean-room engine for CorridorKey's design): a green- or blue-screen picture and a rough hint of the subject (the mask: 0 background, 255 subject) give an RGBA image of the subject's straight (un-mixed) colour and its alpha, at the picture's size. The model works at 2048 x 2048 whatever the picture's shape. Parameter refinerStrength (default 1) scales the full-resolution refiner's corrections. Weights: CorridorKey_v1.0.safetensors from the authors' Hugging Face page (nikopueringer/CorridorKey_v1.0), in models/corridorkey/.",
+    "creator": "Corridor Digital",
+    "description": "Keys a green or blue screen: clean alpha and spill-free subject colour from a rough hint",
+    "badges": [],
+    "counts": {
+      "max": 1,
+      "default": 1
+    },
+    "estimatedSeconds": {
+      "base": 2,
+      "perMegapixel": 0
+    },
+    "pages": [],
+    "parameters": []
+  }
+}
