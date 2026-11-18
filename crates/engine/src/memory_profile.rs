@@ -308,7 +308,7 @@ mod tests {
         // Quality Fast's own template, only when its files are in the models folder.
         let root = std::env::temp_dir().join(format!("pex-fast-image-{}", std::process::id()));
         for f in [
-            "diffusion_models/juggernaut-moss/juggernaut_moss_turbo_v1_int8_convrot.safetensors",
+            "diffusion_models/moss/moss_image_sft_int8_convrot.safetensors",
             "text_encoders/qwen3.5_9b_int8_convrot.safetensors",
             "vae/flux2-vae_small.safetensors",
         ] {
@@ -317,7 +317,7 @@ mod tests {
             std::fs::write(path, b"").unwrap();
         }
         s.edit_prefs(|p| {
-            p.integrations.fast_image_template = "moss-image/juggernaut-turbo".into();
+            p.integrations.fast_image_template = "moss-image/image".into();
             p.integrations.models_path = String::new();
         });
         assert_eq!(default_image_template(&s), "qwen-2.1/image", "not Fast: the chosen template");
@@ -326,7 +326,7 @@ mod tests {
         s.edit_prefs(|p| p.integrations.models_path = empty.to_string_lossy().into_owned());
         assert_eq!(default_image_template(&s), "qwen-2.1/image", "Fast's template not installed");
         s.edit_prefs(|p| p.integrations.models_path = root.to_string_lossy().into_owned());
-        assert_eq!(default_image_template(&s), "moss-image/juggernaut-turbo");
+        assert_eq!(default_image_template(&s), "moss-image/image");
         let _ = std::fs::remove_dir_all(&root);
     }
 

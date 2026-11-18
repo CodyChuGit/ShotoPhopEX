@@ -135,6 +135,10 @@ pub const MOSS_GUIDANCE: f32 = 3.0;
 /// with its 8-step DMD2 LoRA, at the card's 8 steps and CFG 1 (no negative pass).
 pub const TEMPLATE_MOSS_TURBO: &str = "moss-image/turbo";
 /// KandooAI's Juggernaut MOSS (Civitai 3042282, a full fine-tune of MOSS-Image-Base for
+/// photographs; bring your own). Not a choice of its own: a personal build (built with
+/// `PHOTOCRAFT_MOSS_FINETUNE=juggernaut`, or run with `GN_MOSS_FINETUNE=juggernaut`) runs MOSS
+/// Image and MOSS Turbo on it where its files are installed ([`moss_finetune`]); these ids are
+/// the internal recipes.
 /// photographs; bring your own): V1 on its card's recipe (30 Euler steps, CFG 3, block 22
 /// skipped, its negative) and its turbo beta (6 `euler_ancestral` steps, CFG 1).
 pub const TEMPLATE_MOSS_JUGGERNAUT: &str = "moss-image/juggernaut";
@@ -948,6 +952,7 @@ impl DiffusionEngine {
         let edit2511 = self.edit2511_available();
         TEMPLATES
             .iter()
+            .filter(|(t, _, _)| !internal_template(t))
             .filter(|(t, _, f)| {
                 #[cfg(feature = "mlx")]
                 if t.starts_with("moss-image/") {
@@ -1400,6 +1405,34 @@ fn moss_edit_dit_override(template: &str, family: Family) -> Family {
     }
 }
 
+/// The MOSS fine-tune a personal build swaps in for MOSS Image and MOSS Turbo: `GN_MOSS_FINETUNE`
+/// at run time, else `PHOTOCRAFT_MOSS_FINETUNE` at build time. Only `juggernaut` is known;
+/// shipped builds set neither, so their MOSS stays MOSS.
+fn moss_finetune() -> Option<String> {
+    std::env::var("GN_MOSS_FINETUNE")
+        .ok()
+        .or_else(|| option_env!("PHOTOCRAFT_MOSS_FINETUNE").map(str::to_string))
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| v == "juggernaut")
+}
+
+/// The internal Juggernaut recipe a MOSS template runs on a personal build with Juggernaut's
+/// files installed (see [`moss_finetune`]), and the steps the editor sends for the original
+/// template (those mean "the template's", so they become Juggernaut's).
+fn juggernaut_swap(template: &str) -> Option<(&'static str, MossVariant, u32)> {
+    moss_finetune()?;
+    match template {
+        TEMPLATE_MOSS => Some((TEMPLATE_MOSS_JUGGERNAUT, MossVariant::Juggernaut, MOSS_REALISM_STEPS)),
+        TEMPLATE_MOSS_TURBO => Some((TEMPLATE_MOSS_JUGGERNAUT_TURBO, MossVariant::JuggernautTurbo, MOSS_TURBO_STEPS)),
+        _ => None,
+    }
+}
+
+/// The two Juggernaut recipes are internal (never listed to the editor).
+fn internal_template(template: &str) -> bool {
+    [TEMPLATE_MOSS_JUGGERNAUT, TEMPLATE_MOSS_JUGGERNAUT_TURBO].contains(&template)
+}
+
 pub fn family_of(template: &str) -> Option<Family> {
     TEMPLATES.iter().find(|(t, _, _)| *t == template).map(|(_, _, f)| *f)
 }
@@ -1675,6 +1708,21 @@ impl Engine for DiffusionEngine {
         if let Some(why) = &self.refused {
             return Err(EngineError::new(ErrorKind::Unsupported, why.clone()));
         }
+        // A personal build's MOSS fine-tune ([`moss_finetune`]): MOSS Image / Turbo on Juggernaut.
+        let swapped;
+        let req = match juggernaut_swap(&req.model) {
+            Some((internal, v, sent_steps)) if moss::find_files(&self.models_root, v).is_some() => {
+                let mut r = req.clone();
+                r.model = internal.to_string();
+                if r.steps == sent_steps {
+                    r.steps = 0;
+                }
+                eprintln!("gn-diffusion: {} runs on Juggernaut MOSS ({internal})", req.model);
+                swapped = r;
+                &swapped
+            }
+            _ => req,
+        };
         let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model).map(|f| moss_edit_dit_override(&req.model, f))) else {
             let served: Vec<&str> = TEMPLATES.iter().map(|(t, _, _)| *t).collect();
             return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not served here ({} are)", req.model, served.join(", "))));

@@ -1192,7 +1192,7 @@ pub struct Integrations {
     pub default_image_template: String,
     /// The image template Quality Fast runs when the call names none and its files are
     /// installed, ahead of [`Self::default_image_template`] (empty = the same as the other
-    /// qualities). Set per machine, e.g. `moss-image/juggernaut-turbo`.
+    /// qualities). Set per machine, e.g. `moss-image/turbo`.
     pub fast_image_template: String,
     /// The memory profile the AI defaults are matched to: `auto` (the one detected at launch,
     /// [`Self::detected_memory_profile`]) or one of [`crate::memory_profile::PREF_NAMES`]. It
