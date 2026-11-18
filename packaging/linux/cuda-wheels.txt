@@ -1,0 +1,12 @@
+# NVIDIA's CUDA 13 pip wheels the Linux release job builds with and ships libraries from
+# (.github/workflows/shotophopex-release.yml). Pinned by version and by the SHA-256 of the
+# manylinux x86_64 wheel PyPI serves, so `pip download --require-hashes` refuses any other file.
+# To bump one: change the version and take the new hash from https://pypi.org/pypi/<name>/<version>/json.
+nvidia-cuda-nvcc==13.5.37 --hash=sha256:f5c4f7ead5d964fb4af42bbf1e6d3ec3c1e6e9d83b53749f691d387e7fcaa3a7
+nvidia-cuda-crt==13.5.37 --hash=sha256:e898b7f73d3035fa89915a3f7bf3b54a73e90249746111aed295822c4729bb29
+nvidia-nvvm==13.5.37 --hash=sha256:c41bfa362e407405163f103c2229f0765f8cc2ed7d148b754dc77f228bf7e070
+nvidia-cuda-runtime==13.5.37 --hash=sha256:df2b79a8852f10d1fef8c848489c49eebb5754051bf870202a862831412b179d
+nvidia-cuda-cccl==13.3.5.0.6 --hash=sha256:d5230098fa2df5021e1a00c0c4eee41797671a91119d31e892463e5ccf3ee326
+nvidia-cublas==13.10.0.20 --hash=sha256:dcc6d63884c53d07e267ce7e6feac17b2538cebaafec5db865736c3e28e4dc84
+nvidia-curand==10.4.5.25 --hash=sha256:22bb226a857e5888fe6b54ae465fc4371296bcff13a35f79e19691bcf454f529
+nvidia-cuda-nvrtc==13.5.37 --hash=sha256:86b4d68058807988b7d9af5b44917a0601e9c337f35ccd657bfb3c759ff8d8bc
