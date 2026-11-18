@@ -218,7 +218,7 @@ fn progress_is_monotonic_and_reaches_one() {
     assert!(matches!(e.outcome, JobOutcome::Done(_)), "{e:?}");
     assert!(seen.windows(2).all(|w| w[0] <= w[1]), "monotonic: {seen:?}");
     let info = s.jobs_with_recent().into_iter().find(|j| j.id == id).unwrap();
-    assert_eq!((info.state, info.progress), ("done", 1.0));
+    assert_eq!((info.state, info.progress, info.message.as_str()), ("done", 1.0, ""));
 }
 
 #[test]
