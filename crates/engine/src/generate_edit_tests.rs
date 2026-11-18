@@ -152,7 +152,7 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     assert_eq!(
         angle_prompt(315, -30, 0).as_deref(),
         Some(
-            "<sks> front-left quarter view low-angle shot wide shot The camera has moved a little, 45 degrees, to the subject's left: a three-quarter view with most of the front still visible. The camera is close to the ground, below the subject, and looks up at it: a low-angle view from 30 degrees below. The camera has moved back: the whole subject and its surroundings are in the frame."
+            "<sks> front-left quarter view low-angle shot wide shot The camera has moved a little, 45 degrees, to the subject's left: a three-quarter view with most of the front still visible. The camera is close to the ground, below the subject, and looks up at it: a low-angle view from 30 degrees below. The camera has moved back: the whole scene is in the frame, with more around it."
         )
     );
     for p in [json!({"rotation": 30}), json!({"rotation": 360}), json!({"tilt": 45}), json!({"zoom": 7}), json!({"zoom": 2.5}), json!({"variations": 9})] {

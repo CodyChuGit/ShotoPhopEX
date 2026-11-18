@@ -58,7 +58,9 @@ pub fn angle_sentence(rotation: u32, tilt: i32, zoom: u32) -> String {
         _ => "",
     };
     let distance = match zoom {
-        0 => "The camera has moved back: the whole subject and its surroundings are in the frame.",
+        // "Scene", not "subject": the subject wording mirrored a landscape with a seam down the
+        // middle (2 seeds) and swapped a house; never worse on the other 8 kinds (2026-11-18).
+        0 => "The camera has moved back: the whole scene is in the frame, with more around it.",
         10 => "The camera has moved close: the subject's main part fills the frame.",
         _ => "",
     };
