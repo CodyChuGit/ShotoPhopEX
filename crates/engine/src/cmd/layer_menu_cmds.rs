@@ -389,6 +389,52 @@ fn color_decontaminate(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Layer › Matting › Remove Spill: green or blue screen spill taken out of the layer, its
+/// brightness kept (the screen channel comes down to the other two, which share what it lost).
+/// `screen: auto` reads the backdrop: the pixels outside the selection when there is one, else
+/// the layer's see-through fringe.
+fn despill(s: &mut Session, p: &Value) -> Result<Value> {
+    use photocraft_algo::matting::{Screen, SpillLimit};
+    const CMD: &str = "layer.matting.despill";
+    let screen = match p.get("screen").and_then(Value::as_str).unwrap_or("auto") {
+        "auto" => None,
+        "green" => Some(Screen::Green),
+        "blue" => Some(Screen::Blue),
+        v => return Err(bad(CMD, format!("`screen` must be auto, green or blue (got `{v}`)"))),
+    };
+    let limit = match p.get("mode").and_then(Value::as_str).unwrap_or("average") {
+        "average" => SpillLimit::Average,
+        "max" => SpillLimit::Max,
+        v => return Err(bad(CMD, format!("`mode` must be average or max (got `{v}`)"))),
+    };
+    let strength = num(p, "strength", 100.0).clamp(0.0, 100.0) / 100.0;
+    let id = layer_param(s, &Value::Null)?;
+    let mut used = screen.unwrap_or(Screen::Green);
+    s.edit("Remove Spill", |doc, _| {
+        let selected = doc.selection.clone();
+        let surf = crate::commands::paint_surface(doc, id, &Value::Null)?;
+        let r = surf.content_bounds();
+        if r.is_empty() {
+            return Ok(());
+        }
+        let mut px = read_rgba(surf, r);
+        used = screen.unwrap_or_else(|| {
+            let rgb: Vec<[f32; 3]> = px.iter().map(|q| [q[0], q[1], q[2]]).collect();
+            // The rough alpha: the selection, or the layer's own; empty pixels say nothing.
+            let rough: Vec<f32> = match &selected {
+                Some(sel) => sel.read_region(r),
+                None => px.iter().map(|q| if q[3] <= 0.0 { 1.0 } else { q[3] }).collect(),
+            };
+            photocraft_algo::matting::detect_screen(&rgb, &rough)
+        });
+        photocraft_algo::matting::despill(&mut px, used, limit, strength);
+        write_rgba(surf, r, &px);
+        surf.prune();
+        Ok(())
+    })?;
+    Ok(json!({"screen": match used { Screen::Green => "green", Screen::Blue => "blue" }}))
+}
+
 // ---------- smart object stack modes ----------
 
 fn stack_mode(s: &mut Session, p: &Value, mode: Option<StackMode>) -> Result<Value> {
@@ -1037,6 +1083,14 @@ pub fn specs() -> Vec<CommandSpec> {
             r##"{"amount":0..100=100,"radius":1..100=4}"##,
             has_raster,
             color_decontaminate
+        ),
+        spec!(
+            "layer.matting.despill",
+            "Remove Spill…",
+            ["Layer", "Matting"],
+            r##"{"screen":"auto|green|blue","strength":0..100=100,"mode":"average|max"} → {"screen"} (auto: blue when the backdrop, outside the selection or the layer's see-through fringe, is clearly bluer than green)"##,
+            has_raster,
+            despill
         ),
         stack_spec!("entropy", "Entropy", Some(StackMode::Entropy)),
         stack_spec!("kurtosis", "Kurtosis", Some(StackMode::Kurtosis)),

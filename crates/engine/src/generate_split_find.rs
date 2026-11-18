@@ -299,7 +299,12 @@ pub(super) fn matte_all(
         }
         None => instances.iter().map(|(cov, _, _)| cov.clone()).collect(),
     };
-    for (s, a) in subjects.iter_mut().zip(alphas) {
+    for (i, (s, mut a)) in subjects.iter_mut().zip(alphas).enumerate() {
+        // A matted alpha loses the specks and islands the matting left about the picture (a
+        // subject's own separate parts are large against it and stay).
+        if used != Edges::Hard && only.is_none_or(|o| o == i) {
+            crate::select_ml_cmds::despeckle_alpha(&mut a, area, None);
+        }
         s.alpha = a;
     }
     Ok(used)

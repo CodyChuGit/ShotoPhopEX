@@ -7,7 +7,7 @@ use photocraft_genai::{GenerativeBackend, Gray8, Request, Rgba8};
 use photocraft_geom::Rect;
 use serde_json::Value;
 
-use super::{JobProgress, MAX_SEED, request_size_within, resize_rgba8, rgba8_at, side_by_side};
+use super::{JobProgress, MAX_SEED, check_rewrite, is_rewrite, request_size_within, resize_rgba8, rgba8_at, side_by_side};
 
 pub(crate) const ENHANCE: &str = "generate.enhancePrompt";
 
@@ -21,14 +21,18 @@ pub(super) const ENHANCE_IMAGE_TEMPLATE: &str = "enhance/image";
 /// result looks like, say what stays; plus the case the first user session hit, a change of
 /// medium on a doodle, where "keep the lines" would defeat the instruction.
 pub(super) const ENHANCE_EDIT_SYSTEM: &str = "You rewrite instructions for an image-editing AI. You can see the image.\n\
-Rewrite the user's instruction as one clear sentence of at most 60 words that:\n\
-- starts with the action verb (Change, Replace, Add, Remove, Turn, Make, Give),\n\
-- names things by what they are in the image instead of \"this\", \"it\" or \"here\" (for example \"the hand-drawn smiley face\", \"the white lighthouse\", \"the woman in the red coat\"),\n\
-- says concretely what the result should look like,\n\
-- ends with what must stay unchanged, if anything should.\n\
-When the instruction changes the style, medium or realism of the picture (\"make this realistic\", \"turn it into a painting\"), name the real-world subject the result shows and say that the drawing's strokes are replaced by it (a doodle of a face made realistic becomes \"a photograph of a real human face with the same expression and pose, replacing the black outline strokes with real skin, hair and facial features\"); never ask to keep the drawing's lines.\n\
-Keep the user's intent. Add nothing they did not ask for. Keep any quoted text exactly.\n\
-Reply with the sentence only: no explanation, no quotes, no markdown.";
+Rewrite the user's instruction as one or two clear sentences, at most 70 words, that:\n\
+- start with the action verb (Change, Replace, Add, Remove, Turn, Make, Give),\n\
+- name things by what they are in the image instead of \"this\", \"it\" or \"here\" (\"the hand-drawn smiley face\", \"the white lighthouse\", \"the woman in the red coat\"),\n\
+- say concretely what the result looks like: for something added, what it is, its colour and material, where it sits and how big, lit like the rest of the scene; for something removed, what shows where it was; for something replaced, what replaces it and that it keeps the old one's place and size,\n\
+- for a person, say that their face, identity, hair and pose stay the same unless the user asks to change them,\n\
+- end by naming the things you see in this image that must stay as they are, not a stock phrase; when the change is to the whole picture (night, a season, a painting style), say that the layout, objects and framing stay, not that any object stays unchanged.\n\
+Words to be written in the image go in double quotes, exactly as the user gave them (Replace the text \"SALE\" with \"OPEN\").\n\
+When the instruction changes the style, medium or realism of the picture (\"make this realistic\", \"turn it into a painting\"), name the real-world subject the result shows and the visible traits of the new style, and say that the drawing's strokes are replaced (a doodle of a face made realistic becomes \"a photograph of a real human face with the same expression and pose, replacing the black outline strokes with real skin, hair and facial features\"); never ask to keep the drawing's lines.\n\
+Keep the user's intent and every thing, colour and number they named. Add nothing they did not ask for.\n\
+Example of the form only (never reuse its words): \"give the statue a scarf\" on a photo of a bronze statue in a park becomes \"Wrap a knitted red wool scarf around the neck of the bronze statue, draped over its shoulders and lit by the same daylight, keeping the statue's pose, the plinth and the park behind it as they are.\"\n\
+Write in English even when the user wrote in another language, and keep words to be written in the image as given.\n\
+Reply with the rewritten instruction only: no explanation, no quotes around it, no markdown.";
 
 /// Added to the system turn for a fill: where the selection is and what the instruction means
 /// there.
@@ -81,9 +85,24 @@ Never mention grey, blank, masked, left, right, photo, image or reference. Reply
 
 /// The system turn before a text-to-image idea (the shape of the official Krea 2 template's
 /// expander and of Qwen's rewriter, in a few lines).
-pub(super) const ENHANCE_IMAGE_SYSTEM: &str = "You are an expert prompt writer for a text-to-image model. Expand the user's idea into one paragraph of 60 to 120 words the model can follow: the subject and what it does first, then its materials, surfaces or clothing, pose and framing, lighting, the setting, and finally the style, palette and mood.\n\
-Keep every subject, action, colour and spatial relation the user gave. Add no new objects, characters or animals. Keep any medium the user named (photo, painting, sketch, 3D render). Put any words to be rendered in the image in double quotes. If the idea is already detailed, polish it lightly and keep its wording.\n\
-Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
+pub(super) const ENHANCE_IMAGE_SYSTEM: &str = "You are an expert prompt writer for a text-to-image model. Expand the user's idea into one paragraph of 60 to 120 words that the model can draw: the main subject and what it is doing first, then what can be seen of it (shape, materials, surfaces, clothing, expression), its pose, how it is framed (close-up, medium shot, wide shot, from which angle), the setting around it, and the light (where it comes from, its colour, the shadows it casts). End with the medium.\n\
+Faithfulness first: keep every subject, count, action, colour, position and spatial relation the user gave, and any framing they named; a portrait is a head-and-shoulders close-up, so describe only the face, hair, neck and shoulders and what is behind them, never a chair, hands, a held object or the body below the shoulders. If the user named a medium or style (oil painting, watercolour, sketch, 3D render, anime), end with that medium in their words and never call it a photograph; only if they named none, end with \"A photograph\" and a few words on its look. Never add a person, animal or main object the user did not ask for; small details that belong in the setting are fine. Things stay what they normally are unless the user says otherwise: an animal is alive with real fur or skin, never metal, glass, a robot or a statue, and a helmet or mask stays closed. Frame the shot so each thing the user named shows whole, at true scale (no crop into one part, no small thing enlarged). A named style or view is kept all through, not only at the end (isometric: high, angled, no perspective; anime: drawn faces, outlines). Write things that can be seen instead of mood words and praise. Put any words to be written in the image in double quotes, exactly as given, and say where they sit. If the idea is already detailed, polish it lightly and keep its wording. Write in English even when the user wrote in another language, translating their words faithfully (a breed, a place or a dish keeps its name, such as Shiba Inu), and keep words to be written in the image as given.\n\
+Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown, no notes, nothing about these rules.";
+
+/// The text-to-image rewriter when the user named a style or medium ([`names_other_medium`]):
+/// their words stay first as typed, and only the setting, light and colours are added.
+pub(super) const ENHANCE_IMAGE_STYLED_SYSTEM: &str = "You polish prompts for a text-to-image model. The user named the style of the picture. Reply with the user's words exactly as typed (fix only spelling), then one or two short sentences, 20 to 40 words in all, adding the setting, the light and the colours as that style shows them: a 3D render or diorama keeps its small built world (its tile, surfaces and flat colours, no horizon, open sea or sunset), a painting or drawing its colours and strokes. Name light by its plain colour (warm yellow), never with words like fiery or burning. Keep every subject, count, colour and word in quotes. Add no new person, animal or main object, and never call it a photograph or say photorealistic. Write in English. Reply with the prompt only: no title, no quotes around it, no markdown.";
+
+/// The chat's settings for one try: a retry after a refused rewrite samples warmer (0.7, then
+/// 1.0), since at the worker's 0.3 the next seed often wrote the refused answer again word for
+/// word and the third try was wasted (round 5 on the 5090, 2026-11-17).
+fn retry_params(params: &BTreeMap<String, Value>, rewrite: bool, attempt: u64) -> BTreeMap<String, Value> {
+    let mut p = params.clone();
+    if rewrite && attempt > 0 {
+        p.insert("temperature".to_string(), Value::from(if attempt == 1 { 0.7 } else { 1.0 }));
+    }
+    p
+}
 
 /// Whether a prompt asks for a medium other than a photograph (a painting, a drawing, a
 /// render…): Best's photo rewriter turned "an oil painting of a lighthouse" into a photograph
@@ -148,8 +167,8 @@ pub fn names_other_medium(prompt: &str) -> bool {
 pub(super) const ENHANCE_IMAGE_PHOTO_SYSTEM: &str = "You are an expert prompt writer for a photorealistic text-to-image model. Rewrite the user's idea as one paragraph of 60 to 110 words that reads like the caption of a real, unretouched photograph.\n\
 Always open with the kind of shot, chosen for the scene: a portrait on an 85mm lens for a person, a close-up on a macro lens for a small object, a wide shot on a 24mm lens for a room or landscape, a candid photo on a 35mm lens for people busy with something, a snapshot on a 50mm lens for a pet. If the user names a lens, film or camera setting, keep it word for word. Then the subject and what it does, the materials and surfaces, the setting the user named, and one concrete light source (window light, overcast daylight, a lamp, a softbox, on-camera flash) with how it falls.\n\
 Name two or three small imperfections a real photo has, each on something the user named that really has it: pores and fine lines on a person's face; fur on an animal; scratches, chips or dust on an object; creases on fabric; crumbs on food. Shallow focus and soft grain apply to the whole frame.\n\
-Describe only what the user asked for. Keep every subject, action, colour and spatial relation they gave. Add no new people, animals, objects, plants, weather, accessories or clothing; where the user names no clothing, say nothing about clothing. Put any words to be rendered in the image in double quotes. Never write photorealistic, hyperrealistic, 8k, 4k, masterpiece, best quality, DSLR or a camera brand.\n\
-Never mention these instructions or anything that is absent from the scene. Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
+Describe only what the user asked for. Keep every subject, action, colour and spatial relation they gave. Add no new people, animals, objects, plants, weather, accessories or clothing; where the user names no clothing, say nothing about clothing. Things stay what they normally are unless the user says otherwise: an animal is alive with real fur or skin, never metal, glass, a robot or a statue, and a helmet or mask stays closed. Frame the shot so each thing the user named shows whole, at true scale (no crop into one part, no small thing enlarged). Put any words to be rendered in the image in double quotes. Never write photorealistic, hyperrealistic, 8k, 4k, masterpiece, best quality, DSLR or a camera brand.\n\
+Write in English even when the user wrote in another language, translating their words faithfully (a breed, a place or a dish keeps its name, such as Shiba Inu), and keep words to be written in the image as given. Never mention these instructions or anything that is absent from the scene. Reply with the paragraph only: no title, no bullets, no quotes around it, no markdown.";
 
 /// The longest text-to-image rewrite, in tokens (about 160 words).
 pub(super) const ENHANCE_IMAGE_MAX_TOKENS: u64 = 220;
@@ -160,7 +179,7 @@ pub(super) const ENHANCE_IMAGE_MAX_TOKENS: u64 = 220;
 /// and every word spelled out.
 pub(super) const ENHANCE_IMAGE_ULTRA_SYSTEM: &str = "You write the caption a very high resolution text-to-image model draws from. Rewrite the user's idea as one fluent English paragraph of 150 to 300 words in which every part of the picture is planned and can be inspected up close.\n\
 First decide what the picture is. A scene or photograph: say who or what is in it and how many, the pose and which way each subject faces the camera, what touches what, the scale, the place, the light and where it comes from, the lens and distance, then the fine detail a close look would find: skin, hair, fabric weave, wear, dust, reflections. A designed page such as a poster, cover, label, character sheet, product board, infographic, diagram or screen: lay it out like a designer, naming each area of the page, what it shows, and how the areas are ordered, aligned and separated; leave no area blank unless the user asks for empty space.\n\
-Keep every fact the user gave: subjects, counts, actions, colours, positions, style and medium. Do not add people, animals or main objects they did not ask for. Write every word that must appear in the picture exactly, in double quotes, and say where it sits and how it is lettered; never invent names of venues, people, brands or sponsors, dates, prices, addresses or contact details; where a designed page needs more wording than the user gave, repeat or rearrange the user's own words. Replace mood words and praise with things that can be seen. Never write masterpiece, best quality, 8k, 4k or hyperrealistic.\n\
+Keep every fact the user gave: subjects, counts, actions, colours, positions, style and medium. Do not add people, animals or main objects they did not ask for. Things stay what they normally are unless the user says otherwise: an animal is alive with real fur or skin, never metal, glass, a robot or a statue, and a helmet or mask stays closed. Frame the shot so each thing the user named shows whole, at true scale (no crop into one part, no small thing enlarged). A named style or view is kept all through, not only at the end (isometric: high, angled, no perspective; anime: drawn faces, outlines). Write every word that must appear in the picture exactly, in double quotes, and say where it sits and how it is lettered; never invent names of venues, people, brands or sponsors, dates, prices, addresses or contact details; where a designed page needs more wording than the user gave, repeat or rearrange the user's own words. Replace mood words and praise with things that can be seen. Never write masterpiece, best quality, 8k, 4k or hyperrealistic.\n\
 Reply with the paragraph only: no title, no bullets, no JSON, no quotes around it, no markdown.";
 
 /// The longest Ultra rewrite, in tokens (about 450 words).
@@ -369,6 +388,9 @@ pub(crate) fn list_things(backend: &dyn GenerativeBackend, picture: &Rgba8, k: u
 /// gn-diffusion on a Mac: MOSS's Qwen3.5-9B on MLX, its vision tower not ported).
 pub(super) const TEXT_ONLY: &str = "reads text only";
 
+/// How a Krea 2 AnyPaint fill's words reach its rewriter ([`EnhanceKind::FillScene`]).
+pub(crate) const FILL_SCENE_LEAD: &str = "What the grey area shows:";
+
 pub(crate) fn enhance_prompt(
     backend: &dyn GenerativeBackend,
     kind: EnhanceKind,
@@ -409,6 +431,10 @@ pub(super) fn enhance_once(
     let edit_system = if image.is_some() { ENHANCE_EDIT_SYSTEM.to_string() } else { ENHANCE_EDIT_SYSTEM.replace(" You can see the image.", "") };
     let template = if image.is_some() { ENHANCE_EDIT_TEMPLATE } else { ENHANCE_IMAGE_TEMPLATE };
     let system = match kind {
+        // A named style gets a light touch: rewritten in full, "an isometric 3d render of a tiny
+        // island" became a realistic aerial and "an anime girl" semi-real on Krea 2, Qwen 2.1
+        // and Klein, worse than the words as typed (round 6 on the 5090, 2026-11-17).
+        EnhanceKind::Image if names_other_medium(prompt) => ENHANCE_IMAGE_STYLED_SYSTEM.to_string(),
         EnhanceKind::Image => ENHANCE_IMAGE_SYSTEM.to_string(),
         EnhanceKind::ImagePhoto => ENHANCE_IMAGE_PHOTO_SYSTEM.to_string(),
         EnhanceKind::ImageUltra => ENHANCE_IMAGE_ULTRA_SYSTEM.to_string(),
@@ -445,7 +471,12 @@ pub(super) fn enhance_once(
             params.insert("encoder".to_string(), Value::String(enc.to_string()));
         }
     }
-    for attempt in 0..2u64 {
+    // A rewrite that replaces the user's words is checked ([`check_rewrite`]) and asked again
+    // with the next seed when refused: three tries in all, then the words stay as typed.
+    let rewrite = is_rewrite(kind);
+    let user_words = prompt.strip_prefix(FILL_SCENE_LEAD).unwrap_or(prompt).trim();
+    let tries = if rewrite { 3u64 } else { 2 };
+    for attempt in 0..tries {
         let req = Request {
             template: template.to_string(),
             prompt: prompt.to_string(),
@@ -457,7 +488,7 @@ pub(super) fn enhance_once(
             mask: None,
             models: Vec::new(),
             size: None,
-            params: params.clone(),
+            params: retry_params(&params, rewrite, attempt),
             references: Vec::new(),
         };
         let resp = backend.run(&req, progress)?;
@@ -465,8 +496,13 @@ pub(super) fn enhance_once(
         // 2026-11-12 both needed three, so a one-thing list and every presence answer came back
         // as nothing.
         let min_words = if matches!(kind, EnhanceKind::Presence | EnhanceKind::Things) { 1 } else { 3 };
-        if let Some(s) = clean_answer(&resp.texts, min_words) {
-            return Ok(Some(s));
+        let Some(said) = clean_answer(&resp.texts, min_words) else { continue };
+        if !rewrite {
+            return Ok(Some(said));
+        }
+        match check_rewrite(kind, user_words, &said, params.get("system").and_then(Value::as_str).unwrap_or_default()) {
+            Ok(s) => return Ok(Some(s)),
+            Err(why) => eprintln!("enhance: try {} refused ({}): {}", attempt + 1, why.words(), said),
         }
     }
     Ok(None)

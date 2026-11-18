@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "id": "moss-image/juggernaut",
+    "name": "Generate Image (Juggernaut MOSS)",
+    "family": "moss-image",
+    "task": "image",
+    "license": "permissive",
+    "licenseNote": "Juggernaut MOSS (KandooAI, Civitai 3042282 / Hugging Face Kandoo/Juggernaut-Moss, 2026-11) is a full fine-tune of MOSS-Image-Base, Apache-2.0 on its Hugging Face cards (Civitai asks for credit). Bring your own: the app ships no weights.",
+    "needsImage": false,
+    "needsMask": false,
+    "defaults": {
+      "steps": 30,
+      "guidance": 3.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "juggernaut_moss_v1_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3.5_9b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "flux2-vae_small.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native qir::moss) on Juggernaut MOSS V1's card recipe: 30 Euler steps on the shift-5 schedule, CFG 3 with block 22 skipped in the negative branch, the card's photo negative when none is typed, the FLUX.2 small decoder. The DiT goes in diffusion_models/ (juggernaut_moss_v1_int8_convrot or _bf16); the text encoder, VAE and tokenizer are MOSS-Image's (Comfy-Org/MOSS-Image).",
+    "creator": "KandooAI · OpenMOSS",
+    "description": "Photographic text to image (Juggernaut fine-tune of MOSS)",
+    "badges": [
+      "photo"
+    ],
+    "sizes": {
+      "aspects": [
+        "1:1",
+        "3:2",
+        "2:3",
+        "4:3",
+        "3:4",
+        "16:9",
+        "9:16"
+      ],
+      "min": 512,
+      "max": 2048,
+      "step": 16
+    },
+    "estimatedSeconds": {
+      "base": 2,
+      "perMegapixel": 10
+    },
+    "pages": [
+      "image"
+    ],
+    "parameters": []
+  }
+}

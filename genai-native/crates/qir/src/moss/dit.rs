@@ -637,15 +637,17 @@ impl MossDit {
     }
 
     /// MOSS Edit's reference rows `[sin | cos]` `(h·w, head_dim)` f32 for reference `index`
-    /// (0-based): frame `index + 1`, text index 0, height and width centred on its own grid.
-    pub fn reference_rope(&self, h: usize, w: usize, index: usize) -> Result<Tensor> {
+    /// (0-based): frame `index + 1`, text index `text_index` (0 for MOSS Edit; the prompt's
+    /// length for ai-toolkit's edit LoRAs, which sit the references beside the image), height
+    /// and width centred on its own grid.
+    pub fn reference_rope(&self, h: usize, w: usize, index: usize, text_index: usize) -> Result<Tensor> {
         let nb = self.cfg.head_dim() / 8;
         let bands: Vec<f32> = (0..nb).map(|i| 1.0 / self.cfg.rope_base.powf(i as f32 / nb as f32)).collect();
         let mut rows = Vec::with_capacity(h * w * 8 * nb);
         let (ch, cw) = ((h as f32 - 1.0) / 2.0, (w as f32 - 1.0) / 2.0);
         for y in 0..h {
             for x in 0..w {
-                let pos = [(index + 1) as f32, 0.0, y as f32 - ch, x as f32 - cw];
+                let pos = [(index + 1) as f32, text_index as f32, y as f32 - ch, x as f32 - cw];
                 let phase: Vec<f32> = pos.iter().flat_map(|p| bands.iter().map(move |b| p * b)).collect();
                 rows.extend(phase.iter().map(|p| p.sin()));
                 rows.extend(phase.iter().map(|p| p.cos()));
@@ -658,6 +660,13 @@ impl MossDit {
     /// picture being edited first) through every block once, at t = 0, attending only to each
     /// other; the blocks' keys and values for the sampling steps.
     pub fn prepare_references(&self, refs: &[Tensor]) -> Result<RefCache> {
+        self.prepare_references_at(refs, 0)
+    }
+
+    /// [`Self::prepare_references`] with the references at text index `text_index` of the
+    /// RoPE (ai-toolkit's MOSS edit training, ostris' `MOSSImageOstrisEditModelPatch` with
+    /// `kv_cache`: the prompt's token count, the image tokens' own text index).
+    pub fn prepare_references_at(&self, refs: &[Tensor], text_index: usize) -> Result<RefCache> {
         anyhow::ensure!(!refs.is_empty(), "an edit needs a reference");
         let mut tokens = Vec::with_capacity(refs.len());
         let mut ropes = Vec::with_capacity(refs.len());
@@ -665,7 +674,7 @@ impl MossDit {
             let (_, c, h, w) = r.dims4()?;
             anyhow::ensure!(c == self.cfg.channels, "a reference of {c} channels (the model takes {})", self.cfg.channels);
             tokens.push(self.video_embedder.forward(&r.reshape((c, h * w))?.t()?.contiguous()?.to_dtype(self.dtype)?)?);
-            ropes.push(self.reference_rope(h, w, i)?);
+            ropes.push(self.reference_rope(h, w, i, text_index)?);
         }
         let x = Tensor::cat(&tokens, 0)?;
         let rope32 = Tensor::cat(&ropes, 0)?;
