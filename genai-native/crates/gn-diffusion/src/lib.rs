@@ -159,6 +159,10 @@ pub const MOSS_EDIT_STEPS: u32 = 30;
 /// restore (Civitai 2436859, non-commercial; bring your own): its author's 9 Euler steps at
 /// CFG 1, both prompts empty.
 pub const TEMPLATE_MOSS_RESTORE: &str = "moss-image/restore";
+/// Generative Fill on MOSS-Image (no MOSS inpaint model exists): masked latent blending, the
+/// picture's own latent kept outside the selection every step ([`MossFillRecipe`]). The fill
+/// for Macs and small cards beside FLUX 3 Image Klein's.
+pub const TEMPLATE_MOSS_FILL: &str = "moss-image/fill";
 pub const MOSS_RESTORE_STEPS: u32 = 9;
 /// FLUX 3 Image Klein on MLX (macOS; mflux-community's pre-quantized files): text to image
 /// (the Mac's quality pick next to MOSS Turbo), an edit by
@@ -206,7 +210,8 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 44] = [
+pub const TEMPLATES: [(&str, &str, Family); 45] = [
+    (TEMPLATE_MOSS_FILL, "fill", Family::Moss(MossVariant::Kromoss)),
     (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
     (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
@@ -637,6 +642,18 @@ impl DiffusionEngine {
         KLEIN_DIRS.iter().map(|d| self.models_root.join(d)).find(|d| d.join("transformer").is_dir() && d.join("text_encoder").is_dir())
     }
 
+    /// The LoRAs a MOSS fill recipe runs with on CUDA, in order; missing ones named.
+    fn moss_fill_loras(&self, recipe: MossFillRecipe) -> Result<Vec<PathBuf>, EngineError> {
+        let missing = |what: &str| EngineError::new(ErrorKind::ModelMissing, format!("{what} is not in {}", self.models_root.join(LORA_DIR).display()));
+        let turbo = || self.template_lora(MOSS_TURBO_LORA).ok_or_else(|| missing(&format!("the MOSS turbo LoRA {MOSS_TURBO_LORA}")));
+        let edit = || self.moss_edit_lora().ok_or_else(|| missing("the MOSS Edit LoRA (moss-image-edit/adapter_model.safetensors)"));
+        Ok(match recipe {
+            MossFillRecipe::Turbo => vec![turbo()?],
+            MossFillRecipe::EditTurbo => vec![edit()?, turbo()?],
+            MossFillRecipe::Edit => vec![edit()?],
+        })
+    }
+
     fn moss_edit_lora(&self) -> Option<PathBuf> {
         MOSS_EDIT_LORAS.iter().find_map(|n| self.template_lora(n))
     }
@@ -976,6 +993,7 @@ impl DiffusionEngine {
                     && (*t != TEMPLATE_OUTPAINT_TURBO || [QWEN21_OUTPAINT_LORA, QWEN21_TURBO_LORA].iter().all(|n| self.lora_path(n).is_ok_and(|p| p.is_file())))
                     && (*t != TEMPLATE_KREA2_FILL || self.lora_path(KREA2_ANYPAINT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_MOSS_TURBO || self.template_lora(MOSS_TURBO_LORA).is_some())
+                    && (*t != TEMPLATE_MOSS_FILL || self.moss_fill_loras(moss_fill_recipe(&std::collections::BTreeMap::new())).is_ok())
                     && (*t != TEMPLATE_MOSS_EDIT || self.moss_edit_lora().is_some())
                     && (*t != TEMPLATE_MOSS_EDIT_TURBO || (self.moss_edit_lora().is_some() && self.template_lora(MOSS_TURBO_LORA).is_some()))
                     && (*t != TEMPLATE_KREA2_STYLE
@@ -1400,6 +1418,60 @@ fn moss_edit_dit_override(template: &str, family: Family) -> Family {
     }
 }
 
+/// How `moss-image/fill` runs: `params.moss_fill`, else `GN_MOSS_FILL`, else [`Self::Turbo`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MossFillRecipe {
+    /// Kromoss with its 8-step DMD2 LoRA, CFG 1, the prompt alone (on a Mac: MOSS Turbo's
+    /// stack, as MLX runs it).
+    Turbo,
+    /// MOSS-Image-SFT with the MOSS Edit LoRA and the turbo LoRA, CFG 1, the picture shown
+    /// greyed (on a Mac the edit LoRA alone at 8 steps, CFG 4, as MOSS Edit Turbo there).
+    EditTurbo,
+    /// MOSS Edit (SFT and its LoRA), 30 steps at CFG 4, the picture shown greyed.
+    Edit,
+}
+
+impl MossFillRecipe {
+    fn family(self) -> Family {
+        match self {
+            Self::Turbo => Family::Moss(MossVariant::Kromoss),
+            Self::EditTurbo | Self::Edit => Family::Moss(MossVariant::Sft),
+        }
+    }
+
+    fn steps(self) -> u32 {
+        match self {
+            Self::Turbo | Self::EditTurbo => MOSS_TURBO_STEPS,
+            Self::Edit => MOSS_EDIT_STEPS,
+        }
+    }
+
+    fn guidance(self) -> f32 {
+        match self {
+            Self::Turbo | Self::EditTurbo => 1.0,
+            Self::Edit => MOSS_EDIT_GUIDANCE,
+        }
+    }
+
+    #[cfg_attr(feature = "mlx", allow(dead_code))]
+    fn shows(self) -> moss::FillShows {
+        match self {
+            Self::Turbo => moss::FillShows::Nothing,
+            Self::EditTurbo | Self::Edit => moss::FillShows::GreyedPicture,
+        }
+    }
+}
+
+/// The recipe `moss-image/fill` runs (see [`MossFillRecipe`]).
+pub fn moss_fill_recipe(params: &std::collections::BTreeMap<String, Value>) -> MossFillRecipe {
+    let named = params.get("moss_fill").and_then(Value::as_str).map(str::to_string).or_else(|| std::env::var("GN_MOSS_FILL").ok());
+    match named.as_deref().map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("edit-turbo" | "edit_turbo") => MossFillRecipe::EditTurbo,
+        Some("edit") => MossFillRecipe::Edit,
+        _ => MossFillRecipe::Turbo,
+    }
+}
+
 pub fn family_of(template: &str) -> Option<Family> {
     TEMPLATES.iter().find(|(t, _, _)| *t == template).map(|(_, _, f)| *f)
 }
@@ -1675,7 +1747,9 @@ impl Engine for DiffusionEngine {
         if let Some(why) = &self.refused {
             return Err(EngineError::new(ErrorKind::Unsupported, why.clone()));
         }
-        let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model).map(|f| moss_edit_dit_override(&req.model, f))) else {
+        let fill_recipe = moss_fill_recipe(&req.params);
+        let family_for = |f: Family| if req.model == TEMPLATE_MOSS_FILL { fill_recipe.family() } else { moss_edit_dit_override(&req.model, f) };
+        let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model).map(family_for)) else {
             let served: Vec<&str> = TEMPLATES.iter().map(|(t, _, _)| *t).collect();
             return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not served here ({} are)", req.model, served.join(", "))));
         };
@@ -1815,6 +1889,7 @@ impl Engine for DiffusionEngine {
             Family::Krea2 => KREA2_STEPS,
             Family::Layered => LAYERS_STEPS,
             Family::Edit2511 => 40,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_FILL => fill_recipe.steps(),
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => MOSS_TURBO_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_RESTORE => MOSS_RESTORE_STEPS,
@@ -1828,6 +1903,7 @@ impl Engine for DiffusionEngine {
             Family::MiniMaxH3 => MINIMAX_H3_STEPS,
         };
         let default_guidance = match family {
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_FILL => fill_recipe.guidance(),
             Family::Moss(_)
                 if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT_TURBO, TEMPLATE_MOSS_RESTORE, TEMPLATE_MOSS_JUGGERNAUT_TURBO].contains(&req.model.as_str()) =>
             {
@@ -1874,6 +1950,12 @@ impl Engine for DiffusionEngine {
                 with_lora_first(&req.params, KREA2_ANYPAINT_LORA)
             } else if req.model == TEMPLATE_KREA2_STYLE {
                 with_style_lora(&req.params)?
+            } else if req.model == TEMPLATE_MOSS_FILL {
+                let mut params = req.params.clone();
+                for l in self.moss_fill_loras(fill_recipe)?.iter().rev() {
+                    params = with_lora_first(&params, &l.to_string_lossy());
+                }
+                params
             } else if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT, TEMPLATE_MOSS_EDIT_TURBO].contains(&req.model.as_str()) {
                 let missing = |what: &str| EngineError::new(ErrorKind::ModelMissing, format!("{what} is not in {}", self.models_root.join(LORA_DIR).display()));
                 let mut params = req.params.clone();
@@ -1912,9 +1994,11 @@ impl Engine for DiffusionEngine {
                 negative,
                 width,
                 height,
-                steps: if req.steps == 0 { default_steps } else { req.steps } as usize,
+                // MOSS Fill: the editor sends the template's defaults (8 steps, CFG 1), which mean
+                // the recipe's (an A/B recipe runs its own).
+                steps: if req.steps == 0 || (req.model == TEMPLATE_MOSS_FILL && req.steps == MOSS_TURBO_STEPS) { default_steps } else { req.steps } as usize,
                 seed: req.seed,
-                guidance: if req.guidance > 0.0 { req.guidance } else { default_guidance },
+                guidance: if req.guidance <= 0.0 || (req.model == TEMPLATE_MOSS_FILL && req.guidance == 1.0) { default_guidance } else { req.guidance },
                 schedule: schedule_for(&req.model, &req.params)?,
                 references,
                 loras,
@@ -1959,6 +2043,20 @@ impl Engine for DiffusionEngine {
                         _ => moss::Sampling::REALISM,
                     };
                     p.generate_sampled(&ask, sampling.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                }
+                (Resident::Moss(p, _), _) if req.model == TEMPLATE_MOSS_FILL => {
+                    // The second picture is the mask.
+                    let mut ask = ask.clone();
+                    let mask = ask.references.pop().ok_or_else(|| EngineError::new(ErrorKind::BadRequest, "a fill takes the picture and its mask"))?;
+                    let mut sampling = moss::Sampling::OFFICIAL.with_env();
+                    if let Some(v) = req.params.get("denoise") {
+                        match v.as_f64() {
+                            Some(d) if d > 0.0 && d <= 1.0 => sampling = sampling.with_denoise(d as f32),
+                            _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("denoise {v} is outside 0..1"))),
+                        }
+                    }
+                    eprintln!("gn-diffusion: {} recipe {fill_recipe:?}: {} steps, CFG {}", req.model, ask.steps, ask.guidance);
+                    p.fill_sampled(&ask, &mask, fill_recipe.shows(), sampling, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Moss(p, _), _) if req.model == TEMPLATE_MOSS_RESTORE => {
                     let mut sampling = moss::Sampling::OSTRIS_EDIT.with_env();
@@ -2061,7 +2159,7 @@ impl Engine for DiffusionEngine {
 #[cfg(feature = "mlx")]
 fn cuda_default_steps(template: &str) -> Option<u32> {
     match template {
-        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(MOSS_TURBO_STEPS),
+        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO | TEMPLATE_MOSS_FILL => Some(MOSS_TURBO_STEPS),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_STEPS),
         TEMPLATE_MOSS_RESTORE => Some(MOSS_RESTORE_STEPS),
         // The realism recipe's res_2s is CUDA only: MLX keeps its 50 Euler steps.
@@ -2119,7 +2217,7 @@ const GREY_LEVELS: u8 = 6;
 #[cfg(feature = "mlx")]
 fn cuda_default_guidance(template: &str) -> Option<f32> {
     match template {
-        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO | TEMPLATE_MOSS_RESTORE | TEMPLATE_MOSS_JUGGERNAUT_TURBO => Some(1.0),
+        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO | TEMPLATE_MOSS_RESTORE | TEMPLATE_MOSS_JUGGERNAUT_TURBO | TEMPLATE_MOSS_FILL => Some(1.0),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_GUIDANCE),
         TEMPLATE_MOSS | TEMPLATE_MOSS_BASE | TEMPLATE_MOSS_JUGGERNAUT => Some(MOSS_GUIDANCE),
         _ => None,
@@ -2174,6 +2272,7 @@ impl DiffusionEngine {
             seed: req.seed,
             references: references.into_iter().map(pic).collect(),
             mask,
+            fill_shows_picture: false,
         };
         let Resident::Klein(k) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no Klein pipeline")) };
         let stop = || cancel.load(Ordering::SeqCst);
@@ -2222,6 +2321,14 @@ impl DiffusionEngine {
     /// Kromoss DMD2, lodestones' SFT DMD or the 4-step LoRA) leaves the picture unedited.
     #[cfg(feature = "mlx")]
     fn mlx_recipe(&self, template: &str) -> Result<(MossVariant, Vec<PathBuf>, u32, f32), EngineError> {
+        self.mlx_recipe_for(template, moss_fill_recipe(&std::collections::BTreeMap::new()))
+    }
+
+    /// [`Self::mlx_recipe`] with MOSS Fill on `fill`: the turbo as MOSS Turbo runs on MLX, the
+    /// edit recipes as MOSS Edit Turbo and MOSS Edit (CFG 4: at CFG 1 the edit LoRA copies its
+    /// reference, here the grey).
+    #[cfg(feature = "mlx")]
+    fn mlx_recipe_for(&self, template: &str, fill: MossFillRecipe) -> Result<(MossVariant, Vec<PathBuf>, u32, f32), EngineError> {
         let has = |v: MossVariant| moss::find_files(&self.models_root, v).is_some();
         let missing = |what: String| EngineError::new(ErrorKind::ModelMissing, format!("{what} is not in {}", self.models_root.display()));
         let edit = || self.moss_edit_lora().ok_or_else(|| missing("the MOSS Edit LoRA (loras/moss-image-edit/adapter_model.safetensors)".into()));
@@ -2240,6 +2347,11 @@ impl DiffusionEngine {
                     _ => Err(missing(format!("MOSS Turbo (MOSS-Image-SFT with loras/{MOSS_SFT_4STEP_LORA}, or Kromoss with loras/{MOSS_TURBO_LORA})"))),
                 }
             }
+            TEMPLATE_MOSS_FILL => match fill {
+                MossFillRecipe::Turbo => self.mlx_recipe_for(TEMPLATE_MOSS_TURBO, fill),
+                MossFillRecipe::EditTurbo => self.mlx_recipe_for(TEMPLATE_MOSS_EDIT_TURBO, fill),
+                MossFillRecipe::Edit => self.mlx_recipe_for(TEMPLATE_MOSS_EDIT, fill),
+            },
             TEMPLATE_MOSS_EDIT_TURBO => Ok((sft()?, vec![edit()?], 8, MOSS_EDIT_GUIDANCE)),
             TEMPLATE_MOSS_EDIT => Ok((sft()?, vec![edit()?], MOSS_EDIT_STEPS, MOSS_EDIT_GUIDANCE)),
             TEMPLATE_MOSS => Ok((sft()?, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
@@ -2263,7 +2375,8 @@ impl DiffusionEngine {
         progress: &mut dyn FnMut(f32, &str),
         cancel: &AtomicBool,
     ) -> Result<Vec<Picture>, EngineError> {
-        let (variant, template_loras, steps, guidance) = self.mlx_recipe(&req.model)?;
+        let fill = moss_fill_recipe(&req.params);
+        let (variant, template_loras, steps, guidance) = self.mlx_recipe_for(&req.model, fill)?;
         let mut loras: Vec<gn_mlx::pipeline::LoraSpec> = template_loras.into_iter().map(|path| gn_mlx::pipeline::LoraSpec { path, strength: 1.0 }).collect();
         for (file, strength) in lora_asks(&req.params)? {
             let path = self.lora_path(&file)?;
@@ -2292,7 +2405,16 @@ impl DiffusionEngine {
             seed: req.seed,
             references: references.into_iter().map(|r| gn_mlx::pipeline::RefPicture { width: r.width, height: r.height, rgba: r.rgba }).collect(),
             mask: None,
+            fill_shows_picture: req.model == TEMPLATE_MOSS_FILL && fill != MossFillRecipe::Turbo,
         };
+        // A fill's second picture is its mask.
+        let mut ask = ask;
+        if req.model == TEMPLATE_MOSS_FILL {
+            if ask.references.len() != 2 {
+                return Err(EngineError::new(ErrorKind::BadRequest, "a fill takes the picture and its mask"));
+            }
+            ask.mask = ask.references.pop();
+        }
         let Resident::Mlx(m) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no MLX pipeline")) };
         let stop = || cancel.load(Ordering::SeqCst);
         let mut step = |i: usize, n: usize| progress(0.3 + 0.65 * i as f32 / n.max(1) as f32, if i == 0 { "Loading the models" } else { "Sampling" });
@@ -2507,6 +2629,27 @@ mod tests {
         let mut f = req(TEMPLATE_FILL, "fill");
         f.params.insert("batch".into(), json!([1]));
         assert!(matches!(&run(&mut e, &f), Err(EngineError { kind: ErrorKind::BadRequest, message }) if message.contains("batch")));
+    }
+
+    /// MOSS Fill answers `fill` and runs the turbo unless a request (or `GN_MOSS_FILL`) names
+    /// an edit recipe, whose DiT is MOSS-Image-SFT.
+    #[test]
+    fn moss_fill_picks_its_recipe() {
+        assert_eq!(task_of(TEMPLATE_MOSS_FILL), Some("fill"));
+        let mut p = BTreeMap::new();
+        for (name, want, family) in [
+            ("turbo", MossFillRecipe::Turbo, MossVariant::Kromoss),
+            ("Edit-Turbo", MossFillRecipe::EditTurbo, MossVariant::Sft),
+            ("edit", MossFillRecipe::Edit, MossVariant::Sft),
+            ("nonsense", MossFillRecipe::Turbo, MossVariant::Kromoss),
+        ] {
+            p.insert("moss_fill".to_string(), json!(name));
+            let r = moss_fill_recipe(&p);
+            assert_eq!(r, want, "{name}");
+            assert_eq!(r.family(), Family::Moss(family));
+        }
+        assert_eq!((MossFillRecipe::Turbo.steps(), MossFillRecipe::Turbo.guidance()), (MOSS_TURBO_STEPS, 1.0));
+        assert_eq!((MossFillRecipe::Edit.steps(), MossFillRecipe::Edit.guidance()), (MOSS_EDIT_STEPS, MOSS_EDIT_GUIDANCE));
     }
 
     /// MOSS-Image's templates: text to image only, found by Comfy-Org's file names (a

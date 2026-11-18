@@ -508,6 +508,49 @@ impl MossPipeline {
         req: &Request,
         sampling: Sampling,
         progress: &mut dyn FnMut(f32, &str),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
+        self.sample(req, sampling, None, progress, preview, cancel)
+    }
+
+    /// Generative Fill (no MOSS inpaint model exists): `req.references[0]` is the picture, `mask`
+    /// white where MOSS paints. Sampled from noise at the picture's size; after every step the
+    /// latent outside the mask is set back to the picture's own, noised to that step's σ (the
+    /// last step leaves it exact), so the new area grows into the picture around it (masked
+    /// latent blending, as Klein's fill). `show` picks what the model reads besides the
+    /// prompt: nothing (text to image, the turbo's run), or the picture with the area flat grey
+    /// as an edit reference (with the MOSS Edit LoRA in `req.loras`). `sampling.denoise` under 1
+    /// starts from the picture's latent noised that far instead of from noise.
+    pub fn fill_sampled(
+        &self,
+        req: &Request,
+        mask: &RefImage,
+        show: FillShows,
+        sampling: Sampling,
+        progress: &mut dyn FnMut(f32, &str),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
+        let picture = req.references.first().context("a fill needs its picture")?.clone();
+        anyhow::ensure!(req.references.len() == 1, "a MOSS fill takes the picture alone ({} pictures given)", req.references.len());
+        let (w, h) = if req.width == 0 || req.height == 0 { edit_size(picture.width, picture.height) } else { (req.width, req.height) };
+        let mut ask = req.clone();
+        ask.width = w;
+        ask.height = h;
+        ask.references = match show {
+            FillShows::Nothing => Vec::new(),
+            FillShows::GreyedPicture => vec![crate::klein::pipeline::greyed(&picture, mask)?],
+        };
+        self.sample(&ask, sampling, Some(Fill { picture: &picture, mask }), progress, preview, cancel)
+    }
+
+    fn sample(
+        &self,
+        req: &Request,
+        sampling: Sampling,
+        fill: Option<Fill<'_>>,
+        progress: &mut dyn FnMut(f32, &str),
         mut preview: Option<&mut dyn StepPreview>,
         cancel: &dyn Fn() -> bool,
     ) -> Result<Picture> {
@@ -614,7 +657,18 @@ impl MossPipeline {
         let channels = dit.config().channels;
         let noise = crate::comfy::torch_randn(req.seed, channels * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, channels, lh, lw), &self.dev)?;
-        let denoise = Some(sampling.denoise).filter(|d| ostris && *d < 1.0);
+        // A fill: the picture's own latent (kept outside the mask), the mask on the latent grid
+        // and the starting noise (the kept latent is noised with it to each step's σ).
+        let keep = match &fill {
+            Some(f) => {
+                let z0 = self.reference_latent_sized(f.picture, w, h)?.to_dtype(x.dtype())?;
+                let m = crate::klein::pipeline::mask_tokens(f.mask, lw, lh, &self.dev)?.reshape((1, 1, lh, lw))?.to_dtype(x.dtype())?;
+                start = Some(z0.clone());
+                Some((z0, m, x.clone()))
+            }
+            None => None,
+        };
+        let denoise = Some(sampling.denoise).filter(|d| (ostris || fill.is_some()) && *d < 1.0);
         let sig = match (denoise, &start) {
             // ComfyUI's KSampler `denoise`: the last `steps` of a `steps / denoise` schedule,
             // the latent noised to its first σ.
@@ -703,6 +757,11 @@ impl MossPipeline {
                 }
                 _ => (x + (v * f64::from(sig[i + 1] - sig[i]))?)?,
             };
+            if let Some((z0, m, eps)) = &keep {
+                let s1 = f64::from(sig[i + 1]);
+                let known = ((z0 * (1.0 - s1))? + (eps * s1)?)?;
+                x = (x.broadcast_mul(m)? + known.broadcast_mul(&(1.0 - m)?)?)?;
+            }
             progress(0.05 + 0.85 * (i + 1) as f32 / n as f32, "Sampling");
         }
         self.dev.synchronize()?;
@@ -741,6 +800,22 @@ impl MossPipeline {
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
+}
+
+/// What a MOSS fill shows the model besides the prompt ([`MossPipeline::fill_sampled`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillShows {
+    /// Nothing: text to image, the picture reaching the area only through the kept latent.
+    Nothing,
+    /// The picture with the area flat grey, as a MOSS Edit reference.
+    GreyedPicture,
+}
+
+/// A fill's picture and mask, for the sampler.
+#[derive(Clone, Copy)]
+struct Fill<'a> {
+    picture: &'a RefImage,
+    mask: &'a RefImage,
 }
 
 /// One `res_2s` step from σ to σ' > 0 as coefficients: the stage at the log-SNR midpoint is

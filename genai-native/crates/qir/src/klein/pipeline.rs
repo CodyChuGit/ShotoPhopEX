@@ -494,7 +494,7 @@ impl KleinPipeline {
 
 /// `r` with the mask's white made flat grey (#808080), blended by the mask's value; a mask at
 /// another size is resized to the picture's.
-fn greyed(r: &RefImage, m: &RefImage) -> Result<RefImage> {
+pub(crate) fn greyed(r: &RefImage, m: &RefImage) -> Result<RefImage> {
     let mask =
         image::RgbaImage::from_raw(u32::try_from(m.width)?, u32::try_from(m.height)?, m.rgba.clone()).context("the mask's pixels do not match its size")?;
     let mask = if (m.width, m.height) == (r.width, r.height) {
@@ -514,7 +514,7 @@ fn greyed(r: &RefImage, m: &RefImage) -> Result<RefImage> {
 
 /// A fill mask on the latent grid `(lh·lw, 1)` f32 in 0..1 (1 is painted): averaged over each
 /// latent pixel's 16×16 and doubled, so an edge pixel the mask touches is painted too.
-fn mask_tokens(m: &RefImage, lw: usize, lh: usize, dev: &Device) -> Result<Tensor> {
+pub(crate) fn mask_tokens(m: &RefImage, lw: usize, lh: usize, dev: &Device) -> Result<Tensor> {
     let img =
         image::RgbaImage::from_raw(u32::try_from(m.width)?, u32::try_from(m.height)?, m.rgba.clone()).context("the mask's pixels do not match its size")?;
     let small = image::imageops::resize(&img, u32::try_from(lw)?, u32::try_from(lh)?, image::imageops::FilterType::Triangle);

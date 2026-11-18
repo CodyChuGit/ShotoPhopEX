@@ -224,6 +224,7 @@ const BUILTIN: &[&str] = &[
     include_str!("../workflows/flux3-klein-image.json"),
     include_str!("../workflows/flux3-klein-edit.json"),
     include_str!("../workflows/flux3-klein-fill.json"),
+    include_str!("../workflows/moss-image-fill.json"),
     include_str!("../workflows/krea2-turbo-image.json"),
     include_str!("../workflows/qwen-2.1-image.json"),
     include_str!("../workflows/qwen-2.1-matte.json"),

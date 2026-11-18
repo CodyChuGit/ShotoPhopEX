@@ -1,0 +1,56 @@
+{
+  "meta": {
+    "id": "moss-image/fill",
+    "name": "Generative Fill (MOSS Turbo)",
+    "family": "moss-image",
+    "task": "fill",
+    "license": "permissive",
+    "licenseNote": "Kromoss (lodestones, 2026-10) is Apache-2.0, a full fine-tune of MOSS-Image-Base; its 8-step DMD2 LoRA is Apache-2.0; the Qwen3.5-9B text encoder is Apache-2.0. On a Mac MOSS Turbo's own stack runs (MOSS-Image-SFT with akhaliq's Apache-2.0 4-step LoRA). The app ships no weights.",
+    "needsImage": true,
+    "needsMask": true,
+    "defaults": {
+      "steps": 8,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "kromoss_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3.5_9b_int8_convrot.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "flux2-vae_small.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "kromoss-8-steps-dmd2-lora.safetensors"
+      }
+    ],
+    "notes": "Runs natively (genai-native gn-diffusion moss-image/fill): no MOSS inpaint model exists, so the fill is masked latent blending. MOSS Turbo samples the crop from noise at its size, and after every step the area outside the selection is set back to the crop's own latent noised to that step's time (the last step leaves it exact); the editor masks the result to the selection. On CUDA Kromoss with its 8-step DMD2 LoRA, 8 Euler steps, CFG 1; on a Mac (MLX) MOSS Turbo's Mac stack at about 768². In the 12 GB mode on cards under 20 GB the text encoder and the DiT take turns on the card.",
+    "creator": "lodestones · OpenMOSS",
+    "description": "Repaints the selection with MOSS Turbo (fits 12 GB and 16 GB Macs)",
+    "badges": [
+      "fast"
+    ],
+    "estimatedSeconds": {
+      "base": 20,
+      "perMegapixel": 150
+    },
+    "estimatedSecondsCuda": {
+      "base": 3,
+      "perMegapixel": 3
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": []
+  }
+}

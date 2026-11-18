@@ -18,12 +18,12 @@ use crate::{EngineError, Result, Session};
 use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, DEFAULT_SAMPLER, DEFAULT_SCHEDULER, EDIT, EDIT_BAND_CHANGE, EDIT_BAND_MAX_SHARE, Edge, EnhanceKind,
     FAST_DRAFT_STEP_CACHE, FILL, GenerativeInfo, HIGHLIGHT_GROW, HIGHLIGHT_REMOVE_PROMPT, JobProgress, KLEIN_FILL_TEMPLATE, MAX_GROW, MAX_SEED, MAX_VARIATIONS,
-    NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate, dither_edge,
-    enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at, grey_outside,
-    grey_where, judge_pair, krea2_fill, named_object, naming_picture, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num, opt_str,
-    outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter, request_size_within, resize_gray8,
-    resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there, template_or, tone_match_removal,
-    web_unavailable, write_rgba8,
+    MOSS_FILL_TEMPLATE, NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate,
+    dither_edge, enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at,
+    grey_outside, grey_where, judge_pair, krea2_fill, named_object, naming_picture, native_fill_order, native21_auto, native21_fill_fallback, opt_bool,
+    opt_num, opt_str, outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter,
+    request_size_within, resize_gray8, resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there,
+    template_or, tone_match_removal, web_unavailable, write_rgba8,
 };
 
 pub(super) fn fill_enabled(s: &Session) -> std::result::Result<(), String> {
@@ -678,6 +678,8 @@ pub(super) fn run_fill(s: &mut Session, p: &Value) -> Result<Value> {
             native_fill_order(&prompt, enhance)
         } else if template.meta.id == KLEIN_FILL_TEMPLATE {
             &[KLEIN_FILL_TEMPLATE]
+        } else if template.meta.id == MOSS_FILL_TEMPLATE {
+            &[MOSS_FILL_TEMPLATE]
         } else {
             auto_order(FILL, quality(s))
         },

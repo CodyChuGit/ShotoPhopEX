@@ -70,9 +70,12 @@ pub struct Request {
     pub seed: u64,
     /// MOSS Edit's pictures, the one being edited first; none for text to image.
     pub references: Vec<RefPicture>,
-    /// Fill's area on the first reference, its size: white is painted, black kept
-    /// (FLUX 3 Image Klein only).
+    /// Fill's area on the first reference, its size: white is painted, black kept. On MOSS
+    /// the first reference is then the picture kept outside the area ([`MossMlx::generate_with`]).
     pub mask: Option<RefPicture>,
+    /// A MOSS fill shows the model its picture with the area flat grey as an edit reference
+    /// (with the MOSS Edit LoRA); without, it reads the prompt alone.
+    pub fill_shows_picture: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -316,6 +319,21 @@ impl MossMlx {
         Ok(z)
     }
 
+    /// A picture resized (Lanczos) to `w × h` and encoded: a fill's kept latent.
+    fn latent_sized(&self, r: &RefPicture, w: usize, h: usize) -> Result<Array> {
+        let enc = self.encoder.as_ref().context("the VAE file has no FLUX.2 encoder (Comfy-Org's flux2-vae_small has one)")?;
+        let img = image::RgbaImage::from_raw(u32::try_from(r.width)?, u32::try_from(r.height)?, r.rgba.clone())
+            .context("a picture's pixels do not match its size")?;
+        let img = if (w, h) == (r.width, r.height) {
+            img
+        } else {
+            image::imageops::resize(&img, u32::try_from(w)?, u32::try_from(h)?, image::imageops::FilterType::Lanczos3)
+        };
+        let z = enc.encode(&vae::from_rgba_u8(img.as_raw(), w, h)?)?;
+        z.eval()?;
+        Ok(z)
+    }
+
     /// Make one picture with `variant`'s DiT and `loras` merged; `progress(step, steps)` before
     /// the first step (0) and after each; `cancel` is read between steps.
     pub fn generate(
@@ -366,7 +384,19 @@ impl MossMlx {
         // The references at the output's scale (long edge 512..1024): at 512 under a 768 output the
         // edit kept only the subject (the rest of the picture was lost).
         let edge = w.max(h).clamp(LOW_VRAM_REFERENCE_EDGE, REFERENCE_EDGE);
-        let latents = req.references.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
+        // A fill (`req.mask`): the picture's own latent is kept outside the area; the model
+        // sees the picture with the area flat grey, or nothing (`fill_shows_picture`).
+        let (kept, shown) = match (&req.mask, req.references.first()) {
+            (Some(m), Some(p)) => {
+                anyhow::ensure!(req.references.len() == 1, "a MOSS fill takes the picture alone ({} pictures given)", req.references.len());
+                let shown = if req.fill_shows_picture { vec![crate::klein::greyed(p, m)?] } else { Vec::new() };
+                (Some((self.latent_sized(p, w, h)?, m)), Some(shown))
+            }
+            (Some(_), None) => anyhow::bail!("a fill needs its picture"),
+            _ => (None, None),
+        };
+        let pictures = shown.as_ref().unwrap_or(&req.references);
+        let latents = pictures.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
         let dit = self.dit(variant, loras)?;
         let refs = if latents.is_empty() { None } else { Some(dit.prepare_references(&latents)?) };
         // The edit's negative branch skips no block (the official edit sampler).
@@ -377,6 +407,15 @@ impl MossMlx {
         let channels = dit.config().channels;
         let noise = qwen_image_rs::comfy::torch_randn(req.seed, channels * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Array::from_slice(&noise, &shape(&[1, channels, lh, lw])?);
+        // Fill: outside the mask the picture's own latent, noised to each step's σ, is put back
+        // after every step (the last leaves it exact), as qir's MOSS fill.
+        let keep = match &kept {
+            Some((z0, m)) => {
+                let m = crate::klein::mask_tokens(m, lw, lh)?.reshape(&shape(&[1, 1, lh, lw])?)?;
+                Some((z0.as_dtype(Dtype::Float32)?, m, x.clone()))
+            }
+            None => None,
+        };
         let sig = sigmas(req.steps, SHIFT);
         let n = sig.len().saturating_sub(1);
         progress(0, n);
@@ -409,6 +448,10 @@ impl MossMlx {
             } else {
                 x.add(v.multiply(Array::from_f32(s1 - s0))?)?
             };
+            if let Some((z0, m, eps)) = &keep {
+                let known = z0.multiply(Array::from_f32(1.0 - s1))?.add(eps.multiply(Array::from_f32(s1))?)?;
+                x = x.multiply(m)?.add(known.multiply(Array::from_f32(1.0).subtract(m)?)?)?;
+            }
             x.eval()?;
             if crate::profile::enabled() {
                 eprintln!(
