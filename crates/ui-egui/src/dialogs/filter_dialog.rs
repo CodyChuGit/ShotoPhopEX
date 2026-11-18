@@ -322,6 +322,7 @@ pub const PREVIEWED: &[&str] = &[
     "image.mode.duotone",
     "layer.matting.defringe",
     "layer.matting.colorDecontaminate",
+    "layer.matting.despill",
     "layer.layerStyle.scaleEffects",
     "type.warpText",
     // The preview shows the image through the chosen profile, as Photoshop's Preview does.

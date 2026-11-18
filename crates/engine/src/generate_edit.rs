@@ -16,29 +16,95 @@ use crate::jobs::JobCtx;
 use crate::{EngineError, Result, Session};
 
 use super::{
-    ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_TEMPLATE, AUTO_TEMPLATE, CHARACTER_SHEET, Common, DEFAULT_EDIT_TEMPLATE, EDIT, FillJob, FillPlan,
-    MAX_REQUEST_PIXELS, Tuning, ULTRA_EDIT_TEMPLATE, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend, bad, edit_request_pixels, edit_rewrite,
-    fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations, plan_common, run_image, short,
-    template_files_present, ultra, web_unavailable,
+    ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_2511_MIN_COMPUTE_CAP, ANGLES_TEMPLATE, ANGLES21_TEMPLATE, AUTO_TEMPLATE, CHARACTER_SHEET, Common,
+    DEFAULT_EDIT_TEMPLATE, EDIT, FillJob, FillPlan, MAX_REQUEST_PIXELS, Tuning, ULTRA_EDIT_TEMPLATE, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend,
+    bad, edit_request_pixels, edit_rewrite, fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations,
+    plan_common, run_image, short, template_files_present, ultra, web_unavailable,
 };
 
-/// The Multiple Angles LoRA's prompt for a camera, `<sks> [azimuth] [elevation] [distance]`, or
-/// None for a value it has no words for.
-pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
+/// The Multiple Angles LoRA's words for a camera, `[azimuth] [elevation] [distance]`, or None
+/// for a value it has no words for.
+pub fn angle_words(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     let r = ANGLE_ROTATIONS.iter().find(|(d, _)| *d == rotation)?.1;
     let t = ANGLE_TILTS.iter().find(|(d, _)| *d == tilt)?.1;
     let z = ANGLE_ZOOMS.iter().find(|(d, _)| *d == zoom)?.1;
-    Some(format!("<sks> {r} {t} {z}"))
+    Some(format!("{r} {t} {z}"))
 }
 
-/// The template `generate.angles` runs: always 2511 with the Multiple Angles LoRA, which was
-/// trained on exactly these camera moves. Plain Qwen-Image-2.1 by instruction never turned the
-/// camera (0 of 4 at 45°, 2026-11-03 bench; barely on side views in the 2026-11-06 README
-/// recording), so it no longer stands in when the LoRA is missing: the Angles window says what
-/// to download instead. Bring-your-own: on a card below 2511's budget it still runs, with the
-/// window's `may not fit` note.
+/// The camera move in plain words, one sentence per axis that moves (nothing for the front,
+/// eye-level, medium camera). The lesson of the "Latent Layer Cameras" SD 1.5 set: each camera is
+/// one named target in plain language. In the 2026-11-17 5090 test, the LoRA's tokens alone
+/// reached a true side view at rotation 90 on 1 of 5 runs (the rest stopped at 10-45°); with
+/// this sentence after them, 5 of 5, at the same speed, scene and detail.
+pub fn angle_sentence(rotation: u32, tilt: i32, zoom: u32) -> String {
+    let side = if rotation > 180 { "left" } else { "right" };
+    let turn = match rotation {
+        45 | 315 => format!("The camera has moved 45 degrees around to the subject's {side}: a three-quarter view."),
+        90 | 270 => {
+            format!("The camera has moved 90 degrees around to the subject's {side}: a true side profile, the subject seen exactly from its {side} side.")
+        }
+        135 | 225 => format!("The camera has moved 135 degrees around to the subject's {side}: we see the subject's back and {side} side."),
+        180 => "The camera has moved 180 degrees around the subject: we see it from directly behind.".to_string(),
+        _ => String::new(),
+    };
+    let height = match tilt {
+        -30 => "The camera is lowered below the subject and looks up at it at 30 degrees.",
+        30 => "The camera is raised above the subject and looks down at it at 30 degrees.",
+        60 => "The camera is raised high above the subject and looks down at it at 60 degrees.",
+        _ => "",
+    };
+    let distance = match zoom {
+        0 => "The camera has moved back: the whole subject and its surroundings are in the frame.",
+        10 => "The camera has moved close: the subject's main part fills the frame.",
+        _ => "",
+    };
+    [turn.as_str(), height, distance].iter().filter(|w| !w.is_empty()).copied().collect::<Vec<_>>().join(" ")
+}
+
+/// The prompt for a camera: `<sks> [azimuth] [elevation] [distance]`, the LoRA's trained words,
+/// then [`angle_sentence`]; None for a value the LoRA has no words for.
+pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
+    let words = angle_words(rotation, tilt, zoom)?;
+    let sentence = angle_sentence(rotation, tilt, zoom);
+    Some(if sentence.is_empty() { format!("<sks> {words}") } else { format!("<sks> {words} {sentence}") })
+}
+
+/// The template `generate.angles` runs: 2511 with the Multiple Angles LoRA, which was trained on
+/// exactly these camera moves. Plain Qwen-Image-2.1 by instruction never turned the camera (0 of
+/// 4 at 45°, 2026-11-03 bench), so it does not stand in when the LoRA is missing: the Angles
+/// window says what to download instead. Bring-your-own: on a card below 2511's budget it still
+/// runs, with the window's `may not fit` note.
+///
+/// On an NVIDIA card older than RTX 40 (no fp8 matrix cores) 2511's fp8 file does not run (a
+/// 3090 crashed at 24 GB, 2026-11-17), so Qwen-Image-2.1 with its own Multiple Angles LoRA does
+/// ([`ANGLES21_TEMPLATE`]; 21.7 GB, 24 s warm there). The owner's call, 2026-11-17.
 pub fn angles_template(_s: &Session) -> &'static str {
-    ANGLES_TEMPLATE
+    angles_template_for(photocraft_genai::card_compute_cap())
+}
+
+/// [`angles_template`] for a card of `compute_cap` (None: no NVIDIA card known, 2511 as ever).
+pub fn angles_template_for(compute_cap: Option<u32>) -> &'static str {
+    if !photocraft_genai::MLX && compute_cap.is_some_and(|c| c < ANGLES_2511_MIN_COMPUTE_CAP) { ANGLES21_TEMPLATE } else { ANGLES_TEMPLATE }
+}
+
+/// The 2.1 Multiple Angles LoRA's prompt for a camera, `<mva> {azimuth}, {elevation}[ close-up]`
+/// (its card's vocabulary: 30° azimuth steps, eye-level to top-down, close-up or not). Our 45°
+/// steps take its quarter views (60°, 120°…), the nearest it has with the same words; it has no
+/// low angle, so a low camera is eye-level, and no wide shot apart from its default framing.
+pub fn angle_prompt_21(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
+    let azimuth = ANGLE_ROTATIONS.iter().find(|(d, _)| *d == rotation)?.1;
+    let elevation = match tilt {
+        -30 | 0 => "eye-level shot",
+        30 => "elevated shot",
+        60 => "high-angle shot",
+        _ => return None,
+    };
+    let close = match zoom {
+        0 | 5 => "",
+        10 => " close-up",
+        _ => return None,
+    };
+    Some(format!("<mva> {azimuth}, {elevation}{close}"))
 }
 
 /// The Mac build ([`photocraft_genai::MLX`]), for the UI.
@@ -168,6 +234,7 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
             // The whole canvas is re-rendered; a selection, when there is one, confines what
             // of it shows (the edit template takes no mask, see `fill_region`).
             let selected = doc.selection.is_some() && !whole;
+            let soft_edge = matches!(edge, super::params::Edge::Soft);
             let coverage: Vec<f32> = match doc.selection.as_ref().filter(|_| !whole) {
                 Some(sel) => {
                     let k = sel.channels().max(1);
@@ -180,7 +247,7 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
             let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
             if let Some(finder) = finder.as_ref() {
                 for (id, ..) in &filled.0 {
-                    mask_to_subject(doc, *id, rect, selected, before.as_deref(), finder, ctx)?;
+                    mask_to_subject(doc, *id, rect, selected, before.as_deref(), soft_edge, finder, ctx)?;
                 }
             }
             Ok(filled)
@@ -193,19 +260,23 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
 /// first that finds anything, its instances joined) and everything the edit visibly changed
 /// ([`changed_area`] against `before`, the picture before the edit). With a selection that joins
 /// the selection's mask (the selected area changes, and a new subject larger than it still shows
-/// whole); without one it is the mask. Nothing found: the mask stays as it was. An edit that
-/// changed most of the picture (night, snow, a painting style, a new background) shows whole.
+/// whole); without one it is the mask. A soft edge (the default) grows and fades the subject's
+/// outline ([`soft_subject_edge`]); a hard one keeps Select Subject's. Nothing found: the mask
+/// stays as it was. An edit that changed most of the picture (night, snow, a painting style, a
+/// new background) shows whole.
 ///
 /// The subject alone (2026-11-12 to 11-17) kept "make it night", "make it snow", "change the
 /// background to a beach", "turn this into a watercolor", a sign's new text and "remove the bowl
 /// of fruit" from showing at all on every edit model: only the person or the fridge changed
 /// (Enhance round 5 on the 5090, 2026-11-17).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn mask_to_subject(
     doc: &mut Document,
     id: LayerId,
     rect: Rect,
     selected: bool,
     before: Option<&[u8]>,
+    soft_edge: bool,
     finder: &crate::select_ml_cmds::SubjectFinder,
     ctx: &JobCtx,
 ) -> Result<()> {
@@ -221,7 +292,7 @@ pub(super) fn mask_to_subject(
         // Most of the picture changed: the whole result shows, as the model made it.
         return Ok(());
     }
-    let subject = subject_in(&picture, rect, finder, ctx)?;
+    let subject = subject_in(&picture, rect, finder, ctx)?.map(|s| if soft_edge { soft_subject_edge(&s, w, h) } else { s });
     let subject = match (subject, changed) {
         (Some(mut s), Some(c)) => {
             for (a, b) in s.iter_mut().zip(&c) {
@@ -302,6 +373,32 @@ pub(super) fn changed_area(before: &[u8], after: &[u8], w: usize, h: usize) -> V
     out
 }
 
+/// A subject's coverage grown [`subject_edge_radius`] pixels past Select Subject's edge, then
+/// faded out over about twice that again (the inside untouched). Select Subject's edge sits on
+/// the new subject; where the old one reached further (a bigger object, a different outline,
+/// edge pixels the model repainted) a hard mask there showed a stair-stepped sliver of the old
+/// one along the outline (tier bench, 2026-11-17: "make the fridge red" left a white rim on every
+/// model and card). Outside the subject the edit's picture is the original's, so the band costs
+/// nothing.
+pub(super) fn soft_subject_edge(subject: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let r = subject_edge_radius(w, h);
+    if w == 0 || h == 0 || subject.len() != w * h {
+        return subject.to_vec();
+    }
+    let grown = super::pixel_ops::dilate(subject, w, h, r);
+    let mut cur = grown.clone();
+    for _ in 0..2 {
+        cur = super::pixel_ops::box_blur(&cur, w, h, r, true);
+        cur = super::pixel_ops::box_blur(&cur, w, h, r, false);
+    }
+    grown.iter().zip(&cur).map(|(g, b)| g.max((b * 2.0).min(1.0))).collect()
+}
+
+/// How far an edit's subject mask reaches past its edge: 0.5% of the longer side, 3 to 8 pixels.
+pub(super) fn subject_edge_radius(w: usize, h: usize) -> usize {
+    ((w.max(h) as f64 * 0.005).round() as usize).clamp(3, 8)
+}
+
 /// The subjects (at most [`SUBJECT_MASK_AT_MOST`]) Select Subject finds in `picture` (RGBA8 of
 /// `rect`), joined into one coverage; None when nothing is found.
 pub(super) fn subject_in(picture: &[u8], rect: Rect, finder: &crate::select_ml_cmds::SubjectFinder, ctx: &JobCtx) -> Result<Option<Vec<f32>>> {
@@ -370,19 +467,29 @@ pub(super) fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
     let zoom = whole("zoom", 0.0, 10.0, 5.0)? as u32;
     let words = angle_prompt(rotation, tilt, zoom)
         .ok_or_else(|| bad(ANGLES, "`rotation` must be 0, 45, … 315; `tilt` -30, 0, 30 or 60; `zoom` 0 (wide), 5 (medium) or 10 (close-up)"))?;
-    let camera = words.trim_start_matches("<sks> ").to_string();
+    let camera = angle_words(rotation, tilt, zoom).unwrap_or_default();
     let template = angles_template(s);
+    // On 2.1 the LoRA's own words, its template's steps; no Lightning there.
+    let on21 = template == ANGLES21_TEMPLATE;
+    let words = if on21 { angle_prompt_21(rotation, tilt, zoom).unwrap_or(words) } else { words };
     let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "name": format!("Angles: {camera}")});
-    for key in ["seed", "variations", "negative", "lightning", "anglesStrength", "lightningStrength", "steps", "guidance"] {
-        if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
-            q[key] = v.clone();
+    let keys: &[&str] = if on21 {
+        &["seed", "variations", "negative", "steps", "guidance"]
+    } else {
+        &["seed", "variations", "negative", "lightning", "anglesStrength", "lightningStrength", "steps", "guidance"]
+    };
+    for key in keys {
+        if let Some(v) = p.get(*key).filter(|v| !v.is_null()) {
+            q[*key] = v.clone();
         }
     }
     // Each Lightning has its own steps and CFG unless the request names them.
-    let (steps, guidance) = angles_sampling(p.get("lightning").and_then(Value::as_u64).unwrap_or(8));
-    for (key, v) in [("steps", json!(steps)), ("guidance", json!(guidance))] {
-        if q.get(key).is_none() {
-            q[key] = v;
+    if !on21 {
+        let (steps, guidance) = angles_sampling(p.get("lightning").and_then(Value::as_u64).unwrap_or(8));
+        for (key, v) in [("steps", json!(steps)), ("guidance", json!(guidance))] {
+            if q.get(key).is_none() {
+                q[key] = v;
+            }
         }
     }
     run_edit(s, &q)

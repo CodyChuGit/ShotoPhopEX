@@ -343,7 +343,7 @@ fn resize_linear(t: &Tensor, n: usize) -> Result<Tensor> {
 
 /// Bicubic resize (A = -0.75, align_corners = false, borders clamped) of a (S, S, C) grid to (h, w, C), as
 /// `F.interpolate(mode="bicubic")`.
-fn resize_bicubic(t: &Tensor, h: usize, w: usize) -> Result<Tensor> {
+pub(crate) fn resize_bicubic(t: &Tensor, h: usize, w: usize) -> Result<Tensor> {
     let (sh, sw, c) = t.dims3()?;
     let src = t.to_dtype(DType::F32)?.to_device(&Device::Cpu)?.flatten_all()?.to_vec1::<f32>()?;
     let cubic = |x: f64| -> [f64; 4] {

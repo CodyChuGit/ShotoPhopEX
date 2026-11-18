@@ -230,9 +230,14 @@ pub fn morph(src: &[f32], w: usize, h: usize, r: usize, grow: bool) -> Vec<f32> 
 }
 
 mod brush;
+mod finish;
 mod morphology;
 
 pub use brush::{EdgeBrush, EdgeStroke, MAX_SWEPT_AREA, SIZE_RANGE as BRUSH_SIZE_RANGE, brush_surface, painted_tiles, stroke_area, swept_area};
+pub use finish::{
+    DespeckleParams, ForegroundParams, Screen, SpillLimit, despeckle, despeckle_keeping, despill, despill_pixel, detect_screen, estimate_foreground,
+    unmix_rgba8,
+};
 
 /// Running max (or min) over a window of radius `r` (edge-clipped), van Herk / Gil–Werman:
 /// three comparisons per sample whatever the radius.

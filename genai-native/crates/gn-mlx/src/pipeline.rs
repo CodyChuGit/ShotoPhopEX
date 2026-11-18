@@ -12,7 +12,9 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use mlx_rs::{Array, Dtype};
 use qwen_image_rs::moss::dit::{MossConfig, sigmas};
-use qwen_image_rs::moss::pipeline::{LOW_VRAM_REFERENCE_EDGE, MossFiles, REFERENCE_EDGE, SHIFT, UNCOND_SKIP, Variant, find_files, reference_size};
+use qwen_image_rs::moss::pipeline::{
+    LOW_VRAM_REFERENCE_EDGE, MossFiles, REFERENCE_EDGE, SHIFT, UNCOND_SKIP, Variant, euler_ancestral_rf, find_files, reference_size,
+};
 use qwen_image_rs::moss::text::{TextConfig, template};
 use qwen_image_rs::pipeline::Cancelled;
 use tokenizers::Tokenizer;
@@ -324,6 +326,20 @@ impl MossMlx {
         progress: &mut dyn FnMut(usize, usize),
         cancel: &dyn Fn() -> bool,
     ) -> Result<Picture> {
+        self.generate_with(variant, loras, req, false, progress, cancel)
+    }
+
+    /// [`Self::generate`], with ComfyUI's flow `euler_ancestral` (eta 1) in place of Euler when
+    /// `ancestral` (Juggernaut MOSS Turbo's sampler; the noise as `qir::moss` draws it).
+    pub fn generate_with(
+        &mut self,
+        variant: Variant,
+        loras: &[LoraSpec],
+        req: &Request,
+        ancestral: bool,
+        progress: &mut dyn FnMut(usize, usize),
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
         anyhow::ensure!(req.steps > 0 && req.steps <= 200, "{} steps (1..200)", req.steps);
         anyhow::ensure!(req.guidance.is_finite(), "guidance {}", req.guidance);
         anyhow::ensure!(req.references.len() <= MAX_REFERENCES, "MOSS Edit takes at most {MAX_REFERENCES} pictures ({} given)", req.references.len());
@@ -381,7 +397,18 @@ impl MossMlx {
                 }
                 None => pos,
             };
-            x = x.add(v.multiply(Array::from_f32(s1 - s0))?)?;
+            x = if ancestral && s1 > 0.0 {
+                let st = euler_ancestral_rf(f64::from(s0), f64::from(s1), 1.0);
+                let x0 = x.subtract(v.multiply(Array::from_f32(s0))?)?;
+                let down = x.multiply(Array::from_f32(st.ratio as f32))?.add(x0.multiply(Array::from_f32((1.0 - st.ratio) as f32))?)?;
+                let k = 0xA5A5_0000_u64 + i as u64;
+                let eps =
+                    qwen_image_rs::comfy::torch_randn(req.seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15), channels * lh * lw).map_err(anyhow::Error::msg)?;
+                let eps = Array::from_slice(&eps, &shape(&[1, channels, lh, lw])?).as_dtype(x.dtype())?;
+                down.multiply(Array::from_f32(st.scale as f32))?.add(eps.multiply(Array::from_f32(st.renoise as f32))?)?
+            } else {
+                x.add(v.multiply(Array::from_f32(s1 - s0))?)?
+            };
             x.eval()?;
             if crate::profile::enabled() {
                 eprintln!(

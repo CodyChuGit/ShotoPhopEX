@@ -112,6 +112,28 @@ fn matting_commands_fix_dark_fringes() {
 }
 
 #[test]
+fn remove_spill_finds_the_screen_and_keeps_brightness() {
+    for depth in DEPTHS {
+        // A skin-toned subject with green spill on its edge, cut from a blue screen: the
+        // see-through fringe is blue.
+        let mut s = session(depth, "rgb");
+        paint(&mut s, |x, _| if x < 10 { [0.1, 0.2, 0.8, 0.1] } else { [0.6, 0.7, 0.4, 1.0] });
+        let out = s.execute("layer.matting.despill", json!({})).unwrap();
+        assert_eq!(out["screen"], "blue", "{depth}");
+        let q = active(&s).surface().unwrap().rgba(20, 5);
+        assert!((q[1] - 0.7).abs() < 0.01, "{depth}: blue despill leaves green: {q:?}");
+        s.execute("edit.undo", json!({})).unwrap();
+        // Green, named: green comes down to the mean of red and blue, the sum held.
+        let out = s.execute("layer.matting.despill", json!({"screen": "green", "strength": 100})).unwrap();
+        assert_eq!(out["screen"], "green");
+        let q = active(&s).surface().unwrap().rgba(20, 5);
+        assert!((q[1] - 0.5).abs() < 0.01 && (q[0] + q[1] + q[2] - 1.7).abs() < 0.02, "{depth}: {q:?}");
+        assert_eq!(q[3], 1.0);
+        assert!(s.execute("layer.matting.despill", json!({"screen": "red"})).is_err());
+    }
+}
+
+#[test]
 fn defringe_pure_function() {
     // 5×1: transparent, fringe (blue), core red ×3.
     let mut px = vec![[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.5], [1.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]];

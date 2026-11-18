@@ -125,7 +125,11 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     assert!(name.starts_with("Angles: back-right quarter view high-angle shot medium shot"), "{name}");
     let st = fake.state();
     let g = &st.runs[0].request;
-    assert_eq!(g["prompt"], "<sks> back-right quarter view high-angle shot medium shot", "the LoRA's words, no format");
+    assert_eq!(
+        g["prompt"],
+        "<sks> back-right quarter view high-angle shot medium shot The camera has moved 135 degrees around to the subject's right: we see the subject's back and right side. The camera is raised high above the subject and looks down at it at 60 degrees.",
+        "the LoRA's words, then the move in plain words"
+    );
     assert_eq!(g["params"]["models"]["lora"], "qwen-image-edit-2511-multiple-angles-lora.safetensors");
     assert_eq!(g["params"]["models"]["lightning"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
     assert_eq!((g["steps"].as_u64(), g["guidance"].as_f64()), (Some(8), Some(1.0)), "the 8-step Lightning's");
@@ -134,8 +138,23 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     // The layer remembers an edit, so Generate Similar and Recreate run it again.
     let info = generative_info(s.active().unwrap().doc.layer(ids[0]).unwrap()).unwrap();
     assert_eq!((info.command.as_str(), info.template.as_str()), (EDIT, ANGLES_TEMPLATE));
-    assert_eq!(angle_prompt(0, 0, 10).as_deref(), Some("<sks> front view eye-level shot close-up"));
-    assert_eq!(angle_prompt(315, -30, 0).as_deref(), Some("<sks> front-left quarter view low-angle shot wide shot"));
+    assert_eq!(angle_prompt(0, 0, 5).as_deref(), Some("<sks> front view eye-level shot medium shot"), "no move, no sentence");
+    assert_eq!(
+        angle_prompt(0, 0, 10).as_deref(),
+        Some("<sks> front view eye-level shot close-up The camera has moved close: the subject's main part fills the frame.")
+    );
+    assert_eq!(
+        angle_prompt(270, 0, 5).as_deref(),
+        Some(
+            "<sks> left side view eye-level shot medium shot The camera has moved 90 degrees around to the subject's left: a true side profile, the subject seen exactly from its left side."
+        )
+    );
+    assert_eq!(
+        angle_prompt(315, -30, 0).as_deref(),
+        Some(
+            "<sks> front-left quarter view low-angle shot wide shot The camera has moved 45 degrees around to the subject's left: a three-quarter view. The camera is lowered below the subject and looks up at it at 30 degrees. The camera has moved back: the whole subject and its surroundings are in the frame."
+        )
+    );
     for p in [json!({"rotation": 30}), json!({"rotation": 360}), json!({"tilt": 45}), json!({"zoom": 7}), json!({"zoom": 2.5}), json!({"variations": 9})] {
         assert!(matches!(s.execute(ANGLES, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
@@ -319,4 +338,43 @@ fn an_edit_shows_what_it_changed_not_only_its_subject() {
     let night: Vec<u8> = before.as_chunks::<4>().0.iter().flat_map(|p| [p[0] / 3, p[1] / 3, p[2] / 2, 255]).collect();
     let m = changed_area(&before, &night, w, h);
     assert!(m.iter().all(|v| *v > 0.99));
+}
+
+#[test]
+fn an_edit_s_subject_mask_reaches_past_its_edge_and_fades_out() {
+    // A 20×20 square in a 64×64 result: full inside and a little beyond, then a ramp to nothing.
+    let (w, h) = (64usize, 64usize);
+    let mut subject = vec![0.0f32; w * h];
+    for y in 22..42 {
+        for x in 22..42 {
+            subject[y * w + x] = 1.0;
+        }
+    }
+    let soft = super::soft_subject_edge(&subject, w, h);
+    let r = super::subject_edge_radius(w, h);
+    assert_eq!(r, 3);
+    let at = |x: usize| soft[32 * w + x];
+    assert_eq!(at(32), 1.0, "the inside stays whole");
+    assert_eq!(at(42 + r - 1), 1.0, "the old outline is covered");
+    assert!(at(42 + r) > 0.0 && at(42 + r) < 1.0 && at(42 + r + 2) < at(42 + r), "then it fades");
+    assert!(at(42 + 4 * r) < 1e-3, "and stops");
+    assert_eq!(at(0), 0.0);
+}
+
+#[test]
+fn angles_run_on_qwen_2_1_where_2511_s_fp8_file_cannot() {
+    // RTX 30 (8.6) and older: 2.1 with its own Angles LoRA; RTX 40 (8.9), RTX 50 and an unknown
+    // card: 2511 as ever.
+    assert_eq!(angles_template_for(Some(86)), ANGLES21_TEMPLATE);
+    assert_eq!(angles_template_for(Some(75)), ANGLES21_TEMPLATE);
+    assert_eq!(angles_template_for(Some(89)), ANGLES_TEMPLATE);
+    assert_eq!(angles_template_for(Some(120)), ANGLES_TEMPLATE);
+    assert_eq!(angles_template_for(None), ANGLES_TEMPLATE);
+    assert!(photocraft_genai::template::find(ANGLES21_TEMPLATE).is_ok(), "the 2.1 route has a template");
+    // The 2.1 LoRA's words: quarter views for our 45° steps, no low angle, close-up or not.
+    assert_eq!(angle_prompt_21(45, 0, 5).as_deref(), Some("<mva> front-right quarter view, eye-level shot"));
+    assert_eq!(angle_prompt_21(90, 30, 10).as_deref(), Some("<mva> right side view, elevated shot close-up"));
+    assert_eq!(angle_prompt_21(180, 60, 0).as_deref(), Some("<mva> back view, high-angle shot"));
+    assert_eq!(angle_prompt_21(270, -30, 5).as_deref(), Some("<mva> left side view, eye-level shot"));
+    assert_eq!(angle_prompt_21(30, 0, 5), None);
 }

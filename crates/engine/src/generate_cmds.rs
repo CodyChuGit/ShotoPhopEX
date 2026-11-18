@@ -201,6 +201,11 @@ pub const ANGLES: &str = "generate.angles";
 pub const CHARACTER_SHEET: &str = "generate.characterSheet";
 /// The template `generate.angles` runs.
 pub const ANGLES_TEMPLATE: &str = "qwen-edit-2511/angles";
+/// The template `generate.angles` runs on a card without fp8 matrix cores (see
+/// [`angles_template`]): Qwen-Image-2.1 with akhaliq's Multiple Angles v2 LoRA.
+pub const ANGLES21_TEMPLATE: &str = "qwen-2.1/angles";
+/// The oldest card generation (compute capability) that runs 2511's fp8 file: RTX 40 (8.9).
+pub const ANGLES_2511_MIN_COMPUTE_CAP: u32 = 89;
 /// `generate.angles` `rotation` (degrees around the subject, 0 = from the front) and the Multiple
 /// Angles LoRA's word for it.
 pub const ANGLE_ROTATIONS: [(u32, &str); 8] = [
@@ -561,9 +566,8 @@ fn run_info(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn similar_enabled(s: &Session) -> std::result::Result<(), String> {
     web_unavailable()?;
-    let d = s.active().ok_or("no document open")?;
+    s.active().ok_or("no document open")?;
     let layer = crate::active_layer_of(s)?;
-    let _ = d;
     if generative_info(layer).is_none() {
         return Err("the active layer was not made by a generative command".into());
     }
@@ -873,6 +877,17 @@ pub fn specs() -> Vec<CommandSpec> {
             journal: true,
         },
         CommandSpec {
+            id: KEY_GREEN,
+            label: "Key Green Screen (AI)…",
+            // Placed by the menu catalogue under Layer > Matting.
+            menu: &[],
+            shortcut: None,
+            params: r#"{"screen":"auto|green|blue","hint":"auto|subject|chroma","refinerStrength":0..4=1,"despill":0..1=1,"despeckle":bool=true,"sampleAllLayers":bool=false,"name":{str?="Keyed"}} → {"layer","screen","hint","despeckled","despilled","ms"} (a green- or blue-screen picture keyed into a new layer above the active one: the subject's straight, un-mixed colour and a clean alpha from the native worker's keyer (greenkey/corridorkey-v1, CorridorKey's design; bring CorridorKey's own weights, CC BY-NC-SA 4.0, into models/corridorkey/); hint = the rough subject the keyer starts from: chroma = the pixels far from the screen colour, slightly eroded; subject = SAM 3.1's main subject; auto = chroma when most of the frame's border is a screen colour, else the subject; screen = which screen to despill (auto: from the border); refinerStrength scales the full-resolution refiner (0 = coarse only); one undo step; a background job; needs the native worker)"#,
+            enabled: greenkey::enabled,
+            run: greenkey::run,
+            journal: true,
+        },
+        CommandSpec {
             id: INFO,
             label: "Generative Layer Info",
             menu: &[],
@@ -969,9 +984,20 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Image.
             menu: &[],
             shortcut: None,
-            params: r#"{"scale":1..4=2,"tileMegapixels"?:0.25..2,"prompt"?:string,"template"?:string,"seed"?:int,"steps"?:int,"guidance"?:number,"loras"?:[{"file","strength"}],"restoreStrength":0..1.5=0.5,"grid"?:[columns,rows],"name"?:string} → {"layer","tiles","grid","width","height","elapsedMs","template"} (the document enlarged by scale the plain way (bicubic), then redrawn tile by tile by the edit model with a restore prompt (AusBoss's wording unless prompt is given): by default the fewest equal tiles of at most ~1.15 MP each, never a strip of three or more, sharing at least a 128-px strip (grid [columns, rows], 1 to 16 each, names the tiling; tileMegapixels asks for square tiles of about that size instead), each moved back onto its source and matched to its colours, the strips faded together; the redraw is a new layer above. Auto: Qwen-Image-2.1's edit on the native engine when it serves it (with the Restore LoRA at restoreStrength when the LoRA folder has qwen-image-2.1-restore.safetensors and no loras are given), else the edit default)"#,
+            params: r#"{"scale":1..4=2,"tileMegapixels"?:0.25..2,"prompt"?:string,"template"?:string,"seed"?:int,"steps"?:{int?=16 on the 2.1 edit, else the template's},"guidance"?:number,"loras"?:[{"file","strength"}],"restoreStrength":0..1.5=0.5,"turbo":bool=false,"grid"?:[columns,rows],"name"?:string} → {"layer","tiles","grid","width","height","elapsedMs","template"} (the document enlarged by scale the plain way (bicubic), then redrawn tile by tile by the edit model with a restore prompt (AusBoss's wording unless prompt is given): by default the fewest equal tiles of at most ~1.15 MP each, never a strip of three or more, sharing at least a 128-px strip (grid [columns, rows], 1 to 16 each, names the tiling; tileMegapixels asks for square tiles of about that size instead), each moved back onto its source and matched to its colours, the strips faded together; the redraw is a new layer above. Auto: Qwen-Image-2.1's edit on the native engine when it serves it (with the Restore LoRA at restoreStrength when the LoRA folder has qwen-image-2.1-restore.safetensors and no loras are given), else the edit default; turbo = also Viggle's 6-step Turbo LoRA (Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors) on its six sigmas, native 2.1 edit only)"#,
             enabled: edit_enabled,
             run: upscale::run_upscale,
+            journal: true,
+        },
+        CommandSpec {
+            id: upscale::UPSCALE_FAST,
+            label: "Generative Upscale (Fast)",
+            // Placed by the menu catalogue under Edit, after Generative Upscale.
+            menu: &[],
+            shortcut: None,
+            params: r#"{as generate.upscale} → as generate.upscale (generate.upscale with turbo true: Viggle's 6-step Turbo LoRA over the Restore LoRA, about 2x faster at 2x, close-up faces a little less faithful; needs the native Qwen-Image-2.1 edit and Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors in the loras folder)"#,
+            enabled: upscale::upscale_fast_enabled,
+            run: upscale::run_upscale_fast,
             journal: true,
         },
     ]
@@ -1033,6 +1059,9 @@ mod similar_tests;
 #[path = "generate_clown_pass.rs"]
 mod clown_pass;
 pub(crate) use clown_pass::CLOWN_PASS;
+#[path = "generate_greenkey.rs"]
+mod greenkey;
+pub(crate) use greenkey::KEY_GREEN;
 
 #[cfg(test)]
 #[path = "generate_clown_pass_tests.rs"]

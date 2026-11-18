@@ -430,7 +430,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
                     let label = layer_label(&subjects, i);
                     ctx.progress(lo, &format!("Filling behind {label} ({} of {n})", i + 1));
                     // Its layer: the picture now (nearer subjects gone) under its alpha.
-                    cut.push(under_alpha(&p, &subjects[i].alpha));
+                    cut.push(under_alpha(&p, &subjects[i].alpha, wu));
                     let hole = hole_of(&subjects[i]);
                     let (rest, this) = subjects.split_at_mut(i);
                     let _ = rest;
@@ -532,7 +532,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
             } else {
                 // One hole, one fill: every subject at once, as the Remove tool would.
                 for sub in &subjects {
-                    cut.push(under_alpha(&picture, &sub.alpha));
+                    cut.push(under_alpha(&picture, &sub.alpha, wu));
                 }
                 let mut hole = vec![0.0f32; wu * hu];
                 for sub in &subjects {
@@ -878,7 +878,7 @@ fn sweep_subjects(
         }
         ctx.check()?;
         let this = pending.remove(0);
-        cut.push(under_alpha(&p, &this.alpha));
+        cut.push(under_alpha(&p, &this.alpha, wu));
         let hole = hole_of(&this);
         let mut removal = job.clone();
         removal.rewritten = Some(removal_prompt(&this.removal_name()));
@@ -1187,9 +1187,15 @@ fn title_case(term: &str) -> String {
     }
 }
 
-/// `picture` under `alpha`: the pixels, their alpha scaled.
-fn under_alpha(picture: &[u8], alpha: &[f32]) -> Vec<u8> {
-    picture.as_chunks::<4>().0.iter().zip(alpha).flat_map(|(p, a)| [p[0], p[1], p[2], (f32::from(p[3]) * a.clamp(0.0, 1.0)).round() as u8]).collect()
+/// `picture` (RGBA8, `w` wide) under `alpha`: the pixels, their alpha scaled.
+fn under_alpha(picture: &[u8], alpha: &[f32], w: usize) -> Vec<u8> {
+    // The soft edge takes the subject's own colour (the backdrop's tint solved out), so hair
+    // does not carry the old background onto whatever the layer is laid over.
+    let mut colours = picture.to_vec();
+    if w > 0 {
+        photocraft_algo::matting::unmix_rgba8(&mut colours, w, alpha.len() / w, alpha);
+    }
+    colours.as_chunks::<4>().0.iter().zip(alpha).flat_map(|(p, a)| [p[0], p[1], p[2], (f32::from(p[3]) * a.clamp(0.0, 1.0)).round() as u8]).collect()
 }
 
 /// A subject's hole: wherever its mask or its alpha shows it (the soft fringe is still the

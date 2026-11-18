@@ -267,14 +267,18 @@ pub(crate) struct Common {
     pub(crate) name: Option<String>,
 }
 
+/// Templates that run with an empty prompt.
+const PROMPTLESS_TEMPLATES: [&str; 1] = ["moss-image/restore"];
+
 pub(crate) fn plan_common(_s: &Session, cmd: &str, p: &Value, default_template: &str, task: Task, default_model: &str) -> Result<Common> {
-    let prompt = opt_str(cmd, p, "prompt", MAX_PROMPT_CHARS)?
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| bad(cmd, "`prompt` is required: describe what to generate"))?
-        .to_string();
-    let negative = opt_str(cmd, p, "negative", MAX_PROMPT_CHARS)?.unwrap_or("").to_string();
     let template_id = opt_str(cmd, p, "template", 100)?.unwrap_or(default_template);
+    // A restore LoRA's run takes no prompt (its author's: both prompts empty).
+    let prompt = match opt_str(cmd, p, "prompt", MAX_PROMPT_CHARS)?.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => t.to_string(),
+        None if PROMPTLESS_TEMPLATES.contains(&template_id) => String::new(),
+        None => return Err(bad(cmd, "`prompt` is required: describe what to generate")),
+    };
+    let negative = opt_str(cmd, p, "negative", MAX_PROMPT_CHARS)?.unwrap_or("").to_string();
     let template = template::find(template_id).map_err(|e| bad(cmd, e.to_string()))?;
     if template.meta.task != task {
         return Err(bad(cmd, format!("template `{template_id}` is a {:?} template, not {task:?}", template.meta.task)));

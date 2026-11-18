@@ -74,6 +74,18 @@ pub fn bind_thread(device: &Device) {
     let _ = device;
 }
 
+/// The card's memory as the memory modes judge it (MOSS's 12 GB mode, Klein's 8 GB mode): the
+/// app's `PHOTOCRAFT_VRAM_MB` (megabytes) when set, the way the worker's lean mode reads it, else
+/// the driver's total. A card made smaller for a test (another process holding the rest of it)
+/// then picks the mode the smaller card would.
+pub fn card_total(device: &Device) -> Option<usize> {
+    card_total_from(std::env::var("PHOTOCRAFT_VRAM_MB").ok().as_deref(), free_vram(device).map(|(_, total)| total))
+}
+
+fn card_total_from(forced_mb: Option<&str>, total: Option<usize>) -> Option<usize> {
+    forced_mb.and_then(|v| v.trim().parse::<usize>().ok()).filter(|mb| *mb > 0).map(|mb| mb << 20).or(total)
+}
+
 /// `(free, total)` device memory in bytes (cuMemGetInfo) on CUDA; `None` on
 /// CPU or if the query fails.
 pub fn free_vram(device: &Device) -> Option<(usize, usize)> {
@@ -373,6 +385,17 @@ mod tests {
         assert!(!quantized_fast_kernels_run(75, 86));
         assert!(quantized_fast_kernels_run(120, 120));
         assert!(!quantized_fast_kernels_run(86, 89));
+    }
+
+    #[test]
+    fn the_app_s_memory_override_stands_in_for_the_card() {
+        const GIB: usize = 1 << 30;
+        assert_eq!(card_total_from(None, Some(24 * GIB)), Some(24 * GIB));
+        assert_eq!(card_total_from(Some("12288"), Some(24 * GIB)), Some(12 * GIB));
+        assert_eq!(card_total_from(Some(" 16384 "), None), Some(16 * GIB));
+        assert_eq!(card_total_from(Some("not a number"), Some(24 * GIB)), Some(24 * GIB));
+        assert_eq!(card_total_from(Some("0"), Some(24 * GIB)), Some(24 * GIB));
+        assert_eq!(card_total_from(None, None), None);
     }
 
     #[test]
