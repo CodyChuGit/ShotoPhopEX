@@ -22,13 +22,51 @@ use super::{
     plan_common, run_image, short, template_files_present, ultra, web_unavailable,
 };
 
-/// The Multiple Angles LoRA's prompt for a camera, `<sks> [azimuth] [elevation] [distance]`, or
-/// None for a value it has no words for.
-pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
+/// The Multiple Angles LoRA's words for a camera, `[azimuth] [elevation] [distance]`, or None
+/// for a value it has no words for.
+pub fn angle_words(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     let r = ANGLE_ROTATIONS.iter().find(|(d, _)| *d == rotation)?.1;
     let t = ANGLE_TILTS.iter().find(|(d, _)| *d == tilt)?.1;
     let z = ANGLE_ZOOMS.iter().find(|(d, _)| *d == zoom)?.1;
-    Some(format!("<sks> {r} {t} {z}"))
+    Some(format!("{r} {t} {z}"))
+}
+
+/// The camera move in plain words, one sentence per axis that moves (nothing for the front,
+/// eye-level, medium camera). The lesson of the "Latent Layer Cameras" SD 1.5 set: each camera is
+/// one named target in plain language. In the 2026-11-17 5090 test, the LoRA's tokens alone
+/// reached a true side view at rotation 90 on 1 of 5 runs (the rest stopped at 10-45°); with
+/// this sentence after them, 5 of 5, at the same speed, scene and detail.
+pub fn angle_sentence(rotation: u32, tilt: i32, zoom: u32) -> String {
+    let side = if rotation > 180 { "left" } else { "right" };
+    let turn = match rotation {
+        45 | 315 => format!("The camera has moved 45 degrees around to the subject's {side}: a three-quarter view."),
+        90 | 270 => {
+            format!("The camera has moved 90 degrees around to the subject's {side}: a true side profile, the subject seen exactly from its {side} side.")
+        }
+        135 | 225 => format!("The camera has moved 135 degrees around to the subject's {side}: we see the subject's back and {side} side."),
+        180 => "The camera has moved 180 degrees around the subject: we see it from directly behind.".to_string(),
+        _ => String::new(),
+    };
+    let height = match tilt {
+        -30 => "The camera is lowered below the subject and looks up at it at 30 degrees.",
+        30 => "The camera is raised above the subject and looks down at it at 30 degrees.",
+        60 => "The camera is raised high above the subject and looks down at it at 60 degrees.",
+        _ => "",
+    };
+    let distance = match zoom {
+        0 => "The camera has moved back: the whole subject and its surroundings are in the frame.",
+        10 => "The camera has moved close: the subject's main part fills the frame.",
+        _ => "",
+    };
+    [turn.as_str(), height, distance].iter().filter(|w| !w.is_empty()).copied().collect::<Vec<_>>().join(" ")
+}
+
+/// The prompt for a camera: `<sks> [azimuth] [elevation] [distance]`, the LoRA's trained words,
+/// then [`angle_sentence`]; None for a value the LoRA has no words for.
+pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
+    let words = angle_words(rotation, tilt, zoom)?;
+    let sentence = angle_sentence(rotation, tilt, zoom);
+    Some(if sentence.is_empty() { format!("<sks> {words}") } else { format!("<sks> {words} {sentence}") })
 }
 
 /// The template `generate.angles` runs: 2511 with the Multiple Angles LoRA, which was trained on
@@ -428,7 +466,7 @@ pub(super) fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
     let zoom = whole("zoom", 0.0, 10.0, 5.0)? as u32;
     let words = angle_prompt(rotation, tilt, zoom)
         .ok_or_else(|| bad(ANGLES, "`rotation` must be 0, 45, … 315; `tilt` -30, 0, 30 or 60; `zoom` 0 (wide), 5 (medium) or 10 (close-up)"))?;
-    let camera = words.trim_start_matches("<sks> ").to_string();
+    let camera = angle_words(rotation, tilt, zoom).unwrap_or_default();
     let template = angles_template(s);
     // On 2.1 the LoRA's own words, its template's steps; no Lightning there.
     let on21 = template == ANGLES21_TEMPLATE;

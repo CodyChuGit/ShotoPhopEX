@@ -48,12 +48,23 @@ fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
     set(&mut a, &json!({"angles": {"rotation": 180, "tilt": 30, "zoom": 10, "variations": 2, "generate": true}})).unwrap();
     let st = fake.state();
     assert_eq!(st.runs.len(), 2, "two variations");
-    assert_eq!(st.runs[0].request["prompt"], "<sks> back view elevated shot close-up");
+    assert_eq!(
+        st.runs[0].request["prompt"],
+        "<sks> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is raised above the subject and looks down at it at 30 degrees. The camera has moved close: the subject's main part fills the frame."
+    );
     drop(st);
     let runs = crate::variations_strip::bundles(&a);
     assert_eq!((runs.len(), runs[0].layers.len()), (1, 2), "the results are a run of the Variations strip");
     let v = inspect(&a);
-    assert_eq!((v["prompt"].as_str(), v["open"].as_bool()), (Some("<sks> back view elevated shot close-up"), Some(true)));
+    assert_eq!(
+        (v["prompt"].as_str(), v["open"].as_bool()),
+        (
+            Some(
+                "<sks> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is raised above the subject and looks down at it at 30 degrees. The camera has moved close: the subject's main part fills the frame."
+            ),
+            Some(true)
+        )
+    );
     // No picture: no window.
     let mut empty = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     assert!(crate::menus::invoke(&mut empty, &ctx, "generate.angles", json!({})).is_err());
