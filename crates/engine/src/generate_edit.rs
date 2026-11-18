@@ -175,10 +175,12 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 None => vec![1.0; rect.width() as usize * rect.height() as usize],
             };
+            // The picture before the edit: what the edit changed shows along with the subject.
+            let before: Option<Vec<u8>> = finder.as_ref().map(|_| photocraft_compose::render(doc, rect).to_rgba8().pixels);
             let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
             if let Some(finder) = finder.as_ref() {
                 for (id, ..) in &filled.0 {
-                    mask_to_subject(doc, *id, rect, selected, finder, ctx)?;
+                    mask_to_subject(doc, *id, rect, selected, before.as_deref(), finder, ctx)?;
                 }
             }
             Ok(filled)
@@ -187,15 +189,23 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
-/// An edit result's layer mask from its subject: Select Subject's prompts on the result in turn,
-/// the first that finds anything, its instances joined. With a selection the subject joins the
-/// selection's mask (the selected area changes, and a new subject larger than it still shows
-/// whole); without one it is the mask. Nothing found: the mask stays as it was.
+/// An edit result's layer mask: its subject (Select Subject's prompts on the result in turn, the
+/// first that finds anything, its instances joined) and everything the edit visibly changed
+/// ([`changed_area`] against `before`, the picture before the edit). With a selection that joins
+/// the selection's mask (the selected area changes, and a new subject larger than it still shows
+/// whole); without one it is the mask. Nothing found: the mask stays as it was. An edit that
+/// changed most of the picture (night, snow, a painting style, a new background) shows whole.
+///
+/// The subject alone (2026-11-12 to 11-17) kept "make it night", "make it snow", "change the
+/// background to a beach", "turn this into a watercolor", a sign's new text and "remove the bowl
+/// of fruit" from showing at all on every edit model: only the person or the fridge changed
+/// (Enhance round 5 on the 5090, 2026-11-17).
 pub(super) fn mask_to_subject(
     doc: &mut Document,
     id: LayerId,
     rect: Rect,
     selected: bool,
+    before: Option<&[u8]>,
     finder: &crate::select_ml_cmds::SubjectFinder,
     ctx: &JobCtx,
 ) -> Result<()> {
@@ -204,7 +214,25 @@ pub(super) fn mask_to_subject(
     let mut px = vec![[0u8; 4]; rect.width() as usize * rect.height() as usize];
     surf.read_rgba8_into(rect, &mut px);
     let picture: Vec<u8> = px.into_iter().flatten().collect();
-    let Some(subject) = subject_in(&picture, rect, finder, ctx)? else { return Ok(()) };
+    let (w, h) = (rect.width() as usize, rect.height() as usize);
+    // With a selection, the selection says where the edit goes; what changed outside it stays hidden.
+    let changed = before.filter(|b| !selected && b.len() == picture.len()).map(|b| changed_area(b, &picture, w, h));
+    if changed.as_ref().is_some_and(|c| c.iter().sum::<f32>() > 0.5 * c.len() as f32) {
+        // Most of the picture changed: the whole result shows, as the model made it.
+        return Ok(());
+    }
+    let subject = subject_in(&picture, rect, finder, ctx)?;
+    let subject = match (subject, changed) {
+        (Some(mut s), Some(c)) => {
+            for (a, b) in s.iter_mut().zip(&c) {
+                *a = a.max(*b);
+            }
+            s
+        }
+        (Some(s), None) => s,
+        (None, Some(c)) => c,
+        (None, None) => return Ok(()),
+    };
     let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     let shown: Vec<f32> = match layer.mask.as_ref().filter(|_| selected) {
         Some(m) => m.surface.read_region(rect).iter().zip(&subject).map(|(a, b)| a.max(*b)).collect(),
@@ -214,6 +242,64 @@ pub(super) fn mask_to_subject(
     surface.write_region(rect, &shown);
     layer.mask = Some(LayerMask { surface, enabled: true, linked: true, density: 1.0, feather: 0.0 });
     Ok(())
+}
+
+/// Where an edit visibly changed the picture, 0..1 per pixel of a `w`×`h` RGBA8 pair: the
+/// colour difference of 8-pixel block averages (so the model's small shifts and re-rendered
+/// grain do not count), ramped from 0 at 0.07 to 1 at 0.15 of full scale on the most changed
+/// channel, grown by one block and smoothed back to pixels.
+pub(super) fn changed_area(before: &[u8], after: &[u8], w: usize, h: usize) -> Vec<f32> {
+    const B: usize = 8;
+    let (bw, bh) = (w.div_ceil(B), h.div_ceil(B));
+    let mut blocks = vec![0.0f32; bw * bh];
+    for by in 0..bh {
+        for bx in 0..bw {
+            let (mut a, mut z, mut n) = ([0.0f32; 3], [0.0f32; 3], 0.0f32);
+            for y in by * B..((by + 1) * B).min(h) {
+                for x in bx * B..((bx + 1) * B).min(w) {
+                    let i = (y * w + x) * 4;
+                    for c in 0..3 {
+                        a[c] += f32::from(before[i + c]);
+                        z[c] += f32::from(after[i + c]);
+                    }
+                    n += 1.0;
+                }
+            }
+            let d = (0..3).map(|c| (a[c] - z[c]).abs() / (n * 255.0)).fold(0.0f32, f32::max);
+            blocks[by * bw + bx] = ((d - 0.07) / 0.08).clamp(0.0, 1.0);
+        }
+    }
+    // Grown by one block, so the edge of a changed thing is inside.
+    let grown: Vec<f32> = (0..bh * bw)
+        .map(|k| {
+            let (bx, by) = ((k % bw) as isize, (k / bw) as isize);
+            let mut m = 0.0f32;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let (x, y) = (bx + dx, by + dy);
+                    if x >= 0 && y >= 0 && (x as usize) < bw && (y as usize) < bh {
+                        m = m.max(blocks[y as usize * bw + x as usize]);
+                    }
+                }
+            }
+            m
+        })
+        .collect();
+    // Back to pixels, bilinear between block centres.
+    let at = |x: isize, y: isize| grown[y.clamp(0, bh as isize - 1) as usize * bw + x.clamp(0, bw as isize - 1) as usize];
+    let mut out = vec![0.0f32; w * h];
+    for y in 0..h {
+        let fy = (y as f32 + 0.5) / B as f32 - 0.5;
+        let (y0, ty) = (fy.floor() as isize, fy - fy.floor());
+        for x in 0..w {
+            let fx = (x as f32 + 0.5) / B as f32 - 0.5;
+            let (x0, tx) = (fx.floor() as isize, fx - fx.floor());
+            let top = at(x0, y0) * (1.0 - tx) + at(x0 + 1, y0) * tx;
+            let bottom = at(x0, y0 + 1) * (1.0 - tx) + at(x0 + 1, y0 + 1) * tx;
+            out[y * w + x] = top * (1.0 - ty) + bottom * ty;
+        }
+    }
+    out
 }
 
 /// The subjects (at most [`SUBJECT_MASK_AT_MOST`]) Select Subject finds in `picture` (RGBA8 of

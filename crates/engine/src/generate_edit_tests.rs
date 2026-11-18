@@ -74,13 +74,13 @@ fn edit_re_renders_the_whole_canvas_into_a_layer_and_sends_no_mask() {
     let l = d.doc.layer(id).unwrap();
     assert_eq!(l.name, "Generative Edit: make the sky stormy");
     assert!(close(&l.surface().unwrap().read_region(Rect::new(1, 1, 2, 2)), FAKE_COLOR), "the result covers the canvas");
-    // No selection: what shows is the result's subject (Select Subject on it; the fake detector
-    // finds the middle half of the picture), the original around it.
-    assert_eq!(mask_at(&s, id, 32, 24), 1.0, "the subject shows");
-    assert_eq!(mask_at(&s, id, 1, 1), 0.0, "outside the subject the original shows");
-    assert_eq!(mask_at(&s, id, 62, 46), 0.0);
+    // No selection: what shows is the result's subject and what the edit changed; the fake's
+    // flat colour changed all of the picture, so all of the result shows, unmasked (a night or
+    // snow edit, a new background, a painting style).
+    for (x, y) in [(32, 24), (1, 1), (62, 46)] {
+        assert_eq!(mask_at(&s, id, x, y), 1.0, "an edit that changed most of the picture shows whole, at ({x}, {y})");
+    }
     let st = fake.state();
-    assert!(st.runs.iter().skip(1).any(|r| r.request["task"] == "segment"), "the subject is found on the result");
     let g = &st.runs[0].request;
     assert!(g["mask"].is_null() && g["task"] == "edit", "an edit has no input mask");
     assert_eq!(g["params"]["models"]["lora"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
@@ -291,4 +291,32 @@ fn a_repose_sends_the_posestudio_lora_and_prompt() {
     assert!(edit_rewrite(&s, &json!({"repose": true, "swap": "head", "references": [{"layer": 2}]})).is_err(), "not both");
     assert_eq!(edit_rewrite(&s, &json!({"repose": true, "references": [{"layer": 2}]})).unwrap().unwrap()["name"], "Repose");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_edit_shows_what_it_changed_not_only_its_subject() {
+    use super::edit::changed_area;
+    let (w, h) = (64usize, 64usize);
+    let before: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 130, 140, 255]).collect();
+    // Re-rendered grain everywhere (±6 levels), and a 16×16 square repainted red at (40, 8).
+    let mut after = before.clone();
+    for (k, p) in after.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let n = ((k * 7919) % 13) as i16 - 6;
+        for c in &mut p[..3] {
+            *c = (i16::from(*c) + n).clamp(0, 255) as u8;
+        }
+        let (x, y) = (k % w, k / w);
+        if (40..56).contains(&x) && (8..24).contains(&y) {
+            p[..3].copy_from_slice(&[220, 30, 30]);
+        }
+    }
+    let m = changed_area(&before, &after, w, h);
+    assert!(m[16 * w + 48] > 0.99, "inside the square: {}", m[16 * w + 48]);
+    assert!(m[50 * w + 8] < 0.01, "far from it: {}", m[50 * w + 8]);
+    let mean = m.iter().sum::<f32>() / m.len() as f32;
+    assert!(mean < 0.35, "{mean}");
+    // A night edit darkens everything: all of it changed.
+    let night: Vec<u8> = before.as_chunks::<4>().0.iter().flat_map(|p| [p[0] / 3, p[1] / 3, p[2] / 2, 255]).collect();
+    let m = changed_area(&before, &night, w, h);
+    assert!(m.iter().all(|v| *v > 0.99));
 }

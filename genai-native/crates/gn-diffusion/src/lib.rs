@@ -681,7 +681,16 @@ impl DiffusionEngine {
                 _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("max_tokens {v} is outside 16..2048"))),
             },
         };
-        let opts = ChatOptions { seed: req.seed, max_new, ..ChatOptions::default() };
+        // `params.temperature` (0..1.5): the engine warms a retry after a refused rewrite; at the
+        // default 0.3 the next seed often gave the same answer word for word (round 5, 2026-11-17).
+        let temperature = match req.params.get("temperature") {
+            None => ChatOptions::default().temperature,
+            Some(v) => match v.as_f64() {
+                Some(t) if (0.0..=1.5).contains(&t) => t as f32,
+                _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("temperature {v} is outside 0..1.5"))),
+            },
+        };
+        let opts = ChatOptions { seed: req.seed, max_new, temperature, ..ChatOptions::default() };
         let stop = || cancel.load(Ordering::SeqCst);
         let reply = match &self.resident {
             Resident::Qwen(p) if on == ChatOn::Qwen21 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),

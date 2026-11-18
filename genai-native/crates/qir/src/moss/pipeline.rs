@@ -348,8 +348,13 @@ impl MossPipeline {
     /// A reference as MOSS Edit takes it: its long edge at most `edge` (Lanczos, never enlarged,
     /// each side rounded to 16 independently, as the official `resize_image`), encoded.
     pub fn reference_latent(&self, r: &RefImage, edge: usize) -> Result<Tensor> {
-        let enc = self.encoder.as_ref().context("the VAE file has no FLUX.2 encoder (Comfy-Org's flux2-vae_small has one)")?;
         let (w, h) = reference_size(r.width, r.height, edge);
+        self.reference_latent_at(r, w, h)
+    }
+
+    /// A reference encoded at exactly `w`×`h` (Lanczos).
+    fn reference_latent_at(&self, r: &RefImage, w: usize, h: usize) -> Result<Tensor> {
+        let enc = self.encoder.as_ref().context("the VAE file has no FLUX.2 encoder (Comfy-Org's flux2-vae_small has one)")?;
         let img = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.rgba.clone()).context("a reference's pixels do not match its size")?;
         let img = if (w, h) == (r.width, r.height) { img } else { image::imageops::resize(&img, w as u32, h as u32, image::imageops::FilterType::Lanczos3) };
         enc.encode(&vae::from_rgba_u8(img.as_raw(), w, h, &self.dev)?)
@@ -421,7 +426,21 @@ impl MossPipeline {
             // 12 GB mode: references at 512 (the edit workflow's), their cache a quarter the size.
             let default_edge = if self.low_vram { LOW_VRAM_REFERENCE_EDGE } else { REFERENCE_EDGE };
             let edge = std::env::var("QIR_MOSS_REF_EDGE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default_edge);
-            let latents = req.references.iter().map(|r| self.reference_latent(r, edge)).collect::<Result<Vec<_>>>()?;
+            // The picture being edited (the first reference, the output's aspect) is encoded at
+            // the output's size: the reference tokens sit at the same grid positions as the
+            // output's, so a picture encoded smaller (768×1024 for an 864×1152 edit) came back as
+            // a smaller copy in the top-left of the frame, a second head above the first once
+            // laid over the original (Enhance round 5 on the 5090, 2026-11-17). Square pictures
+            // at 1024 were already the same size and were fine.
+            let latents = req
+                .references
+                .iter()
+                .enumerate()
+                .map(|(i, r)| match same_grid_size(i, r.width, r.height, w, h, edge) {
+                    true => self.reference_latent_at(r, w, h),
+                    false => self.reference_latent(r, edge),
+                })
+                .collect::<Result<Vec<_>>>()?;
             Some(dit.prepare_references(&latents)?)
         };
         // The edit's negative branch skips no block (the official edit sampler), unless
@@ -698,6 +717,14 @@ pub fn reference_size(w: usize, h: usize, edge: usize) -> (usize, usize) {
     (side(w), side(h))
 }
 
+/// Whether reference `index` (of `rw`×`rh` pixels) is encoded at the output's `w`×`h`: the first
+/// one, when it has the output's aspect (within 2 %) and the output is no bigger than the
+/// reference edge allows in area (so 12 GB mode keeps its smaller references).
+pub fn same_grid_size(index: usize, rw: usize, rh: usize, w: usize, h: usize, edge: usize) -> bool {
+    let (a, b) = ((rw * h) as f64, (rh * w) as f64);
+    index == 0 && rw > 0 && rh > 0 && (a - b).abs() <= 0.02 * a.max(b) && w * h <= edge * edge
+}
+
 /// An edit's output size when none is asked: the picture's aspect at about [`EDIT_PIXELS`],
 /// sides multiples of 16.
 pub fn edit_size(w: usize, h: usize) -> (usize, usize) {
@@ -716,6 +743,12 @@ mod tests {
         assert_eq!(reference_size(500, 300, 1024), (496, 304));
         assert_eq!(edit_size(4000, 3000), (1184, 880));
         assert_eq!(edit_size(1024, 1024), (1024, 1024));
+        // The edited picture is encoded at the output's size when it has its aspect.
+        assert!(same_grid_size(0, 864, 1152, 864, 1152, REFERENCE_EDGE));
+        assert!(same_grid_size(0, 1728, 2304, 864, 1152, REFERENCE_EDGE));
+        assert!(!same_grid_size(1, 864, 1152, 864, 1152, REFERENCE_EDGE));
+        assert!(!same_grid_size(0, 1024, 1024, 864, 1152, REFERENCE_EDGE));
+        assert!(!same_grid_size(0, 864, 1152, 864, 1152, LOW_VRAM_REFERENCE_EDGE));
     }
 
     #[test]

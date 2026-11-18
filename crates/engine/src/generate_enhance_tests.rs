@@ -64,7 +64,7 @@ fn enhance_prompt_rewrites_an_instruction_with_the_picture_in_view() {
         assert_eq!(text_prompt(g), "make this hyper realistic");
         let sys = system_prompt(g);
         assert!(sys.starts_with("You rewrite instructions for an image-editing AI. You can see the image."), "{sys}");
-        assert!(sys.contains("names things by what they are in the image") && sys.contains("changes the style, medium or realism"), "{sys}");
+        assert!(sys.contains("name things by what they are in the image") && sys.contains("changes the style, medium or realism"), "{sys}");
         assert!(!sys.contains("The user selected"), "an edit is about the whole picture");
         assert_eq!(g["seed"], 7);
     }
@@ -225,13 +225,13 @@ fn a_rewriter_that_says_nothing_usable_leaves_the_prompt_as_typed() {
     let r = s.execute(ENHANCE, json!({"prompt": "a kite", "task": "fill"})).unwrap();
     assert_eq!(r["enhanced"], false);
     assert_eq!(r["prompt"], "a kite", "the typed prompt comes back");
-    assert_eq!(mute.state().runs.len(), 2, "two tries with consecutive seeds");
+    assert_eq!(mute.state().runs.len(), 3, "three tries with consecutive seeds");
     let before = mute.state().runs.len();
     let r = s.execute(EDIT, json!({"prompt": "make the sky stormy", "seed": 3, "enhance": true})).unwrap();
     {
         let st = mute.state();
-        assert_eq!(st.runs.iter().filter(|r| r.request["task"] != "segment").count(), before + 3, "two tries, then the edit as typed");
-        assert_eq!(st.runs[before + 2].request["prompt"], "make the sky stormy. Keep everything else exactly as it is.");
+        assert_eq!(st.runs.iter().filter(|r| r.request["task"] != "segment").count(), before + 4, "three tries, then the edit as typed");
+        assert_eq!(st.runs[before + 3].request["prompt"], "make the sky stormy. Keep everything else exactly as it is.");
     }
     let info = s.execute(INFO, json!({"layer": r["layer"]})).unwrap();
     assert_eq!(info["generative"]["enhanced"], "");
@@ -340,4 +340,174 @@ fn a_text_to_image_rewrite_runs_on_the_pictures_own_encoder() {
     let last = st.runs.iter().rev().find(|r| is_text_request(&r.request)).unwrap();
     assert!(system_prompt(&last.request).contains("150 to 300 words"), "{}", system_prompt(&last.request));
     assert_eq!(last.request["params"]["max_tokens"], 640);
+}
+
+#[test]
+fn a_rewrite_is_checked_before_it_replaces_the_prompt() {
+    use crate::generate_cmds::{EnhanceKind as K, Refusal, check_rewrite};
+    let ok = |k, t: &str, s: &str| check_rewrite(k, t, s, "");
+    // Good rewrites pass, tidied.
+    assert_eq!(
+        ok(K::Edit, "make the boat blue", "Change the white fishing boat to a deep blue, keeping the harbour and the sky unchanged.").as_deref(),
+        Ok("Change the white fishing boat to a deep blue, keeping the harbour and the sky unchanged.")
+    );
+    assert_eq!(
+        ok(K::Image, "a fox in snow", "Here is the enhanced prompt: A red fox stands in deep fresh snow, its fur frosted, soft overcast light.").as_deref(),
+        Ok("A red fox stands in deep fresh snow, its fur frosted, soft overcast light.")
+    );
+    // A paragraph cut off by the token limit ends at its last full sentence.
+    let cut = "A red fox stands in deep fresh snow at the edge of a pine forest, its thick winter fur dusted with flakes. Soft overcast light falls evenly across the scene. The fox looks toward the";
+    assert_eq!(ok(K::Image, "a fox in snow", cut).unwrap(), cut[..cut.rfind('.').unwrap() + 1]);
+    // Garbled answers: another script, broken words, one token over and over.
+    for junk in [
+        "的的的 Change 的 boat 蓝色 的的的 船 改变 颜色 的的的",
+        "Change the boat boat boat boat boat blue",
+        "xqzrtk blpfmn the qwrtzp boat vbnmqr blue sdfghk",
+        "boat blue \u{FFFD}\u{FFFD} sea",
+        "the blue boat the blue boat the blue boat the blue boat the blue boat in the sea",
+    ] {
+        assert_eq!(ok(K::Edit, "make the boat blue", junk), Err(Refusal::Garbled), "{junk}");
+    }
+    // A prompt typed in another script may be answered in it.
+    assert!(ok(K::Image, "雪中的狐狸", "一只红狐狸站在雪地里，柔和的阴天光线。").is_ok());
+    // Talk about the task.
+    assert_eq!(ok(K::Edit, "make the boat blue", "I'm sorry, but I cannot edit images."), Err(Refusal::Chatter));
+    assert_eq!(ok(K::Image, "a fox", "The user wants a fox. A red fox in a forest."), Err(Refusal::Chatter));
+    // The prompt back as typed.
+    assert_eq!(ok(K::Image, "a red fox in deep snow", "A red fox in deep snow."), Err(Refusal::Unchanged));
+    // What the user asked for, dropped: the subject, a colour, a count, quoted words.
+    assert_eq!(ok(K::Image, "a fox", "A wolf runs across a frozen lake under a pale winter sky."), Err(Refusal::LostIntent));
+    assert_eq!(ok(K::Edit, "make the boat blue", "Change the white fishing boat to a deep red colour."), Err(Refusal::LostIntent));
+    assert_eq!(ok(K::Image, "three cats on a sofa", "A cat sleeps on a soft velvet sofa in warm lamp light."), Err(Refusal::LostIntent));
+    assert_eq!(ok(K::Image, "a sign that says \"OPEN 24/7\"", "A neon sign reading \"OPEN\" glows in a rainy window."), Err(Refusal::LostIntent));
+    assert!(ok(K::Image, "a sign that says \"OPEN 24/7\"", "A red neon sign reading \"OPEN 24/7\" glows in a rainy diner window.").is_ok());
+    // Close word forms and plurals count; filler and instruction verbs do not.
+    assert!(ok(K::Edit, "make this hyper realistic", "Turn the doodle into a realistic photograph of a real human face with the same pose.").is_ok());
+    assert!(ok(K::Image, "two dogs playing on the beaches", "Two golden retriever dogs play together on a sandy beach at sunset.").is_ok());
+    // A reference fill describes the reference, not the typed words.
+    assert!(ok(K::FillRef, "the jacket", "a cropped olive green bomber with ribbed cuffs and a brass zip").is_ok());
+}
+
+#[test]
+fn the_wand_rewrites_an_idea_for_the_model_it_will_run_on() {
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    s.edit_prefs(|p| p.integrations.quality = "balanced".into());
+    let last = |fake: &FakeNative| fake.state().runs.iter().rev().find(|r| is_text_request(&r.request)).map(|r| r.request.clone()).unwrap();
+    s.execute(ENHANCE, json!({"prompt": "a fox in snow", "task": "image", "template": "krea2-turbo/image"})).unwrap();
+    let g = last(&fake);
+    assert_eq!(g["params"]["encoder"], "krea2", "Krea 2's own writer, no model swap");
+    assert!(system_prompt(&g).starts_with("You are an expert prompt writer for a text-to-image model."));
+    s.execute(ENHANCE, json!({"prompt": "a fox in snow", "task": "image", "template": "moss-image/turbo"})).unwrap();
+    assert_eq!(last(&fake)["params"]["encoder"], "moss-image/turbo");
+    s.execute(ENHANCE, json!({"prompt": "a fox in snow", "task": "image", "template": "qwen-2.1/image"})).unwrap();
+    assert_eq!(last(&fake)["params"]["encoder"], Value::Null);
+    // The 16 MP model: its long caption, as its run would write.
+    s.execute(ENHANCE, json!({"prompt": "a fox in snow", "task": "image", "template": "minimax-h3-image/image"})).unwrap();
+    assert!(system_prompt(&last(&fake)).contains("150 to 300 words"));
+    // Quality Best: the photographic caption for a photo idea, the plain one for a painting.
+    s.edit_prefs(|p| p.integrations.quality = "best".into());
+    s.execute(ENHANCE, json!({"prompt": "a fox in snow", "task": "image", "template": "krea2-turbo/image"})).unwrap();
+    assert!(system_prompt(&last(&fake)).starts_with("You are an expert prompt writer for a photorealistic"));
+    s.execute(ENHANCE, json!({"prompt": "an oil painting of a fox", "task": "image", "template": "krea2-turbo/image"})).unwrap();
+    assert!(!system_prompt(&last(&fake)).contains("photorealistic text-to-image"));
+    // No template: as before, the plain rewriter on the default encoder.
+    s.execute(ENHANCE, json!({"prompt": "a fox in snow", "task": "image"})).unwrap();
+    let g = last(&fake);
+    assert_eq!(g["params"]["encoder"], Value::Null);
+    assert!(system_prompt(&g).starts_with("You are an expert prompt writer for a text-to-image model."));
+}
+
+#[test]
+fn a_rewrite_that_copies_its_instructions_or_drops_the_medium_is_refused() {
+    use crate::generate_cmds::{EnhanceKind as K, Refusal, check_rewrite};
+    let sys = "End by naming things, for example keeping the yellow note, the fruit bowl and the cabinets unchanged.";
+    assert_eq!(
+        check_rewrite(
+            K::Edit,
+            "make it night",
+            "Turn the kitchen into a night scene with lamps on, keeping the yellow note, the fruit bowl and the cabinets unchanged.",
+            sys
+        ),
+        Err(Refusal::Chatter)
+    );
+    assert!(check_rewrite(K::Edit, "make it night", "Turn the kitchen into a night scene lit by warm lamps, keeping its layout and framing.", sys).is_ok());
+    // Words the user typed may repeat the instructions' words.
+    assert!(
+        check_rewrite(
+            K::Edit,
+            "keep the yellow note, the fruit bowl and the cabinets",
+            "Keep the yellow note, the fruit bowl and the cabinets exactly in place while brightening the room.",
+            sys
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        check_rewrite(K::Image, "a lighthouse in a storm, oil painting", "A photograph of a lighthouse in a storm, an oil painting look.", ""),
+        Err(Refusal::PhotoForMedium)
+    );
+    // A closing "A photograph…" after a paragraph that kept the medium is dropped, not refused
+    // (round 5: island and anime rewrites on Krea 2, Qwen 2.1 and Klein), also when cut off.
+    assert_eq!(
+        check_rewrite(
+            K::Image,
+            "a lighthouse in a storm, oil painting",
+            "An oil painting of a lighthouse on rocks in a storm, waves crashing against it under dark clouds. A photograph with visible brushwork.",
+            ""
+        ),
+        Ok("An oil painting of a lighthouse on rocks in a storm, waves crashing against it under dark clouds.".to_string())
+    );
+    assert_eq!(
+        check_rewrite(
+            K::Image,
+            "isometric 3d render of a tiny island with a windmill",
+            "An isometric 3D render of a tiny island, viewed from a high angle, with a wooden windmill on green grass beside calm blue water. Soft daylight casts gentle shadows. A photograph",
+            ""
+        ),
+        Ok("An isometric 3D render of a tiny island, viewed from a high angle, with a wooden windmill on green grass beside calm blue water. Soft daylight casts gentle shadows.".to_string())
+    );
+    assert!(
+        check_rewrite(
+            K::Image,
+            "a lighthouse in a storm, oil painting",
+            "A lighthouse on rocks in a storm, waves crashing. An oil painting with thick brushwork.",
+            ""
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_light_touch_rewrite_is_one_line_and_not_a_keyword_list() {
+    use crate::generate_cmds::{EnhanceKind as K, Refusal, check_rewrite};
+    let typed = "a lighthouse in a storm, oil painting";
+    assert_eq!(
+        check_rewrite(K::Image, typed, "a lighthouse in a storm, oil painting  \nDark green waves break on black rocks under a bruised violet sky, thick strokes of white foam.", ""),
+        Ok("a lighthouse in a storm, oil painting Dark green waves break on black rocks under a bruised violet sky, thick strokes of white foam.".to_string())
+    );
+    let list = format!("{typed}, {}", "storm, waves, rocks, oil, painting, dramatic, sky, lighthouse, ".repeat(10));
+    assert_eq!(check_rewrite(K::Image, typed, &list, ""), Err(Refusal::Garbled));
+}
+
+#[test]
+fn a_rewrite_that_invents_a_medium_is_refused() {
+    use crate::generate_cmds::{EnhanceKind as K, Refusal, check_rewrite};
+    assert_eq!(
+        check_rewrite(
+            K::Image,
+            "portrait of an old fisherman",
+            "A close-up portrait of an old fisherman with a weathered face. A realistic oil painting with rich brushstrokes.",
+            ""
+        ),
+        Err(Refusal::InventedMedium)
+    );
+    assert!(
+        check_rewrite(
+            K::Image,
+            "portrait of an old fisherman",
+            "A close-up portrait of an old fisherman with a weathered face, soft window light. A photograph rendered in pastel tones.",
+            ""
+        )
+        .is_ok()
+    );
 }
