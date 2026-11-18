@@ -32,6 +32,12 @@ pub const TEMPLATES: [&str; 3] = ["sam3.1/segment", "sam3.1/segment-point", "sam
 pub const MATTE_TEMPLATE: &str = "vitmatte/refine";
 /// The model root's subdirectory for ViTMatte (transformers' `model.safetensors` + `config.json`).
 pub const VITMATTE_DIR: &str = "vitmatte";
+/// The green-screen keyer's template (CorridorKey's design, Corridor Digital; BYOM): a picture
+/// and a rough hint of the subject (the mask blob, 0-255) to an RGBA image of the subject's
+/// straight colour and its alpha. `params.refinerStrength` scales the refiner (default 1).
+pub const GREENKEY_TEMPLATE: &str = "greenkey/corridorkey-v1";
+/// The model root's subdirectory for CorridorKey's checkpoint (`CorridorKey_v1.0.safetensors`).
+pub const GREENKEY_DIR: &str = "corridorkey";
 /// The model root's subdirectory for SAM 3.1.
 pub const SAM31_DIR: &str = "sam3.1";
 /// SAM 3.1's checkpoint as ComfyUI names it.
@@ -96,6 +102,8 @@ pub struct PerceptionEngine {
     last_error: Option<String>,
     #[cfg(feature = "candle")]
     vitmatte: Option<gn_segment::vitmatte::VitMatte>,
+    #[cfg(feature = "candle")]
+    greenkey: Option<gn_segment::greenkey::GreenKeyer>,
 }
 
 impl PerceptionEngine {
@@ -119,6 +127,8 @@ impl PerceptionEngine {
             last_error: None,
             #[cfg(feature = "candle")]
             vitmatte: None,
+            #[cfg(feature = "candle")]
+            greenkey: None,
         }
     }
 
@@ -172,6 +182,66 @@ impl PerceptionEngine {
         }
         #[cfg(not(feature = "candle"))]
         Err(EngineError::new(ErrorKind::ModelMissing, "this build has no ViTMatte backend (built without `candle`)"))
+    }
+
+    /// Is CorridorKey's checkpoint on disk for a build that can run it?
+    fn has_greenkey(&self) -> bool {
+        #[cfg(feature = "candle")]
+        return gn_segment::greenkey::find_checkpoint(&self.models_root.join(GREENKEY_DIR)).is_some();
+        #[cfg(not(feature = "candle"))]
+        false
+    }
+
+    /// `greenkey/corridorkey-v1`: the keyed subject (straight colour + alpha) for a picture and
+    /// a rough hint. Despill, despeckle and premultiplying are the editor's.
+    #[cfg_attr(not(feature = "candle"), allow(unused_variables))]
+    #[allow(clippy::needless_return)] // one return per build: the candle one, else the error
+    fn run_greenkey(&mut self, req: &RunRequest, blobs: &[Vec<u8>], progress: &mut dyn FnMut(f32, &str)) -> Result<(DoneInfo, Vec<Vec<u8>>), EngineError> {
+        let started = Instant::now();
+        let (Some(image), Some(mask)) = (req.image.as_ref(), req.mask.as_ref()) else {
+            return Err(EngineError::new(ErrorKind::BadRequest, "a key needs a picture and a hint"));
+        };
+        if image.channels != 4 || mask.channels != 1 || (image.width, image.height) != (mask.width, mask.height) {
+            return Err(EngineError::new(ErrorKind::BadRequest, "the picture must be RGBA and the hint one channel of the same size"));
+        }
+        let (Some(rgba), Some(hint)) = (blobs.get(image.index as usize), blobs.get(mask.index as usize)) else {
+            return Err(EngineError::new(ErrorKind::BadRequest, "the picture's or hint's blob is missing"));
+        };
+        let (w, h) = (image.width as usize, image.height as usize);
+        let strength = num(&req.params, "refinerStrength").map_or(1.0, |v| v.clamp(0.0, 4.0));
+        #[cfg(feature = "candle")]
+        {
+            if self.greenkey.is_none() {
+                progress(0.0, "Loading CorridorKey");
+                let device = self.candle_device()?;
+                // f16 on a GPU, as the reference runs; `GN_GREENKEY_F32=1` keeps f32 there.
+                let dtype = if std::env::var("GN_GREENKEY_F32").is_ok_and(|v| v.trim() == "1") {
+                    candle_core::DType::F32
+                } else {
+                    gn_segment::greenkey::default_dtype(&device)
+                };
+                self.greenkey = Some(
+                    gn_segment::greenkey::GreenKeyer::load(self.models_root.join(GREENKEY_DIR), &device, dtype)
+                        .map_err(|e| EngineError::new(ErrorKind::ModelUnreadable, format!("{e:#}")))?,
+                );
+            }
+            let Some(m) = self.greenkey.as_ref() else { return Err(EngineError::new(ErrorKind::Internal, "no model")) };
+            progress(0.2, "Keying");
+            let hint: Vec<f32> = hint.iter().map(|v| f32::from(*v) / 255.0).collect();
+            let out = m.key(rgba, &hint, w, h, strength).map_err(candle_error)?;
+            progress(1.0, "Done");
+            return Ok((
+                DoneInfo {
+                    images: vec![Blob { width: image.width, height: image.height, channels: 4, index: 0 }],
+                    texts: Vec::new(),
+                    seed: req.seed,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                },
+                vec![gn_segment::greenkey::to_rgba8(&out)],
+            ));
+        }
+        #[cfg(not(feature = "candle"))]
+        Err(EngineError::new(ErrorKind::ModelMissing, "this build has no CorridorKey backend (built without `candle`)"))
     }
 
     /// The candle device for `self.device`: Metal falls back to the CPU when it cannot open.
@@ -422,6 +492,10 @@ impl Engine for PerceptionEngine {
         if self.sam.is_some() {
             resident.push("sam3.1".to_string());
         }
+        #[cfg(feature = "candle")]
+        if self.greenkey.is_some() {
+            resident.push("corridorkey".to_string());
+        }
         let ready = self.has_model();
         Health {
             ok: ready && self.last_error.is_none(),
@@ -450,6 +524,15 @@ impl Engine for PerceptionEngine {
                 return Err(EngineError::new(ErrorKind::ModelMissing, format!("no ViTMatte in {}", self.models_root.join(VITMATTE_DIR).display())));
             }
             return self.run_matte(req, blobs, progress);
+        }
+        if req.model == GREENKEY_TEMPLATE {
+            if !self.has_greenkey() {
+                return Err(EngineError::new(
+                    ErrorKind::ModelMissing,
+                    format!("no CorridorKey checkpoint in {}", self.models_root.join(GREENKEY_DIR).display()),
+                ));
+            }
+            return self.run_greenkey(req, blobs, progress);
         }
         let started = Instant::now();
         if req.task != "segment" {
@@ -582,6 +665,7 @@ impl Engine for PerceptionEngine {
         #[cfg(feature = "candle")]
         {
             self.vitmatte = None;
+            self.greenkey = None;
         }
     }
 
@@ -595,6 +679,9 @@ impl Engine for PerceptionEngine {
         let mut installed: Vec<&str> = if self.has_model() { TEMPLATES.to_vec() } else { Vec::new() };
         if self.has_matte() {
             installed.push(MATTE_TEMPLATE);
+        }
+        if self.has_greenkey() {
+            installed.push(GREENKEY_TEMPLATE);
         }
         json!({
             "dir": dir,
@@ -702,6 +789,8 @@ mod tests {
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
         let r = e.run(&req("krea2-turbo/image", BTreeMap::new()), &[vec![0; 16]], &mut |_, _| {}, &AtomicBool::new(false));
         assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })));
+        let r = e.run(&req(GREENKEY_TEMPLATE, BTreeMap::new()), &[vec![0; 16]], &mut |_, _| {}, &AtomicBool::new(false));
+        assert!(matches!(r, Err(EngineError { kind: ErrorKind::ModelMissing, .. })), "{r:?}");
         let mut other = req("sam3.1/segment", BTreeMap::new());
         other.task = "image".into();
         let r = e.run(&other, &[vec![0; 16]], &mut |_, _| {}, &AtomicBool::new(false));

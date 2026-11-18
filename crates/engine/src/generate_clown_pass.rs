@@ -240,10 +240,13 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
                     None => None,
                 };
                 matted += usize::from(vit.is_some());
-                let alpha = match vit {
+                let mut alpha = match vit {
                     Some(a) => a,
                     None => refine_coverage(doc, *active, true, cov, frame),
                 };
+                // Specks and islands the matting left about the picture go; the thing's own
+                // separate parts are large against it and stay.
+                crate::select_ml_cmds::despeckle_alpha(&mut alpha, frame, None);
                 let reach = t.reach(frame);
                 let mut crop = Vec::with_capacity(reach.width() as usize * reach.height() as usize);
                 for y in reach.y0..reach.y1 {
@@ -267,7 +270,13 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             let mut numbered: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
             let mut layers: Vec<(String, Vec<u8>)> = Vec::new();
             if background > 0 || keep.len() < things.len() || taken.iter().any(|a| *a < 0.999) {
-                let bg: Vec<u8> = px.iter().zip(&taken).flat_map(|(p, a)| [p[0], p[1], p[2], (f32::from(p[3]) * (1.0 - a)).round() as u8]).collect();
+                // Where a thing's edge lets the Background show, the Background's own colour
+                // (the things' tint solved out), as each thing's edge takes its own below.
+                let left: Vec<f32> = taken.iter().map(|a| 1.0 - a).collect();
+                let mut colours = picture.clone();
+                photocraft_algo::matting::unmix_rgba8(&mut colours, w, h, &left);
+                let bg: Vec<u8> =
+                    colours.as_chunks::<4>().0.iter().zip(&left).flat_map(|(p, a)| [p[0], p[1], p[2], (f32::from(p[3]) * a).round() as u8]).collect();
                 layers.push(("Background".to_string(), bg));
             }
             drop(taken);
@@ -277,15 +286,26 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 *n += 1;
                 let mut out = vec![0u8; w * h * 4];
                 if let Some((reach, crop)) = soft.remove(&i) {
-                    let rw = reach.width() as usize;
+                    let (rw, rh) = (reach.width() as usize, reach.height() as usize);
+                    // The thing's soft edge in its own colours: the backdrop's tint solved out
+                    // of each half-covered pixel, so hair carries no old background.
+                    let mut colours = Vec::with_capacity(rw * rh * 4);
+                    for y in reach.y0..reach.y1 {
+                        let row = (y - frame.y0) as usize * w;
+                        for x in reach.x0..reach.x1 {
+                            colours.extend_from_slice(&px[row + (x - frame.x0) as usize]);
+                        }
+                    }
+                    photocraft_algo::matting::unmix_rgba8(&mut colours, rw, rh, &crop);
                     for y in reach.y0..reach.y1 {
                         for x in reach.x0..reach.x1 {
-                            let a = crop[(y - reach.y0) as usize * rw + (x - reach.x0) as usize];
+                            let j = (y - reach.y0) as usize * rw + (x - reach.x0) as usize;
+                            let a = crop[j];
                             if a <= 0.0 {
                                 continue;
                             }
                             let k = (y - frame.y0) as usize * w + (x - frame.x0) as usize;
-                            let p = px[k];
+                            let p = &colours[j * 4..j * 4 + 4];
                             out[k * 4..k * 4 + 4].copy_from_slice(&[p[0], p[1], p[2], (f32::from(p[3]) * a).round() as u8]);
                         }
                     }
