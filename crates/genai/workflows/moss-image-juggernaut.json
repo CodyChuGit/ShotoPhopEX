@@ -5,7 +5,7 @@
     "family": "moss-image",
     "task": "image",
     "license": "permissive",
-    "licenseNote": "Juggernaut MOSS (KandooAI, Civitai 3042282 / Hugging Face Kandoo/Juggernaut-Moss, 2026-11) is a full fine-tune of MOSS-Image-Base (Apache-2.0); its card allows commercial image use and asks for credit. Bring your own: the app ships no weights.",
+    "licenseNote": "Juggernaut MOSS (KandooAI, Civitai 3042282 / Hugging Face Kandoo/Juggernaut-Moss, 2026-11) is a full fine-tune of MOSS-Image-Base, Apache-2.0 on its Hugging Face cards (Civitai asks for credit). Bring your own: the app ships no weights.",
     "needsImage": false,
     "needsMask": false,
     "defaults": {
