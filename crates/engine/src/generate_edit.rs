@@ -269,6 +269,7 @@ pub(super) fn run_edit(s: &mut Session, p: &Value) -> Result<Value> {
 /// background to a beach", "turn this into a watercolor", a sign's new text and "remove the bowl
 /// of fruit" from showing at all on every edit model: only the person or the fridge changed
 /// (Enhance round 5 on the 5090, 2026-11-17).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn mask_to_subject(
     doc: &mut Document,
     id: LayerId,
