@@ -566,9 +566,8 @@ fn run_info(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn similar_enabled(s: &Session) -> std::result::Result<(), String> {
     web_unavailable()?;
-    let d = s.active().ok_or("no document open")?;
+    s.active().ok_or("no document open")?;
     let layer = crate::active_layer_of(s)?;
-    let _ = d;
     if generative_info(layer).is_none() {
         return Err("the active layer was not made by a generative command".into());
     }
