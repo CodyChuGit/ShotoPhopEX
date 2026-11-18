@@ -195,6 +195,9 @@ pub struct Quant<'a> {
     #[cfg_attr(not(feature = "convrot"), allow(dead_code))]
     rot: Option<&'a Tensor>,
     fp8: Option<&'a Fp8Plan>,
+    /// The rotation every converted fp8 layer shares (one 256 KB tensor, not one per layer).
+    #[cfg_attr(not(feature = "convrot"), allow(dead_code))]
+    fp8_rot: Option<&'a Tensor>,
 }
 
 impl KLinear {
@@ -210,16 +213,21 @@ impl KLinear {
                 // The file's full-precision layers (attention gate, `wo`, `down`) on ConvRot INT8
                 // with a low-rank correction instead of bf16 ([`full_precision_int8`]).
                 #[cfg(feature = "convrot")]
-                if l.is_full_precision()
+                if fp8_layer_on_int8(l.is_full_precision(), full_precision_int8(), fp8_as_int8(crate::fp8::card_has_fp8_mma()))
                     && vb.device().is_cuda()
-                    && full_precision_int8()
                     && in_c.is_multiple_of(crate::model::rotation::GROUP)
                     && out_c.is_multiple_of(8)
                 {
-                    let r = crate::model::rotation::regular_hadamard_256(vb.device())?;
+                    let r = match q.fp8_rot {
+                        Some(r) => r.clone(),
+                        None => crate::model::rotation::regular_hadamard_256(vb.device())?,
+                    };
+                    let full = l.is_full_precision();
                     let w = l.dequantized(DType::BF16)?;
                     drop(l);
-                    if let Some(rank) = full_precision_rank() {
+                    // The e4m3 layers already sit on a coarse grid: plain INT8 is enough for
+                    // them; the low-rank part is for the file's full-precision layers.
+                    if let Some(rank) = full_precision_rank().filter(|_| full) {
                         let (l1, l2, rest) = low_rank_split(&w, rank)?;
                         let c = crate::convrot::ConvRotLinear::from_weight(&rest, &r)?;
                         vb.device().synchronize()?;
@@ -228,6 +236,7 @@ impl KLinear {
                     let c = crate::convrot::ConvRotLinear::from_weight(&w, &r)?;
                     // Each conversion finished before the next (see Layered's INT8 load).
                     vb.device().synchronize()?;
+                    trace_conversion(vb.device(), &vb.prefix());
                     return Ok(Self::Convrot(c));
                 }
                 return Ok(Self::Fp8(l));
@@ -276,6 +285,57 @@ impl KLinear {
 fn full_precision_int8() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("QIR_KREA2_FP_INT8").map_or(true, |v| v.trim() != "0"))
+}
+
+/// `QIR_KREA2_INT8_TRACE=1`: every 20th fp8 layer converted to INT8 logs the card's free
+/// memory and the CUDA pool's reserved/used bytes, to see what a conversion leaves behind.
+#[cfg(feature = "convrot")]
+fn trace_conversion(dev: &candle_core::Device, prefix: &str) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    if !*ON.get_or_init(|| std::env::var("QIR_KREA2_INT8_TRACE").is_ok_and(|v| v.trim() == "1")) {
+        return;
+    }
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n.is_multiple_of(20) {
+        let free = crate::device::free_vram(dev).map_or(0, |(f, _)| f >> 20);
+        let (reserved, used) = crate::device::pool_now(dev).map_or((0, 0), |(r, u)| (r >> 20, u >> 20));
+        tracing::info!(converted = n, layer = prefix, free_mib = free, pool_reserved_mib = reserved, pool_used_mib = used, "krea2 int8 conversion");
+    }
+}
+
+/// Whether an fp8 file's layer runs on ConvRot INT8: its full-precision layers when
+/// [`full_precision_int8`] says so, its e4m3 layers when [`fp8_as_int8`] does.
+#[cfg(feature = "convrot")]
+fn fp8_layer_on_int8(full_precision: bool, full_on_int8: bool, e4m3_on_int8: bool) -> bool {
+    if full_precision {
+        full_on_int8
+    } else {
+        e4m3_on_int8
+    }
+}
+
+/// The e4m3 layers on ConvRot INT8 (W8A8, the INT8 tensor cores) instead of the fp8 recipe:
+/// by default on a card without FP8 matrix cores (RTX 30, sm_86), where the fp8 recipe
+/// dequantizes each weight to bf16 at every call and multiplies in bf16, at a quarter of the
+/// INT8 rate. `QIR_KREA2_FP8_INT8=1` takes INT8 on every card, `=0` keeps the fp8 recipe.
+#[cfg(feature = "convrot")]
+fn fp8_as_int8(card_has_fp8_mma: bool) -> bool {
+    static ON: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    let forced = *ON.get_or_init(|| match std::env::var("QIR_KREA2_FP8_INT8").ok().as_deref().map(str::trim) {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    });
+    forced.unwrap_or(!card_has_fp8_mma)
+}
+
+/// Whether this process converts an fp8 file's e4m3 layers to ConvRot INT8 ([`fp8_as_int8`]).
+pub fn e4m3_layers_on_int8() -> bool {
+    #[cfg(feature = "convrot")]
+    return fp8_as_int8(crate::fp8::card_has_fp8_mma());
+    #[cfg(not(feature = "convrot"))]
+    false
 }
 
 /// `QIR_KREA2_FP_LOWRANK=<rank>`: the low-rank part's rank for the full-precision INT8 layers,
@@ -883,7 +943,12 @@ impl Krea2Dit {
             let _ = convrot;
             None
         };
-        let q = Quant { rot: rot.as_ref(), fp8 };
+        #[cfg(feature = "convrot")]
+        let fp8_rot: Option<Tensor> =
+            if fp8.is_some() && vb.device().is_cuda() { Some(crate::model::rotation::regular_hadamard_256(vb.device())?) } else { None };
+        #[cfg(not(feature = "convrot"))]
+        let fp8_rot: Option<Tensor> = None;
+        let q = Quant { rot: rot.as_ref(), fp8, fp8_rot: fp8_rot.as_ref() };
         let mut blocks = Vec::with_capacity(cfg.layers);
         for i in 0..cfg.layers {
             blocks.push(Block::load(cfg, q, vb.pp("blocks").pp(i))?);
@@ -915,6 +980,57 @@ impl Krea2Dit {
     /// Put `stack`'s adapters on every block and text-fusion linear they name (an empty stack
     /// clears them all); the AnyPaint and outpaint LoRAs address exactly these. Returns the
     /// modules the stack names that this model has not, for the caller to report.
+    /// Every ConvRot INT8 linear of the model (blocks and text fusion).
+    #[cfg(feature = "convrot")]
+    fn convrot_linears(&self) -> Vec<&crate::convrot::ConvRotLinear> {
+        fn of(l: &KLinear) -> Option<&crate::convrot::ConvRotLinear> {
+            match l {
+                KLinear::Convrot(c) | KLinear::LowRank(c, _, _) => Some(c),
+                _ => None,
+            }
+        }
+        fn take<'a>(out: &mut Vec<&'a crate::convrot::ConvRotLinear>, a: &'a Attention, m: &'a SwiGlu) {
+            out.extend([&a.wq, &a.wk, &a.wv, &a.gate, &a.wo, &m.gate, &m.up, &m.down].into_iter().filter_map(of));
+        }
+        let mut out = Vec::new();
+        for b in &self.blocks {
+            take(&mut out, &b.attn, &b.mlp);
+        }
+        for b in self.txtfusion.layerwise.iter().chain(&self.txtfusion.refiner) {
+            take(&mut out, &b.attn, &b.mlp);
+        }
+        out
+    }
+
+    /// The INT8 weights' bytes on the card.
+    pub fn int8_bytes(&self) -> usize {
+        #[cfg(feature = "convrot")]
+        return self.convrot_linears().iter().map(|c| c.weight_bytes()).sum();
+        #[cfg(not(feature = "convrot"))]
+        0
+    }
+
+    /// Park every INT8 weight on the host, hand the pool's memory back to the driver and
+    /// upload them again, so they sit together instead of between the conversion's freed
+    /// temporaries. On the RTX 3090 (every e4m3 layer converted) the load otherwise left the pool
+    /// holding ~6.5 GB more than it used, which a trim could not release; re-homed, 9.2 GB of
+    /// the card is free after the load against 4.1 GB (2026-11-18, ~8 s more load time).
+    pub fn rehome_int8(&self) -> Result<()> {
+        #[cfg(feature = "convrot")]
+        if self.device.is_cuda() {
+            let layers = self.convrot_linears();
+            for c in &layers {
+                c.move_to(&Device::Cpu)?;
+            }
+            crate::device::trim_pool(&self.device);
+            for c in &layers {
+                c.move_to(&self.device)?;
+            }
+            self.device.synchronize()?;
+        }
+        Ok(())
+    }
+
     pub fn set_loras(&self, stack: &LoraStack) -> Result<Vec<String>> {
         let mut bound = self.bound_loras.lock().map_err(|_| anyhow::anyhow!("Krea adapter binding lock poisoned"))?;
         if let Some((previous, unmatched)) = bound.as_ref() {
@@ -1077,7 +1193,7 @@ impl Krea2Dit {
         if let Some((layers, weights, loras)) = streamed {
             for i in 0..layers {
                 let prefix = format!("blocks.{i}");
-                let block = Block::load(&self.cfg, Quant { rot: None, fp8: None }, weights.pp(&prefix))?;
+                let block = Block::load(&self.cfg, Quant::default(), weights.pp(&prefix))?;
                 block.attn.set_loras(loras, &format!("{prefix}.attn"))?;
                 block.mlp.set_loras(loras, &format!("{prefix}.mlp"))?;
                 xs = block.forward_zero(&xs, &tvec, &zero, split, &rope)?;
@@ -1261,6 +1377,16 @@ mod tests {
         assert_eq!((c.head_dim(), c.axes()), (128, [32, 48, 48]));
         assert_eq!(Krea2Config::mlp_dim(6144, 4), 16384);
         assert_eq!(Krea2Config::mlp_dim(2560, 4), 6912);
+    }
+
+    #[test]
+    #[cfg(feature = "convrot")]
+    fn fp8_layers_take_int8_where_asked() {
+        // Full-precision layers follow their own switch, e4m3 layers theirs.
+        assert!(super::fp8_layer_on_int8(true, true, false));
+        assert!(!super::fp8_layer_on_int8(true, false, true));
+        assert!(super::fp8_layer_on_int8(false, false, true));
+        assert!(!super::fp8_layer_on_int8(false, true, false));
     }
 
     #[test]
