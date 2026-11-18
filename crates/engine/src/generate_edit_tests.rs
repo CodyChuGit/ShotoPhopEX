@@ -129,7 +129,7 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     assert_eq!(g["params"]["models"]["lora"], "qwen-image-edit-2511-multiple-angles-lora.safetensors");
     assert_eq!(g["params"]["models"]["lightning"], "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors");
     assert_eq!((g["steps"].as_u64(), g["guidance"].as_f64()), (Some(8), Some(1.0)), "the 8-step Lightning's");
-    assert!(g["params"].get("lightning").is_none(), "the worker's own default (8 at 0.75)");
+    assert!(g["params"].get("lightning").is_none(), "the worker's own default (8 at 1)");
     drop(st);
     // The layer remembers an edit, so Generate Similar and Recreate run it again.
     let info = generative_info(s.active().unwrap().doc.layer(ids[0]).unwrap()).unwrap();

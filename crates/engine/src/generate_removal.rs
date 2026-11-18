@@ -14,10 +14,10 @@ use crate::{EngineError, Result, Session};
 
 use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, EDIT, Edge, EnhanceKind, FILL, FillJob, JobProgress, KLEIN_FILL_TEMPLATE, KLEIN_REMOVAL_PIXELS,
-    MAX_FILL_REQUEST_PIXELS, MAX_GROW, NATIVE21_REMOVAL_PIXELS, TONE_MATCH_INSIDE, Tuning, align_to_grid, auto_order, backend, crop_rgba8, edge_mismatch,
-    embed_coverage, enhance_prompt, feather_outward, fill_rect, fill_region, gen_err, highlight_covered, judged_rect, made_json, native21_auto, paint_left,
-    place_in_words, plan_common, quality, removal_quality, request_size, resize_gray8, resolve_auto, rgba8_at, side_by_side, template_or, tone_matched,
-    write_rgba8,
+    MAX_FILL_REQUEST_PIXELS, MAX_GROW, NATIVE21_REMOVAL_PIXELS, TONE_MATCH_INSIDE, Tuning, align_to_grid, auto_order, backend, crop_rgba8, dim_outside,
+    edge_mismatch, embed_coverage, enhance_prompt, feather_outward, fill_rect, fill_region, gen_err, highlight_covered, judged_rect, made_json, native21_auto,
+    paint_left, place_in_words, plan_common, quality, removal_quality, request_size, resize_gray8, resolve_auto, rgba8_at, side_by_side, still_there,
+    template_or, tone_matched, write_rgba8,
 };
 
 /// [`Tuning::remove_margin`] unless given.
@@ -345,9 +345,26 @@ pub(super) fn removal_job(
     prefill: bool,
     tuning: Tuning,
 ) -> Result<FillJob> {
+    removal_job_on(s, label, grow, erase, enhance, variations, seed, prefill, tuning, None)
+}
+
+/// [`removal_job`] on `template` when one is given (the preferences and `auto` aside).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn removal_job_on(
+    s: &Session,
+    label: &str,
+    grow: u32,
+    erase: bool,
+    enhance: bool,
+    variations: u32,
+    seed: Option<u64>,
+    prefill: bool,
+    tuning: Tuning,
+    template: Option<&str>,
+) -> Result<FillJob> {
     let (default_template, default_model) = {
         let i = &s.prefs().integrations;
-        (template_or(&i.default_fill_template, AUTO_TEMPLATE), i.default_edit_model.clone())
+        (template.map_or_else(|| template_or(&i.default_fill_template, AUTO_TEMPLATE), str::to_string), i.default_edit_model.clone())
     };
     let mut auto = default_template == AUTO_TEMPLATE;
     let mut tuning = tuning;
@@ -503,7 +520,13 @@ pub(crate) fn generative_remove(
     // No Consistency LoRA here: on a pedestrian it turned the removal into a copy of the input
     // (mean change 0.9/255 inside the hole, measured in the app 2026-11-12); a request can still
     // name it in `loras`.
-    let job = removal_job(s, label, grow, erase, enhance, variations, seed, prefill, tuning)?;
+    let job = removal_job(s, label, grow, erase, enhance, variations, seed, prefill, tuning.clone())?;
+    // Qwen-Image-2.1 first; where the object is still there afterwards, the 2511 Remove LoRA
+    // ([`REMOVE_RETRY_TEMPLATE`]): the owner's choice of 2026-11-16, when the 2.1 edit painted a
+    // woman selected whole back in 4 of 4 runs and the 2511 LoRA removed her in 2 of 2.
+    let retry = (job.template_id == "qwen-2.1/edit")
+        .then(|| removal_job_on(s, label, grow, erase, false, variations, seed, prefill, tuning, Some(REMOVE_RETRY_TEMPLATE)).ok())
+        .flatten();
     let label_kept = label.to_string();
     crate::jobs::edit_job(
         s,
@@ -530,7 +553,9 @@ pub(crate) fn generative_remove(
                     let c = photocraft_compose::render(doc, r).to_rgba8();
                     Rgba8::new(c.width, c.height, c.pixels).map_err(gen_err)
                 };
-                let seen = side_by_side(&crop(wide_rect)?, &crop(close_rect)?)?;
+                let mut close = crop(close_rect)?;
+                dim_outside(&mut close, close_rect, &coverage, area);
+                let seen = side_by_side(&crop(wide_rect)?, &close)?;
                 let (rw, rh) = request_size(seen.width, seen.height);
                 let seen = rgba8_at(seen, rw, rh)?;
                 let place = place_in_words(hole, wide_rect);
@@ -633,7 +658,33 @@ pub(crate) fn generative_remove(
                 None
             };
             let coverage = embed_coverage(area, &coverage, rect);
-            let filled = fill_region(doc, active, ctx, job, rect, coverage, None)?;
+            let (object, rewritten, thinker, check_seed, used_grow) =
+                (job.object.clone(), job.rewritten.clone(), Arc::clone(&job.thinker), job.seed.wrapping_add(500), job.grow);
+            let below = *active;
+            let filled = fill_region(doc, active, ctx, job, rect, coverage.clone(), None)?;
+            let filled = match (retry, object) {
+                (Some(mut retry), Some(name)) if resolve_auto(retry.backend.as_ref(), &[retry.template_id.as_str()], "") == retry.template_id => {
+                    ctx.progress(0.98, "Checking the result");
+                    let c = photocraft_compose::render(doc, hole).to_rgba8();
+                    let seen = Rgba8::new(c.width, c.height, c.pixels).map_err(gen_err)?;
+                    let there = still_there(thinker.as_ref(), &seen, &name, check_seed, &JobProgress::span(ctx, 0.98, 0.99));
+                    eprintln!("remove: after {}, is the {name} still there? {there:?}", filled.4);
+                    if there == Some(true) {
+                        ctx.check()?;
+                        for m in &filled.0 {
+                            doc.remove(m.0);
+                        }
+                        *active = below;
+                        retry.object = Some(name);
+                        retry.rewritten = rewritten;
+                        retry.grow = used_grow;
+                        fill_region(doc, active, ctx, retry, rect, coverage, None)?
+                    } else {
+                        filled
+                    }
+                }
+                _ => filled,
+            };
             let kept_layer = match kept {
                 Some((pixels, cov, hole, object)) => {
                     let name = match object {
@@ -713,6 +764,10 @@ pub(super) const HIGHLIGHT_REMOVE_PROMPT: &str = "Remove the red highlighted obj
 /// The removal adapters `auto` tries, first installed one first, for a removal's first
 /// variation (the plain fill takes the rest, and the judge picks).
 pub(super) const REMOVE_HIGHLIGHT_ORDER: &[&str] = &["qwen-edit-2511/remove-lightning-8"];
+
+/// What a removal on Qwen-Image-2.1 runs again on when the object is still there afterwards
+/// ([`generative_remove`]); skipped where the worker does not serve it.
+pub(super) const REMOVE_RETRY_TEMPLATE: &str = "qwen-edit-2511/remove-lightning-8";
 
 /// How far past the selection the adapter's painted hole reaches: a few pixels, as the
 /// highlights it was trained on, not the removal's 15 % growth (a fat red hole came back red

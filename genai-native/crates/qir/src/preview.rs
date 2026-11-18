@@ -716,8 +716,10 @@ impl StepPreview for Previewer<'_> {
         let pixels = h * w * self.space.scale() * self.space.scale();
         for output in 0..n {
             // Sharp only when the card has room for the decode; else Fast for the rest of the run
-            // (alternating sharp and coarse pictures would flicker).
-            let room = self.tiny.is_some_and(|t| crate::device::free_vram(x0.device()).is_none_or(|(free, _)| free >= t.peak_bytes(pixels)));
+            // (alternating sharp and coarse pictures would flicker). The room counts what the pool
+            // holds freed as well: the driver's free count alone left Sharp off for a whole 2511
+            // run whose freed load buffers would have held the decode (2026-11-16).
+            let room = self.tiny.is_some_and(|t| crate::device::usable_vram(x0.device()).is_none_or(|(free, _)| free >= t.peak_bytes(pixels)));
             if self.sharp() && !room {
                 tracing::info!("preview: no room on the card for the tiny decoder; Fast for the rest of the run");
                 self.sharp_failed = true;

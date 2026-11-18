@@ -50,7 +50,7 @@ impl QLinear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         match self {
             QLinear::Full(l) => Ok(l.forward(x)?),
-            QLinear::Quant(q) => Ok(q.forward(x)?),
+            QLinear::Quant(q) => Ok(crate::device::q_forward(q, x)?),
             QLinear::Fp8(l) => l.forward(x),
             QLinear::Comfy(l) => {
                 let (b, s, k) = x.dims3()?;

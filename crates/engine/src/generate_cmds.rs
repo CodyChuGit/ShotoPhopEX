@@ -519,9 +519,15 @@ fn models_json(backend: Option<&dyn GenerativeBackend>, allow_research: bool, q:
     }
     // What `auto` would pick right now (needs the server's model lists).
     let auto = |order, fallback| backend.filter(|_| online).map(|b| resolve_auto(b, order, fallback));
-    // Remove Background: the matte model only with the research opt-in, else the detector.
+    // Remove Background, as its job routes `auto` (generate_matte.rs): the detector refined by
+    // ViTMatte when both are served, else the matte model with the research opt-in, else the
+    // detector.
     let auto_matte = backend.filter(|_| online).map(|b| {
-        if allow_research {
+        let seg = crate::select_ml_cmds::DEFAULT_SEGMENT_TEMPLATE;
+        let vit = crate::select_ml_cmds::VITMATTE_TEMPLATE;
+        if resolve_auto(b, &[vit], "") == vit && resolve_auto(b, &[seg], "") == seg {
+            seg.to_string()
+        } else if allow_research {
             resolve_auto(b, &[DEFAULT_MATTE_TEMPLATE], crate::select_ml_cmds::DEFAULT_SEGMENT_TEMPLATE)
         } else {
             crate::select_ml_cmds::DEFAULT_SEGMENT_TEMPLATE.to_string()
@@ -785,7 +791,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit; the app opens its orbit dialog.
             menu: &[],
             shortcut: None,
-            params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1,"lightning":8|4|0=8,"anglesStrength":0..2=1,"lightningStrength":{0..2?=0.75 on the 8-step, else 1},"steps":{0..250?},"guidance":{0..30?},"negative":text} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it; lightning = the speed LoRA under the Multiple Angles LoRA: 8 = the 8-step one (8 steps, CFG 1), 4 = the 4-step one (4 steps, CFG 1, faster, invents more on hidden sides), 0 = none (40 steps, CFG 4 with the negative); steps and guidance override those; anglesStrength and lightningStrength = the two LoRAs' strengths)"#,
+            params: r#"{"rotation":0|45|90|135|180|225|270|315=0,"tilt":-30|0|30|60=0,"zoom":0|5|10=5,"seed":{u64?=random},"variations":int=1,"lightning":8|4|0=8,"anglesStrength":0..2=1,"lightningStrength":0..2=1,"steps":{0..250?},"guidance":{0..30?},"negative":text} → as generate.edit (the whole picture seen from another camera, as layers over the canvas like Generative Edit's: rotation = degrees around the subject from the front (45 front-right quarter view … 180 back view … 315 front-left quarter view), tilt = the camera's height (-30 low angle, 0 eye level, 30 elevated, 60 high angle), zoom = 0 wide, 5 medium, 10 close-up; runs qwen-edit-2511/angles, which needs fal's Multiple Angles LoRA (Apache-2.0) in the Models folder’s loras subfolder; a selection does not confine it; lightning = the speed LoRA under the Multiple Angles LoRA: 8 = the 8-step one (8 steps, CFG 1), 4 = the 4-step one (4 steps, CFG 1, faster, invents more on hidden sides), 0 = none (40 steps, CFG 4 with the negative); steps and guidance override those; anglesStrength and lightningStrength = the two LoRAs' strengths)"#,
             enabled: angles_enabled,
             run: run_angles,
             journal: true,
@@ -807,7 +813,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, with the other generative items.
             menu: &[],
             shortcut: None,
-            params: r#"{"prompt":text,"asSelection":bool=false,"sampleAllLayers":bool=false,"refine":bool=true,"mode":"replace|add|subtract|intersect","layer":{id?=active},"seed":{u64?=random},"steps":{0..250=0},"guidance":{0..30=0},"template":{id?="auto": qwen-2.1/matte (a soft matte from Qwen-Image-2.1's alpha output; research licence, Preferences › AI Integrations › Allow Research-Only Models) when allowed and installed, else sam3.1/segment (the permissive detector)},"model":{file?}} → {"layer","selection","bounds":[x,y,w,h],"pixels","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (prompt = what to keep, e.g. "the lighthouse", empty = the model's own reading of the subject; the matte becomes the layer's mask (the Background becomes a normal layer; the pixels are never changed) or, with asSelection, the selection combined by mode; sampleAllLayers sends the composite instead of the layer alone; refine = soften the detector's hard mask with the classical edge refinement, as the Quick Action does; images over one megapixel are sent downscaled and the matte comes back resampled; a background job; needs the native worker; the classical Quick Action layer.removeBackground needs none)"#,
+            params: r#"{"prompt":text,"asSelection":bool=false,"sampleAllLayers":bool=false,"refine":bool=true,"mode":"replace|add|subtract|intersect","layer":{id?=active},"seed":{u64?=random},"steps":{0..250=0},"guidance":{0..30=0},"template":{id?="auto": sam3.1/segment refined by ViTMatte (hair strand by strand, about a second) when both are installed, else qwen-2.1/matte (a soft matte from Qwen-Image-2.1's alpha output; research licence, Preferences › AI Integrations › Allow Research-Only Models) when allowed and installed, else sam3.1/segment alone (the permissive detector)},"model":{file?}} → {"layer","selection","bounds":[x,y,w,h],"pixels","seed","template","runId","width","height","requestWidth","requestHeight","ms","timings"} (prompt = what to keep, e.g. "the lighthouse", empty = the model's own reading of the subject; the matte becomes the layer's mask (the Background becomes a normal layer; the pixels are never changed) or, with asSelection, the selection combined by mode; sampleAllLayers sends the composite instead of the layer alone; refine = soften the detector's hard mask with the classical edge refinement, as the Quick Action does; images over one megapixel are sent downscaled and the matte comes back resampled; a background job; needs the native worker; the classical Quick Action layer.removeBackground needs none)"#,
             enabled: remove_bg_enabled,
             run: run_remove_bg,
             journal: true,

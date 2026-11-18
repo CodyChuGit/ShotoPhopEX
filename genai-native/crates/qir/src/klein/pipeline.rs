@@ -200,7 +200,7 @@ impl KleinPipeline {
             if cancel() {
                 return Err(Cancelled.into());
             }
-            let logits = candle_core::Module::forward(&head.head, &last.apply(&head.norm)?)?;
+            let logits = crate::device::q_forward(&head.head, &last.apply(&head.norm)?)?;
             let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
             let next = sample(&logits, opts, &mut rng);
             if next == IM_END || next == END_OF_TEXT {
