@@ -94,7 +94,9 @@ pub(super) const OUTPAINT_WIDE_SHARE: f64 = 0.3;
 
 pub(super) const OUTPAINT_PIXELS: u64 = 1_572_864;
 
-pub(super) const OUTPAINT_WIDE_PIXELS: u64 = 1_048_576;
+/// The v1 file's request size: the same as v2's. At 1 MP a 1024 picture grown to 2048×2048 was
+/// painted at 1024×1024 and upscaled 2×, visibly softer than smaller expands (5090, 2026-11-18).
+pub(super) const OUTPAINT_WIDE_PIXELS: u64 = OUTPAINT_PIXELS;
 
 /// The LoRA's trigger, its instruction, verbatim from the model card; a `Scene:` caption of
 /// the whole picture follows it, as in 75 % of its training pairs.
