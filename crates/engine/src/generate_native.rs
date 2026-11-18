@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::{EngineError, Result, Session};
 
-use super::{default_image_template, gen_err, quality};
+use super::{default_image_template, gen_err, speed};
 
 /// The native engine's backend for this process: one worker (`photocraft --engine …`), started
 /// on first use, shared by every command (plan-native-engine §3.4). A change of the runtime or
@@ -54,9 +54,9 @@ pub(crate) fn native_backend(s: &Session) -> Result<Arc<dyn GenerativeBackend>> 
     let integrations = &s.prefs().integrations;
     let timeout = std::time::Duration::from_secs(u64::from(integrations.generative_timeout_secs.max(5)));
     let preview = preview_mode(integrations);
-    // Fast and Balanced take 4-bit weights where the worker can (Krea 2's NVFP4 file on an RTX
-    // 50-series card); Best keeps the full models.
-    let nvfp4 = quality(s) != "best";
+    // Speed Fast and Balanced take 4-bit weights where the worker can (Krea 2's NVFP4 file on an
+    // RTX 50-series card); Full keeps the full models.
+    let nvfp4 = speed(s) != "best";
     // The deadline, the preview mode and the precision are read at each run: a change takes
     // effect on the next generation without restarting the worker.
     let configure = |b: &photocraft_genai::native::NativeBackend| {

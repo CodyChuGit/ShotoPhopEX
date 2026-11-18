@@ -416,6 +416,8 @@ pub(super) fn field_visible(section: &str, obj: &Map<String, Value>, k: &str, qu
         || path == "unitsAndRulers.showRulers"
         // Written at launch; Memory profile's Auto row names it.
         || path == "integrations.detectedMemoryProfile"
+        // Generate › Speed sets it; the model picker no longer groups by family.
+        || matches!(path.as_str(), "integrations.speed" | "integrations.groupModelsByFamily")
         || (section == "performance" && matches!(k, "useGpu" | "gpuBackend" | "gpuAdapter" | "renderingMode" | "memoryUsageMb"))
         // The browser presents frames itself: Low-Latency Drawing does nothing there.
         || (cfg!(target_arch = "wasm32") && path == "performance.lowLatencyDrawing")

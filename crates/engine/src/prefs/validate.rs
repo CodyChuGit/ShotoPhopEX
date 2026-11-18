@@ -1,5 +1,5 @@
 use super::shortcuts::normalize_shortcut;
-use super::{ALERT_MODES, EXPORT_NAME_TOKENS, GENERATIVE_BAR_MODES, QUALITY_MODES, VARIATIONS_STRIP_PLACES};
+use super::{ALERT_MODES, EXPORT_NAME_TOKENS, GENERATIVE_BAR_MODES, QUALITY_MODES, SPEED_MODES, VARIATIONS_STRIP_PLACES};
 use super::{
     AppearanceMode, Ask, CanvasBorder, CanvasColor, CheckerColors, CheckerSize, ColorPicker, DarkTheme, ExportLocation, ExportMetadata, FontPreview,
     GpuBackend, Interpolation, LightTheme, LineStyle, LinuxDisplayServer, LogDestination, LogDetail, OtherCursor, PaintingCursor, PlaybackPerformance,
@@ -106,6 +106,7 @@ pub fn choices(path: &str) -> Option<&'static [&'static str]> {
         "integrations.showGenerativeBar" => GENERATIVE_BAR_MODES,
         "integrations.variationsStrip" => VARIATIONS_STRIP_PLACES,
         "integrations.quality" => QUALITY_MODES,
+        "integrations.speed" => SPEED_MODES,
         "integrations.memoryProfile" => crate::memory_profile::PREF_NAMES,
         "integrations.alerts" => ALERT_MODES,
         "integrations.previewWhileGenerating" => photocraft_genai::PreviewMode::NAMES,

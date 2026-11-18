@@ -608,7 +608,7 @@ fn run_similar(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // An expand layer's area is regenerated as a fill (its canvas is already there); edits and
     // fills run as what they were.
-    let q = quality(s);
+    let q = speed(s);
     let (command, auto, auto_order, template_id) = match (info.command.as_str(), native21_auto(s, FILL, false)) {
         (c, _) if c == EDIT => (EDIT, false, auto_order(EDIT, auto_quality(s)), info.template.clone()),
         (c, _) if c == FILL => (FILL, false, auto_order(FILL, q), info.template.clone()),

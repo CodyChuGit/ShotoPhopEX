@@ -16,8 +16,8 @@ use crate::{EngineError, Result, Session};
 use super::{
     AUTO_TEMPLATE, Common, EnhanceKind, GenerativeInfo, IMAGE, JobProgress, KLEIN_CHAT_PREFIX, KREA2_CHAT_ENCODER, MAX_SEED, MIN_SIDE, MINIMAX_CHAT_PREFIX,
     MOSS_CHAT_PREFIX, SIZE_STEP, Tuning, ULTRA_IMAGE_TEMPLATE, backend, bad, default_image_template, enhance_prompt, gen_err, loras, loras_of,
-    names_other_medium, opt_bool, opt_str, parse_variations, plan_common, quality, resize_rgba8, rgba8_at, set_generative_info, short, side, web_unavailable,
-    write_rgba8,
+    names_other_medium, opt_bool, opt_str, parse_variations, plan_common, quality, resize_rgba8, rgba8_at, set_generative_info, short, side, speed,
+    web_unavailable, write_rgba8,
 };
 
 /// Everything `generate.image` needs, validated before any network work.
@@ -232,13 +232,13 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
             return Err(bad(IMAGE, format!("`schedule` must be \"simple\" or, on krea2-turbo/image, \"{KREA_DETAIL_SCHEDULE}\" or \"beta\" (got `{other}`)")));
         }
     };
-    let schedule = asked_schedule.unwrap_or_else(|| image_quality_schedule(&template.meta.id, quality(s)));
+    let schedule = asked_schedule.unwrap_or_else(|| image_quality_schedule(&template.meta.id, speed(s)));
     // Preferences › Quality, when the request leaves the steps and guidance to the template
     // (and, for Krea 2, does not ask for its plain schedule).
     if steps == 0
         && guidance == 0.0
         && !(asked_schedule == Some(None) && template.meta.id == "krea2-turbo/image")
-        && let Some((st, g)) = image_quality_tuning(&template.meta.id, quality(s))
+        && let Some((st, g)) = image_quality_tuning(&template.meta.id, speed(s))
     {
         (steps, guidance) = (st, g);
         if g > 1.0 && negative.trim().is_empty() {
@@ -252,7 +252,7 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     let sampler = match opt_str(IMAGE, p, "sampler", 20)? {
         // Preferences › Quality, unless the request asks for Krea's plain schedule.
         None if asked_schedule == Some(None) => None,
-        None => image_quality_sampler(&template.meta.id, quality(s)),
+        None => image_quality_sampler(&template.meta.id, speed(s)),
         Some("euler") => None,
         Some("er_sde") if template.meta.id == "krea2-turbo/image" => Some("er_sde"),
         Some(other) => return Err(bad(IMAGE, format!("`sampler` must be \"euler\" or, on krea2-turbo/image, \"er_sde\" (got `{other}`)"))),
@@ -364,7 +364,7 @@ pub(crate) fn image_enhance_kind(
     has_refs: bool,
     style: Option<&str>,
 ) -> Result<EnhanceKind> {
-    let best_photo = quality(s) == "best" && !transparent && !has_refs;
+    let best_photo = speed(s) == "best" && !transparent && !has_refs;
     Ok(match style {
         None if template == ULTRA_IMAGE_TEMPLATE => EnhanceKind::ImageUltra,
         None if best_photo && !names_other_medium(typed) => EnhanceKind::ImagePhoto,

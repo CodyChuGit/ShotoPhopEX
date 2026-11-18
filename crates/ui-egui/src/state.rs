@@ -423,6 +423,9 @@ pub struct UiState {
     /// Help › Get AI Models…'s window (`get_models_ui`).
     #[serde(skip)]
     pub get_models: crate::get_models_ui::GetModelsUi,
+    /// The model picker's download dialog (`model_download`).
+    #[serde(skip)]
+    pub model_download: crate::model_download::ModelDownloadUi,
     /// The Object Selection tool's SAM 3.1 mode: the object finder's probe, the last query
     /// (`object_select`).
     #[serde(skip)]
@@ -700,6 +703,7 @@ impl Default for UiState {
             angles: Default::default(),
             app_icon: Default::default(),
             get_models: Default::default(),
+            model_download: Default::default(),
             object_select: Default::default(),
             engine: Default::default(),
             canvas_tool_menu_dismissed: false,

@@ -363,10 +363,10 @@ fn best_renders_h3_at_eight_megapixels() {
     assert_eq!(image_quality_size("p-h3-image/image", "best", 3200, 3200), (3200, 3200), "a larger ask is kept");
 }
 
-/// Quality `ultra` is `best` with MiniMax-H3-Image for new pictures and edits, where its files
-/// are in the models folder; without them it is `best`.
+/// Quality never swaps models: `ultra` renders bigger (the Quality setting) and MiniMax-H3-Image
+/// is chosen in the model picker like any other model, installed or not. Speed picks the tier.
 #[test]
-fn ultra_is_best_with_the_16_mp_model_when_installed() {
+fn ultra_no_longer_swaps_models_and_speed_picks_the_tier() {
     let dir = std::env::temp_dir().join(format!("pc-ultra-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut s = Session::new();
@@ -375,29 +375,22 @@ fn ultra_is_best_with_the_16_mp_model_when_installed() {
         p.integrations.quality = "ultra".into();
     });
     assert!(ultra(&s));
-    assert_eq!((quality(&s), auto_quality(&s)), ("best", "ultra"));
-    assert_eq!(auto_order(EDIT, "ultra"), &[ULTRA_EDIT_TEMPLATE, DEFAULT_EDIT_TEMPLATE]);
-    assert_eq!(auto_order(FILL, "ultra"), auto_order(FILL, "best"));
-    assert_eq!(auto_order(EXPAND, "ultra"), auto_order(EXPAND, "best"));
-    // no files: the profile's template
-    assert!(!template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
-    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
     let t = template::find(ULTRA_IMAGE_TEMPLATE).unwrap();
-    for (i, m) in t.meta.models.iter().enumerate() {
-        // one of them a folder deeper, where the worker looks too
-        let folder = if i == 0 { dir.join(&m.folder).join("h3") } else { dir.join(&m.folder) };
+    for m in &t.meta.models {
+        let folder = dir.join(&m.folder);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(&m.default), b"x").unwrap();
     }
     assert!(template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
-    assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
-    // `best` keeps the profile's template; Ultra wins over a saved default template
-    s.edit_prefs(|p| p.integrations.quality = "best".into());
-    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
+    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE, "installed, yet not swapped in");
     s.edit_prefs(|p| p.integrations.default_image_template = "qwen-2.1/image".into());
     assert_eq!(default_image_template(&s), "qwen-2.1/image");
-    s.edit_prefs(|p| p.integrations.quality = "ultra".into());
-    assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
+    // Speed: empty follows the old Quality tier; set, it wins.
+    assert_eq!(auto_quality(&s), "best");
+    for (speed, tier) in [("fast", "fast"), ("balanced", "balanced"), ("full", "best")] {
+        s.edit_prefs(|p| p.integrations.speed = speed.into());
+        assert_eq!(auto_quality(&s), tier);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

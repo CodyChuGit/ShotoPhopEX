@@ -16,7 +16,7 @@ use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, EDIT, Edge, EnhanceKind, FILL, FillJob, JobProgress, KLEIN_FILL_TEMPLATE, KLEIN_REMOVAL_PIXELS,
     MAX_FILL_REQUEST_PIXELS, MAX_GROW, NATIVE21_REMOVAL_PIXELS, TONE_MATCH_INSIDE, Tuning, align_to_grid, auto_order, backend, crop_rgba8, dim_outside,
     edge_mismatch, embed_coverage, enhance_prompt, feather_outward, fill_rect, fill_region, gen_err, highlight_covered, judged_rect, made_json, native21_auto,
-    paint_left, place_in_words, plan_common, quality, removal_quality, request_size, resize_gray8, resolve_auto, rgba8_at, side_by_side, still_there,
+    paint_left, place_in_words, plan_common, removal_quality, request_size, resize_gray8, resolve_auto, rgba8_at, side_by_side, speed, still_there,
     template_or, tone_matched, write_rgba8,
 };
 
@@ -462,7 +462,7 @@ pub(super) fn background_job(s: &Session, label: &str, seed: Option<u64>, tuning
         command: FILL,
         template_id: template.meta.id.clone(),
         auto,
-        auto_order: auto_order(FILL, quality(s)),
+        auto_order: auto_order(FILL, speed(s)),
         prompt,
         negative,
         seed,

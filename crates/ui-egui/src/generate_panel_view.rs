@@ -401,15 +401,32 @@ pub(crate) fn setting_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut 
 /// one-row form draws it as the family glyph alone. Its popover opening asks the server which
 /// templates it has, once.
 pub(super) fn model_pill(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str, width: f32) {
-    let group = app.session.prefs().integrations.group_models_by_family;
     let mut current = app.ui.generate.template.get(mode).cloned().unwrap_or_default();
     let items = picker_items(app, mode, true);
     let auto = auto_name(app, mode);
-    if crate::model_picker::pill(ui, "generate-panel", &items, &mut current, auto.as_deref(), group, width) {
+    let opts = crate::generate_panel::picker_opts(app, mode, auto.as_deref());
+    if crate::model_picker::pill(ui, "generate-panel", &items, &mut current, &opts, width) {
         app.ui.generate.template.insert(mode.to_string(), current);
     }
     if crate::model_picker::is_open(ui.ctx(), "generate-panel") {
         probe_once(app);
+    }
+}
+
+/// Generate › Speed under the model: which version of the model runs (`integrations.speed`).
+/// Full is the model without its turbo LoRA, Balanced the turbo version at a good step count,
+/// Fast the turbo version at the fewest steps that still give an okay picture; a model without
+/// that version runs the nearest one it has (the picker's seconds follow).
+pub(super) fn speed_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    use crate::model_catalog::Speed;
+    let now = crate::generate_panel::speed(app);
+    let options = [
+        Seg::new(Speed::Fast, Speed::Fast.label()).tip(tl!("The turbo version at the fewest steps that still give an okay picture")),
+        Seg::new(Speed::Balanced, Speed::Balanced.label()).tip(tl!("The turbo version at a good step count")),
+        Seg::new(Speed::Full, Speed::Full.label()).tip(tl!("The model without its turbo LoRA: slowest, most detail")),
+    ];
+    if let Some(s) = segmented(ui, &now, &options, 0.0) {
+        let _ = app.run("prefs.set", json!({"path": "integrations.speed", "value": s.pref()}));
     }
 }
 
@@ -438,6 +455,7 @@ pub(super) fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, m
         let w = ui.available_width();
         model_pill(app, ui, mode, w);
     });
+    setting_row(ui, tl!("Speed"), |ui| speed_pick(app, ui));
     setting_row(ui, tl!("Quality"), |ui| quality_pick(app, ui));
     let m = info(app, template).cloned().unwrap_or_default();
     if mode == "image" {

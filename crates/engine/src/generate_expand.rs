@@ -13,7 +13,7 @@ use super::{
     AUTO_TEMPLATE, Common, DEFAULT_EXPAND_TEMPLATE, ENHANCE_BACKDROP_REQUEST, ENHANCE_CUT_REQUEST, ENHANCE_SCENE_REQUEST, ENHANCE_SUBJECT_REQUEST, EXPAND,
     EXPAND_CAPTION, EXPAND_CAPTION_SEED, EnhanceKind, FillJob, FillPlan, JobProgress, KLEIN_FILL_TEMPLATE, MAX_REQUEST_PIXELS, MAX_VARIATIONS, Made, Outpaint,
     Tuning, align_to_grid, auto_order, backend, bad, caption_key, enhance_prompt, fill_region, gen_err, loras, made_json, matte_request_size, native21_auto,
-    opt_num, opt_str, parse_edge, plan_common, quality, rgba8_at, short, web_unavailable,
+    opt_num, opt_str, parse_edge, plan_common, rgba8_at, short, speed, web_unavailable,
 };
 
 /// What `generate.expand` asks for: how much canvas to add on each side.
@@ -124,7 +124,7 @@ pub(super) fn outpaint_lora(s: &Session, (ow, oh): (u32, u32), (nw, nh): (u32, u
     }
     if s.prefs().integrations.allow_research_models {
         let share = (f64::from(ow) * f64::from(oh)) / (f64::from(nw) * f64::from(nh)).max(1.0);
-        if let Some(route) = pick_outpaint_lora(has, share, quality(s) == "fast") {
+        if let Some(route) = pick_outpaint_lora(has, share, speed(s) == "fast") {
             return Some(route);
         }
     }
@@ -422,7 +422,7 @@ pub(super) fn run_expand(s: &mut Session, p: &Value) -> Result<Value> {
         plan;
     let label = name.clone();
     let template_id = template.meta.id.clone();
-    let auto_order = auto_order(EXPAND, quality(s));
+    let auto_order = auto_order(EXPAND, speed(s));
     let thinker = Arc::clone(&backend);
     // One job per stage: the first (when there are two) makes one picture, the last the
     // variations.

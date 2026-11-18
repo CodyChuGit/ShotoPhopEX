@@ -161,6 +161,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         o.insert("angles".into(), crate::angles_ui::inspect(app));
         o.insert("appIcon".into(), crate::app_icon_ui::inspect(app));
         o.insert("getModels".into(), crate::get_models_ui::inspect(app));
+        o.insert("modelDownload".into(), crate::model_download::inspect(app));
         o.insert("objectSelect".into(), crate::object_select::inspect(app));
     }
     v

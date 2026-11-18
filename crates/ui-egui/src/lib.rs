@@ -70,6 +70,8 @@ pub mod memory_profile_ui;
 pub mod memory_warning;
 pub mod menu_catalog;
 pub mod menus;
+pub mod model_catalog;
+pub mod model_download;
 pub mod model_picker;
 pub mod monitor_status;
 pub mod notices;

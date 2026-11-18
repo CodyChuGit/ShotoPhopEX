@@ -21,8 +21,8 @@ use super::{
     NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate, dither_edge,
     enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at, grey_outside,
     grey_where, judge_pair, krea2_fill, named_object, naming_picture, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num, opt_str,
-    outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter, request_size_within, resize_gray8,
-    resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there, template_or, tone_match_removal,
+    outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, realigned, removal_adapter, request_size_within, resize_gray8,
+    resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, speed, still_there, template_or, tone_match_removal,
     web_unavailable, write_rgba8,
 };
 
@@ -116,7 +116,7 @@ pub(super) fn plan_fill(s: &Session, p: &Value) -> Result<FillPlan> {
         auto = false;
     }
     if !named && !ref_specs.is_empty() && template::find(&base).is_ok_and(|t| t.meta.references.max == 0) {
-        base = fill_ref_template(quality(s)).to_string();
+        base = fill_ref_template(speed(s)).to_string();
         auto = false;
         if let Some(o) = q.as_object_mut() {
             o.remove("template");
@@ -679,7 +679,7 @@ pub(super) fn run_fill(s: &mut Session, p: &Value) -> Result<Value> {
         } else if template.meta.id == KLEIN_FILL_TEMPLATE {
             &[KLEIN_FILL_TEMPLATE]
         } else {
-            auto_order(FILL, quality(s))
+            auto_order(FILL, speed(s))
         },
         prompt,
         negative,
