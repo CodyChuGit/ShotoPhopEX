@@ -177,9 +177,18 @@ impl Krea2Pipeline {
         // driver counts as used: on an RTX 3090 (every e4m3 layer converted) that held ~3.9 GB
         // after the load and pushed the first 24 GB picture into system memory (2026-11-18).
         crate::device::trim_pool(&dev);
+        if fp8.is_some() && std::env::var("QIR_KREA2_INT8_REHOME").is_ok_and(|v| v.trim() == "1") {
+            let free = crate::device::free_vram(&dev).map_or(0, |(f, _)| f >> 20);
+            dit.rehome_int8()?;
+            tracing::info!(free_before_mib = free, free_after_mib = crate::device::free_vram(&dev).map_or(0, |(f, _)| f >> 20), "krea2 int8 weights re-homed");
+        }
+        let (pool_reserved, pool_used) = crate::device::pool_now(&dev).unwrap_or((0, 0));
         tracing::info!(
             load_s = t0.elapsed().as_secs_f32(),
             free_mib = crate::device::free_vram(&dev).map_or(0, |(f, _)| f >> 20),
+            pool_reserved_mib = pool_reserved >> 20,
+            pool_used_mib = pool_used >> 20,
+            int8_mib = dit.int8_bytes() >> 20,
             convrot = opts.convrot && fp8.is_none(),
             fp8 = fp8.is_some(),
             nvfp4,
