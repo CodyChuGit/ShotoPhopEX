@@ -355,7 +355,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Generative Remove",
             [],
             None,
-            r#"{"seed":{u64?=random} (repeats a removal exactly)} (ShotoPhopEX: the selection removed through the generative fill model, as edit.contentAwareFill {"generative":true,"sampleAllLayers":true}: the result is a masked layer above the active one, one undo step; a background job; the selection-tool context menu's row under Generative Fill…; needs the native worker)"#,
+            r#"{"seed":{u64?=random} (repeats a removal exactly), and edit.contentAwareFill's generative params ("enhance", "variations", "prefill", "erase", "keepObject", "shadow", "removeMargin", "nameShadow", "loras", "fillEdits", "sampleAllLayers"=true, …)} (ShotoPhopEX: the selection removed through the generative fill model, as edit.contentAwareFill {"generative":true,"sampleAllLayers":true}: the result is a masked layer above the active one, one undo step; a background job; the selection-tool context menu's row under Generative Fill…; needs the native worker)"#,
             can_generative_remove,
             generative_remove
         ),
