@@ -26,7 +26,7 @@ use super::{
     BACKGROUND_PROMPT, Common, DEFAULT_MATTE_TEMPLATE, FillJob, GenerativeInfo, Gray8, JobProgress, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, PEEL_PROMPT,
     PREFILL, REMOVE_BG, REMOVE_MIN_REQUEST, Request, Rgba8, SPLIT, Session, TONE_MATCH_MAX, Task, Tuning, Value, at_least, background_job, box_blur, dilate,
     embed_coverage, fill_rect, fill_region, gen_err, gray8_at, json, list_things, matte_request_size, name_selected, plan_common, removal_job, removal_prompt,
-    remove_grow, request_size, resize_rgba8, resolve_auto, sees, set_generative_info, write_rgba8,
+    remove_grow, request_size, resize_rgba8, resolve_auto, sees, set_generative_info, split_removal, write_rgba8,
 };
 
 /// The simple split: progressive subject removal, nearest first, until the detector finds nothing.
@@ -299,7 +299,7 @@ pub(super) fn run(s: &mut Session, plan: SubjectsPlan) -> Result<Value> {
     // invented room; and every switch between it and the 2.1 family reloaded the other model,
     // about 60 s a split. One model family serves the whole split (measured in the app
     // 2026-11-04).
-    let mut job = removal_job(s, "Split into Layers", 0, false, false, if complete { PEEL_VARIATIONS } else { FLAT_VARIATIONS }, seed, true, tuning.clone())?;
+    let mut job = removal_job(s, "Split into Layers", split_removal(if complete { PEEL_VARIATIONS } else { FLAT_VARIATIONS }, seed, tuning.clone()))?;
     // A split's fills are judged by what they painted, so the membrane moves them at most
     // [`TONE_MATCH_MAX`] levels (the Remove tools match all the way).
     job.tone_most = TONE_MATCH_MAX / 255.0;

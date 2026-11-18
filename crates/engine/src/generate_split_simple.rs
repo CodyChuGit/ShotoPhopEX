@@ -26,8 +26,8 @@ use super::{
     DEFAULT_MATTE_TEMPLATE, FillJob, JobCtx, Layer, MATTE_DEFAULT_PROMPT, MAX_GROW, MAX_SUBJECTS, NEW_AT_MOST, Order, PEEL_VARIATIONS, PERSON, REMOVE_BG,
     REMOVE_MIN_REQUEST, RING_WIDTH, Result, Rgba8, Session, Subject, SubjectFinder, SubjectsPlan, Task, Term, Tuning, Value, at_least, bare, blank_or_ghost,
     box_blur, could_not_clear, creature, dilate, embed_coverage, fill_rect, find_subjects, front_first, gen_err, hole_of, json, kept_terms, matte_all,
-    one_fill, overlap, parse_terms, place_all, plan_common, removal_job, removal_prompt, remove_grow, same_subject, subjects_labels, title_case, under_alpha,
-    write_rgba8,
+    one_fill, overlap, parse_terms, place_all, plan_common, removal_job, removal_prompt, remove_grow, same_subject, split_removal, subjects_labels, title_case,
+    under_alpha, write_rgba8,
 };
 
 /// How many times the removal is asked to take one subject out before it is left in.
@@ -72,7 +72,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
     let finder = crate::select_ml_cmds::subject_finder(s, prompt.as_deref())?;
     let terms: Option<Vec<Term>> = prompt.as_deref().map(parse_terms).filter(|t| !t.is_empty());
     let tuning = Tuning { fast_draft: s.prefs().integrations.fast_draft, ..Tuning::default() };
-    let job = removal_job(s, "Split into Layers", 0, false, false, PEEL_VARIATIONS, seed, true, tuning)?;
+    let job = removal_job(s, "Split into Layers", split_removal(PEEL_VARIATIONS, seed, tuning))?;
     let matte = plan_common(
         s,
         REMOVE_BG,
