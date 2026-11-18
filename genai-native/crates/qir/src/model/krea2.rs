@@ -330,6 +330,14 @@ fn fp8_as_int8(card_has_fp8_mma: bool) -> bool {
     forced.unwrap_or(!card_has_fp8_mma)
 }
 
+/// Whether this process converts an fp8 file's e4m3 layers to ConvRot INT8 ([`fp8_as_int8`]).
+pub fn e4m3_layers_on_int8() -> bool {
+    #[cfg(feature = "convrot")]
+    return fp8_as_int8(crate::fp8::card_has_fp8_mma());
+    #[cfg(not(feature = "convrot"))]
+    false
+}
+
 /// `QIR_KREA2_FP_LOWRANK=<rank>`: the low-rank part's rank for the full-precision INT8 layers,
 /// 64 by default; 0 leaves the plain INT8 layers.
 #[cfg(feature = "convrot")]
@@ -1004,7 +1012,9 @@ impl Krea2Dit {
 
     /// Park every INT8 weight on the host, hand the pool's memory back to the driver and
     /// upload them again, so they sit together instead of between the conversion's freed
-    /// temporaries (`QIR_KREA2_INT8_REHOME=1`; an experiment for the RTX 3090's load).
+    /// temporaries. On the RTX 3090 (every e4m3 layer converted) the load otherwise left the pool
+    /// holding ~6.5 GB more than it used, which a trim could not release; re-homed, 9.2 GB of
+    /// the card is free after the load against 4.1 GB (2026-11-18, ~8 s more load time).
     pub fn rehome_int8(&self) -> Result<()> {
         #[cfg(feature = "convrot")]
         if self.device.is_cuda() {
