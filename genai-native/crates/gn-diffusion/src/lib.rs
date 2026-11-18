@@ -1307,6 +1307,20 @@ pub fn task_of(template: &str) -> Option<&'static str> {
 }
 
 /// The family that serves a template.
+/// An A/B hook for MOSS Edit on another fine-tune's DiT: `GN_MOSS_EDIT_DIT=juggernaut` (or
+/// `juggernaut-turbo`) runs `moss-image/edit` and `moss-image/edit-turbo` with the edit LoRA on
+/// Juggernaut MOSS instead of MOSS-Image-SFT. Unset, the templates' own.
+fn moss_edit_dit_override(template: &str, family: Family) -> Family {
+    if ![TEMPLATE_MOSS_EDIT, TEMPLATE_MOSS_EDIT_TURBO].contains(&template) {
+        return family;
+    }
+    match std::env::var("GN_MOSS_EDIT_DIT").ok().as_deref().map(str::trim) {
+        Some("juggernaut") => Family::Moss(MossVariant::Juggernaut),
+        Some("juggernaut-turbo") => Family::Moss(MossVariant::JuggernautTurbo),
+        _ => family,
+    }
+}
+
 pub fn family_of(template: &str) -> Option<Family> {
     TEMPLATES.iter().find(|(t, _, _)| *t == template).map(|(_, _, f)| *f)
 }
@@ -1580,7 +1594,7 @@ impl Engine for DiffusionEngine {
         if let Some(why) = &self.refused {
             return Err(EngineError::new(ErrorKind::Unsupported, why.clone()));
         }
-        let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model)) else {
+        let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model).map(|f| moss_edit_dit_override(&req.model, f))) else {
             let served: Vec<&str> = TEMPLATES.iter().map(|(t, _, _)| *t).collect();
             return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not served here ({} are)", req.model, served.join(", "))));
         };
@@ -1951,6 +1965,8 @@ fn cuda_default_steps(template: &str) -> Option<u32> {
         // The realism recipe's res_2s is CUDA only: MLX keeps its 50 Euler steps.
         TEMPLATE_MOSS => Some(MOSS_REALISM_STEPS),
         TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
+        TEMPLATE_MOSS_JUGGERNAUT => Some(MOSS_JUGGERNAUT_STEPS),
+        TEMPLATE_MOSS_JUGGERNAUT_TURBO => Some(MOSS_JUGGERNAUT_TURBO_STEPS),
         _ => None,
     }
 }
@@ -2001,9 +2017,9 @@ const GREY_LEVELS: u8 = 6;
 #[cfg(feature = "mlx")]
 fn cuda_default_guidance(template: &str) -> Option<f32> {
     match template {
-        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(1.0),
+        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO | TEMPLATE_MOSS_JUGGERNAUT_TURBO => Some(1.0),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_GUIDANCE),
-        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE => Some(MOSS_GUIDANCE),
+        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE | TEMPLATE_MOSS_JUGGERNAUT => Some(MOSS_GUIDANCE),
         _ => None,
     }
 }
@@ -2126,6 +2142,10 @@ impl DiffusionEngine {
             TEMPLATE_MOSS_EDIT => Ok((sft()?, vec![edit()?], MOSS_EDIT_STEPS, MOSS_EDIT_GUIDANCE)),
             TEMPLATE_MOSS => Ok((sft()?, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
             TEMPLATE_MOSS_BASE if has(MossVariant::Base) => Ok((MossVariant::Base, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
+            TEMPLATE_MOSS_JUGGERNAUT if has(MossVariant::Juggernaut) => Ok((MossVariant::Juggernaut, Vec::new(), MOSS_JUGGERNAUT_STEPS, MOSS_GUIDANCE)),
+            TEMPLATE_MOSS_JUGGERNAUT_TURBO if has(MossVariant::JuggernautTurbo) => {
+                Ok((MossVariant::JuggernautTurbo, Vec::new(), MOSS_JUGGERNAUT_TURBO_STEPS, 1.0))
+            }
             t => Err(EngineError::new(ErrorKind::ModelMissing, format!("{t} is not served on MLX"))),
         }
     }
@@ -2155,9 +2175,15 @@ impl DiffusionEngine {
                 loras.push(gn_mlx::pipeline::LoraSpec { path, strength });
             }
         }
+        // Juggernaut MOSS V1 with its card's negative when none is typed, as on CUDA.
+        let negative = if req.model == TEMPLATE_MOSS_JUGGERNAUT && req.negative.trim().is_empty() {
+            moss::JUGGERNAUT_NEGATIVE.to_string()
+        } else {
+            req.negative.clone()
+        };
         let ask = gn_mlx::pipeline::Request {
             prompt: req.prompt.clone(),
-            negative: req.negative.clone(),
+            negative,
             width,
             height,
             // The editor sends the template's CUDA defaults (MOSS Turbo's 8 steps, Edit Turbo's
@@ -2171,7 +2197,9 @@ impl DiffusionEngine {
         let Resident::Mlx(m) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no MLX pipeline")) };
         let stop = || cancel.load(Ordering::SeqCst);
         let mut step = |i: usize, n: usize| progress(0.3 + 0.65 * i as f32 / n.max(1) as f32, if i == 0 { "Loading the models" } else { "Sampling" });
-        let p = m.generate(variant, &loras, &ask, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
+        // Juggernaut MOSS Turbo samples with euler_ancestral (its card's), the rest with Euler.
+        let ancestral = req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO;
+        let p = m.generate_with(variant, &loras, &ask, ancestral, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
         let t = p.timings;
         eprintln!(
             "gn-diffusion: {} on MLX ({variant:?}, {} steps, CFG {}, {}x{}): encode {:.1} s, DiT load + references {:.1} s, steps {:.1} s, decode {:.1} s",
