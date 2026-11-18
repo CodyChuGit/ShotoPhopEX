@@ -127,7 +127,7 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     let g = &st.runs[0].request;
     assert_eq!(
         g["prompt"],
-        "<sks> back-right quarter view high-angle shot medium shot The camera has moved 135 degrees around to the subject's right: we see the subject's back and right side. The camera is raised high above the subject and looks down at it at 60 degrees.",
+        "<sks> back-right quarter view high-angle shot The camera has moved 135 degrees around to the subject's right: we see the subject's back and right side. The camera is raised high above the subject and looks down at it at 60 degrees.",
         "the LoRA's words, then the move in plain words"
     );
     assert_eq!(g["params"]["models"]["lora"], "qwen-image-edit-2511-multiple-angles-lora.safetensors");
@@ -138,7 +138,7 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     // The layer remembers an edit, so Generate Similar and Recreate run it again.
     let info = generative_info(s.active().unwrap().doc.layer(ids[0]).unwrap()).unwrap();
     assert_eq!((info.command.as_str(), info.template.as_str()), (EDIT, ANGLES_TEMPLATE));
-    assert_eq!(angle_prompt(0, 0, 5).as_deref(), Some("<sks> front view eye-level shot medium shot"), "no move, no sentence");
+    assert_eq!(angle_prompt(0, 0, 5).as_deref(), Some("<sks> front view eye-level shot"), "no move: no sentence, no distance");
     assert_eq!(
         angle_prompt(0, 0, 10).as_deref(),
         Some("<sks> front view eye-level shot close-up The camera has moved close: the subject's main part fills the frame.")
@@ -146,7 +146,7 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     assert_eq!(
         angle_prompt(270, 0, 5).as_deref(),
         Some(
-            "<sks> left side view eye-level shot medium shot The camera has moved 90 degrees around to the subject's left: a true side profile, the subject seen exactly from its left side."
+            "<sks> left side view eye-level shot The camera has moved 90 degrees around to the subject's left: a true side profile, the subject seen exactly from its left side."
         )
     );
     assert_eq!(

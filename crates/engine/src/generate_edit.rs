@@ -61,10 +61,15 @@ pub fn angle_sentence(rotation: u32, tilt: i32, zoom: u32) -> String {
     [turn.as_str(), height, distance].iter().filter(|w| !w.is_empty()).copied().collect::<Vec<_>>().join(" ")
 }
 
-/// The prompt for a camera: `<sks> [azimuth] [elevation] [distance]`, the LoRA's trained words,
+/// The prompt for a camera: `<sks> [azimuth] [elevation] [distance]`, the LoRA's trained words
+/// (no distance for the default medium one),
 /// then [`angle_sentence`]; None for a value the LoRA has no words for.
 pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     let words = angle_words(rotation, tilt, zoom)?;
+    // The default distance says nothing: `medium shot` pulled tight photos (a cat's head, a
+    // portrait) back to a full body (2026-11-18 5090 test, 10 kinds of photo); without it the
+    // framing stays and the turn is as far or further, and wide photos are unchanged.
+    let words = if zoom == 5 { words.trim_end_matches(" medium shot").to_string() } else { words };
     let sentence = angle_sentence(rotation, tilt, zoom);
     Some(if sentence.is_empty() { format!("<sks> {words}") } else { format!("<sks> {words} {sentence}") })
 }
