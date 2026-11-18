@@ -297,11 +297,11 @@ extern "C" int qir_flash_fwd_bias(void* o, const void* q, const void* k, const v
     for (int i = 0; i < 9; ++i) {
         if (strides[i] % 8 != 0) return 2;  // every row must start on 16 bytes
     }
-    static bool configured = false;
-    if (!configured) {
+    // Every call (about a microsecond): the attribute belongs to the current device, so a
+    // process-wide "done once" flag would launch on a second card without it.
+    {
         cudaError_t e = cudaFuncSetAttribute(flash_fwd, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_BYTES);
         if (e != cudaSuccess) return static_cast<int>(e);
-        configured = true;
     }
     const dim3 grid((S + BR - 1) / BR, H, B);
     flash_fwd<<<grid, THREADS, SMEM_BYTES, static_cast<cudaStream_t>(stream)>>>(

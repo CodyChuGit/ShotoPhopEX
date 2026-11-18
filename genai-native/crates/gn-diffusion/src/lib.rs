@@ -1321,7 +1321,31 @@ pub fn is_sticky_cuda_error(message: &str) -> bool {
         "CUDA_ERROR_HARDWARE_STACK_ERROR",
         "CUDA_ERROR_ASSERT",
     ];
-    STICKY.iter().any(|s| message.contains(s))
+    // Our own kernels (qir) report the CUDA runtime's code as a number ("rc=700",
+    // "cudaError 719", "failed: 700"); the runtime spells the names differently too.
+    const STICKY_RUNTIME: [&str; 6] = [
+        "cudaErrorIllegalAddress",
+        "cudaErrorLaunchFailure",
+        "cudaErrorIllegalInstruction",
+        "cudaErrorMisalignedAddress",
+        "cudaErrorHardwareStackError",
+        "cudaErrorAssert",
+    ];
+    STICKY.iter().chain(STICKY_RUNTIME.iter()).any(|s| message.contains(s)) || sticky_runtime_code(message)
+}
+
+/// A CUDA runtime code that poisons the context (cudaErrorAssert 710, HardwareStackError 714,
+/// IllegalInstruction 715, MisalignedAddress 716, IllegalAddress 700, LaunchFailure 719) after
+/// "rc=", "rc = ", "cudaError " or "failed: " in a kernel's error. Our kernels' own small
+/// codes (1 = shape, 2 = alignment) never match.
+fn sticky_runtime_code(message: &str) -> bool {
+    const CODES: [u32; 6] = [700, 710, 714, 715, 716, 719];
+    ["rc=", "rc = ", "cudaError ", "failed: "].iter().any(|key| {
+        message.match_indices(key).any(|(i, _)| {
+            let digits: String = message[i + key.len()..].chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u32>().is_ok_and(|c| CODES.contains(&c))
+        })
+    })
 }
 
 /// The worker's way out of a poisoned CUDA context: say why and end the process, so the
@@ -2716,6 +2740,16 @@ mod tests {
             (Some("text"), Some("text"), Some(Family::QwenImage21))
         );
         assert!(is_sticky_cuda_error(r#"DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")"#));
+        // Our kernels' runtime codes, in the formats qir writes them.
+        assert!(is_sticky_cuda_error("flash-attention failed, rc=700"));
+        assert!(is_sticky_cuda_error("sage2 attention: CUDA launch failed (cudaError 719)"));
+        assert!(is_sticky_cuda_error("Edit modulation failed: 716"));
+        assert!(is_sticky_cuda_error("qir_vae_conv2d_nhwc failed rc=715 (N=1 H=64 W=64 C=128 K=128 R=3)"));
+        assert!(is_sticky_cuda_error("cudaErrorIllegalAddress: an illegal memory access was encountered"));
+        assert!(!is_sticky_cuda_error("flash-attention failed, rc=1"), "a shape our kernel does not take");
+        assert!(!is_sticky_cuda_error("flash-attention failed, rc=2"), "a misaligned pointer, caught before launch");
+        assert!(!is_sticky_cuda_error("fp8-quant failed, rc=2 (M=700)"));
+        assert!(!is_sticky_cuda_error("int8_gemm_dequant failed, rc=7000"));
         assert!(
             !is_sticky_cuda_error("DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")"),
             "out of memory is recoverable: the models are dropped instead"
