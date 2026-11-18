@@ -555,7 +555,12 @@ pub fn enhance(app: &mut PhotocraftApp) -> Result<Value, String> {
         "edit" => "edit",
         _ => "image",
     };
-    match app.run("generate.enhancePrompt", json!({"prompt": prompt, "task": task})) {
+    let mut q = json!({"prompt": prompt, "task": task});
+    // A text-to-image idea is rewritten for the model it will run on.
+    if task == "image" {
+        q["template"] = json!(effective_template(app, &app.ui.generate.mode.clone()));
+    }
+    match app.run("generate.enhancePrompt", q) {
         Ok(v) => {
             if v.get("pending").and_then(Value::as_bool) == Some(true) {
                 app.ui.generate.enhance_job = v.get("job").and_then(Value::as_u64);

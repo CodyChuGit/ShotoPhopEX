@@ -63,6 +63,13 @@ pub const TEMPLATE_EXPAND: &str = "qwen-2.1/expand";
 /// 32 of 32 renders against 3 of 16 for plain 2.1) and paints the grey. Served when that file
 /// is under the model root's `loras/`.
 pub const TEMPLATE_OUTPAINT: &str = "qwen-2.1/outpaint";
+/// Generative Angles on Qwen-Image-2.1 (the 2.1 edit with [`QWEN21_ANGLES_LORA`]): the app's
+/// route on cards without fp8 matrix cores (RTX 30 and older), where 2511's fp8 file does not
+/// run (on a 3090 the worker died, 7.2 GB spilled; this route fitted in 21.7 GB, 2026-11-17).
+pub const TEMPLATE_ANGLES21: &str = "qwen-2.1/angles";
+/// The LoRA [`TEMPLATE_ANGLES21`] runs with: akhaliq's Multiple Angles v2 for Qwen-Image-2.1
+/// (step 1500, Apache-2.0), prompts `<mva> {azimuth}, {elevation}[ close-up]`.
+pub const QWEN21_ANGLES_LORA: &str = "qwen-image-2.1-multiple-angles-v2.safetensors";
 /// The LoRA [`TEMPLATE_OUTPAINT`] runs with (added to a request's own LoRAs).
 pub const QWEN21_OUTPAINT_LORA: &str = "qwen-image-2.1-outpaint-v2.safetensors";
 /// [`TEMPLATE_OUTPAINT`] in six steps with Viggle's Turbo LoRA (`Viggle/Qwen-Image-2.1-viggle-turbo`
@@ -127,6 +134,13 @@ pub const MOSS_GUIDANCE: f32 = 3.0;
 /// The low-VRAM turbo: lodestones' Kromoss (Apache-2.0, a full fine-tune of MOSS-Image-Base)
 /// with its 8-step DMD2 LoRA, at the card's 8 steps and CFG 1 (no negative pass).
 pub const TEMPLATE_MOSS_TURBO: &str = "moss-image/turbo";
+/// KandooAI's Juggernaut MOSS (Civitai 3042282, a full fine-tune of MOSS-Image-Base for
+/// photographs; bring your own): V1 on its card's recipe (30 Euler steps, CFG 3, block 22
+/// skipped, its negative) and its turbo beta (6 `euler_ancestral` steps, CFG 1).
+pub const TEMPLATE_MOSS_JUGGERNAUT: &str = "moss-image/juggernaut";
+pub const TEMPLATE_MOSS_JUGGERNAUT_TURBO: &str = "moss-image/juggernaut-turbo";
+pub const MOSS_JUGGERNAUT_STEPS: u32 = 30;
+pub const MOSS_JUGGERNAUT_TURBO_STEPS: u32 = 6;
 pub const MOSS_TURBO_LORA: &str = "kromoss-8-steps-dmd2-lora.safetensors";
 pub const MOSS_TURBO_STEPS: u32 = 8;
 /// akhaliq's MOSS-Image-SFT 4-step LoRA (Apache-2.0; stock Euler, 4 steps, CFG 1): MOSS Turbo
@@ -140,6 +154,12 @@ pub const TEMPLATE_MOSS_EDIT_TURBO: &str = "moss-image/edit-turbo";
 /// The adapter as its repo names it, in its own folder; or renamed to a file of its own.
 pub const MOSS_EDIT_LORAS: [&str; 2] = ["moss-image-edit/adapter_model.safetensors", "moss_image_edit_lora.safetensors"];
 pub const MOSS_EDIT_STEPS: u32 = 30;
+/// An edit of MOSS-Image-Base in ai-toolkit's edit layout (`qir::moss::Sampling::OSTRIS_EDIT`),
+/// for edit LoRAs trained there that the request brings, such as NO8D's MOSS HighQuality
+/// restore (Civitai 2436859, non-commercial; bring your own): its author's 9 Euler steps at
+/// CFG 1, both prompts empty.
+pub const TEMPLATE_MOSS_RESTORE: &str = "moss-image/restore";
+pub const MOSS_RESTORE_STEPS: u32 = 9;
 /// FLUX 3 Image Klein on MLX (macOS; mflux-community's pre-quantized files): text to image
 /// (the Mac's quality pick next to MOSS Turbo), an edit by
 /// instruction (and, with AusBoss's outpaint LoRA in the request, the editor's Expand), and a
@@ -186,7 +206,7 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 40] = [
+pub const TEMPLATES: [(&str, &str, Family); 44] = [
     (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
     (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
@@ -196,16 +216,20 @@ pub const TEMPLATES: [(&str, &str, Family); 40] = [
     (TEMPLATE_KLEIN_FILL, "fill", Family::Klein),
     (TEMPLATE_MOSS_EDIT, "edit", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_EDIT_TURBO, "edit", Family::Moss(MossVariant::Sft)),
+    (TEMPLATE_MOSS_RESTORE, "edit", Family::Moss(MossVariant::Base)),
     (TEMPLATE_MOSS_TURBO, "image", Family::Moss(MossVariant::Kromoss)),
     (TEMPLATE_OUTPAINT_TURBO, "expand", Family::QwenImage21),
     (TEMPLATE_OUTPAINT, "expand", Family::QwenImage21),
     (TEMPLATE_KREA2_FILL, "fill", Family::Krea2),
     (TEMPLATE_MOSS, "image", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_BASE, "image", Family::Moss(MossVariant::Base)),
+    (TEMPLATE_MOSS_JUGGERNAUT, "image", Family::Moss(MossVariant::Juggernaut)),
+    (TEMPLATE_MOSS_JUGGERNAUT_TURBO, "image", Family::Moss(MossVariant::JuggernautTurbo)),
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
     (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
     (TEMPLATE_EDIT, "edit", Family::QwenImage21),
+    (TEMPLATE_ANGLES21, "edit", Family::QwenImage21),
     (TEMPLATE_FILL, "fill", Family::QwenImage21),
     (TEMPLATE_EXPAND, "expand", Family::QwenImage21),
     (TEMPLATE_MATTE, "matte", Family::QwenImage21),
@@ -251,6 +275,15 @@ pub const LEAN_BELOW: usize = 28 << 30;
 /// working set) wants beside a resident diffusion model; with less, on a lean card, the
 /// diffusion model is unloaded for it ([`DiffusionEngine::yields`]).
 pub const PERCEPTION_ROOM: usize = 4 << 30;
+/// The least free card memory SAM gets beside a resident model on a card that is not lean
+/// ([`DiffusionEngine::yields`]): its ~2 GB and a little working room.
+pub const PERCEPTION_MIN_ROOM: usize = 5 << 29;
+/// The least free card memory a request starts with on a card that is not lean: under it the
+/// resident model is loaded again from scratch ([`DiffusionEngine::ensure_loaded`]), since a
+/// session's growth past the card's memory makes Windows page it to the host instead of
+/// failing, and every step runs 5–400x slower (a 5090 beside 4–5 GB of desktop apps,
+/// 2026-11-16: Krea 2's decode 29 s instead of 1.8, Upscale's encode 35 s instead of 5.5).
+pub const RUN_MIN_ROOM: usize = 1 << 30;
 
 /// Whether a card of `total` bytes runs lean ([`LEAN_BELOW`]). `forced_mb` (the app's
 /// `PHOTOCRAFT_VRAM_MB`, in megabytes) stands in for the card's memory, to try the lean
@@ -342,6 +375,14 @@ fn log_previews(mode: PreviewMode, viewer: &Previewer<'_>) {
     }
 }
 
+/// Card 0's compute capability (8.6 as 86), asked of the driver once without creating a
+/// context; None in a build without CUDA or with no NVIDIA card. The app routes by it where a
+/// model's format needs a newer card (2511's fp8 file wants 8.9).
+pub fn card_compute_cap() -> Option<u32> {
+    static CAP: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| if cfg!(feature = "cuda") { qwen_image_rs::device::probe().ok().map(|g| g.compute_cap) } else { None })
+}
+
 /// The card and, in a CUDA build, the sentence that refuses it (plan-native-engine §10, GPU
 /// detection). A CPU build refuses nothing: it runs, slowly, for tests.
 fn gpu_and_refusal() -> (Option<qwen_image_rs::device::Gpu>, Option<String>) {
@@ -431,6 +472,9 @@ fn chat_on(params: &std::collections::BTreeMap<String, Value>) -> Result<ChatOn,
 /// recipe ([`Schedule::KreaDetail`]: the Sick Ollie Creator Kit's beta scheduler over AuraFlow
 /// shift 1.25); absent or `"simple"` keeps ComfyUI's `simple` schedule.
 pub const KREA_DETAIL_SCHEDULE: &str = "krea-detail";
+/// `params.schedule: "viggle-turbo"` on [`TEMPLATE_EDIT`]: Viggle's six shifted sigmas, for a
+/// request that stacks [`QWEN21_TURBO_LORA`].
+pub const VIGGLE_TURBO_SCHEDULE: &str = "viggle-turbo";
 
 /// `params.sampler`: `"euler"` (absent) or, on Krea 2 Turbo's text to image and edit, `"er_sde"`.
 fn sampler_for(model: &str, params: &std::collections::BTreeMap<String, Value>) -> Result<Sampler, EngineError> {
@@ -449,6 +493,8 @@ fn schedule_for(model: &str, params: &std::collections::BTreeMap<String, Value>)
         None | Some("simple") => Ok(Schedule::Comfy),
         Some(KREA_DETAIL_SCHEDULE) if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaDetail),
         Some("beta") if [TEMPLATE_KREA2, TEMPLATE_KREA2_EDIT].contains(&model) => Ok(Schedule::KreaBeta),
+        // The 2.1 edit under Viggle's Turbo LoRA (Generative Upscale's fast restore).
+        Some(VIGGLE_TURBO_SCHEDULE) if model == TEMPLATE_EDIT => Ok(Schedule::ViggleTurbo),
         Some(other) => Err(EngineError::new(ErrorKind::BadRequest, format!("schedule {other:?} is not one {model} takes"))),
     }
 }
@@ -672,7 +718,16 @@ impl DiffusionEngine {
                 _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("max_tokens {v} is outside 16..2048"))),
             },
         };
-        let opts = ChatOptions { seed: req.seed, max_new, ..ChatOptions::default() };
+        // `params.temperature` (0..1.5): the engine warms a retry after a refused rewrite; at the
+        // default 0.3 the next seed often gave the same answer word for word (round 5, 2026-11-17).
+        let temperature = match req.params.get("temperature") {
+            None => ChatOptions::default().temperature,
+            Some(v) => match v.as_f64() {
+                Some(t) if (0.0..=1.5).contains(&t) => t as f32,
+                _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("temperature {v} is outside 0..1.5"))),
+            },
+        };
+        let opts = ChatOptions { seed: req.seed, max_new, temperature, ..ChatOptions::default() };
         let stop = || cancel.load(Ordering::SeqCst);
         let reply = match &self.resident {
             Resident::Qwen(p) if on == ChatOn::Qwen21 => p.chat(&system, &req.prompt, image.as_ref(), &opts, &stop),
@@ -917,6 +972,7 @@ impl DiffusionEngine {
                         || edit2511_defaults(t).is_some_and(|(_, _, names)| names.iter().all(|n| self.models_root.join("loras").join(n).is_file())))
                     && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_OUTPAINT || self.lora_path(QWEN21_OUTPAINT_LORA).is_ok_and(|p| p.is_file()))
+                    && (*t != TEMPLATE_ANGLES21 || self.lora_path(QWEN21_ANGLES_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_OUTPAINT_TURBO || [QWEN21_OUTPAINT_LORA, QWEN21_TURBO_LORA].iter().all(|n| self.lora_path(n).is_ok_and(|p| p.is_file())))
                     && (*t != TEMPLATE_KREA2_FILL || self.lora_path(KREA2_ANYPAINT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_MOSS_TURBO || self.template_lora(MOSS_TURBO_LORA).is_some())
@@ -933,6 +989,14 @@ impl DiffusionEngine {
     /// Load `family`'s pipeline if it is not resident, letting the other family's go first.
     fn ensure_loaded(&mut self, family: Family, progress: &mut dyn FnMut(f32, &str)) -> Result<(), EngineError> {
         self.bind();
+        if cfg!(feature = "cuda") && !self.lean && !matches!(self.resident, Resident::None) {
+            self.give_back();
+            if let Some(free) = self.free_now().filter(|f| *f < RUN_MIN_ROOM) {
+                eprintln!("gn-diffusion: {:.2} GB of the card free before a request; reloading so Windows does not page the card", free as f64 / 1e9);
+                progress(0.0, "Making room on the graphics card");
+                self.unload();
+            }
+        }
         match (&self.resident, family) {
             (Resident::Krea2(p), Family::Krea2) if p.is_nvfp4() == self.krea2_nvfp4() => return Ok(()),
             (Resident::Qwen(_), Family::QwenImage21) | (Resident::Layered(_), Family::Layered) | (Resident::Edit2511(_), Family::Edit2511) => return Ok(()),
@@ -1062,6 +1126,8 @@ impl DiffusionEngine {
                                 MossVariant::Base => "moss_image_base",
                                 MossVariant::Sft => "moss_image_sft",
                                 MossVariant::Kromoss => "kromoss",
+                                MossVariant::Juggernaut => "juggernaut_moss_v1",
+                                MossVariant::JuggernautTurbo => "juggernaut_moss_turbo_v1",
                             }
                         ),
                     ));
@@ -1320,6 +1386,20 @@ pub fn task_of(template: &str) -> Option<&'static str> {
 }
 
 /// The family that serves a template.
+/// An A/B hook for MOSS Edit on another fine-tune's DiT: `GN_MOSS_EDIT_DIT=juggernaut` (or
+/// `juggernaut-turbo`) runs `moss-image/edit` and `moss-image/edit-turbo` with the edit LoRA on
+/// Juggernaut MOSS instead of MOSS-Image-SFT. Unset, the templates' own.
+fn moss_edit_dit_override(template: &str, family: Family) -> Family {
+    if ![TEMPLATE_MOSS_EDIT, TEMPLATE_MOSS_EDIT_TURBO].contains(&template) {
+        return family;
+    }
+    match std::env::var("GN_MOSS_EDIT_DIT").ok().as_deref().map(str::trim) {
+        Some("juggernaut") => Family::Moss(MossVariant::Juggernaut),
+        Some("juggernaut-turbo") => Family::Moss(MossVariant::JuggernautTurbo),
+        _ => family,
+    }
+}
+
 pub fn family_of(template: &str) -> Option<Family> {
     TEMPLATES.iter().find(|(t, _, _)| *t == template).map(|(_, _, f)| *f)
 }
@@ -1344,12 +1424,14 @@ pub type AnglesSetup = (u32, f32, Vec<(&'static str, f64)>);
 /// The Angles template's adapters and sampler defaults for a request: the Multiple Angles LoRA at
 /// `angles_strength` (0..2, default 1) and the Lightning LoRA `lightning` names (8 = the 8-step
 /// one, the default; 4 = the 4-step one; 0 = none, the base model's 40 steps at CFG 4) at
-/// `lightning_strength` (0..2; default 0.75 on the 8-step one, else 1). The steps and CFG are
+/// `lightning_strength` (0..2, default 1). The steps and CFG are
 /// that Lightning's. Measured in the app on 2026-11-14 (3 photos x 4 cameras, seed 7): the
 /// 8-step at 0.75 drew the most believable hidden sides with no crackle on fabric, 12 s warm
 /// against the 4-step's 10 s, which invented parts and over-turned; no Lightning was softer,
 /// lost prints and took 36 s; a stronger Angles LoRA (1.25, 1.5) turned barely further and
-/// invented furniture.
+/// invented furniture. Re-measured 2026-11-16 (portrait, camera and cat, two seeds, 45 and 90):
+/// at 0.75 and 0.9 a 45 turned the portrait's face only 15-25 degrees, at 1.0 about 35 (a real
+/// three-quarter view), with no artifacts and the same speed, so the 8-step runs at 1.
 pub fn angles_setup(params: &std::collections::BTreeMap<String, Value>) -> Result<AnglesSetup, EngineError> {
     use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
     let bad = |message: &str| EngineError::new(ErrorKind::BadRequest, message);
@@ -1373,7 +1455,7 @@ pub fn angles_setup(params: &std::collections::BTreeMap<String, Value>) -> Resul
 }
 
 /// The 8-step Lightning LoRA's strength under the Multiple Angles LoRA (see [`angles_setup`]).
-pub const ANGLES_LIGHTNING8_STRENGTH: f64 = 0.75;
+pub const ANGLES_LIGHTNING8_STRENGTH: f64 = 1.;
 
 /// Resolve graph inputs before loading models so invalid requests fail without touching CUDA.
 fn edit2511_request(req: &RunRequest, blobs: &[Vec<u8>]) -> Result<Edit2511Request, EngineError> {
@@ -1593,7 +1675,7 @@ impl Engine for DiffusionEngine {
         if let Some(why) = &self.refused {
             return Err(EngineError::new(ErrorKind::Unsupported, why.clone()));
         }
-        let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model)) else {
+        let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model).map(|f| moss_edit_dit_override(&req.model, f))) else {
             let served: Vec<&str> = TEMPLATES.iter().map(|(t, _, _)| *t).collect();
             return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not served here ({} are)", req.model, served.join(", "))));
         };
@@ -1632,7 +1714,7 @@ impl Engine for DiffusionEngine {
                 Vec::new(),
             ));
         }
-        if req.prompt.trim().is_empty() {
+        if req.prompt.trim().is_empty() && req.model != TEMPLATE_MOSS_RESTORE {
             return Err(EngineError::new(ErrorKind::BadRequest, "a prompt is needed"));
         }
         if task == "text" {
@@ -1735,7 +1817,10 @@ impl Engine for DiffusionEngine {
             Family::Edit2511 => 40,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => MOSS_TURBO_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_RESTORE => MOSS_RESTORE_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS => MOSS_REALISM_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_JUGGERNAUT => MOSS_JUGGERNAUT_STEPS,
+            Family::Moss(_) if req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO => MOSS_JUGGERNAUT_TURBO_STEPS,
             Family::Moss(_) => MOSS_STEPS,
             // Klein's own (its checkpoint's 16).
             Family::Klein => 0,
@@ -1743,7 +1828,11 @@ impl Engine for DiffusionEngine {
             Family::MiniMaxH3 => MINIMAX_H3_STEPS,
         };
         let default_guidance = match family {
-            Family::Moss(_) if req.model == TEMPLATE_MOSS_TURBO || req.model == TEMPLATE_MOSS_EDIT_TURBO => 1.0,
+            Family::Moss(_)
+                if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT_TURBO, TEMPLATE_MOSS_RESTORE, TEMPLATE_MOSS_JUGGERNAUT_TURBO].contains(&req.model.as_str()) =>
+            {
+                1.0
+            }
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_GUIDANCE,
             Family::Moss(_) => MOSS_GUIDANCE,
             _ => 1.0,
@@ -1777,6 +1866,8 @@ impl Engine for DiffusionEngine {
                 with_edit_lora(&req.params)
             } else if req.model == TEMPLATE_OUTPAINT {
                 with_lora_first(&req.params, QWEN21_OUTPAINT_LORA)
+            } else if req.model == TEMPLATE_ANGLES21 {
+                with_lora_first(&req.params, QWEN21_ANGLES_LORA)
             } else if req.model == TEMPLATE_OUTPAINT_TURBO {
                 with_lora_first(&with_lora_first(&req.params, QWEN21_TURBO_LORA), QWEN21_OUTPAINT_LORA)
             } else if krea2_fill {
@@ -1806,8 +1897,16 @@ impl Engine for DiffusionEngine {
                 None => 1.0,
             };
             // MOSS-Image's text to image: the realism recipe's negative when none is typed.
+            // Juggernaut MOSS V1 likewise with its card's negative; its turbo runs at CFG 1.
             let realism = req.model == TEMPLATE_MOSS;
-            let negative = if realism && req.negative.trim().is_empty() { moss::REALISM_NEGATIVE.to_string() } else { req.negative.clone() };
+            let juggernaut = req.model == TEMPLATE_MOSS_JUGGERNAUT;
+            let juggernaut_turbo = req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO;
+            let negative = match () {
+                _ if !req.negative.trim().is_empty() => req.negative.clone(),
+                _ if realism => moss::REALISM_NEGATIVE.to_string(),
+                _ if juggernaut => moss::JUGGERNAUT_NEGATIVE.to_string(),
+                _ => req.negative.clone(),
+            };
             let ask = Request {
                 prompt: req.prompt.clone(),
                 negative,
@@ -1853,8 +1952,23 @@ impl Engine for DiffusionEngine {
                         p.refine_previewed(&ask, &base, &opts, &mut |f, m| report(0.55 + 0.45 * f, m), shown, &stop).map(|p| vec![p]).map_err(err)
                     }
                 },
-                (Resident::Moss(p, _), _) if realism => {
-                    p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                (Resident::Moss(p, _), _) if realism || juggernaut || juggernaut_turbo => {
+                    let sampling = match () {
+                        _ if juggernaut => moss::Sampling::JUGGERNAUT,
+                        _ if juggernaut_turbo => moss::Sampling::JUGGERNAUT_TURBO,
+                        _ => moss::Sampling::REALISM,
+                    };
+                    p.generate_sampled(&ask, sampling.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                }
+                (Resident::Moss(p, _), _) if req.model == TEMPLATE_MOSS_RESTORE => {
+                    let mut sampling = moss::Sampling::OSTRIS_EDIT.with_env();
+                    if let Some(v) = req.params.get("denoise") {
+                        match v.as_f64() {
+                            Some(d) if d > 0.0 && d <= 1.0 => sampling = sampling.with_denoise(d as f32),
+                            _ => return Err(EngineError::new(ErrorKind::BadRequest, format!("denoise {v} is outside 0..1"))),
+                        }
+                    }
+                    p.generate_sampled(&ask, sampling, &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Moss(p, _), _) => p.generate_previewed(&ask, &mut report, shown, &stop).map(|p| vec![p]).map_err(err),
                 (Resident::H3(p), _) => p.generate(&ask, &mut report, &stop).map(|p| vec![p]).map_err(err),
@@ -1917,16 +2031,19 @@ impl Engine for DiffusionEngine {
     /// where holding both pushed a 16 GB Mac into gigabytes of swap. On a CUDA card under
     /// [`LEAN_BELOW`] it gives way only when the card has less than [`PERCEPTION_ROOM`] free
     /// (Krea 2 warmed at launch filled a 3090, and the first Select Subject ran out of memory
-    /// instead of making room, 2026-11-11). On a bigger card it stays.
+    /// instead of making room, 2026-11-11); on a bigger card under [`PERCEPTION_MIN_ROOM`]
+    /// (a 5090 beside 4–5 GB of desktop apps, Qwen-Image-2.1 resident: Windows paged the card and
+    /// SAM took 54–385 s a call instead of 0.2 s, 2026-11-16).
     fn yields(&self) -> bool {
         if cfg!(feature = "mlx") {
             return true;
         }
-        if !self.lean || matches!(self.resident, Resident::None) {
+        if matches!(self.resident, Resident::None) {
             return false;
         }
         self.give_back();
-        self.free_now().is_some_and(|free| free < PERCEPTION_ROOM)
+        let room = if self.lean { PERCEPTION_ROOM } else { PERCEPTION_MIN_ROOM };
+        self.free_now().is_some_and(|free| free < room)
     }
 
     fn index(&mut self, dir: &str) -> Value {
@@ -1946,9 +2063,12 @@ fn cuda_default_steps(template: &str) -> Option<u32> {
     match template {
         TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(MOSS_TURBO_STEPS),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_STEPS),
+        TEMPLATE_MOSS_RESTORE => Some(MOSS_RESTORE_STEPS),
         // The realism recipe's res_2s is CUDA only: MLX keeps its 50 Euler steps.
         TEMPLATE_MOSS => Some(MOSS_REALISM_STEPS),
         TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
+        TEMPLATE_MOSS_JUGGERNAUT => Some(MOSS_JUGGERNAUT_STEPS),
+        TEMPLATE_MOSS_JUGGERNAUT_TURBO => Some(MOSS_JUGGERNAUT_TURBO_STEPS),
         _ => None,
     }
 }
@@ -1999,9 +2119,9 @@ const GREY_LEVELS: u8 = 6;
 #[cfg(feature = "mlx")]
 fn cuda_default_guidance(template: &str) -> Option<f32> {
     match template {
-        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO => Some(1.0),
+        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO | TEMPLATE_MOSS_RESTORE | TEMPLATE_MOSS_JUGGERNAUT_TURBO => Some(1.0),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_GUIDANCE),
-        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE => Some(MOSS_GUIDANCE),
+        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE | TEMPLATE_MOSS_JUGGERNAUT => Some(MOSS_GUIDANCE),
         _ => None,
     }
 }
@@ -2124,6 +2244,10 @@ impl DiffusionEngine {
             TEMPLATE_MOSS_EDIT => Ok((sft()?, vec![edit()?], MOSS_EDIT_STEPS, MOSS_EDIT_GUIDANCE)),
             TEMPLATE_MOSS => Ok((sft()?, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
             TEMPLATE_MOSS_BASE if has(MossVariant::Base) => Ok((MossVariant::Base, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
+            TEMPLATE_MOSS_JUGGERNAUT if has(MossVariant::Juggernaut) => Ok((MossVariant::Juggernaut, Vec::new(), MOSS_JUGGERNAUT_STEPS, MOSS_GUIDANCE)),
+            TEMPLATE_MOSS_JUGGERNAUT_TURBO if has(MossVariant::JuggernautTurbo) => {
+                Ok((MossVariant::JuggernautTurbo, Vec::new(), MOSS_JUGGERNAUT_TURBO_STEPS, 1.0))
+            }
             t => Err(EngineError::new(ErrorKind::ModelMissing, format!("{t} is not served on MLX"))),
         }
     }
@@ -2153,9 +2277,12 @@ impl DiffusionEngine {
                 loras.push(gn_mlx::pipeline::LoraSpec { path, strength });
             }
         }
+        // Juggernaut MOSS V1 with its card's negative when none is typed, as on CUDA.
+        let negative =
+            if req.model == TEMPLATE_MOSS_JUGGERNAUT && req.negative.trim().is_empty() { moss::JUGGERNAUT_NEGATIVE.to_string() } else { req.negative.clone() };
         let ask = gn_mlx::pipeline::Request {
             prompt: req.prompt.clone(),
-            negative: req.negative.clone(),
+            negative,
             width,
             height,
             // The editor sends the template's CUDA defaults (MOSS Turbo's 8 steps, Edit Turbo's
@@ -2169,7 +2296,9 @@ impl DiffusionEngine {
         let Resident::Mlx(m) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no MLX pipeline")) };
         let stop = || cancel.load(Ordering::SeqCst);
         let mut step = |i: usize, n: usize| progress(0.3 + 0.65 * i as f32 / n.max(1) as f32, if i == 0 { "Loading the models" } else { "Sampling" });
-        let p = m.generate(variant, &loras, &ask, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
+        // Juggernaut MOSS Turbo samples with euler_ancestral (its card's), the rest with Euler.
+        let ancestral = req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO;
+        let p = m.generate_with(variant, &loras, &ask, ancestral, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
         let t = p.timings;
         eprintln!(
             "gn-diffusion: {} on MLX ({variant:?}, {} steps, CFG {}, {}x{}): encode {:.1} s, DiT load + references {:.1} s, steps {:.1} s, decode {:.1} s",
@@ -2386,6 +2515,8 @@ mod tests {
     fn moss_templates_find_their_files() -> anyhow::Result<()> {
         assert_eq!(task_of(TEMPLATE_MOSS), Some("image"));
         assert_eq!(family_of(TEMPLATE_MOSS_BASE), Some(Family::Moss(MossVariant::Base)));
+        assert_eq!(family_of(TEMPLATE_MOSS_JUGGERNAUT), Some(Family::Moss(MossVariant::Juggernaut)));
+        assert_eq!(family_of(TEMPLATE_MOSS_JUGGERNAUT_TURBO), Some(Family::Moss(MossVariant::JuggernautTurbo)));
         let root = std::env::temp_dir().join(format!("gn-moss-{}", std::process::id()));
         let mut e = DiffusionEngine::new(root.clone(), false);
         e.refused = None;
@@ -2436,6 +2567,8 @@ mod tests {
         assert_eq!(schedule_for(TEMPLATE_KREA2, &p(KREA_DETAIL_SCHEDULE)).unwrap(), Schedule::KreaDetail);
         assert_eq!(schedule_for(TEMPLATE_KREA2_EDIT, &p(KREA_DETAIL_SCHEDULE)).unwrap(), Schedule::KreaDetail);
         assert_eq!(schedule_for(TEMPLATE_OUTPAINT_TURBO, &none).unwrap(), Schedule::ViggleTurbo);
+        assert_eq!(schedule_for(TEMPLATE_EDIT, &p(VIGGLE_TURBO_SCHEDULE)).unwrap(), Schedule::ViggleTurbo);
+        assert!(schedule_for(TEMPLATE_KREA2, &p(VIGGLE_TURBO_SCHEDULE)).is_err());
         assert!(schedule_for(TEMPLATE_KREA2_FILL, &p(KREA_DETAIL_SCHEDULE)).is_err());
         assert!(schedule_for(TEMPLATE_KREA2, &p("karras")).is_err());
         assert_eq!(schedule_for(TEMPLATE_KREA2, &p("beta")).unwrap(), Schedule::KreaBeta);
@@ -2549,6 +2682,7 @@ mod tests {
     #[test]
     fn an_outpaint_runs_its_lora_first_once() {
         assert_eq!((task_of(TEMPLATE_OUTPAINT), family_of(TEMPLATE_OUTPAINT)), (Some("expand"), Some(Family::QwenImage21)));
+        assert_eq!((task_of(TEMPLATE_ANGLES21), family_of(TEMPLATE_ANGLES21)), (Some("edit"), Some(Family::QwenImage21)));
         let mut p = BTreeMap::new();
         p.insert("loras".to_string(), json!([{"file": "style.safetensors", "strength": 0.5}]));
         let out = with_lora_first(&p, QWEN21_OUTPAINT_LORA);
@@ -2666,7 +2800,7 @@ mod edit2511_tests {
     fn angles_setup_picks_the_lightning_and_strengths() {
         use qwen_image_rs::edit2511_files::ADAPTER_NAMES as A;
         let p = |v: Value| v.as_object().unwrap().clone().into_iter().collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(angles_setup(&p(json!({}))).unwrap(), (8, 1., vec![(A[3], 1.), (A[1], 0.75)]));
+        assert_eq!(angles_setup(&p(json!({}))).unwrap(), (8, 1., vec![(A[3], 1.), (A[1], 1.)]));
         assert_eq!(angles_setup(&p(json!({"lightning": 4}))).unwrap(), (4, 1., vec![(A[3], 1.), (A[0], 1.)]));
         assert_eq!(angles_setup(&p(json!({"lightning": 8, "angles_strength": 0.8, "lightning_strength": 1}))).unwrap(), (8, 1., vec![(A[3], 0.8), (A[1], 1.)]));
         assert_eq!(angles_setup(&p(json!({"lightning": 0}))).unwrap(), (40, 4., vec![(A[3], 1.)]));

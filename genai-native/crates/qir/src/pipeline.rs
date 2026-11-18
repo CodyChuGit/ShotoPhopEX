@@ -372,8 +372,16 @@ impl Default for ChatOptions {
 pub(crate) struct ChatRng(u64);
 
 impl ChatRng {
+    /// The state is a splitmix64 of the seed, never zero (xorshift's one dead state). Before
+    /// 2026-11-17 it was `seed ^ C | 1`, which threw the seed's lowest bit away (C is odd):
+    /// seeds 12 and 13 wrote the same rewrite word for word, and the engine's retry with the
+    /// next seed repeated a refused answer (Enhance round 6 on the 5090).
     pub(crate) fn new(seed: u64) -> Self {
-        Self(seed ^ 0x9E37_79B9_7F4A_7C15 | 1)
+        let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        Self(if z == 0 { 0x9E37_79B9_7F4A_7C15 } else { z })
     }
 
     /// Uniform in `[0, 1)`.
@@ -745,7 +753,8 @@ impl Pipeline {
             // Only a missing tensor is a text-only repack: a card out of memory while the head
             // went up read as one (RTX 3090, 2026-11-11, with the head on disk and quantized).
             anyhow::ensure!(vb.contains_tensor("lm_head.weight"), "the text encoder has no lm_head (a text-only repack?)");
-            let head = if matches!(self.dev, Device::Cuda(_)) {
+            let bf16_head = head_stays_bf16(std::env::var("QIR_HEAD_BF16").ok().as_deref());
+            let head = if matches!(self.dev, Device::Cuda(_)) && !bf16_head {
                 // Read on the CPU and quantized on every core ([`crate::q8`]): candle's own
                 // quantize of the CUDA copy ran on one thread, 10.2 s a load. The blocks are
                 // kept on disk for the next load ([`crate::q8::cached_q8_0`]).
@@ -805,7 +814,7 @@ impl Pipeline {
                 if cancel() {
                     return Err(Cancelled.into());
                 }
-                let logits: Tensor = self.with_head(|h| Ok(candle_core::Module::forward(&h.head, &last.apply(&h.norm)?)?))?;
+                let logits: Tensor = self.with_head(|h| Ok(crate::device::q_forward(&h.head, &last.apply(&h.norm)?)?))?;
                 let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
                 let next = sample(&logits, opts, &mut rng);
                 if next == IM_END || next == END_OF_TEXT {
@@ -1102,6 +1111,14 @@ impl Pipeline {
     }
 }
 
+/// Whether the chat's language-model head stays bf16 instead of Q8_0: only when
+/// `QIR_HEAD_BF16=1` (about 0.6 GB more). A diagnostic: the head's garbled answers on an RTX 5090
+/// came from candle's fast Q8_0 kernels, which [`crate::device::guard_quantized_kernels`] now
+/// keeps off cards they were not built for.
+pub(crate) fn head_stays_bf16(env: Option<&str>) -> bool {
+    env.is_some_and(|v| v.trim() == "1")
+}
+
 /// The text encoder: a pre-quantized GGUF when given (Q8_0, no bf16 transient), else the
 /// snapshot's bf16 shards, quantized on load when asked.
 pub fn load_text_encoder(model: &Path, dev: &Device, dtype: DType, quant_text: bool, text_gguf: Option<&Path>) -> Result<QwenTextEncoder> {
@@ -1141,6 +1158,13 @@ fn load_text_from(src: &Source, dev: &Device, dtype: DType, quant_text: bool, te
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chat_head_stays_bf16_only_when_asked() {
+        assert!(head_stays_bf16(Some(" 1 ")));
+        assert!(!head_stays_bf16(Some("0")));
+        assert!(!head_stays_bf16(None));
+    }
 
     #[test]
     fn picture_conditioning_reuses_only_encoder_inputs() {
@@ -1228,5 +1252,8 @@ mod tests {
             (0..20).map(|_| sample(&logits, &opts, &mut r)).collect::<Vec<_>>()
         };
         assert_eq!(draw(7), draw(7));
+        // Neighbouring seeds draw differently: an even seed and the next odd one were the same.
+        assert_ne!(draw(12), draw(13));
+        assert_ne!(ChatRng::new(12).0, ChatRng::new(13).0);
     }
 }

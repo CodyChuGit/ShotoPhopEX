@@ -10,13 +10,53 @@ pub fn best_device() -> Result<Device> {
     #[cfg(feature = "cuda")]
     {
         match Device::new_cuda(0) {
-            Ok(d) => return Ok(d),
+            Ok(d) => {
+                guard_quantized_kernels();
+                return Ok(d);
+            }
             Err(e) => {
                 tracing::warn!("CUDA requested but unavailable ({e}); falling back to CPU");
             }
         }
     }
     Ok(Device::Cpu)
+}
+
+/// Whether candle's fast quantized matmuls (MMVQ, MMQ) run on a card of `card_cap`. They are
+/// built into a static library as one architecture's machine code and no PTX
+/// (`-gencode=arch=compute_86,code=sm_86` in the sm_86 release), so they run only on cards of
+/// that major version at or above it: on an RTX 50 card the launches fail without an error and
+/// every Q8_0 matmul returns whatever was in memory (all of 0.1.1's and 0.1.2's Qwen3-VL answers
+/// were gibberish on an RTX 5090, 2026-11-16).
+pub fn quantized_fast_kernels_run(card_cap: u32, built: u32) -> bool {
+    card_cap / 10 == built / 10 && card_cap >= built
+}
+
+/// On a card [`quantized_fast_kernels_run`] rules out, send candle's quantized matmuls down
+/// its dequantize paths, whose kernels are PTX and compile for any newer card. Called once a
+/// CUDA device exists.
+pub fn guard_quantized_kernels() {
+    #[cfg(feature = "cuda")]
+    if let Some(g) = probe().ok().filter(|g| !quantized_fast_kernels_run(g.compute_cap, built_compute_cap())) {
+        if !QUANT_DEQUANTIZE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(card = g.compute_cap, built = built_compute_cap(), "quantized matmuls take the dequantize path (no fast kernels for this card)");
+        }
+        candle_core::quantized::cuda::set_force_dmmv(true);
+    }
+}
+
+/// Set by [`guard_quantized_kernels`]: candle's quantized matmuls run their dequantize paths.
+static QUANT_DEQUANTIZE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `q` applied to `x`, as `q.forward(x)`, except that on the dequantize path
+/// ([`guard_quantized_kernels`]) a quantized weight is given `x` as f32 (those kernels read
+/// nothing else) and the result comes back in `x`'s dtype.
+pub fn q_forward(q: &candle_core::quantized::QMatMul, x: &candle_core::Tensor) -> candle_core::Result<candle_core::Tensor> {
+    use candle_core::{DType, Module};
+    if matches!(q, candle_core::quantized::QMatMul::QTensor(_)) && x.dtype() != DType::F32 && QUANT_DEQUANTIZE.load(std::sync::atomic::Ordering::Relaxed) {
+        return q.forward(&x.to_dtype(DType::F32)?)?.to_dtype(x.dtype());
+    }
+    q.forward(x)
 }
 
 /// Make `device`'s CUDA context current on this thread. The worker serves each
@@ -32,6 +72,18 @@ pub fn bind_thread(device: &Device) {
         let _ = d.cuda_stream().context().bind_to_thread();
     }
     let _ = device;
+}
+
+/// The card's memory as the memory modes judge it (MOSS's 12 GB mode, Klein's 8 GB mode): the
+/// app's `PHOTOCRAFT_VRAM_MB` (megabytes) when set, the way the worker's lean mode reads it, else
+/// the driver's total. A card made smaller for a test (another process holding the rest of it)
+/// then picks the mode the smaller card would.
+pub fn card_total(device: &Device) -> Option<usize> {
+    card_total_from(std::env::var("PHOTOCRAFT_VRAM_MB").ok().as_deref(), free_vram(device).map(|(_, total)| total))
+}
+
+fn card_total_from(forced_mb: Option<&str>, total: Option<usize>) -> Option<usize> {
+    forced_mb.and_then(|v| v.trim().parse::<usize>().ok()).filter(|mb| *mb > 0).map(|mb| mb << 20).or(total)
 }
 
 /// `(free, total)` device memory in bytes (cuMemGetInfo) on CUDA; `None` on
@@ -324,6 +376,27 @@ pub fn label(device: &Device) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fast_quantized_kernels_run_only_within_the_built_major_version() {
+        assert!(quantized_fast_kernels_run(86, 86));
+        assert!(quantized_fast_kernels_run(89, 86));
+        assert!(!quantized_fast_kernels_run(120, 86));
+        assert!(!quantized_fast_kernels_run(75, 86));
+        assert!(quantized_fast_kernels_run(120, 120));
+        assert!(!quantized_fast_kernels_run(86, 89));
+    }
+
+    #[test]
+    fn the_app_s_memory_override_stands_in_for_the_card() {
+        const GIB: usize = 1 << 30;
+        assert_eq!(card_total_from(None, Some(24 * GIB)), Some(24 * GIB));
+        assert_eq!(card_total_from(Some("12288"), Some(24 * GIB)), Some(12 * GIB));
+        assert_eq!(card_total_from(Some(" 16384 "), None), Some(16 * GIB));
+        assert_eq!(card_total_from(Some("not a number"), Some(24 * GIB)), Some(24 * GIB));
+        assert_eq!(card_total_from(Some("0"), Some(24 * GIB)), Some(24 * GIB));
+        assert_eq!(card_total_from(None, None), None);
+    }
 
     #[test]
     fn a_card_loads_the_newest_cubin_of_its_own_major_else_the_newest_ptx() {

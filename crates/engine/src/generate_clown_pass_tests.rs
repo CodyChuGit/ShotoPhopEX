@@ -104,6 +104,12 @@ fn generative_remove_takes_the_selection_out_through_the_fill_model() {
     // The shown fill and its hidden variation (two seeds, as the Remove tool's Pick Best).
     assert_eq!(s.active().unwrap().doc.layers.len(), layers + 2);
     assert!(fake.state().runs.iter().any(|r| r.request["task"] != "segment" && r.request["task"] != "text"), "the fill ran");
+    // A seed repeats the removal: its variations run on it and the next one.
+    s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 12})).unwrap();
+    let r = s.execute("edit.generativeRemove", json!({"seed": 4242})).unwrap();
+    let mut seeds: Vec<u64> = r["seeds"].as_array().unwrap().iter().filter_map(|v| v.as_u64()).collect();
+    seeds.sort();
+    assert_eq!(seeds, vec![4242, 4243], "{r}");
     // Without the generative models set up it is greyed out.
     s.edit_prefs(|p| {
         p.integrations.models_path = String::new();

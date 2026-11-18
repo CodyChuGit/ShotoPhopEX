@@ -450,7 +450,7 @@ fn fetch_verified(
     for attempt in 0..2 {
         // A part already longer than the file can't be resumed.
         if std::fs::metadata(&part).is_ok_and(|m| m.len() > bytes) {
-            let _ = std::fs::remove_file(&part);
+            remove_part(&part)?;
         }
         curl(url, &part, bytes, token, ctx, progress)
             .map_err(|e| if gated && token.is_none() { format!("{e} (this model needs a Hugging Face sign-in: add a token)") } else { e })?;
@@ -459,7 +459,8 @@ fn fetch_verified(
         if ok {
             return std::fs::rename(&part, dest).map_err(|e| format!("couldn't move the download into place: {e}"));
         }
-        let _ = std::fs::remove_file(&part);
+        // A bad part left behind would be resumed by the next attempt and fail the check again.
+        remove_part(&part)?;
         if attempt == 1 {
             return Err(format!("the download didn't match its checksum twice (got {len} of {bytes} bytes)"));
         }
@@ -467,9 +468,24 @@ fn fetch_verified(
     Err("the download didn't match its checksum".into())
 }
 
+/// Delete a partial download that can't be resumed. A part that is already gone is fine.
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_part(part: &std::path::Path) -> std::result::Result<(), String> {
+    match std::fs::remove_file(part) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("couldn't delete the partial download {}: {e}", part.display())),
+        _ => Ok(()),
+    }
+}
+
+/// `CREATE_NO_WINDOW`: run a console tool without flashing a console window.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// The system's `curl` or `tar` by full path on Windows (System32, where Windows 10 and later
 /// ship both), so a `curl.exe` or `tar.exe` beside the executable (a portable zip unpacked into
-/// Downloads) or in a user-writable `PATH` entry is never the one run; the plain name elsewhere.
+/// Downloads) or in a user-writable `PATH` entry is never the one run. On macOS and Linux the
+/// system's own copy in `/usr/bin` (then `/bin`) for the same reason (curl is handed the Hugging
+/// Face token), and the plain name from `PATH` only where neither has one.
 #[cfg(not(target_arch = "wasm32"))]
 fn system_tool(name: &str) -> std::path::PathBuf {
     #[cfg(windows)]
@@ -479,7 +495,7 @@ fn system_tool(name: &str) -> std::path::PathBuf {
     }
     #[cfg(not(windows))]
     {
-        std::path::PathBuf::from(name)
+        ["/usr/bin", "/bin"].iter().map(|dir| std::path::Path::new(dir).join(name)).find(|p| p.is_file()).unwrap_or_else(|| std::path::PathBuf::from(name))
     }
 }
 
@@ -529,11 +545,16 @@ fn curl(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = cmd.spawn().map_err(|e| format!("couldn't run curl: {e}"))?;
     if let (Some(t), Some(mut stdin)) = (token, child.stdin.take()) {
-        let _ = writeln!(stdin, "Authorization: Bearer {t}");
+        // Without the header curl would run signed out and fail as if the model were gated.
+        if let Err(e) = writeln!(stdin, "Authorization: Bearer {t}") {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("couldn't pass the sign-in token to curl: {e}"));
+        }
     }
     loop {
         if ctx.cancelled() {
@@ -598,7 +619,7 @@ fn extract_libraries(zip: &std::path::Path, dir: &std::path::Path, libraries: &[
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let out = cmd.output().map_err(|e| format!("couldn't run tar: {e}"))?;
     if !out.status.success() {
@@ -840,13 +861,27 @@ mod tests {
     }
 
     #[test]
+    fn a_bad_part_is_deleted_and_a_missing_one_is_fine() {
+        let p = std::env::temp_dir().join(format!("pc-part-{}.part", std::process::id()));
+        std::fs::write(&p, b"half").unwrap();
+        remove_part(&p).unwrap();
+        assert!(!p.exists());
+        remove_part(&p).unwrap();
+    }
+
+    #[test]
     fn downloads_run_the_systems_own_curl_and_tar() {
         for name in ["curl", "tar"] {
             let p = system_tool(name);
             if cfg!(windows) {
                 assert!(p.is_absolute() && p.ends_with(format!("System32/{name}.exe")), "{}", p.display());
+            } else if p.is_absolute() {
+                assert!(p.starts_with("/usr/bin") || p.starts_with("/bin"), "{}", p.display());
+                assert!(p.ends_with(name) && p.is_file(), "{}", p.display());
             } else {
+                // Only where the system has no copy of its own.
                 assert_eq!(p, std::path::PathBuf::from(name));
+                assert!(!std::path::Path::new("/usr/bin").join(name).is_file());
             }
         }
     }

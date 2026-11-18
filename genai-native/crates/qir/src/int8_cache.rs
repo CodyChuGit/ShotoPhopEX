@@ -2,7 +2,7 @@
 //! model): the ConvRot INT8 linears a resident load converts from the fp8 file (with 2511's LoRAs
 //! merged first), saved once and read back as they are, so a later load skips the fp8 read, the
 //! LoRA materialize and the conversion. The entry is keyed by the checkpoint and every LoRA file
-//! (path, size, mtime, strength) and [`FORMAT`]. An entry is ~19 GB: one per model is kept
+//! (path, size, mtime, strength) and [`FORMAT`]. An entry is ~19 GB: two per model are kept
 //! ([`KEEP`]), all of them within [`MAX_GB`], and none is written that would leave the disk with
 //! less than [`MIN_FREE_GB`] free.
 
@@ -15,8 +15,11 @@ use crate::Result;
 
 /// Bumped when the cached tensors' meaning changes (the rotation, the quantizer, the names).
 pub const FORMAT: &str = "qir-layered-int8-v1";
-/// Entries kept per checkpoint, one per LoRA set (`QIR_INT8_CACHE_KEEP`).
-pub const KEEP: usize = 1;
+/// Entries kept per checkpoint, one per LoRA set (`QIR_INT8_CACHE_KEEP`). Two: Generative
+/// Remove's retry (the Remove LoRA) and Angles (its two LoRAs) each have a 2511 entry, and with
+/// one kept each evicted the other, about 100 s and a 19 GB write at every switch (2026-11-16).
+/// Two 2511 entries and Split's Layered one fit [`MAX_GB`].
+pub const KEEP: usize = 2;
 /// Total size of all entries in GiB; the least recently used go first (`QIR_INT8_CACHE_MAX_GB`).
 pub const MAX_GB: u64 = 60;
 /// Free space in GiB a write must leave on the disk (`QIR_INT8_CACHE_MIN_FREE_GB`).

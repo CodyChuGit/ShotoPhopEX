@@ -18,12 +18,12 @@ use crate::{EngineError, Result, Session};
 use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, DEFAULT_SAMPLER, DEFAULT_SCHEDULER, EDIT, EDIT_BAND_CHANGE, EDIT_BAND_MAX_SHARE, Edge, EnhanceKind,
     FAST_DRAFT_STEP_CACHE, FILL, GenerativeInfo, HIGHLIGHT_GROW, HIGHLIGHT_REMOVE_PROMPT, JobProgress, KLEIN_FILL_TEMPLATE, MAX_GROW, MAX_SEED, MAX_VARIATIONS,
-    NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate, dither_edge,
-    enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at, grey_outside,
-    grey_where, judge_pair, krea2_fill, named_object, naming_views, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num, opt_str,
-    outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter, request_size, request_size_within,
-    resize_gray8, resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there, template_or, tone_match_removal,
-    web_unavailable, write_rgba8,
+    NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate, dim_outside,
+    dither_edge, enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at,
+    grey_outside, grey_where, judge_pair, krea2_fill, named_object, naming_views, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num,
+    opt_str, outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter, request_size,
+    request_size_within, resize_gray8, resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there,
+    template_or, tone_match_removal, web_unavailable, write_rgba8,
 };
 
 pub(super) fn fill_enabled(s: &Session) -> std::result::Result<(), String> {
@@ -249,7 +249,9 @@ pub(super) fn name_selected(doc: &Document, job: &FillJob, area: Rect, coverage:
         let c = photocraft_compose::render(doc, r).to_rgba8();
         Rgba8::new(c.width, c.height, c.pixels).map_err(gen_err)
     };
-    let seen = side_by_side(&crop(wide_rect)?, &crop(close_rect)?)?;
+    let mut close = crop(close_rect)?;
+    dim_outside(&mut close, close_rect, coverage, area);
+    let seen = side_by_side(&crop(wide_rect)?, &close)?;
     let (rw, rh) = request_size(seen.width, seen.height);
     let seen = rgba8_at(seen, rw, rh)?;
     let place = place_in_words(hole, wide_rect);
@@ -325,7 +327,7 @@ pub(super) fn rewritten_fill_prompt(
     // Krea 2 AnyPaint: the whole finished picture described, the area seen as flat grey.
     if let (Some(mask), true) = (scene, command == FILL && refs.images.is_empty()) {
         let grey = grey_where(image, mask);
-        let words = format!("What the grey area shows: {}", prompt.trim());
+        let words = format!("{} {}", super::FILL_SCENE_LEAD, prompt.trim());
         return match enhance_prompt(thinker, EnhanceKind::FillScene, &words, Some(&grey), None, seed, &JobProgress::span(ctx, 0.02, 0.05)) {
             Ok(Some(p)) => p,
             Ok(None) | Err(_) => prompt,

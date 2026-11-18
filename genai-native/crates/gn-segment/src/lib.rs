@@ -5,6 +5,8 @@ pub mod attention;
 pub mod detector;
 mod detector_heads;
 pub mod geometry;
+pub mod greenkey;
+pub mod hiera;
 pub mod mask_decoder;
 pub mod ops;
 pub mod position;
@@ -20,3 +22,4 @@ pub mod vitmatte;
 pub mod profile;
 
 mod linear;
+mod store;

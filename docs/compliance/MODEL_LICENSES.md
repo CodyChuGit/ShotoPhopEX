@@ -89,6 +89,7 @@ request, never bundled**.
 |---|---|---|
 | TAESD / taew2_1 / taeqi2_1 preview decoders (`vae_approx/`) | MIT per madebyollin; taew2_1 repo not found on 2026-11-07 | Bring your own; UNRESOLVED (U-9, low) for the exact repo |
 | Qwen-Image-2.1 Restore LoRA (`qwen-image-2.1-restore`) | "qwen-research-license" (no text linked) | Same as U-5 |
+| CorridorKey v1.0 (`corridorkey/CorridorKey_v1.0.safetensors`; Corridor Digital, huggingface.co/nikopueringer/CorridorKey_v1.0) | CC BY-NC-SA 4.0 with Corridor Digital's additional terms (model card and the project's `pyproject.toml`) | **Bring your own; never downloaded or shipped by the app.** Non-commercial and share-alike: the user downloads the checkpoint from the authors' Hugging Face page for their own non-commercial use. Our engine (`gn-segment::greenkey`, template `greenkey/corridorkey-v1`, Layer > Matting > Key Green Screen (AI)…) is a clean-room implementation written from a description of the method, timm's Hiera (Apache-2.0) and the checkpoint's tensor names; it contains no CorridorKey code or weights. Building the weights into the app or a pack needs a written agreement with Corridor Digital |
 | Any user-supplied checkpoint or LoRA | User's responsibility | The app does not inspect licences of files it did not download |
 
 ### Planned Mac models (thread "Build the Mac MLX .dmg version"; not yet in the manifest)

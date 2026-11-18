@@ -127,7 +127,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 let order = front_first(&pending, Order::Auto, wu, hu);
                 let mut slots: Vec<Option<Subject>> = pending.into_iter().map(Some).collect();
                 let ordered: Vec<Subject> = order.into_iter().filter_map(|i| slots.get_mut(i).and_then(Option::take)).collect();
-                let cut: Vec<Vec<u8>> = ordered.iter().map(|s| under_alpha(&picture, &s.cov)).collect();
+                let cut: Vec<Vec<u8>> = ordered.iter().map(|s| under_alpha(&picture, &s.cov, wu)).collect();
                 let (ids, placed, incomplete, refused_ids) =
                     place_all(doc, active, area, base.as_deref(), &found_by, &template_id, 0, &ordered, cut, picture, &[], Vec::new())?;
                 let detector = finder.detector_stats();
@@ -218,7 +218,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                 let hole = group_hole(&group, &over_budget.iter().map(|q| &q.sub).collect::<Vec<_>>());
                 // The layers: the picture now (every nearer subject gone) under each one's alpha,
                 // less what its parts above it show; the parts on top, the smallest highest.
-                let mut cuts = cut_group(&p, &group, &parents);
+                let mut cuts = cut_group(&p, &group, &parents, wu);
                 let whole_at = done + group.len() - 1;
                 for k in (1..group.len()).rev() {
                     part_layers.push((done + group.len() - 1 - k, done + group.len() - 1 - parents.get(k).copied().unwrap_or(0)));
@@ -289,7 +289,7 @@ pub(in crate::generate_cmds) fn run(s: &mut Session, plan: SubjectsPlan) -> Resu
                             if let Some(record) = lost.get_mut(first + k) {
                                 record["layered"] = json!(true);
                             }
-                            cut.push(under_alpha(source, &g.alpha));
+                            cut.push(under_alpha(source, &g.alpha, wu));
                             taken.push(g);
                         }
                     }
@@ -579,7 +579,7 @@ fn group_hole(group: &[Subject], unmatted: &[&Subject]) -> Vec<f32> {
 /// direct parts (`parents[k]`: the group index of part k's direct whole) show over it, so the
 /// stack composites as the whole did: a layer of alpha a under parts showing u keeps
 /// (a − u) / (1 − u).
-fn cut_group(picture: &[u8], group: &[Subject], parents: &[usize]) -> Vec<Vec<u8>> {
+fn cut_group(picture: &[u8], group: &[Subject], parents: &[usize], w: usize) -> Vec<Vec<u8>> {
     group
         .iter()
         .enumerate()
@@ -595,7 +595,7 @@ fn cut_group(picture: &[u8], group: &[Subject], parents: &[usize]) -> Vec<Vec<u8
             }
             let alpha: Vec<f32> =
                 s.alpha.iter().zip(&through).map(|(a, q)| if *q <= 1e-4 { 0.0 } else { ((a.clamp(0.0, 1.0) - (1.0 - q)) / q).clamp(0.0, 1.0) }).collect();
-            under_alpha(picture, &alpha)
+            under_alpha(picture, &alpha, w)
         })
         .collect()
 }
@@ -868,7 +868,7 @@ mod tests {
         }
         whole.alpha[100 * 200 + 20] = 0.4;
         let picture: Vec<u8> = (0..200 * 200).flat_map(|k| [(k % 251) as u8, 90, 200, 255]).collect();
-        let cuts = cut_group(&picture, &[whole, part], &[0, 0]);
+        let cuts = cut_group(&picture, &[whole, part], &[0, 0], 200);
         let a = |c: &Vec<u8>, x: usize, y: usize| f32::from(c[(y * 200 + x) * 4 + 3]) / 255.0;
         assert_eq!(a(&cuts[0], 80, 80), 0.0, "a gap in the whole where the part is");
         assert_eq!(a(&cuts[1], 80, 80), 1.0, "the part whole on its layer");
@@ -879,6 +879,22 @@ mod tests {
         let (pa, wa) = (a(&cuts[1], 60, 80), a(&cuts[0], 60, 80));
         assert!((pa + wa * (1.0 - pa) - 1.0).abs() < 0.01, "part {pa} over whole {wa}");
         assert_eq!(cuts[0][(80 * 200 + 150) * 4], picture[(80 * 200 + 150) * 4], "the picture's own pixels");
+    }
+
+    #[test]
+    fn a_cut_layers_soft_edge_takes_the_subjects_colour_not_the_backdrops() {
+        // A red subject fading into a blue backdrop over x = 10..30: the picture mixes them.
+        let (w, h) = (40usize, 12usize);
+        let alpha: Vec<f32> = (0..w * h).map(|k| (1.0 - ((k % w) as f32 - 10.0) / 20.0).clamp(0.0, 1.0)).collect();
+        let lin = |v: f32| photocraft_color::convert::linear_to_srgb(v);
+        let picture: Vec<u8> =
+            alpha.iter().flat_map(|a| [lin(0.8 * a), 0.0, lin(0.7 * (1.0 - a))].map(|v| (v * 255.0).round() as u8).into_iter().chain([255])).collect();
+        let cut = under_alpha(&picture, &alpha, w);
+        let k = 6 * w + 25; // a quarter covered
+        assert!(picture[k * 4 + 2] > 150 && cut[k * 4 + 2] < 60, "{:?} → {:?}", &picture[k * 4..k * 4 + 4], &cut[k * 4..k * 4 + 4]);
+        assert!(cut[k * 4] > 200, "{:?}", &cut[k * 4..k * 4 + 4]);
+        assert_eq!(cut[k * 4 + 3], (255.0 * alpha[k]).round() as u8);
+        assert_eq!(cut[(6 * w + 2) * 4..(6 * w + 2) * 4 + 4], picture[(6 * w + 2) * 4..(6 * w + 2) * 4 + 4], "solid pixels as they were");
     }
 
     #[test]

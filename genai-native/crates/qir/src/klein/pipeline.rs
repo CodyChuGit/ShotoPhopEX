@@ -36,8 +36,10 @@ const FILL_REFERENCE_SHARE: f32 = 0.5;
 /// Each further reference at most this many pixels.
 const REFERENCE_PIXELS: usize = 1024 * 1024;
 /// Cards with less memory than this run in 8 GB mode (the int8 DiT 5.8 GB and the fp8 encoder
-/// about 4.5 GB do not fit together with room for the activations).
-pub const LOW_VRAM_BELOW: usize = 15 << 30;
+/// about 4.5 GB do not fit together with room for the activations). 16 GB cards included: a 3090
+/// held to 15 GiB spilled 3.5 GB into system memory on two of three edits with both resident
+/// (tier bench, 2026-11-17).
+pub const LOW_VRAM_BELOW: usize = 17 << 30;
 /// The hidden states the DiT reads (after this many layers), stacked into 20480-wide tokens.
 const TAPS: [usize; 8] = [4, 8, 12, 16, 20, 24, 28, 32];
 const PAD_MULTIPLE: usize = 80;
@@ -200,7 +202,7 @@ impl KleinPipeline {
             if cancel() {
                 return Err(Cancelled.into());
             }
-            let logits = candle_core::Module::forward(&head.head, &last.apply(&head.norm)?)?;
+            let logits = crate::device::q_forward(&head.head, &last.apply(&head.norm)?)?;
             let logits = logits.squeeze(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
             let next = sample(&logits, opts, &mut rng);
             if next == IM_END || next == END_OF_TEXT {
@@ -520,12 +522,12 @@ fn mask_tokens(m: &RefImage, lw: usize, lh: usize, dev: &Device) -> Result<Tenso
     Ok(Tensor::from_vec(v, (lh * lw, 1), dev)?)
 }
 
-/// 8 GB mode on a card under [`LOW_VRAM_BELOW`], or as `QIR_KLEIN_LOW_VRAM=1` / `0` says.
+/// 8 GB mode on a card under [`LOW_VRAM_BELOW`] (by [`crate::device::card_total`]), or as `QIR_KLEIN_LOW_VRAM=1` / `0` says.
 fn low_vram_mode(dev: &Device) -> bool {
     match std::env::var("QIR_KLEIN_LOW_VRAM").ok().as_deref().map(str::trim) {
         Some("1") => true,
         Some("0") => false,
-        _ => crate::device::free_vram(dev).is_some_and(|(_, total)| total < LOW_VRAM_BELOW),
+        _ => crate::device::card_total(dev).is_some_and(|total| total < LOW_VRAM_BELOW),
     }
 }
 
