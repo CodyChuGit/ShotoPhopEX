@@ -1190,10 +1190,6 @@ pub struct Integrations {
     /// profile's ([`crate::memory_profile::image_template`]): Krea 2 on a 24 GB card or larger,
     /// MOSS turbo on a smaller one.
     pub default_image_template: String,
-    /// The image template Quality Fast runs when the call names none and its files are
-    /// installed, ahead of [`Self::default_image_template`] (empty = the same as the other
-    /// qualities). Set per machine, e.g. `moss-image/juggernaut-turbo`.
-    pub fast_image_template: String,
     /// The memory profile the AI defaults are matched to: `auto` (the one detected at launch,
     /// [`Self::detected_memory_profile`]) or one of [`crate::memory_profile::PREF_NAMES`]. It
     /// only changes what Auto picks; see [`crate::memory_profile`].
@@ -1275,7 +1271,6 @@ impl Default for Integrations {
             default_generate_model: String::new(),
             default_fill_template: "auto".into(),
             default_image_template: "auto".into(),
-            fast_image_template: String::new(),
             memory_profile: "auto".into(),
             detected_memory_profile: String::new(),
             // A Mac's GPU (MLX) is several times slower than the cards the Windows build runs on.
