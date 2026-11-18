@@ -32,12 +32,21 @@ pub fn quantized_fast_kernels_run(card_cap: u32, built: u32) -> bool {
     card_cap / 10 == built / 10 && card_cap >= built
 }
 
-/// On a card [`quantized_fast_kernels_run`] rules out, send candle's quantized matmuls down
+/// [`quantized_fast_kernels_run`] for a build whose candle kernels also carry a cubin for each
+/// of `archs` ([`kernel_archs`]: the release's `QIR_CUDA_ARCHS`, which the vendored
+/// candle-kernels build compiles them for too, 2026-11-17): a card runs them when one of those
+/// is of its major version at or below it. Without `QIR_CUDA_ARCHS` the list is the build's
+/// own architecture alone, so nothing changes. The PTX the release adds is not counted.
+pub fn quantized_fast_kernels_on(card_cap: u32, built: u32, archs: &[u32]) -> bool {
+    quantized_fast_kernels_run(card_cap, built) || archs.iter().any(|&a| a / 10 == card_cap / 10 && a <= card_cap)
+}
+
+/// On a card [`quantized_fast_kernels_on`] rules out, send candle's quantized matmuls down
 /// its dequantize paths, whose kernels are PTX and compile for any newer card. Called once a
 /// CUDA device exists.
 pub fn guard_quantized_kernels() {
     #[cfg(feature = "cuda")]
-    if let Some(g) = probe().ok().filter(|g| !quantized_fast_kernels_run(g.compute_cap, built_compute_cap())) {
+    if let Some(g) = probe().ok().filter(|g| !quantized_fast_kernels_on(g.compute_cap, built_compute_cap(), &kernel_archs())) {
         if !QUANT_DEQUANTIZE.swap(true, std::sync::atomic::Ordering::Relaxed) {
             tracing::warn!(card = g.compute_cap, built = built_compute_cap(), "quantized matmuls take the dequantize path (no fast kernels for this card)");
         }
@@ -385,6 +394,22 @@ mod tests {
         assert!(!quantized_fast_kernels_run(75, 86));
         assert!(quantized_fast_kernels_run(120, 120));
         assert!(!quantized_fast_kernels_run(86, 89));
+    }
+
+    #[test]
+    fn the_release_s_extra_architectures_count_for_the_fast_kernels() {
+        // The sm_86 release with 86,89,120 cubins: RTX 30, 40 and 50 all run them.
+        let release = [86, 89, 120];
+        assert!(quantized_fast_kernels_on(86, 86, &release));
+        assert!(quantized_fast_kernels_on(89, 86, &release));
+        assert!(quantized_fast_kernels_on(120, 86, &release));
+        assert!(quantized_fast_kernels_on(121, 86, &release));
+        // Older than every cubin, or a major with none: the dequantize path.
+        assert!(!quantized_fast_kernels_on(75, 86, &release));
+        assert!(!quantized_fast_kernels_on(100, 86, &release));
+        // A build for its own card only: as before.
+        assert!(!quantized_fast_kernels_on(120, 86, &[86]));
+        assert!(quantized_fast_kernels_on(120, 120, &[120]));
     }
 
     #[test]
