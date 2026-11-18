@@ -15,6 +15,8 @@ use super::dit::{self, MossConfig, MossDit};
 use super::text::{self, Qwen35Text, TextConfig};
 use super::vae::{self, Flux2Decoder, Flux2Encoder};
 use super::weights::{QLinear, Weights};
+use crate::model::text_encoder::mrope_positions;
+use crate::model::vision::{self as vit, VisionConfig, VisionTower};
 use crate::pipeline::{Cancelled, Picture, RefImage, Request, Timings};
 use crate::preview::StepPreview;
 use crate::Result;
@@ -56,17 +58,42 @@ pub struct Sampling {
     /// `res_2s`'s ancestral noise, RES4LYF's `eta` in its "hard" mode (0 = the plain ODE,
     /// `res_2s_ode`; the `res_2s` that KSamplerSelect lists runs 0.5 on steps and substeps).
     pub eta: f64,
+    /// An edit in ai-toolkit's MOSS edit layout (ostris' ComfyUI-MOSS-Image-Ostris-Edit, the
+    /// one its edit LoRAs train on): each prompt opens with `Picture N: ` per reference, the
+    /// references sit at the prompt's text index of the RoPE, encoded at the output's size.
+    /// MOSS Edit's own layout (text index 0, long edge [`REFERENCE_EDGE`]) otherwise.
+    pub ostris_refs: bool,
+    /// How much of an [`Self::ostris_refs`] edit is redrawn: 1 starts from noise (the author's
+    /// empty latent), less starts from the picture's own latent noised that far (ComfyUI's
+    /// KSampler `denoise`).
+    pub denoise: f32,
+    /// An [`Self::ostris_refs`] edit takes the picture's colours back (the wavelet colour fix).
+    pub color_fix: bool,
 }
 
 impl Sampling {
     /// The official pipeline: Euler on the shift-5 schedule, block 22 skipped in the negative.
-    pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true, eta: 0.0 };
+    pub const OFFICIAL: Self = Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: true, eta: 0.0, ostris_refs: false, denoise: 1.0, color_fix: false };
     /// The app's MOSS-Image text to image, after RaymondLuxuryYacht's MOSS realism workflow
     /// (Civitai 3035895, 2026-11-04): RES4LYF's `res_2s` (ancestral, eta 0.5), 20 steps, plain CFG
     /// 3 (no skipped block) with a real negative ([`REALISM_NEGATIVE`]). The workflow's schedule
     /// is linear σ (shift 1); in the app (2026-11-11, three prompts) that came out dark and
     /// muddy with broken signs, so the official shift 5 stays. About 30 % faster than 50 Euler steps.
-    pub const REALISM: Self = Self { shift: SHIFT, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5 };
+    pub const REALISM: Self = Self { shift: SHIFT, sampler: Sampler::Res2s, skip_uncond: false, eta: 0.5, ostris_refs: false, denoise: 1.0, color_fix: false };
+    /// An ai-toolkit edit LoRA's run (NO8D's MOSS HighQuality restore, Civitai 2436859): Euler, no
+    /// skipped block, references in ostris' layout, as its author's graph; then, from the in-app
+    /// rounds of 2026-11-17 (three photos against the shipped Upscale), 45 % redrawn from the
+    /// picture's latent (from noise, 1.0, rewrites text and faces; 0.45 is the best cleanup,
+    /// 0.3 keeps faces) and the wavelet colour fix (brightness and colour back to the picture's,
+    /// ΔE down a third to a half, detail and edges unchanged).
+    pub const OSTRIS_EDIT: Self =
+        Self { shift: SHIFT, sampler: Sampler::Euler, skip_uncond: false, eta: 0.0, ostris_refs: true, denoise: 0.45, color_fix: true };
+
+    /// `self` redrawing `denoise` (0..1] of an edit.
+    pub fn with_denoise(mut self, denoise: f32) -> Self {
+        self.denoise = denoise.clamp(0.01, 1.0);
+        self
+    }
 
     /// `self` with the A/B hooks applied: `QIR_MOSS_SHIFT`, `QIR_MOSS_SAMPLER` (`euler` /
     /// `res_2s`), `QIR_MOSS_SKIP` (`0` / `1`), `QIR_MOSS_ETA` (`res_2s`'s noise, 0..1).
@@ -89,6 +116,14 @@ impl Sampling {
         }
         if let Some(e) = var("QIR_MOSS_ETA").and_then(|v| v.parse::<f64>().ok()).filter(|e| (0.0..=1.0).contains(e)) {
             self.eta = e;
+        }
+        if let Some(d) = var("QIR_MOSS_DENOISE").and_then(|v| v.parse::<f32>().ok()).filter(|d| *d > 0.0 && *d <= 1.0) {
+            self.denoise = d;
+        }
+        match var("QIR_MOSS_COLORFIX").as_deref() {
+            Some("wavelet" | "1") => self.color_fix = true,
+            Some("none" | "0") => self.color_fix = false,
+            _ => {}
         }
         match var("QIR_MOSS_SKIP").as_deref() {
             Some("0") => self.skip_uncond = false,
@@ -180,6 +215,9 @@ pub struct MossPipeline {
     negative: Mutex<Option<Cached>>,
     /// The language-model head, loaded on a first chat ([`Self::chat`]).
     head: Mutex<Option<Arc<QLinear>>>,
+    /// The encoder file's Qwen3.5 vision tower (f32), loaded on a first prompt with pictures in
+    /// view ([`Sampling::ostris_refs`]).
+    vision: Mutex<Option<Arc<VisionTower>>>,
 }
 
 impl MossPipeline {
@@ -223,6 +261,7 @@ impl MossPipeline {
             positive: Mutex::new(None),
             negative: Mutex::new(None),
             head: Mutex::new(None),
+            vision: Mutex::new(None),
         })
     }
 
@@ -317,6 +356,66 @@ impl MossPipeline {
         Ok(h)
     }
 
+    /// The vision tower of the encoder file (`model.visual.*`, Qwen3.5-9B's: Qwen3-VL's ViT
+    /// without DeepStack), on the card from the first prompt with pictures on.
+    fn vision(&self) -> Result<Arc<VisionTower>> {
+        let mut slot = self.vision.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = slot.as_ref() {
+            return Ok(Arc::clone(v));
+        }
+        let t0 = Instant::now();
+        let vb = candle_nn::VarBuilder::from_tensors(visual_tensors(&self.files.text, &self.dev)?, DType::F32, &self.dev);
+        let cfg = VisionConfig { deepstack_visual_indexes: Vec::new(), ..VisionConfig::default() };
+        let v = Arc::new(VisionTower::load(&cfg, vb.pp("model").pp("visual")).context("the encoder file's Qwen3.5 vision tower (model.visual.*)")?);
+        tracing::info!(load_s = t0.elapsed().as_secs_f32(), "MOSS vision tower loaded");
+        *slot = Some(Arc::clone(&v));
+        Ok(v)
+    }
+
+    /// The encoder's last hidden state `(rows, 4096)` for `prompt` with `pictures` in view, as
+    /// ostris' `TextEncodeMOSSImageOstrisEdit` encodes it (the layout ai-toolkit's MOSS edit
+    /// LoRAs train on): `Picture N: <|vision_start|><|image_pad|><|vision_end|>` per picture
+    /// ahead of the prompt in MOSS's template, each picture downscaled (area, never enlarged)
+    /// to fit 384² pixels, then to the ViT's 32-pixel grid (bilinear), its merged rows in
+    /// place of `<|image_pad|>` at multimodal RoPE positions.
+    pub fn encode_with_pictures(&self, prompt: &str, pictures: &[RefImage]) -> Result<Tensor> {
+        let labels: String = (1..=pictures.len()).map(|i| format!("Picture {i}: <|vision_start|><|image_pad|><|vision_end|>")).collect();
+        let ids = self.tokens(format!("{labels}{prompt}").trim())?;
+        let pad = self.tok.token_to_id("<|image_pad|>").context("the tokenizer has no <|image_pad|>")?;
+        let tower = self.vision()?;
+        let feats = pictures
+            .iter()
+            .map(|r| {
+                let (patches, gh, gw) = vit_patches(r, tower.config(), &self.dev)?;
+                tower.forward_editplus(&patches, gh, gw)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let te = self.text_encoder()?;
+        let text = te.embed_ids(&ids)?;
+        let at: Vec<usize> = ids.iter().enumerate().filter(|(_, t)| **t == pad).map(|(i, _)| i).collect();
+        anyhow::ensure!(at.len() == feats.len(), "{} <|image_pad|> tokens for {} pictures", at.len(), feats.len());
+        let mut parts = Vec::new();
+        let mut spans = Vec::new();
+        let (mut cursor, mut len) = (0usize, 0usize);
+        for (&p, f) in at.iter().zip(&feats) {
+            if p > cursor {
+                parts.push(text.narrow(0, cursor, p - cursor)?);
+                len += p - cursor;
+            }
+            spans.push((len, f.tokens()));
+            parts.push(f.merged.to_dtype(text.dtype())?);
+            len += f.tokens();
+            cursor = p + 1;
+        }
+        if cursor < ids.len() {
+            parts.push(text.narrow(0, cursor, ids.len() - cursor)?);
+            len += ids.len() - cursor;
+        }
+        let grids: Vec<(usize, usize)> = feats.iter().map(|f| (f.rows, f.cols)).collect();
+        let pos = mrope_positions(&spans, &grids, len);
+        te.forward_rows(Tensor::cat(&parts, 0)?, &pos)
+    }
+
     /// The encoder's last hidden state `(tokens, 4096)` for `prompt`.
     pub fn encode(&self, prompt: &str) -> Result<Tensor> {
         self.text_encoder()?.forward(&self.tokens(prompt)?)
@@ -345,19 +444,19 @@ impl MossPipeline {
         self.encoder.is_some()
     }
 
-    /// A reference as MOSS Edit takes it: its long edge at most `edge` (Lanczos, never enlarged,
-    /// each side rounded to 16 independently, as the official `resize_image`), encoded.
-    pub fn reference_latent(&self, r: &RefImage, edge: usize) -> Result<Tensor> {
-        let (w, h) = reference_size(r.width, r.height, edge);
-        self.reference_latent_at(r, w, h)
-    }
-
-    /// A reference encoded at exactly `w`×`h` (Lanczos).
-    fn reference_latent_at(&self, r: &RefImage, w: usize, h: usize) -> Result<Tensor> {
+    /// A reference resized (Lanczos) to `w × h` (multiples of 16) and encoded.
+    pub fn reference_latent_sized(&self, r: &RefImage, w: usize, h: usize) -> Result<Tensor> {
         let enc = self.encoder.as_ref().context("the VAE file has no FLUX.2 encoder (Comfy-Org's flux2-vae_small has one)")?;
         let img = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.rgba.clone()).context("a reference's pixels do not match its size")?;
         let img = if (w, h) == (r.width, r.height) { img } else { image::imageops::resize(&img, w as u32, h as u32, image::imageops::FilterType::Lanczos3) };
         enc.encode(&vae::from_rgba_u8(img.as_raw(), w, h, &self.dev)?)
+    }
+
+    /// A reference as MOSS Edit takes it: its long edge at most `edge` (Lanczos, never enlarged,
+    /// each side rounded to 16 independently, as the official `resize_image`), encoded.
+    pub fn reference_latent(&self, r: &RefImage, edge: usize) -> Result<Tensor> {
+        let (w, h) = reference_size(r.width, r.height, edge);
+        self.reference_latent_sized(r, w, h)
     }
 
     /// Make one picture; `progress` hears every step, `cancel` is read between steps.
@@ -409,9 +508,29 @@ impl MossPipeline {
         check()?;
         progress(0.02, "Encoding the prompt");
         let t0 = Instant::now();
-        let cond = self.cached(&self.positive, &req.prompt)?;
+        // ai-toolkit's edit layout names each reference ahead of the prompt.
+        let ostris = sampling.ostris_refs && !req.references.is_empty();
+        let named = |p: &str| -> String {
+            if ostris {
+                let mut s: String = (1..=req.references.len()).map(|i| format!("Picture {i}: ")).collect();
+                s.push_str(p);
+                s
+            } else {
+                p.to_string()
+            }
+        };
+        // ... and lets the encoder see them (`QIR_MOSS_VISION=0`: the names alone).
+        let vision = ostris && std::env::var("QIR_MOSS_VISION").map(|v| v.trim() != "0").unwrap_or(true);
+        let encode = |slot: &Mutex<Option<Cached>>, p: &str| -> Result<Tensor> {
+            if vision {
+                self.encode_with_pictures(p, &req.references)
+            } else {
+                self.cached(slot, &named(p))
+            }
+        };
+        let cond = encode(&self.positive, &req.prompt)?;
         let cfg = req.guidance != 1.0;
-        let uncond = if cfg { Some(self.cached(&self.negative, &req.negative)?) } else { None };
+        let uncond = if cfg { Some(encode(&self.negative, &req.negative)?) } else { None };
         // The prompts are in hand: the DiT (back on the card in 12 GB mode) and its adapters.
         let dit = self.transformer()?;
         let unmatched = dit.set_loras(&req.loras)?;
@@ -419,6 +538,9 @@ impl MossPipeline {
             tracing::warn!(modules = unmatched.len(), first = %unmatched[0], "LoRA modules MOSS-Image does not have (a file for another model?)");
         }
         // MOSS Edit: the pictures encoded and run through the blocks once.
+        // A restore from the picture's own latent, noised to `Sampling::denoise` (1 = the
+        // author's empty latent), so less of the picture is redrawn.
+        let mut start: Option<Tensor> = None;
         let refs = if req.references.is_empty() {
             None
         } else {
@@ -426,22 +548,31 @@ impl MossPipeline {
             // 12 GB mode: references at 512 (the edit workflow's), their cache a quarter the size.
             let default_edge = if self.low_vram { LOW_VRAM_REFERENCE_EDGE } else { REFERENCE_EDGE };
             let edge = std::env::var("QIR_MOSS_REF_EDGE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default_edge);
-            // The picture being edited (the first reference, the output's aspect) is encoded at
-            // the output's size: the reference tokens sit at the same grid positions as the
-            // output's, so a picture encoded smaller (768×1024 for an 864×1152 edit) came back as
-            // a smaller copy in the top-left of the frame, a second head above the first once
-            // laid over the original (Enhance round 5 on the 5090, 2026-11-17). Square pictures
-            // at 1024 were already the same size and were fine.
-            let latents = req
-                .references
-                .iter()
-                .enumerate()
-                .map(|(i, r)| match same_grid_size(i, r.width, r.height, w, h, edge) {
-                    true => self.reference_latent_at(r, w, h),
-                    false => self.reference_latent(r, edge),
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Some(dit.prepare_references(&latents)?)
+            if ostris {
+                // At the output's size (the author's FluxKontextImageScale, about 1 MP), at the
+                // prompt's text index. One cache serves both prompts (a guided run with prompts
+                // of different lengths puts the negative's references at the prompt's index).
+                let latents = req.references.iter().map(|r| self.reference_latent_sized(r, w, h)).collect::<Result<Vec<_>>>()?;
+                start = latents.first().cloned();
+                Some(dit.prepare_references_at(&latents, cond.dim(0)?)?)
+            } else {
+                // The picture being edited (the first reference, the output's aspect) is encoded at
+                // the output's size: the reference tokens sit at the same grid positions as the
+                // output's, so a picture encoded smaller (768×1024 for an 864×1152 edit) came back as
+                // a smaller copy in the top-left of the frame, a second head above the first once
+                // laid over the original (Enhance round 5 on the 5090, 2026-11-17). Square pictures
+                // at 1024 were already the same size and were fine.
+                let latents = req
+                    .references
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| match same_grid_size(i, r.width, r.height, w, h, edge) {
+                        true => self.reference_latent_sized(r, w, h),
+                        false => self.reference_latent(r, edge),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Some(dit.prepare_references(&latents)?)
+            }
         };
         // The edit's negative branch skips no block (the official edit sampler), unless
         // `QIR_MOSS_EDIT_SKIP` names one (the author's ComfyUI workflow skips 22).
@@ -459,7 +590,19 @@ impl MossPipeline {
         let channels = dit.config().channels;
         let noise = crate::comfy::torch_randn(req.seed, channels * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, channels, lh, lw), &self.dev)?;
-        let sig = dit::sigmas(req.steps, sampling.shift);
+        let denoise = Some(sampling.denoise).filter(|d| ostris && *d < 1.0);
+        let sig = match (denoise, &start) {
+            // ComfyUI's KSampler `denoise`: the last `steps` of a `steps / denoise` schedule,
+            // the latent noised to its first σ.
+            (Some(d), Some(init)) => {
+                let full = dit::sigmas(((req.steps as f32) / d).round().max(req.steps as f32) as usize, sampling.shift);
+                let sig = full[full.len().saturating_sub(req.steps + 1)..].to_vec();
+                let s0 = f64::from(sig[0]);
+                x = ((init.to_dtype(x.dtype())? * (1.0 - s0))? + (x * s0)?)?;
+                sig
+            }
+            _ => dit::sigmas(req.steps, sampling.shift),
+        };
         let n = sig.len() - 1;
         tracing::info!(shift = sampling.shift, sampler = ?sampling.sampler, eta = sampling.eta, skip = ?skip, steps = n, guidance = req.guidance, "MOSS sampling");
         // The guided velocity at σ (the DiT's timestep is σ·1000).
@@ -542,7 +685,16 @@ impl MossPipeline {
         let img = self.vae.decode(&x)?;
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
-        let (pw, ph, rgba) = vae::to_rgba_u8(&img)?;
+        let (pw, ph, mut rgba) = vae::to_rgba_u8(&img)?;
+        // A restore's colours from the picture itself (`Sampling::color_fix`): the
+        // author's wavelet colour match, the output's detail on the picture's low frequencies.
+        if ostris && sampling.color_fix {
+            if let Some(r) = req.references.first() {
+                let src = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.rgba.clone()).context("a reference's pixels do not match its size")?;
+                let src = image::imageops::resize(&src, pw as u32, ph as u32, image::imageops::FilterType::Lanczos3);
+                wavelet_color_match(&mut rgba, src.as_raw(), pw, ph);
+            }
+        }
         tracing::info!(
             encode_s = timings.encode_s,
             denoise_s = timings.denoise_s,
@@ -775,5 +927,211 @@ mod tests {
             assert!(((a.alpha * a.down).powi(2) + a.up * a.up - next * next).abs() < 1e-9);
             assert!(a.down <= next + 1e-12);
         }
+    }
+}
+
+/// The encoder file's `model.visual.*` tensors in f32 on `dev`: plain ones converted, ComfyUI's
+/// INT8 ConvRot linears (`int8_tensorwise` rows with a per-row `weight_scale`, `convrot` in
+/// groups of `convrot_groupsize` input features, 64 in Comfy-Org's file) dequantized and
+/// rotated back, as comfy-kitchen's `dequantize_int8_convrot_weight` does.
+fn visual_tensors(path: &Path, dev: &Device) -> Result<std::collections::HashMap<String, Tensor>> {
+    use safetensors::{Dtype, SafeTensors};
+    let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let map = unsafe { memmap2::Mmap::map(&file)? };
+    let st = SafeTensors::deserialize(&map)?;
+    let as_f32 = |name: &str| -> Result<Vec<f32>> {
+        let t = st.tensor(name)?;
+        let b = t.data();
+        Ok(match t.dtype() {
+            Dtype::F32 => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+            Dtype::BF16 => b.chunks_exact(2).map(|c| f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16)).collect(),
+            Dtype::F16 => b.chunks_exact(2).map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32()).collect(),
+            other => anyhow::bail!("{name}: {other:?} is not a float tensor"),
+        })
+    };
+    let mut out = std::collections::HashMap::new();
+    for (name, view) in st.tensors() {
+        if !name.starts_with("model.visual.") || name.ends_with(".weight_scale") || name.ends_with(".comfy_quant") || name.ends_with(".input_scale") {
+            continue;
+        }
+        let shape = view.shape().to_vec();
+        let values = if view.dtype() == Dtype::I8 {
+            let module = name.strip_suffix(".weight").with_context(|| format!("{name}: an INT8 tensor that is not a weight"))?;
+            anyhow::ensure!(shape.len() == 2, "{name}: an INT8 weight of shape {shape:?}");
+            let (n, k) = (shape[0], shape[1]);
+            let scale = as_f32(&format!("{module}.weight_scale"))?;
+            anyhow::ensure!(scale.len() == n || scale.len() == 1, "{module}.weight_scale: {} values for {n} rows", scale.len());
+            let group = match st.tensor(&format!("{module}.comfy_quant")) {
+                Ok(q) => {
+                    let d: serde_json::Value = serde_json::from_slice(q.data()).with_context(|| format!("{module}.comfy_quant"))?;
+                    if d.get("convrot").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+                        d.get("convrot_groupsize").and_then(serde_json::Value::as_u64).unwrap_or(256) as usize
+                    } else {
+                        0
+                    }
+                }
+                Err(_) => 0,
+            };
+            let mut w: Vec<f32> = view.data().iter().enumerate().map(|(i, &b)| f32::from(b as i8) * scale[if scale.len() == 1 { 0 } else { i / k }]).collect();
+            if group > 0 {
+                anyhow::ensure!(k.is_multiple_of(group), "{module}: {k} input features in ConvRot groups of {group}");
+                let h = regular_hadamard(group)?;
+                let mut tmp = vec![0f32; group];
+                for row in w.chunks_mut(k) {
+                    for g in row.chunks_mut(group) {
+                        // W = W_rot · Hᵀ per group (H is symmetric).
+                        for (j, t) in tmp.iter_mut().enumerate() {
+                            *t = g.iter().zip(&h[j * group..(j + 1) * group]).map(|(a, b)| a * b).sum();
+                        }
+                        g.copy_from_slice(&tmp);
+                    }
+                }
+            }
+            w
+        } else {
+            as_f32(&name)?
+        };
+        out.insert(name.clone(), Tensor::from_vec(values, shape, &Device::Cpu)?.to_device(dev)?);
+    }
+    anyhow::ensure!(!out.is_empty(), "{}: no model.visual.* tensors (an encoder file without the vision tower)", path.display());
+    Ok(out)
+}
+
+/// comfy-kitchen's `_build_hadamard`: the normalized regular Hadamard of `size` (a power of 4),
+/// Kronecker powers of `[[1,1,1,-1],[1,1,-1,1],[1,-1,1,1],[-1,1,1,1]]`, row-major.
+fn regular_hadamard(size: usize) -> Result<Vec<f32>> {
+    anyhow::ensure!(size >= 4 && size.is_power_of_two() && size.trailing_zeros() % 2 == 0, "a regular Hadamard of {size} (a power of 4)");
+    const H4: [f32; 16] = [1., 1., 1., -1., 1., 1., -1., 1., 1., -1., 1., 1., -1., 1., 1., 1.];
+    let mut h = H4.to_vec();
+    let mut n = 4;
+    while n < size {
+        let m = n * 4;
+        let mut next = vec![0f32; m * m];
+        for (i, a) in h.iter().enumerate() {
+            let (ar, ac) = (i / n, i % n);
+            for (j, b) in H4.iter().enumerate() {
+                let (br, bc) = (j / 4, j % 4);
+                next[(ar * 4 + br) * m + ac * 4 + bc] = a * b;
+            }
+        }
+        h = next;
+        n = m;
+    }
+    let norm = 1.0 / (size as f32).sqrt();
+    Ok(h.into_iter().map(|v| v * norm).collect())
+}
+
+/// A picture as the ViT takes it: area-downscaled (never enlarged) to fit 384² pixels (the
+/// edit encoder's `_fit_area`), then bilinearly to the 32-pixel grid (`process_qwen2vl_images`),
+/// patchified. Returns `(patches, grid_h, grid_w)`.
+fn vit_patches(r: &RefImage, cfg: &VisionConfig, dev: &Device) -> Result<(Tensor, usize, usize)> {
+    const MAX_PIXELS: f64 = 384.0 * 384.0;
+    let (w, h) = (r.width, r.height);
+    anyhow::ensure!(w > 0 && h > 0 && r.rgba.len() == w * h * 4, "a picture of {w}x{h} with {} bytes", r.rgba.len());
+    let scale = (MAX_PIXELS / (w * h) as f64).sqrt().min(1.0);
+    let (aw, ah) = (((w as f64 * scale).round() as usize).max(1), ((h as f64 * scale).round() as usize).max(1));
+    let rgb = area_resize(&r.rgba, w, h, aw, ah);
+    let rgb = Tensor::from_vec(rgb, (3, ah, aw), &Device::Cpu)?;
+    let (vw, vh) = vit::vit_size(aw, ah, 3136, 12_845_056);
+    let rgb = if (vw, vh) == (aw, ah) { rgb } else { vit::resize_bilinear(&rgb, vh, vw)? };
+    let (p, gh, gw) = vit::patchify(&rgb, cfg)?;
+    Ok((p.to_device(dev)?, gh, gw))
+}
+
+/// torch's `interpolate(mode="area")` (adaptive average pooling) of RGBA bytes to `(3, dh, dw)`
+/// f32 in `[0, 1]`, alpha dropped.
+fn area_resize(rgba: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> Vec<f32> {
+    let span = |i: usize, n_src: usize, n_dst: usize| -> (usize, usize) { (i * n_src / n_dst, ((i + 1) * n_src).div_ceil(n_dst)) };
+    let mut out = vec![0f32; 3 * dh * dw];
+    for y in 0..dh {
+        let (y0, y1) = span(y, h, dh);
+        for x in 0..dw {
+            let (x0, x1) = span(x, w, dw);
+            let mut acc = [0f32; 3];
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let o = (sy * w + sx) * 4;
+                    for (c, a) in acc.iter_mut().enumerate() {
+                        *a += f32::from(rgba[o + c]);
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as f32 * 255.0;
+            for (c, a) in acc.iter().enumerate() {
+                out[(c * dh + y) * dw + x] = a / n;
+            }
+        }
+    }
+    out
+}
+
+/// StableSR's wavelet colour fix (`wavelet_reconstruction`, the author's ComfyUI colour match):
+/// both pictures split into high and low frequencies by five à-trous blurs (radius 1, 2, 4, 8,
+/// 16, the 3×3 binomial kernel, edges replicated); `out` keeps its high frequencies on the
+/// low frequencies of `style` (same size, RGBA bytes; alpha left as it is).
+pub fn wavelet_color_match(out: &mut [u8], style: &[u8], w: usize, h: usize) {
+    let plane = |src: &[u8], c: usize| -> Vec<f32> { (0..w * h).map(|i| f32::from(src[i * 4 + c]) / 255.0).collect() };
+    let blur = |x: &[f32], r: usize| -> Vec<f32> {
+        const K: [f32; 3] = [0.25, 0.5, 0.25];
+        let at = |v: isize, n: usize| v.clamp(0, n as isize - 1) as usize;
+        let mut tmp = vec![0f32; w * h];
+        for y in 0..h {
+            for xx in 0..w {
+                tmp[y * w + xx] = (0..3).map(|k| K[k] * x[y * w + at(xx as isize + (k as isize - 1) * r as isize, w)]).sum();
+            }
+        }
+        let mut outp = vec![0f32; w * h];
+        for y in 0..h {
+            for xx in 0..w {
+                outp[y * w + xx] = (0..3).map(|k| K[k] * tmp[at(y as isize + (k as isize - 1) * r as isize, h) * w + xx]).sum();
+            }
+        }
+        outp
+    };
+    let low = |x: Vec<f32>| -> Vec<f32> { (0..5).fold(x, |cur, i| blur(&cur, 1 << i)) };
+    for c in 0..3 {
+        let content = plane(out, c);
+        let (cl, sl) = (low(content.clone()), low(plane(style, c)));
+        for i in 0..w * h {
+            let v = content[i] - cl[i] + sl[i];
+            out[i * 4 + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod vision_tests {
+    use super::{area_resize, regular_hadamard, wavelet_color_match};
+
+    #[test]
+    fn the_regular_hadamard_is_orthogonal_and_symmetric() {
+        let n = 64;
+        let h = regular_hadamard(n).unwrap();
+        for i in 0..n {
+            for j in 0..n {
+                assert_eq!(h[i * n + j], h[j * n + i]);
+                let dot: f32 = (0..n).map(|k| h[i * n + k] * h[j * n + k]).sum();
+                assert!((dot - if i == j { 1.0 } else { 0.0 }).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn wavelet_match_takes_flat_colour_from_the_style() {
+        let (w, h) = (8, 8);
+        let mut out: Vec<u8> = (0..w * h).flat_map(|_| [200u8, 100, 50, 255]).collect();
+        let style: Vec<u8> = (0..w * h).flat_map(|_| [10u8, 20, 30, 255]).collect();
+        wavelet_color_match(&mut out, &style, w, h);
+        assert!(out.chunks(4).all(|p| p == [10, 20, 30, 255]), "{:?}", &out[..4]);
+    }
+
+    #[test]
+    fn area_resize_averages_blocks_and_keeps_a_same_size_picture() {
+        // 2x2 RGBA -> 1x1: the mean of the four pixels per channel.
+        let px = [0u8, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 255, 255, 255, 255];
+        let one = area_resize(&px, 2, 2, 1, 1);
+        assert_eq!(one, vec![0.5, 0.5, 0.25]);
+        let same = area_resize(&px, 2, 2, 2, 2);
+        assert_eq!(&same[0..4], &[0.0, 1.0, 0.0, 1.0]);
     }
 }

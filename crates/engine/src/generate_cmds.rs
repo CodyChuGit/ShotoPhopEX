@@ -974,9 +974,20 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Image.
             menu: &[],
             shortcut: None,
-            params: r#"{"scale":1..4=2,"tileMegapixels"?:0.25..2,"prompt"?:string,"template"?:string,"seed"?:int,"steps"?:int,"guidance"?:number,"loras"?:[{"file","strength"}],"restoreStrength":0..1.5=0.5,"grid"?:[columns,rows],"name"?:string} → {"layer","tiles","grid","width","height","elapsedMs","template"} (the document enlarged by scale the plain way (bicubic), then redrawn tile by tile by the edit model with a restore prompt (AusBoss's wording unless prompt is given): by default the fewest equal tiles of at most ~1.15 MP each, never a strip of three or more, sharing at least a 128-px strip (grid [columns, rows], 1 to 16 each, names the tiling; tileMegapixels asks for square tiles of about that size instead), each moved back onto its source and matched to its colours, the strips faded together; the redraw is a new layer above. Auto: Qwen-Image-2.1's edit on the native engine when it serves it (with the Restore LoRA at restoreStrength when the LoRA folder has qwen-image-2.1-restore.safetensors and no loras are given), else the edit default)"#,
+            params: r#"{"scale":1..4=2,"tileMegapixels"?:0.25..2,"prompt"?:string,"template"?:string,"seed"?:int,"steps"?:{int?=16 on the 2.1 edit, else the template's},"guidance"?:number,"loras"?:[{"file","strength"}],"restoreStrength":0..1.5=0.5,"turbo":bool=false,"grid"?:[columns,rows],"name"?:string} → {"layer","tiles","grid","width","height","elapsedMs","template"} (the document enlarged by scale the plain way (bicubic), then redrawn tile by tile by the edit model with a restore prompt (AusBoss's wording unless prompt is given): by default the fewest equal tiles of at most ~1.15 MP each, never a strip of three or more, sharing at least a 128-px strip (grid [columns, rows], 1 to 16 each, names the tiling; tileMegapixels asks for square tiles of about that size instead), each moved back onto its source and matched to its colours, the strips faded together; the redraw is a new layer above. Auto: Qwen-Image-2.1's edit on the native engine when it serves it (with the Restore LoRA at restoreStrength when the LoRA folder has qwen-image-2.1-restore.safetensors and no loras are given), else the edit default; turbo = also Viggle's 6-step Turbo LoRA (Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors) on its six sigmas, native 2.1 edit only)"#,
             enabled: edit_enabled,
             run: upscale::run_upscale,
+            journal: true,
+        },
+        CommandSpec {
+            id: upscale::UPSCALE_FAST,
+            label: "Generative Upscale (Fast)",
+            // Placed by the menu catalogue under Edit, after Generative Upscale.
+            menu: &[],
+            shortcut: None,
+            params: r#"{as generate.upscale} → as generate.upscale (generate.upscale with turbo true: Viggle's 6-step Turbo LoRA over the Restore LoRA, about 2x faster at 2x, close-up faces a little less faithful; needs the native Qwen-Image-2.1 edit and Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors in the loras folder)"#,
+            enabled: upscale::upscale_fast_enabled,
+            run: upscale::run_upscale_fast,
             journal: true,
         },
     ]

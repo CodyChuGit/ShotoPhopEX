@@ -62,6 +62,7 @@ const NEEDS_MODELS: &[&str] = &[
     "generate.angles",
     "generate.characterSheet",
     "generate.upscale",
+    "generate.upscaleFast",
     "select.byText",
 ];
 

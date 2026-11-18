@@ -109,6 +109,7 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Edit"], "Generative Angles…", None, "generate.angles"),
     (&["Edit"], "Character Sheet", None, "generate.characterSheet"),
     (&["Edit"], "Generative Upscale", None, "generate.upscale"),
+    (&["Edit"], "Generative Upscale (Fast)", None, "generate.upscaleFast"),
     (&["Edit"], "---", None, "---"),
     (&["Edit"], "Content-Aware Scale", Some("Cmd+Alt+Shift+C"), "edit.contentAwareScale"),
     (&["Edit"], "Puppet Warp", None, "edit.puppetWarp"),
