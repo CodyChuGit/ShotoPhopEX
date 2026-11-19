@@ -426,9 +426,11 @@ pub fn estimate(app: &PhotocraftApp, mode: &str) -> Option<f32> {
     if mode != "image" {
         return g::estimate_seconds(&t, w, h, count, refs);
     }
-    // Quality's render size.
+    // Quality's render size, and Ultra's refine pass (a fraction of a run at that size).
     let (rw, rh) = g::image_render_sizes(&app.session, &t, w, h);
-    g::estimate_seconds(&t, rw, rh, count, refs).map(|s| s * g::image_quality_cost(&t, q))
+    let run = g::estimate_seconds(&t, rw, rh, count, refs)?;
+    let refine = if g::ultra_refines(&t, g::quality_level(&app.session)) { run * g::ULTRA_REFINE_DENOISE as f32 } else { 0.0 };
+    Some(run * g::image_quality_cost(&t, q) + refine)
 }
 
 /// "~24 s", "~2 min".

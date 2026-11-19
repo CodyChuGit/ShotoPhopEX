@@ -328,12 +328,16 @@ fn quality_levels_supersample_krea2() {
     s.execute(IMAGE, ask.clone()).unwrap();
     assert_eq!(sent()["width"], 1536);
     assert!(sent()["params"].get("refine").is_none());
-    // Ultra on 24 GB+: a plain 2x render, the document at the asked size.
+    // Ultra on 24 GB+: a 2x render with a light refine over it, the document at the asked size.
     s.edit_prefs(|p| p.integrations.memory_profile = "24gb".into());
     let r = s.execute(IMAGE, ask.clone()).unwrap();
     let req = sent();
     assert_eq!(req["width"], 2048, "{req}");
-    assert!(req["params"].get("refine").is_none(), "{req}");
+    assert_eq!(
+        req["params"]["refine"],
+        json!({"width": 2048, "height": 2048, "denoise": ULTRA_REFINE_DENOISE, "steps": ULTRA_REFINE_STEPS}),
+        "the light refine at the render's size: {req}"
+    );
     assert_eq!(r["width"], 1024);
     // MOSS stops at 1536 a side (it failed at 2048), same aspect.
     s.execute(IMAGE, json!({"prompt": "x", "template": "moss-image/turbo", "target": "document", "width": 2048, "height": 1024})).unwrap();

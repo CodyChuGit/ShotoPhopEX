@@ -298,7 +298,13 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
             }
         },
     };
-    let refine = image_refine(p, &template.meta.id, width, height)?;
+    let mut refine = image_refine(p, &template.meta.id, width, height)?;
+    // Quality Ultra: after the 2x render, a light refine pass over it at the same size (Cody,
+    // 2026-11-19), on a model that has one, unless the request asks for its own or sets
+    // `supersample`.
+    if refine.is_none() && supersample.is_none() && quality_level(s) == "ultra" && ULTRA_REFINE_TEMPLATES.contains(&template.meta.id.as_str()) {
+        refine = Some(ultra_refine(width, height));
+    }
     let name = name.unwrap_or_else(|| format!("Generated: {}", short(&prompt)));
     // A transparent result: the template says how its model is asked for one (Qwen-Image-2.1
     // decodes RGBA); the layer keeps the alpha the PNG comes back with.
@@ -359,8 +365,28 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
 /// wider, and both spilled past 32 GB at 1.5x and failed at 2048, so they stay at the asked size.
 pub const SUPERSAMPLE_TEMPLATES: &[&str] = &["krea2-turbo/image"];
 
+/// The templates Quality Ultra gives a light refine pass after its 2x render.
+pub const ULTRA_REFINE_TEMPLATES: &[&str] = &["krea2-turbo/image"];
+
+/// Ultra's refine pass over the 2x render: how much of it is redrawn, and the steps. Light: a
+/// refine from the asked size measured 2026-11-19 darkened the picture 2.5-4.8 levels at
+/// 0.3-0.5 and redrew invented label text, so this only polishes (to be tuned in the app).
+pub const ULTRA_REFINE_DENOISE: f64 = 0.3;
+pub const ULTRA_REFINE_STEPS: u64 = 8;
+
+/// `params.refine` for Quality Ultra over a render of `width × height`: the same size.
+pub fn ultra_refine(width: u32, height: u32) -> Value {
+    json!({"width": width, "height": height, "denoise": ULTRA_REFINE_DENOISE, "steps": ULTRA_REFINE_STEPS})
+}
+
+/// Whether Quality `level` adds Ultra's refine pass on `template`.
+pub fn ultra_refines(template: &str, level: &str) -> bool {
+    level == "ultra" && ULTRA_REFINE_TEMPLATES.contains(&template)
+}
+
 /// How many times the asked size `template` renders at under Quality `level` (1 for models
-/// that do not gain: [`SUPERSAMPLE_TEMPLATES`]). Ultra is a plain 2x render: round 2
+/// that do not gain: [`SUPERSAMPLE_TEMPLATES`]). Ultra is a 2x render (then a light refine,
+/// [`ultra_refine`]), not a refine up from the asked size: round 2
 /// (2026-11-19, 5090) measured Cody's first Ultra, the asked size then a 2x refine pass (as
 /// ComfyUI's hires fix, denoise 0.3-0.5, 8 steps), at 27 s like the plain 2x but no sharper
 /// than Basic (luma Laplacian 0.86-1.16x against 3.94x), a little darker (-2.5 to -4.8 levels)
