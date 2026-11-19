@@ -396,5 +396,14 @@ fn angles_run_on_qwen_2_1_with_qma_on_every_card() {
     assert_eq!((g["steps"].as_u64(), g["guidance"].as_f64()), (Some(30), Some(3.0)), "the QMA card's");
     assert!(g["params"].get("lightning").is_none(), "no Lightning on 2.1");
     drop(st);
+    // Enhance prompts on: the camera words still go as they are.
+    s.edit_prefs(|p| p.integrations.enhance_prompts = true);
+    let before = fake.state().runs.len();
+    s.execute(ANGLES, json!({"rotation": 90, "seed": 4, "template": ANGLES21_TEMPLATE})).unwrap();
+    let st = fake.state();
+    let last = st.runs.last().unwrap();
+    assert!(last.request["prompt"].as_str().unwrap().starts_with("<qma> right side view"), "{}", last.request["prompt"]);
+    assert_eq!(st.runs.len(), before + 1, "no rewriter run");
+    drop(st);
     assert!(matches!(s.execute(ANGLES, json!({"template": "qwen-2.1/edit"})), Err(EngineError::BadParams { .. })));
 }

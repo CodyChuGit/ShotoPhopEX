@@ -479,7 +479,9 @@ pub(super) fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
     // On 2.1 QMA's words, its template's steps and CFG; no Lightning there.
     let on21 = template == ANGLES21_TEMPLATE;
     let words = if on21 { angle_prompt_21(rotation, tilt, zoom).unwrap_or(words) } else { words };
-    let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "name": format!("Angles: {camera}")});
+    // Never rewritten: the rewriter dropped the LoRA's trigger and camera words (5 of 7 runs with
+    // Enhance prompts on, 5090, 2026-11-19).
+    let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "enhance": false, "name": format!("Angles: {camera}")});
     let keys: &[&str] = if on21 {
         &["seed", "variations", "negative", "steps", "guidance"]
     } else {
