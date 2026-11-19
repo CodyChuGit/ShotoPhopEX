@@ -195,7 +195,7 @@ pub fn pill(ui: &mut Ui, id_salt: &str, items: &[Item], current: &mut String, op
     let resp = resp.on_hover_text(tip);
     let hover_id = egui::Id::unique(("model-picker-hover", id_salt));
     let find_id = egui::Id::unique(("model-picker-find", id_salt));
-    egui::Popup::menu(&resp).id(popup_id(id_salt)).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+    let shown = egui::Popup::menu(&resp).id(popup_id(id_salt)).gap(4.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         let hovered: Option<Option<usize>> = ui.ctx().data(|d| d.get_temp(hover_id));
         let mut find: String = ui.ctx().data(|d| d.get_temp(find_id)).unwrap_or_default();
         let mut now_hovered: Option<Option<usize>> = None;
@@ -240,6 +240,8 @@ pub fn pill(ui: &mut Ui, id_salt: &str, items: &[Item], current: &mut String, op
             ui.painter().vline(sep.center().x, sep.y_range(), Stroke::new(1.0, t.separator));
             ui.vertical(|ui| {
                 ui.set_width(PREVIEW_W);
+                // A steady height while the hover moves between rows.
+                ui.set_min_height(PREVIEW_H);
                 // None = Auto.
                 let shown: Option<usize> = now_hovered.or(hovered).unwrap_or(chosen_row).filter(|n| *n < rows.len());
                 if let Some(n) = shown {
@@ -285,6 +287,10 @@ pub fn pill(ui: &mut Ui, id_salt: &str, items: &[Item], current: &mut String, op
             None => {}
         }
     });
+    // Over whatever holds the pill (the task bar is a foreground area too).
+    if let Some(r) = shown {
+        ui.ctx().move_to_top(r.response.layer_id);
+    }
     if !is_open(ui.ctx(), id_salt) {
         ui.ctx().data_mut(|d| {
             d.remove_temp::<Option<usize>>(hover_id);

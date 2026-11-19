@@ -435,7 +435,11 @@ pub(super) fn speed_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 /// the 4-step tier where one exists; Ultra = Best with the 16 MP model for new pictures and
 /// edits). A chosen template is left alone.
 pub(super) fn quality_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    let q = photocraft_engine::generate_cmds::auto_quality(&app.session).to_string();
+    // The Quality preference itself (auto_quality now follows Speed).
+    let q = match app.session.prefs().integrations.quality.trim() {
+        "" => "best".to_string(),
+        q => q.to_string(),
+    };
     let options = [
         Seg::new("ultra".to_string(), tl!("Ultra"))
             .tip(tl!("Best, with new pictures and edits on MiniMax H3 Image at up to 16 MP when its files are installed")),
