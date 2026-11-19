@@ -1227,8 +1227,8 @@ pub struct Integrations {
     /// exists. A chosen template is never changed by this; see `generate_cmds::auto_order`.
     pub quality: String,
     /// Quality: how far above the asked size a new picture is rendered before it is brought
-    /// down to it (`basic` 1x, `better` 1.25x, `best` 1.5x, `ultra` 2x and a light refine pass
-    /// on 24 GB+ cards), on the models that gain from it; see `generate_cmds::quality_factor`.
+    /// down to it (`basic` 1x, `better` 1.25x, `best` 1.5x, `ultra` 2x on 24 GB+
+    /// cards), on the models that gain from it; see `generate_cmds::quality_factor`.
     pub quality_level: String,
     /// The folder the Generations panel's Save writes results into (`generate.export` without
     /// `dir`); empty = ask each time.

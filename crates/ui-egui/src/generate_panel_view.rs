@@ -415,7 +415,7 @@ pub(super) fn model_pill(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str,
 
 /// Preferences › AI Integrations › Quality beside the model: how far above the asked size a new
 /// picture renders before it is brought down to it, on the models that gain from it (Basic 1x,
-/// Better 1.25x, Best 1.5x, Ultra 2x and a light refine pass, offered on 24 GB cards or larger).
+/// Better 1.25x, Best 1.5x, Ultra 2x, offered on 24 GB cards or larger).
 /// It never changes the model.
 pub(super) fn quality_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     use photocraft_engine::generate_cmds as g;
@@ -478,9 +478,7 @@ pub(super) fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, m
         let (rw, rh) = photocraft_engine::generate_cmds::image_render_sizes(&app.session, &tid, w, h);
         let level = photocraft_engine::generate_cmds::quality_level(&app.session);
         let gains = photocraft_engine::generate_cmds::SUPERSAMPLE_TEMPLATES.contains(&tid.as_str());
-        let hint = if (rw, rh) != (w, h) && gains && photocraft_engine::generate_cmds::ultra_refines(&tid, level) {
-            format!("{w} × {h} px · {} {rw} × {rh} {}", tl!("rendered at"), tl!("and refined"))
-        } else if (rw, rh) != (w, h) && gains {
+        let hint = if (rw, rh) != (w, h) && gains {
             format!("{w} × {h} px · {} {rw} × {rh}", tl!("rendered at"))
         } else if (rw, rh) != (w, h) {
             format!("{rw} × {rh} px")
