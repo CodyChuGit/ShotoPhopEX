@@ -231,6 +231,45 @@ impl LayeredLinear {
         Ok(())
     }
 
+    /// For a DiT kept as INT8: merge `pairs` into the dequantized fp8 weight on the card and
+    /// convert it straight to ConvRot INT8, replacing the fp8 copy. No CPU original is kept and
+    /// the merged weight is not requantized to fp8 first, so loading a LoRA stack holds no host
+    /// copy of the model (the bind + snapshot path held two, ~40 GB, which a 24 GB card's PC with
+    /// 64 GB of RAM could not commit next to the app, 2026-11-18). A linear ConvRot cannot take
+    /// (or one not fp8 on CUDA) binds as before.
+    #[cfg(feature = "convrot")]
+    fn merge_int8(&mut self, module: &str, pairs: &[crate::lora::LoraPair]) -> Result<()> {
+        anyhow::ensure!(self.int8.is_none() && self.original.is_none(), "{module}: already converted or bound");
+        let convertible = match (&self.fp8, &self.gpu) {
+            (Some((w, _)), Some(_)) => {
+                let (output, input) = w.dims2()?;
+                input.is_multiple_of(crate::model::rotation::GROUP) && output.is_multiple_of(8)
+            }
+            _ => false,
+        };
+        if !convertible {
+            return self.bind(module, pairs);
+        }
+        let device = self.bias.device().clone();
+        let (w, scale) = self.fp8.as_ref().ok_or_else(|| anyhow::anyhow!("{module}: missing fp8 weight"))?;
+        // The same dequantization `bind` merges into.
+        let mut weight = crate::fp8::Fp8Linear::new_full_precision(w.clone(), scale)?.precise_scale().dequantized(DType::BF16)?;
+        for pair in pairs {
+            weight = pair.merge_weight(weight)?;
+        }
+        let r = crate::model::rotation::regular_hadamard_256(&device)?;
+        let c = crate::convrot::ConvRotLinear::from_weight(&weight.to_dtype(DType::BF16)?, &r)?;
+        drop(weight);
+        self.fp8 = None;
+        self.gpu = None;
+        self.fast = None;
+        self.int8 = Some(c);
+        // As the converting load does: wait, so the freed temporaries of hundreds of linears are
+        // not all pending on the card at once.
+        device.synchronize()?;
+        Ok(())
+    }
+
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         self.forward_impl(x, false)
     }
@@ -1254,6 +1293,37 @@ impl LayeredDit {
         Ok(())
     }
 
+    /// [`Self::bind_loras`] for a DiT that stays INT8: each linear gets its LoRAs merged and is
+    /// converted to ConvRot INT8 in place, one at a time (see [`LayeredLinear::merge_int8`]). An
+    /// empty stack only converts. The model cannot be rebound afterwards.
+    #[cfg(feature = "convrot")]
+    pub fn merge_loras_int8(&mut self, stack: &crate::lora::LoraStack) -> Result<()> {
+        anyhow::ensure!(self.kind == DitKind::Edit2511 && self.streamed.is_none() && self.binding.is_none(), "INT8 merge requires a fresh resident edit DiT");
+        let mut known = std::collections::BTreeSet::new();
+        for (i, block) in self.blocks.iter_mut().enumerate() {
+            for (text, stream) in [(false, &mut block.image), (true, &mut block.text)] {
+                let prefix = format!("transformer_blocks.{i}");
+                let name = if text { "txt" } else { "img" };
+                for (suffix, linear) in [
+                    (format!("{name}_mod.1"), &mut stream.modulation),
+                    (format!("attn.{}", if text { "add_q_proj" } else { "to_q" }), &mut stream.q),
+                    (format!("attn.{}", if text { "add_k_proj" } else { "to_k" }), &mut stream.k),
+                    (format!("attn.{}", if text { "add_v_proj" } else { "to_v" }), &mut stream.v),
+                    (format!("attn.{}", if text { "to_add_out" } else { "to_out.0" }), &mut stream.out),
+                    (format!("{name}_mlp.net.0.proj"), &mut stream.up),
+                    (format!("{name}_mlp.net.2"), &mut stream.down),
+                ] {
+                    let module = format!("{prefix}.{suffix}");
+                    linear.merge_int8(&module, &stack.pairs(&module)?)?;
+                    known.insert(module);
+                }
+            }
+        }
+        anyhow::ensure!(stack.unmatched(&|m| known.contains(m)).is_empty(), "unmatched 2511 LoRA modules: {:?}", stack.unmatched(&|m| known.contains(m)));
+        self.binding = Some(stack.clone());
+        Ok(())
+    }
+
     /// Retain only materialized weights on CPU so equal bindings survive stage unloads.
     pub fn materialized_weights(&self) -> Result<std::collections::BTreeMap<String, Tensor>> {
         let mut weights = std::collections::BTreeMap::new();
@@ -1286,9 +1356,10 @@ impl LayeredDit {
         Ok(weights)
     }
 
-    /// The INT8 linears' weights on the CPU (`{module}.weight_i8` U8 and `{module}.col_scale`
+    /// The INT8 linears' weights where they live (`{module}.weight_i8` U8 and `{module}.col_scale`
     /// f32, ConvRot's prequantized form), for a cache that [`LayeredLinear::load`] reads back as
-    /// they are; empty when no linear is INT8.
+    /// they are; empty when no linear is INT8. [`crate::int8_cache::write`] copies them to the
+    /// host one at a time.
     #[cfg(feature = "convrot")]
     pub fn int8_weights(&self) -> Result<Vec<(String, Tensor)>> {
         let mut weights = Vec::new();
@@ -1307,8 +1378,8 @@ impl LayeredDit {
                 ] {
                     if let Some(c) = &linear.int8 {
                         let (q, scales) = c.export()?;
-                        weights.push((format!("{prefix}.{suffix}.weight_i8"), q.to_device(&Device::Cpu)?));
-                        weights.push((format!("{prefix}.{suffix}.col_scale"), scales.to_device(&Device::Cpu)?));
+                        weights.push((format!("{prefix}.{suffix}.weight_i8"), q));
+                        weights.push((format!("{prefix}.{suffix}.col_scale"), scales));
                     }
                 }
             }

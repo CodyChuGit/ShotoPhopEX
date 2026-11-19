@@ -129,6 +129,18 @@ fn pool_usage(pool: candle_core::cuda_backend::cudarc::driver::sys::CUmemoryPool
     Some((get(A::CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT)?, get(A::CU_MEMPOOL_ATTR_USED_MEM_CURRENT)?))
 }
 
+/// The default pool's memory now: `(reserved, used)` bytes after a sync, `None` off CUDA.
+/// Reserved minus used is freed memory the pool still holds (what [`trim_pool`] releases).
+pub fn pool_now(device: &Device) -> Option<(u64, u64)> {
+    #[cfg(feature = "cuda")]
+    if let Device::Cuda(d) = device {
+        let _ = device.synchronize();
+        return pool_usage(default_pool(d)?);
+    }
+    let _ = device;
+    None
+}
+
 /// The default pool's high-water marks since the last [`reset_pool_peak`]: `(used, reserved)`
 /// bytes (`CU_MEMPOOL_ATTR_USED_MEM_HIGH`, `RESERVED_MEM_HIGH`): the most the run's own tensors
 /// held at once, what a smaller card must fit (plus the context and cuBLAS' workspace), which
