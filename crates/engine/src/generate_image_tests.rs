@@ -58,7 +58,7 @@ fn image_lands_as_a_layer_covering_the_canvas() {
     assert_eq!(g["prompt"], "a lighthouse at dusk");
     assert_eq!(g["width"], 64);
     assert_eq!(g["height"], 64, "48 is below the 64-pixel minimum side; the result is resampled back to the canvas");
-    assert_eq!(g["steps"], 8, "Krea 2 Turbo default");
+    assert_eq!(g["steps"], 4, "Krea 2 Turbo at Fast: the step sweep's okay count");
     assert_eq!(g["guidance"], 1.0);
     assert_eq!(g["seed"], 3);
     assert_eq!(g["params"]["models"]["unet"], "krea2_turbo_fp8_scaled.safetensors");
@@ -135,7 +135,7 @@ fn sizes_default_round_and_validate() {
     // The generated dialog sends 0 for "default" sizes and steps, and "auto" for the target.
     let r = s.execute(IMAGE, json!({"prompt": "x", "width": 0, "height": 0, "target": "auto", "steps": 0, "guidance": 0})).unwrap();
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(1024), Some(1024)), "auto with a document open: a layer over its canvas");
-    assert_eq!(fake.state().runs.last().unwrap().request["steps"], 8, "0 steps = the template default");
+    assert_eq!(fake.state().runs.last().unwrap().request["steps"], 4, "0 steps = the Speed's count (Fast: 4)");
     let mut empty = Session::new();
     empty.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
@@ -222,11 +222,13 @@ fn best_quality_tunes_qwen21_text_to_image() {
     assert_eq!(image_quality_tuning("qwen-2.1/image", "best"), Some((40, 3.0)));
     assert_eq!(image_quality_tuning("qwen-2.1/image", "balanced"), Some((25, 3.0)));
     assert_eq!(image_quality_tuning("qwen-2.1/image", "fast"), None);
-    assert_eq!(image_quality_tuning("krea2-turbo/image", "fast"), None);
+    assert_eq!(image_quality_tuning("krea2-turbo/image", "fast"), Some((4, 1.0)), "the step sweep's okay count");
+    assert_eq!(image_quality_tuning("moss-image/turbo", "fast"), Some((6, 1.0)));
+    assert_eq!(image_quality_tuning("flux3-klein/image", "balanced"), Some((8, 1.0)));
     let cost = image_quality_cost("qwen-2.1/image", "best");
     assert!((2.5..3.0).contains(&cost), "{cost}");
     assert_eq!(image_quality_cost("krea2-turbo/image", "best"), 9.0 / 8.0);
-    assert_eq!(image_quality_cost("krea2-turbo/image", "fast"), 1.0);
+    assert_eq!(image_quality_cost("krea2-turbo/image", "fast"), 4.0 / 8.0);
 }
 
 /// Krea 2 Turbo under `best` and `balanced` runs the creator kit's detail recipe (9 steps,
@@ -258,7 +260,7 @@ fn balanced_and_best_run_krea2_detail_schedule() {
     assert_eq!((req["params"]["schedule"].as_str(), req["params"].get("sampler")), (Some("beta"), None), "{req}");
     s.edit_prefs(|p| p.integrations.quality = "fast".into());
     let req = run(&mut s, json!({}));
-    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(8), None), "{req}");
+    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(4), None), "Fast: 4 plain steps {req}");
     let req = run(&mut s, json!({"schedule": "krea-detail"}));
     assert_eq!((req["steps"].as_u64(), req["params"]["schedule"].as_str()), (Some(9), Some("krea-detail")), "{req}");
     let err = s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "schedule": "krea-detail"}));

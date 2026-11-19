@@ -78,6 +78,14 @@ pub fn image_quality_tuning(template: &str, quality: &str) -> Option<(u32, f32)>
         // Krea 2 Turbo's detail recipe ([`image_quality_schedule`]) takes one step more than
         // the template's 8: the Sick Ollie Creator Kit's 9.
         ("krea2-turbo/image", "best" | "balanced") => Some((KREA_DETAIL_STEPS, 1.0)),
+        // Speed Fast: the fewest steps that still gave an okay picture in the 5090 step sweep
+        // (2026-11-19, 4 prompts, seed 42, 1024²): Krea 2 Turbo 4 (good from 6), MOSS Turbo 6
+        // (2-4 melt faces and garble text; good at its 8), FLUX 3 Klein 6 (nothing gained past 8).
+        ("krea2-turbo/image", "fast") => Some((4, 1.0)),
+        ("moss-image/turbo", "fast") => Some((6, 1.0)),
+        ("flux3-klein/image", "fast") => Some((6, 1.0)),
+        // Speed Balanced on Klein: its good count, half the template's 16.
+        ("flux3-klein/image", "balanced") => Some((8, 1.0)),
         _ => None,
     }
 }
@@ -234,10 +242,10 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
     };
     let schedule = asked_schedule.unwrap_or_else(|| image_quality_schedule(&template.meta.id, speed(s)));
     // Preferences › Quality, when the request leaves the steps and guidance to the template
-    // (and, for Krea 2, does not ask for its plain schedule).
+    // (and, for Krea 2, does not ask for a schedule: its own steps come with it).
     if steps == 0
         && guidance == 0.0
-        && !(asked_schedule == Some(None) && template.meta.id == "krea2-turbo/image")
+        && !(asked_schedule.is_some() && template.meta.id == "krea2-turbo/image")
         && let Some((st, g)) = image_quality_tuning(&template.meta.id, speed(s))
     {
         (steps, guidance) = (st, g);

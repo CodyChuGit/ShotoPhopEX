@@ -364,10 +364,13 @@ pub fn row_seconds(it: Option<&Item>) -> Option<String> {
 fn row_frame(ui: &mut Ui, checked: bool, name: &str, t: &Tokens) -> (Rect, egui::Response) {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::click());
-    if checked {
-        ui.painter().rect_filled(rect, 4.0, t.accent_soft);
-    } else if resp.hovered() {
+    // Hover fills the row; the choice is an accent bar on the left, so the two never look alike.
+    if resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, t.hover);
+    }
+    if checked {
+        let bar = Rect::from_min_size(pos2(rect.left(), rect.top() + 4.0), vec2(2.5, rect.height() - 8.0));
+        ui.painter().rect_filled(bar, 1.25, t.accent);
     }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, checked, name));
     (rect, resp)
@@ -394,7 +397,7 @@ fn model_row(ui: &mut Ui, row: &Row, it: Option<&Item>, checked: bool, t: &Token
     glyph(ui, g, &row.model);
     let right = match row_seconds(it) {
         Some(s) => {
-            let galley = ui.painter().layout_no_wrap(s, FontId::monospace(10.5), t.text_dim);
+            let galley = ui.painter().layout_no_wrap(s, FontId::proportional(10.5), t.text_dim);
             let w = galley.size().x;
             ui.painter().galley(pos2(rect.right() - 6.0 - w, rect.center().y - galley.size().y / 2.0), galley, t.text_dim);
             w
@@ -528,9 +531,27 @@ fn preview(ui: &mut Ui, items: &[Item], rows: &[Row], n: usize, opts: &Opts<'_>,
         tl!("Use")
     };
     let w = ui.available_width();
-    let clicked = ui.add_enabled_ui(it.is_some() && (missing || !chosen), |ui| crate::widgets::primary_button(ui, label, w)).inner.clicked();
+    if chosen && !missing {
+        in_use(ui, label, w, t);
+        ui.add_space(2.0);
+        return false;
+    }
+    let clicked = ui.add_enabled_ui(it.is_some(), |ui| crate::widgets::primary_button(ui, label, w)).inner.clicked();
     ui.add_space(2.0);
     clicked
+}
+
+/// The chosen model's quiet state in place of Use: an outline with a check, nothing to press.
+fn in_use(ui: &mut Ui, label: &str, w: f32, t: &Tokens) {
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, label));
+    let p = ui.painter();
+    p.rect_stroke(r, t.radius_sm, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    let galley = p.layout_no_wrap(label.to_string(), FontId::proportional(12.0), t.text_dim);
+    let total = 14.0 + 4.0 + galley.size().x;
+    let x = r.center().x - total / 2.0;
+    crate::icons::paint(ui, Rect::from_min_size(pos2(x, r.center().y - 7.0), vec2(14.0, 14.0)), "check", 12.0, t.accent);
+    ui.painter().galley(pos2(x + 18.0, r.center().y - galley.size().y / 2.0), galley, t.text_dim);
 }
 
 /// The Auto preview; true when Use was clicked.
@@ -544,8 +565,11 @@ fn preview_auto(ui: &mut Ui, auto: Option<&str>, chosen: bool, t: &Tokens) -> bo
     ui.label(egui::RichText::new(auto_description(auto)).size(11.0).color(t.text_faint));
     ui.add_space(8.0);
     let w = ui.available_width();
-    let label = if chosen { tl!("In use") } else { tl!("Use") };
-    ui.add_enabled_ui(!chosen, |ui| crate::widgets::primary_button(ui, label, w)).inner.clicked()
+    if chosen {
+        in_use(ui, tl!("In use"), w, t);
+        return false;
+    }
+    crate::widgets::primary_button(ui, tl!("Use"), w).clicked()
 }
 
 #[cfg(test)]
