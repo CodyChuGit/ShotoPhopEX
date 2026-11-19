@@ -32,16 +32,16 @@ struct VaeConv {
     /// The weight in the implicit GEMM's KRSC layout, when the convolution takes that path.
     #[cfg(feature = "convrot")]
     krsc: Option<Tensor>,
-    /// A decoder convolution: on candle's im2col it goes in bands of rows past
-    /// [`DECODER_IM2COL_BYTES`].
-    decoder: bool,
 }
 
-/// Bytes of im2col scratch a decoder convolution off the implicit GEMM builds in one go: past
+/// Bytes of im2col scratch a convolution off the implicit GEMM builds in one go: past
 /// this it goes in bands of [`DECODER_CONV_ROWS`] rows. The head (96 channels to 3, which the
 /// implicit GEMM does not take) builds 9·96·H·W bf16 values: 3.6 GB at 1440², enough beside a
 /// resident DiT to spill to shared memory on Windows. 2 GiB keeps a 1024² decode (1.8 GB) whole,
-/// as before.
+/// as before. The encoder bands the same way: a 2048² encode (Quality Ultra's Krea 2 refine
+/// pass) built 7 GB per full-size convolution and, with its attention, failed on the 5090 with
+/// CUDA_ERROR_INVALID_VALUE after 28 GB of spill (2026-11-19); a 1024² encode (1.8 GB) stays
+/// whole, so edits are as before.
 const DECODER_IM2COL_BYTES: usize = 2 << 30;
 const DECODER_CONV_ROWS: usize = 128;
 
@@ -75,7 +75,6 @@ impl VaeConv {
             conv: Conv2d::new(w, Some(b), Conv2dConfig { padding: k / 2, ..Default::default() }),
             #[cfg(feature = "convrot")]
             krsc,
-            decoder: DECODER.with(|d| d.get()),
         })
     }
 
@@ -86,7 +85,7 @@ impl VaeConv {
                 return crate::vae_conv::conv2d_nchw(x, krsc, bias);
             }
         }
-        if self.decoder && x.device().is_cuda() {
+        if x.device().is_cuda() {
             let (_, c, h, w) = x.dims4()?;
             let (_, _, kh, kw) = self.conv.weight().dims4()?;
             let scratch = c.saturating_mul(kh * kw).saturating_mul(h).saturating_mul(w).saturating_mul(x.dtype().size_in_bytes());
@@ -178,12 +177,13 @@ impl ResidualBlock {
     }
 }
 
-/// Bytes of f32 attention scores the decoder computes in one go: past this the queries go in
+/// Bytes of f32 attention scores the VAE computes in one go: past this the queries go in
 /// blocks of rows. A 1440² picture has 32 400 keys, so whole it needs 4.2 GB of scores, as much
 /// again for their softmax and half that in bf16: beside a resident DiT that over-subscribes the
 /// card, and on Windows the driver spills it to shared memory (decodes of 14-67 s instead of
 /// 0.7 s). Each query row's softmax only sees its own scores, so the blocks change only the
-/// peak. 1 GiB keeps a 1024² decode (16 384 keys, exactly 1 GiB) whole, as before.
+/// peak. 1 GiB keeps a 1024² decode or encode (16 384 keys, exactly 1 GiB) whole, as before; a
+/// 2048² encode (65 536 keys, 17 GB of scores whole) goes in blocks.
 const DECODER_SCORE_BYTES: usize = 1 << 30;
 /// The size of one block of scores once the queries are split.
 const DECODER_SCORE_BLOCK_BYTES: usize = 256 << 20;
@@ -194,9 +194,6 @@ struct AttentionBlock {
     to_qkv: VaeConv,
     proj: VaeConv,
     dim: usize,
-    /// The decoder's: queries go in blocks past [`DECODER_SCORE_BYTES`]. The encoder's stays
-    /// whole, so an edit's conditioning is bit-identical to before.
-    blocked: bool,
 }
 
 impl AttentionBlock {
@@ -206,7 +203,6 @@ impl AttentionBlock {
             to_qkv: conv2d(dim, 3 * dim, 1, vb.pp("to_qkv"))?,
             proj: conv2d(dim, dim, 1, vb.pp("proj"))?,
             dim,
-            blocked: DECODER.with(|d| d.get()),
         })
     }
 
@@ -219,7 +215,9 @@ impl AttentionBlock {
         let v = qkv.narrow(2, 2 * c, c)?.contiguous()?;
         drop(qkv);
         let score_bytes = b.saturating_mul(n).saturating_mul(n).saturating_mul(4);
-        let rows = if self.blocked && score_bytes > DECODER_SCORE_BYTES {
+        // Queries in blocks past [`DECODER_SCORE_BYTES`] (decoder and encoder alike; up to
+        // 1024² nothing changes).
+        let rows = if score_bytes > DECODER_SCORE_BYTES {
             (DECODER_SCORE_BLOCK_BYTES / b.saturating_mul(n).saturating_mul(4).max(1)).max(1)
         } else {
             n
