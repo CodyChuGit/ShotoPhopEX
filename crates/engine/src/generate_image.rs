@@ -118,7 +118,7 @@ pub fn image_quality_sampler(template: &str, quality: &str) -> Option<&'static s
     }
 }
 
-/// Pixels Krea 2 Turbo renders at under Quality `best` (1440², about 2 MP: the model is made for
+/// Pixels Krea 2 Turbo rendered at under Quality `best` (1440², about 2 MP: the model is made for
 /// 1-2 MP). Measured in the app 2026-11-05: visibly finer skin and texture at 100 % than 1024²,
 /// about 10 s warm against 3 s.
 pub const BEST_KREA_PIXELS: u64 = 1440 * 1440;
@@ -298,16 +298,7 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
             }
         },
     };
-    let mut refine = image_refine(p, &template.meta.id, width, height)?;
-    // Quality Ultra: the hires pass (as ComfyUI's hires fix) on a model that has one, when the
-    // request neither asks for its own nor sets `supersample`: the picture at the asked size,
-    // redrawn at twice that, brought down to the asked size.
-    let (mut width, mut height, mut output) = (width, height, output);
-    if refine.is_none() && supersample.is_none() && quality_level(s) == "ultra" && ULTRA_REFINE_TEMPLATES.contains(&template.meta.id.as_str()) {
-        let r = ultra_refine(aw, ah);
-        (width, height, output) = (aw, ah, Some((aw, ah)));
-        refine = Some(r);
-    }
+    let refine = image_refine(p, &template.meta.id, width, height)?;
     let name = name.unwrap_or_else(|| format!("Generated: {}", short(&prompt)));
     // A transparent result: the template says how its model is asked for one (Qwen-Image-2.1
     // decodes RGBA); the layer keeps the alpha the PNG comes back with.
@@ -368,17 +359,12 @@ pub(super) fn plan_image(s: &Session, p: &Value) -> Result<ImagePlan> {
 /// wider, and both spilled past 32 GB at 1.5x and failed at 2048, so they stay at the asked size.
 pub const SUPERSAMPLE_TEMPLATES: &[&str] = &["krea2-turbo/image"];
 
-/// The templates Quality Ultra gives a refine (hires) pass.
-pub const ULTRA_REFINE_TEMPLATES: &[&str] = &["krea2-turbo/image"];
-
-/// Ultra's refine pass: twice the asked size, how much of the picture it redraws and its steps.
-pub const ULTRA_REFINE_SCALE: f64 = 2.0;
-pub const ULTRA_REFINE_DENOISE: f64 = 0.4;
-pub const ULTRA_REFINE_STEPS: u64 = 8;
-
 /// How many times the asked size `template` renders at under Quality `level` (1 for models
-/// that do not gain: [`SUPERSAMPLE_TEMPLATES`]). Ultra's 2x comes from its refine pass
-/// ([`ultra_refine`]) where the model has one.
+/// that do not gain: [`SUPERSAMPLE_TEMPLATES`]). Ultra is a plain 2x render: round 2
+/// (2026-11-19, 5090) measured Cody's first Ultra, the asked size then a 2x refine pass (as
+/// ComfyUI's hires fix, denoise 0.3-0.5, 8 steps), at 27 s like the plain 2x but no sharper
+/// than Basic (luma Laplacian 0.86-1.16x against 3.94x), a little darker (-2.5 to -4.8 levels)
+/// and with invented label text redrawn differently.
 pub fn quality_factor(template: &str, level: &str) -> f64 {
     if !SUPERSAMPLE_TEMPLATES.contains(&template) {
         return 1.0;
@@ -386,43 +372,26 @@ pub fn quality_factor(template: &str, level: &str) -> f64 {
     match level {
         "basic" => 1.0,
         "better" => 1.25,
-        "ultra" if !ULTRA_REFINE_TEMPLATES.contains(&template) => 2.0,
-        "ultra" => 1.0,
+        "ultra" => 2.0,
         _ => 1.5,
     }
 }
 
-/// `params.refine` for Quality Ultra on an asked `width × height`: [`ULTRA_REFINE_SCALE`] times
-/// it on the 16-px grid, at most [`MAX_REFINE_SIDE`] a side.
-pub fn ultra_refine(width: u32, height: u32) -> Value {
-    let long = f64::from(width.max(height).max(1));
-    let k = ULTRA_REFINE_SCALE.min(f64::from(MAX_REFINE_SIDE) / long).max(1.0);
-    let fit = |v: u32| ((f64::from(v) * k) as u32 / SIZE_STEP * SIZE_STEP).max(SIZE_STEP);
-    json!({"width": fit(width), "height": fit(height), "denoise": ULTRA_REFINE_DENOISE, "steps": ULTRA_REFINE_STEPS})
-}
-
-/// The render size and refine size Quality gives a text-to-image run of `template` asked for
-/// `width × height`, for the panel's hint: `(render, refine)`.
-pub fn quality_render_size(template: &str, level: &str, width: u32, height: u32) -> ((u32, u32), Option<(u32, u32)>) {
-    if level == "ultra" && ULTRA_REFINE_TEMPLATES.contains(&template) {
-        let r = ultra_refine(width, height);
-        let side = |k: &str| r[k].as_u64().unwrap_or(0) as u32;
-        return ((width, height), Some((side("width"), side("height"))));
-    }
+/// The size Quality renders a text-to-image run of `template` asked for `width × height` at.
+pub fn quality_render_size(template: &str, level: &str, width: u32, height: u32) -> (u32, u32) {
     match (quality_factor(template, level), template::find(template)) {
-        (k, Ok(t)) if k > 1.0 => (supersample_size(&t, width, height, k), None),
-        _ => ((width, height), None),
+        (k, Ok(t)) if k > 1.0 => supersample_size(&t, width, height, k),
+        _ => (width, height),
     }
 }
 
 /// What a text-to-image run of `template` asked for `width × height` renders at in this
-/// session with no `supersample` or `refine` in the request (for the panel's hint and
-/// estimate): Quality's size ([`quality_render_size`]), else the model's own
-/// ([`image_quality_size`]); and the refine pass's size under Ultra.
-pub fn image_render_sizes(s: &Session, template: &str, width: u32, height: u32) -> ((u32, u32), Option<(u32, u32)>) {
+/// session with no `supersample` in the request (for the panel's hint and estimate): Quality's
+/// size ([`quality_render_size`]), else the model's own ([`image_quality_size`]).
+pub fn image_render_sizes(s: &Session, template: &str, width: u32, height: u32) -> (u32, u32) {
     match quality_render_size(template, quality_level(s), width, height) {
-        (r, None) if r == (width, height) => (image_quality_size(template, quality(s), width, height), None),
-        other => other,
+        r if r == (width, height) => image_quality_size(template, quality(s), width, height),
+        r => r,
     }
 }
 

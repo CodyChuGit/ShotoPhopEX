@@ -415,17 +415,14 @@ pub(super) fn model_pill(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str,
 
 /// Preferences › AI Integrations › Quality beside the model: how far above the asked size a new
 /// picture renders before it is brought down to it, on the models that gain from it (Basic 1x,
-/// Better 1.25x, Best 1.5x, Ultra 2x through a refine pass, offered on 24 GB cards or larger).
+/// Better 1.25x, Best 1.5x, Ultra 2x, offered on 24 GB cards or larger).
 /// It never changes the model.
 pub(super) fn quality_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     use photocraft_engine::generate_cmds as g;
     let q = g::quality_level(&app.session).to_string();
     let mut options = Vec::with_capacity(4);
     if g::ultra_allowed(&app.session) {
-        options.push(
-            Seg::new("ultra".to_string(), tl!("Ultra"))
-                .tip(tl!("Renders the picture, then redraws it at twice the size and brings it down: the most detail, the slowest")),
-        );
+        options.push(Seg::new("ultra".to_string(), tl!("Ultra")).tip(tl!("Renders at twice the size and brings it down: the most detail, the slowest")));
     }
     options.extend([
         Seg::new("best".to_string(), tl!("Best")).tip(tl!("Renders at 1.5 times the size and brings it down: finer skin, hair and text")),
@@ -478,18 +475,17 @@ pub(super) fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, m
         // What it will make, on the template's grid, and what Quality renders it at first.
         let (w, h) = image_size(app);
         let tid = effective_template(app, "image");
-        let ((rw, rh), refine) = photocraft_engine::generate_cmds::image_render_sizes(&app.session, &tid, w, h);
+        let (rw, rh) = photocraft_engine::generate_cmds::image_render_sizes(&app.session, &tid, w, h);
         let level = photocraft_engine::generate_cmds::quality_level(&app.session);
-        let hint = match refine {
-            Some((fw, fh)) => format!("{w} × {h} px · {} {fw} × {fh}", tl!("refined at")),
-            None if (rw, rh) != (w, h) && photocraft_engine::generate_cmds::SUPERSAMPLE_TEMPLATES.contains(&tid.as_str()) => {
-                format!("{w} × {h} px · {} {rw} × {rh}", tl!("rendered at"))
-            }
-            None if (rw, rh) != (w, h) => format!("{rw} × {rh} px"),
-            None if level != "basic" && !photocraft_engine::generate_cmds::SUPERSAMPLE_TEMPLATES.contains(&tid.as_str()) => {
-                format!("{w} × {h} px · {}", tl!("this model renders at the size asked"))
-            }
-            None => format!("{w} × {h} px"),
+        let gains = photocraft_engine::generate_cmds::SUPERSAMPLE_TEMPLATES.contains(&tid.as_str());
+        let hint = if (rw, rh) != (w, h) && gains {
+            format!("{w} × {h} px · {} {rw} × {rh}", tl!("rendered at"))
+        } else if (rw, rh) != (w, h) {
+            format!("{rw} × {rh} px")
+        } else if level != "basic" && !gains {
+            format!("{w} × {h} px · {}", tl!("this model renders at the size asked"))
+        } else {
+            format!("{w} × {h} px")
         };
         setting_row(ui, "", |ui| {
             ui.label(RichText::new(hint).small().color(t.text_faint));

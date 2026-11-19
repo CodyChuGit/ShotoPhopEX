@@ -291,21 +291,21 @@ fn best_quality_sends_qwen21_steps_guidance_and_negative() {
 }
 
 #[test]
-fn quality_levels_supersample_krea2_and_ultra_refines() {
+fn quality_levels_supersample_krea2() {
     assert_eq!(quality_factor("krea2-turbo/image", "basic"), 1.0);
     assert_eq!(quality_factor("krea2-turbo/image", "better"), 1.25);
     assert_eq!(quality_factor("krea2-turbo/image", "best"), 1.5);
-    assert_eq!(quality_factor("krea2-turbo/image", "ultra"), 1.0, "Ultra's 2x is its refine pass");
+    assert_eq!(quality_factor("krea2-turbo/image", "ultra"), 2.0);
     for level in ["basic", "better", "best", "ultra"] {
         assert_eq!(quality_factor("moss-image/image", level), 1.0, "MOSS got softer supersampled");
         assert_eq!(quality_factor("moss-image/turbo", level), 1.0);
     }
     // Krea's old 1440² Best size is gone from the legacy sizes.
     assert_eq!(image_quality_size("krea2-turbo/image", "best", 1024, 1024), (1024, 1024));
-    assert_eq!(quality_render_size("krea2-turbo/image", "best", 1024, 1024), ((1536, 1536), None));
-    assert_eq!(quality_render_size("krea2-turbo/image", "better", 1024, 1024), ((1280, 1280), None));
-    assert_eq!(quality_render_size("krea2-turbo/image", "ultra", 1024, 1024), ((1024, 1024), Some((2048, 2048))));
-    assert_eq!(quality_render_size("moss-image/image", "best", 1024, 1024), ((1024, 1024), None));
+    assert_eq!(quality_render_size("krea2-turbo/image", "best", 1024, 1024), (1536, 1536));
+    assert_eq!(quality_render_size("krea2-turbo/image", "better", 1024, 1024), (1280, 1280));
+    assert_eq!(quality_render_size("krea2-turbo/image", "ultra", 1024, 1024), (2048, 2048));
+    assert_eq!(quality_render_size("moss-image/image", "best", 1024, 1024), (1024, 1024));
 
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
@@ -328,12 +328,12 @@ fn quality_levels_supersample_krea2_and_ultra_refines() {
     s.execute(IMAGE, ask.clone()).unwrap();
     assert_eq!(sent()["width"], 1536);
     assert!(sent()["params"].get("refine").is_none());
-    // Ultra on 24 GB+: the asked size, then the refine pass at 2x; the document at the asked size.
+    // Ultra on 24 GB+: a plain 2x render, the document at the asked size.
     s.edit_prefs(|p| p.integrations.memory_profile = "24gb".into());
     let r = s.execute(IMAGE, ask.clone()).unwrap();
     let req = sent();
-    assert_eq!(req["width"], 1024, "{req}");
-    assert_eq!(req["params"]["refine"], json!({"width": 2048, "height": 2048, "denoise": ULTRA_REFINE_DENOISE, "steps": ULTRA_REFINE_STEPS}), "{req}");
+    assert_eq!(req["width"], 2048, "{req}");
+    assert!(req["params"].get("refine").is_none(), "{req}");
     assert_eq!(r["width"], 1024);
     // MOSS stops at 1536 a side (it failed at 2048), same aspect.
     s.execute(IMAGE, json!({"prompt": "x", "template": "moss-image/turbo", "target": "document", "width": 2048, "height": 1024})).unwrap();
