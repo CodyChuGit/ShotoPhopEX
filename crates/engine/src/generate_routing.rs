@@ -47,6 +47,9 @@ pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option
 /// [`native21_auto`] without the memory profile: the Qwen-Image-2.1 route alone.
 pub(super) fn native21_only(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
     let t = match command {
+        // Remove: the Bbox Object Remover LoRA's route when the worker serves it (owner's
+        // call 2026-11-19, after the 5090 A/B), else the plain 2.1 edit.
+        FILL if removal && loras::runs_native(s, REMOVE21_TEMPLATE) => REMOVE21_TEMPLATE,
         FILL if removal => "qwen-2.1/edit",
         FILL => NATIVE21_FILL,
         // Expand stays on 2511's own tiers: its sampler keeps the picture's latent outside the
@@ -57,6 +60,10 @@ pub(super) fn native21_only(s: &Session, command: &str, removal: bool) -> Option
     };
     (s.prefs().integrations.allow_research_models && loras::runs_native(s, t)).then_some(t)
 }
+
+/// Generative Remove on Qwen-Image-2.1 with the Bbox Object Remover LoRA (a red box drawn
+/// around the selection, see `highlight_covered`).
+pub const REMOVE21_TEMPLATE: &str = "qwen-2.1/remove";
 
 /// The 2.1 fill `auto` falls back to on the native worker.
 pub(super) const NATIVE21_FILL: &str = "qwen-2.1/fill";

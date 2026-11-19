@@ -1081,13 +1081,13 @@ fn angles_runs_the_multiple_angles_lora_and_the_auto_line_names_the_outpaint_exp
         p.integrations.allow_research_models = true;
         p.integrations.quality = "best".into();
     });
-    // Always 2511 + the Multiple Angles LoRA: plain 2.1 never turned the camera, so it no longer
-    // stands in when the LoRA is missing (the window says what to download); research opt-in or not.
-    assert_eq!(angles_template(&s), ANGLES_TEMPLATE);
+    // Always 2.1 + the QMA LoRA: the window says what to download when it is missing; research
+    // opt-in or not.
+    assert_eq!(angles_template(&s), ANGLES21_TEMPLATE);
     std::fs::write(dir.path().join("loras").join(ANGLES_LORA), b"x").unwrap();
-    assert_eq!(angles_template(&s), ANGLES_TEMPLATE);
+    assert_eq!(angles_template(&s), ANGLES21_TEMPLATE);
     s.edit_prefs(|p| p.integrations.allow_research_models = false);
-    assert_eq!(angles_template(&s), ANGLES_TEMPLATE);
+    assert_eq!(angles_template(&s), ANGLES21_TEMPLATE);
     s.edit_prefs(|p| p.integrations.allow_research_models = true);
 
     // Expand's Auto line: 2511's expand until the Outpaint LoRA is there, then the 2.1 edit it

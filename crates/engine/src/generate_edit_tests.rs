@@ -116,7 +116,7 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     let fake = FakeNative::start().unwrap();
     let mut s = session(&fake.url);
     // A selection is there, but a camera move is not confined by it.
-    let r = s.execute(ANGLES, json!({"rotation": 135, "tilt": 60, "zoom": 5, "seed": 9, "variations": 2})).unwrap();
+    let r = s.execute(ANGLES, json!({"rotation": 135, "tilt": 60, "zoom": 5, "seed": 9, "variations": 2, "template": ANGLES_TEMPLATE})).unwrap();
     assert_eq!(r["template"], ANGLES_TEMPLATE);
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().filter_map(|v| v.as_u64()).map(LayerId).collect();
     assert_eq!(ids.len(), 2);
@@ -160,9 +160,10 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     }
     // Another Lightning brings its steps and CFG; the strengths go to the worker as they are.
     let before = fake.state().runs.len();
-    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 4})).unwrap();
-    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 0, "anglesStrength": 1.25, "lightningStrength": 0.5})).unwrap();
-    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 0, "steps": 30})).unwrap();
+    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 4, "template": ANGLES_TEMPLATE})).unwrap();
+    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 0, "anglesStrength": 1.25, "lightningStrength": 0.5, "template": ANGLES_TEMPLATE}))
+        .unwrap();
+    s.execute(ANGLES, json!({"rotation": 45, "seed": 1, "lightning": 0, "steps": 30, "template": ANGLES_TEMPLATE})).unwrap();
     let st = fake.state();
     let runs: Vec<&Value> = st.runs[before..].iter().map(|r| &r.request).collect();
     assert_eq!((runs[0]["steps"].as_u64(), runs[0]["guidance"].as_f64(), runs[0]["params"]["lightning"].as_u64()), (Some(4), Some(1.0), Some(4)));
@@ -170,7 +171,11 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     assert_eq!((runs[1]["params"]["angles_strength"].as_f64(), runs[1]["params"]["lightning_strength"].as_f64()), (Some(1.25), Some(0.5)));
     assert_eq!(runs[2]["steps"].as_u64(), Some(30), "steps given win");
     drop(st);
-    for p in [json!({"lightning": 6}), json!({"anglesStrength": 3}), json!({"lightningStrength": -1})] {
+    for p in [
+        json!({"lightning": 6, "template": ANGLES_TEMPLATE}),
+        json!({"anglesStrength": 3, "template": ANGLES_TEMPLATE}),
+        json!({"lightningStrength": -1, "template": ANGLES_TEMPLATE}),
+    ] {
         assert!(matches!(s.execute(ANGLES, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
     // Every camera has words: 8 × 4 × 3.
@@ -362,19 +367,34 @@ fn an_edit_s_subject_mask_reaches_past_its_edge_and_fades_out() {
 }
 
 #[test]
-fn angles_run_on_qwen_2_1_where_2511_s_fp8_file_cannot() {
-    // RTX 30 (8.6) and older: 2.1 with its own Angles LoRA; RTX 40 (8.9), RTX 50 and an unknown
-    // card: 2511 as ever.
-    assert_eq!(angles_template_for(Some(86)), ANGLES21_TEMPLATE);
-    assert_eq!(angles_template_for(Some(75)), ANGLES21_TEMPLATE);
-    assert_eq!(angles_template_for(Some(89)), ANGLES_TEMPLATE);
-    assert_eq!(angles_template_for(Some(120)), ANGLES_TEMPLATE);
-    assert_eq!(angles_template_for(None), ANGLES_TEMPLATE);
+fn angles_run_on_qwen_2_1_with_qma_on_every_card() {
+    // The owner's call, 2026-11-19: 2.1 with the QMA LoRA on any card (2511 by hand only).
+    for cap in [Some(75), Some(86), Some(89), Some(120), None] {
+        assert_eq!(angles_template_for(cap), ANGLES21_TEMPLATE, "{cap:?}");
+    }
     assert!(photocraft_genai::template::find(ANGLES21_TEMPLATE).is_ok(), "the 2.1 route has a template");
-    // The 2.1 LoRA's words: quarter views for our 45° steps, no low angle, close-up or not.
-    assert_eq!(angle_prompt_21(45, 0, 5).as_deref(), Some("<mva> front-right quarter view, eye-level shot"));
-    assert_eq!(angle_prompt_21(90, 30, 10).as_deref(), Some("<mva> right side view, elevated shot close-up"));
-    assert_eq!(angle_prompt_21(180, 60, 0).as_deref(), Some("<mva> back view, high-angle shot"));
-    assert_eq!(angle_prompt_21(270, -30, 5).as_deref(), Some("<mva> left side view, eye-level shot"));
+    // QMA's words are fal's with its own trigger, then the move in plain words.
+    assert_eq!(angle_prompt_21(0, 0, 5).as_deref(), Some("<qma> front view eye-level shot"));
+    assert_eq!(
+        angle_prompt_21(90, 30, 10).as_deref(),
+        Some(
+            "<qma> right side view elevated shot close-up The camera has moved 90 degrees around to the subject's right: a true side profile, the subject seen exactly from its right side. The camera is a little higher than the subject and looks slightly down at it, 30 degrees. The camera has moved close: the subject's main part fills the frame."
+        )
+    );
+    assert!(angle_prompt_21(270, -30, 0).unwrap().starts_with("<qma> left side view low-angle shot wide shot The camera"));
     assert_eq!(angle_prompt_21(30, 0, 5), None);
+
+    // generate.angles: QMA's words and the template's 30 steps at CFG 3; no Lightning keys.
+    let fake = FakeNative::start().unwrap();
+    let mut s = session(&fake.url);
+    let r = s.execute(ANGLES, json!({"rotation": 90, "seed": 4, "lightning": 4, "template": ANGLES21_TEMPLATE})).unwrap();
+    assert_eq!(r["template"], ANGLES21_TEMPLATE);
+    let st = fake.state();
+    let g = &st.runs[0].request;
+    assert!(g["prompt"].as_str().unwrap().starts_with("<qma> right side view eye-level shot The camera has moved 90 degrees"), "{}", g["prompt"]);
+    assert_eq!(g["params"]["models"]["lora"], "qwen-image-2.1-qma-camera-angles.safetensors");
+    assert_eq!((g["steps"].as_u64(), g["guidance"].as_f64()), (Some(30), Some(3.0)), "the QMA card's");
+    assert!(g["params"].get("lightning").is_none(), "no Lightning on 2.1");
+    drop(st);
+    assert!(matches!(s.execute(ANGLES, json!({"template": "qwen-2.1/edit"})), Err(EngineError::BadParams { .. })));
 }

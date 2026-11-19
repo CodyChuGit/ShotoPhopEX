@@ -323,13 +323,23 @@
   },
   {
    "id": "angles21",
-   "name": "2.1 Multiple Angles",
+   "name": "2.1 QMA camera angles",
    "folder": "loras",
-   "file": "qwen-image-2.1-multiple-angles-v2.safetensors",
-   "bytes": 318819792,
-   "sha256": "548c57977c3f1c09c2c9e5f4e83e930cbc6f719c878a576ab8666ce29fef39b6",
-   "url": "https://huggingface.co/akhaliq/Qwen-Image-2.1-Multiple-Angles-LoRA/resolve/main/checkpoints_v2/angles_v2_full_qwen21_multiple_angles_v2_qwen21_multiple_angles_v2_000001500.safetensors",
+   "file": "qwen-image-2.1-qma-camera-angles.safetensors",
+   "bytes": 318820224,
+   "sha256": "ad2c20e0e103b6ad3ffffc56ab4e89c0822263c488aa4dd70e7e03091ff37b8d",
+   "url": "https://huggingface.co/gribbliest/qwen-image-2.1-qma-camera-angles/resolve/13007eec2648c09529e930164c2ccc9c8c12428c/qwen-image-2.1-qma-camera-angles.safetensors",
    "license": "apache-2.0"
+  },
+  {
+   "id": "remove21",
+   "name": "2.1 Object Remover (Bbox turbo)",
+   "folder": "loras",
+   "file": "Qwen-Image-2.1-Object-Remover-Bbox-turbo-4000.safetensors",
+   "bytes": 83943952,
+   "sha256": "7035eba6f25cdbd0c780027372710c9bebebdd814baaa79d48ce9d5ca80d6449",
+   "url": "https://huggingface.co/prithivMLmods/Qwen-Image-2.1-Object-Remover-Bbox-turbo/resolve/main/Qwen-Image-2.1-Object-Remover-Bbox-turbo-4000.safetensors",
+   "license": "qwen-research"
   },
   {
    "id": "lightning4",
@@ -664,6 +674,8 @@
     "outpaint-v2",
     "outpaint-wide",
     "viggle-turbo",
+    "angles21",
+    "remove21",
     "sam31",
     "sam31-tokenizer",
     "vitmatte",
@@ -793,6 +805,8 @@
     "outpaint-v2",
     "outpaint-wide",
     "viggle-turbo",
+    "angles21",
+    "remove21",
     "sam31",
     "sam31-tokenizer",
     "vitmatte",
@@ -821,8 +835,8 @@
   },
   {
    "id": "qwen21-angles",
-   "name": "Angles on RTX 30 and older",
-   "description": "Generative Angles on cards without fp8 support (RTX 30-series and older), where Qwen-Image-Edit-2511 doesn't run: Qwen-Image-2.1 with akhaliq's Multiple Angles LoRA.",
+   "name": "Generative Angles",
+   "description": "Generative Angles: Qwen-Image-2.1 with the QMA camera-angles LoRA.",
    "files": [
     "qwen21-dit",
     "qwen3vl-8b",

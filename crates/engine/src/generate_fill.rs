@@ -23,7 +23,7 @@ use super::{
     grey_where, judge_pair, krea2_fill, named_object, naming_picture, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num, opt_str,
     outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, realigned, removal_adapter, request_size_within, resize_gray8,
     resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, speed, still_there, template_or, tone_match_removal,
-    web_unavailable, write_rgba8,
+    unboxed, web_unavailable, write_rgba8,
 };
 
 pub(super) fn fill_enabled(s: &Session) -> std::result::Result<(), String> {
@@ -378,6 +378,16 @@ pub(super) fn source_picture(doc: &Document, ctx: &JobCtx, rect: Rect, outpaint:
     Ok(image)
 }
 
+/// A box adapter's box left in the result goes back to the picture there (`unboxed`).
+fn unbox_adapter(out: Rgba8, adapter: Option<&(String, Rgba8, Gray8)>, plain: &Rgba8) -> Rgba8 {
+    match adapter {
+        Some((id, img, _)) if template::find(id).is_ok_and(|t| t.meta.highlight.as_deref().is_some_and(|c| c.trim().ends_with("-box"))) => {
+            unboxed(out, img, plain)
+        }
+        _ => out,
+    }
+}
+
 pub(super) fn fill_region(
     doc: &mut Document,
     active: &mut Option<LayerId>,
@@ -545,6 +555,7 @@ pub(super) fn fill_region(
         ctx.check()?;
         let out = resp.images.into_iter().next().ok_or_else(|| EngineError::Other("the backend returned no image".into()))?;
         let out = if realign { realigned(out, &image_plain, run_mask) } else { out };
+        let out = unbox_adapter(out, this_adapter, &image_plain);
         // `shadow`: on a whole-picture route a removal also takes what changed with the object
         // beside the hole; that band joins the hole for the tone match (the membrane carries
         // the result across it, so its edge meets the picture) and the layer mask.

@@ -746,17 +746,15 @@ pub(super) const PAINT_LEFT_SHARE: f64 = 0.05;
 
 /// `img` with the hole (`mask` at [`SMOOTH_INSIDE`] or more) painted solid in `colour`
 /// ("red", "green", "blue", or `#rrggbb`; anything else red): what a removal adapter trained
-/// on a highlight expects to see.
+/// on a highlight expects to see. A colour ending in `-box` ("red-box") draws a thin box of
+/// that colour around the hole instead, the picture left as it is inside: what the Qwen 2.1
+/// Bbox Object Remover was trained on.
 pub(super) fn highlight_covered(img: &Rgba8, mask: &Gray8, colour: &str) -> Rgba8 {
-    let rgb = match colour.trim().to_ascii_lowercase().as_str() {
-        "green" => [0, 255, 0],
-        "blue" => [0, 0, 255],
-        hex if hex.len() == 7 && hex.starts_with('#') => {
-            let v = |i: usize| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("ff"), 16).unwrap_or(255);
-            [v(1), v(3), v(5)]
-        }
-        _ => [255, 0, 0],
-    };
+    let colour = colour.trim().to_ascii_lowercase();
+    if let Some(c) = colour.strip_suffix("-box") {
+        return box_around(img, mask, highlight_rgb(c));
+    }
+    let rgb = highlight_rgb(&colour);
     if (mask.width, mask.height) != (img.width, img.height) {
         return img.clone();
     }
@@ -766,6 +764,73 @@ pub(super) fn highlight_covered(img: &Rgba8, mask: &Gray8, colour: &str) -> Rgba
             && let Some(px) = data.get_mut(i * 4..i * 4 + 4)
         {
             px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
+    }
+    Rgba8::new(img.width, img.height, data).unwrap_or_else(|_| img.clone())
+}
+
+/// `out` with the picture put back wherever the request showed the adapter's box (`boxed`
+/// differs from `plain`) and the result still has it in saturated red: the Bbox remover leaves
+/// a trace of its box on some seeds, which the result layer's band would show.
+pub(super) fn unboxed(out: Rgba8, boxed: &Rgba8, plain: &Rgba8) -> Rgba8 {
+    if (out.width, out.height) != (plain.width, plain.height) || (boxed.width, boxed.height) != (plain.width, plain.height) {
+        return out;
+    }
+    let mut out = out;
+    for ((o, b), p) in out.data.chunks_exact_mut(4).zip(boxed.data.chunks_exact(4)).zip(plain.data.chunks_exact(4)) {
+        if b[..3] != p[..3] && o[0] >= 150 && i32::from(o[0]) - i32::from(o[1].max(o[2])) >= 70 {
+            o.copy_from_slice(p);
+        }
+    }
+    out
+}
+
+fn highlight_rgb(colour: &str) -> [u8; 3] {
+    match colour {
+        "green" => [0, 255, 0],
+        "blue" => [0, 0, 255],
+        hex if hex.len() == 7 && hex.starts_with('#') => {
+            let v = |i: usize| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("ff"), 16).unwrap_or(255);
+            [v(1), v(3), v(5)]
+        }
+        _ => [255, 0, 0],
+    }
+}
+
+/// How thick [`box_around`] draws: 3 px (the Bbox remover's samples) up to 1600 px, a pixel
+/// more for each further 400.
+pub(super) fn box_width(w: u32, h: u32) -> u32 {
+    (w.max(h) / 400).max(3)
+}
+
+/// `img` with a box in `rgb` drawn just outside the hole's bounds (`mask` at
+/// [`SMOOTH_INSIDE`] or more), clipped to the picture; `img` as it is when there is no hole.
+pub(super) fn box_around(img: &Rgba8, mask: &Gray8, rgb: [u8; 3]) -> Rgba8 {
+    if (mask.width, mask.height) != (img.width, img.height) {
+        return img.clone();
+    }
+    let (w, h) = (i64::from(img.width), i64::from(img.height));
+    let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+    for (i, m) in mask.data.iter().enumerate() {
+        if *m >= SMOOTH_INSIDE {
+            let (x, y) = (i as i64 % w, i as i64 / w);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+    }
+    if x0 > x1 {
+        return img.clone();
+    }
+    let t = i64::from(box_width(img.width, img.height));
+    // The box's inner edge one pixel outside the hole.
+    let (bx0, by0, bx1, by1) = (x0 - 1 - t, y0 - 1 - t, x1 + 1 + t, y1 + 1 + t);
+    let mut data = img.data.clone();
+    for y in by0.max(0)..=by1.min(h - 1) {
+        for x in bx0.max(0)..=bx1.min(w - 1) {
+            let edge = x < bx0 + t || x > bx1 - t || y < by0 + t || y > by1 - t;
+            let at = ((y * w + x) * 4) as usize;
+            if edge && let Some(px) = data.get_mut(at..at + 4) {
+                px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+            }
         }
     }
     Rgba8::new(img.width, img.height, data).unwrap_or_else(|_| img.clone())

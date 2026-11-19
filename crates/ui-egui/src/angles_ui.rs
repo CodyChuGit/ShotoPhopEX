@@ -1,5 +1,5 @@
 //! Edit › Generative Angles… (ShotoPhopEX, plan Phase 5): the picture seen from another camera,
-//! with fal's Multiple Angles LoRA for Qwen-Image-Edit-2511 (`generate.angles`). A small window
+//! with the QMA camera LoRA for Qwen-Image-2.1 (`generate.angles`). A small window
 //! beside the canvas: an orbit widget (the subject in the middle, the camera dragged around it
 //! and up or down, snapping to the 8 directions and 4 heights the LoRA knows), the direction,
 //! height and distance as menus, the number of variations, and Generate with its estimate. The
@@ -8,7 +8,9 @@
 use std::f32::consts::PI;
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
-use photocraft_engine::generate_cmds::{ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_TEMPLATE, angle_prompt, angle_words, angles_template};
+use photocraft_engine::generate_cmds::{
+    ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_TEMPLATE, angle_prompt, angle_prompt_21, angle_words, angles_template,
+};
 use serde_json::{Value, json};
 
 use crate::PhotocraftApp;
@@ -130,7 +132,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let template = angles_template(&app.session);
     let missing = app.ui.generate.catalog.iter().find(|m| m.id == template).is_some_and(|m| m.installed == Some(false));
     let on21 = template != ANGLES_TEMPLATE;
-    // Bring-your-own: 2511 stays the model on a smaller card too, with a note that it may not fit.
+    // Bring-your-own: the model stays on a smaller card too, with a note that it may not fit.
     let may_not_fit = photocraft_engine::memory_profile::may_not_fit(photocraft_engine::memory_profile::active(&app.session), template);
     let mut open = true;
     let mut generate = false;
@@ -195,7 +197,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             if missing {
                 ui.add_space(4.0);
                 let why = if on21 {
-                    tl!("On this card Angles runs Qwen-Image-2.1 with its Multiple Angles LoRA, which aren’t in the Models folder yet. Get them from Get AI Models › Extras.")
+                    tl!("Angles runs Qwen-Image-2.1 with the QMA camera LoRA, which aren’t in the Models folder yet. Get them from Get AI Models › Extras.")
                 } else {
                     tl!("Angles runs Qwen-Image-Edit-2511 with fal’s Multiple Angles LoRA, which aren’t in the Models folder yet. Get them from Get AI Models › Extras.")
                 };
@@ -249,8 +251,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 /// Get AI Models' extra (`model-packs.json`) with Qwen-Image-Edit-2511 and the Multiple Angles LoRA.
 const ANGLES_EXTRA: &str = "qwen-edit-2511";
-/// The extra with Qwen-Image-2.1 and its Multiple Angles LoRA, Angles' route on cards older than
-/// RTX 40.
+/// The extra with Qwen-Image-2.1 and the QMA camera LoRA, Angles' route.
 const ANGLES21_EXTRA: &str = "qwen21-angles";
 
 /// Seconds the run will most likely take (the template's formula at the document's size).
@@ -281,7 +282,8 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
     let a = &app.ui.angles;
     json!({
         "open": a.open, "rotation": a.rotation, "tilt": a.tilt, "zoom": a.zoom, "variations": a.variations, "job": a.job,
-        "prompt": angle_prompt(a.rotation, a.tilt, a.zoom), "eta": estimate(app),
+        "prompt": if angles_template(&app.session) == ANGLES_TEMPLATE { angle_prompt(a.rotation, a.tilt, a.zoom) } else { angle_prompt_21(a.rotation, a.tilt, a.zoom) },
+        "eta": estimate(app),
     })
 }
 

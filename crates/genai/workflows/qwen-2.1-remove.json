@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "id": "qwen-2.1/remove",
+    "name": "Generative Remove (Qwen-Image-2.1, Bbox Object Remover LoRA)",
+    "family": "qwen-image-2.1",
+    "task": "edit",
+    "license": "research",
+    "licenseNote": "Qwen-Image-2.1 (Alibaba Qwen, 2026-09-20) ships under the Qwen Research License Agreement: research and evaluation use only; commercial use needs a separate agreement with Alibaba. Turn on Allow Research-Only Models in Preferences › AI Integrations to use it.",
+    "needsImage": true,
+    "needsMask": false,
+    "highlight": "red-box",
+    "defaults": {
+      "steps": 25,
+      "guidance": 1.0
+    },
+    "models": [
+      {
+        "placeholder": "unet",
+        "folder": "diffusion_models",
+        "default": "qwen_image_2.1_bf16.safetensors"
+      },
+      {
+        "placeholder": "clip",
+        "folder": "text_encoders",
+        "default": "qwen3vl_8b_bf16.safetensors"
+      },
+      {
+        "placeholder": "vae",
+        "folder": "vae",
+        "default": "qwen_image_2.1_vae_bf16.safetensors"
+      },
+      {
+        "placeholder": "lora",
+        "folder": "loras",
+        "default": "Qwen-Image-2.1-Object-Remover-Bbox-turbo-4000.safetensors"
+      }
+    ],
+    "notes": "Served by ShotoPhopEX's native worker (gn-diffusion qwen-2.1/remove): the Qwen-Image-2.1 edit with prithivMLmods' Object Remover Bbox-turbo LoRA (huggingface.co/prithivMLmods/Qwen-Image-2.1-Object-Remover-Bbox-turbo, step 4000, Qwen Research licence) at strength 1 in front of the request's own LoRAs. `highlight: red-box` tells the engine to draw a thin pure-red box around the selection in the request picture and send the LoRA's trigger, `Remove the red highlighted object from the scene.`; the result layer is masked to the selection, so whatever the edit moved outside it stays the picture. Generative Remove's route on Qwen-Image-2.1 when the LoRA is installed (owner's call, 2026-11-19): in the 5090 A/B on 8 removals it scored 21 of 24 at about 6 s warm, against 19 for 2511's Object Remover (24-29 s) and 7 for the plain 2.1 edit. No ComfyUI graph.",
+    "creator": "prithivMLmods (LoRA), Alibaba Qwen",
+    "description": "Removes what the selection covers with an adapter trained for it",
+    "badges": [],
+    "estimatedSeconds": {
+      "base": 4,
+      "perMegapixel": 3
+    },
+    "pages": [
+      "fill"
+    ],
+    "parameters": []
+  }
+}

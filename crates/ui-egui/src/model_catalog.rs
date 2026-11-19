@@ -286,6 +286,8 @@ pub fn role(id: &str, page: &str) -> Role {
             // The Outpaint LoRA's 6-step recipe: Expand's Fast; on the Edit page it is Expand's.
             "outpaint-turbo" if page == "expand" => Role::Runs(FAST),
             "outpaint-turbo" => Role::Hidden,
+            // Remove's adapter belongs to that tool.
+            "remove" => Role::Hidden,
             // The image template follows Speed's step tiers in the engine (25 or 40 steps).
             "image" => Role::Runs(ALL),
             _ => Role::Runs(FULL),
