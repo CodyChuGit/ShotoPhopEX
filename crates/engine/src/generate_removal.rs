@@ -93,9 +93,14 @@ pub(super) fn stroke_overlap(stroke: &[f32], sb: Rect, obj: &[f32], on: u64, can
     inside as f64 / union as f64
 }
 
-/// `PHOTOCRAFT_DUMP_VIEWS=<folder>` (bench only): the picture a removal's rewriter is shown
-/// is saved there as `views-<n>.png`, so `naming-probe.ps1` can ask about exactly that picture.
+/// `PHOTOCRAFT_DUMP_VIEWS=<folder>` (bench only, debug builds only): the picture a removal's
+/// rewriter is shown is saved there as `views-<n>.png`, so `naming-probe.ps1` can ask about
+/// exactly that picture. Release builds ignore the variable, so a stray environment setting
+/// cannot make the shipped app write the user's pictures to disk.
 pub(super) fn dump_views(seen: &Rgba8) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     let Ok(dir) = std::env::var("PHOTOCRAFT_DUMP_VIEWS") else { return };
     let Ok(png) = photocraft_genai::png::encode_rgba8(seen) else { return };
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);

@@ -50,7 +50,7 @@ fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
     assert_eq!(st.runs.len(), 2, "two variations");
     assert_eq!(
         st.runs[0].request["prompt"],
-        "<sks> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is raised above the subject and looks down at it at 30 degrees. The camera has moved close: the subject's main part fills the frame."
+        "<sks> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is a little higher than the subject and looks slightly down at it, 30 degrees. The camera has moved close: the subject's main part fills the frame."
     );
     drop(st);
     let runs = crate::variations_strip::bundles(&a);
@@ -60,7 +60,7 @@ fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
         (v["prompt"].as_str(), v["open"].as_bool()),
         (
             Some(
-                "<sks> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is raised above the subject and looks down at it at 30 degrees. The camera has moved close: the subject's main part fills the frame."
+                "<sks> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is a little higher than the subject and looks slightly down at it, 30 degrees. The camera has moved close: the subject's main part fills the frame."
             ),
             Some(true)
         )

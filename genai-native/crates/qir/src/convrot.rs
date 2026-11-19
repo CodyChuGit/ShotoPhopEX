@@ -717,6 +717,22 @@ impl ConvRotLinear {
         Ok(Self { weights: std::sync::RwLock::new(LinearWeights { q: w_i8, scales: col_scale, original_cpu: None, patched: false }), hadamard: r.clone() })
     }
 
+    /// Move the INT8 weight and its scales to `dev` (the rotation stays where it is). The
+    /// Krea 2 loader parks a converted model's weights on the host and brings them back, so
+    /// they land in one fresh stretch of the card instead of between the conversion's freed
+    /// temporaries.
+    pub fn move_to(&self, dev: &candle_core::Device) -> Result<()> {
+        let mut weights = self.weights.write().map_err(|_| anyhow::anyhow!("ConvRot weight lock poisoned"))?;
+        weights.q = weights.q.to_device(dev)?;
+        weights.scales = weights.scales.to_device(dev)?;
+        Ok(())
+    }
+
+    /// The INT8 weight's bytes on its device.
+    pub fn weight_bytes(&self) -> usize {
+        self.weights.read().map_or(0, |w| w.q.elem_count())
+    }
+
     /// Restore original bytes without another quantization.
     pub fn clear_loras(&self) -> Result<()> {
         let mut weights = self.weights.write().map_err(|_| anyhow::anyhow!("ConvRot weight lock poisoned"))?;

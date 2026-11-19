@@ -134,13 +134,6 @@ pub const MOSS_GUIDANCE: f32 = 3.0;
 /// The low-VRAM turbo: lodestones' Kromoss (Apache-2.0, a full fine-tune of MOSS-Image-Base)
 /// with its 8-step DMD2 LoRA, at the card's 8 steps and CFG 1 (no negative pass).
 pub const TEMPLATE_MOSS_TURBO: &str = "moss-image/turbo";
-/// KandooAI's Juggernaut MOSS (Civitai 3042282, a full fine-tune of MOSS-Image-Base for
-/// photographs; bring your own): V1 on its card's recipe (30 Euler steps, CFG 3, block 22
-/// skipped, its negative) and its turbo beta (6 `euler_ancestral` steps, CFG 1).
-pub const TEMPLATE_MOSS_JUGGERNAUT: &str = "moss-image/juggernaut";
-pub const TEMPLATE_MOSS_JUGGERNAUT_TURBO: &str = "moss-image/juggernaut-turbo";
-pub const MOSS_JUGGERNAUT_STEPS: u32 = 30;
-pub const MOSS_JUGGERNAUT_TURBO_STEPS: u32 = 6;
 pub const MOSS_TURBO_LORA: &str = "kromoss-8-steps-dmd2-lora.safetensors";
 pub const MOSS_TURBO_STEPS: u32 = 8;
 /// akhaliq's MOSS-Image-SFT 4-step LoRA (Apache-2.0; stock Euler, 4 steps, CFG 1): MOSS Turbo
@@ -206,7 +199,7 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 44] = [
+pub const TEMPLATES: [(&str, &str, Family); 42] = [
     (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
     (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
@@ -223,8 +216,6 @@ pub const TEMPLATES: [(&str, &str, Family); 44] = [
     (TEMPLATE_KREA2_FILL, "fill", Family::Krea2),
     (TEMPLATE_MOSS, "image", Family::Moss(MossVariant::Sft)),
     (TEMPLATE_MOSS_BASE, "image", Family::Moss(MossVariant::Base)),
-    (TEMPLATE_MOSS_JUGGERNAUT, "image", Family::Moss(MossVariant::Juggernaut)),
-    (TEMPLATE_MOSS_JUGGERNAUT_TURBO, "image", Family::Moss(MossVariant::JuggernautTurbo)),
     (TEMPLATE_KREA2_EDIT, "edit", Family::Krea2),
     (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
@@ -407,6 +398,27 @@ fn with_edit_lora(params: &std::collections::BTreeMap<String, Value>) -> std::co
 
 /// A request's params with `file` at strength 1 in front of its own `loras`, unless the
 /// request already names that file (at its own strength).
+/// A LoRA file `name` under `root` ([`DiffusionEngine::template_lora`]'s places).
+fn find_lora(root: &Path, name: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+        let here = dir.join(name);
+        if here.is_file() {
+            return Some(here);
+        }
+        if depth == 0 {
+            return None;
+        }
+        let mut subs: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
+        subs.sort();
+        subs.iter().find_map(|d| walk(d, name, depth - 1))
+    }
+    walk(&root.join(LORA_DIR), name, 2).or_else(|| {
+        let mut models: Vec<PathBuf> = std::fs::read_dir(root).ok()?.filter_map(|e| e.ok().map(|e| e.path().join(LORA_DIR))).filter(|p| p.is_dir()).collect();
+        models.sort();
+        models.iter().find_map(|d| walk(d, name, 1))
+    })
+}
+
 fn with_lora_first(params: &std::collections::BTreeMap<String, Value>, file: &str) -> std::collections::BTreeMap<String, Value> {
     let mut out = params.clone();
     let mut list = params.get("loras").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -614,22 +626,13 @@ impl DiffusionEngine {
     /// Where a LoRA named by a request lives: an absolute path as given, a name under the model
     /// root's `loras/`. A name must stay a plain file name (no folders) so a request cannot read
     /// outside the root.
-    /// A template's own LoRA `name` under the root's `loras/`, or up to two subfolders below it
-    /// (`loras/moss-image/…`, as a junctioned model folder puts it), first found in sorted order.
+    /// A LoRA file `name`: under the root's `loras/`, or up to two subfolders below it
+    /// (`loras/moss-image/…`, as a junctioned model folder puts it), else in a model folder's own
+    /// `loras/` (`moss-image/loras/…`, where MOSS-Image's download keeps its turbo LoRA), first
+    /// found in sorted order. Only `kromoss-8-steps-dmd2-lora` in `moss-image/loras` made MOSS
+    /// Turbo report "not installed" though the file was there (round 9 on the 5090, 2026-11-18).
     fn template_lora(&self, name: &str) -> Option<PathBuf> {
-        fn walk(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
-            let here = dir.join(name);
-            if here.is_file() {
-                return Some(here);
-            }
-            if depth == 0 {
-                return None;
-            }
-            let mut subs: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
-            subs.sort();
-            subs.iter().find_map(|d| walk(d, name, depth - 1))
-        }
-        walk(&self.models_root.join(LORA_DIR), name, 2)
+        find_lora(&self.models_root, name)
     }
 
     /// Klein's folder under the model root ([`KLEIN_DIRS`], first found).
@@ -649,7 +652,8 @@ impl DiffusionEngine {
         if p.components().count() != 1 {
             return Err(EngineError::new(ErrorKind::BadRequest, format!("a LoRA is named by its file name or an absolute path, not `{file}`")));
         }
-        Ok(self.models_root.join(LORA_DIR).join(p))
+        let main = self.models_root.join(LORA_DIR).join(p);
+        Ok(if main.is_file() { main } else { find_lora(&self.models_root, file).unwrap_or(main) })
     }
 
     /// A text answer (the app's `enhance/*` templates): the 2.1 pipeline's encoder as Qwen3-VL,
@@ -1126,8 +1130,6 @@ impl DiffusionEngine {
                                 MossVariant::Base => "moss_image_base",
                                 MossVariant::Sft => "moss_image_sft",
                                 MossVariant::Kromoss => "kromoss",
-                                MossVariant::Juggernaut => "juggernaut_moss_v1",
-                                MossVariant::JuggernautTurbo => "juggernaut_moss_turbo_v1",
                             }
                         ),
                     ));
@@ -1386,20 +1388,6 @@ pub fn task_of(template: &str) -> Option<&'static str> {
 }
 
 /// The family that serves a template.
-/// An A/B hook for MOSS Edit on another fine-tune's DiT: `GN_MOSS_EDIT_DIT=juggernaut` (or
-/// `juggernaut-turbo`) runs `moss-image/edit` and `moss-image/edit-turbo` with the edit LoRA on
-/// Juggernaut MOSS instead of MOSS-Image-SFT. Unset, the templates' own.
-fn moss_edit_dit_override(template: &str, family: Family) -> Family {
-    if ![TEMPLATE_MOSS_EDIT, TEMPLATE_MOSS_EDIT_TURBO].contains(&template) {
-        return family;
-    }
-    match std::env::var("GN_MOSS_EDIT_DIT").ok().as_deref().map(str::trim) {
-        Some("juggernaut") => Family::Moss(MossVariant::Juggernaut),
-        Some("juggernaut-turbo") => Family::Moss(MossVariant::JuggernautTurbo),
-        _ => family,
-    }
-}
-
 pub fn family_of(template: &str) -> Option<Family> {
     TEMPLATES.iter().find(|(t, _, _)| *t == template).map(|(_, _, f)| *f)
 }
@@ -1675,7 +1663,7 @@ impl Engine for DiffusionEngine {
         if let Some(why) = &self.refused {
             return Err(EngineError::new(ErrorKind::Unsupported, why.clone()));
         }
-        let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model).map(|f| moss_edit_dit_override(&req.model, f))) else {
+        let (Some(task), Some(family)) = (task_of(&req.model), family_of(&req.model)) else {
             let served: Vec<&str> = TEMPLATES.iter().map(|(t, _, _)| *t).collect();
             return Err(EngineError::new(ErrorKind::ModelMissing, format!("{} is not served here ({} are)", req.model, served.join(", "))));
         };
@@ -1819,8 +1807,6 @@ impl Engine for DiffusionEngine {
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_RESTORE => MOSS_RESTORE_STEPS,
             Family::Moss(_) if req.model == TEMPLATE_MOSS => MOSS_REALISM_STEPS,
-            Family::Moss(_) if req.model == TEMPLATE_MOSS_JUGGERNAUT => MOSS_JUGGERNAUT_STEPS,
-            Family::Moss(_) if req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO => MOSS_JUGGERNAUT_TURBO_STEPS,
             Family::Moss(_) => MOSS_STEPS,
             // Klein's own (its checkpoint's 16).
             Family::Klein => 0,
@@ -1828,11 +1814,7 @@ impl Engine for DiffusionEngine {
             Family::MiniMaxH3 => MINIMAX_H3_STEPS,
         };
         let default_guidance = match family {
-            Family::Moss(_)
-                if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT_TURBO, TEMPLATE_MOSS_RESTORE, TEMPLATE_MOSS_JUGGERNAUT_TURBO].contains(&req.model.as_str()) =>
-            {
-                1.0
-            }
+            Family::Moss(_) if [TEMPLATE_MOSS_TURBO, TEMPLATE_MOSS_EDIT_TURBO, TEMPLATE_MOSS_RESTORE].contains(&req.model.as_str()) => 1.0,
             Family::Moss(_) if req.model == TEMPLATE_MOSS_EDIT => MOSS_EDIT_GUIDANCE,
             Family::Moss(_) => MOSS_GUIDANCE,
             _ => 1.0,
@@ -1897,16 +1879,8 @@ impl Engine for DiffusionEngine {
                 None => 1.0,
             };
             // MOSS-Image's text to image: the realism recipe's negative when none is typed.
-            // Juggernaut MOSS V1 likewise with its card's negative; its turbo runs at CFG 1.
             let realism = req.model == TEMPLATE_MOSS;
-            let juggernaut = req.model == TEMPLATE_MOSS_JUGGERNAUT;
-            let juggernaut_turbo = req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO;
-            let negative = match () {
-                _ if !req.negative.trim().is_empty() => req.negative.clone(),
-                _ if realism => moss::REALISM_NEGATIVE.to_string(),
-                _ if juggernaut => moss::JUGGERNAUT_NEGATIVE.to_string(),
-                _ => req.negative.clone(),
-            };
+            let negative = if realism && req.negative.trim().is_empty() { moss::REALISM_NEGATIVE.to_string() } else { req.negative.clone() };
             let ask = Request {
                 prompt: req.prompt.clone(),
                 negative,
@@ -1952,13 +1926,8 @@ impl Engine for DiffusionEngine {
                         p.refine_previewed(&ask, &base, &opts, &mut |f, m| report(0.55 + 0.45 * f, m), shown, &stop).map(|p| vec![p]).map_err(err)
                     }
                 },
-                (Resident::Moss(p, _), _) if realism || juggernaut || juggernaut_turbo => {
-                    let sampling = match () {
-                        _ if juggernaut => moss::Sampling::JUGGERNAUT,
-                        _ if juggernaut_turbo => moss::Sampling::JUGGERNAUT_TURBO,
-                        _ => moss::Sampling::REALISM,
-                    };
-                    p.generate_sampled(&ask, sampling.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
+                (Resident::Moss(p, _), _) if realism => {
+                    p.generate_sampled(&ask, moss::Sampling::REALISM.with_env(), &mut report, shown, &stop).map(|p| vec![p]).map_err(err)
                 }
                 (Resident::Moss(p, _), _) if req.model == TEMPLATE_MOSS_RESTORE => {
                     let mut sampling = moss::Sampling::OSTRIS_EDIT.with_env();
@@ -2067,8 +2036,6 @@ fn cuda_default_steps(template: &str) -> Option<u32> {
         // The realism recipe's res_2s is CUDA only: MLX keeps its 50 Euler steps.
         TEMPLATE_MOSS => Some(MOSS_REALISM_STEPS),
         TEMPLATE_MOSS_BASE => Some(MOSS_STEPS),
-        TEMPLATE_MOSS_JUGGERNAUT => Some(MOSS_JUGGERNAUT_STEPS),
-        TEMPLATE_MOSS_JUGGERNAUT_TURBO => Some(MOSS_JUGGERNAUT_TURBO_STEPS),
         _ => None,
     }
 }
@@ -2119,9 +2086,9 @@ const GREY_LEVELS: u8 = 6;
 #[cfg(feature = "mlx")]
 fn cuda_default_guidance(template: &str) -> Option<f32> {
     match template {
-        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO | TEMPLATE_MOSS_RESTORE | TEMPLATE_MOSS_JUGGERNAUT_TURBO => Some(1.0),
+        TEMPLATE_MOSS_TURBO | TEMPLATE_MOSS_EDIT_TURBO | TEMPLATE_MOSS_RESTORE => Some(1.0),
         TEMPLATE_MOSS_EDIT => Some(MOSS_EDIT_GUIDANCE),
-        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE | TEMPLATE_MOSS_JUGGERNAUT => Some(MOSS_GUIDANCE),
+        TEMPLATE_MOSS | TEMPLATE_MOSS_BASE => Some(MOSS_GUIDANCE),
         _ => None,
     }
 }
@@ -2244,10 +2211,6 @@ impl DiffusionEngine {
             TEMPLATE_MOSS_EDIT => Ok((sft()?, vec![edit()?], MOSS_EDIT_STEPS, MOSS_EDIT_GUIDANCE)),
             TEMPLATE_MOSS => Ok((sft()?, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
             TEMPLATE_MOSS_BASE if has(MossVariant::Base) => Ok((MossVariant::Base, Vec::new(), MOSS_STEPS, MOSS_GUIDANCE)),
-            TEMPLATE_MOSS_JUGGERNAUT if has(MossVariant::Juggernaut) => Ok((MossVariant::Juggernaut, Vec::new(), MOSS_JUGGERNAUT_STEPS, MOSS_GUIDANCE)),
-            TEMPLATE_MOSS_JUGGERNAUT_TURBO if has(MossVariant::JuggernautTurbo) => {
-                Ok((MossVariant::JuggernautTurbo, Vec::new(), MOSS_JUGGERNAUT_TURBO_STEPS, 1.0))
-            }
             t => Err(EngineError::new(ErrorKind::ModelMissing, format!("{t} is not served on MLX"))),
         }
     }
@@ -2277,12 +2240,9 @@ impl DiffusionEngine {
                 loras.push(gn_mlx::pipeline::LoraSpec { path, strength });
             }
         }
-        // Juggernaut MOSS V1 with its card's negative when none is typed, as on CUDA.
-        let negative =
-            if req.model == TEMPLATE_MOSS_JUGGERNAUT && req.negative.trim().is_empty() { moss::JUGGERNAUT_NEGATIVE.to_string() } else { req.negative.clone() };
         let ask = gn_mlx::pipeline::Request {
             prompt: req.prompt.clone(),
-            negative,
+            negative: req.negative.clone(),
             width,
             height,
             // The editor sends the template's CUDA defaults (MOSS Turbo's 8 steps, Edit Turbo's
@@ -2296,9 +2256,7 @@ impl DiffusionEngine {
         let Resident::Mlx(m) = &mut self.resident else { return Err(EngineError::new(ErrorKind::Internal, "no MLX pipeline")) };
         let stop = || cancel.load(Ordering::SeqCst);
         let mut step = |i: usize, n: usize| progress(0.3 + 0.65 * i as f32 / n.max(1) as f32, if i == 0 { "Loading the models" } else { "Sampling" });
-        // Juggernaut MOSS Turbo samples with euler_ancestral (its card's), the rest with Euler.
-        let ancestral = req.model == TEMPLATE_MOSS_JUGGERNAUT_TURBO;
-        let p = m.generate_with(variant, &loras, &ask, ancestral, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
+        let p = m.generate(variant, &loras, &ask, &mut step, &stop).map_err(|e| EngineError::new(kind_of(&e), e.to_string()))?;
         let t = p.timings;
         eprintln!(
             "gn-diffusion: {} on MLX ({variant:?}, {} steps, CFG {}, {}x{}): encode {:.1} s, DiT load + references {:.1} s, steps {:.1} s, decode {:.1} s",
@@ -2515,8 +2473,6 @@ mod tests {
     fn moss_templates_find_their_files() -> anyhow::Result<()> {
         assert_eq!(task_of(TEMPLATE_MOSS), Some("image"));
         assert_eq!(family_of(TEMPLATE_MOSS_BASE), Some(Family::Moss(MossVariant::Base)));
-        assert_eq!(family_of(TEMPLATE_MOSS_JUGGERNAUT), Some(Family::Moss(MossVariant::Juggernaut)));
-        assert_eq!(family_of(TEMPLATE_MOSS_JUGGERNAUT_TURBO), Some(Family::Moss(MossVariant::JuggernautTurbo)));
         let root = std::env::temp_dir().join(format!("gn-moss-{}", std::process::id()));
         let mut e = DiffusionEngine::new(root.clone(), false);
         e.refused = None;
@@ -2760,6 +2716,26 @@ mod tests {
     }
 
     #[test]
+    fn a_lora_is_found_in_loras_subfolders_and_in_a_model_folders_own_loras() {
+        let root = std::env::temp_dir().join(format!("gn-lora-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let e = DiffusionEngine::new(root.clone(), false);
+        let own = root.join("moss-image").join(LORA_DIR);
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("turbo.safetensors"), b"x").unwrap();
+        assert_eq!(e.lora_path("turbo.safetensors").unwrap(), own.join("turbo.safetensors"), "a model folder's own loras/");
+        assert_eq!(e.template_lora("turbo.safetensors"), Some(own.join("turbo.safetensors")));
+        let sub = root.join(LORA_DIR).join("moss");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("turbo.safetensors"), b"x").unwrap();
+        assert_eq!(e.lora_path("turbo.safetensors").unwrap(), sub.join("turbo.safetensors"), "the loras folder first, subfolders too");
+        std::fs::write(root.join(LORA_DIR).join("turbo.safetensors"), b"x").unwrap();
+        assert_eq!(e.lora_path("turbo.safetensors").unwrap(), root.join(LORA_DIR).join("turbo.safetensors"));
+        assert_eq!(e.template_lora("none.safetensors"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn loras_are_read_from_the_request_and_named_inside_the_root() {
         let p = |v: Value| -> BTreeMap<String, Value> { [("loras".to_string(), v)].into_iter().collect() };
         assert!(lora_asks(&BTreeMap::new()).unwrap().is_empty());
@@ -2769,7 +2745,7 @@ mod tests {
         assert_eq!(lora_asks(&p(json!([{"strength": 1}]))).unwrap_err().kind, ErrorKind::BadRequest);
         assert_eq!(lora_asks(&p(json!([{"file": "a", "strength": 9}]))).unwrap_err().kind, ErrorKind::BadRequest);
         let e = DiffusionEngine::new(PathBuf::from("root"), false);
-        assert_eq!(e.lora_path("a.safetensors").unwrap(), PathBuf::from("root").join(LORA_DIR).join("a.safetensors"));
+        assert_eq!(e.lora_path("a.safetensors").unwrap(), PathBuf::from("root").join(LORA_DIR).join("a.safetensors"), "not found anywhere: where it belongs");
         assert!(e.lora_path("../a.safetensors").is_err(), "no folders in a name");
         let abs = std::env::temp_dir().join("x.safetensors");
         assert_eq!(e.lora_path(&abs.to_string_lossy()).unwrap(), abs);
