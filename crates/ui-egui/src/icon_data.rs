@@ -59,6 +59,7 @@ pub static ICONS: &[(&str, &[u8])] = &[
     ("crop-overlay-triangle", include_bytes!("../../../assets/icons/crop-overlay-triangle.svg")),
     ("diamond", include_bytes!("../../../assets/icons/diamond.svg")),
     ("direct-select", include_bytes!("../../../assets/icons/direct-select.svg")),
+    ("download", include_bytes!("../../../assets/icons/download.svg")),
     ("droplet", include_bytes!("../../../assets/icons/droplet.svg")),
     // Original: a dashed horizontal ellipse (Elliptical Marquee), on Lucide's grid and stroke.
     ("ellipse-dashed", include_bytes!("../../../assets/icons/ellipse-dashed.svg")),

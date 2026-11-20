@@ -1212,8 +1212,7 @@ pub struct Integrations {
     /// Enter in the Generate panel's prompt generates (Shift+Enter starts a new line);
     /// otherwise Ctrl+Enter does and Enter is a new line.
     pub enter_to_generate: bool,
-    /// The model picker groups a page's templates into one submenu per family once there are
-    /// eight or more.
+    /// Unused since the model picker became one row per model (kept so saved preferences load).
     pub group_models_by_family: bool,
     /// Where the Variations strip (the candidates of the active document's recent generative
     /// runs) sits over the canvas: `right`, `bottom` or `off`.
@@ -1222,6 +1221,13 @@ pub struct Integrations {
     /// `balanced` = the 8-step Lightning tier, `fast` = the 4-step tier where one
     /// exists. A chosen template is never changed by this; see `generate_cmds::auto_order`.
     pub quality: String,
+    /// Generate panel › Speed: which version of the chosen model runs (and which tier `auto`
+    /// takes). `full` = the model without its turbo LoRA (the full-step base templates),
+    /// `balanced` = the turbo/Lightning version at a good step count, `fast` = the turbo version
+    /// at the fewest steps that still give an okay picture (the 4-step tier where one exists).
+    /// Empty = not chosen yet: follows the step tier the old `quality` stood for
+    /// (`generate_cmds::speed`).
+    pub speed: String,
     /// The folder the Generations panel's Save writes results into (`generate.export` without
     /// `dir`); empty = ask each time.
     pub save_results_dir: String,
@@ -1281,6 +1287,7 @@ impl Default for Integrations {
             group_models_by_family: true,
             variations_strip: "right".into(),
             quality: "best".into(),
+            speed: String::new(),
             save_results_dir: String::new(),
             save_results_naming: "{model}_{date}_{seed}".into(),
             alerts: "off".into(),
@@ -1384,6 +1391,9 @@ pub const ALERT_MODES: &[&str] = &["off", "done", "doneAndFailed"];
 
 /// `integrations.quality`: see [`Integrations::quality`].
 pub const QUALITY_MODES: &[&str] = &["ultra", "best", "balanced", "fast"];
+
+/// `integrations.speed`: see [`Integrations::speed`] (empty = follow the old `quality`).
+pub const SPEED_MODES: &[&str] = &["", "fast", "balanced", "full"];
 
 /// `integrations.variationsStrip`: see [`Integrations::variations_strip`].
 pub const VARIATIONS_STRIP_PLACES: &[&str] = &["right", "bottom", "off"];

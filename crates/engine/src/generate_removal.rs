@@ -16,7 +16,7 @@ use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, EDIT, Edge, EnhanceKind, FILL, FillJob, JobProgress, KLEIN_FILL_TEMPLATE, KLEIN_REMOVAL_PIXELS,
     MAX_FILL_REQUEST_PIXELS, MAX_GROW, NATIVE21_REMOVAL_PIXELS, TONE_MATCH_INSIDE, Tuning, align_to_grid, auto_order, backend, crop_rgba8, dim_outside,
     edge_mismatch, embed_coverage, enhance_prompt, feather_outward, fill_rect, fill_region, gen_err, highlight_covered, judged_rect, made_json, native21_auto,
-    paint_left, place_in_words, plan_common, quality, removal_quality, request_size, resize_gray8, resolve_auto, rgba8_at, side_by_side, still_there,
+    paint_left, place_in_words, plan_common, removal_quality, request_size, resize_gray8, resolve_auto, rgba8_at, side_by_side, speed, still_there,
     template_or, tone_matched, write_rgba8,
 };
 
@@ -467,7 +467,7 @@ pub(super) fn background_job(s: &Session, label: &str, seed: Option<u64>, tuning
         command: FILL,
         template_id: template.meta.id.clone(),
         auto,
-        auto_order: auto_order(FILL, quality(s)),
+        auto_order: auto_order(FILL, speed(s)),
         prompt,
         negative,
         seed,
@@ -545,7 +545,8 @@ pub(crate) fn generative_remove(
     // name it in `loras`.
     let opts = RemovalOpts { grow, erase, enhance, variations, seed, prefill, tuning };
     let job = removal_job(s, label, opts.clone())?;
-    // Qwen-Image-2.1 first; where the object is still there afterwards, the 2511 Remove LoRA
+    // Qwen-Image-2.1 first, with the Bbox Object Remover LoRA where it is installed. On the
+    // plain 2.1 edit, where the object is still there afterwards, the 2511 Remove LoRA
     // ([`REMOVE_RETRY_TEMPLATE`]): the owner's choice of 2026-11-16, when the 2.1 edit painted a
     // woman selected whole back in 4 of 4 runs and the 2511 LoRA removed her in 2 of 2.
     let retry = (job.template_id == "qwen-2.1/edit")
@@ -778,8 +779,9 @@ pub(super) const HIGHLIGHT_REMOVE_PROMPT: &str = "Remove the red highlighted obj
 /// variation (the plain fill takes the rest, and the judge picks).
 pub(super) const REMOVE_HIGHLIGHT_ORDER: &[&str] = &["qwen-edit-2511/remove-lightning-8"];
 
-/// What a removal on Qwen-Image-2.1 runs again on when the object is still there afterwards
-/// ([`generative_remove`]); skipped where the worker does not serve it.
+/// What a removal on the plain Qwen-Image-2.1 edit runs again on when the object is still there
+/// afterwards ([`generative_remove`]); skipped where the worker does not serve it. Not after
+/// [`super::REMOVE21_TEMPLATE`], which removes as well as it does (2026-11-19 A/B).
 pub(super) const REMOVE_RETRY_TEMPLATE: &str = "qwen-edit-2511/remove-lightning-8";
 
 /// How far past the selection the adapter's painted hole reaches: a few pixels, as the

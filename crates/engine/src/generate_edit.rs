@@ -17,9 +17,9 @@ use crate::{EngineError, Result, Session};
 
 use super::{
     ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_2511_MIN_COMPUTE_CAP, ANGLES_TEMPLATE, ANGLES21_TEMPLATE, AUTO_TEMPLATE, CHARACTER_SHEET, Common,
-    DEFAULT_EDIT_TEMPLATE, EDIT, FillJob, FillPlan, MAX_REQUEST_PIXELS, Tuning, ULTRA_EDIT_TEMPLATE, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend,
-    bad, edit_request_pixels, edit_rewrite, fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations,
-    plan_common, run_image, short, template_files_present, ultra, web_unavailable,
+    DEFAULT_EDIT_TEMPLATE, EDIT, FillJob, FillPlan, MAX_REQUEST_PIXELS, Tuning, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend, bad,
+    edit_request_pixels, edit_rewrite, fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations, plan_common,
+    run_image, short, template_files_present, ultra, web_unavailable,
 };
 
 /// The Multiple Angles LoRA's words for a camera, `[azimuth] [elevation] [distance]`, or None
@@ -152,11 +152,6 @@ pub(super) fn plan_edit(s: &Session, p: &Value) -> Result<FillPlan> {
     let mut q = p.clone();
     if auto && let Some(o) = q.as_object_mut() {
         o.remove("template");
-    }
-    // Quality Ultra edits on the 16 MP model where it is installed, before any other route.
-    if auto && ultra(s) && template_files_present(s, ULTRA_EDIT_TEMPLATE) {
-        requested = ULTRA_EDIT_TEMPLATE.to_string();
-        auto = false;
     }
     if auto && let Some(t) = native21_auto(s, EDIT, false) {
         requested = t.to_string();
@@ -494,7 +489,9 @@ pub(super) fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
     // On 2.1 the LoRA's own words, its template's steps; no Lightning there.
     let on21 = template == ANGLES21_TEMPLATE;
     let words = if on21 { angle_prompt_21(rotation, tilt, zoom).unwrap_or(words) } else { words };
-    let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "name": format!("Angles: {camera}")});
+    // Never rewritten: the rewriter dropped the LoRA's trigger and camera words (5 of 7 runs with
+    // Enhance prompts on, 5090, 2026-11-19).
+    let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "enhance": false, "name": format!("Angles: {camera}")});
     let keys: &[&str] = if on21 {
         &["seed", "variations", "negative", "steps", "guidance"]
     } else {

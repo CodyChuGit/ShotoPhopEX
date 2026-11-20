@@ -370,6 +370,7 @@ impl PhotocraftApp {
         crate::angles_ui::window(self, &ctx);
         crate::app_icon_ui::window(self, &ctx);
         crate::get_models_ui::window(self, &ctx);
+        crate::model_download::window(self, &ctx);
         crate::generative_bar::show(self, &ctx);
         dialogs::show(self, &ctx);
         layers_panel_ui::show_dialog(self, &ctx);

@@ -1,7 +1,7 @@
 //! The pixel helpers' fast paths against the straightforward versions they replaced: the same
 //! bytes (and the same `f32` bits) for every size, channel count and radius tried.
 
-use super::{Filter, LANCZOS, TENT, box_blur, dilate, dim_outside, resample_u8, taps};
+use super::{Filter, LANCZOS, TENT, box_blur, dilate, dim_outside, highlight_covered, resample_u8, taps, unboxed};
 use photocraft_genai::Rgba8;
 use photocraft_geom::Rect;
 
@@ -182,4 +182,30 @@ fn dim_outside_darkens_only_what_is_not_selected() {
     let mut same = Rgba8::new(1, 1, vec![9, 9, 9, 255]).unwrap();
     dim_outside(&mut same, Rect::new(0, 0, 1, 1), &[1.0, 1.0], Rect::new(0, 0, 1, 1));
     assert_eq!(same.data, [9, 9, 9, 255]);
+}
+
+#[test]
+fn the_bbox_remover_s_box_sits_outside_the_hole_and_a_left_trace_goes_back_to_the_picture() {
+    use photocraft_genai::Gray8;
+    let (w, h) = (40u32, 30u32);
+    let plain = Rgba8::new(w, h, vec![100; (w * h * 4) as usize]).unwrap();
+    let mut m = vec![0u8; (w * h) as usize];
+    for y in 10..20 {
+        for x in 15..25 {
+            m[(y * w + x) as usize] = 255;
+        }
+    }
+    let mask = Gray8::new(w, h, m).unwrap();
+    let boxed = highlight_covered(&plain, &mask, "red-box");
+    let at = |img: &Rgba8, x: u32, y: u32| img.get(x, y).unwrap();
+    assert_eq!(at(&boxed, 20, 15), [100, 100, 100, 100], "inside the hole as it was");
+    assert_eq!(at(&boxed, 15 - 2, 15), [255, 0, 0, 255], "the box one pixel out, 3 wide");
+    assert_eq!(at(&boxed, 15 - 4, 15), [255, 0, 0, 255]);
+    assert_eq!(at(&boxed, 15 - 5, 15), [100, 100, 100, 100]);
+    assert_eq!(at(&boxed, 15 - 1, 15), [100, 100, 100, 100]);
+    // A result that kept the box is the picture there again.
+    let out = unboxed(boxed.clone(), &boxed, &plain);
+    assert_eq!(at(&out, 13, 15), [100, 100, 100, 100]);
+    // The solid highlight still paints the hole.
+    assert_eq!(at(&highlight_covered(&plain, &mask, "red"), 20, 15), [255, 0, 0, 255]);
 }

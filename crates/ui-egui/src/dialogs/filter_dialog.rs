@@ -631,11 +631,14 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
         let items: Vec<Value> = crate::generate_panel::picker_items(app, page, false)
             .into_iter()
             .map(|i| {
-                json!({"id": i.id, "name": i.name, "family": i.family, "description": i.description, "research": i.research, "allowed": i.allowed, "installed": i.installed, "mayNotFit": i.may_not_fit})
+                json!({"id": i.id, "name": i.name, "family": i.family, "description": i.description, "research": i.research, "allowed": i.allowed, "installed": i.installed, "mayNotFit": i.may_not_fit, "needGb": i.need_gb})
             })
             .collect();
         fields.insert("__models".into(), Value::Array(items));
-        fields.insert("__groupModels".into(), json!(app.session.prefs().integrations.group_models_by_family));
+        fields.insert("__modelPage".into(), json!(page));
+        fields.insert("__speed".into(), json!(photocraft_engine::generate_cmds::speed(&app.session)));
+        fields.insert("__refs".into(), json!(crate::generate_panel::has_refs(app, page)));
+        fields.insert("__budgetGb".into(), json!(photocraft_engine::memory_profile::active(&app.session).map(|p| p.budget_gb())));
         fields.insert("__autoModel".into(), json!(crate::generate_panel::auto_name(app, page)));
     }
     // The generative dialogs show the picture's size (Expand's diagram, Generate Image's Auto)
@@ -1197,14 +1200,23 @@ pub(crate) fn model_pill(ui: &mut egui::Ui, f: &mut Map<String, Value>, cmd: &st
                     installed: v["installed"].as_bool(),
                     eta: None,
                     may_not_fit: v["mayNotFit"].as_bool().unwrap_or(false),
+                    need_gb: v["needGb"].as_f64().map(|g| g as f32),
                 })
                 .collect()
         })
         .unwrap_or_default();
-    let group = f.get("__groupModels").and_then(Value::as_bool).unwrap_or(true);
     let mut current = f.get("template").and_then(Value::as_str).unwrap_or_default().to_string();
     let auto = f.get("__autoModel").and_then(Value::as_str).map(str::to_string);
-    crate::model_picker::pill(ui, &format!("flt-{cmd}"), &items, &mut current, auto.as_deref(), group, width);
+    let page = f.get("__modelPage").and_then(Value::as_str).unwrap_or(cmd).to_string();
+    let speed = crate::model_catalog::Speed::from_tier(f.get("__speed").and_then(Value::as_str).unwrap_or("balanced"));
+    let opts = crate::model_picker::Opts {
+        page: &page,
+        speed,
+        refs: f.get("__refs").and_then(Value::as_bool).unwrap_or(false),
+        auto: auto.as_deref(),
+        budget_gb: f.get("__budgetGb").and_then(Value::as_f64).map(|g| g as f32),
+    };
+    crate::model_picker::pill(ui, &format!("flt-{cmd}"), &items, &mut current, &opts, width);
     if current.is_empty() {
         f.remove("template");
     } else {

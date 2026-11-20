@@ -307,8 +307,31 @@ pub fn picker_items(app: &PhotocraftApp, page: &str, eta: bool) -> Vec<crate::mo
             installed: m.installed,
             eta: area.and_then(|(w, h)| photocraft_engine::generate_cmds::estimate_seconds(&m.id, w, h, count, refs)),
             may_not_fit: photocraft_engine::memory_profile::may_not_fit(profile, &m.id),
+            need_gb: photocraft_engine::memory_profile::need_gb(&m.id),
         })
         .collect()
+}
+
+/// Generate › Speed as the picker reads it (`integrations.speed`, else the old Quality step tier).
+pub fn speed(app: &PhotocraftApp) -> crate::model_catalog::Speed {
+    crate::model_catalog::Speed::from_tier(photocraft_engine::generate_cmds::speed(&app.session))
+}
+
+/// Reference pictures are attached and `page` takes them.
+pub fn has_refs(app: &PhotocraftApp, page: &str) -> bool {
+    matches!(page, "image" | "edit" | "fill") && !app.ui.generate.references.is_empty()
+}
+
+/// The model picker's options for `page`: Speed, the references, the Auto row's model and the
+/// memory budget.
+pub fn picker_opts<'a>(app: &PhotocraftApp, page: &'a str, auto: Option<&'a str>) -> crate::model_picker::Opts<'a> {
+    crate::model_picker::Opts {
+        page,
+        speed: speed(app),
+        refs: has_refs(app, page),
+        auto,
+        budget_gb: photocraft_engine::memory_profile::active(&app.session).map(|p| p.budget_gb()),
+    }
 }
 
 fn info<'a>(app: &'a PhotocraftApp, id: &str) -> Option<&'a ModelInfo> {
@@ -316,9 +339,14 @@ fn info<'a>(app: &'a PhotocraftApp, id: &str) -> Option<&'a ModelInfo> {
 }
 
 /// The template the panel's choice names for `mode` (validated against the catalogue), if any.
+///
+/// The choice names a model: the version that runs is the one for Generate › Speed and the
+/// references attached (Krea 2 chosen at Full runs Krea 2's full version, at Fast its turbo).
 pub fn chosen_template(app: &PhotocraftApp, mode: &str) -> Option<String> {
     let id = app.ui.generate.template.get(mode).map(|s| s.trim()).filter(|s| !s.is_empty() && *s != photocraft_engine::generate_cmds::AUTO_TEMPLATE)?;
-    info(app, id).filter(|m| m.pages.iter().any(|p| p == mode)).map(|m| m.id.clone())
+    let id = info(app, id).filter(|m| m.pages.iter().any(|p| p == mode)).map(|m| m.id.clone())?;
+    let items = picker_items(app, mode, false);
+    Some(crate::model_catalog::remap(&items, mode, &id, speed(app), has_refs(app, mode)).unwrap_or(id))
 }
 
 /// The template a run of `mode` will most likely use: the choice, else the preference's
@@ -370,6 +398,14 @@ pub fn reposing(app: &PhotocraftApp) -> bool {
 pub fn auto_name(app: &PhotocraftApp, mode: &str) -> Option<String> {
     let id = default_template(app, mode);
     let items = picker_items(app, mode, false);
+    if crate::model_catalog::per_model(mode)
+        && let Some(m) = info(app, &id)
+    {
+        let key = crate::model_catalog::model_key(&m.id, &m.family);
+        if key != "other" {
+            return Some(crate::model_catalog::model(key).name.to_string());
+        }
+    }
     let names = crate::model_picker::display_names(&items);
     items.iter().zip(names).find(|(i, _)| i.id == id).map(|(_, n)| n).or_else(|| info(app, &id).map(|m| crate::model_picker::short_name(&m.name).to_string()))
 }

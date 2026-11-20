@@ -332,6 +332,16 @@
    "license": "apache-2.0"
   },
   {
+   "id": "remove21",
+   "name": "2.1 Object Remover (Bbox turbo)",
+   "folder": "loras",
+   "file": "Qwen-Image-2.1-Object-Remover-Bbox-turbo-4000.safetensors",
+   "bytes": 83943952,
+   "sha256": "7035eba6f25cdbd0c780027372710c9bebebdd814baaa79d48ce9d5ca80d6449",
+   "url": "https://huggingface.co/prithivMLmods/Qwen-Image-2.1-Object-Remover-Bbox-turbo/resolve/90f708f53feb896a2873378629ffe414e0e584c0/Qwen-Image-2.1-Object-Remover-Bbox-turbo-4000.safetensors",
+   "license": "qwen-research"
+  },
+  {
    "id": "lightning4",
    "name": "2511 Lightning 4-step",
    "folder": "loras",
@@ -664,6 +674,7 @@
     "outpaint-v2",
     "outpaint-wide",
     "viggle-turbo",
+    "remove21",
     "sam31",
     "sam31-tokenizer",
     "vitmatte",
@@ -793,6 +804,7 @@
     "outpaint-v2",
     "outpaint-wide",
     "viggle-turbo",
+    "remove21",
     "sam31",
     "sam31-tokenizer",
     "vitmatte",

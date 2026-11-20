@@ -440,9 +440,10 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .and_then(|j| app.session.job(j))
         .or_else(|| app.session.active_job().filter(|j| j.command == COMMAND || j.command == EDIT_COMMAND));
     app.ui.generative_bar.showing_job = job.as_ref().map(|j| j.id.0);
-    let picker = crate::generate_panel::picker_items(app, &app.ui.generative_bar.mode.clone(), true);
-    let group = app.session.prefs().integrations.group_models_by_family;
-    let auto = crate::generate_panel::auto_name(app, &app.ui.generative_bar.mode.clone());
+    let bar_mode = app.ui.generative_bar.mode.clone();
+    let picker = crate::generate_panel::picker_items(app, &bar_mode, true);
+    let auto = crate::generate_panel::auto_name(app, &bar_mode);
+    let opts = crate::generate_panel::picker_opts(app, &bar_mode, auto.as_deref());
     egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(pos).constrain(false).show(ctx, |ui| {
         egui::Frame::NONE
             .fill(t.card)
@@ -457,7 +458,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     crate::icons::paint(ui, ir, "sparkles", 16.0, t.accent);
                     match job {
                         Some(j) => running(ui, &j, &t, &mut action),
-                        None => idle(ui, app, (&picker, auto.as_deref(), group), &t, &mut action),
+                        None => idle(ui, app, (&picker, &opts), &t, &mut action),
                     }
                     let (xr, xresp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
                     if xresp.hovered() {
@@ -523,7 +524,7 @@ fn running(ui: &mut egui::Ui, j: &photocraft_engine::jobs::JobInfo, t: &Tokens, 
 fn idle(
     ui: &mut egui::Ui,
     app: &mut PhotocraftApp,
-    (picker, auto, group): (&[crate::model_picker::Item], Option<&str>, bool),
+    (picker, opts): (&[crate::model_picker::Item], &crate::model_picker::Opts<'_>),
     t: &Tokens,
     action: &mut Option<Action>,
 ) {
@@ -578,7 +579,7 @@ fn idle(
     // templates with their estimates, research ones greyed until the preference allows them,
     // missing files marked. The same picker as the Generate panel's.
     let mut current = shared.template.get(&mode).cloned().filter(|c| c != photocraft_engine::generate_cmds::AUTO_TEMPLATE).unwrap_or_default();
-    if crate::model_picker::pill(ui, "generative-bar", picker, &mut current, auto, group, 170.0) {
+    if crate::model_picker::pill(ui, "generative-bar", picker, &mut current, opts, 170.0) {
         shared.template.insert(mode.clone(), current);
     }
     // Variations.

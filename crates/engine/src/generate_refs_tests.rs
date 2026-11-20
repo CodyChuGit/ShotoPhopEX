@@ -197,6 +197,30 @@ fn a_qwen_21_removal_sees_the_picture_as_it_is_and_a_2511_one_the_hole_smoothed(
     assert!(b > rd, "2511 sees the hole smoothed from the blue around it: {rd} {b}");
 }
 
+#[test]
+fn a_qwen_21_removal_runs_the_bbox_remover_with_a_red_box_around_the_hole() {
+    let fake = FakeNative::start().unwrap();
+    let (mut s, _, _) = session(&fake.url);
+    s.edit_prefs(|p| {
+        p.integrations.allow_research_models = true;
+        p.integrations.default_fill_template = "auto".into();
+    });
+    // `auto` takes the Bbox remover where the worker serves it (the 2026-11-19 A/B).
+    let r = s.execute("edit.contentAwareFill", json!({"generative": true, "variations": 2, "enhance": false})).unwrap();
+    assert_eq!(r["template"], "qwen-2.1/remove", "{r}");
+    let st = fake.state();
+    assert_eq!(st.runs.len(), 2, "both variations");
+    for run in &st.runs {
+        assert_eq!(run.request["prompt"], "Remove the red highlighted object from the scene.", "the LoRA's trigger");
+    }
+    // The picture keeps the hat inside the hole; a pure red box is drawn around it.
+    let pic = st.pictures[0].clone();
+    let centre = pic.get(pic.width * 20 / 64, pic.height * 16 / 48).unwrap();
+    assert_ne!(centre, [255, 0, 0, 255], "the hole is not painted over");
+    let boxed = (0..pic.height).flat_map(|y| (0..pic.width).map(move |x| (x, y))).filter(|(x, y)| pic.get(*x, *y) == Some([255, 0, 0, 255])).count();
+    assert!(boxed > 0, "a red box");
+}
+
 /// Content-Aware Fill, the Remove tool and Spot Healing go through the fill model when asked
 /// (`generative`), with the removal instruction and the hole flattened to grey, each as a masked
 /// layer; without a backend configured they fall back to their classical fills, in place.

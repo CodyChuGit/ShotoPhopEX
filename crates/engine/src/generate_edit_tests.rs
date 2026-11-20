@@ -173,6 +173,14 @@ fn angles_sends_the_loras_words_over_the_whole_picture() {
     for p in [json!({"lightning": 6}), json!({"anglesStrength": 3}), json!({"lightningStrength": -1})] {
         assert!(matches!(s.execute(ANGLES, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
+    // Enhance prompts on: the camera words still go as they are, with no rewriter run.
+    s.edit_prefs(|p| p.integrations.enhance_prompts = true);
+    let before = fake.state().runs.len();
+    s.execute(ANGLES, json!({"rotation": 90, "seed": 4})).unwrap();
+    let st = fake.state();
+    assert_eq!(st.runs.len(), before + 1, "no rewriter run");
+    assert!(st.runs.last().unwrap().request["prompt"].as_str().unwrap().starts_with("<sks> right side view"));
+    drop(st);
     // Every camera has words: 8 × 4 × 3.
     let all =
         ANGLE_ROTATIONS.iter().flat_map(|(r, _)| ANGLE_TILTS.iter().flat_map(move |(t, _)| ANGLE_ZOOMS.iter().map(move |(z, _)| angle_prompt(*r, *t, *z))));

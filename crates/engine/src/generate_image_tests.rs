@@ -58,7 +58,7 @@ fn image_lands_as_a_layer_covering_the_canvas() {
     assert_eq!(g["prompt"], "a lighthouse at dusk");
     assert_eq!(g["width"], 64);
     assert_eq!(g["height"], 64, "48 is below the 64-pixel minimum side; the result is resampled back to the canvas");
-    assert_eq!(g["steps"], 8, "Krea 2 Turbo default");
+    assert_eq!(g["steps"], 4, "Krea 2 Turbo at Fast: the step sweep's okay count");
     assert_eq!(g["guidance"], 1.0);
     assert_eq!(g["seed"], 3);
     assert_eq!(g["params"]["models"]["unet"], "krea2_turbo_fp8_scaled.safetensors");
@@ -135,7 +135,7 @@ fn sizes_default_round_and_validate() {
     // The generated dialog sends 0 for "default" sizes and steps, and "auto" for the target.
     let r = s.execute(IMAGE, json!({"prompt": "x", "width": 0, "height": 0, "target": "auto", "steps": 0, "guidance": 0})).unwrap();
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(1024), Some(1024)), "auto with a document open: a layer over its canvas");
-    assert_eq!(fake.state().runs.last().unwrap().request["steps"], 8, "0 steps = the template default");
+    assert_eq!(fake.state().runs.last().unwrap().request["steps"], 4, "0 steps = the Speed's count (Fast: 4)");
     let mut empty = Session::new();
     empty.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
@@ -222,11 +222,13 @@ fn best_quality_tunes_qwen21_text_to_image() {
     assert_eq!(image_quality_tuning("qwen-2.1/image", "best"), Some((40, 3.0)));
     assert_eq!(image_quality_tuning("qwen-2.1/image", "balanced"), Some((25, 3.0)));
     assert_eq!(image_quality_tuning("qwen-2.1/image", "fast"), None);
-    assert_eq!(image_quality_tuning("krea2-turbo/image", "fast"), None);
+    assert_eq!(image_quality_tuning("krea2-turbo/image", "fast"), Some((4, 1.0)), "the step sweep's okay count");
+    assert_eq!(image_quality_tuning("moss-image/turbo", "fast"), Some((6, 1.0)));
+    assert_eq!(image_quality_tuning("flux3-klein/image", "balanced"), Some((8, 1.0)));
     let cost = image_quality_cost("qwen-2.1/image", "best");
     assert!((2.5..3.0).contains(&cost), "{cost}");
     assert_eq!(image_quality_cost("krea2-turbo/image", "best"), 9.0 / 8.0);
-    assert_eq!(image_quality_cost("krea2-turbo/image", "fast"), 1.0);
+    assert_eq!(image_quality_cost("krea2-turbo/image", "fast"), 4.0 / 8.0);
 }
 
 /// Krea 2 Turbo under `best` and `balanced` runs the creator kit's detail recipe (9 steps,
@@ -258,7 +260,7 @@ fn balanced_and_best_run_krea2_detail_schedule() {
     assert_eq!((req["params"]["schedule"].as_str(), req["params"].get("sampler")), (Some("beta"), None), "{req}");
     s.edit_prefs(|p| p.integrations.quality = "fast".into());
     let req = run(&mut s, json!({}));
-    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(8), None), "{req}");
+    assert_eq!((req["steps"].as_u64(), req["params"].get("schedule")), (Some(4), None), "Fast: 4 plain steps {req}");
     let req = run(&mut s, json!({"schedule": "krea-detail"}));
     assert_eq!((req["steps"].as_u64(), req["params"]["schedule"].as_str()), (Some(9), Some("krea-detail")), "{req}");
     let err = s.execute(IMAGE, json!({"prompt": "x", "template": "qwen-2.1/image", "target": "document", "schedule": "krea-detail"}));
@@ -363,10 +365,10 @@ fn best_renders_h3_at_eight_megapixels() {
     assert_eq!(image_quality_size("p-h3-image/image", "best", 3200, 3200), (3200, 3200), "a larger ask is kept");
 }
 
-/// Quality `ultra` is `best` with MiniMax-H3-Image for new pictures and edits, where its files
-/// are in the models folder; without them it is `best`.
+/// Quality never swaps models: `ultra` renders bigger (the Quality setting) and MiniMax-H3-Image
+/// is chosen in the model picker like any other model, installed or not. Speed picks the tier.
 #[test]
-fn ultra_is_best_with_the_16_mp_model_when_installed() {
+fn ultra_no_longer_swaps_models_and_speed_picks_the_tier() {
     let dir = std::env::temp_dir().join(format!("pc-ultra-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut s = Session::new();
@@ -375,29 +377,22 @@ fn ultra_is_best_with_the_16_mp_model_when_installed() {
         p.integrations.quality = "ultra".into();
     });
     assert!(ultra(&s));
-    assert_eq!((quality(&s), auto_quality(&s)), ("best", "ultra"));
-    assert_eq!(auto_order(EDIT, "ultra"), &[ULTRA_EDIT_TEMPLATE, DEFAULT_EDIT_TEMPLATE]);
-    assert_eq!(auto_order(FILL, "ultra"), auto_order(FILL, "best"));
-    assert_eq!(auto_order(EXPAND, "ultra"), auto_order(EXPAND, "best"));
-    // no files: the profile's template
-    assert!(!template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
-    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
     let t = template::find(ULTRA_IMAGE_TEMPLATE).unwrap();
-    for (i, m) in t.meta.models.iter().enumerate() {
-        // one of them a folder deeper, where the worker looks too
-        let folder = if i == 0 { dir.join(&m.folder).join("h3") } else { dir.join(&m.folder) };
+    for m in &t.meta.models {
+        let folder = dir.join(&m.folder);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(&m.default), b"x").unwrap();
     }
     assert!(template_files_present(&s, ULTRA_IMAGE_TEMPLATE));
-    assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
-    // `best` keeps the profile's template; Ultra wins over a saved default template
-    s.edit_prefs(|p| p.integrations.quality = "best".into());
-    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE);
+    assert_eq!(default_image_template(&s), DEFAULT_IMAGE_TEMPLATE, "installed, yet not swapped in");
     s.edit_prefs(|p| p.integrations.default_image_template = "qwen-2.1/image".into());
     assert_eq!(default_image_template(&s), "qwen-2.1/image");
-    s.edit_prefs(|p| p.integrations.quality = "ultra".into());
-    assert_eq!(default_image_template(&s), ULTRA_IMAGE_TEMPLATE);
+    // Speed: empty follows the old Quality tier; set, it wins.
+    assert_eq!(auto_quality(&s), "best");
+    for (speed, tier) in [("fast", "fast"), ("balanced", "balanced"), ("full", "best")] {
+        s.edit_prefs(|p| p.integrations.speed = speed.into());
+        assert_eq!(auto_quality(&s), tier);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

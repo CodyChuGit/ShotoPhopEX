@@ -30,7 +30,7 @@ pub struct GetModelsUi {
     pub done: Option<String>,
 }
 
-fn refresh(app: &mut PhotocraftApp) {
+pub(crate) fn refresh(app: &mut PhotocraftApp) {
     match app.session.execute(photocraft_engine::model_packs::PACKS, json!({})) {
         Ok(v) => app.ui.get_models.info = Some(v),
         Err(e) => app.ui.get_models.error = Some(e.to_string()),
@@ -94,7 +94,7 @@ pub fn menu(app: &mut PhotocraftApp, id: &str, _params: &Value) -> Option<Result
     })
 }
 
-fn gb(b: u64) -> String {
+pub(crate) fn gb(b: u64) -> String {
     if b >= 1_000_000_000 {
         format!("{:.1} GB", b as f64 / 1e9)
     } else if b >= 1_000_000 {
@@ -189,7 +189,7 @@ fn licences_to_accept(info: &Value, extras: &[String]) -> Vec<Value> {
     info["licenses"].as_array().into_iter().flatten().filter(|l| l["id"].as_str().is_some_and(|id| ids.contains(&id))).cloned().collect()
 }
 
-fn licence_rows(ui: &mut egui::Ui, t: &Tokens, licences: &[Value]) {
+pub(crate) fn licence_rows(ui: &mut egui::Ui, t: &Tokens, licences: &[Value]) {
     for l in licences {
         let commercial = match l["commercial"].as_str() {
             Some("yes") => tl!("commercial use allowed"),

@@ -47,6 +47,9 @@ pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option
 /// [`native21_auto`] without the memory profile: the Qwen-Image-2.1 route alone.
 pub(super) fn native21_only(s: &Session, command: &str, removal: bool) -> Option<&'static str> {
     let t = match command {
+        // Remove: the Bbox Object Remover LoRA's route when the worker serves it (owner's
+        // call 2026-11-19, after the 5090 A/B), else the plain 2.1 edit.
+        FILL if removal && loras::runs_native(s, REMOVE21_TEMPLATE) => REMOVE21_TEMPLATE,
         FILL if removal => "qwen-2.1/edit",
         FILL => NATIVE21_FILL,
         // Expand stays on 2511's own tiers: its sampler keeps the picture's latent outside the
@@ -57,6 +60,10 @@ pub(super) fn native21_only(s: &Session, command: &str, removal: bool) -> Option
     };
     (s.prefs().integrations.allow_research_models && loras::runs_native(s, t)).then_some(t)
 }
+
+/// Generative Remove on Qwen-Image-2.1 with the Bbox Object Remover LoRA (a red box drawn
+/// around the selection, see `highlight_covered`).
+pub const REMOVE21_TEMPLATE: &str = "qwen-2.1/remove";
 
 /// The 2.1 fill `auto` falls back to on the native worker.
 pub(super) const NATIVE21_FILL: &str = "qwen-2.1/fill";
@@ -117,9 +124,22 @@ pub fn ultra(s: &Session) -> bool {
     s.prefs().integrations.quality.trim() == "ultra"
 }
 
-/// The quality [`auto_order`] is asked with: [`quality`], or `ultra`.
+/// Generate panel › Speed as the step tier [`auto_order`] and the template tuning read:
+/// `fast`, `balanced`, or `best` (the full-step, no-turbo version; the preference says `full`).
+/// Unset, it follows the tier the old Quality preference stood for (`ultra` = `best`).
+pub fn speed(s: &Session) -> &'static str {
+    match s.prefs().integrations.speed.trim() {
+        "fast" => "fast",
+        "balanced" => "balanced",
+        "full" => "best",
+        _ => quality(s),
+    }
+}
+
+/// The tier [`auto_order`] is asked with: [`speed`]. Quality no longer swaps models (MiniMax H3
+/// is chosen in the model picker like any other model).
 pub fn auto_quality(s: &Session) -> &'static str {
-    if ultra(s) { "ultra" } else { quality(s) }
+    speed(s)
 }
 
 /// Whether every file of `template` is in the models folder (as the template names them, in
@@ -144,7 +164,7 @@ pub fn template_files_present(s: &Session, template: &str) -> bool {
 /// Spot Healing dab from about 25 s to 100 s, which reads as the tool not working.
 /// `fast` stays `fast`.
 pub fn removal_quality(s: &Session) -> &'static str {
-    match quality(s) {
+    match speed(s) {
         "fast" => "fast",
         _ => "balanced",
     }
@@ -173,11 +193,6 @@ pub fn auto_order(command: &str, quality: &str) -> &'static [&'static str] {
 /// The image template a run with none named uses: Preferences › Default Image Template, where
 /// `auto` (or nothing) is the memory profile's ([`crate::memory_profile::image_template`]).
 pub fn default_image_template(s: &Session) -> String {
-    // Quality Ultra is the 16 MP model: it wins over a saved default (a request's own
-    // `template` still wins over both).
-    if ultra(s) && template_files_present(s, ULTRA_IMAGE_TEMPLATE) {
-        return ULTRA_IMAGE_TEMPLATE.to_string();
-    }
     match s.prefs().integrations.default_image_template.trim() {
         "" | AUTO_TEMPLATE => crate::memory_profile::image_template(crate::memory_profile::active(s)).to_string(),
         t => t.to_string(),
@@ -234,10 +249,6 @@ pub fn likely_auto(command: &str, quality: &str) -> &'static str {
 /// [`likely_auto`] in this session: the Qwen-Image-2.1 template where `auto` runs it on the
 /// native worker ([`native21_auto`]), else the first of the server's order.
 pub fn likely_auto_in(s: &Session, command: &str, quality: &str) -> &'static str {
-    // Quality Ultra edits on the 16 MP model where it is installed (as `plan_edit` does).
-    if command == EDIT && ultra(s) && template_files_present(s, ULTRA_EDIT_TEMPLATE) {
-        return ULTRA_EDIT_TEMPLATE;
-    }
     auto_shown(s, command, false).unwrap_or_else(|| likely_auto(command, quality))
 }
 
