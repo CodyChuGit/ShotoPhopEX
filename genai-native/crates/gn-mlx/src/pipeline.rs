@@ -423,9 +423,9 @@ impl MossMlx {
             x = x.add(v.multiply(Array::from_f32(s1 - s0))?)?;
             if let Some((z0, m, eps)) = &keep {
                 let known = z0.multiply(Array::from_f32(1.0 - s1))?.add(eps.multiply(Array::from_f32(s1))?)?;
-                // Differential, as qir's MOSS fill: painted from the step the mask value passes
-                // `1 - (i+1)/n`, kept before it, never mixed (a soft mix left pale smears).
-                let m = m.gt(Array::from_f32((n - i - 1) as f32 / n as f32))?.as_dtype(Dtype::Float32)?;
+                // Differential by σ, as qir's MOSS fill: painted from the step whose σ falls under
+                // the mask value, kept before it, never mixed (a soft mix left pale smears).
+                let m = m.gt(Array::from_f32(s1))?.as_dtype(Dtype::Float32)?;
                 x = x.multiply(&m)?.add(known.multiply(Array::from_f32(1.0).subtract(&m)?)?)?;
             }
             x.eval()?;
@@ -449,7 +449,11 @@ impl MossMlx {
         check()?;
         let t0 = Instant::now();
         let img = self.vae.decode(&x)?;
-        let (pw, ph, rgba) = vae::to_rgba_u8(&img)?;
+        let (pw, ph, mut rgba) = vae::to_rgba_u8(&img)?;
+        // A fill: the picture's own pixels back outside the area, faded across its soft edge.
+        if let (Some(m), Some(p)) = (&req.mask, req.references.first()) {
+            qwen_image_rs::moss::pipeline::paste_outside(&mut rgba, pw, ph, (&p.rgba, p.width, p.height), (&m.rgba, m.width, m.height))?;
+        }
         timings.decode_s = t0.elapsed().as_secs_f32();
         mlx_rs::memory::clear_cache()?;
         Ok(Picture { width: pw, height: ph, rgba, timings })

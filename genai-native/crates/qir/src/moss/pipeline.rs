@@ -731,11 +731,14 @@ impl MossPipeline {
             if let Some((z0, m, eps)) = &keep {
                 let s1 = f64::from(sig[i + 1]);
                 let known = ((z0 * (1.0 - s1))? + (eps * s1)?)?;
-                // Differential: a latent pixel is painted from the step its mask value passes
-                // `1 - (i+1)/n` on, kept before it, never mixed. Mixing the painted and the kept
+                // Differential: a latent pixel is painted from the step whose σ falls under its
+                // mask value on, kept before it, never mixed. Mixing the painted and the kept
                 // latent by a soft mask (`QIR_MOSS_FILL_SOFT=1`, round 1) averaged two unrelated
                 // latents along the feathered edge and left pale smears there (5090, 2026-11-20).
-                let m = if fill_soft_blend() { m.clone() } else { m.gt((n - i - 1) as f64 / n as f64)?.to_dtype(x.dtype())? };
+                // By σ, not by step count: the shift-5 schedule stays near σ 1 for most steps, and
+                // the feathered band freed by step count was redrawn almost whole at 4 steps on
+                // MLX (a dotted band under the editor's dithered edge, M1 Air 2026-11-20).
+                let m = if fill_soft_blend() { m.clone() } else { m.gt(s1)?.to_dtype(x.dtype())? };
                 x = (x.broadcast_mul(&m)? + known.broadcast_mul(&(1.0 - &m)?)?)?;
             }
             progress(0.05 + 0.85 * (i + 1) as f32 / n as f32, "Sampling");
@@ -755,6 +758,10 @@ impl MossPipeline {
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, mut rgba) = vae::to_rgba_u8(&img)?;
+        // A fill: the picture's own pixels back outside the area, faded across its soft edge.
+        if let Some(f) = &fill {
+            paste_outside(&mut rgba, pw, ph, (&f.picture.rgba, f.picture.width, f.picture.height), (&f.mask.rgba, f.mask.width, f.mask.height))?;
+        }
         // A restore's colours from the picture itself (`Sampling::color_fix`): the
         // author's wavelet colour match, the output's detail on the picture's low frequencies.
         if ostris && sampling.color_fix {
@@ -776,6 +783,26 @@ impl MossPipeline {
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
+}
+
+/// A fill's result `out` (`w × h` RGBA8) with the picture's pixels put back by the mask: kept
+/// where the mask is black, the result where it is white, mixed across a soft edge. The latent
+/// blend leaves the kept area close but not equal (the decoder's round trip), and the editor's
+/// dithered edge then shows the difference as dots; the picture's own pixels there show none.
+pub fn paste_outside(out: &mut [u8], w: usize, h: usize, picture: (&[u8], usize, usize), mask: (&[u8], usize, usize)) -> Result<()> {
+    let fit = |(px, pw, ph): (&[u8], usize, usize), filter| -> Result<image::RgbaImage> {
+        let img = image::RgbaImage::from_raw(pw as u32, ph as u32, px.to_vec()).context("a picture's pixels do not match its size")?;
+        Ok(if (pw, ph) == (w, h) { img } else { image::imageops::resize(&img, w as u32, h as u32, filter) })
+    };
+    let (orig, m) = (fit(picture, image::imageops::FilterType::Lanczos3)?, fit(mask, image::imageops::FilterType::Triangle)?);
+    anyhow::ensure!(out.len() >= w * h * 4, "the result's pixels do not match its size");
+    for ((px, o), mp) in out.chunks_exact_mut(4).zip(orig.pixels()).zip(m.pixels()) {
+        let a = f32::from(mp.0[0]) / 255.0;
+        for (c, oc) in px.iter_mut().zip(o.0).take(3) {
+            *c = (f32::from(*c) * a + f32::from(oc) * (1.0 - a)).round() as u8;
+        }
+    }
+    Ok(())
 }
 
 /// The A/B hook back to round 1's soft latent blend (`QIR_MOSS_FILL_SOFT=1`).
@@ -1294,6 +1321,18 @@ mod vision_tests {
         let style: Vec<u8> = (0..w * h).flat_map(|_| [10u8, 20, 30, 255]).collect();
         wavelet_color_match(&mut out, &style, w, h);
         assert!(out.chunks(4).all(|p| p == [10, 20, 30, 255]), "{:?}", &out[..4]);
+    }
+
+    /// A fill's result keeps the picture where the mask is black and itself where it is white.
+    #[test]
+    fn paste_outside_keeps_the_picture_outside_the_mask() -> Result<()> {
+        let mut out = vec![10u8, 10, 10, 255, 10, 10, 10, 255];
+        let picture = [200u8, 200, 200, 255, 200, 200, 200, 255];
+        let mask = [0u8, 0, 0, 255, 255, 255, 255, 255];
+        super::paste_outside(&mut out, 2, 1, (&picture, 2, 1), (&mask, 2, 1))?;
+        assert_eq!(&out[..3], &[200, 200, 200]);
+        assert_eq!(&out[4..7], &[10, 10, 10]);
+        Ok(())
     }
 
     /// A fill's smoothed start: the hole takes its surroundings' colour, the rest is untouched.
