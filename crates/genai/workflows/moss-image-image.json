@@ -46,7 +46,7 @@
         "9:16"
       ],
       "min": 512,
-      "max": 2048,
+      "max": 1536,
       "step": 16
     },
     "estimatedSeconds": {

@@ -1222,6 +1222,10 @@ pub struct Integrations {
     /// `balanced` = the 8-step Lightning tier, `fast` = the 4-step tier where one
     /// exists. A chosen template is never changed by this; see `generate_cmds::auto_order`.
     pub quality: String,
+    /// Quality: how far above the asked size a new picture is rendered before it is brought
+    /// down to it (`basic` 1x, `better` 1.25x, `best` 1.5x, `ultra` 2x on 24 GB+
+    /// cards), on the models that gain from it; see `generate_cmds::quality_factor`.
+    pub quality_level: String,
     /// The folder the Generations panel's Save writes results into (`generate.export` without
     /// `dir`); empty = ask each time.
     pub save_results_dir: String,
@@ -1281,6 +1285,7 @@ impl Default for Integrations {
             group_models_by_family: true,
             variations_strip: "right".into(),
             quality: "best".into(),
+            quality_level: "best".into(),
             save_results_dir: String::new(),
             save_results_naming: "{model}_{date}_{seed}".into(),
             alerts: "off".into(),
@@ -1384,6 +1389,9 @@ pub const ALERT_MODES: &[&str] = &["off", "done", "doneAndFailed"];
 
 /// `integrations.quality`: see [`Integrations::quality`].
 pub const QUALITY_MODES: &[&str] = &["ultra", "best", "balanced", "fast"];
+
+/// `integrations.qualityLevel`: see [`Integrations::quality_level`].
+pub const QUALITY_LEVELS: &[&str] = &["basic", "better", "best", "ultra"];
 
 /// `integrations.variationsStrip`: see [`Integrations::variations_strip`].
 pub const VARIATIONS_STRIP_PLACES: &[&str] = &["right", "bottom", "off"];

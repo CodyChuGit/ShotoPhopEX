@@ -413,21 +413,24 @@ pub(super) fn model_pill(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: &str,
     }
 }
 
-/// Preferences › AI Integrations › Quality beside the model: what Auto optimises for (Best = the
-/// full-step base templates and no 4-bit weights; Balanced = the 8-step Lightning tier; Fast =
-/// the 4-step tier where one exists; Ultra = Best with the 16 MP model for new pictures and
-/// edits). A chosen template is left alone.
+/// Preferences › AI Integrations › Quality beside the model: how far above the asked size a new
+/// picture renders before it is brought down to it, on the models that gain from it (Basic 1x,
+/// Better 1.25x, Best 1.5x, Ultra 2x, offered on 24 GB cards or larger).
+/// It never changes the model.
 pub(super) fn quality_pick(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    let q = photocraft_engine::generate_cmds::auto_quality(&app.session).to_string();
-    let options = [
-        Seg::new("ultra".to_string(), tl!("Ultra"))
-            .tip(tl!("Best, with new pictures and edits on MiniMax H3 Image at up to 16 MP when its files are installed")),
-        Seg::new("best".to_string(), tl!("Best")).tip(tl!("Auto takes the full-step model and keeps the 4-bit weights off")),
-        Seg::new("balanced".to_string(), tl!("Balanced")).tip(tl!("Auto takes the 8-step Lightning tier when the server has it")),
-        Seg::new("fast".to_string(), tl!("Fast")).tip(tl!("Auto takes the 4-step tier where there is one")),
-    ];
+    use photocraft_engine::generate_cmds as g;
+    let q = g::quality_level(&app.session).to_string();
+    let mut options = Vec::with_capacity(4);
+    if g::ultra_allowed(&app.session) {
+        options.push(Seg::new("ultra".to_string(), tl!("Ultra")).tip(tl!("Renders at twice the size and brings it down: the most detail, the slowest")));
+    }
+    options.extend([
+        Seg::new("best".to_string(), tl!("Best")).tip(tl!("Renders at 1.5 times the size and brings it down: finer skin, hair and text")),
+        Seg::new("better".to_string(), tl!("Better")).tip(tl!("Renders at 1.25 times the size and brings it down")),
+        Seg::new("basic".to_string(), tl!("Basic")).tip(tl!("Renders at the size asked: the fastest")),
+    ]);
     if let Some(q) = segmented(ui, &q, &options, 0.0) {
-        let _ = app.run("prefs.set", json!({"path": "integrations.quality", "value": q}));
+        let _ = app.run("prefs.set", json!({"path": "integrations.qualityLevel", "value": q}));
     }
 }
 
@@ -469,16 +472,23 @@ pub(super) fn settings(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &Tokens, m
                 }
             }
         });
-        // What it will make, on the template's grid (Quality Best renders Krea 2 at about 2 MP).
+        // What it will make, on the template's grid, and what Quality renders it at first.
         let (w, h) = image_size(app);
-        let (w, h) = photocraft_engine::generate_cmds::image_quality_size(
-            &effective_template(app, "image"),
-            photocraft_engine::generate_cmds::quality(&app.session),
-            w,
-            h,
-        );
+        let tid = effective_template(app, "image");
+        let (rw, rh) = photocraft_engine::generate_cmds::image_render_sizes(&app.session, &tid, w, h);
+        let level = photocraft_engine::generate_cmds::quality_level(&app.session);
+        let gains = photocraft_engine::generate_cmds::SUPERSAMPLE_TEMPLATES.contains(&tid.as_str());
+        let hint = if (rw, rh) != (w, h) && gains {
+            format!("{w} × {h} px · {} {rw} × {rh}", tl!("rendered at"))
+        } else if (rw, rh) != (w, h) {
+            format!("{rw} × {rh} px")
+        } else if level != "basic" && !gains {
+            format!("{w} × {h} px · {}", tl!("this model renders at the size asked"))
+        } else {
+            format!("{w} × {h} px")
+        };
         setting_row(ui, "", |ui| {
-            ui.label(RichText::new(format!("{w} × {h} px")).small().color(t.text_faint));
+            ui.label(RichText::new(hint).small().color(t.text_faint));
         });
     }
     if mode != "expand" {

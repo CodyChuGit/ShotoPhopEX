@@ -423,8 +423,12 @@ pub fn estimate(app: &PhotocraftApp, mode: &str) -> Option<f32> {
     use photocraft_engine::generate_cmds as g;
     let t = effective_template(app, mode);
     let q = g::quality(&app.session);
-    let (cost, (w, h)) = if mode == "image" { (g::image_quality_cost(&t, q), g::image_quality_size(&t, q, w, h)) } else { (1.0, (w, h)) };
-    g::estimate_seconds(&t, w, h, count, refs).map(|s| s * cost)
+    if mode != "image" {
+        return g::estimate_seconds(&t, w, h, count, refs);
+    }
+    // Quality's render size.
+    let (rw, rh) = g::image_render_sizes(&app.session, &t, w, h);
+    g::estimate_seconds(&t, rw, rh, count, refs).map(|s| s * g::image_quality_cost(&t, q))
 }
 
 /// "~24 s", "~2 min".
