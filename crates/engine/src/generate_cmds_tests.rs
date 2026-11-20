@@ -1097,3 +1097,27 @@ fn angles_runs_the_multiple_angles_lora_and_the_auto_line_names_the_outpaint_exp
     assert_eq!(likely_auto_in(&s, EXPAND, "best"), OUTPAINT_EDIT_TEMPLATE);
     assert!(native21_picks(&s).contains(&("autoExpand", OUTPAINT_EDIT_TEMPLATE)));
 }
+
+#[test]
+fn a_small_cuda_card_with_klein_fills_with_klein_but_removes_with_qwen() {
+    let dir = tempfile::tempdir().unwrap();
+    for (sub, file) in [("diffusion_models", "flux3-image-klein-int8-convrot.safetensors"), ("text_encoders", "qwen3vl_4b_fp8_scaled.safetensors")] {
+        std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+        std::fs::write(dir.path().join(sub).join(file), b"x").unwrap();
+    }
+    let mut s = Session::new();
+    s.edit_prefs(|p| {
+        p.integrations.models_path = dir.path().to_string_lossy().into_owned();
+        p.integrations.runtime_path = "fake".into();
+        p.integrations.allow_research_models = true;
+        p.integrations.memory_profile = "16gb".into();
+    });
+    if cfg!(target_os = "macos") {
+        return; // a Mac has its own Klein route
+    }
+    assert_eq!(routing::native21_auto(&s, FILL, false), Some(KLEIN_FILL_TEMPLATE));
+    assert_eq!(routing::native21_auto(&s, FILL, true), Some("qwen-2.1/edit"), "a removal stays on Qwen");
+    // A big profile keeps Qwen's fill.
+    s.edit_prefs(|p| p.integrations.memory_profile = "24gb".into());
+    assert_ne!(routing::native21_auto(&s, FILL, false), Some(KLEIN_FILL_TEMPLATE));
+}

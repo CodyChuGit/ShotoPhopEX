@@ -28,6 +28,13 @@ pub(crate) fn native21_auto(s: &Session, command: &str, removal: bool) -> Option
     if command == EDIT && crate::memory_profile::cuda_klein(s) && loras::runs_native(s, crate::memory_profile::KLEIN_EDIT_TEMPLATE) {
         return Some(crate::memory_profile::KLEIN_EDIT_TEMPLATE);
     }
+    // ... and fills with Klein: on a 5090 held to 16 and 12 GB it matched the light, scale and
+    // perspective with no seams (1.6 / 4.4 s warm), where qwen-2.1/fill kept the fruit bowl it
+    // was asked to replace and once returned a flat grey patch (2026-11-20). Not a removal: the
+    // Klein fill took out more than the object (the knife block, the stove, 2026-11-17).
+    if command == FILL && !removal && crate::memory_profile::cuda_klein(s) && loras::runs_native(s, crate::generate_cmds::KLEIN_FILL_TEMPLATE) {
+        return Some(crate::generate_cmds::KLEIN_FILL_TEMPLATE);
+    }
     // A small memory profile edits with MOSS Edit (permissive, so no research opt-in).
     if command == EDIT
         && let Some(t) = crate::memory_profile::edit_template(crate::memory_profile::active(s))
