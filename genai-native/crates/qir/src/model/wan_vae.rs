@@ -198,12 +198,7 @@ struct AttentionBlock {
 
 impl AttentionBlock {
     fn load(dim: usize, vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            norm: RmsNorm::load(dim, vb.pp("norm"))?,
-            to_qkv: conv2d(dim, 3 * dim, 1, vb.pp("to_qkv"))?,
-            proj: conv2d(dim, dim, 1, vb.pp("proj"))?,
-            dim,
-        })
+        Ok(Self { norm: RmsNorm::load(dim, vb.pp("norm"))?, to_qkv: conv2d(dim, 3 * dim, 1, vb.pp("to_qkv"))?, proj: conv2d(dim, dim, 1, vb.pp("proj"))?, dim })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -217,11 +212,7 @@ impl AttentionBlock {
         let score_bytes = b.saturating_mul(n).saturating_mul(n).saturating_mul(4);
         // Queries in blocks past [`DECODER_SCORE_BYTES`] (decoder and encoder alike; up to
         // 1024² nothing changes).
-        let rows = if score_bytes > DECODER_SCORE_BYTES {
-            (DECODER_SCORE_BLOCK_BYTES / b.saturating_mul(n).saturating_mul(4).max(1)).max(1)
-        } else {
-            n
-        };
+        let rows = if score_bytes > DECODER_SCORE_BYTES { (DECODER_SCORE_BLOCK_BYTES / b.saturating_mul(n).saturating_mul(4).max(1)).max(1) } else { n };
         let out = attend_rows(&q, &kt, &v, (self.dim as f64).sqrt(), rows)?;
         let out = out.transpose(1, 2)?.reshape((b, c, h, w))?;
         Ok((self.proj.forward(&out)? + x)?)
