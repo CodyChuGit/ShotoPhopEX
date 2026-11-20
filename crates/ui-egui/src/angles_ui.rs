@@ -128,8 +128,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     let eta = estimate(app);
     let template = angles_template(&app.session);
-    let missing = app.ui.generate.catalog.iter().find(|m| m.id == template).is_some_and(|m| m.installed == Some(false));
-    let on21 = template != ANGLES_TEMPLATE;
+    let missing = template == ANGLES_TEMPLATE && app.ui.generate.catalog.iter().find(|m| m.id == ANGLES_TEMPLATE).is_some_and(|m| m.installed == Some(false));
     // Bring-your-own: 2511 stays the model on a smaller card too, with a note that it may not fit.
     let may_not_fit = photocraft_engine::memory_profile::may_not_fit(photocraft_engine::memory_profile::active(&app.session), template);
     let mut open = true;
@@ -194,12 +193,13 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             });
             if missing {
                 ui.add_space(4.0);
-                let why = if on21 {
-                    tl!("On this card Angles runs Qwen-Image-2.1 with its Multiple Angles LoRA, which aren’t in the Models folder yet. Get them from Get AI Models › Extras.")
-                } else {
-                    tl!("Angles runs Qwen-Image-Edit-2511 with fal’s Multiple Angles LoRA, which aren’t in the Models folder yet. Get them from Get AI Models › Extras.")
-                };
-                callout(ui, &t, "triangle-alert", why, t.warning);
+                callout(
+                    ui,
+                    &t,
+                    "triangle-alert",
+                    tl!("Angles runs Qwen-Image-Edit-2511 with fal’s Multiple Angles LoRA, which aren’t in the Models folder yet. Get them from Get AI Models › Extras."),
+                    t.warning,
+                );
                 let w = ui.available_width();
                 get_models = crate::widgets::secondary_button(ui, tl!("Get AI Models…"), w).clicked();
             } else if may_not_fit {
@@ -238,10 +238,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let _ = run(app);
     }
     if get_models {
-        // The extra that holds the route's model and its Multiple Angles LoRA, ticked.
-        let extra = if template == ANGLES_TEMPLATE { ANGLES_EXTRA } else { ANGLES21_EXTRA };
-        if !app.ui.get_models.extras.iter().any(|x| x == extra) {
-            app.ui.get_models.extras.push(extra.to_string());
+        // The extra that holds 2511, its Lightning LoRAs and the Multiple Angles LoRA, ticked.
+        if !app.ui.get_models.extras.iter().any(|x| x == ANGLES_EXTRA) {
+            app.ui.get_models.extras.push(ANGLES_EXTRA.to_string());
         }
         crate::get_models_ui::open(app);
     }
@@ -249,9 +248,6 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 /// Get AI Models' extra (`model-packs.json`) with Qwen-Image-Edit-2511 and the Multiple Angles LoRA.
 const ANGLES_EXTRA: &str = "qwen-edit-2511";
-/// The extra with Qwen-Image-2.1 and its Multiple Angles LoRA, Angles' route on cards older than
-/// RTX 40.
-const ANGLES21_EXTRA: &str = "qwen21-angles";
 
 /// Seconds the run will most likely take (the template's formula at the document's size).
 fn estimate(app: &PhotocraftApp) -> Option<f32> {
