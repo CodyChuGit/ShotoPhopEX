@@ -423,7 +423,10 @@ impl MossMlx {
             x = x.add(v.multiply(Array::from_f32(s1 - s0))?)?;
             if let Some((z0, m, eps)) = &keep {
                 let known = z0.multiply(Array::from_f32(1.0 - s1))?.add(eps.multiply(Array::from_f32(s1))?)?;
-                x = x.multiply(m)?.add(known.multiply(Array::from_f32(1.0).subtract(m)?)?)?;
+                // Differential, as qir's MOSS fill: painted from the step the mask value passes
+                // `1 - (i+1)/n`, kept before it, never mixed (a soft mix left pale smears).
+                let m = m.gt(Array::from_f32((n - i - 1) as f32 / n as f32))?.as_dtype(Dtype::Float32)?;
+                x = x.multiply(&m)?.add(known.multiply(Array::from_f32(1.0).subtract(&m)?)?)?;
             }
             x.eval()?;
             if crate::profile::enabled() {

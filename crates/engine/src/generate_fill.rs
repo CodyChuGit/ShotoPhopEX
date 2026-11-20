@@ -26,6 +26,9 @@ use super::{
     template_or, tone_match_removal, web_unavailable, write_rgba8,
 };
 
+/// The context around the selection a MOSS fill sends, as a fraction of the selection's larger side.
+const MOSS_FILL_MARGIN: f64 = 0.75;
+
 pub(super) fn fill_enabled(s: &Session) -> std::result::Result<(), String> {
     web_unavailable()?;
     let d = s.active().ok_or("no document open")?;
@@ -124,7 +127,11 @@ pub(super) fn plan_fill(s: &Session, p: &Value) -> Result<FillPlan> {
     }
     let Common { template, prompt, negative, seed, steps, guidance, models, name } =
         plan_common(s, FILL, &q, &base, if as_edit { Task::Edit } else { Task::Fill }, &default_model)?;
-    let margin = opt_num(FILL, p, "margin", 0.0, 1.0)?.unwrap_or(0.25);
+    // MOSS Fill paints by latent blending: it reads the scene only from the picture around the
+    // selection, and with the usual quarter it drew the thing as large as the whole selection
+    // (5090, 2026-11-20); it gets more of the room to judge the size by.
+    let default_margin = if template.meta.id == MOSS_FILL_TEMPLATE { MOSS_FILL_MARGIN } else { 0.25 };
+    let margin = opt_num(FILL, p, "margin", 0.0, 1.0)?.unwrap_or(default_margin);
     let edge = parse_edge(FILL, p)?;
     let variations = match opt_num(FILL, p, "variations", 1.0, f64::from(MAX_VARIATIONS))? {
         None => 1,
