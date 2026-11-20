@@ -63,15 +63,45 @@ enum Emb {
 }
 
 /// The candle backend's files under a models root: the checkpoint and the CLIP tokenizer
-/// (`sam3.1/tokenizer.json`, else ComfyUI's `comfy/sd1_tokenizer` beside a ComfyUI `models`
-/// folder).
+/// (`sam3.1/tokenizer.json`, else ComfyUI's `comfy/sd1_tokenizer` in the ComfyUI folder that
+/// holds the models: beside `root`, or beside the folder `root` or the checkpoint really is in
+/// when they are links into a ComfyUI install, so a models folder elsewhere still finds it).
+///
+/// Only beside `root` (until 2026-11-18): a models folder of junctions into ComfyUI's lost
+/// SAM, and with it Select Subject and every edit's subject mask (round 9 on the 5090).
 #[cfg(feature = "candle")]
 fn candle_files(root: &Path) -> Option<(PathBuf, PathBuf)> {
     let checkpoint = [root.join("checkpoints").join(SAM31_CHECKPOINT), root.join(SAM31_DIR).join(SAM31_CHECKPOINT)].into_iter().find(|p| p.is_file())?;
     let own = root.join(SAM31_DIR).join("tokenizer.json");
-    let comfy = root.parent().map(|p| p.join("comfy").join("sd1_tokenizer")).filter(|d| d.join("vocab.json").is_file() && d.join("merges.txt").is_file());
-    let tokenizer = if own.is_file() { Some(own) } else { comfy }?;
+    let tokenizer = if own.is_file() {
+        Some(own)
+    } else {
+        comfy_homes(root, &checkpoint)
+            .into_iter()
+            .map(|h| h.join("comfy").join("sd1_tokenizer"))
+            .find(|d| d.join("vocab.json").is_file() && d.join("merges.txt").is_file())
+    }?;
     Some((checkpoint, tokenizer))
+}
+
+/// The folders that may hold ComfyUI's code beside its `models` folder: `root`'s parent, the
+/// parent of the folder `root` resolves to, and the folder above the `models` folder the
+/// `checkpoint` (in `models/<folder>/`) resolves to.
+#[cfg_attr(not(feature = "candle"), allow(dead_code))]
+fn comfy_homes(root: &Path, checkpoint: &Path) -> Vec<PathBuf> {
+    let mut homes: Vec<PathBuf> = Vec::new();
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let candidates = [
+        root.parent().map(Path::to_path_buf),
+        real(root).and_then(|r| r.parent().map(Path::to_path_buf)),
+        real(checkpoint).and_then(|c| c.ancestors().nth(3).map(Path::to_path_buf)),
+    ];
+    for c in candidates.into_iter().flatten() {
+        if !homes.contains(&c) {
+            homes.push(c);
+        }
+    }
+    homes
 }
 
 #[cfg(not(feature = "candle"))]
@@ -746,6 +776,30 @@ pub fn has_models(dir: &Path) -> bool {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[cfg(unix)]
+    #[test]
+    fn comfy_is_found_through_links_into_a_comfy_install() {
+        let base = std::env::temp_dir().join(format!("gn-comfy-homes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let comfy = base.join("ComfyUI");
+        let sam = comfy.join("models").join(SAM31_DIR);
+        std::fs::create_dir_all(&sam).unwrap();
+        std::fs::write(sam.join(SAM31_CHECKPOINT), b"x").unwrap();
+        // A models folder elsewhere whose sam3.1 is a link into ComfyUI's.
+        let root = base.join("elsewhere").join("models");
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&sam, root.join(SAM31_DIR)).unwrap();
+        let checkpoint = root.join(SAM31_DIR).join(SAM31_CHECKPOINT);
+        let homes = comfy_homes(&root, &checkpoint);
+        assert_eq!(homes[0], base.join("elsewhere"), "beside the models folder first");
+        assert!(homes.contains(&std::fs::canonicalize(&comfy).unwrap()), "{homes:?}");
+        // The models folder itself a link: its real parent.
+        let linked = base.join("linked-models");
+        std::os::unix::fs::symlink(comfy.join("models"), &linked).unwrap();
+        assert!(comfy_homes(&linked, &linked.join(SAM31_DIR).join(SAM31_CHECKPOINT)).contains(&std::fs::canonicalize(&comfy).unwrap()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     fn req(model: &str, params: BTreeMap<String, Value>) -> RunRequest {
         RunRequest {

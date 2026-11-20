@@ -39,7 +39,9 @@ pub fn angle_words(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
 pub fn angle_sentence(rotation: u32, tilt: i32, zoom: u32) -> String {
     let side = if rotation > 180 { "left" } else { "right" };
     let turn = match rotation {
-        45 | 315 => format!("The camera has moved 45 degrees around to the subject's {side}: a three-quarter view."),
+        // "A little" and "most of the front still visible" keep it at 45: without them it went
+        // on to 60-90° on animals, objects, cars and buildings (2026-11-18, 10 kinds of photo).
+        45 | 315 => format!("The camera has moved a little, 45 degrees, to the subject's {side}: a three-quarter view with most of the front still visible."),
         90 | 270 => {
             format!("The camera has moved 90 degrees around to the subject's {side}: a true side profile, the subject seen exactly from its {side} side.")
         }
@@ -48,23 +50,32 @@ pub fn angle_sentence(rotation: u32, tilt: i32, zoom: u32) -> String {
         _ => String::new(),
     };
     let height = match tilt {
-        -30 => "The camera is lowered below the subject and looks up at it at 30 degrees.",
-        30 => "The camera is raised above the subject and looks down at it at 30 degrees.",
+        // Tuned 2026-11-18: the plain "lowered below" barely moved (5-20°); "raised above" went
+        // nearly top-down on objects and bent buildings like a fisheye.
+        -30 => "The camera is close to the ground, below the subject, and looks up at it: a low-angle view from 30 degrees below.",
+        30 => "The camera is a little higher than the subject and looks slightly down at it, 30 degrees.",
         60 => "The camera is raised high above the subject and looks down at it at 60 degrees.",
         _ => "",
     };
     let distance = match zoom {
-        0 => "The camera has moved back: the whole subject and its surroundings are in the frame.",
+        // "Scene", not "subject": the subject wording mirrored a landscape with a seam down the
+        // middle (2 seeds) and swapped a house; never worse on the other 8 kinds (2026-11-18).
+        0 => "The camera has moved back: the whole scene is in the frame, with more around it.",
         10 => "The camera has moved close: the subject's main part fills the frame.",
         _ => "",
     };
     [turn.as_str(), height, distance].iter().filter(|w| !w.is_empty()).copied().collect::<Vec<_>>().join(" ")
 }
 
-/// The prompt for a camera: `<sks> [azimuth] [elevation] [distance]`, the LoRA's trained words,
+/// The prompt for a camera: `<sks> [azimuth] [elevation] [distance]`, the LoRA's trained words
+/// (no distance for the default medium one),
 /// then [`angle_sentence`]; None for a value the LoRA has no words for.
 pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     let words = angle_words(rotation, tilt, zoom)?;
+    // The default distance says nothing: `medium shot` pulled tight photos (a cat's head, a
+    // portrait) back to a full body (2026-11-18 5090 test, 10 kinds of photo); without it the
+    // framing stays and the turn is as far or further, and wide photos are unchanged.
+    let words = if zoom == 5 { words.trim_end_matches(" medium shot").to_string() } else { words };
     let sentence = angle_sentence(rotation, tilt, zoom);
     Some(if sentence.is_empty() { format!("<sks> {words}") } else { format!("<sks> {words} {sentence}") })
 }
@@ -268,7 +279,18 @@ pub(super) fn mask_to_subject(
         // Most of the picture changed: the whole result shows, as the model made it.
         return Ok(());
     }
-    let subject = subject_in(&picture, rect, finder, ctx)?.map(|s| if soft_edge { soft_subject_edge(&s, w, h) } else { s });
+    // Select Subject unavailable (SAM's files not found) costs the subject, not the edit: what
+    // changed still shows. It made every edit fail with "no engine here serves sam3.1/segment"
+    // (round 9 on the 5090, 2026-11-18).
+    let subject = match subject_in(&picture, rect, finder, ctx) {
+        Ok(s) => s,
+        Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+        Err(e) => {
+            eprintln!("edit: no subject mask ({e}); showing what changed");
+            None
+        }
+    };
+    let subject = subject.map(|s| if soft_edge { soft_subject_edge(&s, w, h) } else { s });
     let subject = match (subject, changed) {
         (Some(mut s), Some(c)) => {
             for (a, b) in s.iter_mut().zip(&c) {

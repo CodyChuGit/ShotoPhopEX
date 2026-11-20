@@ -18,12 +18,12 @@ use crate::{EngineError, Result, Session};
 use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, DEFAULT_SAMPLER, DEFAULT_SCHEDULER, EDIT, EDIT_BAND_CHANGE, EDIT_BAND_MAX_SHARE, Edge, EnhanceKind,
     FAST_DRAFT_STEP_CACHE, FILL, GenerativeInfo, HIGHLIGHT_GROW, HIGHLIGHT_REMOVE_PROMPT, JobProgress, KLEIN_FILL_TEMPLATE, MAX_GROW, MAX_SEED, MAX_VARIATIONS,
-    NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate, dim_outside,
-    dither_edge, enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at,
-    grey_outside, grey_where, judge_pair, krea2_fill, named_object, naming_views, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num,
-    opt_str, outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter, request_size,
-    request_size_within, resize_gray8, resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there,
-    template_or, tone_match_removal, web_unavailable, write_rgba8,
+    NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate, dither_edge,
+    enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at, grey_outside,
+    grey_where, judge_pair, krea2_fill, named_object, naming_picture, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num, opt_str,
+    outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter, request_size_within, resize_gray8,
+    resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there, template_or, tone_match_removal,
+    web_unavailable, write_rgba8,
 };
 
 pub(super) fn fill_enabled(s: &Session) -> std::result::Result<(), String> {
@@ -238,23 +238,11 @@ pub(super) struct Outpaint {
 /// came back or the rewriter could not run.
 pub(super) fn name_selected(doc: &Document, job: &FillJob, area: Rect, coverage: &[f32], ctx: &JobCtx) -> Result<Option<String>> {
     ctx.progress(0.0, "Naming what is selected");
-    let canvas = doc.bounds();
     let (hole, _) = crate::select_ml_cmds::coverage_bounds(coverage, area);
     if hole.is_empty() {
         return Ok(None);
     }
-    let by_worker = true;
-    let (wide_rect, close_rect) = naming_views(hole, canvas, by_worker)?;
-    let crop = |r: Rect| -> Result<Rgba8> {
-        let c = photocraft_compose::render(doc, r).to_rgba8();
-        Rgba8::new(c.width, c.height, c.pixels).map_err(gen_err)
-    };
-    let mut close = crop(close_rect)?;
-    dim_outside(&mut close, close_rect, coverage, area);
-    let seen = side_by_side(&crop(wide_rect)?, &close)?;
-    let (rw, rh) = request_size(seen.width, seen.height);
-    let seen = rgba8_at(seen, rw, rh)?;
-    let place = place_in_words(hole, wide_rect);
+    let (seen, place) = naming_picture(doc, hole, coverage, area)?;
     let said =
         enhance_prompt(job.thinker.as_ref(), EnhanceKind::Remove, REMOVE_PROMPT, Some(&seen), Some(&place), job.seed, &JobProgress::span(ctx, 0.01, 0.04));
     Ok(said.ok().flatten().and_then(|p| named_object(&p)))

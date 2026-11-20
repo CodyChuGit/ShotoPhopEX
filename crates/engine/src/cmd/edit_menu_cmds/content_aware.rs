@@ -56,9 +56,16 @@ pub(super) fn delete_and_fill(s: &mut Session, _: &Value) -> Result<Value> {
 /// undo step. Sampled from what the picture shows (all layers), as the Remove tool's default.
 /// `seed` repeats a removal exactly (random when absent).
 pub(super) fn generative_remove(s: &mut Session, p: &Value) -> Result<Value> {
-    let mut q = json!({"generative": true, "sampleAllLayers": true});
-    if let Some(seed) = p.get("seed").and_then(Value::as_u64) {
-        q["seed"] = json!(seed);
+    // The caller's generative params (seed, enhance, variations, prefill, tuning, …) pass through
+    // as edit.contentAwareFill takes them; only `generative` is fixed, and all layers are sampled
+    // unless the caller says otherwise.
+    let mut q = match p {
+        Value::Object(m) => Value::Object(m.clone()),
+        _ => json!({}),
+    };
+    q["generative"] = json!(true);
+    if q.get("sampleAllLayers").is_none() {
+        q["sampleAllLayers"] = json!(true);
     }
     content_aware_fill_as(s, &q, "edit.generativeRemove", "Generative Remove")
 }

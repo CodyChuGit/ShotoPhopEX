@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use candle_core::Tensor;
+use candle_core::{DType, Tensor};
 
 use crate::lora::LoraStack;
 use crate::Result;
@@ -61,8 +61,10 @@ pub fn entry(dir: &Path, checkpoint: &Path, loras: &LoraStack) -> Result<PathBuf
     Ok(dir.join(format!("{stem}-int8-{:016x}.safetensors", crate::convrot_cache::fnv1a64(key.as_bytes()))))
 }
 
-/// Save `weights` (CPU tensors) at `path` atomically and evict ([`evictions`]); `false` when it
-/// was not written because the disk would be left with less than [`MIN_FREE_GB`] free.
+/// Save `weights` at `path` atomically and evict ([`evictions`]); `false` when it was not written
+/// because the disk would be left with less than [`MIN_FREE_GB`] free. The tensors may be on the
+/// card: each is copied to the host only while it is written, so the write never holds the
+/// ~19 GB entry in RAM (a PC whose commit was already full could not, 2026-11-18).
 pub fn write(path: &Path, weights: Vec<(String, Tensor)>) -> Result<bool> {
     let size: u64 = weights.iter().map(|(_, t)| (t.elem_count() * t.dtype().size_in_bytes()) as u64).sum();
     let dir = path.parent().ok_or_else(|| anyhow::anyhow!("INT8 cache entry has no folder"))?;
@@ -73,10 +75,58 @@ pub fn write(path: &Path, weights: Vec<(String, Tensor)>) -> Result<bool> {
         tracing::info!(path = %path.display(), free_gib = free >> 30, entry_gib = size >> 30, min_free_gib = min_free >> 30, "INT8 cache entry not written: too little free space");
         return Ok(false);
     }
-    let map: std::collections::HashMap<String, Tensor> = weights.into_iter().collect();
-    crate::convrot_cache::write_atomic(path, |tmp| Ok(candle_core::safetensors::save(&map, tmp)?))?;
+    crate::convrot_cache::write_atomic(path, |tmp| write_streamed(tmp, &weights))?;
     prune(path);
     Ok(true)
+}
+
+fn dtype_name(dtype: DType) -> Result<&'static str> {
+    Ok(match dtype {
+        DType::U8 => "U8",
+        DType::F32 => "F32",
+        DType::BF16 => "BF16",
+        DType::F16 => "F16",
+        other => anyhow::bail!("INT8 cache cannot store {other:?}"),
+    })
+}
+
+fn host_bytes(t: &Tensor) -> Result<Vec<u8>> {
+    let t = t.to_device(&candle_core::Device::Cpu)?.flatten_all()?;
+    Ok(match t.dtype() {
+        DType::U8 => t.to_vec1::<u8>()?,
+        DType::F32 => t.to_vec1::<f32>()?.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        DType::BF16 => t.to_vec1::<half::bf16>()?.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        DType::F16 => t.to_vec1::<half::f16>()?.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        other => anyhow::bail!("INT8 cache cannot store {other:?}"),
+    })
+}
+
+/// A safetensors file written one tensor at a time: the header from the shapes, then each
+/// tensor's bytes in order.
+fn write_streamed(path: &Path, weights: &[(String, Tensor)]) -> Result<()> {
+    use std::io::Write;
+    let mut header = serde_json::Map::new();
+    let mut offset = 0u64;
+    for (name, t) in weights {
+        let len = (t.elem_count() * t.dtype().size_in_bytes()) as u64;
+        header.insert(name.clone(), serde_json::json!({ "dtype": dtype_name(t.dtype())?, "shape": t.dims(), "data_offsets": [offset, offset + len] }));
+        offset += len;
+    }
+    let mut json = serde_json::to_vec(&serde_json::Value::Object(header))?;
+    // Pad to 8 bytes, as safetensors does, so the data starts aligned.
+    while json.len() % 8 != 0 {
+        json.push(b' ');
+    }
+    let mut out = std::io::BufWriter::with_capacity(8 << 20, std::fs::File::create(path)?);
+    out.write_all(&(json.len() as u64).to_le_bytes())?;
+    out.write_all(&json)?;
+    for (name, t) in weights {
+        let bytes = host_bytes(t)?;
+        anyhow::ensure!(bytes.len() as u64 == (t.elem_count() * t.dtype().size_in_bytes()) as u64, "{name}: unexpected byte count");
+        out.write_all(&bytes)?;
+    }
+    out.into_inner().map_err(|e| anyhow::anyhow!("flushing the INT8 cache entry: {e}"))?.sync_all()?;
+    Ok(())
 }
 
 /// Mark an entry as just used, so eviction takes the least recently used first.
@@ -173,6 +223,23 @@ mod tests {
         assert!(evictions(entries.clone(), &p("a-int8-2"), 2, 1000).is_empty());
         // The new entry stays even when it alone is over the cap.
         assert_eq!(evictions(vec![(at(1), p("a-int8-1"), 99)], &p("a-int8-1"), 1, 60), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn the_streamed_entry_reads_back_as_safetensors() {
+        let d = tmpdir("stream");
+        let path = d.join("m-int8-1.safetensors");
+        let dev = candle_core::Device::Cpu;
+        let q = Tensor::from_vec((0u8..24).collect::<Vec<_>>(), (4, 6), &dev).unwrap();
+        let s = Tensor::from_vec(vec![0.5f32, -1.25, 3.0, 7.5], 4, &dev).unwrap();
+        let odd = Tensor::from_vec(vec![1u8, 2, 3], 3, &dev).unwrap();
+        write_streamed(&path, &[("a.weight_i8".into(), q.clone()), ("a.col_scale".into(), s.clone()), ("b.weight_i8".into(), odd.clone())]).unwrap();
+        let back = candle_core::safetensors::load(&path, &dev).unwrap();
+        assert_eq!(back["a.weight_i8"].to_vec2::<u8>().unwrap(), q.to_vec2::<u8>().unwrap());
+        assert_eq!(back["a.col_scale"].to_vec1::<f32>().unwrap(), s.to_vec1::<f32>().unwrap());
+        assert_eq!(back["b.weight_i8"].to_vec1::<u8>().unwrap(), vec![1, 2, 3]);
+        let file = crate::layered_files::TensorFile::open(&path).unwrap();
+        assert!(file.contains("a.col_scale"));
     }
 
     #[test]

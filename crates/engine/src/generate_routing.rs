@@ -185,11 +185,6 @@ pub fn default_image_template(s: &Session) -> String {
     if ultra(s) && template_files_present(s, ULTRA_IMAGE_TEMPLATE) {
         return ULTRA_IMAGE_TEMPLATE.to_string();
     }
-    // Preferences' Fast image template (per machine), when Quality is Fast and its files are in.
-    let fast = s.prefs().integrations.fast_image_template.trim().to_string();
-    if quality(s) == "fast" && !fast.is_empty() && fast != AUTO_TEMPLATE && template_files_present(s, &fast) {
-        return fast;
-    }
     match s.prefs().integrations.default_image_template.trim() {
         "" | AUTO_TEMPLATE => crate::memory_profile::image_template(crate::memory_profile::active(s)).to_string(),
         t => t.to_string(),

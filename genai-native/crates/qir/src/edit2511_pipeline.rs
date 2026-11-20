@@ -47,11 +47,33 @@ struct ConditioningKey {
     references: Vec<RgbImage>,
     prompt: String,
     negative: Option<String>,
+    /// The picture the first reference is encoded as ([`aligned_reference`]), when it is.
+    aligned: Option<RgbImage>,
 }
 impl ConditioningKey {
     fn new(req: &Edit2511Request) -> Self {
-        Self { references: req.references.clone(), prompt: req.prompt.clone(), negative: (req.cfg > 1.).then(|| req.negative.clone()) }
+        Self {
+            references: req.references.clone(),
+            prompt: req.prompt.clone(),
+            negative: (req.cfg > 1.).then(|| req.negative.clone()),
+            aligned: aligned_reference(req).cloned(),
+        }
     }
+}
+
+/// An edit's picture, when the first reference's VAE latent is encoded from it, on the output's
+/// own grid, instead of from the Kontext-scaled copy at about 1024²: an edit by instruction (no
+/// mask) whose picture has the reference's aspect (within 2 %) and is no bigger than 1024² in
+/// area. A tall picture's reference (768×1024 cropped and scaled to 880×1184) against its own
+/// 96×128 latent made 2511 redraw the whole frame a little off for "make her smile" or "give
+/// them sunglasses", so every small edit re-toned and shifted the picture; a square picture,
+/// whose reference already was its own size, kept the rest as it was (Enhance round 8 on the
+/// 5090, 2026-11-18). The same mismatch doubled MOSS Edit's heads.
+fn aligned_reference(req: &Edit2511Request) -> Option<&RgbImage> {
+    let (t, r) = (req.target.as_ref()?, req.references.first()?);
+    let (tw, th, rw, rh) = (t.width() as f64, t.height() as f64, r.width() as f64, r.height() as f64);
+    let (a, b) = (rw * th, rh * tw);
+    (req.mask.is_none() && tw * th > 0. && (a - b).abs() <= 0.02 * a.max(b) && tw * th <= 1024. * 1024.).then_some(t)
 }
 #[derive(Clone)]
 struct Conditioning {
@@ -189,11 +211,16 @@ impl Edit2511Pipeline {
         let mut mark = phase_marks(&self.device);
         let references = {
             let vae = self.vae()?;
+            let aligned = aligned_reference(req);
             req.references
                 .iter()
-                .map(|rgb| {
+                .enumerate()
+                .map(|(i, rgb)| {
                     check()?;
-                    self.encode(&vae, &resize_vae_reference(&pixels(rgb)?)?)
+                    match aligned.filter(|_| i == 0) {
+                        Some(picture) => self.encode(&vae, &crop_vae_target(&pixels(picture)?)?),
+                        None => self.encode(&vae, &resize_vae_reference(&pixels(rgb)?)?),
+                    }
                 })
                 .collect::<Result<Vec<_>>>()?
         };
@@ -294,7 +321,7 @@ impl Edit2511Pipeline {
         }
         mark("residency check/release")?;
         // The model kept between requests carries its LoRAs merged into the weights, so it can run
-        // INT8 linears; the load that binds and materializes them stays fp8. An INT8 cache entry
+        // INT8 linears; on CUDA they are merged and converted linear by linear. An INT8 cache entry
         // for these LoRAs holds the merged, converted linears; its pages fault in while the
         // encoders run.
         let int8 = edit2511_int8();
@@ -353,6 +380,26 @@ impl Edit2511Pipeline {
                         }
                         Err(e) => tracing::warn!(error = %e, "unreadable INT8 cache entry; converting"),
                     }
+                }
+                // INT8 on the card: merge the LoRAs and convert each linear in place, with no
+                // host copy of the model (see `merge_loras_int8`), then write the cache entry.
+                #[cfg(feature = "convrot")]
+                if resident.is_none() && int8 && self.device.is_cuda() {
+                    // A retained fp8 snapshot is never used by an INT8 model; free it.
+                    *self.binding.lock().map_err(|_| anyhow::anyhow!("2511 binding lock poisoned"))? = None;
+                    let mut dit = LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder(&self.files.diffusion, &self.device)?)?;
+                    mark("DiT load")?;
+                    dit.merge_loras_int8(&req.loras)?;
+                    crate::device::trim_pool(&self.device);
+                    if let Some(entry) = &cache {
+                        // Read back from the entry it writes, as a cache hit loads (see
+                        // `reload_from_entry`: a converting load leaves the pool fragmented).
+                        dit = LayeredDit::reload_from_entry(dit, entry, &self.device, |file| {
+                            crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, file).and_then(LayeredDit::load_int8)
+                        })?;
+                    }
+                    mark("LoRA merge + INT8 convert")?;
+                    *resident = Some((req.loras.clone(), dit));
                 }
                 if resident.is_none() {
                     let mut binding = self.binding.lock().map_err(|_| anyhow::anyhow!("2511 binding lock poisoned"))?;
@@ -554,5 +601,36 @@ mod tests {
         req.cfg = 1.;
         req.references[0].put_pixel(0, 0, image::Rgb([1, 0, 0]));
         assert!(key != ConditioningKey::new(&req));
+    }
+
+    #[test]
+    fn an_edit_encodes_its_picture_on_the_output_grid() {
+        let mut req = Edit2511Request {
+            prompt: "make her smile".into(),
+            negative: String::new(),
+            references: vec![RgbImage::new(880, 1184)],
+            target: Some(RgbImage::new(768, 1024)),
+            mask: None,
+            width: 768,
+            height: 1024,
+            seed: 42,
+            steps: 8,
+            cfg: 1.,
+            loras: LoraStack::default(),
+            step_cache: None,
+        };
+        // A tall picture against its Kontext copy (0.743 against 0.75): the picture itself.
+        assert!(aligned_reference(&req).is_some_and(|t| t.dimensions() == (768, 1024)));
+        // Another aspect (an expand's crop), a fill's mask, or a picture above 1024²: the reference.
+        req.references[0] = RgbImage::new(1024, 1024);
+        assert!(aligned_reference(&req).is_none());
+        req.references[0] = RgbImage::new(880, 1184);
+        req.mask = Some(RgbImage::new(768, 1024));
+        assert!(aligned_reference(&req).is_none());
+        req.mask = None;
+        req.target = Some(RgbImage::new(1536, 2048));
+        assert!(aligned_reference(&req).is_none());
+        req.target = None;
+        assert!(aligned_reference(&req).is_none());
     }
 }

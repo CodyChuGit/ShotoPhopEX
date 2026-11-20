@@ -18,6 +18,12 @@ fn nvcc() -> cc::Build {
     // Never device-debug builds: a profile with `debug = 1` makes `cc` pass nvcc `-G`, which
     // strips every device optimisation and turns a 3 s denoise into a stall.
     b.cuda(true).debug(false).opt_level(3).flag("-std=c++17").flag("--expt-relaxed-constexpr");
+    // `QIR_NVCC_LINEINFO=1`: keep source lines (no change to the generated code) so NVIDIA
+    // Compute Sanitizer and Nsight reports name the `.cu` file and line.
+    println!("cargo:rerun-if-env-changed=QIR_NVCC_LINEINFO");
+    if std::env::var("QIR_NVCC_LINEINFO").is_ok_and(|v| v == "1") {
+        b.flag("-lineinfo");
+    }
     if let [cap] = archs.as_slice() {
         b.flag(format!("-arch=sm_{cap}"));
     } else {

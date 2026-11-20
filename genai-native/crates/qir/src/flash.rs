@@ -85,7 +85,10 @@ fn bhs_strides(l: &Layout, what: &str) -> candle_core::Result<([std::ffi::c_long
     if st.len() != 4 || st[3] != 1 {
         candle_core::bail!("{what}: rows must be dense, got strides {st:?}");
     }
-    Ok(([st[0] as std::ffi::c_long, st[1] as std::ffi::c_long, st[2] as std::ffi::c_long], l.start_offset()))
+    // `c_long` is 32 bits on Windows: refuse a stride that would wrap instead of reading the
+    // wrong rows.
+    let c = |x: usize| std::ffi::c_long::try_from(x).map_err(|_| candle_core::Error::Msg(format!("{what}: stride {x} too large for the kernel")));
+    Ok(([c(st[0])?, c(st[1])?, c(st[2])?], l.start_offset()))
 }
 
 /// A constant added to the attention scores (before the softmax, in natural-log units) of the

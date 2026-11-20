@@ -110,6 +110,16 @@ fn generative_remove_takes_the_selection_out_through_the_fill_model() {
     let mut seeds: Vec<u64> = r["seeds"].as_array().unwrap().iter().filter_map(|v| v.as_u64()).collect();
     seeds.sort();
     assert_eq!(seeds, vec![4242, 4243], "{r}");
+    // The rest of edit.contentAwareFill's generative params pass through too: one variation
+    // and no naming run.
+    s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 12})).unwrap();
+    let layers = s.active().unwrap().doc.layers.len();
+    let runs = fake.state().runs.len();
+    let r = s.execute("edit.generativeRemove", json!({"seed": 7, "variations": 1, "enhance": false})).unwrap();
+    assert_eq!(s.active().unwrap().doc.layers.len(), layers + 1, "one variation: {r}");
+    let after = fake.state().runs.clone();
+    let tasks: Vec<&str> = after[runs..].iter().filter_map(|r| r.request["task"].as_str()).filter(|t| *t != "segment").collect();
+    assert_eq!(tasks.len(), 1, "one fill and no naming run with enhance off: {tasks:?}");
     // Without the generative models set up it is greyed out.
     s.edit_prefs(|p| {
         p.integrations.models_path = String::new();

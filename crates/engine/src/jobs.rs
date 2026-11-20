@@ -2311,7 +2311,10 @@ impl Session {
         info.error = error;
         info.error_kind = error_kind.clone();
         if state == "done" {
+            // A finished job has no step in progress: its last status ("Placing") must not
+            // stay on it.
             info.progress = 1.0;
+            info.message.clear();
         }
         self.jobs.recent.push(info);
         if self.jobs.recent.len() > RECENT {

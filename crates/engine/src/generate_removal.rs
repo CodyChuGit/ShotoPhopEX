@@ -93,9 +93,14 @@ pub(super) fn stroke_overlap(stroke: &[f32], sb: Rect, obj: &[f32], on: u64, can
     inside as f64 / union as f64
 }
 
-/// `PHOTOCRAFT_DUMP_VIEWS=<folder>` (bench only): the picture a removal's rewriter is shown
-/// is saved there as `views-<n>.png`, so `naming-probe.ps1` can ask about exactly that picture.
+/// `PHOTOCRAFT_DUMP_VIEWS=<folder>` (bench only, debug builds only): the picture a removal's
+/// rewriter is shown is saved there as `views-<n>.png`, so `naming-probe.ps1` can ask about
+/// exactly that picture. Release builds ignore the variable, so a stray environment setting
+/// cannot make the shipped app write the user's pictures to disk.
 pub(super) fn dump_views(seen: &Rgba8) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     let Ok(dir) = std::env::var("PHOTOCRAFT_DUMP_VIEWS") else { return };
     let Ok(png) = photocraft_genai::png::encode_rgba8(seen) else { return };
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
@@ -168,6 +173,23 @@ pub(crate) fn naming_views(hole: Rect, canvas: Rect, by_worker: bool) -> Result<
     let margin = if by_worker { REMOVE_CLOSE_MARGIN_WORKER } else { REMOVE_CLOSE_MARGIN };
     let close = fill_rect(hole.inflate(remove_grow(hole) as i32).intersect(&canvas), margin, canvas)?;
     Ok((at_least(close, REMOVE_MIN_REQUEST, canvas), close))
+}
+
+/// The picture the rewriter names a stroke's object from, at the request size: the
+/// surroundings beside the close-up ([`naming_views`]), the close-up dimmed outside the stroke
+/// (`coverage` over `area`), and where in the surroundings the hole is, in words.
+pub(crate) fn naming_picture(doc: &photocraft_doc::Document, hole: Rect, coverage: &[f32], area: Rect) -> Result<(Rgba8, String)> {
+    let by_worker = true;
+    let (wide_rect, close_rect) = naming_views(hole, doc.bounds(), by_worker)?;
+    let crop = |r: Rect| -> Result<Rgba8> {
+        let c = photocraft_compose::render(doc, r).to_rgba8();
+        Rgba8::new(c.width, c.height, c.pixels).map_err(gen_err)
+    };
+    let mut close = crop(close_rect)?;
+    dim_outside(&mut close, close_rect, coverage, area);
+    let seen = side_by_side(&crop(wide_rect)?, &close)?;
+    let (rw, rh) = request_size(seen.width, seen.height);
+    Ok((rgba8_at(seen, rw, rh)?, place_in_words(hole, wide_rect)))
 }
 
 /// `rect` widened about its centre to at least `min_side` on each side, slid inside `canvas`
@@ -330,38 +352,39 @@ pub(super) fn remove_grow(b: Rect) -> u32 {
     ((side * REMOVE_GROW_SHARE).round() as u32).clamp(REMOVE_GROW_MIN, REMOVE_GROW_MAX)
 }
 
+/// What a generative removal's fill job asks for, apart from the session and the label.
+#[derive(Clone)]
+pub(super) struct RemovalOpts {
+    /// How far the hole grows (0: [`remove_grow`] decides).
+    pub grow: u32,
+    /// Flatten the hole to grey in what the model sees.
+    pub erase: bool,
+    /// Let the rewriter name the object first.
+    pub enhance: bool,
+    /// How many results are judged.
+    pub variations: u32,
+    pub seed: Option<u64>,
+    /// Pre-fill the hole before the model sees it.
+    pub prefill: bool,
+    pub tuning: Tuning,
+}
+
+/// Split into Layers' removal of one subject: the hole grown by [`remove_grow`], its pixels
+/// kept and pre-filled, no rewriter.
+pub(super) fn split_removal(variations: u32, seed: Option<u64>, tuning: Tuning) -> RemovalOpts {
+    RemovalOpts { grow: 0, erase: false, enhance: false, variations, seed, prefill: true, tuning }
+}
+
 /// The fill job a generative removal runs ([`generative_remove`], Split into Layers'
 /// subjects): the fill template the preferences give (under `auto` the native
 /// Qwen-Image-2.1 removal route), the measured removal prompt, `variations` judged.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn removal_job(
-    s: &Session,
-    label: &str,
-    grow: u32,
-    erase: bool,
-    enhance: bool,
-    variations: u32,
-    seed: Option<u64>,
-    prefill: bool,
-    tuning: Tuning,
-) -> Result<FillJob> {
-    removal_job_on(s, label, grow, erase, enhance, variations, seed, prefill, tuning, None)
+pub(super) fn removal_job(s: &Session, label: &str, opts: RemovalOpts) -> Result<FillJob> {
+    removal_job_on(s, label, opts, None)
 }
 
 /// [`removal_job`] on `template` when one is given (the preferences and `auto` aside).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn removal_job_on(
-    s: &Session,
-    label: &str,
-    grow: u32,
-    erase: bool,
-    enhance: bool,
-    variations: u32,
-    seed: Option<u64>,
-    prefill: bool,
-    tuning: Tuning,
-    template: Option<&str>,
-) -> Result<FillJob> {
+pub(super) fn removal_job_on(s: &Session, label: &str, opts: RemovalOpts, template: Option<&str>) -> Result<FillJob> {
+    let RemovalOpts { grow, erase, enhance, variations, seed, prefill, tuning } = opts;
     let (default_template, default_model) = {
         let i = &s.prefs().integrations;
         (template.map_or_else(|| template_or(&i.default_fill_template, AUTO_TEMPLATE), str::to_string), i.default_edit_model.clone())
@@ -520,12 +543,13 @@ pub(crate) fn generative_remove(
     // No Consistency LoRA here: on a pedestrian it turned the removal into a copy of the input
     // (mean change 0.9/255 inside the hole, measured in the app 2026-11-12); a request can still
     // name it in `loras`.
-    let job = removal_job(s, label, grow, erase, enhance, variations, seed, prefill, tuning.clone())?;
+    let opts = RemovalOpts { grow, erase, enhance, variations, seed, prefill, tuning };
+    let job = removal_job(s, label, opts.clone())?;
     // Qwen-Image-2.1 first; where the object is still there afterwards, the 2511 Remove LoRA
     // ([`REMOVE_RETRY_TEMPLATE`]): the owner's choice of 2026-11-16, when the 2.1 edit painted a
     // woman selected whole back in 4 of 4 runs and the 2511 LoRA removed her in 2 of 2.
     let retry = (job.template_id == "qwen-2.1/edit")
-        .then(|| removal_job_on(s, label, grow, erase, false, variations, seed, prefill, tuning, Some(REMOVE_RETRY_TEMPLATE)).ok())
+        .then(|| removal_job_on(s, label, RemovalOpts { enhance: false, ..opts }, Some(REMOVE_RETRY_TEMPLATE)).ok())
         .flatten();
     let label_kept = label.to_string();
     crate::jobs::edit_job(
@@ -547,18 +571,7 @@ pub(crate) fn generative_remove(
             if job.enhance {
                 ctx.progress(0.0, "Naming the object");
                 let (hole, _) = crate::select_ml_cmds::coverage_bounds(&coverage, area);
-                let by_worker = true;
-                let (wide_rect, close_rect) = naming_views(hole, canvas, by_worker)?;
-                let crop = |r: Rect| -> Result<Rgba8> {
-                    let c = photocraft_compose::render(doc, r).to_rgba8();
-                    Rgba8::new(c.width, c.height, c.pixels).map_err(gen_err)
-                };
-                let mut close = crop(close_rect)?;
-                dim_outside(&mut close, close_rect, &coverage, area);
-                let seen = side_by_side(&crop(wide_rect)?, &close)?;
-                let (rw, rh) = request_size(seen.width, seen.height);
-                let seen = rgba8_at(seen, rw, rh)?;
-                let place = place_in_words(hole, wide_rect);
+                let (seen, place) = naming_picture(doc, hole, &coverage, area)?;
                 // The rewriter's sentence gives the object's name and what lies behind it; the
                 // fill's prompt is composed from them with the measured generic wording (the
                 // rewriter's own closing clauses listed the scene's neighbours and the model
