@@ -207,7 +207,7 @@ impl Fp8Linear {
 /// FP8 tensor cores: cuBLASLt declines every FP8 GEMM there, after the activation was already
 /// cast, so each layer paid a cast and a failed algorithm search before its bf16 matmul.
 #[cfg_attr(not(feature = "fp8"), allow(dead_code))]
-fn card_has_fp8_mma() -> bool {
+pub(crate) fn card_has_fp8_mma() -> bool {
     static FP8_MMA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *FP8_MMA.get_or_init(|| crate::device::probe().map_or(true, |g| g.compute_cap >= 89))
 }

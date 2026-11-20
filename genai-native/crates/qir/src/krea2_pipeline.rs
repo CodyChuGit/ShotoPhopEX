@@ -173,8 +173,25 @@ impl Krea2Pipeline {
             if fp8.is_some() { raw } else { crate::convrot_cache::resolve_file_set(&files.dit_key, raw, opts.convrot, &opts.cache, &Policy::krea2())? };
         let vb = crate::mapped::var_builder(&dit_files, dtype, &dev, |_| true)?;
         let dit = Krea2Dit::load_with(&Krea2Config::default(), opts.convrot, fp8.as_ref(), vb)?;
+        // The INT8 conversions' freed bf16 and rotated copies stay in the CUDA pool, which the
+        // driver counts as used: on an RTX 3090 (every e4m3 layer converted) that held ~3.9 GB
+        // after the load and pushed the first 24 GB picture into system memory (2026-11-18).
+        crate::device::trim_pool(&dev);
+        // Converted e4m3 layers sit between the conversion's freed temporaries: park them on
+        // the host and upload them again (`QIR_KREA2_INT8_REHOME=0` skips it).
+        let rehome = std::env::var("QIR_KREA2_INT8_REHOME").map_or(crate::model::krea2::e4m3_layers_on_int8(), |v| v.trim() == "1");
+        if fp8.is_some() && rehome {
+            let free = crate::device::free_vram(&dev).map_or(0, |(f, _)| f >> 20);
+            dit.rehome_int8()?;
+            tracing::info!(free_before_mib = free, free_after_mib = crate::device::free_vram(&dev).map_or(0, |(f, _)| f >> 20), "krea2 int8 weights re-homed");
+        }
+        let (pool_reserved, pool_used) = crate::device::pool_now(&dev).unwrap_or((0, 0));
         tracing::info!(
             load_s = t0.elapsed().as_secs_f32(),
+            free_mib = crate::device::free_vram(&dev).map_or(0, |(f, _)| f >> 20),
+            pool_reserved_mib = pool_reserved >> 20,
+            pool_used_mib = pool_used >> 20,
+            int8_mib = dit.int8_bytes() >> 20,
             convrot = opts.convrot && fp8.is_none(),
             fp8 = fp8.is_some(),
             nvfp4,

@@ -247,8 +247,6 @@ const BUILTIN: &[&str] = &[
     include_str!("../workflows/moss-image-image.json"),
     include_str!("../workflows/moss-image-image-base.json"),
     include_str!("../workflows/moss-image-turbo.json"),
-    include_str!("../workflows/moss-image-juggernaut.json"),
-    include_str!("../workflows/moss-image-juggernaut-turbo.json"),
     include_str!("../workflows/moss-image-edit.json"),
     include_str!("../workflows/moss-image-edit-turbo.json"),
     include_str!("../workflows/moss-image-restore.json"),

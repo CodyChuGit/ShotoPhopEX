@@ -321,7 +321,7 @@ impl Edit2511Pipeline {
         }
         mark("residency check/release")?;
         // The model kept between requests carries its LoRAs merged into the weights, so it can run
-        // INT8 linears; the load that binds and materializes them stays fp8. An INT8 cache entry
+        // INT8 linears; on CUDA they are merged and converted linear by linear. An INT8 cache entry
         // for these LoRAs holds the merged, converted linears; its pages fault in while the
         // encoders run.
         let int8 = edit2511_int8();
@@ -380,6 +380,26 @@ impl Edit2511Pipeline {
                         }
                         Err(e) => tracing::warn!(error = %e, "unreadable INT8 cache entry; converting"),
                     }
+                }
+                // INT8 on the card: merge the LoRAs and convert each linear in place, with no
+                // host copy of the model (see `merge_loras_int8`), then write the cache entry.
+                #[cfg(feature = "convrot")]
+                if resident.is_none() && int8 && self.device.is_cuda() {
+                    // A retained fp8 snapshot is never used by an INT8 model; free it.
+                    *self.binding.lock().map_err(|_| anyhow::anyhow!("2511 binding lock poisoned"))? = None;
+                    let mut dit = LayeredDit::load(crate::model::qwen_image_dit::checkpoint_builder(&self.files.diffusion, &self.device)?)?;
+                    mark("DiT load")?;
+                    dit.merge_loras_int8(&req.loras)?;
+                    crate::device::trim_pool(&self.device);
+                    if let Some(entry) = &cache {
+                        // Read back from the entry it writes, as a cache hit loads (see
+                        // `reload_from_entry`: a converting load leaves the pool fragmented).
+                        dit = LayeredDit::reload_from_entry(dit, entry, &self.device, |file| {
+                            crate::model::qwen_image_dit::checkpoint_builder_cached(&self.files.diffusion, &self.device, file).and_then(LayeredDit::load_int8)
+                        })?;
+                    }
+                    mark("LoRA merge + INT8 convert")?;
+                    *resident = Some((req.loras.clone(), dit));
                 }
                 if resident.is_none() {
                     let mut binding = self.binding.lock().map_err(|_| anyhow::anyhow!("2511 binding lock poisoned"))?;
