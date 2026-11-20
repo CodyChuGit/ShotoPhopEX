@@ -322,16 +322,6 @@
    "license": "apache-2.0"
   },
   {
-   "id": "angles21",
-   "name": "2.1 Multiple Angles",
-   "folder": "loras",
-   "file": "qwen-image-2.1-multiple-angles-v2.safetensors",
-   "bytes": 318819792,
-   "sha256": "548c57977c3f1c09c2c9e5f4e83e930cbc6f719c878a576ab8666ce29fef39b6",
-   "url": "https://huggingface.co/akhaliq/Qwen-Image-2.1-Multiple-Angles-LoRA/resolve/main/checkpoints_v2/angles_v2_full_qwen21_multiple_angles_v2_qwen21_multiple_angles_v2_000001500.safetensors",
-   "license": "apache-2.0"
-  },
-  {
    "id": "lightning4",
    "name": "2511 Lightning 4-step",
    "folder": "loras",
@@ -817,17 +807,6 @@
     "qwen25-tokenizer-vocab",
     "qwen25-tokenizer-merges",
     "qwen25-tokenizer-config"
-   ]
-  },
-  {
-   "id": "qwen21-angles",
-   "name": "Angles on RTX 30 and older",
-   "description": "Generative Angles on cards without fp8 support (RTX 30-series and older), where Qwen-Image-Edit-2511 doesn't run: Qwen-Image-2.1 with akhaliq's Multiple Angles LoRA.",
-   "files": [
-    "qwen21-dit",
-    "qwen3vl-8b",
-    "qwen21-vae",
-    "angles21"
    ]
   },
   {

@@ -16,10 +16,10 @@ use crate::jobs::JobCtx;
 use crate::{EngineError, Result, Session};
 
 use super::{
-    ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_2511_MIN_COMPUTE_CAP, ANGLES_TEMPLATE, ANGLES21_TEMPLATE, AUTO_TEMPLATE, CHARACTER_SHEET, Common,
-    DEFAULT_EDIT_TEMPLATE, EDIT, FillJob, FillPlan, MAX_REQUEST_PIXELS, Tuning, ULTRA_EDIT_TEMPLATE, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend,
-    bad, edit_request_pixels, edit_rewrite, fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations,
-    plan_common, run_image, short, template_files_present, ultra, web_unavailable,
+    ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_TEMPLATE, AUTO_TEMPLATE, CHARACTER_SHEET, Common, DEFAULT_EDIT_TEMPLATE, EDIT, FillJob, FillPlan,
+    MAX_REQUEST_PIXELS, Tuning, ULTRA_EDIT_TEMPLATE, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend, bad, edit_request_pixels, edit_rewrite,
+    fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations, plan_common, run_image, short,
+    template_files_present, ultra, web_unavailable,
 };
 
 /// The Multiple Angles LoRA's words for a camera, `[azimuth] [elevation] [distance]`, or None
@@ -80,42 +80,18 @@ pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     Some(if sentence.is_empty() { format!("<sks> {words}") } else { format!("<sks> {words} {sentence}") })
 }
 
-/// The template `generate.angles` runs: 2511 with the Multiple Angles LoRA, which was trained on
-/// exactly these camera moves. Plain Qwen-Image-2.1 by instruction never turned the camera (0 of
-/// 4 at 45°, 2026-11-03 bench), so it does not stand in when the LoRA is missing: the Angles
-/// window says what to download instead. Bring-your-own: on a card below 2511's budget it still
-/// runs, with the window's `may not fit` note.
+/// The template `generate.angles` runs: always 2511 with the Multiple Angles LoRA, which was
+/// trained on exactly these camera moves. Plain Qwen-Image-2.1 by instruction never turned the
+/// camera (0 of 4 at 45°, 2026-11-03 bench; barely on side views in the 2026-11-06 README
+/// recording), so it no longer stands in when the LoRA is missing: the Angles window says what
+/// to download instead. Bring-your-own: on a card below 2511's budget it still runs, with the
+/// window's `may not fit` note.
 ///
-/// On an NVIDIA card older than RTX 40 (no fp8 matrix cores) 2511's fp8 file does not run (a
-/// 3090 crashed at 24 GB, 2026-11-17), so Qwen-Image-2.1 with its own Multiple Angles LoRA does
-/// ([`ANGLES21_TEMPLATE`]; 21.7 GB, 24 s warm there). The owner's call, 2026-11-17.
+/// That holds on RTX 30 and older too: there the fp8 file loads as INT8 (2026-11-19), which fits
+/// 24 GB. A Qwen-Image-2.1 route with its own Angles LoRA kept the scene in 0 of 16 runs (grey
+/// studio), so the owner kept 2511 everywhere, 2026-11-20.
 pub fn angles_template(_s: &Session) -> &'static str {
-    angles_template_for(photocraft_genai::card_compute_cap())
-}
-
-/// [`angles_template`] for a card of `compute_cap` (None: no NVIDIA card known, 2511 as ever).
-pub fn angles_template_for(compute_cap: Option<u32>) -> &'static str {
-    if !photocraft_genai::MLX && compute_cap.is_some_and(|c| c < ANGLES_2511_MIN_COMPUTE_CAP) { ANGLES21_TEMPLATE } else { ANGLES_TEMPLATE }
-}
-
-/// The 2.1 Multiple Angles LoRA's prompt for a camera, `<mva> {azimuth}, {elevation}[ close-up]`
-/// (its card's vocabulary: 30° azimuth steps, eye-level to top-down, close-up or not). Our 45°
-/// steps take its quarter views (60°, 120°…), the nearest it has with the same words; it has no
-/// low angle, so a low camera is eye-level, and no wide shot apart from its default framing.
-pub fn angle_prompt_21(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
-    let azimuth = ANGLE_ROTATIONS.iter().find(|(d, _)| *d == rotation)?.1;
-    let elevation = match tilt {
-        -30 | 0 => "eye-level shot",
-        30 => "elevated shot",
-        60 => "high-angle shot",
-        _ => return None,
-    };
-    let close = match zoom {
-        0 | 5 => "",
-        10 => " close-up",
-        _ => return None,
-    };
-    Some(format!("<mva> {azimuth}, {elevation}{close}"))
+    ANGLES_TEMPLATE
 }
 
 /// The Mac build ([`photocraft_genai::MLX`]), for the UI.
@@ -491,27 +467,17 @@ pub(super) fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| bad(ANGLES, "`rotation` must be 0, 45, … 315; `tilt` -30, 0, 30 or 60; `zoom` 0 (wide), 5 (medium) or 10 (close-up)"))?;
     let camera = angle_words(rotation, tilt, zoom).unwrap_or_default();
     let template = angles_template(s);
-    // On 2.1 the LoRA's own words, its template's steps; no Lightning there.
-    let on21 = template == ANGLES21_TEMPLATE;
-    let words = if on21 { angle_prompt_21(rotation, tilt, zoom).unwrap_or(words) } else { words };
     let mut q = json!({"prompt": words, "template": template, "wholePicture": true, "name": format!("Angles: {camera}")});
-    let keys: &[&str] = if on21 {
-        &["seed", "variations", "negative", "steps", "guidance"]
-    } else {
-        &["seed", "variations", "negative", "lightning", "anglesStrength", "lightningStrength", "steps", "guidance"]
-    };
-    for key in keys {
-        if let Some(v) = p.get(*key).filter(|v| !v.is_null()) {
-            q[*key] = v.clone();
+    for key in ["seed", "variations", "negative", "lightning", "anglesStrength", "lightningStrength", "steps", "guidance"] {
+        if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
+            q[key] = v.clone();
         }
     }
     // Each Lightning has its own steps and CFG unless the request names them.
-    if !on21 {
-        let (steps, guidance) = angles_sampling(p.get("lightning").and_then(Value::as_u64).unwrap_or(8));
-        for (key, v) in [("steps", json!(steps)), ("guidance", json!(guidance))] {
-            if q.get(key).is_none() {
-                q[key] = v;
-            }
+    let (steps, guidance) = angles_sampling(p.get("lightning").and_then(Value::as_u64).unwrap_or(8));
+    for (key, v) in [("steps", json!(steps)), ("guidance", json!(guidance))] {
+        if q.get(key).is_none() {
+            q[key] = v;
         }
     }
     run_edit(s, &q)

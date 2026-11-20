@@ -63,13 +63,6 @@ pub const TEMPLATE_EXPAND: &str = "qwen-2.1/expand";
 /// 32 of 32 renders against 3 of 16 for plain 2.1) and paints the grey. Served when that file
 /// is under the model root's `loras/`.
 pub const TEMPLATE_OUTPAINT: &str = "qwen-2.1/outpaint";
-/// Generative Angles on Qwen-Image-2.1 (the 2.1 edit with [`QWEN21_ANGLES_LORA`]): the app's
-/// route on cards without fp8 matrix cores (RTX 30 and older), where 2511's fp8 file does not
-/// run (on a 3090 the worker died, 7.2 GB spilled; this route fitted in 21.7 GB, 2026-11-17).
-pub const TEMPLATE_ANGLES21: &str = "qwen-2.1/angles";
-/// The LoRA [`TEMPLATE_ANGLES21`] runs with: akhaliq's Multiple Angles v2 for Qwen-Image-2.1
-/// (step 1500, Apache-2.0), prompts `<mva> {azimuth}, {elevation}[ close-up]`.
-pub const QWEN21_ANGLES_LORA: &str = "qwen-image-2.1-multiple-angles-v2.safetensors";
 /// The LoRA [`TEMPLATE_OUTPAINT`] runs with (added to a request's own LoRAs).
 pub const QWEN21_OUTPAINT_LORA: &str = "qwen-image-2.1-outpaint-v2.safetensors";
 /// [`TEMPLATE_OUTPAINT`] in six steps with Viggle's Turbo LoRA (`Viggle/Qwen-Image-2.1-viggle-turbo`
@@ -199,7 +192,7 @@ pub enum Family {
 }
 
 /// Every template served, with the task each one answers and the family that serves it.
-pub const TEMPLATES: [(&str, &str, Family); 42] = [
+pub const TEMPLATES: [(&str, &str, Family); 41] = [
     (TEMPLATE_MINIMAX_H3_IMAGE, "image", Family::MiniMaxH3),
     (TEMPLATE_MINIMAX_H3_EDIT, "edit", Family::MiniMaxH3),
     (TEMPLATE_H3_IMAGE, "image", Family::H3),
@@ -220,7 +213,6 @@ pub const TEMPLATES: [(&str, &str, Family); 42] = [
     (TEMPLATE_IMAGE_REF, "image", Family::QwenImage21),
     (TEMPLATE, "image", Family::QwenImage21),
     (TEMPLATE_EDIT, "edit", Family::QwenImage21),
-    (TEMPLATE_ANGLES21, "edit", Family::QwenImage21),
     (TEMPLATE_FILL, "fill", Family::QwenImage21),
     (TEMPLATE_EXPAND, "expand", Family::QwenImage21),
     (TEMPLATE_MATTE, "matte", Family::QwenImage21),
@@ -364,14 +356,6 @@ fn log_previews(mode: PreviewMode, viewer: &Previewer<'_>) {
     if mode != PreviewMode::Off {
         eprintln!("gn-diffusion: previews {mode:?}: {} pictures in {:.1} ms", viewer.shown, viewer.spent.as_secs_f64() * 1000.0);
     }
-}
-
-/// Card 0's compute capability (8.6 as 86), asked of the driver once without creating a
-/// context; None in a build without CUDA or with no NVIDIA card. The app routes by it where a
-/// model's format needs a newer card (2511's fp8 file wants 8.9).
-pub fn card_compute_cap() -> Option<u32> {
-    static CAP: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
-    *CAP.get_or_init(|| if cfg!(feature = "cuda") { qwen_image_rs::device::probe().ok().map(|g| g.compute_cap) } else { None })
 }
 
 /// The card and, in a CUDA build, the sentence that refuses it (plan-native-engine §10, GPU
@@ -976,7 +960,6 @@ impl DiffusionEngine {
                         || edit2511_defaults(t).is_some_and(|(_, _, names)| names.iter().all(|n| self.models_root.join("loras").join(n).is_file())))
                     && (*t != TEMPLATE_KREA2_EDIT || self.lora_path(KREA2_EDIT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_OUTPAINT || self.lora_path(QWEN21_OUTPAINT_LORA).is_ok_and(|p| p.is_file()))
-                    && (*t != TEMPLATE_ANGLES21 || self.lora_path(QWEN21_ANGLES_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_OUTPAINT_TURBO || [QWEN21_OUTPAINT_LORA, QWEN21_TURBO_LORA].iter().all(|n| self.lora_path(n).is_ok_and(|p| p.is_file())))
                     && (*t != TEMPLATE_KREA2_FILL || self.lora_path(KREA2_ANYPAINT_LORA).is_ok_and(|p| p.is_file()))
                     && (*t != TEMPLATE_MOSS_TURBO || self.template_lora(MOSS_TURBO_LORA).is_some())
@@ -1848,8 +1831,6 @@ impl Engine for DiffusionEngine {
                 with_edit_lora(&req.params)
             } else if req.model == TEMPLATE_OUTPAINT {
                 with_lora_first(&req.params, QWEN21_OUTPAINT_LORA)
-            } else if req.model == TEMPLATE_ANGLES21 {
-                with_lora_first(&req.params, QWEN21_ANGLES_LORA)
             } else if req.model == TEMPLATE_OUTPAINT_TURBO {
                 with_lora_first(&with_lora_first(&req.params, QWEN21_TURBO_LORA), QWEN21_OUTPAINT_LORA)
             } else if krea2_fill {
@@ -2638,7 +2619,6 @@ mod tests {
     #[test]
     fn an_outpaint_runs_its_lora_first_once() {
         assert_eq!((task_of(TEMPLATE_OUTPAINT), family_of(TEMPLATE_OUTPAINT)), (Some("expand"), Some(Family::QwenImage21)));
-        assert_eq!((task_of(TEMPLATE_ANGLES21), family_of(TEMPLATE_ANGLES21)), (Some("edit"), Some(Family::QwenImage21)));
         let mut p = BTreeMap::new();
         p.insert("loras".to_string(), json!([{"file": "style.safetensors", "strength": 0.5}]));
         let out = with_lora_first(&p, QWEN21_OUTPAINT_LORA);

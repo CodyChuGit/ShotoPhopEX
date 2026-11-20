@@ -13,26 +13,6 @@ pub mod template;
 /// (Generative Angles, Upscale) have no model yet.
 pub const MLX: bool = cfg!(feature = "native-mlx");
 
-/// The NVIDIA card's compute capability (8.6 as 86), or None: no card, or a build without the
-/// native diffusion worker. `PHOTOCRAFT_COMPUTE_CAP` stands in for it (to try an older card's
-/// routes on a newer one).
-pub fn card_compute_cap() -> Option<u32> {
-    if let Some(cap) = std::env::var("PHOTOCRAFT_COMPUTE_CAP").ok().and_then(|v| v.trim().parse::<u32>().ok()).filter(|c| *c > 0) {
-        return Some(cap);
-    }
-    probed_compute_cap()
-}
-
-#[cfg(all(feature = "native-diffusion", not(target_arch = "wasm32")))]
-fn probed_compute_cap() -> Option<u32> {
-    gn_diffusion::card_compute_cap()
-}
-
-#[cfg(not(all(feature = "native-diffusion", not(target_arch = "wasm32"))))]
-fn probed_compute_cap() -> Option<u32> {
-    None
-}
-
 use serde::{Deserialize, Serialize};
 
 /// Why a generation did not happen. Messages are written for the user and for agents.
