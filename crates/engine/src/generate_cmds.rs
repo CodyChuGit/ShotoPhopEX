@@ -91,6 +91,8 @@ pub const FAST_FILL_ORDER: &[&str] = &["qwen-edit-2511/fill-lightning-4", "qwen-
 pub const BEST_FILL_ORDER: &[&str] = &[DEFAULT_FILL_TEMPLATE];
 /// The Mac's fill (FLUX 3 Image Klein on MLX), picked by the Mac memory profiles.
 pub const KLEIN_FILL_TEMPLATE: &str = "flux3-klein/fill";
+/// The fill on MOSS Turbo (masked latent blending; CUDA and MLX), for Macs and small cards.
+pub const MOSS_FILL_TEMPLATE: &str = "moss-image/fill";
 pub const BEST_EXPAND_ORDER: &[&str] = &[DEFAULT_EXPAND_TEMPLATE];
 /// The same for Generative Expand, whose templates show the model only the picture as a
 /// reference while the padded canvas is the sampling latent.

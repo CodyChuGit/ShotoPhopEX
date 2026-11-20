@@ -74,6 +74,7 @@ fn main() -> anyhow::Result<()> {
             seed,
             references: references.clone(),
             mask: None,
+            fill_shows_picture: false,
         };
         let t0 = Instant::now();
         let mut last = Instant::now();

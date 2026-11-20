@@ -77,6 +77,7 @@ fn main() -> anyhow::Result<()> {
             seed,
             references: references.clone(),
             mask: mask.clone(),
+            fill_shows_picture: false,
         };
         let t0 = Instant::now();
         let pic = klein.generate(&model, &loras, &req, &mut |_, _| {}, &|| false)?;

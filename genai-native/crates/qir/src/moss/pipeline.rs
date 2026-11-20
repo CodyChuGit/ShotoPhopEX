@@ -484,6 +484,49 @@ impl MossPipeline {
         req: &Request,
         sampling: Sampling,
         progress: &mut dyn FnMut(f32, &str),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
+        self.sample(req, sampling, None, progress, preview, cancel)
+    }
+
+    /// Generative Fill (no MOSS inpaint model exists): `req.references[0]` is the picture, `mask`
+    /// white where MOSS paints. Sampled from noise at the picture's size; after every step the
+    /// latent outside the mask is set back to the picture's own, noised to that step's σ (the
+    /// last step leaves it exact), so the new area grows into the picture around it (masked
+    /// latent blending, as Klein's fill). `show` picks what the model reads besides the
+    /// prompt: nothing (text to image, the turbo's run), or the picture with the area flat grey
+    /// as an edit reference (with the MOSS Edit LoRA in `req.loras`). `sampling.denoise` under 1
+    /// starts from the picture's latent noised that far instead of from noise.
+    pub fn fill_sampled(
+        &self,
+        req: &Request,
+        mask: &RefImage,
+        show: FillShows,
+        sampling: Sampling,
+        progress: &mut dyn FnMut(f32, &str),
+        preview: Option<&mut dyn StepPreview>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Picture> {
+        let picture = req.references.first().context("a fill needs its picture")?.clone();
+        anyhow::ensure!(req.references.len() == 1, "a MOSS fill takes the picture alone ({} pictures given)", req.references.len());
+        let (w, h) = if req.width == 0 || req.height == 0 { edit_size(picture.width, picture.height) } else { (req.width, req.height) };
+        let mut ask = req.clone();
+        ask.width = w;
+        ask.height = h;
+        ask.references = match show {
+            FillShows::Nothing => Vec::new(),
+            FillShows::GreyedPicture => vec![crate::klein::pipeline::greyed(&picture, mask)?],
+        };
+        self.sample(&ask, sampling, Some(Fill { picture: &picture, mask }), progress, preview, cancel)
+    }
+
+    fn sample(
+        &self,
+        req: &Request,
+        sampling: Sampling,
+        fill: Option<Fill<'_>>,
+        progress: &mut dyn FnMut(f32, &str),
         mut preview: Option<&mut dyn StepPreview>,
         cancel: &dyn Fn() -> bool,
     ) -> Result<Picture> {
@@ -590,7 +633,23 @@ impl MossPipeline {
         let channels = dit.config().channels;
         let noise = crate::comfy::torch_randn(req.seed, channels * lh * lw).map_err(anyhow::Error::msg)?;
         let mut x = Tensor::from_vec(noise, (1, channels, lh, lw), &self.dev)?;
-        let denoise = Some(sampling.denoise).filter(|d| ostris && *d < 1.0);
+        // A fill: the picture's own latent (kept outside the mask), the mask on the latent grid
+        // and the starting noise (the kept latent is noised with it to each step's σ).
+        let keep = match &fill {
+            Some(f) => {
+                let z0 = self.reference_latent_sized(f.picture, w, h)?.to_dtype(x.dtype())?;
+                let m = crate::klein::pipeline::mask_tokens(f.mask, lw, lh, &self.dev)?.reshape((1, 1, lh, lw))?.to_dtype(x.dtype())?;
+                // A partial redraw (`denoise` under 1) starts from the picture with the area
+                // smoothed over from its surroundings, not from what was there (the old object
+                // would come back) and not from noise alone (the area's colours carry over).
+                if sampling.denoise < 1.0 {
+                    start = Some(self.reference_latent_sized(&smooth_filled(f.picture, f.mask)?, w, h)?);
+                }
+                Some((z0, m, x.clone()))
+            }
+            None => None,
+        };
+        let denoise = Some(sampling.denoise).filter(|d| (ostris || fill.is_some()) && *d < 1.0);
         let sig = match (denoise, &start) {
             // ComfyUI's KSampler `denoise`: the last `steps` of a `steps / denoise` schedule,
             // the latent noised to its first σ.
@@ -669,6 +728,19 @@ impl MossPipeline {
                 }
                 _ => (x + (v * f64::from(sig[i + 1] - sig[i]))?)?,
             };
+            if let Some((z0, m, eps)) = &keep {
+                let s1 = f64::from(sig[i + 1]);
+                let known = ((z0 * (1.0 - s1))? + (eps * s1)?)?;
+                // Differential: a latent pixel is painted from the step whose σ falls under its
+                // mask value on, kept before it, never mixed. Mixing the painted and the kept
+                // latent by a soft mask (`QIR_MOSS_FILL_SOFT=1`, round 1) averaged two unrelated
+                // latents along the feathered edge and left pale smears there (5090, 2026-11-20).
+                // By σ, not by step count: the shift-5 schedule stays near σ 1 for most steps, and
+                // the feathered band freed by step count was redrawn almost whole at 4 steps on
+                // MLX (a dotted band under the editor's dithered edge, M1 Air 2026-11-20).
+                let m = if fill_soft_blend() { m.clone() } else { m.gt(s1)?.to_dtype(x.dtype())? };
+                x = (x.broadcast_mul(&m)? + known.broadcast_mul(&(1.0 - &m)?)?)?;
+            }
             progress(0.05 + 0.85 * (i + 1) as f32 / n as f32, "Sampling");
         }
         self.dev.synchronize()?;
@@ -686,6 +758,10 @@ impl MossPipeline {
         self.dev.synchronize()?;
         timings.decode_s = t0.elapsed().as_secs_f32();
         let (pw, ph, mut rgba) = vae::to_rgba_u8(&img)?;
+        // A fill: the picture's own pixels back outside the area, faded across its soft edge.
+        if let Some(f) = &fill {
+            paste_outside(&mut rgba, pw, ph, (&f.picture.rgba, f.picture.width, f.picture.height), (&f.mask.rgba, f.mask.width, f.mask.height))?;
+        }
         // A restore's colours from the picture itself (`Sampling::color_fix`): the
         // author's wavelet colour match, the output's detail on the picture's low frequencies.
         if ostris && sampling.color_fix {
@@ -707,6 +783,127 @@ impl MossPipeline {
         progress(1.0, "Done");
         Ok(Picture { width: pw as u32, height: ph as u32, rgba, timings })
     }
+}
+
+/// A fill's result `out` (`w × h` RGBA8) with the picture's pixels put back by the mask: kept
+/// where the mask is black, the result where it is white, mixed across a soft edge. The latent
+/// blend leaves the kept area close but not equal (the decoder's round trip), and the editor's
+/// dithered edge then shows the difference as dots; the picture's own pixels there show none.
+pub fn paste_outside(out: &mut [u8], w: usize, h: usize, picture: (&[u8], usize, usize), mask: (&[u8], usize, usize)) -> Result<()> {
+    let fit = |(px, pw, ph): (&[u8], usize, usize), filter| -> Result<image::RgbaImage> {
+        let img = image::RgbaImage::from_raw(pw as u32, ph as u32, px.to_vec()).context("a picture's pixels do not match its size")?;
+        Ok(if (pw, ph) == (w, h) { img } else { image::imageops::resize(&img, w as u32, h as u32, filter) })
+    };
+    let (orig, m) = (fit(picture, image::imageops::FilterType::Lanczos3)?, fit(mask, image::imageops::FilterType::Triangle)?);
+    anyhow::ensure!(out.len() >= w * h * 4, "the result's pixels do not match its size");
+    for ((px, o), mp) in out.chunks_exact_mut(4).zip(orig.pixels()).zip(m.pixels()) {
+        let a = f32::from(mp.0[0]) / 255.0;
+        for (c, oc) in px.iter_mut().zip(o.0).take(3) {
+            *c = (f32::from(*c) * a + f32::from(oc) * (1.0 - a)).round() as u8;
+        }
+    }
+    Ok(())
+}
+
+/// The A/B hook back to round 1's soft latent blend (`QIR_MOSS_FILL_SOFT=1`).
+fn fill_soft_blend() -> bool {
+    std::env::var("QIR_MOSS_FILL_SOFT").is_ok_and(|v| v.trim() == "1")
+}
+
+/// `r` with the area `m` paints (red over half) filled smoothly from the pixels around it: a
+/// pyramid of masked averages, each hole pixel taking the finest level that has picture there,
+/// so a large hole gets the surroundings' broad colour and a small one its neighbours'.
+pub fn smooth_filled(r: &RefImage, m: &RefImage) -> Result<RefImage> {
+    let (w, h) = (r.width, r.height);
+    anyhow::ensure!(r.rgba.len() >= w * h * 4, "a picture's pixels do not match its size");
+    let mask = image::RgbaImage::from_raw(m.width as u32, m.height as u32, m.rgba.clone()).context("the mask's pixels do not match its size")?;
+    let mask = if (m.width, m.height) == (w, h) { mask } else { image::imageops::resize(&mask, w as u32, h as u32, image::imageops::FilterType::Triangle) };
+    // Level 0: colour sums and weights (1 = picture, 0 = hole).
+    let mut levels: Vec<(usize, usize, Vec<[f32; 4]>)> = Vec::new();
+    let base: Vec<[f32; 4]> = r
+        .rgba
+        .chunks_exact(4)
+        .zip(mask.pixels())
+        .take(w * h)
+        .map(|(p, mp)| if mp.0[0] > 127 { [0.0; 4] } else { [f32::from(p[0]), f32::from(p[1]), f32::from(p[2]), 1.0] })
+        .collect();
+    levels.push((w, h, base));
+    while let Some((lw, lh, prev)) = levels.last() {
+        if *lw <= 1 && *lh <= 1 {
+            break;
+        }
+        let (nw, nh) = (lw.div_ceil(2), lh.div_ceil(2));
+        let mut next = vec![[0.0f32; 4]; nw * nh];
+        for y in 0..*lh {
+            for x in 0..*lw {
+                let (s, d) = (prev[y * lw + x], &mut next[(y / 2) * nw + x / 2]);
+                for c in 0..4 {
+                    d[c] += s[c];
+                }
+            }
+        }
+        levels.push((nw, nh, next));
+    }
+    let mut rgba = r.rgba.clone();
+    for (i, px) in rgba.chunks_exact_mut(4).take(w * h).enumerate() {
+        if levels[0].2[i][3] > 0.0 {
+            continue;
+        }
+        let (x, y) = (i % w, i / w);
+        for (k, (lw, _, v)) in levels.iter().enumerate().skip(1) {
+            let s = v[(y >> k) * lw + (x >> k)];
+            if s[3] > 0.0 {
+                for c in 0..3 {
+                    px[c] = (s[c] / s[3]).round().clamp(0.0, 255.0) as u8;
+                }
+                break;
+            }
+        }
+    }
+    // The blocks of the coarse levels smoothed inside the hole: a few box passes there.
+    let hole: Vec<bool> = levels[0].2.iter().map(|v| v[3] == 0.0).collect();
+    let radius = (w.max(h) / 128).max(2);
+    for _ in 0..3 {
+        let src = rgba.clone();
+        for y in 0..h {
+            for x in 0..w {
+                if !hole[y * w + x] {
+                    continue;
+                }
+                let mut acc = [0u32; 3];
+                let mut n = 0u32;
+                for yy in y.saturating_sub(radius)..(y + radius + 1).min(h) {
+                    for xx in x.saturating_sub(radius)..(x + radius + 1).min(w) {
+                        let p = &src[(yy * w + xx) * 4..][..3];
+                        for c in 0..3 {
+                            acc[c] += u32::from(p[c]);
+                        }
+                        n += 1;
+                    }
+                }
+                for c in 0..3 {
+                    rgba[(y * w + x) * 4 + c] = (acc[c] / n.max(1)) as u8;
+                }
+            }
+        }
+    }
+    Ok(RefImage { width: w, height: h, rgba, offset: None })
+}
+
+/// What a MOSS fill shows the model besides the prompt ([`MossPipeline::fill_sampled`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillShows {
+    /// Nothing: text to image, the picture reaching the area only through the kept latent.
+    Nothing,
+    /// The picture with the area flat grey, as a MOSS Edit reference.
+    GreyedPicture,
+}
+
+/// A fill's picture and mask, for the sampler.
+#[derive(Clone, Copy)]
+struct Fill<'a> {
+    picture: &'a RefImage,
+    mask: &'a RefImage,
 }
 
 /// One `res_2s` step from σ to σ' > 0 as coefficients: the stage at the log-SNR midpoint is
@@ -1101,7 +1298,8 @@ pub fn wavelet_color_match(out: &mut [u8], style: &[u8], w: usize, h: usize) {
 
 #[cfg(test)]
 mod vision_tests {
-    use super::{area_resize, regular_hadamard, wavelet_color_match};
+    use super::{area_resize, regular_hadamard, smooth_filled, wavelet_color_match};
+    use crate::Result;
 
     #[test]
     fn the_regular_hadamard_is_orthogonal_and_symmetric() {
@@ -1123,6 +1321,42 @@ mod vision_tests {
         let style: Vec<u8> = (0..w * h).flat_map(|_| [10u8, 20, 30, 255]).collect();
         wavelet_color_match(&mut out, &style, w, h);
         assert!(out.chunks(4).all(|p| p == [10, 20, 30, 255]), "{:?}", &out[..4]);
+    }
+
+    /// A fill's result keeps the picture where the mask is black and itself where it is white.
+    #[test]
+    fn paste_outside_keeps_the_picture_outside_the_mask() -> Result<()> {
+        let mut out = vec![10u8, 10, 10, 255, 10, 10, 10, 255];
+        let picture = [200u8, 200, 200, 255, 200, 200, 200, 255];
+        let mask = [0u8, 0, 0, 255, 255, 255, 255, 255];
+        super::paste_outside(&mut out, 2, 1, (&picture, 2, 1), (&mask, 2, 1))?;
+        assert_eq!(&out[..3], &[200, 200, 200]);
+        assert_eq!(&out[4..7], &[10, 10, 10]);
+        Ok(())
+    }
+
+    /// A fill's smoothed start: the hole takes its surroundings' colour, the rest is untouched.
+    #[test]
+    fn smooth_fill_takes_the_hole_colour_from_around_it() -> Result<()> {
+        let (w, h) = (64usize, 64usize);
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        let mut mask = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                // Green everywhere, a black object in the middle the mask covers.
+                let inside = (24..40).contains(&x) && (24..40).contains(&y);
+                rgba.extend_from_slice(if inside { &[0, 0, 0, 255] } else { &[20, 200, 40, 255] });
+                mask.extend_from_slice(if inside { &[255, 255, 255, 255] } else { &[0, 0, 0, 255] });
+            }
+        }
+        use crate::pipeline::RefImage;
+        let r = RefImage { width: w, height: h, rgba, offset: None };
+        let m = RefImage { width: w, height: h, rgba: mask, offset: None };
+        let f = smooth_filled(&r, &m)?;
+        let px = |x: usize, y: usize| &f.rgba[(y * w + x) * 4..][..3];
+        assert_eq!(px(32, 32), &[20, 200, 40]);
+        assert_eq!(px(2, 2), &[20, 200, 40]);
+        Ok(())
     }
 
     #[test]

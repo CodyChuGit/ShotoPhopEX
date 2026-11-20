@@ -18,13 +18,16 @@ use crate::{EngineError, Result, Session};
 use super::{
     AUTO_TEMPLATE, Common, DEFAULT_FILL_TEMPLATE, DEFAULT_SAMPLER, DEFAULT_SCHEDULER, EDIT, EDIT_BAND_CHANGE, EDIT_BAND_MAX_SHARE, Edge, EnhanceKind,
     FAST_DRAFT_STEP_CACHE, FILL, GenerativeInfo, HIGHLIGHT_GROW, HIGHLIGHT_REMOVE_PROMPT, JobProgress, KLEIN_FILL_TEMPLATE, MAX_GROW, MAX_SEED, MAX_VARIATIONS,
-    NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate, dither_edge,
-    enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at, grey_outside,
-    grey_where, judge_pair, krea2_fill, named_object, naming_picture, native_fill_order, native21_auto, native21_fill_fallback, opt_bool, opt_num, opt_str,
-    outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter, request_size_within, resize_gray8,
-    resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there, template_or, tone_match_removal,
-    web_unavailable, write_rgba8,
+    MOSS_FILL_TEMPLATE, NATIVE21_FILL, PRESENCE_CHECK, REMOVE_PROMPT, SHADOW_CHANGE, SHADOW_MAX_SHARE, Tuning, auto_order, backend, bad, change_band, dilate,
+    dither_edge, enhance_prompt, erase_covered, fast_draft_applies, feather_outward, feather_radius, fill_rect, fill_ref_template, gen_err, gray8_at,
+    grey_outside, grey_where, judge_pair, krea2_fill, named_object, naming_picture, native_fill_order, native21_auto, native21_fill_fallback, opt_bool,
+    opt_num, opt_str, outpaint_feather_radius, parse_edge, place_in_words, plan_common, prefill_outside, quality, realigned, removal_adapter,
+    request_size_within, resize_gray8, resize_rgba8, resolve_auto, rgba8_at, set_generative_info, short, side_by_side, smooth_covered, still_there,
+    template_or, tone_match_removal, web_unavailable, write_rgba8,
 };
+
+/// The context around the selection a MOSS fill sends, as a fraction of the selection's larger side.
+const MOSS_FILL_MARGIN: f64 = 0.75;
 
 pub(super) fn fill_enabled(s: &Session) -> std::result::Result<(), String> {
     web_unavailable()?;
@@ -124,7 +127,11 @@ pub(super) fn plan_fill(s: &Session, p: &Value) -> Result<FillPlan> {
     }
     let Common { template, prompt, negative, seed, steps, guidance, models, name } =
         plan_common(s, FILL, &q, &base, if as_edit { Task::Edit } else { Task::Fill }, &default_model)?;
-    let margin = opt_num(FILL, p, "margin", 0.0, 1.0)?.unwrap_or(0.25);
+    // MOSS Fill paints by latent blending: it reads the scene only from the picture around the
+    // selection, and with the usual quarter it drew the thing as large as the whole selection
+    // (5090, 2026-11-20); it gets more of the room to judge the size by.
+    let default_margin = if template.meta.id == MOSS_FILL_TEMPLATE { MOSS_FILL_MARGIN } else { 0.25 };
+    let margin = opt_num(FILL, p, "margin", 0.0, 1.0)?.unwrap_or(default_margin);
     let edge = parse_edge(FILL, p)?;
     let variations = match opt_num(FILL, p, "variations", 1.0, f64::from(MAX_VARIATIONS))? {
         None => 1,
@@ -678,6 +685,8 @@ pub(super) fn run_fill(s: &mut Session, p: &Value) -> Result<Value> {
             native_fill_order(&prompt, enhance)
         } else if template.meta.id == KLEIN_FILL_TEMPLATE {
             &[KLEIN_FILL_TEMPLATE]
+        } else if template.meta.id == MOSS_FILL_TEMPLATE {
+            &[MOSS_FILL_TEMPLATE]
         } else {
             auto_order(FILL, quality(s))
         },
