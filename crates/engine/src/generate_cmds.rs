@@ -199,11 +199,10 @@ pub(crate) const EDIT: &str = "generate.edit";
 pub const ANGLES: &str = "generate.angles";
 /// Character Sheet: four views of the character on a layer, as a new document.
 pub const CHARACTER_SHEET: &str = "generate.characterSheet";
-/// 2511 with fal's Multiple Angles LoRA: `generate.angles`' route on the Mac build, and by hand
-/// (`template`) on any other.
+/// The template `generate.angles` runs.
 pub const ANGLES_TEMPLATE: &str = "qwen-edit-2511/angles";
-/// The template `generate.angles` runs (see [`angles_template`]): Qwen-Image-2.1 with
-/// gribbliest's QMA camera LoRA.
+/// The template `generate.angles` runs on a card without fp8 matrix cores (see
+/// [`angles_template`]): Qwen-Image-2.1 with akhaliq's Multiple Angles v2 LoRA.
 pub const ANGLES21_TEMPLATE: &str = "qwen-2.1/angles";
 /// The oldest card generation (compute capability) that runs 2511's fp8 file: RTX 40 (8.9).
 pub const ANGLES_2511_MIN_COMPUTE_CAP: u32 = 89;

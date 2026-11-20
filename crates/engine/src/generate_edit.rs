@@ -16,10 +16,10 @@ use crate::jobs::JobCtx;
 use crate::{EngineError, Result, Session};
 
 use super::{
-    ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_TEMPLATE, ANGLES21_TEMPLATE, AUTO_TEMPLATE, CHARACTER_SHEET, Common, DEFAULT_EDIT_TEMPLATE, EDIT,
-    FillJob, FillPlan, MAX_REQUEST_PIXELS, Tuning, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend, bad, edit_request_pixels, edit_rewrite,
-    fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations, plan_common, run_image, short,
-    template_files_present, ultra, web_unavailable,
+    ANGLE_ROTATIONS, ANGLE_TILTS, ANGLE_ZOOMS, ANGLES, ANGLES_2511_MIN_COMPUTE_CAP, ANGLES_TEMPLATE, ANGLES21_TEMPLATE, AUTO_TEMPLATE, CHARACTER_SHEET, Common,
+    DEFAULT_EDIT_TEMPLATE, EDIT, FillJob, FillPlan, MAX_REQUEST_PIXELS, Tuning, ULTRA_IMAGE_TEMPLATE, auto_order, auto_quality, backend, bad,
+    edit_request_pixels, edit_rewrite, fill_region, loras_of, made_json, native21_auto, opt_bool, opt_num, opt_str, parse_edge, parse_variations, plan_common,
+    run_image, short, template_files_present, ultra, web_unavailable,
 };
 
 /// The Multiple Angles LoRA's words for a camera, `[azimuth] [elevation] [distance]`, or None
@@ -80,26 +80,42 @@ pub fn angle_prompt(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
     Some(if sentence.is_empty() { format!("<sks> {words}") } else { format!("<sks> {words} {sentence}") })
 }
 
-/// The template `generate.angles` runs: Qwen-Image-2.1 with gribbliest's QMA camera LoRA and
-/// the camera in plain words ([`ANGLES21_TEMPLATE`], [`angle_prompt_21`]), on every card. The
-/// owner's call, 2026-11-19: 2.1 is the edit model that keeps the scene best, and in the 5090 test
-/// QMA kept the scene and the person where akhaliq's 2.1 LoRA left a cut-out on grey and 2511
-/// left speckle. The Mac build keeps 2511's route ([`ANGLES_TEMPLATE`]) until 2.1 runs there.
+/// The template `generate.angles` runs: 2511 with the Multiple Angles LoRA, which was trained on
+/// exactly these camera moves. Plain Qwen-Image-2.1 by instruction never turned the camera (0 of
+/// 4 at 45°, 2026-11-03 bench), so it does not stand in when the LoRA is missing: the Angles
+/// window says what to download instead. Bring-your-own: on a card below 2511's budget it still
+/// runs, with the window's `may not fit` note.
+///
+/// On an NVIDIA card older than RTX 40 (no fp8 matrix cores) 2511's fp8 file does not run (a
+/// 3090 crashed at 24 GB, 2026-11-17), so Qwen-Image-2.1 with its own Multiple Angles LoRA does
+/// ([`ANGLES21_TEMPLATE`]; 21.7 GB, 24 s warm there). The owner's call, 2026-11-17.
 pub fn angles_template(_s: &Session) -> &'static str {
     angles_template_for(photocraft_genai::card_compute_cap())
 }
 
-/// [`angles_template`] for a card of `compute_cap`: 2.1 on every card (2511's fp8 file also does
-/// not run below RTX 40, [`super::ANGLES_2511_MIN_COMPUTE_CAP`]).
-pub fn angles_template_for(_compute_cap: Option<u32>) -> &'static str {
-    if photocraft_genai::MLX { ANGLES_TEMPLATE } else { ANGLES21_TEMPLATE }
+/// [`angles_template`] for a card of `compute_cap` (None: no NVIDIA card known, 2511 as ever).
+pub fn angles_template_for(compute_cap: Option<u32>) -> &'static str {
+    if !photocraft_genai::MLX && compute_cap.is_some_and(|c| c < ANGLES_2511_MIN_COMPUTE_CAP) { ANGLES21_TEMPLATE } else { ANGLES_TEMPLATE }
 }
 
-/// The 2.1 QMA LoRA's prompt for a camera: `<qma> {azimuth} {elevation} [distance]`, then the
-/// move in plain words. QMA was trained on the same 8 × 4 × 3 vocabulary as 2511's fal LoRA, so
-/// this is [`angle_prompt`] with QMA's trigger.
+/// The 2.1 Multiple Angles LoRA's prompt for a camera, `<mva> {azimuth}, {elevation}[ close-up]`
+/// (its card's vocabulary: 30° azimuth steps, eye-level to top-down, close-up or not). Our 45°
+/// steps take its quarter views (60°, 120°…), the nearest it has with the same words; it has no
+/// low angle, so a low camera is eye-level, and no wide shot apart from its default framing.
 pub fn angle_prompt_21(rotation: u32, tilt: i32, zoom: u32) -> Option<String> {
-    angle_prompt(rotation, tilt, zoom).map(|w| w.replacen("<sks>", "<qma>", 1))
+    let azimuth = ANGLE_ROTATIONS.iter().find(|(d, _)| *d == rotation)?.1;
+    let elevation = match tilt {
+        -30 | 0 => "eye-level shot",
+        30 => "elevated shot",
+        60 => "high-angle shot",
+        _ => return None,
+    };
+    let close = match zoom {
+        0 | 5 => "",
+        10 => " close-up",
+        _ => return None,
+    };
+    Some(format!("<mva> {azimuth}, {elevation}{close}"))
 }
 
 /// The Mac build ([`photocraft_genai::MLX`]), for the UI.
@@ -469,14 +485,8 @@ pub(super) fn run_angles(s: &mut Session, p: &Value) -> Result<Value> {
     let words = angle_prompt(rotation, tilt, zoom)
         .ok_or_else(|| bad(ANGLES, "`rotation` must be 0, 45, … 315; `tilt` -30, 0, 30 or 60; `zoom` 0 (wide), 5 (medium) or 10 (close-up)"))?;
     let camera = angle_words(rotation, tilt, zoom).unwrap_or_default();
-    // `template` picks a route by hand (an A/B against 2511); otherwise the card's.
-    let template = match p.get("template").and_then(Value::as_str) {
-        None => angles_template(s),
-        Some(t) if t == ANGLES_TEMPLATE => ANGLES_TEMPLATE,
-        Some(t) if t == ANGLES21_TEMPLATE => ANGLES21_TEMPLATE,
-        Some(_) => return Err(bad(ANGLES, format!("`template` must be {ANGLES21_TEMPLATE} or {ANGLES_TEMPLATE}"))),
-    };
-    // On 2.1 QMA's words, its template's steps and CFG; no Lightning there.
+    let template = angles_template(s);
+    // On 2.1 the LoRA's own words, its template's steps; no Lightning there.
     let on21 = template == ANGLES21_TEMPLATE;
     let words = if on21 { angle_prompt_21(rotation, tilt, zoom).unwrap_or(words) } else { words };
     // Never rewritten: the rewriter dropped the LoRA's trigger and camera words (5 of 7 runs with

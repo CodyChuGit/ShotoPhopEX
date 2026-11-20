@@ -64,11 +64,12 @@ pub const TEMPLATE_EXPAND: &str = "qwen-2.1/expand";
 /// is under the model root's `loras/`.
 pub const TEMPLATE_OUTPAINT: &str = "qwen-2.1/outpaint";
 /// Generative Angles on Qwen-Image-2.1 (the 2.1 edit with [`QWEN21_ANGLES_LORA`]): the app's
-/// Angles route on every card (it fitted in 21.7 GB on a 3090, 2026-11-17).
+/// route on cards without fp8 matrix cores (RTX 30 and older), where 2511's fp8 file does not
+/// run (on a 3090 the worker died, 7.2 GB spilled; this route fitted in 21.7 GB, 2026-11-17).
 pub const TEMPLATE_ANGLES21: &str = "qwen-2.1/angles";
-/// The LoRA [`TEMPLATE_ANGLES21`] runs with: gribbliest's QMA camera angles for Qwen-Image-2.1
-/// (model card Apache-2.0), prompts `<qma> {azimuth} {elevation} {distance}`.
-pub const QWEN21_ANGLES_LORA: &str = "qwen-image-2.1-qma-camera-angles.safetensors";
+/// The LoRA [`TEMPLATE_ANGLES21`] runs with: akhaliq's Multiple Angles v2 for Qwen-Image-2.1
+/// (step 1500, Apache-2.0), prompts `<mva> {azimuth}, {elevation}[ close-up]`.
+pub const QWEN21_ANGLES_LORA: &str = "qwen-image-2.1-multiple-angles-v2.safetensors";
 /// Generative Remove on Qwen-Image-2.1 (the 2.1 edit with [`QWEN21_REMOVE_LORA`]): the app
 /// draws a red box around the selection and sends the LoRA's trigger sentence.
 pub const TEMPLATE_REMOVE21: &str = "qwen-2.1/remove";

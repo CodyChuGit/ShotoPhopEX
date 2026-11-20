@@ -76,7 +76,6 @@ request, never bundled**.
 | Qwen2.5-VL 7B text encoder | Comfy-Org/Qwen-Image | Apache-2.0 | Yes | Yes | Keep notices | None | No | E | VERIFIED |
 | 2511 Lightning 4/8-step LoRAs | lightx2v/Qwen-Image-Edit-2511-Lightning | Apache-2.0 | Yes | Yes | Keep notices | None | No | E | VERIFIED |
 | 2511 Multiple Angles LoRA | fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA | Apache-2.0 | Yes | Yes | Keep notices | None | No | E | VERIFIED |
-| Qwen 2.1 QMA camera-angles LoRA | gribbliest/qwen-image-2.1-qma-camera-angles (revision 13007eec) | Apache-2.0 per the model card; no LICENSE file in the repo | Yes per card | Yes per card | Keep notices | None | No | E | UNRESOLVED: licence stated on the card only, and the LoRA is a derivative of Qwen-Image-2.1 (Qwen Research License) |
 | 2511 Object Remover LoRA | prithivMLmods/QIE-2511-Object-Remover-v2 | Apache-2.0 | Yes | Yes | Keep notices | None | No | E | VERIFIED |
 | Krea 2 General Edit LoRA v2 | conradlocke/krea2-identity-edit | Krea 2 Identity Edit v2 licence (LICENSE_V2.md) **and** Krea 2 Community License | **No** without the author's commercial licence | Per licence | Per licence | Krea use policy | No | E | VERIFIED (V2 terms read) |
 | Krea 2 style reference LoRA | ostris/krea2_turbo_style_reference | Krea 2 Community License | Below US$1M | Per licence | Per licence | Krea use policy | No | E | VERIFIED |

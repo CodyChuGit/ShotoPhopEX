@@ -1,7 +1,7 @@
 {
   "meta": {
     "id": "qwen-2.1/angles",
-    "name": "Generative Angles (Qwen-Image-2.1, QMA camera LoRA)",
+    "name": "Generative Angles (Qwen-Image-2.1, Multiple Angles LoRA)",
     "family": "qwen-image-2.1",
     "task": "edit",
     "license": "research",
@@ -9,8 +9,8 @@
     "needsImage": true,
     "needsMask": false,
     "defaults": {
-      "steps": 30,
-      "guidance": 3.0
+      "steps": 25,
+      "guidance": 1.0
     },
     "models": [
       {
@@ -31,16 +31,16 @@
       {
         "placeholder": "lora",
         "folder": "loras",
-        "default": "qwen-image-2.1-qma-camera-angles.safetensors"
+        "default": "qwen-image-2.1-multiple-angles-v2.safetensors"
       }
     ],
-    "notes": "Served by ShotoPhopEX's native worker (gn-diffusion qwen-2.1/angles): the Qwen-Image-2.1 edit with gribbliest's QMA camera-angles LoRA (huggingface.co/gribbliest/qwen-image-2.1-qma-camera-angles, revision 13007eec, model card Apache-2.0, read 2026-11-19) at strength 1 in front of the request's own LoRAs, at the card's 30 steps and CFG 3. The prompt is the LoRA's vocabulary, `<qma> {azimuth} {elevation} {distance}` (the same 8 x 4 x 3 words as 2511's fal LoRA), then the camera move in plain words, built by generate.angles. generate.angles runs it on every card but the Mac build (owner's call, 2026-11-19): on the 5090 it kept the scene and the person, where akhaliq's 2.1 Multiple Angles LoRA left a cut-out on grey. No ComfyUI graph.",
-    "creator": "gribbliest (LoRA), Alibaba Qwen",
+    "notes": "Served by ShotoPhopEX's native worker (gn-diffusion qwen-2.1/angles): the Qwen-Image-2.1 edit with akhaliq's Multiple Angles v2 LoRA (huggingface.co/akhaliq/Qwen-Image-2.1-Multiple-Angles-LoRA, checkpoints_v2 step 1500, Apache-2.0, read 2026-11-17) at strength 1 in front of the request's own LoRAs. The prompt is the LoRA's vocabulary, `<mva> {azimuth}, {elevation}[ close-up]`, built by generate.angles. generate.angles runs it instead of qwen-edit-2511/angles on cards without fp8 matrix cores (compute capability under 8.9: RTX 30 and older), where 2511's fp8 file does not run (a 3090 crashed; this route took 21.7 GB and 24 s warm there, 2026-11-17). The LoRA was trained on Objaverse renders at 512 px: it turns the camera on real photos but may simplify the background. No ComfyUI graph.",
+    "creator": "akhaliq (LoRA), Alibaba Qwen",
     "description": "Moves the camera around the subject: 8 directions, 4 heights, 3 distances",
     "badges": [],
     "estimatedSeconds": {
-      "base": 12,
-      "perMegapixel": 3
+      "base": 14,
+      "perMegapixel": 10
     },
     "pages": [
       "angles"

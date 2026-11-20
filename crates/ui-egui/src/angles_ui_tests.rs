@@ -50,7 +50,7 @@ fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
     assert_eq!(st.runs.len(), 2, "two variations");
     assert_eq!(
         st.runs[0].request["prompt"],
-        "<qma> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is a little higher than the subject and looks slightly down at it, 30 degrees. The camera has moved close: the subject's main part fills the frame."
+        "<sks> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is a little higher than the subject and looks slightly down at it, 30 degrees. The camera has moved close: the subject's main part fills the frame."
     );
     drop(st);
     let runs = crate::variations_strip::bundles(&a);
@@ -60,7 +60,7 @@ fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
         (v["prompt"].as_str(), v["open"].as_bool()),
         (
             Some(
-                "<qma> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is a little higher than the subject and looks slightly down at it, 30 degrees. The camera has moved close: the subject's main part fills the frame."
+                "<sks> back view elevated shot close-up The camera has moved 180 degrees around the subject: we see it from directly behind. The camera is a little higher than the subject and looks slightly down at it, 30 degrees. The camera has moved close: the subject's main part fills the frame."
             ),
             Some(true)
         )
@@ -72,7 +72,8 @@ fn the_menu_opens_the_window_and_ui_set_generates_into_the_variations_strip() {
 
 #[test]
 fn the_window_draws_the_orbit_and_warns_when_the_lora_is_missing() {
-    let fake = FakeNative::start_with(Options { missing_files: vec!["qwen-image-2.1-qma-camera-angles.safetensors".into()], ..Options::default() }).unwrap();
+    let fake =
+        FakeNative::start_with(Options { missing_files: vec!["qwen-image-edit-2511-multiple-angles-lora.safetensors".into()], ..Options::default() }).unwrap();
     let mut a = app(&fake.url);
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut a, &ctx, "generate.angles", json!({})).unwrap();
@@ -87,7 +88,7 @@ fn the_window_draws_the_orbit_and_warns_when_the_lora_is_missing() {
     );
     crate::PhotocraftApp::setup_context(&h.ctx, Default::default());
     h.run_steps(4);
-    assert!(h.query_by_label_contains("QMA camera LoRA").is_some(), "the missing LoRA is named");
+    assert!(h.query_by_label_contains("Multiple Angles LoRA").is_some(), "the missing LoRA is named");
     assert!(h.query_by_label_contains("Generate ·").is_some(), "the estimate is on the button");
     // A click on the orbit moves the camera to the nearest stop.
     let orbit = h.get_by_label("Camera").rect();
@@ -103,9 +104,9 @@ fn the_window_draws_the_orbit_and_warns_when_the_lora_is_missing() {
     assert_ne!(after, before, "moved");
     assert_eq!(after.0 % 45, 0);
     assert!(ANGLE_TILTS.iter().any(|(t, _)| *t == after.1));
-    // The button opens Get AI Models with the 2.1 Angles extra (2.1 and the LoRA) ticked.
+    // The button opens Get AI Models with the 2511 extra (2511 and the LoRA) ticked.
     h.get_by_label("Get AI Models…").click();
     h.run_steps(2);
     assert!(h.state().ui.get_models.open, "Get AI Models opened");
-    assert!(h.state().ui.get_models.extras.iter().any(|x| x == "qwen21-angles"), "the 2.1 Angles extra is ticked");
+    assert!(h.state().ui.get_models.extras.iter().any(|x| x == "qwen-edit-2511"), "the 2511 extra is ticked");
 }
