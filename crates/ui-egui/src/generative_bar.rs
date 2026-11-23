@@ -412,7 +412,8 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         bar.had_selection = has_selection;
     }
     let Some(bounds) = sel_bounds else { return };
-    let busy = app.ui.transform.is_some() || app.ui.text_edit.is_some() || app.jobs.focus.is_some() || !app.ui.dialogs.is_empty();
+    let busy = app.ui.transform.is_some() || app.ui.text_edit.is_some() || app.jobs.focus.is_some()
+        || craft::ui::runtime::overlay::any_open(ctx, craft::ui::runtime::overlay::OpenFilter::Modal);
     if !app.ui.generative_bar.open || busy {
         return;
     }
@@ -420,12 +421,12 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if app.ui.generative_bar.templates.is_empty() {
         load_templates(app);
     }
-    let Some(xf) = crate::canvas::ViewXform::active(app) else { return };
-    let canvas = crate::rulers::content_rect(app, app.last_canvas_rect);
+    let Some(xf) = crate::canvas::document_display::active_view(app) else { return };
+    let canvas = xf.rect;
     if canvas.width() < 200.0 || canvas.height() < 80.0 {
         return;
     }
-    let sel = xf.doc_rect(bounds);
+    let sel = crate::gen_preview::screen_rect(&xf, bounds);
     let id = egui::Id::unique(AREA_ID);
     let size = ctx.memory(|m| m.area_rect(id)).map_or(vec2(560.0, 44.0), |r| r.size());
     let pos = place(sel, size, canvas);
@@ -512,7 +513,7 @@ fn running(ui: &mut egui::Ui, j: &photocraft_engine::jobs::JobInfo, t: &Tokens, 
     let msg = if j.message.is_empty() || j.message == j.label { tl!("Generating…").to_string() } else { j.message.clone() };
     ui.label(RichText::new(msg).color(t.text_dim));
     let (br, _) = ui.allocate_exact_size(vec2(180.0, 6.0), Sense::hover());
-    crate::jobs_ui::bar(ui, br, (j.progress > 0.0).then_some(j.progress), t);
+    crate::widgets::progress_bar(ui, br, (j.progress > 0.0).then_some(j.progress), t);
     let pct = if j.progress > 0.0 { format!("{:.0}%", j.progress * 100.0) } else { String::new() };
     ui.label(RichText::new(pct).color(t.text_faint).size(11.5).monospace());
     if crate::widgets::secondary_button(ui, tl!("Cancel"), 72.0).clicked() {

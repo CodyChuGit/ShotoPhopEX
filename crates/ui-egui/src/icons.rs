@@ -37,6 +37,10 @@ pub fn tool_icon(t: Tool) -> IconId {
     icons.get(command_of(t).id()).map_or_else(|| IconId::new("more"), |name| IconId::from(name.clone()))
 }
 
+// ShotoPhopEX: immediate-mode icon drawing for the generative UI.
+mod egui_paint;
+pub use egui_paint::{button, button_chrome, exists, paint};
+
 #[cfg(test)]
 mod tests {
     use craft::ui::primitives::has_icon;

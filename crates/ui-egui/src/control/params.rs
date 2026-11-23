@@ -6,7 +6,7 @@ use super::{Reply, Value, json};
 /// field's value is validated before the first one is applied, so a typo, an unknown field, a
 /// bad value or a bad nested key can't reply with success while nothing — or only half of it —
 /// changed (#412).
-pub const UI_SET_FIELDS: [&str; 56] = [
+pub const UI_SET_FIELDS: [&str; 65] = [
     "updatesOpen",
     "tool",
     "strokeTrace",
@@ -56,6 +56,19 @@ pub const UI_SET_FIELDS: [&str; 56] = [
     "histogramPanel",
     "histogramRange",
     "histogramRefresh",
+    // ShotoPhopEX: the generative task bar (`generative_bar::set`), Window › Generations
+    // (`generations_panel::set`), Window › Generate (`generate_panel::set`), Edit › Generative
+    // Angles… (`angles_ui::set`) and the options bar's per-tool settings, merged field by field
+    // (`ToolOptions`).
+    "generativeBar",
+    "generativeMode",
+    "generativePrompt",
+    "generativeTemplate",
+    "generativeVariations",
+    "generationsView",
+    "generatePanel",
+    "angles",
+    "toolOptions",
     "statusInfo",
     "marqueeStyle",
     "marqueeSize",

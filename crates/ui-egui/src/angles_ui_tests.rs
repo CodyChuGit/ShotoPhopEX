@@ -7,7 +7,7 @@ use serde_json::json;
 use super::*;
 
 /// A 96×64 document talking to `url` (inline runs).
-fn app(url: &str) -> PhotocraftApp {
+fn app(url: &str) -> Box<PhotocraftApp> {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 96, "height": 64})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
@@ -78,7 +78,7 @@ fn the_window_draws_the_orbit_and_warns_when_the_lora_is_missing() {
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut a, &ctx, "generate.angles", json!({})).unwrap();
     let mut h = Harness::builder().with_size(vec2(700.0, 560.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
             }

@@ -156,6 +156,9 @@ pub(super) fn handle_event(app: &mut PhotocraftApp, event: impl Into<Option<Crop
 fn apply_commit(app: &mut PhotocraftApp, commit: &CropCommit) -> bool {
     let rect = commit.frame.rect;
     let px = |v: f64| v.round().max(1.0) as u64;
+    if app.ui.tool_options.crop_generative && commit.frame.angle == 0.0 && commit.target.is_none() && let Some(done) = generative_expand(app, commit) {
+        return done;
+    }
     let mut params = json!({
         "x": rect.x0.round(), "y": rect.y0.round(), "width": px(rect.width()), "height": px(rect.height()),
         "deleteCroppedPixels": commit.delete_pixels,
@@ -187,6 +190,45 @@ fn apply_commit(app: &mut PhotocraftApp, commit: &CropCommit) -> bool {
             false
         }
     }
+}
+
+/// ShotoPhopEX: Generative Expand. The part of an upright frame beyond the canvas is painted by the model: crop to the
+/// part inside first (when that is not the whole canvas), then `generate.expand` grows the canvas by the overhang in one
+/// more undo step. `None` when the frame does not reach past the canvas, so the plain crop runs.
+fn generative_expand(app: &mut PhotocraftApp, commit: &CropCommit) -> Option<bool> {
+    let (cw, ch) = app.session.active().map(|d| (f64::from(d.doc.size.width), f64::from(d.doc.size.height)))?;
+    let rect = commit.frame.rect;
+    let (x, y) = (rect.x0.round(), rect.y0.round());
+    let (w, h) = (rect.width().round().max(1.0), rect.height().round().max(1.0));
+    let (left, top) = ((-x).max(0.0), (-y).max(0.0));
+    let (right, bottom) = ((x + w - cw).max(0.0), (y + h - ch).max(0.0));
+    if left + top + right + bottom <= 0.0 || ![left, top, right, bottom].iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let (ix0, iy0) = (x.max(0.0), y.max(0.0));
+    let (ix1, iy1) = ((x + w).min(cw), (y + h).min(ch));
+    let inside_is_whole = ix0 <= 0.0 && iy0 <= 0.0 && ix1 >= cw && iy1 >= ch;
+    let crops = ix1 - ix0 >= 1.0 && iy1 - iy0 >= 1.0 && !inside_is_whole;
+    if crops {
+        let inside = json!({"x": ix0, "y": iy0, "width": ix1 - ix0, "height": iy1 - iy0, "deleteCroppedPixels": commit.delete_pixels});
+        if let Err(error) = app.run("image.crop", inside) {
+            app.ui.status = error;
+            app.ui.status_error = true;
+            return Some(false);
+        }
+    }
+    let accepted = match app.run("generate.expand", json!({"left": left, "top": top, "right": right, "bottom": bottom})) {
+        Ok(_) => true,
+        Err(error) => {
+            crate::notices::error(app, format!("{}: {error}", tl!("Generative Expand")));
+            // A crop that ran still ends the frame: the document changed under it.
+            crops
+        }
+    };
+    if let Some(view) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i)) {
+        view.place(craft::ui::canvas::ViewCommands::FitOnScreen);
+    }
+    Some(accepted)
 }
 
 /// The default mode turned the view of the document whose frame was dropped: it goes upright (Classic Mode never turns it).

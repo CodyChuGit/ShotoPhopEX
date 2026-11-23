@@ -512,6 +512,14 @@ fn canvas_controls(
     crate::distort_ui::show_in_canvas(app, ui, rect);
     crate::blur_pins::overlay(app, ui, rect);
     let doc = app.session.documents()[host.idx].doc.id;
+    // ShotoPhopEX: a generation running on this document shows its latest picture over its place,
+    // and on the active document the Object Selection tool's SAM 3.1 finder tints the object under
+    // the resting pointer.
+    let painter = ui.painter_at(rect);
+    crate::gen_preview::paint(app, ui.ctx(), &painter, &space.view, doc);
+    if app.session.active_index() == Some(host.idx) && host.is_primary(app) {
+        crate::object_select::draw(app, &painter, &space.view);
+    }
     if let Some(shown) = crate::vector_ui::overlay::show_paths(app, ui, rect, doc) {
         let mods = craft::ui::runtime::pointer::frame(ui.ctx()).mods;
         crate::direct_select::edits::apply(app, &shown.output, &shown.refs, app.ui.tool, mods);

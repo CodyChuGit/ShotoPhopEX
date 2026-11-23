@@ -14,7 +14,8 @@ use photocraft_doc::DocId;
 use photocraft_engine::jobs::{JobId, JobPreview};
 
 use crate::PhotocraftApp;
-use crate::canvas::ViewXform;
+use craft::behavior::CanvasView as ViewXform;
+use craft::behavior::kurbo::Point;
 
 /// How often the canvas looks for a newer picture while one is shown.
 const POLL: Duration = Duration::from_millis(100);
@@ -69,8 +70,13 @@ fn drop_texture(ctx: &egui::Context, key: egui::Id) {
 /// The four screen corners of document rectangle `r` (clockwise from its top-left), through the
 /// view's zoom, rotation, flip and pixel aspect.
 pub(crate) fn corners(xf: &ViewXform, r: photocraft_geom::Rect) -> [Pos2; 4] {
-    let (x0, y0, x1, y1) = (r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32);
-    [xf.to_screen(x0, y0), xf.to_screen(x1, y0), xf.to_screen(x1, y1), xf.to_screen(x0, y1)]
+    let (x0, y0, x1, y1) = (f64::from(r.x0), f64::from(r.y0), f64::from(r.x1), f64::from(r.y1));
+    [Point::new(x0, y0), Point::new(x1, y0), Point::new(x1, y1), Point::new(x0, y1)].map(|p| xf.to_screen(p))
+}
+
+/// The screen box around document rectangle `r` under the view.
+pub(crate) fn screen_rect(xf: &ViewXform, r: photocraft_geom::Rect) -> egui::Rect {
+    egui::Rect::from_points(&corners(xf, r))
 }
 
 /// Draw the pictures of the generation running on `doc`, if it shows any, each over its place
@@ -128,6 +134,57 @@ pub(crate) fn forget_row(ctx: &egui::Context, record: u64) {
     drop_texture(ctx, row_key(record));
 }
 
+/// Cheap identity of a surface's pixels: its default (untouched) pixel, tile coordinates and
+/// `Arc` pointers (copy-on-write tiles change pointer only when their pixels change).
+pub(crate) fn surface_fingerprint(s: &photocraft_raster::Surface) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ s.tile_count() as u64;
+    for &b in s.default_bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+    }
+    for (c, t) in s.tiles() {
+        let p = std::sync::Arc::as_ptr(t) as usize as u64;
+        h = (h ^ p ^ ((c.tx as u64) << 32 | c.ty as u32 as u64)).wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
+/// A 64-pixel thumbnail of `layer`'s pixels over the canvas of `doc`, letterboxed in a square and
+/// kept in the context until the pixels change (the Generate panel's reference chips).
+pub(crate) fn layer_thumb(ctx: &egui::Context, doc: &photocraft_doc::Document, layer: &photocraft_doc::Layer) -> Option<egui::TextureId> {
+    let s = layer.surface()?;
+    let rev = surface_fingerprint(s) ^ (u64::from(doc.size.width) << 40) ^ (u64::from(doc.size.height) << 16);
+    let key = egui::Id::unique(("gen-layer-thumb", layer.id.0));
+    if let Some((r, tex)) = ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(key))
+        && r == rev
+    {
+        return Some(tex.id());
+    }
+    const SIDE: usize = 64;
+    let frame = doc.bounds();
+    let (w, h) = (frame.width().max(1) as f32, frame.height().max(1) as f32);
+    let scale = w.max(h) / SIDE as f32;
+    let (ox, oy) = ((SIDE as f32 - w / scale) / 2.0, (SIDE as f32 - h / scale) / 2.0);
+    let n = s.channels();
+    let mut buf = [0.0f32; 8];
+    let mut px = vec![Color32::TRANSPARENT; SIDE * SIDE];
+    for ty in 0..SIDE {
+        for tx in 0..SIDE {
+            let (fx, fy) = ((tx as f32 + 0.5 - ox) * scale, (ty as f32 + 0.5 - oy) * scale);
+            if fx < 0.0 || fy < 0.0 || fx >= w || fy >= h {
+                continue;
+            }
+            s.read_pixel(frame.x0 + fx as i32, frame.y0 + fy as i32, &mut buf[..n]);
+            let [r, g, b, a] = photocraft_raster::to_rgba(&s.format(), &buf[..n]);
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            px[ty * SIDE + tx] = Color32::from_rgba_unmultiplied(q(r), q(g), q(b), q(a));
+        }
+    }
+    let tex = ctx.load_texture(format!("gen-layer-thumb-{}", layer.id.0), egui::ColorImage::new([SIDE, SIDE], px), egui::TextureOptions::LINEAR);
+    let id = tex.id();
+    ctx.data_mut(|d| d.insert_temp(key, (rev, tex)));
+    Some(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,18 +224,12 @@ mod tests {
     /// The picture spans its document rectangle on screen, under the view's mapping.
     #[test]
     fn the_picture_covers_its_place_on_screen() {
-        let xf = ViewXform {
-            rect: egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(200.0, 100.0)),
-            zoom: 2.0,
-            center: [50.0, 25.0],
-            flip: false,
-            rotation: 0.0,
-            aspect: 1.0,
-        };
+        let xf = ViewXform::new(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(200.0, 100.0)), Point::new(50.0, 25.0), 2.0);
         let c = corners(&xf, photocraft_geom::Rect::new(10, 20, 74, 52));
         assert_eq!(c[0], pos2(20.0, 40.0));
         assert_eq!(c[2], pos2(148.0, 104.0));
-        let flipped = ViewXform { flip: true, ..xf };
+        let mut flipped = xf;
+        flipped.flip_x = true;
         let f = corners(&flipped, photocraft_geom::Rect::new(10, 20, 74, 52));
         assert_eq!(f[0].x, 180.0, "a flipped view mirrors the place");
     }

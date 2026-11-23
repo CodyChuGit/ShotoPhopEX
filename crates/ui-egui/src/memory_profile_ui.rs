@@ -50,6 +50,6 @@ pub fn check_at_launch(app: &mut PhotocraftApp) -> Option<Profile> {
         lines.push(tl!("Experimental: one model in memory at a time; MOSS and Prompt Enhance are off.").to_string());
         lines.push(tl!("SAM 3.1 (Select Subject, Object Selection, Split into Layers, Remove Background) peaks near 7 GB and may swap.").to_string());
     }
-    crate::notices::post(app, crate::i18n::fmt(tl!("Memory profile: {profile}"), &[("profile", p.label())]), lines, false, None);
+    crate::notices::post(app, crate::i18n::fmt(tl!("Memory profile: {profile}"), &[("profile", p.label())]), lines, crate::notices::Tone::Neutral, None);
     Some(p)
 }

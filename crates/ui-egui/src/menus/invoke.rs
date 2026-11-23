@@ -86,6 +86,10 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
     if crate::discard_ui::intercept(app, id, &params) {
         return Ok(Value::Null);
     }
+    // ShotoPhopEX: a generative tool clicked before any models are downloaded: Get AI Models instead.
+    if crate::get_models_ui::intercept(app, id) {
+        return Ok(json!({"getModels": true}));
+    }
     let revealed = crate::layer_reveal::mark(app);
     let history = crate::panels::history::mark(app);
     let result = invoke_unguarded(app, ctx, id, params);
@@ -192,6 +196,25 @@ fn invoke_early_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str,
     // Filter › Plug-ins (installed WebAssembly plug-ins, Install Plug-in…).
     if let Some(r) = crate::plugin_ui::menu(app, id, params) {
         return Some(r);
+    }
+    // ShotoPhopEX: Edit › Generative Fill… opens the generative task bar under the selection;
+    // Edit › Generative Angles… its orbit window; Edit › Preferences › App Icon… the window, or a
+    // change from automation; Help › Get AI Models… the memory profile's model pack.
+    if let Some(r) = crate::generative_bar::menu(app, id, params) {
+        return Some(r);
+    }
+    if let Some(r) = crate::angles_ui::menu(app, id, params) {
+        return Some(r);
+    }
+    if let Some(r) = crate::app_icon_ui::menu(app, ctx, id, params) {
+        return Some(r);
+    }
+    if let Some(r) = crate::get_models_ui::menu(app, id, params) {
+        return Some(r);
+    }
+    // Select › Subject goes through SAM 3.1 when a server answers (`retouch_ui::select_subject`).
+    if id == "select.subject" && params.as_object().is_none_or(|o| o.is_empty()) {
+        return Some(crate::retouch_ui::select_subject(app));
     }
     // History panel menu › History Options… (without params: its dialog).
     if let Some(r) = crate::history_options_ui::menu(app, id, params) {
@@ -429,6 +452,11 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             Ok(Value::Null)
         }
         "help.about" => Ok(dialog_reply(crate::credits::open_about(app, Default::default()))),
+        // ShotoPhopEX: the Generate hub's cards in a window (`generate_hub`).
+        "help.generativeFeatures" => {
+            app.ui.hub.open = true;
+            Ok(json!({"hub": true}))
+        }
         "help.systemInfo" => {
             let dialog = crate::credits::open_system_info(app);
             Ok(json!({"dialog": dialog.value().to_string(), "info": crate::gpu_status::system_info_json(app)}))

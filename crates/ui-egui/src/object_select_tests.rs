@@ -7,7 +7,7 @@ use super::*;
 use crate::canvas::{ToolEvent, tool_event};
 
 /// A 100×60 document with a layer, talking to `url`, the Object Selection tool chosen.
-fn app(url: &str) -> PhotocraftApp {
+fn app(url: &str) -> Box<PhotocraftApp> {
     let mut a = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     a.run("file.new", json!({"width": 100, "height": 60})).unwrap();
     a.run("layer.new.layer", json!({})).unwrap();
@@ -104,7 +104,7 @@ fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
     let fake = FakeNative::start().unwrap();
     let mut a = app(&fake.url);
     let mut h = Harness::builder().with_size(vec2(700.0, 500.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
             }
@@ -117,8 +117,8 @@ fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
     h.run_steps(4);
     // The pointer rests over the picture: after the delay the finder asks (inline here) and the
     // probe is kept, with its tint texture; the status bar shows nothing of it.
-    let xf = ViewXform::active(h.state()).unwrap();
-    let at = xf.to_screen(30.0, 20.0);
+    let xf = crate::canvas::document_display::active_view(h.state()).unwrap();
+    let at = xf.to_screen(craft::behavior::kurbo::Point::new(30.0, 20.0));
     h.hover_at(at);
     h.run_steps(2);
     std::thread::sleep(std::time::Duration::from_millis((PROBE_DELAY * 1000.0) as u64 + 60));
@@ -157,7 +157,7 @@ fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
     });
     h.state_mut().ui.object_select = Default::default();
     h.state_mut().ui.tool = Tool::ObjectSelection;
-    let far = xf.to_screen(80.0, 50.0);
+    let far = xf.to_screen(craft::behavior::kurbo::Point::new(80.0, 50.0));
     h.hover_at(far);
     h.run_steps(2);
     std::thread::sleep(std::time::Duration::from_millis((PROBE_DELAY * 1000.0) as u64 + 60));

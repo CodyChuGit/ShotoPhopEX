@@ -39,6 +39,14 @@ pub struct ToolOptions {
     /// Remove tool: each stroke is filled when released (Photoshop's default). Off, the strokes
     /// collect as a tint on the canvas and ↩ applies them together (Esc drops them).
     pub remove_after_each_stroke: bool,
+    /// Remove tool (ShotoPhopEX): the hole filled through the generative fill model when a
+    /// backend is set up (`paint.remove` `generative`), the classical fill otherwise.
+    #[serde(default = "yes")]
+    pub remove_generative: bool,
+    /// Remove tool and Spot Healing (ShotoPhopEX), generative: run two candidates and show
+    /// the one that looks untouched (`variations` 2), or one candidate (1), faster.
+    #[serde(default = "yes")]
+    pub remove_pick_best: bool,
     /// Adjustment Brush: the Adjustment dropdown's entry (`photocraft_engine::adjustment_brush_cmds::ENTRIES`).
     pub adjustment_brush_kind: String,
     /// Adjustment Brush: Subtract (paints black into the mask) instead of Add.
@@ -93,7 +101,8 @@ pub struct ToolOptions {
     pub pattern_stamp_angle: f32,
     /// current | currentAndBelow | all
     pub clone_sample: String,
-    /// Spot Healing: contentAware | createTexture | proximityMatch
+    /// Spot Healing: contentAware | createTexture | proximityMatch | generative (ShotoPhopEX:
+    /// through the fill model when a backend is set up).
     pub spot_type: String,
     /// Patch: source (repair the selection) | destination (repair where it is dragged).
     pub patch_mode: String,
@@ -127,6 +136,33 @@ pub struct ToolOptions {
     pub smudge_mode: photocraft_color::BlendMode,
     /// Quick Selection enhance edge.
     pub enhance_edge: bool,
+    /// Object Selection: the phrase of its "Select by text" field (SAM 3.1 through
+    /// `select.byText`; comfy-photocraft).
+    pub select_text: String,
+    /// Object Selection (SAM 3.1): soften the detector's hard edge with the classical
+    /// refinement (`object_finder` below tints the object under the resting pointer).
+    pub refine_edge: bool,
+    /// Object Selection's Refine mode: clicks add spots to the last object (⌥ excludes one).
+    pub object_refine: bool,
+    /// Object Selection (SAM 3.1): the mask stack after the detector (`select.byPoint`'s
+    /// `grow`, `fillHoles`, `soften`): widen the mask by this many pixels (negative shrinks),
+    /// fill the gaps it encloses, feather its edge by this radius.
+    #[serde(default)]
+    pub object_widen: f32,
+    #[serde(default)]
+    pub object_fill_holes: bool,
+    #[serde(default)]
+    pub object_soften: f32,
+    /// Object Selection (SAM 3.1): Parts: a click (and the finder's tint) takes a part of what is
+    /// under it, such as one piece of clothing, instead of the whole figure (`detail: "part"`).
+    #[serde(default)]
+    pub object_parts: bool,
+    /// Select Subject's quality: High Quality asks Qwen-Image-2.1 for the subject's soft matte
+    /// (`generate.removeBackground` with `asSelection` on `qwen-2.1/matte`, about 8 s warm, a
+    /// cleaner edge on hair, fur and glass than SAM 3.1 with refinement, measured in the app
+    /// 2026-11-11); Fast (off) is SAM 3.1 (`select.subjectML`, under a second).
+    #[serde(default)]
+    pub subject_hq: bool,
     /// Pen: a work path or a shape layer.
     pub vector_mode: VectorMode,
     /// Pen, Freeform Pen and Curvature Pen › Path Operations (#1397): how a new path combines with
@@ -259,6 +295,10 @@ pub struct ToolOptions {
     pub cr_limits: String,
     pub cr_tolerance: f32,
     pub cr_anti_alias: bool,
+    /// Crop options bar › Generative Expand (ShotoPhopEX): a frame dragged beyond the canvas
+    /// has the model paint the added area (`generate.expand`) instead of leaving it empty.
+    #[serde(default)]
+    pub crop_generative: bool,
     /// Zoom tool › Scrubby Zoom: dragging left/right zooms continuously (else a zoom rectangle).
     #[serde(default = "yes")]
     pub zoom_scrubby: bool,
@@ -364,8 +404,12 @@ pub(super) fn default_brush_tool() -> Tool {
 
 /// Each tool's Sample All Layers (the Paint Bucket calls it All Layers). Photoshop keeps one per
 /// tool, all off by default except the Patch tool's Content-Aware Sample All Layers (#5524,
-/// #12125): turning it on for the Magic Wand must not leave Blur or Smudge copying the composite
-/// onto the active layer. The Mixer Brush keeps its own with the brush (`MixerSettings`).
+/// #12125) and Object Selection: turning it on for the Magic Wand must not leave Blur or Smudge
+/// copying the composite onto the active layer. The Mixer Brush keeps its own with the brush
+/// (`MixerSettings`). Object Selection is on by default: SAM should see the picture as shown, and
+/// after a generative fill the active layer is the masked result, so off it found the fill's
+/// rectangle instead of the mug under it (2026-11-08; `select.byPoint`'s own default is all
+/// layers too).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SampleAllLayers {
@@ -385,24 +429,27 @@ pub struct SampleAllLayers {
 
 impl Default for SampleAllLayers {
     fn default() -> Self {
-        Self {
-            magic_wand: false,
-            quick_selection: false,
-            object_selection: false,
-            paint_bucket: false,
-            magic_eraser: false,
-            spot_healing: false,
-            patch: true,
-            content_aware_move: false,
-            remove: false,
-            blur: false,
-            sharpen: false,
-            smudge: false,
-        }
+        Self { object_selection: true, patch: true, ..Self::NONE }
     }
 }
 
 impl SampleAllLayers {
+    /// Every tool off.
+    pub const NONE: Self = Self {
+        magic_wand: false,
+        quick_selection: false,
+        object_selection: false,
+        paint_bucket: false,
+        magic_eraser: false,
+        spot_healing: false,
+        patch: false,
+        content_aware_move: false,
+        remove: false,
+        blur: false,
+        sharpen: false,
+        smudge: false,
+    };
+
     /// `tool`'s setting; false for a tool without the option.
     pub fn get(mut self, tool: Tool) -> bool {
         self.slot(tool).is_some_and(|v| *v)
@@ -438,6 +485,8 @@ impl Default for ToolOptions {
             object_finder: true,
             object_subtract: true,
             object_finder_mode: ObjectFinderMode::Auto,
+            remove_generative: true,
+            remove_pick_best: true,
             object_hard_edge: true,
             remove_new_layer: false,
             remove_after_each_stroke: true,
@@ -481,6 +530,14 @@ impl Default for ToolOptions {
             exposure: 50.0,
             protect_tones: true,
             sponge_mode: "desaturate".into(),
+            select_text: String::new(),
+            refine_edge: true,
+            object_refine: false,
+            object_widen: 0.0,
+            object_fill_holes: false,
+            object_soften: 0.0,
+            object_parts: false,
+            subject_hq: false,
             sponge_flow: 50.0,
             vibrance: true,
             strength: 50.0,
@@ -520,6 +577,7 @@ impl Default for ToolOptions {
             marquee_height: 1.0,
             marquee_unit: default_marquee_unit(),
             slice_style: default_marquee_style(),
+            crop_generative: false,
             slice_width: 1.0,
             slice_height: 1.0,
             move_auto_select: true,

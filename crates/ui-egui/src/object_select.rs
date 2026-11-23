@@ -26,7 +26,8 @@ use photocraft_engine::jobs::{JobEvent, JobId, JobOutcome};
 use serde_json::{Value, json};
 
 use crate::PhotocraftApp;
-use crate::canvas::ViewXform;
+use craft::behavior::CanvasView as ViewXform;
+use craft::keymap::Mods;
 use crate::retouch_ui::{server_configured, server_online};
 use crate::state::Tool;
 
@@ -213,6 +214,12 @@ pub fn online(app: &mut PhotocraftApp, now: f64) -> bool {
     ok
 }
 
+/// The last answer of [`online`], without asking again: the classical Object Finder steps aside
+/// while SAM 3.1 tints the object under the pointer.
+pub fn known_online(app: &PhotocraftApp) -> bool {
+    app.ui.object_select.online.as_ref().is_some_and(|(_, ok, _)| *ok)
+}
+
 /// Forget the finder's answer and anything in flight (the tool, document or picture changed).
 pub fn reset(app: &mut PhotocraftApp) {
     if let Some((job, _)) = app.ui.object_select.pending.take() {
@@ -229,7 +236,7 @@ pub fn reset(app: &mut PhotocraftApp) {
 pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
     let active_doc = app.session.active().map(|d| d.doc.id);
-    let wanted = app.ui.tool == Tool::ObjectSelection && app.ui.tool_options.object_finder && app.drag.is_none() && active_doc.is_some();
+    let wanted = app.ui.tool == Tool::ObjectSelection && app.ui.tool_options.object_finder && !ctx.input(|i| i.pointer.any_down()) && active_doc.is_some();
     if !wanted {
         if app.ui.object_select.probe.is_some() || app.ui.object_select.pending.is_some() || app.ui.object_select.hover.is_some() {
             reset(app);
@@ -372,17 +379,17 @@ fn texture_of(ctx: &egui::Context, mask: &(usize, usize, Vec<u8>), color: Color3
 
 /// Draw the finder's tint over the object under the pointer (the canvas, before the ants).
 pub fn draw(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
-    if app.ui.tool != Tool::ObjectSelection || app.drag.is_some() {
+    if app.ui.tool != Tool::ObjectSelection || painter.ctx().input(|i| i.pointer.any_down()) {
         return;
     }
     let Some(pr) = app.ui.object_select.probe.as_ref() else { return };
     let Some(st) = app.session.active().filter(|d| d.doc.id == pr.doc) else { return };
-    let rect = xf.doc_rect(st.doc.bounds());
+    let rect = crate::gen_preview::screen_rect(xf, st.doc.bounds());
     painter.image(pr.tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 }
 
 /// Object Selection's modifiers: ⌥ subtracts, ⇧ adds (see `tool_feedback::selection_mode`).
-fn object_mode(mods: egui::Modifiers) -> &'static str {
+fn object_mode(mods: Mods) -> &'static str {
     if mods.alt {
         "subtract"
     } else if mods.shift {
@@ -394,45 +401,6 @@ fn object_mode(mods: egui::Modifiers) -> &'static str {
 
 /// The gesture ended: a click, a box, or a Ctrl-click refinement; the classical rectangle when
 /// no server answers.
-/// Without a server: upstream's classical tool. A click (or a sub-2 px nudge) selects the
-/// object under it when the Object Finder is on, as hovering highlighted it (#4087; ⇧ adds,
-/// ⌥ subtracts, ⇧⌥ intersects); with the finder off it is a Quick Selection dab at the brush
-/// size instead of looking dead (⌥ subtracts). A larger drag runs the rectangle GrabCut (⌥
-/// subtracts, ⇧ adds, otherwise replaces).
-fn classical_finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers, sample_all: bool) {
-    let (x, y) = (start[0].min(end[0]), start[1].min(end[1]));
-    let (w, h) = ((end[0] - start[0]).abs(), (end[1] - start[1]).abs());
-    let click = w < 2.0 || h < 2.0;
-    if click && app.ui.tool_options.object_finder {
-        let mode = match (mods.shift, mods.alt) {
-            (true, true) => "intersect",
-            (true, false) => "add",
-            (false, true) => "subtract",
-            (false, false) => "replace",
-        };
-        let r = app.run("select.object", json!({"point": [end[0], end[1]], "mode": mode, "sampleAllLayers": sample_all}));
-        crate::object_finder::clear(app);
-        crate::retouch_ui::report_smart_result(app, r, tl!("No object found there — drag a rectangle around it"));
-        return;
-    }
-    if click {
-        let size = app.session.tools.brush.size;
-        let mode = if mods.alt { "subtract" } else { "add" };
-        let r = app.run("select.quick", json!({"points": [[end[0], end[1]]], "size": size, "mode": mode, "sampleAllLayers": sample_all}));
-        crate::retouch_ui::report_smart_result(app, r, tl!("Quick Selection found nothing there"));
-        return;
-    }
-    let mode = if mods.alt {
-        "subtract"
-    } else if mods.shift {
-        "add"
-    } else {
-        "replace"
-    };
-    let r = app.run("select.object", json!({"rect": [x.round(), y.round(), w.round(), h.round()], "mode": mode, "sampleAllLayers": sample_all}));
-    crate::retouch_ui::report_smart_result(app, r, tl!("Object Selection found nothing there — try a tighter rectangle"));
-}
-
 /// The options bar's mask stack (Widen, Fill Holes, Soften) on a detector query: only what is
 /// set goes along, so a plain click sends what it always did.
 pub fn mask_stack(app: &PhotocraftApp, q: &mut Value) {
@@ -448,11 +416,11 @@ pub fn mask_stack(app: &PhotocraftApp, q: &mut Value) {
     }
 }
 
-pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) {
+pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: Mods) {
     // Indexed Color and Bitmap: the reference application's alert with OK (#12867), and nothing runs.
     if let Some(why) = app.session.active().and_then(|st| photocraft_engine::smartselect_cmds::object_mode_refusal(st.doc.mode)) {
         crate::object_finder::clear(app);
-        crate::brush_refusal::prompt(app, tl!(why));
+        let _ = crate::dialogs::alerts::alert(app, tl!(why));
         return;
     }
     let (x, y) = (start[0].min(end[0]), start[1].min(end[1]));
@@ -463,7 +431,7 @@ pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egu
     let (sample_all, refine) = (o.sample_all.object_selection, o.refine_edge);
     let now = app.ui.object_select.hover.map_or(0.0, |(_, t)| t);
     if !online(app, now) {
-        classical_finish(app, start, end, mods, sample_all);
+        crate::retouch_ui::classical_object_selection(app, start, end, mods);
         return;
     }
     let point = [start[0].round(), start[1].round()];
@@ -557,7 +525,7 @@ pub fn next_match(app: &mut PhotocraftApp) {
         .clone()
         .filter(|l| l.job.is_none() && current == Some((l.doc, l.past_len)) && l.positives.len() == 1 && l.negatives.is_empty() && l.bbox.is_none())
     else {
-        crate::notices::post(app, tl!("Click an object first; Next Match swaps what that click selected"), Vec::new(), false, None);
+        crate::notices::post(app, tl!("Click an object first; Next Match swaps what that click selected"), Vec::new(), crate::notices::Tone::Neutral, None);
         return;
     };
     if app.run("edit.undo", json!({})).is_err() {

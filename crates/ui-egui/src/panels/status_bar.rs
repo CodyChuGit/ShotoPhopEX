@@ -91,6 +91,8 @@ pub fn status_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         .trailing(|ui, _| {
             let props = TrailingProps { render_path: render_path.clone(), redraw: redraw.clone(), job: progress.clone(), out: Outbox::new(&mut trailing_sent) };
             let _ = MemoView::new("status-bar-trailing", props, trailing_view).show(ui);
+            // ShotoPhopEX: the generative engine's state (`engine_ui`), at the bar's far end.
+            crate::engine_ui::dot(app, ui);
         })
         .show(ui, |ui, _| {
             let props = StatusProps { values: values.clone(), item, document, view, message: message.clone(), out: Outbox::new(&mut body_sent) };

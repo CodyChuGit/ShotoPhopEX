@@ -60,7 +60,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if app.screen_pick.busy() {
         app.screen_pick.set_monitor(&app.session.color().monitor());
     }
-    ScreenColorPicker::new(&mut app.screen_pick, "PhotoCraft").show(ui);
+    ScreenColorPicker::new(&mut app.screen_pick, photocraft_engine::build_info::APP_NAME).show(ui);
     // The status is taken here rather than in `tick`: the words come from the Env, which needs a
     // `Ui`, and `show` runs after every settle of the pass (tick's and the windows').
     let words = Env::of(ui).words::<ScreenPickerWords>();

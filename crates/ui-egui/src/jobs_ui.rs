@@ -551,7 +551,8 @@ pub fn job_in_view(app: &PhotocraftApp) -> Option<JobInfo> {
     if let Some(j) = app.jobs.focus.and_then(|j| app.session.job(j)) {
         return Some(j);
     }
-    app.session.active_job().or_else(|| app.session.jobs().pop())
+    // ShotoPhopEX: the object finder's probes are quiet: never the status bar's job.
+    app.session.active_job().or_else(|| app.session.jobs().into_iter().rev().find(|j| j.command != "select.probe"))
 }
 
 /// Cancel job `id` (the status bar's ×, the dialog's Cancel, Esc, closing an opening tab).
@@ -605,6 +606,13 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
         };
         app.reply_job(e.id, &reply);
     }
+    // ShotoPhopEX: the generative task bar's own fill records the result layers (variations);
+    // Window › Generations its unread results and thumbnails; Window › Generate its own run and
+    // the wand; the Object Selection tool its finder probe.
+    crate::generative_bar::on_event(app, &e);
+    crate::generations_panel::on_event(app, &e);
+    crate::generate_panel::on_event(app, &e);
+    crate::object_select::on_event(app, &e);
     // A Free Transform commit's session ends with its job (then reported like any job).
     crate::transform_tool::on_job_event(app, &e);
     if crate::prefs_ui::on_recovery_event(app, &e) {
@@ -663,6 +671,9 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
             // The import's result is in the Brushes panel.
             let _ = crate::panels::panel_docking::show_panel(app, "brushes", Some(true));
         }
+        // ShotoPhopEX: the model pickers' background check of the server stays quiet either way
+        // (the badges show its answer; a generative run reports an unreachable server itself).
+        JobOutcome::Done(_) | JobOutcome::Failed(_) if e.command == "generate.models" || e.command == "select.probe" => {}
         JobOutcome::Done(ref result) if matches!(e.command.as_str(), "file.print" | "file.printOneCopy") => {
             app.sync_views();
             crate::file_ui::print_status(app, result);
@@ -899,7 +910,16 @@ pub fn dialog(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 &j.command,
                 !app.ui.view.hides_chrome() && app.ui.panels.status_bar && job_in_view(app).is_some_and(|shown| shown.id == j.id),
             );
-            if j.command == "file.automate.batch" || j.elapsed_ms < DIALOG_DELAY_MS || place || app.jobs.saves.iter().any(|s| s.job == j.id) {
+            // ShotoPhopEX: a fill the generative task bar, the Generate panel or the Variations
+            // strip is showing has its progress and Cancel there already.
+            if j.command == "file.automate.batch"
+                || j.elapsed_ms < DIALOG_DELAY_MS
+                || place
+                || app.jobs.saves.iter().any(|s| s.job == j.id)
+                || crate::generative_bar::shows_job(app, j.id)
+                || crate::generate_panel::shows_job(app, j.id)
+                || crate::variations_strip::shows_job(app, ui.ctx(), j.id)
+            {
                 return;
             }
             j

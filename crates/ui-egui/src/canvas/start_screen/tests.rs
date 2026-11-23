@@ -1,5 +1,6 @@
-//! #15527: the Home screen uses the framework's Home layout, with Home and Learn in a left rail beside the content,
-//! the community links at the bottom of that rail and the PhotoCraft title above the page.
+//! #15527: the Home screen uses the framework's Home layout, with Home in a left rail beside the content, the
+//! project links at the bottom of that rail and the app's title above the page. (ShotoPhopEX: no Learn, Website or
+//! Discord links; GitHub and the upstream project instead.)
 use crate::PhotocraftApp;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -29,15 +30,16 @@ fn rect(h: &H, label: &str) -> egui::Rect {
 fn home_and_the_links_sit_in_a_rail_left_of_the_content_at_desktop_width() {
     let h = harness();
     let hint = rect(&h, DROP_HINT);
-    let title = rect(&h, "PhotoCraft");
-    for label in ["Home", "Learn", "Website", "Discord", "GitHub"] {
+    let title = rect(&h, photocraft_engine::build_info::APP_NAME);
+    let based_on = format!("Based on {}", photocraft_engine::build_info::UPSTREAM_NAME);
+    for label in ["Home", "GitHub", based_on.as_str()] {
         let link = rect(&h, label);
         assert!(link.right() <= hint.left(), "{label} {link:?} must be in the rail left of the drop hint {hint:?}");
         assert!(link.right() <= title.left(), "{label} {link:?} must be left of the title {title:?}");
     }
-    assert!(rect(&h, "Home").bottom() <= rect(&h, "Learn").top(), "Learn follows Home");
+    assert!(rect(&h, "Home").bottom() <= rect(&h, "GitHub").top(), "the project links follow Home");
     let middle = h.ctx.content_rect().center().y;
-    for label in ["Website", "Discord", "GitHub"] {
+    for label in ["GitHub", based_on.as_str()] {
         assert!(rect(&h, label).top() > middle, "{label} sits at the bottom of the rail");
     }
     assert!(title.bottom() <= hint.top(), "the title is above the page");

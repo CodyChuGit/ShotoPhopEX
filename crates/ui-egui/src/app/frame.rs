@@ -93,6 +93,8 @@ impl PhotocraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         crate::text::installed_fonts::tick(self, ctx);
         monitor_status::poll_frame(self, ctx, frame);
+        crate::engine_ui::tick(self, ctx);
+        crate::object_select::tick(self, ctx);
         // Control requests and persisted preferences can change the language in this frame.
         i18n::sync_context(ctx, &self.session.prefs().interface.language);
         // The runtime's close path, which asks PhotoCraft when the window was asked to close.
@@ -255,6 +257,14 @@ impl PhotocraftApp {
         // hosted dialog, then the other OS windows' contents.
         jobs_ui::dialog(self, ui);
         updates_ui::show(self, &ctx);
+        // ShotoPhopEX: the generative windows and the bar under the selection.
+        crate::variations_strip::show(self, &ctx);
+        crate::generate_hub::tick(self, &ctx);
+        crate::generate_hub::window(self, &ctx);
+        crate::angles_ui::window(self, &ctx);
+        crate::app_icon_ui::window(self, &ctx);
+        crate::get_models_ui::window(self, &ctx);
+        crate::generative_bar::show(self, &ctx);
         // The Keyboard Shortcuts dialog draws while its session is open.
         prefs_ui::show_shortcuts(self, ui);
         crate::dialogs::run(self, ui);

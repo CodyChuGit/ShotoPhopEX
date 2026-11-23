@@ -742,7 +742,7 @@ pub(super) fn add_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui, action: &mut 
             });
         }
     }
-    if app.services.file_dialog.is_some() && ui.button(tl!("File…")).clicked() {
+    if crate::generations_panel::picks_files(app) && ui.button(tl!("File…")).clicked() {
         *action = Some(Action::PickFile);
     }
     let recent: Vec<(u64, String)> = app
@@ -791,7 +791,7 @@ pub(super) fn reference_texture(app: &mut PhotocraftApp, ctx: &egui::Context, sp
     if let Some(id) = spec["layer"].as_u64() {
         let doc = app.session.active()?.doc.clone();
         let layer = doc.layer(photocraft_doc::LayerId(id))?.clone();
-        return Some(app.layer_thumb(ctx, &doc, &layer).0);
+        return crate::gen_preview::layer_thumb(ctx, &doc, &layer);
     }
     if let Some(id) = spec["job"].as_u64() {
         return crate::generations_panel::thumbnail(app, ctx, id).map(|t| t.id());

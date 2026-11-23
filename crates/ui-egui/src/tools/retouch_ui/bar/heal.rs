@@ -81,8 +81,19 @@ pub(super) fn remove(ui: &mut egui::Ui, app: &mut PhotocraftApp) -> Option<Range
     check(ui, tl!("Sample all layers"), &mut o.sample_all.remove, true, Some(tl!("Sample content from all visible layers")));
     check(ui, tl!("Remove after each stroke"), &mut o.remove_after_each_stroke, true, Some(tl!("Remove area after a single stroke")));
     check(ui, tl!("Create new layer"), &mut o.remove_new_layer, composite, Some(tl!("Create new layer with results")));
+    // ShotoPhopEX: the hole filled through the fill model (a masked layer either way).
+    Divider::vertical().show(ui);
+    check(ui, tl!("Generative"), &mut o.remove_generative, true, Some(tl!(GENERATIVE_TIP)));
+    if o.remove_generative {
+        check(ui, tl!("Best of two"), &mut o.remove_pick_best, true, Some(tl!(BEST_OF_TWO_TIP)));
+    }
     None
 }
+
+/// ShotoPhopEX: the tooltip of the generative fill choice of Remove and Spot Healing.
+const GENERATIVE_TIP: &str = "Fill from the generative model: slower, far better on textures and patterns (needs the native worker)";
+/// ShotoPhopEX: the tooltip of Best of two.
+const BEST_OF_TWO_TIP: &str = "Run two candidates and show the one that looks untouched; off, one candidate, about half the time";
 
 /// Patch's options: the lasso's operation, then Normal (Source / Destination) or Content-Aware.
 pub(super) fn patch(ui: &mut egui::Ui, app: &mut PhotocraftApp) -> Option<RangeAlert> {
@@ -132,8 +143,12 @@ pub(super) fn spot_healing(ui: &mut egui::Ui, app: &mut PhotocraftApp) -> Option
         ui,
         tl!("Type"),
         &mut o.spot_type,
-        &[("contentAware", tl!("Content-Aware")), ("createTexture", tl!("Create Texture")), ("proximityMatch", tl!("Proximity Match"))],
+        // ShotoPhopEX adds Generative: the stroke healed through the fill model.
+        &[("contentAware", tl!("Content-Aware")), ("createTexture", tl!("Create Texture")), ("proximityMatch", tl!("Proximity Match")), ("generative", tl!("Generative"))],
     );
+    if o.spot_type == "generative" {
+        check(ui, tl!("Best of two"), &mut o.remove_pick_best, true, Some(tl!(BEST_OF_TWO_TIP)));
+    }
     Divider::vertical().show(ui);
     check(ui, tl!("Sample All Layers"), &mut o.sample_all.spot_healing, true, None);
     None

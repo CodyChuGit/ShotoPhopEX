@@ -116,7 +116,7 @@ fn main() {
             services.xwayland_command = wayland_notice.then(|| "WAYLAND_DISPLAY= photocraft".into());
             let mut app = PhotocraftApp::with_context(cc.egui_ctx.clone(), photocraft_engine::Session::new(), services);
             if update_notice {
-                photocraft_ui_egui::updates_ui::preview_release(&mut app, "99.0.0", "https://github.com/storytold/photocraft/releases/tag/v99.0.0");
+                photocraft_ui_egui::updates_ui::preview_release(&mut app, "99.0.0", "https://github.com/CodyChuGit/ShotoPhopEX/releases/tag/v99.0.0");
             }
             app.background_jobs = background_jobs;
             // `--safe-gpu`: the CPU canvas, as the desktop app's `--safe-gpu` launch.

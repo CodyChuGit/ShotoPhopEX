@@ -88,7 +88,7 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     // Generative steps (a `generate.*` or detector command in the action, or in one it plays)
     // record their runs in the Generations library, as `run` does.
     let generations_dir = crate::document::generations_dir_for(
-        actions.iter().map(|(id, _)| id.as_str()).chain(set.iter().flat_map(|a| a.steps.iter().map(|(id, _)| id.as_str()))),
+        actions.iter().map(|(id, _)| id.as_str()).chain(set.iter().flat_map(|a| a.steps.iter().map(|st| st.command.as_str()))),
     );
     let named = photocraft_engine::file_cmds::plan_batch_names(
         &inputs,

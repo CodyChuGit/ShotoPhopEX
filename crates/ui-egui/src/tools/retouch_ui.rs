@@ -206,7 +206,10 @@ pub(crate) fn finish_stroke_with(app: &mut PhotocraftApp, tool: Tool, points: &[
     let o = app.ui.tool_options.clone();
     let pts = json!(points);
     let (cmd, mut p): (&str, Value) = match tool {
-        Tool::SpotHealing => ("paint.spotHealing", json!({"type": o.spot_type, "sampleAllLayers": o.sample_all.spot_healing})),
+        Tool::SpotHealing => (
+            "paint.spotHealing",
+            json!({"type": o.spot_type, "sampleAllLayers": o.sample_all.spot_healing, "variations": if o.remove_pick_best { 2 } else { 1 }}),
+        ),
         Tool::Remove => {
             if !o.remove_after_each_stroke {
                 remove_pending_add(app, points);
@@ -259,6 +262,10 @@ pub(crate) fn finish_stroke_with(app: &mut PhotocraftApp, tool: Tool, points: &[
             }
             let size = app.session.tools.brush.size;
             let mode = if mods.alt { "subtract" } else { "add" };
+            // ShotoPhopEX: with a server that answers the stroke is SAM 3.1's prompt.
+            if quick_select_detector(app, points, mode) {
+                return true;
+            }
             let xy: Vec<[f64; 2]> = points.iter().map(|q| [q[0], q[1]]).collect();
             let (sample_all, enhance) = (o.sample_all.quick_selection, o.enhance_edge);
             let r = app.run("select.quick", json!({"points": xy, "size": size, "mode": mode, "enhanceEdge": enhance, "sampleAllLayers": sample_all}));
@@ -299,9 +306,62 @@ pub(crate) fn finish_stroke_with(app: &mut PhotocraftApp, tool: Tool, points: &[
     true
 }
 
+/// ShotoPhopEX: how many spots along a Quick Selection stroke the detector gets. SAM 3.1
+/// reads several positive points as one object, but the mask degrades as they pile up (the fox
+/// picture, 2026-10-16: 1–4 spots along a stroke give the whole fox, ~340 k pixels; 8 give
+/// 292 k; 16 give a fragmented 164 k), so the stroke's ends and two spots between them say which
+/// object.
+pub(crate) const QUICK_STROKE_POINTS: usize = 4;
+
+/// The spots along a Quick Selection stroke that go to the detector: at most
+/// [`QUICK_STROKE_POINTS`], evenly spaced along the stroke's samples, whole pixels inside the
+/// `canvas` (width, height), no repeats.
+pub(crate) fn stroke_prompt(points: &[[f64; 3]], canvas: [f64; 2]) -> Vec<[f64; 2]> {
+    let inside: Vec<[f64; 2]> = points
+        .iter()
+        .map(|p| [p[0].round(), p[1].round()])
+        .filter(|p| p[0].is_finite() && p[1].is_finite() && p[0] >= 0.0 && p[1] >= 0.0 && p[0] < canvas[0] && p[1] < canvas[1])
+        .collect();
+    let n = inside.len();
+    let k = n.min(QUICK_STROKE_POINTS);
+    let mut out: Vec<[f64; 2]> = Vec::with_capacity(k);
+    for i in 0..k {
+        let idx = if k < 2 { 0 } else { i * (n - 1) / (k - 1) };
+        if let Some(p) = inside.get(idx).copied()
+            && !out.contains(&p)
+        {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// ShotoPhopEX: a Quick Selection stroke through SAM 3.1 when the server answers. The spots
+/// along the stroke are one point prompt (`select.byPoint`), so painting over an object selects
+/// the object rather than the similar-coloured region; ⌥ subtracts the object under the stroke;
+/// Enhance Edge is the detector's edge refinement. False, the classical `select.quick`, without
+/// a server, with one that is down, or for a stroke entirely off the canvas.
+fn quick_select_detector(app: &mut PhotocraftApp, points: &[[f64; 3]], mode: &str) -> bool {
+    let now = app.last_frame_time;
+    if !crate::object_select::online(app, now) {
+        return false;
+    }
+    let Some(canvas) = app.session.active().map(|d| [f64::from(d.doc.size.width), f64::from(d.doc.size.height)]) else { return false };
+    let pts = stroke_prompt(points, canvas);
+    if pts.is_empty() {
+        return false;
+    }
+    let o = &app.ui.tool_options;
+    let q = json!({"points": pts, "mode": mode, "sampleAllLayers": o.sample_all.quick_selection, "refine": o.enhance_edge});
+    if let Err(e) = app.run("select.byPoint", q) {
+        crate::notices::error(app, e);
+    }
+    true
+}
+
 /// `paint.remove` params from the options bar (without the strokes).
 fn remove_params(o: &crate::state::ToolOptions, composite: bool) -> Value {
-    json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer && composite})
+    json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer && composite, "generative": o.remove_generative, "variations": if o.remove_pick_best { 2 } else { 1 }})
 }
 
 /// The selection a queued Remove stroke was drawn against. A later selection must not
@@ -605,6 +665,12 @@ pub fn content_aware_move_params(app: &PhotocraftApp, offset: [i64; 2]) -> Value
 /// bar's New / Add / Subtract / Intersect buttons say, with ⇧ adding, ⌥ subtracting and ⇧⌥
 /// intersecting (#12853).
 pub fn finish_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: Mods) {
+    // ShotoPhopEX: SAM 3.1 when a server answers, this classical tool otherwise.
+    crate::object_select::finish(app, start, end, mods);
+}
+
+/// The classical Object Selection (no generative server): see [`finish_object_selection`].
+pub(crate) fn classical_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: Mods) {
     // Indexed Color and Bitmap: the reference application's alert with OK (#12867), and nothing runs.
     if let Some(why) = app.session.active().and_then(|st| photocraft_engine::smartselect_cmds::object_mode_refusal(st.doc.mode)) {
         crate::object_finder::clear(app);
@@ -651,6 +717,72 @@ pub fn finish_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f
         let why = tl!("Couldn't find an object to select. There might not be enough edge contrast, or the object might be too small.");
         let _ = crate::dialogs::alerts::alert_once(app, why, OBJECT_NOT_FOUND_PREF);
     }
+}
+
+/// Whether the native worker has runtime and Models folders for model-backed tools.
+pub fn server_configured(app: &PhotocraftApp) -> bool {
+    app.session.prefs().integrations.native_configured()
+}
+
+pub fn native_engine(_app: &PhotocraftApp) -> bool {
+    true
+}
+
+/// The template the selection tools' health check asks about: under `auto` its backend is the
+/// native worker when that serves SAM 3.1, the ComfyUI server otherwise.
+const HEALTH_TEMPLATE: &str = "sam3.1/segment-point";
+
+/// Is the backend SAM 3.1 would use answering right now (`generate.health`, one quick request; a
+/// closed local port answers at once)? A click or Select Subject goes to SAM 3.1 only then, so a
+/// machine without ComfyUI or the native graphs keeps the classical behaviour instead of
+/// collecting errors.
+pub fn server_online(app: &mut PhotocraftApp) -> bool {
+    server_configured(app) && app.run("generate.health", json!({"template": HEALTH_TEMPLATE})).is_ok_and(|h| h["ok"].as_bool() == Some(true))
+}
+
+/// The Object Selection options bar's "Select by text" field: the phrase through SAM 3.1
+/// (`select.byText`, a background job), replacing the selection.
+pub fn select_by_text(app: &mut PhotocraftApp) -> Result<Value, String> {
+    let phrase = app.ui.tool_options.select_text.trim().to_string();
+    if phrase.is_empty() {
+        return Err("type what to select first".into());
+    }
+    let mut q = json!({"prompt": phrase, "mode": "replace", "sampleAllLayers": app.ui.tool_options.sample_all.object_selection});
+    crate::object_select::mask_stack(app, &mut q);
+    let r = app.run("select.byText", q);
+    if let Err(e) = &r {
+        crate::notices::error(app, format!("Select by Text: {e}"));
+    }
+    r
+}
+
+/// Select › Subject and the selection tools' Select Subject button: SAM 3.1's reading of the
+/// main subject when the server answers (`select.subjectML`, with the edge refinement the
+/// Object Selection tool uses), the classical `select.subject` otherwise. With High Quality
+/// chosen ([`subject_quality`]), Qwen-Image-2.1's soft matte of the subject first
+/// (`generate.removeBackground` with `asSelection`), SAM 3.1 when that cannot start.
+pub fn select_subject(app: &mut PhotocraftApp) -> Result<Value, String> {
+    let refine = app.ui.tool_options.refine_edge;
+    if server_online(app) {
+        if app.ui.tool_options.subject_hq
+            && let Ok(v) = app.run("generate.removeBackground", subject_hq_params(app.ui.tool_options.sample_all.object_selection))
+        {
+            return Ok(v);
+        }
+        if let Ok(v) = app.run("select.subjectML", json!({"refine": refine})) {
+            return Ok(v);
+        }
+    }
+    app.run("select.subject", json!({}))
+}
+
+/// The Qwen matte template High Quality runs.
+pub const SUBJECT_HQ_TEMPLATE: &str = "qwen-2.1/matte";
+
+/// `generate.removeBackground`'s params for a High Quality Select Subject: the matte as a new
+/// selection, the main subject (nothing named), from the layer or every layer.
+pub fn subject_hq_params(sample_all: bool) -> Value {
+    json!({"asSelection": true, "mode": "replace", "prompt": "", "template": SUBJECT_HQ_TEMPLATE, "sampleAllLayers": sample_all})
 }
 
 /// The "Don't show again" of the alert for an Object Selection rectangle that finds nothing.

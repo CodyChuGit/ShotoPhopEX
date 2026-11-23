@@ -107,7 +107,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
     // The old `panels` and `dockTabs` words, derived from the workspace for readers that still use them.
     let legacy = crate::panel_docking::legacy_view(app);
     let picker = &app.ui.brush_picker_state;
-    json!({
+    let mut v = json!({
         "window": {"width": screen.width(), "height": screen.height(), "pixelsPerPoint": ctx.pixels_per_point()},
         "scratch": photocraft_raster::spill::stats(),
         "memory": photocraft_raster::memory::stats(),
@@ -204,5 +204,25 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "agentLink": agent_link_json(app),
         "histogram": crate::histogram_panel::inspect(app),
         "cameraRaw": crate::camera_raw_ui::describe(app),
-    })
+    });
+    // ShotoPhopEX: the generative UI, added after the macro (one `json!` this big trips
+    // serde_json's recursion limit).
+    if let Some(o) = v.as_object_mut() {
+        // The main canvas inside the rulers (points): with `views[activeDocument]`'s zoom and
+        // center, document → screen for ui.move / ui.click.
+        let canvas_rect = crate::canvas::document_display::active_view(app).map(|view| [view.rect.left(), view.rect.top(), view.rect.width(), view.rect.height()]);
+        o.insert("canvasRect".into(), json!(canvas_rect));
+        o.insert("activeDocument".into(), json!(app.session.active_index()));
+        o.insert("generativeBar".into(), crate::generative_bar::inspect(app));
+        o.insert("generatePanel".into(), crate::generate_panel::inspect(app));
+        o.insert("generations".into(), crate::generations_panel::inspect(app));
+        o.insert("modelPickers".into(), crate::model_picker::inspect(ctx));
+        o.insert("variations".into(), crate::variations_strip::inspect(app, ctx));
+        o.insert("hub".into(), crate::generate_hub::inspect(app, ctx));
+        o.insert("angles".into(), crate::angles_ui::inspect(app));
+        o.insert("appIcon".into(), crate::app_icon_ui::inspect(app));
+        o.insert("getModels".into(), crate::get_models_ui::inspect(app));
+        o.insert("objectSelect".into(), crate::object_select::inspect(app));
+    }
+    v
 }

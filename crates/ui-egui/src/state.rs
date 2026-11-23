@@ -254,6 +254,37 @@ pub struct UiState {
     /// Selection-tool context menu opened by a plain canvas right-click.
     #[serde(default)]
     pub canvas_tool_menu: Option<crate::canvas_tool_menu::CanvasToolMenu>,
+    /// The generative task bar under the selection (ShotoPhopEX, `generative_bar`).
+    #[serde(default)]
+    pub generative_bar: crate::generative_bar::GenerativeBar,
+    /// Window › Generations: view mode, last viewed result, thumbnails (`generations_panel`).
+    #[serde(default)]
+    pub generations: crate::generations_panel::GenerationsUi,
+    /// Window › Generate: the prompt box's state, shared with the task bar (`generate_panel`).
+    #[serde(default)]
+    pub generate: crate::generate_panel::GeneratePanel,
+    /// The Variations strip's caches (`variations_strip`); never saved.
+    #[serde(skip)]
+    pub variations: crate::variations_strip::VariationsUi,
+    /// The Generate hub: Help › Generative Features… and a card waiting for a file (`generate_hub`).
+    #[serde(skip)]
+    pub hub: crate::generate_hub::HubUi,
+    /// Edit › Generative Angles…'s window (`angles_ui`).
+    #[serde(skip)]
+    pub angles: crate::angles_ui::AnglesUi,
+    /// Edit › Preferences › App Icon…'s window and the icon applied (`app_icon_ui`).
+    #[serde(skip)]
+    pub app_icon: crate::app_icon_ui::AppIconUi,
+    /// Help › Get AI Models…'s window (`get_models_ui`).
+    #[serde(skip)]
+    pub get_models: crate::get_models_ui::GetModelsUi,
+    /// The Object Selection tool's SAM 3.1 mode: the object finder's probe, the last query
+    /// (`object_select`).
+    #[serde(skip)]
+    pub object_select: crate::object_select::ObjectSelectUi,
+    /// The generative engine's last polled status, for the status bar's dot (`engine_ui`).
+    #[serde(skip)]
+    pub engine: crate::engine_ui::EngineUi,
     /// The guide a Move-tool click selected (`guide_select`): drawn blue, Delete removes it.
     #[serde(default)]
     pub selected_guide: Option<crate::guide_select::SelectedGuide>,
@@ -487,6 +518,16 @@ impl Default for UiState {
             brush_picker_state: Tracked::default(),
             color_hud: None,
             canvas_tool_menu: None,
+            generative_bar: Default::default(),
+            generations: Default::default(),
+            generate: Default::default(),
+            variations: Default::default(),
+            hub: Default::default(),
+            angles: Default::default(),
+            app_icon: Default::default(),
+            get_models: Default::default(),
+            object_select: Default::default(),
+            engine: Default::default(),
             selected_guide: None,
             brush_tool: Tool::Brush,
             tool_brushes: Vec::new(),

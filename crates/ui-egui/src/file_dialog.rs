@@ -211,7 +211,8 @@ impl PhotocraftApp {
     ///
     /// A bare file name (export dialogs, an untitled document) starts in the folder the active
     /// document was last saved or exported to through a dialog, else beside the document
-    /// (#1826, #1866). A caller's explicit directory is kept. The chosen folder is remembered for
+    /// (#1826, #1866), else (a new document) in the last folder any save dialog chose, which the
+    /// preferences keep across restarts. A caller's explicit directory is kept. The chosen folder is remembered for
     /// the document the dialog was asked for.
     pub(crate) fn pick_save(&mut self, suggested: &str, then: impl FnOnce(&mut Self, String) -> Result<Value, String> + 'static) -> Result<Value, String> {
         self.pick_save_in(suggested, false, then)
@@ -240,7 +241,9 @@ impl PhotocraftApp {
                 .and_then(|d| self.save_dirs.get(&d).cloned())
                 // An export doesn't start in a folder that is gone.
                 .filter(|dir| !export || folder_exists(dir))
-                .or_else(|| self.session.active().and_then(|d| d.path.as_deref()).and_then(|p| Path::new(p).parent()).map(Path::to_path_buf));
+                .or_else(|| self.session.active().and_then(|d| d.path.as_deref()).and_then(|p| Path::new(p).parent()).map(Path::to_path_buf))
+                // ShotoPhopEX: a new document starts in the last folder any save dialog chose (kept across restarts).
+                .or_else(|| (!export).then(|| self.session.prefs().last_save_folder.clone()).filter(|f| !f.is_empty()).map(PathBuf::from));
             let remembered = export.then(|| self.session.prefs().export.last_folder.clone());
             if let Some(dir) = export_start_dir(remembered.as_deref(), document_dir, folder_exists) {
                 suggested = dir.join(suggested);
@@ -254,6 +257,10 @@ impl PhotocraftApp {
             // An export's folder only once it has exported: a failed one doesn't move where
             // the next export starts.
             if !export && let Some((doc, dir)) = dir.clone() {
+                let folder = dir.to_string_lossy().into_owned();
+                if app.session.prefs().last_save_folder != folder {
+                    app.session.prefs.edit(|p| p.last_save_folder = folder);
+                }
                 app.save_dirs.insert(doc, dir);
             }
             let exported = then(app, path.clone())?;

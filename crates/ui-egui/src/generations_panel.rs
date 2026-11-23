@@ -879,12 +879,24 @@ fn save_many(app: &mut PhotocraftApp, ids: &[u64]) -> bool {
             if e != crate::file_dialog::CANCELLED {
                 app.ui.status = e;
                 app.ui.status_error = true;
-            } else if app.services.file_dialog.is_none() {
+            } else if !picks_files(app) {
                 app.ui.status = tl!("Saving files is not available here").to_string();
                 app.ui.status_error = true;
             }
             false
         }
+    }
+}
+
+/// Whether this build can ask for a file: the host's file service (desktop) or the web's dialog.
+pub(crate) fn picks_files(app: &PhotocraftApp) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        app.services.file_dialog.is_some()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        app.services.files.is_some()
     }
 }
 

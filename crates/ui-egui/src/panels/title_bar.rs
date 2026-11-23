@@ -1,4 +1,3 @@
-use craft::ui::contract::Show as _;
 use craft::ui::shell::{Title, TitleBar};
 
 use super::{PhotocraftApp, brand};
@@ -16,7 +15,12 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui,
         Title::new(title),
         |ui, _| {
-            brand::mark().show(ui);
+            let mark = brand::show_mark(ui);
+            // ShotoPhopEX: one click on the mark opens Edit › Preferences › App Icon….
+            let id = ui.scope_id().with("brand-mark-app-icon");
+            if ui.interact(mark.rect, id, egui::Sense::click()).on_hover_text(tl!("App Icon…")).clicked() {
+                app.ui.app_icon.open = true;
+            }
             // With the macOS menu bar the menus are at the top of the screen instead.
             if app.services.native_menu.is_none() {
                 crate::menus::menu_bar(app, ui);

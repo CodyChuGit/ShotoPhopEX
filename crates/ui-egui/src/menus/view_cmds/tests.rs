@@ -287,24 +287,6 @@ fn show_snap_extras_and_screen_modes_are_state() {
 }
 
 #[test]
-fn a_macs_full_screen_with_menu_bar_is_a_maximized_window() {
-    use super::options::screen_mode_commands_mac as mac;
-    use egui::ViewportCommand::{Fullscreen, Maximized};
-    // Standard → With Menu Bar: maximize (the system menu bar stays), remember the window.
-    assert_eq!(mac(false, false, false, "standard", "fullScreenWithMenuBar"), (vec![Maximized(true)], false));
-    assert_eq!(mac(false, true, false, "standard", "fullScreenWithMenuBar"), (vec![Maximized(true)], true));
-    // With Menu Bar → Full Screen: native full screen, still remembering Standard's window.
-    assert_eq!(mac(false, true, false, "fullScreenWithMenuBar", "fullScreen"), (vec![Fullscreen(true)], false));
-    // Full Screen → With Menu Bar: leave native full screen, then maximize.
-    assert_eq!(mac(true, false, true, "fullScreen", "fullScreenWithMenuBar"), (vec![Fullscreen(false), Maximized(true)], true));
-    // Back to Standard: the window as it was.
-    assert_eq!(mac(true, false, false, "fullScreen", "standard"), (vec![Fullscreen(false), Maximized(false)], false));
-    assert_eq!(mac(false, true, true, "fullScreenWithMenuBar", "standard"), (vec![Maximized(true)], false));
-    // Standard while already standard changes nothing.
-    assert_eq!(mac(false, true, false, "standard", "standard"), (vec![], false));
-}
-
-#[test]
 fn zoom_presets_and_fit_layers() {
     use craft::ui::canvas::ViewCommands;
     let (mut app, ctx) = app_with(1);

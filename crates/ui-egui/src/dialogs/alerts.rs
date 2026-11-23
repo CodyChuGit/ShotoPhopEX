@@ -17,7 +17,7 @@ pub(crate) struct AlertOnce {
 }
 
 /// The title every alert of the app carries.
-const TITLE: &str = "PhotoCraft";
+const TITLE: &str = photocraft_engine::build_info::APP_NAME;
 
 /// Shows `alert` on the host. One alert is open at a time, and the same message opened again while it
 /// is up adds nothing: the open alert's id comes back.
@@ -33,7 +33,7 @@ pub fn show(app: &mut PhotocraftApp, alert: Alert<'static>) -> DialogId {
     host.open(dialog)
 }
 
-/// An alert titled "PhotoCraft" with `message` and OK; see [`show`] for the one-per-message rule.
+/// An alert titled with the app name with `message` and OK; see [`show`] for the one-per-message rule.
 pub fn alert(app: &mut PhotocraftApp, message: impl Into<String>) -> DialogId {
     show(app, Alert::new(TITLE, message.into()))
 }

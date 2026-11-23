@@ -37,6 +37,8 @@ pub(crate) enum DropTo {
     Slot(usize),
     /// Anywhere else (panels, a dialog, no document): opened like File › Open.
     Window,
+    /// The Generate panel (ShotoPhopEX): each file becomes a reference image.
+    References,
 }
 
 impl DropTo {
@@ -394,13 +396,19 @@ impl PhotocraftApp {
         // The log tells a drop that never reached the app (the operating system, or an elevated
         // process, refused it) from one the app routed (#10492). File names stay out of it.
         log::info!("{} file(s) dropped on the window: {to:?}", files.len());
+        // ShotoPhopEX: a drop the Generate panel's reference box takes, here or anywhere over it.
+        let over_references = self.cursor_pos(ctx).is_some_and(|p| self.ui.generate.drop_rect.is_some_and(|r| r.contains(p)));
+        if to == DropTo::References || (to == DropTo::Window && over_references) {
+            crate::generate_panel::add_dropped(self, files);
+            return;
+        }
         let frame = match to {
             DropTo::Canvas { at } => at.and_then(|p| crate::frame_tool::frame_at(self, p)),
-            DropTo::Slot(_) | DropTo::Window => None,
+            DropTo::Slot(_) | DropTo::Window | DropTo::References => None,
         };
         let mut slot = match to {
             DropTo::Slot(slot) => Some(slot),
-            DropTo::Canvas { .. } | DropTo::Window => None,
+            DropTo::Canvas { .. } | DropTo::Window | DropTo::References => None,
         };
         // A box still open from an earlier drop (or any Free Transform) is applied first (#4833):
         // the queue below places the next file only once no box is open, so a separate drop
@@ -460,6 +468,10 @@ impl PhotocraftApp {
     /// Where a web-build drop at `at` lands (the web build's own drop path until FW-264). Over a
     /// window or dialog it's not the canvas. On the canvas it carries the document point under `at`.
     pub(crate) fn drop_to(&self, ctx: &egui::Context, at: Option<egui::Pos2>) -> DropTo {
+        // ShotoPhopEX: the Generate panel's reference images take a drop over their box.
+        if at.is_some_and(|p| self.ui.generate.drop_rect.is_some_and(|r| r.contains(p))) {
+            return DropTo::References;
+        }
         let uncovered = at.is_some_and(|p| {
             ctx.layer_id_at(p).is_none_or(|l| l.order == egui::Order::Background)
                 && (self.ui.document_windows.arrangement != Some(craft::behavior::dock::Arrangement::Tile)

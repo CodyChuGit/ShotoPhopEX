@@ -33,7 +33,8 @@ use crate::canvas::tools::in_gesture;
 use crate::state::{ObjectFinderMode, Tool};
 
 /// Seconds the pointer must rest before an object is looked up.
-pub const DEBOUNCE: f64 = 0.12;
+// ShotoPhopEX: a longer rest, so crossing the picture does not tint everything the pointer passes.
+pub const DEBOUNCE: f64 = 0.45;
 
 /// What a lookup job sends: the object. Its hover mask is made on the UI thread, whose
 /// `texture_serials` number it.

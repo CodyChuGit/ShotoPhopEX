@@ -99,6 +99,12 @@ pub(super) fn rules() -> Vec<SettingRule> {
                 pairs.extend(crate::i18n::Lang::for_picker().into_iter().map(|l| (l.code().to_string(), l.name().to_string())));
                 let refs: Vec<(&str, &str)> = pairs.iter().map(|(id, label)| (id.as_str(), label.as_str())).collect();
                 tweak(&mut rules, &path, |r| r.choices(&refs));
+            } else if path == "integrations.memoryProfile" {
+                // ShotoPhopEX: the memory profiles by their labels ("24 GB GPU"), Auto first.
+                use photocraft_engine::memory_profile::Profile;
+                let mut pairs: Vec<(&str, &str)> = vec![("auto", "Auto")];
+                pairs.extend(Profile::ALL.iter().map(|p| (p.name(), p.label())));
+                tweak(&mut rules, &path, |r| r.choices(&pairs));
             } else if let Some(options) = prefs::choices(&path) {
                 let labelled: Vec<(&str, String)> = options.iter().map(|id| (*id, choice_label(id))).collect();
                 let refs: Vec<(&str, &str)> = labelled.iter().map(|(id, label)| (*id, label.as_str())).collect();
@@ -134,6 +140,8 @@ pub(super) fn rules() -> Vec<SettingRule> {
         "unitsAndRulers.showRulers",
         "performance.useGpu",
         "performance.gpuBackend",
+        // ShotoPhopEX: written at launch, for what Memory Profile's Auto picks.
+        "integrations.detectedMemoryProfile",
     ] {
         tweak(&mut rules, path, |r| r.hidden());
     }
@@ -226,6 +234,12 @@ fn label_override(key: &str) -> Option<&'static str> {
         "lowLatencyDrawing" => "Low-Latency Drawing (vsync off, applies at next launch)",
         "sizeLimitMb" => "Scratch Size Limit (MB, 0 = No Limit)",
         "gpuMemoryMb" => "GPU Memory (MB, 0 = Automatic)",
+        // ShotoPhopEX: AI Integrations keys whose spelled-out form reads badly.
+        "generativeTimeoutSecs" => "Generative timeout (seconds)",
+        "runtimePath" => "Native runtime folders",
+        "modelsPath" => "Models folder",
+        "warmUpAtLaunch" => "Warm up AI models at launch",
+        "fastDraft" => "Fast draft (faster, slightly softer detail)",
         _ => return None,
     })
 }

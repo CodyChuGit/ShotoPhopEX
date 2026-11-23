@@ -192,6 +192,7 @@ pub const PREVIEWED: &[&str] = &[
     "image.mode.duotone",
     "layer.matting.defringe",
     "layer.matting.colorDecontaminate",
+    "layer.matting.despill",
     "layer.layerStyle.scaleEffects",
     "type.warpText",
     // The preview shows the image through the chosen profile, as Photoshop's Preview does.
@@ -226,6 +227,15 @@ pub fn has_dialog(command: &str) -> bool {
                 | "edit.definePattern"
                 | "select.convertToShape"
                 | "layer.new.artboardFromLayers"
+                // ShotoPhopEX: the generative commands take a prompt and options, with no preview (they run as
+                // background jobs).
+                | "generate.fill"
+                | "generate.image"
+                | "generate.expand"
+                | "generate.edit"
+                | "generate.removeBackground"
+                | "generate.splitLayers"
+                | "select.byText"
         ))
         && photocraft_engine::commands::find(command).is_some_and(|c| !Param::parse_list(c.params).is_empty())
 }
@@ -280,9 +290,48 @@ fn document_derived(command: &str, key: &str) -> bool {
         || command == "view.proofSetup"
 }
 
+/// ShotoPhopEX: the model picker's page for a generative command's dialog.
+fn model_page(command: &str) -> Option<&'static str> {
+    Some(match command {
+        "generate.fill" => "fill",
+        "generate.image" => "image",
+        "generate.expand" => "expand",
+        "generate.edit" => "edit",
+        "generate.removeBackground" => "matte",
+        "select.byText" => "select",
+        _ => return None,
+    })
+}
+
+/// ShotoPhopEX: the Model row's entries of a generative command's dialog: Auto (empty, so `template` is left out and
+/// the preferences' default runs), then the page's templates by name, with the ones the computer cannot run marked.
+fn model_choices(app: &mut PhotocraftApp, command: &str) -> Option<Vec<(String, Label)>> {
+    let page = model_page(command)?;
+    crate::generate_panel::load_catalog(app);
+    let auto = match crate::generate_panel::auto_name(app, page) {
+        Some(name) => crate::i18n::fmt(tl!("Auto ({model})"), &[("model", &name)]),
+        None => tl!("Auto").to_string(),
+    };
+    let mut options = vec![(String::new(), Label::from(auto))];
+    for item in crate::generate_panel::picker_items(app, page, false) {
+        if !item.allowed {
+            continue;
+        }
+        let mut name = item.name.clone();
+        if item.installed == Some(false) {
+            name = crate::i18n::fmt(tl!("{model} (not downloaded)"), &[("model", &name)]);
+        } else if item.may_not_fit {
+            name = crate::i18n::fmt(tl!("{model} (may not fit)"), &[("model", &name)]);
+        }
+        options.push((item.id, Label::from(name)));
+    }
+    Some(options)
+}
+
 /// The rows of `command`'s dialog for the parameter notation `spec`: the framework's parse of it,
 /// then the app's rows (documents, angle dials, units, the rows only the open document can fill).
 pub(crate) fn params(app: &mut PhotocraftApp, command: &str, spec: &str) -> Vec<Param> {
+    let models = model_choices(app, command);
     let documents = document_keys(spec);
     let names: Vec<String> = app.session.documents().iter().map(|d| d.doc.name.clone()).collect();
     let allowed = (command == "edit.assignProfile").then(|| {
@@ -301,6 +350,12 @@ pub(crate) fn params(app: &mut PhotocraftApp, command: &str, spec: &str) -> Vec<
             ) && matches!(p.key.as_str(), "reference" | "path"))
         })
         .map(|mut p| {
+            // ShotoPhopEX: a generative command's model: Auto (the preferences' default), then the page's templates.
+            if p.key == "template"
+                && let Some(options) = &models
+            {
+                return Param::new(p.key, Label::from(tl!("Model").to_string()), ParamKind::choice(options.clone(), Some(String::new())));
+            }
             // Edit › Fade's Mode is the blend list with the modes the document can't fade with greyed (#13852).
             if command == super::fade_modes::COMMAND && p.key == "mode" {
                 return super::fade_modes::param(app, p.label);
@@ -685,6 +740,10 @@ pub(crate) fn command_params(command: &str, fields: &DialogFields) -> Value {
     if command == "file.export.artboardsToFiles" {
         crate::menus::view_cmds::strip_artboard_name_options(&mut map);
         crate::menus::view_cmds::nest_artboard_export_options(&mut map);
+    }
+    // ShotoPhopEX: the Model row's Auto leaves the template to the preferences.
+    if model_page(command).is_some() && map.get("template").and_then(Value::as_str).is_some_and(str::is_empty) {
+        map.remove("template");
     }
     // An emptied embedded LUT is no data: a stored empty `data` would be read over the chosen `lut`.
     if command == "image.adjustments.colorLookup" && map.get("data").and_then(Value::as_str).is_some_and(str::is_empty) {

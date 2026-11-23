@@ -15,13 +15,15 @@ fn card(id: &str) -> Card {
 
 /// An app with no document whose open dialog "picks" `pick` (a 32×24 picture), or has no file
 /// dialog at all.
-fn app(pick: Option<&str>) -> PhotocraftApp {
-    let answer = pick.map(|n| crate::FileDialogAnswer::Contents(n.to_string(), b"img".to_vec()));
+fn app(pick: Option<&str>) -> Box<PhotocraftApp> {
     let services = Services {
         import: Some(Box::new(|name: &str, _bytes: &[u8], _opts: &photocraft_io::ImportOptions| {
             Ok((Document::new(name, Size::new(32, 24), ColorMode::Rgb, SampleType::U8), Vec::new()))
         })),
-        file_dialog: pick.map(|_| crate::file_dialog::fake(vec![answer]).0),
+        files: pick.map(|n| {
+            let answer = craft::host::Picked::Contents(vec![(n.to_string(), b"img".to_vec())]);
+            std::sync::Arc::new(craft::host::ScriptedFiles::answering([answer])) as std::sync::Arc<dyn craft::host::Files>
+        }),
         ..Services::default()
     };
     let mut s = photocraft_engine::Session::new();
@@ -29,7 +31,7 @@ fn app(pick: Option<&str>) -> PhotocraftApp {
     // Angles window must not reach a real model server from a test.
     s.edit_prefs(|p| p.integrations.models_path = "/nonexistent/photocraft-test-models".into());
     let mut app = PhotocraftApp::new(s, services);
-    app.ui.panels.generate = false;
+    let _ = crate::panel_docking::show_panel(&mut app, "generate", Some(false));
     app
 }
 
@@ -61,7 +63,7 @@ fn with_no_models_every_card_opens_get_ai_models_first() {
         a.ui.get_models.open = false;
         assert_eq!(activate(&mut a, &ctx, &card(id)).unwrap(), json!({"getModels": true}), "{id}");
         assert!(a.ui.get_models.open, "{id}");
-        assert!(a.ui.hub.pending.is_none() && !a.ui.panels.generate, "{id}: nothing else started");
+        assert!(a.ui.hub.pending.is_none() && !crate::panel_docking::is_front(&a, "generate"), "{id}: nothing else started");
     }
 }
 
@@ -71,7 +73,7 @@ fn image_opens_the_panel_with_nothing_open_and_edit_cards_ask_for_a_file_first()
     // Create › Image: the panel in Image mode, a new document as the result, keyboard in the prompt.
     let mut a = app(None);
     activate(&mut a, &ctx, &card("image")).unwrap();
-    assert!(a.ui.panels.generate);
+    assert!(crate::panel_docking::is_front(&a, "generate"));
     assert_eq!((a.ui.generate.mode.as_str(), a.ui.generate.into.as_str(), a.ui.generate.focus), ("image", "document", true));
     // Edit › Fill with nothing open and the dialog cancelled: it says so and waits for nothing.
     activate(&mut a, &ctx, &card("fill")).unwrap();
@@ -83,13 +85,13 @@ fn image_opens_the_panel_with_nothing_open_and_edit_cards_ask_for_a_file_first()
     assert_eq!(a.ui.hub.pending, Some("fill"));
     tick(&mut a, &ctx);
     assert_eq!(a.ui.hub.pending, Some("fill"), "still waiting for the dialog");
-    a.poll_file_dialog(&ctx, None);
+    a.poll_file_dialog();
     tick(&mut a, &ctx);
     assert_eq!(a.session.active().map(|d| d.doc.name.as_str()), Some("boat.png"));
     assert_eq!((a.ui.generate.mode.as_str(), a.ui.generative_bar.mode.as_str(), a.ui.hub.pending), ("fill", "fill", None));
     // With a picture open a command card opens its dialog.
     activate(&mut a, &ctx, &card("selectByText")).unwrap();
-    assert_eq!(a.ui.dialogs.len(), 1, "Select by Text's dialog");
+    assert!(a.framework.dialogs.is_open::<craft::ui::patterns::form_dialogs::HostedParamDialog>(), "Select by Text's dialog");
     // Angles opens its orbit window.
     activate(&mut a, &ctx, &card("angles")).unwrap();
     assert!(a.ui.angles.open);
@@ -102,7 +104,7 @@ fn help_and_the_home_screen_show_the_cards() {
     crate::menus::invoke(&mut a, &ctx, "help.generativeFeatures", json!({})).unwrap();
     assert_eq!(inspect(&a, &ctx)["open"], true);
     let mut h = Harness::builder().with_size(vec2(1280.0, 900.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
             }
@@ -113,10 +115,10 @@ fn help_and_the_home_screen_show_the_cards() {
     );
     PhotocraftApp::setup_context(&h.ctx, Default::default());
     h.run_steps(4);
-    // The window and the Home screen each show every card.
+    // The window and the Home screen each show every card (the Home screen's as its template tiles).
     assert_eq!(h.get_all_by_label("Remove Background").count(), 2);
     let v = inspect(h.state(), &h.ctx);
-    assert_eq!(v["cards"][4]["rects"].as_array().map(Vec::len), Some(2), "{v}");
+    assert_eq!(v["cards"][4]["rects"].as_array().map(Vec::len), Some(1), "the window's card: {v}");
     h.get_by_label("Close").click();
     h.run_steps(3);
     assert!(!h.state().ui.hub.open);
@@ -124,7 +126,7 @@ fn help_and_the_home_screen_show_the_cards() {
     // A Home card: Image opens the panel.
     h.get_by_label("Image").click();
     h.run_steps(3);
-    assert_eq!((h.state().ui.panels.generate, h.state().ui.generate.mode.as_str()), (true, "image"));
+    assert_eq!((crate::panel_docking::is_front(h.state(), "generate"), h.state().ui.generate.mode.as_str()), (true, "image"));
 }
 
 #[test]
@@ -132,5 +134,5 @@ fn window_generate_puts_the_keyboard_in_the_prompt() {
     let mut a = app(None);
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut a, &ctx, "window.toggle.generate", json!({})).unwrap();
-    assert!(a.ui.panels.generate && a.ui.generate.focus);
+    assert!(crate::panel_docking::is_front(&a, "generate") && a.ui.generate.focus);
 }

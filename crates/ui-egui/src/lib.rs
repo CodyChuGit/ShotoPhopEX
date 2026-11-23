@@ -34,6 +34,22 @@ macro_rules! tl {
     };
 }
 mod brush_mode_menu;
+// ShotoPhopEX: the generative features (top-level modules, outside upstream's folders).
+pub mod alerts;
+pub mod angles_ui;
+pub mod app_icon_ui;
+pub mod engine_ui;
+pub mod gen_preview;
+pub mod generate_hub;
+pub mod generate_panel;
+pub mod generations_panel;
+pub mod generative_bar;
+pub mod get_models_ui;
+pub mod memory_profile_ui;
+pub mod model_picker;
+pub mod object_select;
+pub mod variations_strip;
+pub mod widgets;
 pub mod canvas;
 mod channel_titles;
 #[cfg(not(target_arch = "wasm32"))]

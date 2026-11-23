@@ -84,10 +84,11 @@ pub fn about_info(_app: &PhotocraftApp) -> AboutInfo {
 
 fn about_info_for(identity: crate::os_window::LaunchIdentity, version: String, commit: Option<&str>) -> AboutInfo {
     let nightly = identity == crate::os_window::LaunchIdentity::NightlyV1;
+    // ShotoPhopEX: its GitHub repository and the upstream project, named as written (`tl!` would
+    // brand it); no ArtCraft website or Discord.
     let mut links = vec![
-        AboutLink::new(tl!("PhotoCraft website"), crate::links::APP_PAGE),
         AboutLink::new(tl!("GitHub"), crate::links::GITHUB),
-        AboutLink::new(tl!("ArtCraft"), crate::links::ARTCRAFT_WEBSITE),
+        AboutLink::new(photocraft_engine::build_info::upstream_base(), crate::links::UPSTREAM),
     ];
     if nightly {
         // Opens only after a user click. No diagnostics, paths or documents are sent automatically.
@@ -95,7 +96,6 @@ fn about_info_for(identity: crate::os_window::LaunchIdentity, version: String, c
     }
     let version = if nightly { nightly_about_version(&version, commit) } else { version };
     AboutInfo::new(crate::os_window::name_for(identity), tl!("PhotoCraft — an open-source, native image editor written in Rust."), version)
-        .community(AboutLink::new(tl!("Join us on Discord"), crate::links::DISCORD))
         .links(links)
         .built_with("egui · wgpu · photocraft-engine")
 }
@@ -137,14 +137,12 @@ mod nightly_about_tests {
     #[test]
     fn stable_about_preserves_its_name_version_and_existing_links() {
         let info = about_info_for(LaunchIdentity::Stable, "0.23.1 (dev build)".into(), None);
-        let expected = AboutInfo::new("PhotoCraft", "", "0.23.1 (dev build)".to_owned());
+        let expected = AboutInfo::new(photocraft_engine::build_info::APP_NAME, "", "0.23.1 (dev build)".to_owned());
         assert_eq!(info.app_name, expected.app_name);
         assert_eq!(info.version, expected.version);
-        assert_eq!(
-            info.links.iter().map(|link| link.url.as_str()).collect::<Vec<_>>(),
-            [crate::links::APP_PAGE, crate::links::GITHUB, crate::links::ARTCRAFT_WEBSITE]
-        );
-        assert_eq!(info.community.unwrap().url, crate::links::DISCORD);
+        // ShotoPhopEX: its repository and the upstream project; no ArtCraft website or Discord.
+        assert_eq!(info.links.iter().map(|link| link.url.as_str()).collect::<Vec<_>>(), [crate::links::GITHUB, crate::links::UPSTREAM]);
+        assert!(info.community.is_none());
     }
 
     #[test]
@@ -155,9 +153,9 @@ mod nightly_about_tests {
         let expected = AboutInfo::new("PhotoCraft Nightly", "", nightly_about_version(version, Some(commit)));
         assert_eq!(info.app_name, expected.app_name);
         assert_eq!(info.version, expected.version);
-        assert_eq!(info.links.len(), 4);
+        assert_eq!(info.links.len(), 3);
         assert_eq!(info.links.last().unwrap().url, crate::links::ISSUES);
-        assert_eq!(info.community.unwrap().url, crate::links::DISCORD);
+        assert!(info.community.is_none());
     }
 
     #[test]

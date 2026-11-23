@@ -9,7 +9,7 @@ use serde_json::json;
 use super::*;
 
 /// A 256×192 document with a selection, talking to `url`; runs inline unless `background`.
-fn app(url: &str) -> PhotocraftApp {
+fn app(url: &str) -> Box<PhotocraftApp> {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 256, "height": 192})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
@@ -25,9 +25,9 @@ fn app(url: &str) -> PhotocraftApp {
 }
 
 /// Draw the strip over a 900×600 canvas.
-fn harness(app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
+fn harness(app: Box<PhotocraftApp>) -> Harness<'static, Box<PhotocraftApp>> {
     let mut h = Harness::builder().with_size(vec2(900.0, 600.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
             }
@@ -41,11 +41,11 @@ fn harness(app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
     h
 }
 
-fn layers(h: &Harness<'_, PhotocraftApp>) -> usize {
+fn layers(h: &Harness<'_, Box<PhotocraftApp>>) -> usize {
     h.state().session.active().unwrap().doc.layers.len()
 }
 
-fn steps(h: &Harness<'_, PhotocraftApp>) -> usize {
+fn steps(h: &Harness<'_, Box<PhotocraftApp>>) -> usize {
     h.state().session.active().unwrap().history.past_len()
 }
 
@@ -137,7 +137,7 @@ fn a_running_job_shows_placeholders_then_its_tiles_and_a_failed_one_offers_retry
 }
 
 /// The strip's outer rect as egui laid it out last frame.
-fn strip_rect(h: &Harness<'_, PhotocraftApp>) -> egui::Rect {
+fn strip_rect(h: &Harness<'_, Box<PhotocraftApp>>) -> egui::Rect {
     h.ctx.memory(|m| m.area_rect(egui::Id::unique("variations-strip"))).expect("the strip is on screen")
 }
 

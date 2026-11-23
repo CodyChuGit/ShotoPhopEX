@@ -268,6 +268,8 @@ impl eframe::App for PhotocraftApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.close_control();
+        // ShotoPhopEX: the app-managed engine stops with the app when the preference says so.
+        crate::engine_ui::on_quit(self);
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {

@@ -73,7 +73,7 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=delayimp.lib");
     }
     let mut res = winresource::WindowsResource::new();
-    res.set_icon("../../assets/app-icon/sp/sp.ico")
+    res.set_icon(build_channel::windows_icon_path(nightly))
         .set("ProductName", "ShotoPhopEX")
         .set("FileDescription", "ShotoPhopEX image editor")
         .set("CompanyName", "ShotoPhopEX contributors")

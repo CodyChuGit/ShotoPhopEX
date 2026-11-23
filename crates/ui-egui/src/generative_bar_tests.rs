@@ -5,10 +5,10 @@ use photocraft_genai::fake::FakeNative;
 use serde_json::json;
 
 use super::*;
-use crate::control::{ControlRequest, Outcome, handle};
+use crate::control::{ControlRequest, Reply, handle};
 
 /// A 64×48 document with one empty layer, talking to `url`; no background jobs (inline runs).
-fn app(url: &str) -> PhotocraftApp {
+fn app(url: &str) -> Box<PhotocraftApp> {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
@@ -25,7 +25,7 @@ fn app(url: &str) -> PhotocraftApp {
 fn control(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: Value) -> Value {
     let (req, _rx) = ControlRequest::new(method, params);
     match handle(app, ctx, &req) {
-        Outcome::Done(v) => v,
+        Reply::Done(v) => v,
         _ => panic!("{method}: the reply was deferred"),
     }
 }
@@ -50,7 +50,7 @@ fn menu_opens_the_bar(app: &mut PhotocraftApp, ctx: &egui::Context, fake: &FakeN
     let r = crate::menus::invoke(app, ctx, COMMAND, json!({})).unwrap();
     assert_eq!(r["generativeBar"], true);
     assert!(app.ui.generative_bar.open && app.ui.generative_bar.focus);
-    assert!(app.ui.dialogs.is_empty(), "the bar replaces the generated dialog");
+    assert!(app.framework.dialogs.is_empty(), "the bar replaces the generated dialog");
     let ids: Vec<&str> = app.ui.generative_bar.templates.iter().map(|t| t.id.as_str()).collect();
     assert!(ids.contains(&"qwen-edit-2511/fill") && ids.contains(&"qwen-2.1/fill"), "{ids:?}");
     assert!(app.ui.generative_bar.templates.iter().find(|t| t.id == "qwen-2.1/fill").unwrap().allowed, "a research licence never gates");
@@ -182,20 +182,20 @@ fn the_preference_hides_the_bar_and_the_menu_falls_back_to_the_dialog() {
     show(&mut app, &ctx);
     assert!(!app.ui.generative_bar.open, "no bar when the preference is off");
     let r = crate::menus::invoke(&mut app, &ctx, COMMAND, json!({})).unwrap();
-    assert!(r["dialog"].is_u64(), "{r}");
-    assert_eq!(app.ui.dialogs.len(), 1);
+    assert!(!r["dialog"].is_null(), "{r}");
+    assert_eq!(app.framework.dialogs.open_dialogs().len(), 1);
     // With params, automation runs the engine directly either way.
-    app.ui.close_dialog(r["dialog"].as_u64().unwrap());
+    assert!(app.framework.dialogs.cancel::<craft::ui::patterns::form_dialogs::HostedParamDialog>(&ctx));
     app.session.edit_prefs(|p| p.integrations.show_generative_bar = "auto".into());
     let r = crate::menus::invoke(&mut app, &ctx, COMMAND, json!({"prompt": "x"})).unwrap();
     assert!(r["layer"].is_u64(), "{r}");
     assert!(!app.ui.generative_bar.open);
 }
 
-fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
+fn harness(mut app: Box<PhotocraftApp>) -> Harness<'static, Box<PhotocraftApp>> {
     app.sync_views();
     let mut h = Harness::builder().with_size(vec2(1000.0, 700.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             let ctx = ui.ctx().clone();
             if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
@@ -205,12 +205,12 @@ fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
         },
         app,
     );
-    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
+    PhotocraftApp::setup_context(&h.ctx, Default::default());
     h.run_steps(4);
     h
 }
 
-fn bar_rect(h: &Harness<'static, PhotocraftApp>) -> Option<egui::Rect> {
+fn bar_rect(h: &Harness<'static, Box<PhotocraftApp>>) -> Option<egui::Rect> {
     h.ctx.memory(|m| m.area_rect(egui::Id::unique(AREA_ID)))
 }
 
@@ -226,9 +226,9 @@ fn the_bar_appears_under_a_new_selection_inside_the_canvas_and_goes_with_it() {
     assert!(!h.state().ui.generative_bar.templates.is_empty(), "the picker has its templates without a menu click");
     let bar = bar_rect(&h).expect("the bar is drawn");
     let app = h.state();
-    let xf = crate::canvas::ViewXform::active(app).unwrap();
-    let sel = xf.doc_rect(app.session.active().unwrap().doc.selection.as_ref().unwrap().content_bounds());
-    let canvas = crate::rulers::content_rect(app, app.last_canvas_rect);
+    let xf = crate::canvas::document_display::active_view(app).unwrap();
+    let sel = crate::gen_preview::screen_rect(&xf, app.session.active().unwrap().doc.selection.as_ref().unwrap().content_bounds());
+    let canvas = xf.rect;
     assert!(bar.top() >= sel.bottom(), "below the selection: bar {bar:?}, selection {sel:?}");
     assert!((bar.center().x - sel.center().x).abs() < 2.0, "centred on it: bar {bar:?}, selection {sel:?}");
     assert!(canvas.contains_rect(bar), "inside the canvas: bar {bar:?}, canvas {canvas:?}");
@@ -244,7 +244,7 @@ fn the_bar_appears_under_a_new_selection_inside_the_canvas_and_goes_with_it() {
     assert!(h.state().ui.generative_bar.open, "a new selection reopens it");
     let bar = bar_rect(&h).expect("drawn again");
     let app = h.state();
-    let canvas = crate::rulers::content_rect(app, app.last_canvas_rect);
+    let canvas = crate::canvas::document_display::active_view(app).unwrap().rect;
     assert!(canvas.contains_rect(bar), "a selection filling the view keeps the bar on the canvas: {bar:?} in {canvas:?}");
 }
 

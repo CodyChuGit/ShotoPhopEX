@@ -30,7 +30,10 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut PhotocraftApp, rect: egui::Rect,
     }
     show_clone_overlay(ui, app, at, rect);
     show_smoothing_string(ui, app, rect);
-    crate::object_finder::show(ui, app, at);
+    // ShotoPhopEX: with SAM 3.1 answering, its finder (`object_select`) tints the object instead.
+    if !crate::object_select::known_online(app) {
+        crate::object_finder::show(ui, app, at);
+    }
     if let Some(at) = at {
         let shift = craft::ui::runtime::pointer::frame(ui.ctx()).mods.shift;
         let tool = app.ui.tool;

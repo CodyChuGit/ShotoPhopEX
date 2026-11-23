@@ -4,7 +4,7 @@
 use craft::behavior::IconId;
 use craft::ui::contract::Bind;
 use craft::ui::runtime::env::Label;
-use craft::ui::shell::{StartAction, StartLink, StartScreen};
+use craft::ui::shell::{StartAction, StartLink, StartScreen, Template};
 
 use super::PhotocraftApp;
 
@@ -26,11 +26,14 @@ pub(super) fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let (mut view, mut sort) = (app.ui.chrome.home_recent_view, app.ui.chrome.home_recent_sort);
     let links = links();
     let footer = footer_links();
+    // ShotoPhopEX: the Generate hub's cards as the page's templates (not on the web, which has no generative commands).
+    let hub = hub_templates();
     let actions = {
         let source = crate::home_recent_ui::source(app, &ctx);
         StartScreen::new(Bind::bound(&mut view), Bind::bound(&mut sort), &recent)
             .thumbnails(&thumbs, &source)
             .links(&links[..])
+            .templates(&hub[..])
             .home_layout(Label::from(crate::native_menu::APP_NAME), &footer[..])
             .max_recent(HOME_RECENT)
             .card_zoom(HOME_CARD_ZOOM)
@@ -47,6 +50,10 @@ pub(super) fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             continue;
         }
         if crate::home_recent_ui::act(app, &action) {
+            continue;
+        }
+        if let StartAction::UseTemplate(id) = &action {
+            use_hub_card(app, &ctx, id);
             continue;
         }
         if action == StartAction::New {
@@ -67,23 +74,35 @@ fn reveal(app: &mut PhotocraftApp, path: &std::path::Path) {
     let _ = (app, path);
 }
 
-/// The navigation of the Home rail: Home (the page shown, so selected), which leaves Home for the open documents, then
-/// Learn.
-fn links() -> [StartLink; 2] {
+/// The navigation of the Home rail: Home (the page shown, so selected), which leaves Home for the open documents.
+fn links() -> [StartLink; 1] {
+    [StartLink::command(tl!("Home"), Some(IconId::new("home")), "window.home").selected(true)]
+}
+
+/// The project links, at the bottom of the Home rail. ShotoPhopEX has no website or Discord of its own: its GitHub
+/// repository and the upstream project. The upstream name is a placeholder, so branding leaves it as PhotoCraft.
+fn footer_links() -> [StartLink; 2] {
+    let based_on = crate::i18n::fmt(tl!("Based on {upstream}"), &[("upstream", photocraft_engine::build_info::UPSTREAM_NAME)]);
     [
-        StartLink::command(tl!("Home"), Some(IconId::new("home")), "window.home").selected(true),
-        StartLink::url(tl!("Learn"), Some(IconId::new("sparkles")), crate::links::TUTORIALS),
+        StartLink::url(tl!("GitHub"), Some(IconId::new("link_layers")), crate::links::GITHUB),
+        StartLink::url(based_on, Some(IconId::new("link")), crate::links::UPSTREAM),
     ]
 }
 
-/// The community pages, at the bottom of the Home rail.
-fn footer_links() -> [StartLink; 3] {
-    [
-        StartLink::url(tl!("Website"), Some(IconId::new("link")), crate::links::APP_PAGE),
-        // A speech bubble and a chain link, as the rail showed before the framework move (#15449).
-        StartLink::url(tl!("Discord"), Some(IconId::new("note")), crate::links::DISCORD),
-        StartLink::url(tl!("GitHub"), Some(IconId::new("link_layers")), crate::links::GITHUB),
-    ]
+/// The Generate hub's cards as start-screen templates: the card id, its label and its sentence. None on the web.
+fn hub_templates() -> Vec<Template> {
+    if cfg!(target_arch = "wasm32") {
+        return Vec::new();
+    }
+    crate::generate_hub::CARDS.iter().map(|c| Template::new(c.id, tl!(c.label), tl!(c.sentence))).collect()
+}
+
+/// Runs the hub card a template click chose; a refusal goes to the notices, as the hub window's do.
+fn use_hub_card(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str) {
+    let Some(card) = crate::generate_hub::CARDS.iter().find(|c| c.id == id) else { return };
+    if let Err(e) = crate::generate_hub::activate(app, ctx, card) {
+        crate::notices::error(app, e);
+    }
 }
 
 /// Shows Home over the open documents, or leaves it for them: the rule of the options bar's Home button, the Home

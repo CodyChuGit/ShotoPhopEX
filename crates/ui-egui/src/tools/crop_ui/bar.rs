@@ -3,6 +3,8 @@
 
 use craft::draw::ui::crop::{CropBar, CropPresetList, CropRatioChange};
 use craft::ui::dialog::{Alert, HostedAlert};
+use craft::ui::choice::Checkbox;
+use craft::ui::contract::{Bind, Props as _, Show as _};
 use craft::ui::runtime::env::Env;
 
 use super::{document, handle_event, refit, reset, toggle_straighten, words};
@@ -27,6 +29,14 @@ pub(crate) fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         .can_reset(modified)
         .help(words.fill_help.clone())
         .show(ui);
+    // ShotoPhopEX: a frame beyond the canvas is painted by the model (`generate.expand`).
+    let generative = Checkbox::new(Bind::given(app.ui.tool_options.crop_generative))
+        .label(tl!("Generative Expand").to_owned())
+        .tooltip(tl!("Paint the part of the frame beyond the canvas with the generative model (needs the native worker)").to_owned())
+        .show(ui);
+    if let Some(on) = generative.value().copied() {
+        app.ui.tool_options.crop_generative = on;
+    }
     if out.settings_changed || out.ratio.is_some() || out.selection {
         app.ui.tool_options.crop = settings.clone();
     }

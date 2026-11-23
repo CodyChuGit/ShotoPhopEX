@@ -96,6 +96,9 @@ const CHARACTER_HEIGHTS: DockHeights = DockHeights::new(240.0).compact(130.0).fi
 const NAVIGATOR_HEIGHTS: DockHeights = DockHeights::new(180.0).compact(110.0).fill(LEAST);
 const HISTORY_HEIGHTS: DockHeights = DockHeights::new(170.0).compact(100.0).fill(LEAST);
 const LAYERS_HEIGHTS: DockHeights = DockHeights::new(290.0).compact(170.0).fill(470.0);
+// ShotoPhopEX: one row (mode, prompt, Generate) at the least; the feed shows its header and a sliver.
+const GENERATE_HEIGHTS: DockHeights = DockHeights::new(300.0).compact(80.0).fill(LEAST);
+const GENERATIONS_HEIGHTS: DockHeights = DockHeights::new(260.0).compact(80.0).fill(LEAST);
 const BRUSHES_HEIGHTS: DockHeights = DockHeights::new(170.0).compact(120.0).fill(70.0);
 
 /// Every registered panel: the docked panels in their groups' one tab order, top to bottom, then the panels that
@@ -118,6 +121,12 @@ pub(crate) static PANELS: &[PanelEntry] = &[
     },
     panel("gradients", || tl!("Gradients").to_string(), "blend", LEAST, super::preset_panels::gradients_panel),
     panel("patterns", || tl!("Patterns").to_string(), "grid", LEAST, super::preset_panels::patterns_panel),
+    // ShotoPhopEX: the prompt box and the feed of generative jobs (`generate_panel`, `generations_panel`).
+    PanelEntry { heights: Some(GENERATE_HEIGHTS), ..panel("generate", || tl!("Generate").to_string(), "wand_sparkles", 80.0, crate::generate_panel::panel) },
+    PanelEntry {
+        heights: Some(GENERATIONS_HEIGHTS),
+        ..panel("generations", || tl!("Generations").to_string(), "image", 80.0, crate::generations_panel::panel)
+    },
     PanelEntry { heights: Some(PROPERTIES_HEIGHTS), ..panel("properties", || tl!("Properties").to_string(), "adjustments", LEAST, super::properties::panel) },
     panel("adjustments", || tl!("Adjustments").to_string(), "contrast", LEAST, |app, ui| scrolled(app, ui, super::properties::adjustments::panel)),
     PanelEntry {
@@ -299,6 +308,9 @@ pub(crate) fn run_fired(app: &mut PhotocraftApp, ctx: &egui::Context, command: &
 pub(crate) const LEGACY_GROUPS: &[(&str, &[&str])] = &[
     ("color", &["color", "swatches", "gradients", "patterns"]),
     ("properties", &["properties", "adjustments"]),
+    // ShotoPhopEX's generative groups, open below Properties by default.
+    ("generate", &["generate"]),
+    ("generations", &["generations"]),
     ("character", &["character", "paragraph"]),
     ("navigator", &["navigator", "histogram", "info"]),
     ("history", &["history", "actions", "layerComps"]),
@@ -325,7 +337,7 @@ fn float_rect(id: &str, size: [f32; 2]) -> Rect {
 }
 
 /// The old groups the default expanded column holds, top to bottom; the rest are the column of icons.
-const EXPANDED_GROUPS: [&str; 4] = ["color", "properties", "character", "layers"];
+const EXPANDED_GROUPS: [&str; 6] = ["color", "properties", "generate", "generations", "character", "layers"];
 
 /// The width of the Start dock's split: the toolbar's dock takes its column's own width.
 const TOOLBAR_DOCK_WIDTH: f32 = 60.0;
@@ -369,7 +381,7 @@ fn preset_panels(name: &str) -> Vec<&'static str> {
         // Color includes Swatches; the Navigator keeps the pixel canvas easy to inspect.
         "Pixel Art" => &["color", "navigator", "layers"],
         "Motion" => &["properties", "layers"],
-        _ => &["color", "properties", "layers", "navigator", "history", "brushes"],
+        _ => &["color", "properties", "generate", "generations", "layers", "navigator", "history", "brushes"],
     };
     let mut shown: Vec<&'static str> = vec![TOOLBAR];
     shown.extend(LEGACY_GROUPS.iter().filter(|(key, _)| groups.contains(key)).flat_map(|(_, panels)| panels.iter().copied()));

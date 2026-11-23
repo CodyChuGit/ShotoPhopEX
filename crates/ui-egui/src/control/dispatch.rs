@@ -345,6 +345,10 @@ struct UiSet {
     brush: BrushSet,
     /// The workspace edits of `panels`, `dockTabs`, `dock` and `dockWidth`, run as one atomic list.
     workspace: Vec<Action<String>>,
+    /// ShotoPhopEX: `toolOptions`, the options bar's per-tool settings merged field by field.
+    tool_options: Option<crate::state::ToolOptions>,
+    /// ShotoPhopEX: the request, for the generative UI's own fields.
+    params: Value,
 }
 
 impl UiSet {
@@ -366,7 +370,8 @@ impl UiSet {
         }
         // The whole list is checked on a clone of the workspace, so `apply` cannot refuse it.
         crate::panel_docking::check(app, &workspace)?;
-        Ok(Self { tools, crop, panels, view, theme, brush, workspace })
+        let tool_options = tool_options_param(app, p)?;
+        Ok(Self { tools, crop, panels, view, theme, brush, workspace, tool_options, params: p.clone() })
     }
 
     /// Apply (nothing but the frame selection and the final `brushSize` command can fail; the workspace list was checked).
@@ -384,8 +389,32 @@ impl UiSet {
         self.panels.apply_color(app);
         self.view.apply(app);
         self.brush.apply(app)?;
+        if let Some(v) = self.tool_options.take() {
+            app.ui.tool_options = v;
+        }
+        // ShotoPhopEX: the generative task bar, panels and dialog.
+        let p = &self.params;
+        crate::generative_bar::set(app, p)?;
+        crate::generations_panel::set(app, p)?;
+        crate::generate_panel::set(app, p)?;
+        crate::angles_ui::set(app, p)?;
         Ok(note.map_or(Value::Null, |note| json!({"note": note})))
     }
+}
+
+/// ShotoPhopEX: `toolOptions`, the named fields of `ToolOptions`, spelled as ui.inspect shows them.
+fn tool_options_param(app: &PhotocraftApp, p: &Value) -> std::result::Result<Option<crate::state::ToolOptions>, String> {
+    let Some(opts) = p.get("toolOptions").filter(|v| !v.is_null()) else { return Ok(None) };
+    let n = opts.as_object().ok_or("toolOptions must be an object")?;
+    let mut cur = serde_json::to_value(&app.ui.tool_options).unwrap_or_default();
+    let c = cur.as_object_mut().ok_or("tool options are not inspectable")?;
+    if let Some(k) = n.keys().find(|k| !c.contains_key(k.as_str())) {
+        return Err(format!("toolOptions has no field `{k}`"));
+    }
+    for (k, v) in n {
+        c.insert(k.clone(), v.clone());
+    }
+    serde_json::from_value(cur).map(Some).map_err(|e| format!("toolOptions: {e}"))
 }
 
 /// `theme`: a suite theme id, shown in the mode on screen, or a name PhotoCraft took before theme

@@ -155,7 +155,7 @@ pub fn preview_release(app: &mut PhotocraftApp, version: &str, url: &str) {
     updater.offer(craft::update::Release {
         tag: format!("v{version}"),
         version: craft::update::parse_version(version),
-        name: format!("PhotoCraft {version}"),
+        name: format!("{} {version}", photocraft_engine::build_info::APP_NAME),
         html_url: url.into(),
         ..Default::default()
     });
@@ -172,6 +172,35 @@ mod tests {
 
     fn app() -> Box<PhotocraftApp> {
         PhotocraftApp::new(Session::new(), Services::default())
+    }
+
+    /// ShotoPhopEX: release files are named shotophopex-* since 0.1.2 and photocraft-* before; the update check
+    /// finds both, and never a file of another app.
+    #[test]
+    fn the_update_check_finds_shotophopex_and_older_photocraft_release_files() {
+        use craft::update::{Arch, Asset, Os, PackageKind, Platform, Release as Published, pick_asset};
+        let stems: Vec<&str> = crate::UPDATE_APP.stems().collect();
+        let release = |names: &[&str]| Published {
+            assets: names.iter().map(|n| Asset { name: (*n).into(), size: 1, url: format!("https://x/{n}"), sha256: None }).collect(),
+            ..Default::default()
+        };
+        let pick = |r: &Published, os, arch, kind| pick_asset(r, &stems, Platform { os, arch }, &[kind]).map(|(a, _)| a.name.clone());
+        let new = release(&[
+            "shotophopex-0.1.2-windows-x64.msi",
+            "shotophopex-0.1.2-windows-x64-portable.zip",
+            "shotophopex-0.1.2-windows-x64.spdx.json",
+            "shotophopex-0.1.2-linux-x86_64.tar.gz",
+            "shotophopex-0.1.2-macos-aarch64.dmg",
+            "shotophopex-cli-0.1.2-macos-aarch64.zip",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(pick(&new, Os::Windows, Arch::X64, PackageKind::Msi).as_deref(), Some("shotophopex-0.1.2-windows-x64.msi"));
+        assert_eq!(pick(&new, Os::Windows, Arch::X64, PackageKind::PortableZip).as_deref(), Some("shotophopex-0.1.2-windows-x64-portable.zip"));
+        assert_eq!(pick(&new, Os::Linux, Arch::X64, PackageKind::TarGz).as_deref(), Some("shotophopex-0.1.2-linux-x86_64.tar.gz"));
+        assert_eq!(pick(&new, Os::MacOs, Arch::Arm64, PackageKind::Dmg).as_deref(), Some("shotophopex-0.1.2-macos-aarch64.dmg"));
+        let old = release(&["photocraft-0.1.1-windows-x64.msi", "photocraft-0.1.1-macos-aarch64.dmg"]);
+        assert_eq!(pick(&old, Os::Windows, Arch::X64, PackageKind::Msi).as_deref(), Some("photocraft-0.1.1-windows-x64.msi"));
+        assert_eq!(pick(&old, Os::MacOs, Arch::Arm64, PackageKind::Dmg).as_deref(), Some("photocraft-0.1.1-macos-aarch64.dmg"));
     }
 
     #[test]

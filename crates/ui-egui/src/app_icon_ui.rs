@@ -268,14 +268,11 @@ fn apply(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let custom = active(app).and_then(|i| base64::engine::general_purpose::STANDARD.decode(&i.png).ok()).and_then(|png| rgba(&png).ok());
     match custom {
         Some((w, h, px)) => {
-            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
-            let options = TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
-            let tex = ctx.load_texture("photocraft-brand-mark-custom", image, options);
-            ctx.data_mut(|d| d.insert_temp(crate::brand::custom_id(), tex));
+            crate::panels::brand::set_custom(ctx, Some(egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px)));
             ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(egui::IconData { rgba: px, width: w, height: h }))));
         }
         None => {
-            ctx.data_mut(|d| d.remove::<TextureHandle>(crate::brand::custom_id()));
+            crate::panels::brand::set_custom(ctx, None);
             if !first && let Ok((w, h, px)) = rgba(BUILT_IN_256) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(egui::IconData { rgba: px, width: w, height: h }))));
             }

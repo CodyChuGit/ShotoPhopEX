@@ -412,6 +412,8 @@ fn show_param(params: &Value) -> Result<Option<bool>, String> {
 /// [`show_panel`] with the protocol's answer.
 fn toggled(app: &mut PhotocraftApp, panel: &str, show: Option<bool>) -> Result<Value, String> {
     let shown = show_panel(app, panel, show)?;
+    // ShotoPhopEX: Window › Generate shown: the keyboard goes to its prompt.
+    app.ui.generate.focus |= panel == "generate" && shown;
     Ok(json!({"panel": panel, "shown": shown, "layout": app.ui.docking.layout()}))
 }
 
