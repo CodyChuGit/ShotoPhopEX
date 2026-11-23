@@ -13,8 +13,17 @@
 /// prompt shows both, and an AppImage's menu entry gets the icon.
 #[cfg(not(target_arch = "wasm32"))]
 pub const UPDATE_APP: craft::update::app::App = craft::update::app::App {
-    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.photocraft.png")),
-    accent: Some([0x2f, 0x7b, 0xf5]),
+    // Fork: check and download ShotoPhopEX's own releases, never upstream PhotoCraft's (whose
+    // installer would replace this build). The id stays `photocraft` (the exe, the MSI's
+    // registration, install folders); release files are named `shotophopex-<ver>-<os>-<arch>`
+    // since 0.1.2, so that is listed as a stem too, and the update check finds either name.
+    name: "ShotoPhopEX",
+    repo: "CodyChuGit/ShotoPhopEX",
+    developer: "CodyChuGit",
+    former_ids: &["shotophopex"],
+    former_names: &["PhotoCraft"],
+    icon_png: Some(include_bytes!("../../../assets/app-icon/sp/sp-128.png")),
+    accent: Some([0x31, 0xa8, 0xff]),
     ..craft::update::suite::PHOTOCRAFT
 };
 

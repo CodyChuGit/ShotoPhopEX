@@ -442,6 +442,7 @@ pub(crate) fn run_upscale(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions_cmds::ActionsExt as _;
 
     #[test]
     fn tiles_cover_the_picture_with_shared_strips_and_flush_edges() {
@@ -606,7 +607,7 @@ mod tests {
         };
         assert!(matches!(e.outcome, crate::jobs::JobOutcome::Done(_)), "{e:?}");
         s.execute("actions.stop", json!({})).unwrap();
-        let ids: Vec<&str> = s.actions.list[action].steps.iter().map(|(id, _)| id.as_str()).collect();
+        let ids: Vec<&str> = s.actions().list.actions()[action].steps.iter().map(|st| st.command.as_str()).collect();
         assert_eq!(ids, [UPSCALE]);
         assert_eq!(s.journal.iter().filter(|(id, _)| id == "image.imageSize").count(), 0);
     }

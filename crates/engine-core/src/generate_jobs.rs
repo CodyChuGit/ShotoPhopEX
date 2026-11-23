@@ -863,7 +863,7 @@ impl Session {
 
     /// The document `doc` (or the active one), its name and id.
     fn doc_title(&self, doc: Option<DocId>) -> (Option<u64>, String) {
-        let st = doc.and_then(|d| self.docs.iter().find(|st| st.doc.id == d)).or_else(|| self.active());
+        let st = doc.and_then(|d| self.docs.iter().map(|st| &**st).find(|st| st.doc.id == d)).or_else(|| self.active());
         st.map_or((None, String::new()), |st| (Some(st.doc.id.0), st.doc.name.clone()))
     }
 

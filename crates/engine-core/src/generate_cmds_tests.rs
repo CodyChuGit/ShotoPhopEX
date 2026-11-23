@@ -8,6 +8,7 @@ use serde_json::json;
 
 use super::*;
 use crate::jobs::{JobOutcome, Started};
+use crate::prefs::SavedPrefsExt as _;
 
 const FAKE_COLOR: [f32; 4] = [200.0 / 255.0, 40.0 / 255.0, 40.0 / 255.0, 1.0];
 
