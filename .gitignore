@@ -11,6 +11,11 @@ target/
 /craft-fonts
 *.log
 __pycache__/
+
+# Checked out inside the workspace by the shared nightly workflows (craft-common-actions).
+/.nightly-tools
+/.nightly-input
+/craft-i18n
 /target-app
 
 # Fork: the owner's local files, kept on disk but out of the distributed repository

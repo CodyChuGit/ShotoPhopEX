@@ -32,7 +32,6 @@ fn main() {
     if let Err(e) = std::fs::write(&out, craft_i18n()) {
         println!("cargo::error=writing {}: {e}", out.display());
     }
-    deflate_egui_fonts();
 }
 
 /// The catalog this app reads in each locale: `locales/<locale>/photocraft.tsv`.
@@ -94,7 +93,6 @@ fn locales(dir: &std::path::Path) -> Result<Vec<Locale>, String> {
             continue;
         }
         println!("cargo::rerun-if-changed={}", app.display());
-        let app = with_own_rows(&code, app)?;
         let shared = Some(path.join("common.tsv")).filter(|p| p.is_file());
         if let Some(p) = &shared {
             println!("cargo::rerun-if-changed={}", p.display());
@@ -106,68 +104,6 @@ fn locales(dir: &std::path::Path) -> Result<Vec<Locale>, String> {
     }
     out.sort();
     Ok(out)
-}
-
-/// ShotoPhopEX: PhotoCraft's catalog for `code` with ShotoPhopEX's own rows
-/// (`src/i18n/shotophopex/<code>.tsv`, the generative features' strings) appended, written to
-/// `OUT_DIR`; a row PhotoCraft's catalog already has (same context and source) is skipped, so the
-/// catalog never holds a key twice. Without own rows for `code`, `app` as it is.
-fn with_own_rows(code: &str, app: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
-    let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/i18n/shotophopex").join(format!("{code}.tsv"));
-    println!("cargo::rerun-if-changed={}", own.display());
-    let Ok(own) = std::fs::read_to_string(&own) else { return Ok(app) };
-    let base = std::fs::read_to_string(&app).map_err(|e| format!("{}: {e}", app.display()))?;
-    let key = |line: &str| {
-        if line.starts_with('#') || !line.contains('\t') {
-            return None;
-        }
-        let mut cols = line.splitn(3, '\t');
-        Some((cols.next()?.to_owned(), cols.next()?.to_owned()))
-    };
-    let have: std::collections::HashSet<_> = base.lines().filter_map(key).collect();
-    let mut out = base;
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str("\n# ShotoPhopEX's own rows (crates/ui-egui/src/i18n/shotophopex).\n");
-    for line in own.lines().filter(|l| key(l).is_some_and(|k| !have.contains(&k))) {
-        out.push_str(line);
-        out.push('\n');
-    }
-    let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("i18n-app").join(code);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join(APP_CATALOG);
-    std::fs::write(&path, out).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(path)
-}
-
-/// Deflate egui's default fonts (the `epaint_default_fonts` crate) into `OUT_DIR/egui_fonts/` for
-/// `egui_fonts.rs`. The app builds egui without `default_fonts`, which would embed the same 1.4 MB
-/// uncompressed; deflated they take 0.78 MB (the web build's 24 MiB size gate).
-fn deflate_egui_fonts() {
-    use std::io::Write as _;
-    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("egui_fonts");
-    // `egui-icons` is unconditional in 0.37 (a handful of private-use symbols, 3.5 kB); the two
-    // emoji fonts come through `monochrome_emoji_fonts` in Cargo.toml.
-    let fonts = [
-        ("Hack-Regular", epaint_default_fonts::HACK_REGULAR),
-        ("egui-icons", epaint_default_fonts::EGUI_ICONS),
-        ("NotoEmoji-Regular", epaint_default_fonts::NOTO_EMOJI_REGULAR),
-        ("Ubuntu-Light", epaint_default_fonts::UBUNTU_LIGHT),
-        ("emoji-icon-font", epaint_default_fonts::EMOJI_ICON),
-    ];
-    let result = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(&out)?;
-        for (name, bytes) in fonts {
-            let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
-            z.write_all(bytes)?;
-            std::fs::write(out.join(format!("{name}.ttf.deflate")), z.finish()?)?;
-        }
-        Ok(())
-    })();
-    if let Err(e) = result {
-        println!("cargo::error=deflating egui's default fonts into {}: {e}", out.display());
-    }
 }
 
 fn read<T>(path: &std::path::Path, fallback: &str, parse: impl Fn(&str) -> Result<T, String>) -> Option<T> {
