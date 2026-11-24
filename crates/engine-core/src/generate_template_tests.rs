@@ -7,7 +7,7 @@ use serde_json::json;
 use super::*;
 
 fn session(url: &str) -> Session {
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 16, "y": 16, "width": 32, "height": 32})).unwrap();

@@ -16,7 +16,7 @@ fn close(a: &[f32], b: [f32; 4]) -> bool {
 
 /// A 64×48 document with one empty layer, talking to `url`.
 fn session(url: &str) -> Session {
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.edit_prefs(|p| {
@@ -79,7 +79,7 @@ fn an_auto_template_is_the_default_image_template() {
 #[test]
 fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
     let fake = FakeNative::start().unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
@@ -109,7 +109,7 @@ fn image_opens_a_new_document_when_none_is_open_or_when_asked() {
 #[test]
 fn sizes_default_round_and_validate() {
     let fake = FakeNative::start().unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
@@ -136,7 +136,7 @@ fn sizes_default_round_and_validate() {
     let r = s.execute(IMAGE, json!({"prompt": "x", "width": 0, "height": 0, "target": "auto", "steps": 0, "guidance": 0})).unwrap();
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(1024), Some(1024)), "auto with a document open: a layer over its canvas");
     assert_eq!(fake.state().runs.last().unwrap().request["steps"], 8, "0 steps = the template default");
-    let mut empty = Session::new();
+    let mut empty = crate::session();
     empty.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
@@ -169,7 +169,7 @@ fn image_runs_as_a_background_job() {
     assert_eq!(s.active().unwrap().doc.layers.len(), layers + 1);
 
     // A new document from a background job too.
-    let mut empty = Session::new();
+    let mut empty = crate::session();
     empty.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
@@ -369,7 +369,7 @@ fn best_renders_h3_at_eight_megapixels() {
 fn ultra_is_best_with_the_16_mp_model_when_installed() {
     let dir = std::env::temp_dir().join(format!("pc-ultra-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.edit_prefs(|p| {
         p.integrations.models_path = dir.to_string_lossy().into_owned();
         p.integrations.quality = "ultra".into();

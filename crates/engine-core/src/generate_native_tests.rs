@@ -1,11 +1,10 @@
 //! Native-only routing and worker request regression tests.
-use crate::Session;
 use photocraft_genai::fake::FakeNative;
 use serde_json::json;
 #[test]
 fn every_route_uses_the_native_worker() {
     let fake = FakeNative::start().unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();
@@ -31,7 +30,7 @@ fn every_route_uses_the_native_worker() {
 #[test]
 fn lifecycle_status_purge_and_stop_address_only_the_native_worker() {
     let fake = FakeNative::start().unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();

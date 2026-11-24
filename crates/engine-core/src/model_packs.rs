@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn packs_report_missing_files_and_the_default_folder() {
-        let mut s = Session::new();
+        let mut s = crate::session();
         s.edit_prefs(|p| p.integrations.models_path = std::env::temp_dir().join("pc-no-such-models").to_string_lossy().into_owned());
         let v = run_packs(&mut s, &json!({})).unwrap();
         assert_eq!(v["pack"]["id"], manifest().packs[0].id);
@@ -888,7 +888,7 @@ mod tests {
 
     #[test]
     fn get_rejects_unknown_packs_and_odd_tokens() {
-        let mut s = Session::new();
+        let mut s = crate::session();
         assert!(run_get(&mut s, &json!({"pack": "nope"})).is_err());
         assert!(run_get(&mut s, &json!({"extras": ["nope"]})).is_err());
         assert!(run_get(&mut s, &json!({"token": "hf_a b"})).is_err());
@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn mac_only_extras_are_offered_only_on_a_mac() {
-        let mut s = Session::new();
+        let mut s = crate::session();
         s.edit_prefs(|p| p.integrations.models_path = std::env::temp_dir().join("pc-no-such-models").to_string_lossy().into_owned());
         let v = run_packs(&mut s, &json!({})).unwrap();
         let offered = v["extras"].as_array().unwrap().iter().any(|e| e["id"] == "flux3-klein-q4");
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn get_downloads_nothing_until_the_licences_are_accepted() {
-        let mut s = Session::new();
+        let mut s = crate::session();
         s.edit_prefs(|p| p.integrations.models_path = std::env::temp_dir().join("pc-no-such-models-lic").to_string_lossy().into_owned());
         for p in [json!({}), json!({"acceptLicenses": false}), json!({"acceptLicenses": "yes"})] {
             let e = run_get(&mut s, &p).unwrap_err().to_string();
@@ -928,7 +928,7 @@ mod tests {
 
     #[test]
     fn packs_list_the_licences_of_what_they_offer() {
-        let mut s = Session::new();
+        let mut s = crate::session();
         let v = run_packs(&mut s, &json!({})).unwrap();
         let ids: Vec<&str> = v["licenses"].as_array().unwrap().iter().filter_map(|l| l["id"].as_str()).collect();
         for f in v["pack"]["files"].as_array().unwrap() {

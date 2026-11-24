@@ -14,7 +14,7 @@ const FAKE_COLOR: [f32; 4] = [200.0 / 255.0, 40.0 / 255.0, 40.0 / 255.0, 1.0];
 
 /// A 64×48 document with a textured layer and a 20×16 selection at (10, 8), talking to `url`.
 fn session(url: &str) -> Session {
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     texture(&mut s);
@@ -282,7 +282,7 @@ fn fill_needs_a_selection_and_a_document() {
     s.execute("select.deselect", json!({})).unwrap();
     assert!(matches!(s.execute(FILL, json!({"prompt": "x"})), Err(EngineError::Disabled(..))));
     assert!(!s.is_enabled(FILL));
-    let mut empty = Session::new();
+    let mut empty = crate::session();
     assert!(matches!(empty.execute(FILL, json!({"prompt": "x"})), Err(EngineError::Disabled(..))));
     assert!(empty.is_enabled(HEALTH));
 }
@@ -308,7 +308,7 @@ fn the_model_preference_and_param_override_the_template() {
 #[test]
 fn a_sixteen_bit_document_gets_a_sixteen_bit_layer() {
     let fake = FakeNative::start().unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     let doc = Document::new("deep", Size::new(32, 32), ColorMode::Rgb, SampleType::U16);
     s.add_document(doc, None);
     s.execute("layer.new.layer", json!({})).unwrap();
@@ -356,7 +356,7 @@ fn results_of_another_size_are_resampled_to_the_request() {
 #[test]
 fn the_quality_preference_decides_what_auto_picks() {
     // The default is `best`: the full-step base templates, no 4-bit weights under `auto`.
-    let fresh = Session::new();
+    let fresh = crate::session();
     assert_eq!(quality(&fresh), "best");
     assert_eq!(auto_order(FILL, "best"), &[DEFAULT_FILL_TEMPLATE]);
     assert_eq!(auto_order(FILL, "balanced"), AUTO_FILL_ORDER);
@@ -366,7 +366,7 @@ fn the_quality_preference_decides_what_auto_picks() {
     assert_eq!(likely_auto(FILL, "best"), DEFAULT_FILL_TEMPLATE);
     assert_eq!(likely_auto(FILL, "nonsense"), "qwen-edit-2511/fill-lightning-8", "unknown reads as balanced in the order");
     let fake = FakeNative::start_with(Options::default()).unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 10, "y": 8, "width": 20, "height": 16})).unwrap();
@@ -484,7 +484,7 @@ fn dropping_and_keeping_variations_are_one_undo_step_each() {
         assert!(matches!(s.execute(DROP_VARIATION, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
     // The only layer of a document cannot be dropped.
-    let mut lone = Session::new();
+    let mut lone = crate::session();
     lone.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
     let only = lone.active().unwrap().doc.layers[0].id.0;
     assert!(lone.execute(DROP_VARIATION, json!({"layers": [only], "index": 1})).is_err());
@@ -624,7 +624,7 @@ fn expand_takes_a_target_size_with_an_anchor_and_validates() {
     ] {
         assert!(matches!(s.execute(EXPAND, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
-    let mut empty = Session::new();
+    let mut empty = crate::session();
     assert!(!empty.is_enabled(EXPAND));
     assert!(matches!(empty.execute(EXPAND, json!({"right": 8})), Err(EngineError::Disabled(..))));
 }
@@ -632,7 +632,7 @@ fn expand_takes_a_target_size_with_an_anchor_and_validates() {
 #[test]
 fn purge_generative_models_asks_the_server_to_free() {
     let fake = FakeNative::start().unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.edit_prefs(|p| {
         {
             p.integrations.models_path = fake.url.clone();
@@ -681,7 +681,7 @@ fn large_areas_are_sent_at_one_megapixel_and_come_back_full_size() {
     assert!(h == 64 && w < 20_000 && w % 16 == 0, "the short side never drops below 64: {w}×{h}");
 
     let fake = FakeNative::start().unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 1600, "height": 1200})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 100, "y": 100, "width": 1400, "height": 1000})).unwrap();
@@ -935,13 +935,13 @@ fn the_preview_preference_reaches_the_next_run() {
 /// hand-edited unknown value reads as `fast`.
 #[test]
 fn the_preview_preference_defaults_to_fast_and_round_trips() {
-    let mut s = Session::new();
+    let mut s = crate::session();
     assert_eq!(s.execute("prefs.get", json!({"path": "integrations.previewWhileGenerating"})).unwrap(), json!("fast"));
     assert_eq!(preview_mode(&s.prefs().integrations), photocraft_genai::PreviewMode::Fast);
     assert!(s.execute("prefs.set", json!({"path": "integrations.previewWhileGenerating", "value": "blurry"})).is_err());
     s.execute("prefs.set", json!({"path": "integrations.previewWhileGenerating", "value": "sharp"})).unwrap();
     assert_eq!(s.execute("prefs.get", json!({"path": "integrations.previewWhileGenerating"})).unwrap(), json!("sharp"));
-    let mut restored = Session::new();
+    let mut restored = crate::session();
     restored.load_prefs_json(&s.prefs_to_json()).unwrap();
     assert_eq!(preview_mode(&restored.prefs().integrations), photocraft_genai::PreviewMode::Sharp);
     restored.edit_prefs(|p| p.integrations.preview_while_generating = "blurry".into());
@@ -1075,7 +1075,7 @@ fn a_blank_expand_of_a_cut_off_subject_runs_in_two_stages_and_leaves_one_layer()
 fn angles_runs_the_multiple_angles_lora_and_the_auto_line_names_the_outpaint_expand() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("loras")).unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.edit_prefs(|p| {
         p.integrations.models_path = dir.path().to_string_lossy().into_owned();
         p.integrations.runtime_path = "fake".into();

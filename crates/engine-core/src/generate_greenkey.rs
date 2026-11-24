@@ -377,7 +377,7 @@ mod tests {
 
     /// A 64x48 green-screen document (a skin-coloured block in the middle) on the fake worker.
     fn green_session(url: &str) -> crate::Session {
-        let mut s = crate::Session::new();
+        let mut s = crate::session();
         s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
         s.execute("layer.new.layer", json!({})).unwrap();
         s.edit("green", |doc, active| {

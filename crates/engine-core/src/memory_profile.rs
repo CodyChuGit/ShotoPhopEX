@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn auto_image_template_follows_the_profile_and_a_pick_wins() {
         use crate::generate_cmds::default_image_template;
-        let mut s = Session::new();
+        let mut s = crate::session();
         assert_eq!(default_image_template(&s), BIG_IMAGE_TEMPLATE, "nothing detected: today's default");
         record_detected(&mut s, Some(Profile::Gb12));
         assert_eq!(default_image_template(&s), SMALL_IMAGE_TEMPLATE);
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn the_detected_profile_is_recorded_once_and_a_choice_wins() {
-        let mut s = Session::new();
+        let mut s = crate::session();
         assert_eq!(active(&s), None);
         assert_eq!(record_detected(&mut s, Some(Profile::Gb12)), Some(Profile::Gb12), "first launch");
         assert_eq!(record_detected(&mut s, Some(Profile::Gb12)), None, "same card: nothing new");

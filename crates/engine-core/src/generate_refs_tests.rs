@@ -12,7 +12,7 @@ use crate::generate_cmds::{EDIT, FILL, IMAGE, SIMILAR, estimate_seconds, generat
 /// A 64×48 document with a textured layer, a second small layer (the reference) and a
 /// selection, talking to `url`.
 fn session(url: &str) -> (Session, LayerId, LayerId) {
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     let paint = |s: &mut Session, rect: photocraft_geom::Rect, rgba: [f32; 4]| {
         s.edit("paint", |doc, active| {
@@ -662,7 +662,7 @@ fn the_time_estimate_is_one_formula_everywhere() {
     let edit = estimate_seconds("qwen-2.1/edit", 1024, 1024, 3, 0).unwrap();
     assert!((12.0..30.0).contains(&edit), "{edit}");
     // generate.models reports it per template for an area and count.
-    let mut s = Session::new();
+    let mut s = crate::session();
     let v = s.execute("generate.models", json!({"probe": false, "width": 1000, "height": 1000, "count": 1})).unwrap();
     let krea = v["templates"].as_array().unwrap().iter().find(|t| t["id"] == "krea2-turbo/image").unwrap().clone();
     assert!((krea["eta"].as_f64().unwrap() - 3.8).abs() < 0.01);

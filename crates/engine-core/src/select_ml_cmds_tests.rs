@@ -6,7 +6,7 @@ use super::*;
 
 /// A 64×48 document with one layer, talking to `url`.
 fn session(url: &str) -> Session {
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.edit_prefs(|p| {
@@ -193,7 +193,7 @@ fn a_probe_is_kept_for_the_click_that_follows_and_goes_stale_with_an_edit() {
     assert!(s2.execute(PROBE, json!({"x": 1, "y": 1})).is_err());
     assert!(s2.select_probes.is_empty());
     // Probes of big pictures go out small.
-    let mut big = Session::new();
+    let mut big = crate::session();
     big.execute("file.new", json!({"width": 2400, "height": 1800})).unwrap();
     big.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
@@ -316,7 +316,7 @@ fn the_active_layer_can_be_sampled_instead_of_the_composite() {
 fn big_canvases_are_sent_downscaled_and_the_masks_come_back_at_canvas_size() {
     // 2400×1800 = 4.3 MP goes out at ≤ 2 MP; the fake finds the centre quarter of what it got.
     let fake = FakeNative::start().unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 2400, "height": 1800})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.edit_prefs(|p| {
@@ -354,7 +354,7 @@ fn parameters_are_validated_and_the_command_needs_a_document() {
         assert!(matches!(e, EngineError::BadParams { .. }), "{p}: {e}");
     }
     assert!(fake.state().runs.is_empty());
-    let mut empty = Session::new();
+    let mut empty = crate::session();
     assert!(matches!(empty.execute(BY_TEXT, json!({"prompt": "x"})), Err(EngineError::Disabled(..))));
     let m = s.execute("generate.models", json!({})).unwrap();
     let sam = m["templates"].as_array().unwrap().iter().find(|t| t["id"] == "sam3.1/segment").unwrap();

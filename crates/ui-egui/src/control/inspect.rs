@@ -210,7 +210,8 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
     if let Some(o) = v.as_object_mut() {
         // The main canvas inside the rulers (points): with `views[activeDocument]`'s zoom and
         // center, document → screen for ui.move / ui.click.
-        let canvas_rect = crate::canvas::document_display::active_view(app).map(|view| [view.rect.left(), view.rect.top(), view.rect.width(), view.rect.height()]);
+        let canvas_rect =
+            crate::canvas::document_display::active_view(app).map(|view| [view.rect.left(), view.rect.top(), view.rect.width(), view.rect.height()]);
         o.insert("canvasRect".into(), json!(canvas_rect));
         o.insert("activeDocument".into(), json!(app.session.active_index()));
         o.insert("generativeBar".into(), crate::generative_bar::inspect(app));

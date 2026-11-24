@@ -86,10 +86,8 @@ fn about_info_for(identity: crate::os_window::LaunchIdentity, version: String, c
     let nightly = identity == crate::os_window::LaunchIdentity::NightlyV1;
     // ShotoPhopEX: its GitHub repository and the upstream project, named as written (`tl!` would
     // brand it); no ArtCraft website or Discord.
-    let mut links = vec![
-        AboutLink::new(tl!("GitHub"), crate::links::GITHUB),
-        AboutLink::new(photocraft_engine::build_info::upstream_base(), crate::links::UPSTREAM),
-    ];
+    let mut links =
+        vec![AboutLink::new(tl!("GitHub"), crate::links::GITHUB), AboutLink::new(photocraft_engine::build_info::upstream_base(), crate::links::UPSTREAM)];
     if nightly {
         // Opens only after a user click. No diagnostics, paths or documents are sent automatically.
         links.push(AboutLink::new(tl!("Report a problem"), crate::links::ISSUES));

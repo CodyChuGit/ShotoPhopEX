@@ -106,9 +106,17 @@ fn detector_options(ui: &mut egui::Ui, app: &mut PhotocraftApp) {
     if let Some(on) = Segmented::new(tl!("Detector mode"), Bind::given(o.object_refine), &modes).show(ui).value().copied() {
         o.object_refine = on;
     }
-    check(ui, tl!("Parts"), &mut o.object_parts, true, Some(tl!("Select a part of what is under the pointer (a piece of clothing) instead of the whole figure")));
+    check(
+        ui,
+        tl!("Parts"),
+        &mut o.object_parts,
+        true,
+        Some(tl!("Select a part of what is under the pointer (a piece of clothing) instead of the whole figure")),
+    );
     let next = clicked(
-        &Button::new(tl!("Next Match")).tooltip(tl!("Swap the last click's object for the next thing it could mean (the whole, a part, a smaller part)")).show(ui),
+        &Button::new(tl!("Next Match"))
+            .tooltip(tl!("Swap the last click's object for the next thing it could mean (the whole, a part, a smaller part)"))
+            .show(ui),
     );
     check(ui, tl!("Refine edge"), &mut o.refine_edge, true, Some(tl!("Soften the detector's hard edge from the pixels (hair, fur)")));
     let _ = number(tl!("Widen"), &mut o.object_widen, -64.0..=256.0)

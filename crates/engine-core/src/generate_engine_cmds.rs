@@ -145,7 +145,7 @@ mod tests {
     use super::*;
     #[test]
     fn status_is_native_only_and_start_requires_folders() {
-        let mut s = Session::new();
+        let mut s = crate::session();
         let st = s.execute(STATUS, json!({})).unwrap();
         assert_eq!(st["native"]["state"], "unconfigured");
         assert!(st.get("state").is_none());
@@ -156,7 +156,7 @@ mod tests {
 
     fn fake_session(options: photocraft_genai::fake::Options) -> (photocraft_genai::fake::FakeNative, Session) {
         let fake = photocraft_genai::fake::FakeNative::start_with(options).unwrap();
-        let mut s = Session::new();
+        let mut s = crate::session();
         s.edit_prefs(|p| {
             p.integrations.models_path = fake.url.clone();
             p.integrations.runtime_path = "fake".into();

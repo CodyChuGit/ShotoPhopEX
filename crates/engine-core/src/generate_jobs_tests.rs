@@ -18,7 +18,7 @@ fn temp_dir(name: &str) -> PathBuf {
 /// A 64×48 document with a textured layer and a 20×16 selection at (10, 8), talking to `url`,
 /// its library in `dir` (None = in memory).
 fn session(url: &str, dir: Option<&Path>) -> Session {
-    let mut s = Session::new();
+    let mut s = crate::session();
     if let Some(d) = dir {
         s.set_generations_dir(d.to_path_buf());
     }
@@ -92,7 +92,7 @@ fn an_inline_fill_is_recorded_with_its_result_and_thumbnail_and_survives_a_resta
     // A restart: the row is still there, without its process-local document link.
     s.flush_generations();
     drop(s);
-    let mut s2 = Session::new();
+    let mut s2 = crate::session();
     s2.set_generations_dir(dir.clone());
     let list = jobs(&mut s2);
     assert_eq!(list.len(), 1);
@@ -203,14 +203,14 @@ fn rows_left_running_by_a_closed_process_become_interrupted() {
     std::fs::create_dir_all(&dir).unwrap();
     let rec = GenerationRecord { id: 7, created_ms: unix_ms(), command: FILL.into(), status: GenStatus::Running, ..GenerationRecord::default() };
     std::fs::write(dir.join("index.json"), serde_json::to_vec(&json!({"version": 1, "records": [rec]})).unwrap()).unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.set_generations_dir(dir.clone());
     let r = s.generations.get(7).unwrap();
     assert_eq!(r.status, GenStatus::Failed);
     assert_eq!(r.failure.as_ref().map(|f| f.kind), Some(GenFailureKind::Interrupted));
     // A corrupt index is ignored, never an error.
     std::fs::write(dir.join("index.json"), b"{not json").unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.set_generations_dir(dir.clone());
     assert!(jobs(&mut s).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
@@ -394,7 +394,7 @@ fn export_names_files_from_the_pattern_and_never_replaces_one() {
 
 #[test]
 fn every_library_command_refuses_bad_params_without_panicking() {
-    let mut s = Session::new();
+    let mut s = crate::session();
     for (cmd, p) in [
         (JOBS, json!({"limit": "x"})),
         (JOBS, json!({"limit": 0})),
@@ -448,7 +448,7 @@ fn two_processes_share_the_index_and_keep_each_others_rows() {
     assert_ne!(list[0]["id"], list[1]["id"]);
     a.execute(DISMISS, json!({"id": list[1]["id"]})).unwrap();
     a.flush_generations();
-    let mut c = Session::new();
+    let mut c = crate::session();
     c.set_generations_dir(dir.clone());
     assert_eq!(c.execute(JOBS, json!({"includeDismissed": true})).unwrap()["total"], 2);
     // A row one process cleared is not brought back by merging an older index.

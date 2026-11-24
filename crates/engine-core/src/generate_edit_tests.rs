@@ -12,7 +12,7 @@ const FAKE_COLOR: [f32; 4] = [200.0 / 255.0, 40.0 / 255.0, 40.0 / 255.0, 1.0];
 
 /// A 64×48 document with a textured layer and a 20×16 selection at (10, 8), talking to `url`.
 fn session(url: &str) -> Session {
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.edit("texture", |doc, active| {
@@ -202,7 +202,7 @@ fn auto_falls_back_to_the_base_edit_template_and_params_are_validated() {
     ] {
         assert!(matches!(s.execute(EDIT, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
-    let mut empty = Session::new();
+    let mut empty = crate::session();
     empty.edit_prefs(|p| {
         {
             p.integrations.models_path = bare.url.clone();
@@ -219,7 +219,7 @@ fn auto_falls_back_to_the_base_edit_template_and_params_are_validated() {
 /// `swap` pins the 2.1 edit, adds the BFS LoRA and the author's prompt, and needs a reference.
 #[test]
 fn a_swap_sends_the_bfs_lora_and_prompt() {
-    let s = Session::new();
+    let s = crate::session();
     let p = json!({"swap": "face", "prompt": "smiling", "references": [{"path": "who.png"}], "enhance": true});
     let q = swap::apply(&s, &p).unwrap().unwrap();
     assert_eq!(q["template"], swap::SWAP_TEMPLATE);
@@ -272,7 +272,7 @@ fn a_repose_sends_the_posestudio_lora_and_prompt() {
     let dir = std::env::temp_dir().join(format!("pex-repose-{}", std::process::id()));
     let loras = dir.join("loras");
     std::fs::create_dir_all(&loras).unwrap();
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.edit_prefs(|p| p.integrations.models_path = dir.to_string_lossy().into_owned());
 
     let p = json!({"repose": true, "references": [{"path": "who.png"}]});

@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn the_fast_upscale_needs_the_native_21_edit_and_the_turbo_lora() {
-        let mut s = Session::new();
+        let mut s = crate::session();
         s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
         // No native engine: greyed out with the reason, and a direct call says the same.
         let why = upscale_fast_enabled(&s).unwrap_err();
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn an_upscale_enlarges_the_picture_and_redraws_it_as_a_layer_tile_by_tile() {
         let fake = photocraft_genai::fake::FakeNative::start().unwrap();
-        let mut s = Session::new();
+        let mut s = crate::session();
         s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
         s.edit_prefs(|p| {
             p.integrations.models_path = fake.url.clone();
@@ -518,7 +518,7 @@ mod tests {
     fn a_native_21_upscale_sends_its_tiles_as_one_batch() {
         let upscale = |no_batch: bool| {
             let fake = photocraft_genai::fake::FakeNative::start_with(photocraft_genai::fake::Options { echo: true, no_batch, ..Default::default() }).unwrap();
-            let mut s = Session::new();
+            let mut s = crate::session();
             s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
             s.execute("filter.addNoise", json!({"amount": 40, "seed": 3})).ok();
             s.edit_prefs(|p| {
@@ -550,7 +550,7 @@ mod tests {
         let fake =
             photocraft_genai::fake::FakeNative::start_with(photocraft_genai::fake::Options { delay_ms: 20_000, progress_steps: 200, ..Default::default() })
                 .unwrap();
-        let mut s = Session::new();
+        let mut s = crate::session();
         s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
         s.edit_prefs(|p| {
             p.integrations.models_path = fake.url.clone();
@@ -585,7 +585,7 @@ mod tests {
     fn a_background_upscale_records_one_step() {
         use std::time::{Duration, Instant};
         let fake = photocraft_genai::fake::FakeNative::start_with(photocraft_genai::fake::Options { delay_ms: 50, ..Default::default() }).unwrap();
-        let mut s = Session::new();
+        let mut s = crate::session();
         s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
         s.edit_prefs(|p| {
             p.integrations.models_path = fake.url.clone();

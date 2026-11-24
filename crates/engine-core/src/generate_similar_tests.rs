@@ -9,7 +9,7 @@ use super::*;
 
 /// A 64×48 document with a textured layer and a 20×16 selection at (10, 8), talking to `url`.
 fn session(url: &str) -> Session {
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.edit("texture", |doc, active| {

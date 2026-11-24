@@ -26,10 +26,10 @@ use photocraft_engine::jobs::{JobEvent, JobId, JobOutcome};
 use serde_json::{Value, json};
 
 use crate::PhotocraftApp;
-use craft::behavior::CanvasView as ViewXform;
-use craft::keymap::Mods;
 use crate::retouch_ui::{server_configured, server_online};
 use crate::state::Tool;
+use craft::behavior::CanvasView as ViewXform;
+use craft::keymap::Mods;
 
 /// Seconds the pointer rests before the finder asks. A quarter of a second (and 80 ms on the
 /// native engine) tinted whatever the pointer crossed; the owner wanted to rest on a spot a

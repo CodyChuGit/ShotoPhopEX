@@ -5,7 +5,14 @@ use super::{Color32, Pos2, Rect, Response, Sense, Tokens, Ui, Vec2};
 /// A dropdown of `options` (value and English label, translated here) about `width` points wide, the framework
 /// `Select`. `name` names it for screen readers; `id` keeps it apart from another of the same name. Returns true when
 /// the user picked another value.
-pub fn dropdown<T: craft::behavior::Value + PartialEq + Clone + 'static>(ui: &mut Ui, id: &str, name: &str, current: &mut T, options: &[(T, &str)], width: f32) -> bool {
+pub fn dropdown<T: craft::behavior::Value + PartialEq + Clone + 'static>(
+    ui: &mut Ui,
+    id: &str,
+    name: &str,
+    current: &mut T,
+    options: &[(T, &str)],
+    width: f32,
+) -> bool {
     use craft::ui::contract::{Bind, Entry, Props as _, Show as _, Sizing};
     let entries: Vec<Entry<T>> = options.iter().map(|(value, label)| Entry::new(value.clone(), tl!(label).to_owned())).collect();
     let picked = ui

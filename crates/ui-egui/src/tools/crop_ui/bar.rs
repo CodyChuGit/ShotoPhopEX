@@ -2,9 +2,9 @@
 //! outputs into app calls.
 
 use craft::draw::ui::crop::{CropBar, CropPresetList, CropRatioChange};
-use craft::ui::dialog::{Alert, HostedAlert};
 use craft::ui::choice::Checkbox;
 use craft::ui::contract::{Bind, Props as _, Show as _};
+use craft::ui::dialog::{Alert, HostedAlert};
 use craft::ui::runtime::env::Env;
 
 use super::{document, handle_event, refit, reset, toggle_straighten, words};

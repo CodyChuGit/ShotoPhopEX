@@ -156,7 +156,11 @@ pub(super) fn handle_event(app: &mut PhotocraftApp, event: impl Into<Option<Crop
 fn apply_commit(app: &mut PhotocraftApp, commit: &CropCommit) -> bool {
     let rect = commit.frame.rect;
     let px = |v: f64| v.round().max(1.0) as u64;
-    if app.ui.tool_options.crop_generative && commit.frame.angle == 0.0 && commit.target.is_none() && let Some(done) = generative_expand(app, commit) {
+    if app.ui.tool_options.crop_generative
+        && commit.frame.angle == 0.0
+        && commit.target.is_none()
+        && let Some(done) = generative_expand(app, commit)
+    {
         return done;
     }
     let mut params = json!({

@@ -17,7 +17,7 @@ fn session(url: &str) -> Session {
 /// A `w`×`h` document with one empty layer, talking to `url`. The removal widens its hole by
 /// 16 pixels at least, so a test whose subjects must keep their distance takes a larger canvas.
 fn session_of(url: &str, w: u32, h: u32) -> Session {
-    let mut s = Session::new();
+    let mut s = crate::session();
     s.execute("file.new", json!({"width": w, "height": h})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.edit_prefs(|p| {
@@ -299,7 +299,7 @@ fn split_validates_its_parameters_and_has_no_similar() {
     drop(st);
     let e = s.execute(SIMILAR, json!({"layer": id.0})).unwrap_err().to_string();
     assert!(e.contains("split"), "{e}");
-    let mut empty = Session::new();
+    let mut empty = crate::session();
     empty.edit_prefs(|p| {
         p.integrations.models_path = fake.url.clone();
         p.integrations.runtime_path = "fake".into();

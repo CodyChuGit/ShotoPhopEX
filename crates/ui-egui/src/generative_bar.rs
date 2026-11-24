@@ -412,7 +412,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         bar.had_selection = has_selection;
     }
     let Some(bounds) = sel_bounds else { return };
-    let busy = app.ui.transform.is_some() || app.ui.text_edit.is_some() || app.jobs.focus.is_some()
+    let busy = app.ui.transform.is_some()
+        || app.ui.text_edit.is_some()
+        || app.jobs.focus.is_some()
         || craft::ui::runtime::overlay::any_open(ctx, craft::ui::runtime::overlay::OpenFilter::Modal);
     if !app.ui.generative_bar.open || busy {
         return;
