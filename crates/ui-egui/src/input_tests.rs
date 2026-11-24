@@ -10,6 +10,8 @@ use crate::PhotocraftApp;
 
 fn harness() -> Harness<'static, Box<PhotocraftApp>> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    // Upstream's wheel: plain scroll pans (the fork's default is wheel = zoom).
+    app.session.edit_prefs(|p| p.general.zoom_with_scroll_wheel = false);
     app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
     app.sync_views();
     // The whole app: its frame hook hands the keys, the wheel and the pointer to the framework's runtime.
@@ -228,6 +230,8 @@ fn doc_at(h: &Harness<'static, Box<PhotocraftApp>>, p: Pos2) -> [f32; 2] {
 /// The whole window (status bar and Navigator included) on a 400 × 300 document.
 fn app_window() -> Harness<'static, Box<PhotocraftApp>> {
     let mut s = photocraft_engine::Session::new();
+    // Upstream's wheel: plain scroll pans (the fork's default is wheel = zoom).
+    s.edit_prefs(|p| p.general.zoom_with_scroll_wheel = false);
     s.execute("file.new", json!({"width": 400, "height": 300})).unwrap();
     let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_max_steps(64).build_eframe(move |cc| {
         PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());

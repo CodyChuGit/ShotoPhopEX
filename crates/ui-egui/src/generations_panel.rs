@@ -865,6 +865,11 @@ fn save_many(app: &mut PhotocraftApp, ids: &[u64]) -> bool {
     if !folder.is_empty() {
         return export_many(app, ids, &folder, None) > 0;
     }
+    if !picks_files(app) {
+        app.ui.status = tl!("Saving files is not available here").to_string();
+        app.ui.status_error = true;
+        return false;
+    }
     let suggested = format!("{}.png", photocraft_engine::generate_jobs::export_name(&pattern, first, 1, false));
     let ids = ids.to_vec();
     let r = app.pick_save(&suggested, move |app, path| {
@@ -878,9 +883,6 @@ fn save_many(app: &mut PhotocraftApp, ids: &[u64]) -> bool {
         Err(e) => {
             if e != crate::file_dialog::CANCELLED {
                 app.ui.status = e;
-                app.ui.status_error = true;
-            } else if !picks_files(app) {
-                app.ui.status = tl!("Saving files is not available here").to_string();
                 app.ui.status_error = true;
             }
             false

@@ -762,7 +762,8 @@ fn filesystem_command_paths_and_profiles_fail_closed() {
         assert!(authorize_engine_command("prefs.set", &p).is_err(), "{p}");
     }
     assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "integrations.saveResultsNaming", "value": "{seed}"})).is_ok());
-    assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "integrations", "value": {"enterToGenerate": true}})).is_ok());
+    // (The whole section is denied since 0.24: it can carry the automation roots.)
+    assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "integrations.enterToGenerate", "value": true})).is_ok());
     assert!(authorize_engine_step("file.open", &serde_json::json!({})).is_err());
     assert!(authorize_engine_step("actions.play", &serde_json::json!({})).is_ok());
     // An allowed command can't reach a denied one by running it on its own behalf.

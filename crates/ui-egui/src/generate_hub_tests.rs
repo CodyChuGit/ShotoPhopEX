@@ -97,13 +97,19 @@ fn image_opens_the_panel_with_nothing_open_and_edit_cards_ask_for_a_file_first()
     assert!(a.ui.angles.open);
 }
 
+/// The nodes named `name`: a window card's button, or a Home template tile (named "<name>, <sentence>").
+fn cards_named(h: &Harness<'static, Box<PhotocraftApp>>, name: &str) -> usize {
+    let tile = format!("{name}, ");
+    h.query_all_by(|n| n.label().is_some_and(|l| l == name || l.starts_with(&tile))).count()
+}
+
 #[test]
 fn help_and_the_home_screen_show_the_cards() {
     let mut a = app(None);
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut a, &ctx, "help.generativeFeatures", json!({})).unwrap();
     assert_eq!(inspect(&a, &ctx)["open"], true);
-    let mut h = Harness::builder().with_size(vec2(1280.0, 900.0)).build_ui_state(
+    let mut h = Harness::builder().with_context(a.ctx().clone()).with_size(vec2(1280.0, 1600.0)).build_ui_state(
         |ui, app: &mut Box<PhotocraftApp>| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
@@ -116,15 +122,15 @@ fn help_and_the_home_screen_show_the_cards() {
     PhotocraftApp::setup_context(&h.ctx, Default::default());
     h.run_steps(4);
     // The window and the Home screen each show every card (the Home screen's as its template tiles).
-    assert_eq!(h.get_all_by_label("Remove Background").count(), 2);
+    assert_eq!(cards_named(&h, "Remove Background"), 2);
     let v = inspect(h.state(), &h.ctx);
     assert_eq!(v["cards"][4]["rects"].as_array().map(Vec::len), Some(1), "the window's card: {v}");
     h.get_by_label("Close").click();
     h.run_steps(3);
     assert!(!h.state().ui.hub.open);
-    assert_eq!(h.get_all_by_label("Split into Layers").count(), 1, "the Home screen's");
+    assert_eq!(cards_named(&h, "Split into Layers"), 1, "the Home screen's");
     // A Home card: Image opens the panel.
-    h.get_by_label("Image").click();
+    h.get_by(|n| n.label().is_some_and(|l| l.starts_with("Image, "))).click();
     h.run_steps(3);
     assert_eq!((crate::panel_docking::is_front(h.state(), "generate"), h.state().ui.generate.mode.as_str()), (true, "image"));
 }

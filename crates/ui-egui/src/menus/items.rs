@@ -407,7 +407,10 @@ fn build(app: &PhotocraftApp) -> Built {
             continue;
         }
         let shown = translated_menu_label(lang, &row.command.id, &row.label);
-        if shown != row.label {
+        // ShotoPhopEX: the English name is branded as the English menu shows it ("ShotoPhopEX on GitHub").
+        let english = photocraft_engine::build_info::brand(&row.label).into_owned();
+        row.label = english.clone();
+        if shown != english {
             row.english = Some(std::mem::replace(&mut row.label, shown));
         }
         if let Some(tip) = row.tooltip.take() {

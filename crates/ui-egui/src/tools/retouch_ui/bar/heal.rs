@@ -76,16 +76,19 @@ fn first(a: Option<RangeAlert>, b: Option<RangeAlert>) -> Option<RangeAlert> {
 /// Remove's options. The apply and cancel pair belongs to the bar's pending strip.
 pub(super) fn remove(ui: &mut egui::Ui, app: &mut PhotocraftApp) -> Option<RangeAlert> {
     let composite = crate::canvas::paint_target(app).as_str() == Some("pixels");
+    let generative = crate::retouch_ui::server_configured(app);
     let o = &mut app.ui.tool_options;
     // The reference's options bar, in its order and words (#12546).
     check(ui, tl!("Sample all layers"), &mut o.sample_all.remove, true, Some(tl!("Sample content from all visible layers")));
     check(ui, tl!("Remove after each stroke"), &mut o.remove_after_each_stroke, true, Some(tl!("Remove area after a single stroke")));
     check(ui, tl!("Create new layer"), &mut o.remove_new_layer, composite, Some(tl!("Create new layer with results")));
-    // ShotoPhopEX: the hole filled through the fill model (a masked layer either way).
-    Divider::vertical().show(ui);
-    check(ui, tl!("Generative"), &mut o.remove_generative, true, Some(tl!(GENERATIVE_TIP)));
-    if o.remove_generative {
-        check(ui, tl!("Best of two"), &mut o.remove_pick_best, true, Some(tl!(BEST_OF_TWO_TIP)));
+    // ShotoPhopEX: the hole filled through the fill model (a masked layer either way), once a native worker is set up.
+    if generative {
+        Divider::vertical().show(ui);
+        check(ui, tl!("Generative"), &mut o.remove_generative, true, Some(tl!(GENERATIVE_TIP)));
+        if o.remove_generative {
+            check(ui, tl!("Best of two"), &mut o.remove_pick_best, true, Some(tl!(BEST_OF_TWO_TIP)));
+        }
     }
     None
 }
@@ -138,14 +141,14 @@ pub(super) fn content_aware_move(ui: &mut egui::Ui, app: &mut PhotocraftApp) -> 
 
 /// Spot Healing's options.
 pub(super) fn spot_healing(ui: &mut egui::Ui, app: &mut PhotocraftApp) -> Option<RangeAlert> {
+    let generative = crate::retouch_ui::server_configured(app);
     let o = &mut app.ui.tool_options;
-    radios(
-        ui,
-        tl!("Type"),
-        &mut o.spot_type,
-        // ShotoPhopEX adds Generative: the stroke healed through the fill model.
-        &[("contentAware", tl!("Content-Aware")), ("createTexture", tl!("Create Texture")), ("proximityMatch", tl!("Proximity Match")), ("generative", tl!("Generative"))],
-    );
+    let mut types = vec![("contentAware", tl!("Content-Aware")), ("createTexture", tl!("Create Texture")), ("proximityMatch", tl!("Proximity Match"))];
+    // ShotoPhopEX adds Generative once a native worker is set up: the stroke healed through the fill model.
+    if generative || o.spot_type == "generative" {
+        types.push(("generative", tl!("Generative")));
+    }
+    radios(ui, tl!("Type"), &mut o.spot_type, &types);
     if o.spot_type == "generative" {
         check(ui, tl!("Best of two"), &mut o.remove_pick_best, true, Some(tl!(BEST_OF_TWO_TIP)));
     }

@@ -963,7 +963,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "List Generative Models",
             menu: &[],
             shortcut: None,
-            params: r#"{"probe":bool=true,"width":int?,"height":int?,"count":int=1,"references":int=0} → {server,device,templates:[{id,name,family,task,license,allowed,defaults,models,creator,description,badges,references,sizes,counts,estimatedSeconds,pages,eta}],autoFill,autoExpand,autoEdit,autoRemove,autoMatte}; native worker capabilities; probe false lists metadata without starting or contacting a worker"#,
+            params: r#"{"probe":bool=true,"async":bool=false,"width":int?,"height":int?,"count":int=1,"references":int=0} → {server,device,templates:[{id,name,family,task,license,allowed,defaults,models,creator,description,badges,references,sizes,counts,estimatedSeconds,pages,eta}],autoFill,autoExpand,autoEdit,autoRemove,autoMatte}; native worker capabilities; probe false lists metadata without starting or contacting a worker"#,
             enabled: always,
             run: run_models,
             journal: false,
@@ -995,7 +995,7 @@ pub fn specs() -> Vec<CommandSpec> {
             // Placed by the menu catalogue under Edit, after Generative Upscale.
             menu: &[],
             shortcut: None,
-            params: r#"{as generate.upscale} → as generate.upscale (generate.upscale with turbo true: Viggle's 6-step Turbo LoRA over the Restore LoRA, about 2x faster at 2x, close-up faces a little less faithful; needs the native Qwen-Image-2.1 edit and Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors in the loras folder)"#,
+            params: r#"{…} (… = generate.upscale's params) → as generate.upscale (generate.upscale with turbo true: Viggle's 6-step Turbo LoRA over the Restore LoRA, about 2x faster at 2x, close-up faces a little less faithful; needs the native Qwen-Image-2.1 edit and Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors in the loras folder)"#,
             enabled: upscale::upscale_fast_enabled,
             run: upscale::run_upscale_fast,
             journal: true,

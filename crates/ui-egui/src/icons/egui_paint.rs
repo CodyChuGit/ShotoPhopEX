@@ -27,14 +27,31 @@ fn catalog_name(name: &str) -> IconId {
 
 /// Whether icon `name` is registered, so [`paint`] draws a glyph for it.
 pub fn exists(name: &str) -> bool {
+    // The app's set is registered at start-up; asking first (a test, a script) registers it too (idempotent).
+    crate::icons::register();
     has_icon(&catalog_name(name))
+}
+
+/// A number new for every icon painted in this pass, so two icons never share their child's id (a panel can be
+/// drawn more than once in a pass, and an icon at the same place each time).
+fn next_in_pass(ctx: &egui::Context) -> u64 {
+    let pass = ctx.cumulative_pass_nr();
+    let key = egui::Id::unique("egui-paint-icon-count");
+    ctx.data_mut(|d| {
+        let slot = d.get_temp_mut_or_insert_with(key, || (pass, 0u64));
+        if slot.0 != pass {
+            *slot = (pass, 0);
+        }
+        slot.1 += 1;
+        slot.1
+    })
 }
 
 /// Paints icon `name` centred in `rect`, about `size` points across, in `tint`.
 pub fn paint(ui: &egui::Ui, rect: Rect, name: &str, size: f32, tint: Color32) {
     let side = if size < 16.0 { ControlSize::Sm } else { ControlSize::Md };
     let spec = IconSpec::svg(catalog_name(name)).color(StyleColor(tint));
-    let id = ui.scope_id().with(("egui-paint-icon", name, rect.min.x.to_bits(), rect.min.y.to_bits()));
+    let id = ui.scope_id().with(("egui-paint-icon", name, next_in_pass(ui.ctx())));
     let builder = UiBuilder::new().layer_id(ui.layer_id()).max_rect(rect).layout(egui::Layout::centered_and_justified(egui::Direction::TopDown));
     let mut child = egui::Ui::new(ui.ctx().clone(), id, builder);
     child.set_clip_rect(ui.clip_rect());

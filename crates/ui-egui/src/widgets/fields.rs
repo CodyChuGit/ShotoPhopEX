@@ -6,12 +6,12 @@ use super::{Color32, Pos2, Rect, Response, Sense, Tokens, Ui, Vec2};
 /// `Select`. `name` names it for screen readers; `id` keeps it apart from another of the same name. Returns true when
 /// the user picked another value.
 pub fn dropdown<T: craft::behavior::Value + PartialEq + Clone + 'static>(ui: &mut Ui, id: &str, name: &str, current: &mut T, options: &[(T, &str)], width: f32) -> bool {
-    use craft::ui::contract::{Bind, Entry, Show as _};
+    use craft::ui::contract::{Bind, Entry, Props as _, Show as _, Sizing};
     let entries: Vec<Entry<T>> = options.iter().map(|(value, label)| Entry::new(value.clone(), tl!(label).to_owned())).collect();
     let picked = ui
         .push_id(id, |ui| {
             ui.set_max_width(width);
-            craft::ui::pickers::Select::new(tl!(name).to_owned(), Bind::given(current.clone()), &entries).show(ui).value().cloned()
+            craft::ui::pickers::Select::new(tl!(name).to_owned(), Bind::given(current.clone()), &entries).sizing(Sizing::Content).show(ui).value().cloned()
         })
         .inner;
     match picked {

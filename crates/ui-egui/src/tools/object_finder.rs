@@ -355,6 +355,8 @@ mod tests {
         let mut app = disc_app();
         let ctx = app.ctx().clone();
         app.session.execute("layer.new.layer", json!({})).unwrap();
+        // ShotoPhopEX: Sample All Layers off (the fork turns it on by default for Object Selection).
+        app.ui.tool_options.sample_all.object_selection = false;
         let u = update(&mut app, Some([100.0, 80.0]), false, 100.0, &ctx);
         assert!(u.shown.is_none() && !u.busy);
         assert_eq!(u.hint, Some(empty_layer_hint()));

@@ -155,6 +155,11 @@ fn the_window_menu_toggles_the_panel_and_ui_set_switches_its_view() {
     let mut app = app("http://127.0.0.1:9", &dir);
     let ctx = egui::Context::default();
     assert!(crate::panel_docking::is_shown(&app, "generations"), "on in Essentials");
+    // A tab behind Generate in its group: the menu brings it to the front, then hides it.
+    if !crate::panel_docking::is_front(&app, "generations") {
+        crate::menus::invoke(&mut app, &ctx, "window.panel.generations", Value::Null).unwrap();
+        assert!(crate::panel_docking::is_front(&app, "generations"));
+    }
     crate::menus::invoke(&mut app, &ctx, "window.panel.generations", Value::Null).unwrap();
     assert!(!crate::panel_docking::is_front(&app, "generations"));
     crate::menus::invoke(&mut app, &ctx, "window.toggle.generations", Value::Null).unwrap();

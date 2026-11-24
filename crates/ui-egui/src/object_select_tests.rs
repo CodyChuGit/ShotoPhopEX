@@ -89,12 +89,15 @@ fn a_drag_is_a_box_prompt_and_ctrl_clicks_refine_the_last_object() {
     let plain = selection_bounds(&a).unwrap();
     a.ui.tool_options.object_widen = 6.0;
     a.ui.tool_options.object_fill_holes = true;
+    // A click inside the selection in New mode deselects (upstream 0.24, #12853): start clear.
+    a.run("select.deselect", json!({})).unwrap();
     click(&mut a, 30.0, 30.0, none);
     let p = last_params(&a).1;
     assert_eq!((p["grow"].as_f64(), p["fillHoles"].as_bool(), p.get("soften")), (Some(6.0), Some(true), None));
     assert_eq!(selection_bounds(&a).map(|b| b.x0), Some(plain.x0 - 6), "the same object, widened");
     // Soften feathers beyond the widened edge (a Gaussian tail), so only the parameter is checked.
     a.ui.tool_options.object_soften = 2.5;
+    a.run("select.deselect", json!({})).unwrap();
     click(&mut a, 30.0, 30.0, none);
     assert_eq!(last_params(&a).1["soften"].as_f64(), Some(2.5));
 }
@@ -103,7 +106,7 @@ fn a_drag_is_a_box_prompt_and_ctrl_clicks_refine_the_last_object() {
 fn the_finder_probes_a_resting_pointer_and_the_click_applies_the_probe() {
     let fake = FakeNative::start().unwrap();
     let mut a = app(&fake.url);
-    let mut h = Harness::builder().with_size(vec2(700.0, 500.0)).build_ui_state(
+    let mut h = Harness::builder().with_context(a.ctx().clone()).with_size(vec2(700.0, 500.0)).build_ui_state(
         |ui, app: &mut Box<PhotocraftApp>| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;

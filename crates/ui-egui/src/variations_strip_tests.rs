@@ -10,6 +10,11 @@ use super::*;
 
 /// A 256×192 document with a selection, talking to `url`; runs inline unless `background`.
 fn app(url: &str) -> Box<PhotocraftApp> {
+    app_in(url, egui::Context::default())
+}
+
+/// [`app`] drawing into `ctx` (the canvas views live in the context).
+fn app_in(url: &str, ctx: egui::Context) -> Box<PhotocraftApp> {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 256, "height": 192})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
@@ -19,20 +24,21 @@ fn app(url: &str) -> Box<PhotocraftApp> {
         p.integrations.runtime_path = "fake".into();
         p.integrations.allow_research_models = false;
     });
-    let mut app = PhotocraftApp::new(s, crate::Services::default());
+    let mut app = PhotocraftApp::with_context(ctx, s, crate::Services::default());
     app.sync_views();
     app
 }
 
-/// Draw the strip over a 900×600 canvas.
+/// Draw the strip over the document's canvas in a 900×600 window.
 fn harness(app: Box<PhotocraftApp>) -> Harness<'static, Box<PhotocraftApp>> {
-    let mut h = Harness::builder().with_size(vec2(900.0, 600.0)).build_ui_state(
+    let mut h = Harness::builder().with_context(app.ctx().clone()).with_size(vec2(900.0, 600.0)).build_ui_state(
         |ui, app: &mut Box<PhotocraftApp>| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
             }
-            app.last_canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(900.0, 600.0));
-            show(app, ui.ctx());
+            let ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+            show(app, &ctx);
         },
         app,
     );
@@ -200,7 +206,7 @@ fn in_the_whole_app_a_tile_click_reaches_only_the_strip() {
     let url = fake.url.clone();
     let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_max_steps(8).build_eframe(move |cc| {
         PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-        let mut a = app(&url);
+        let mut a = app_in(&url, cc.egui_ctx.clone());
         a.run("generate.fill", json!({"prompt": "a kite", "variations": 3})).unwrap();
         a.ui.tool = crate::state::Tool::Brush;
         a

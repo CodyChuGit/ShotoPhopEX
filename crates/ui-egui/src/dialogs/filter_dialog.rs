@@ -354,6 +354,7 @@ pub(crate) fn params(app: &mut PhotocraftApp, command: &str, spec: &str) -> Vec<
             if p.key == "template"
                 && let Some(options) = &models
             {
+                // (Only when the form lists `template` itself; otherwise the row is added below.)
                 return Param::new(p.key, Label::from(tl!("Model").to_string()), ParamKind::choice(options.clone(), Some(String::new())));
             }
             // Edit › Fade's Mode is the blend list with the modes the document can't fade with greyed (#13852).
@@ -418,6 +419,12 @@ pub(crate) fn params(app: &mut PhotocraftApp, command: &str, spec: &str) -> Vec<
             p
         })
         .collect();
+    // ShotoPhopEX: the generic form leaves out the optional `template`; the generative dialogs show it as the Model row.
+    if let Some(options) = models
+        && !list.iter().any(|p| p.key == "template")
+    {
+        list.push(Param::new("template", Label::from(tl!("Model").to_string()), ParamKind::choice(options, Some(String::new()))));
+    }
     if command == crate::bitmap_dialog::COMMAND {
         list = crate::bitmap_dialog::params(app);
     }

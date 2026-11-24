@@ -354,7 +354,14 @@ fn legacy_group(key: &str) -> Group<String> {
 /// so every closed panel keeps the place it comes back to.
 fn full_layout() -> Layout<String> {
     let toolbar = Column::new(vec![Group::new(vec![TOOLBAR.to_owned()], 0)]).with_steps(1);
-    let expanded = Column::new(EXPANDED_GROUPS.iter().map(|key| legacy_group(key)).collect());
+    // ShotoPhopEX: Generate and Generations share one group (two tabs), so the column keeps upstream's room for Layers.
+    let expanded = Column::new(
+        EXPANDED_GROUPS
+            .iter()
+            .filter(|key| **key != "generations")
+            .map(|key| if *key == "generate" { Group::new(vec!["generate".to_owned(), "generations".to_owned()], 0) } else { legacy_group(key) })
+            .collect(),
+    );
     let icons =
         Column::new(LEGACY_GROUPS.iter().map(|(key, _)| *key).filter(|key| !EXPANDED_GROUPS.contains(key)).map(legacy_group).collect()).with_iconic(true);
     let canvas =

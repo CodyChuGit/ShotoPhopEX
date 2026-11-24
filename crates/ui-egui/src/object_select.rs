@@ -236,7 +236,11 @@ pub fn reset(app: &mut PhotocraftApp) {
 pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
     let active_doc = app.session.active().map(|d| d.doc.id);
-    let wanted = app.ui.tool == Tool::ObjectSelection && app.ui.tool_options.object_finder && !ctx.input(|i| i.pointer.any_down()) && active_doc.is_some();
+    let wanted = app.ui.tool == Tool::ObjectSelection && app.ui.tool_options.object_finder && active_doc.is_some();
+    // A press keeps the probe: its release (the click) applies it.
+    if wanted && ctx.input(|i| i.pointer.any_down()) {
+        return;
+    }
     if !wanted {
         if app.ui.object_select.probe.is_some() || app.ui.object_select.pending.is_some() || app.ui.object_select.hover.is_some() {
             reset(app);
@@ -272,7 +276,8 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
         });
         ctx.request_repaint();
     }
-    let inside = app.hover_doc.filter(|p| {
+    let pointer = ctx.pointer_hover_pos().and_then(|pos| crate::canvas::document_display::doc_point_at(app, pos)).map(|p| [p.x, p.y]);
+    let inside = pointer.or(app.hover_doc).filter(|p| {
         app.session.active().is_some_and(|d| p[0] >= 0.0 && p[1] >= 0.0 && p[0] < f64::from(d.doc.size.width) && p[1] < f64::from(d.doc.size.height))
     });
     let Some(p) = inside else {

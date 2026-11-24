@@ -33,6 +33,8 @@ pub fn document_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     crate::layer_transfer::prepare(app, ui.ctx());
     documents(app, ui);
     crate::layer_transfer::finish(app, ui.ctx());
+    // ShotoPhopEX: the Object Finder's hover probe, once the canvas has its view.
+    crate::object_select::tick(app, ui.ctx());
     // The Shift+Alt+right-click HUD Color Picker (#6098), while its gesture is held.
     crate::color_hud::show(app, ui);
 }

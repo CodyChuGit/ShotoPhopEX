@@ -478,6 +478,8 @@ fn black_white_auto_button_sets_the_weights() {
             Ok(())
         })
         .unwrap();
+    // ShotoPhopEX: the Generate panel has Auto choices of its own; this test means the Properties panel's button.
+    let _ = crate::panel_docking::show_panel(h.state_mut(), "generate", Some(false));
     h.run_steps(2);
     let (_, before) = layer(&h);
     let steps = history_len(&h);

@@ -74,7 +74,10 @@ pub(crate) fn tool<'a>(scope: &'a ToolScope<'a>, state: &'a mut RetouchTools, _h
         // Indexed Color and Bitmap refuse Object Selection: the press must reach `finish_object_selection` for the
         // tool's alert (#12867), never deselect or move the outline.
         let refused = app.session.active().is_some_and(|st| photocraft_engine::smartselect_cmds::object_mode_refusal(st.doc.mode).is_some());
-        (tool, PcSelection::of(app), bar, app.ui.tool_options.object_finder && !refused)
+        // ShotoPhopEX: in Refine mode a click inside the selection adds a spot to the last object, so the outline
+        // drag (and its click-deselects) is off.
+        let refining = app.ui.tool_options.object_refine;
+        (tool, PcSelection::of(app), bar, app.ui.tool_options.object_finder && !refused && !refining)
     });
     state.drag.operation(bar);
     Box::new(RetouchTool { scope, state: RefCell::new(state), tool, probe, bar, finder })
