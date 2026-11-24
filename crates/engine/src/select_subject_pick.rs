@@ -15,8 +15,17 @@ use photocraft_geom::Rect;
 const SIZE_CAP: f32 = 0.10;
 /// A candidate covering more than this share of the picture is taken for the backdrop.
 const BACKDROP_SHARE: f32 = 0.80;
-/// What a backdrop keeps of its weight.
-const BACKDROP_WEIGHT: f32 = 0.3;
+/// What a backdrop keeps of its weight: next to nothing, so it is chosen only when it is all
+/// there is.
+const BACKDROP_WEIGHT: f32 = 0.05;
+/// A candidate reaching within this share of the picture's width or height of an edge
+/// touches it.
+const EDGE_REACH: f64 = 0.01;
+/// A find of a catch-all prompt touching this many of the picture's edges is the ground, a
+/// wall or a table top (5090 test, 2026-11-24: the tundra under a lone hiker, 57 % of the
+/// picture, named "the foreground object"). A person's bust touches three edges too, so what
+/// "the main subject", "person" or "animal" found is not judged this way.
+const BACKDROP_EDGES: usize = 3;
 /// How much the far corner costs against the middle of the picture (0: nothing, 1: all).
 const CENTRE_PULL: f32 = 0.5;
 /// The detector's score when the worker sent none (an older worker).
@@ -37,6 +46,9 @@ pub(crate) struct Candidate {
     /// Which prompt found it (an index into the prompts asked) and what that prompt weighs.
     pub prompt: usize,
     pub prompt_weight: f32,
+    /// A catch-all prompt found it ("the foreground object", "object"): such prompts name
+    /// surfaces as readily as things.
+    pub catch_all: bool,
     /// The detector's score, 0..1, when the worker sent it.
     pub score: Option<f32>,
     /// Canvas coverage, its bounds and pixel count.
@@ -54,7 +66,10 @@ pub(crate) fn share(c: &Candidate, w: usize, h: usize) -> f32 {
 pub(crate) fn weight(c: &Candidate, w: usize, h: usize) -> f32 {
     let share = share(c, w, h);
     let size = (share.min(SIZE_CAP) / SIZE_CAP).sqrt();
-    let backdrop = if share > BACKDROP_SHARE { BACKDROP_WEIGHT } else { 1.0 };
+    let (rx, ry) = (w.max(1) as f64 * EDGE_REACH, h.max(1) as f64 * EDGE_REACH);
+    let edges = [f64::from(c.bounds.x0) <= rx, f64::from(c.bounds.y0) <= ry, f64::from(c.bounds.x1) >= w as f64 - rx, f64::from(c.bounds.y1) >= h as f64 - ry];
+    let touching = edges.iter().filter(|e| **e).count();
+    let backdrop = if share > BACKDROP_SHARE || (c.catch_all && touching >= BACKDROP_EDGES) { BACKDROP_WEIGHT } else { 1.0 };
     let (cx, cy) = (f64::from(c.bounds.x0 + c.bounds.x1) * 0.5, f64::from(c.bounds.y0 + c.bounds.y1) * 0.5);
     let (hw, hh) = (w.max(1) as f64 * 0.5, h.max(1) as f64 * 0.5);
     let off = (((cx - hw) / hw).powi(2) + ((cy - hh) / hh).powi(2)).sqrt() / std::f64::consts::SQRT_2;
@@ -121,7 +136,7 @@ mod tests {
             }
         }
         let pixels = ((r.2 - r.0) * (r.3 - r.1)) as u64;
-        Candidate { prompt, prompt_weight: 1.0, score: Some(score), cov, bounds, pixels }
+        Candidate { prompt, prompt_weight: 1.0, catch_all: false, score: Some(score), cov, bounds, pixels }
     }
 
     #[test]
@@ -175,6 +190,27 @@ mod tests {
         let vase = cand(0, 0.7, (40, 40, 60, 80));
         let (chosen, _) = choose(&[wall, vase], W, H);
         assert_eq!(chosen, vec![1]);
+    }
+
+    #[test]
+    fn the_ground_a_catch_all_prompt_names_does_not_beat_a_small_sure_subject() {
+        // A lone hiker, a thousandth of the picture, and the tundra under them: three edges,
+        // over half the picture, named by "the foreground object".
+        let hiker = cand(0, 0.90, (48, 40, 51, 44));
+        let mut tundra = cand(1, 0.79, (0, 43, 100, 100));
+        tundra.prompt_weight = 0.9;
+        tundra.catch_all = true;
+        let (chosen, _) = choose(&[hiker.clone(), tundra.clone()], W, H);
+        assert_eq!(chosen, vec![0]);
+        // A bust touching three edges, found as the main subject, is the subject.
+        let bust = cand(0, 0.9, (0, 20, 100, 100));
+        let hat = cand(0, 0.8, (35, 20, 65, 35));
+        assert_eq!(choose(&[bust, hat], W, H).0, vec![0]);
+        // A large thing a catch-all prompt names that stands clear of the edges still wins.
+        let mut car = cand(1, 0.79, (10, 45, 90, 95));
+        car.prompt_weight = 0.9;
+        car.catch_all = true;
+        assert_eq!(choose(&[hiker, car], W, H).0, vec![1]);
     }
 
     #[test]

@@ -774,7 +774,8 @@ fn subject_candidates(
         total_ms += ms;
         for (mi, m) in masks.iter().enumerate() {
             let Some((cov, bounds, pixels)) = instances_of(std::slice::from_ref(m), area)?.pop() else { continue };
-            cands.push(Candidate { prompt: pi, prompt_weight: subject_prompt_weight(prompt), score: scores.get(mi).copied(), cov, bounds, pixels });
+            let catch_all = matches!(prompt.as_str(), "the foreground object" | "object");
+            cands.push(Candidate { prompt: pi, prompt_weight: subject_prompt_weight(prompt), catch_all, score: scores.get(mi).copied(), cov, bounds, pixels });
         }
     }
     if cands.is_empty() {
