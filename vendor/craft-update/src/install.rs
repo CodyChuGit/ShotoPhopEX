@@ -1426,8 +1426,8 @@ pub mod macos {
     /// What a new copy must prove before it replaces anything. The checksum shows the download is
     /// the file the release lists; these show the app inside is the one the release promises.
     pub struct Expect<'a> {
-        /// The team whose Developer ID signature the bundle must carry. `None` only in tests,
-        /// which build unsigned bundles.
+        /// The team whose Developer ID signature the bundle must carry. `None` for ShotoPhopEX's
+        /// own self-update (its releases are unsigned) and in tests, which build unsigned bundles.
         pub team: Option<&'a str>,
         /// The release's version, which the bundle must report. `None` when the tag isn't one.
         pub version: Option<&'a Version>,
@@ -1442,8 +1442,13 @@ pub mod macos {
         }
 
         /// [`Self::release`] for an app replacing itself.
+        ///
+        /// ShotoPhopEX: no Developer ID check. Its Mac releases are never signed (and never by
+        /// upstream's team), so upstream's check refused every update. The DMG is still checked
+        /// against the SHA-256 its GitHub release publishes, and the app inside must report the
+        /// release's version.
         pub fn self_update(release: &'a Release) -> Self {
-            Self { quit_first: false, ..Self::release(release) }
+            Self { team: None, quit_first: false, ..Self::release(release) }
         }
     }
 
@@ -4021,6 +4026,16 @@ esac
             let release = Release { tag: "v0.6.0".into(), version: version::parse("0.6.0"), ..Release::default() };
             assert!(Expect::release(&release).quit_first);
             assert!(!Expect::self_update(&release).quit_first);
+        }
+
+        /// ShotoPhopEX: its unsigned Mac releases update themselves; the version is still checked.
+        #[test]
+        fn a_self_update_needs_no_developer_signature() {
+            let release = Release { tag: "v0.6.0".into(), version: version::parse("0.6.0"), ..Release::default() };
+            let expect = Expect::self_update(&release);
+            assert_eq!(expect.team, None);
+            assert_eq!(expect.version, release.version.as_ref());
+            assert_eq!(Expect::release(&release).team, Some(TEAM_ID));
         }
 
         #[test]

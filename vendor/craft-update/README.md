@@ -24,3 +24,11 @@ A second change (also marked `ShotoPhopEX`): the Windows Installer publisher in 
 (`PUBLISHER`, also used for the launcher's HKCU key in `src/msi_copy.rs`) is `ShotoPhopEX`, the
 MSI's own Manufacturer since 0.1.2, instead of upstream's `Learning Machines LLC`. So the updater
 only ever recognises this fork's installs, never an upstream PhotoCraft install.
+
+A third change (also marked `ShotoPhopEX`): ShotoPhopEX releases are never code-signed, so the
+self-update no longer requires a signature. On Windows `can_self_update_at` offers the update to
+an unsigned copy and `signed_like` (in `src/self_update.rs`) accepts every file when the running
+copy itself isn't signed; on macOS `Expect::self_update` (in `src/install.rs`) drops the Developer
+ID team check. Downloads are still refused unless they come from the release's own GitHub download
+link and match the SHA-256 the release publishes (GitHub's per-file digest or `SHA256SUMS.txt`);
+the Mac bundle must also report the release's version.
