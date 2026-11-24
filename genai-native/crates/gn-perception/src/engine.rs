@@ -685,8 +685,13 @@ impl Engine for PerceptionEngine {
             images.push(b);
             bytes.push(data);
         }
+        // The detector's score of each mask, in order, as one text: the app weighs Select
+        // Subject's candidates by it.
+        let scores: Vec<String> = kept.iter().map(|i| format!("{:.4}", i.score.clamp(0.0, 1.0))).collect();
+        // Nothing found stays an answer with no output at all, as before.
+        let texts = if scores.is_empty() { Vec::new() } else { vec![format!("scores: [{}]", scores.join(", "))] };
         progress(1.0, "Done");
-        Ok((DoneInfo { images, texts: Vec::new(), seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, bytes))
+        Ok((DoneInfo { images, texts, seed: req.seed, elapsed_ms: started.elapsed().as_millis() as u64 }, bytes))
     }
 
     fn free(&mut self) {

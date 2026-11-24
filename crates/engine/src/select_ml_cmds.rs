@@ -124,6 +124,9 @@ struct Plan {
     /// `detail: "part"`: a single click selects a part of what is under it (the shirt, not the
     /// person): see [`detect`].
     part: bool,
+    /// Select Subject's `pick: "top"`: the detector's first answer as it comes, not the
+    /// weighed pick ([`crate::select_subject_pick`]).
+    pick_top: bool,
 }
 
 /// Most pixels a detector mask may be widened or shrunk by.
@@ -287,7 +290,12 @@ fn plan(s: &Session, cmd: &str, p: &Value) -> Result<Plan> {
         Some("part") => true,
         Some(other) => return Err(bad(cmd, format!("`detail` must be whole or part (got `{other}`)"))),
     };
-    Ok(Plan { common, mode, instance, threshold, all_layers, points, negatives, bbox, refine, probe, grow, fill_holes, soften, candidate, part })
+    let pick_top = match p.get("pick").and_then(Value::as_str) {
+        None | Some("smart") => false,
+        Some("top") => true,
+        Some(other) => return Err(bad(cmd, format!("`pick` must be smart or top (got `{other}`)"))),
+    };
+    Ok(Plan { common, mode, instance, threshold, all_layers, points, negatives, bbox, refine, probe, grow, fill_holes, soften, candidate, part, pick_top })
 }
 
 /// Bounding box of the pixels with coverage ≥ 0.5, in document coordinates, and their count.
@@ -403,12 +411,35 @@ fn detect(
 /// One request to the detector: see [`detect`].
 fn detect_one(
     backend: &dyn photocraft_genai::GenerativeBackend,
-    _server: &str,
+    server: &str,
     image: Rgba8,
     canvas: Rect,
     pr: &Prompting,
     ctx: &JobCtx,
 ) -> Result<(Vec<Gray8>, u64)> {
+    detect_scored(backend, server, image, canvas, pr, ctx).map(|(masks, ms, _)| (masks, ms))
+}
+
+/// The detector's scores for the masks of one answer, when the worker sent them (a text
+/// `scores: [0.93, 0.61]`, one per mask in order); empty from a worker that does not.
+fn scores_of(texts: &[String], masks: usize) -> Vec<f32> {
+    texts
+        .iter()
+        .find_map(|t| t.strip_prefix("scores: "))
+        .and_then(|t| serde_json::from_str::<Vec<f32>>(t).ok())
+        .filter(|v| v.len() == masks)
+        .unwrap_or_default()
+}
+
+/// One request to the detector, with its scores ([`scores_of`]): see [`detect`].
+fn detect_scored(
+    backend: &dyn photocraft_genai::GenerativeBackend,
+    _server: &str,
+    image: Rgba8,
+    canvas: Rect,
+    pr: &Prompting,
+    ctx: &JobCtx,
+) -> Result<(Vec<Gray8>, u64, Vec<f32>)> {
     let (rw, rh) = (image.width, image.height);
     let (sx, sy) = (f64::from(rw) / f64::from(canvas.width().max(1)), f64::from(rh) / f64::from(canvas.height().max(1)));
     let scaled = |pts: &[[f64; 2]]| -> String {
@@ -476,7 +507,8 @@ fn detect_one(
         let red = Gray8::new(img.width, img.height, img.data.as_chunks::<4>().0.iter().map(|p| p[0]).collect()).map_err(gen_err)?;
         masks.push(red);
     }
-    Ok((masks, resp.elapsed_ms))
+    let scores = scores_of(&resp.texts, masks.len());
+    Ok((masks, resp.elapsed_ms, scores))
 }
 
 /// The server's way of saying the detector found no instance (ComfyUI 0.39's SaveImage on an
@@ -626,7 +658,7 @@ fn run_select(s: &mut Session, cmd: &str, p: &Value, label_prefix: &str) -> Resu
     }
     let pr = prompting(&plan);
     let (backend, server) = generate_cmds::backend_for(s, &pr.template_id)?;
-    let Plan { mode, instance, all_layers, points, bbox, refine, grow, fill_holes, soften, .. } = plan;
+    let Plan { mode, instance, all_layers, points, bbox, refine, grow, fill_holes, soften, pick_top, .. } = plan;
     let label = if bbox.is_some() {
         "Select by Box".to_string()
     } else if points.is_empty() {
@@ -650,26 +682,126 @@ fn run_select(s: &mut Session, cmd: &str, p: &Value, label_prefix: &str) -> Resu
             let area = doc.bounds();
             let n = area.width() as usize * area.height() as usize;
             let (image, _) = detector_image(doc, *active, all_layers, MAX_SEGMENT_REQUEST_PIXELS)?;
-            let (masks, ms, _) = detect_any(backend.as_ref(), &server, &image, area, &pr, &prompts, ctx)?;
-            ctx.progress(0.95, "Selecting");
-            let mut instances = instances_of(&masks, area)?;
-            if instance.is_none() {
-                instances = without_specks(instances);
-            }
-            if instances.is_empty() {
-                return Err(EngineError::Other(format!("nothing matching \"{shown}\" was found")));
-            }
-            let mut mask = pick(&instances, instance, n, &shown)?;
+            // Select Subject weighs everything the detector found; `pick: "top"`, a numbered
+            // instance and every other command take the detector's answer as it comes.
+            let weighed = if prompts.len() > 1 && instance.is_none() && !pick_top {
+                Some(subject_candidates(backend.as_ref(), &server, &image, area, &pr, &prompts, ctx)?)
+            } else {
+                None
+            };
+            let (mut mask, instances, ms, candidates) = match weighed {
+                Some((cands, ms)) => {
+                    ctx.progress(0.95, "Selecting");
+                    let (chosen, weights) = crate::select_subject_pick::choose(&cands, area.width() as usize, area.height() as usize);
+                    let instances: Vec<Instance> = chosen.iter().map(|i| (cands[*i].cov.clone(), cands[*i].bounds, cands[*i].pixels)).collect();
+                    let listed = candidates_json(&cands, &weights, &chosen, &prompts);
+                    (pick(&instances, None, n, &shown)?, instances, ms, Some(listed))
+                }
+                None => {
+                    let (masks, ms, _) = detect_any(backend.as_ref(), &server, &image, area, &pr, &prompts, ctx)?;
+                    ctx.progress(0.95, "Selecting");
+                    let mut instances = instances_of(&masks, area)?;
+                    if instance.is_none() {
+                        instances = without_specks(instances);
+                    }
+                    if instances.is_empty() {
+                        return Err(EngineError::Other(format!("nothing matching \"{shown}\" was found")));
+                    }
+                    (pick(&instances, instance, n, &shown)?, instances, ms, None)
+                }
+            };
             if refine {
                 ctx.progress(0.97, "Refining edge");
                 mask = matte_or_refine(backend.as_ref(), doc, *active, all_layers, mask, area, ctx)?.0;
             }
             let mask = finish_coverage(mask, area, grow, fill_holes, soften);
             doc.selection = sel::combine(doc.selection.as_ref(), &mask, area, mode);
-            Ok((doc.selection.is_some(), instances_json(&instances), ms))
+            Ok((doc.selection.is_some(), instances_json(&instances), ms, candidates))
         },
-        move |(selected, instances, ms)| json!({"selected": selected, "count": instances.len(), "instances": instances, "ms": ms}),
+        move |(selected, instances, ms, candidates)| {
+            let mut out = json!({"selected": selected, "count": instances.len(), "instances": instances, "ms": ms});
+            if let (Some(c), Some(o)) = (candidates, out.as_object_mut()) {
+                o.insert("candidates".into(), Value::Array(c));
+            }
+            out
+        },
     )
+}
+
+/// How many instances Select Subject asks the detector for per prompt.
+const SUBJECT_CANDIDATES: usize = 6;
+
+/// What each of [`SUBJECT_FALLBACKS`] weighs in Select Subject's pick: "object" matches
+/// anything, so it counts least.
+fn subject_prompt_weight(prompt: &str) -> f32 {
+    match prompt {
+        "the main subject" => 1.0,
+        "object" => 0.6,
+        _ => 0.9,
+    }
+}
+
+/// Everything the detector finds for Select Subject: up to [`SUBJECT_CANDIDATES`] answers to
+/// the first prompt and, when the best of them is small in the picture (or there is none),
+/// to the others too. The picture's embedding is kept by the worker, so the further prompts
+/// cost a fraction of the first. The candidates and the detector's time.
+fn subject_candidates(
+    backend: &dyn photocraft_genai::GenerativeBackend,
+    server: &str,
+    image: &Rgba8,
+    area: Rect,
+    pr: &Prompting,
+    prompts: &[String],
+    ctx: &JobCtx,
+) -> Result<(Vec<crate::select_subject_pick::Candidate>, u64)> {
+    use crate::select_subject_pick::{Candidate, WEAK_SHARE, share};
+    let (w, h) = (area.width() as usize, area.height() as usize);
+    let mut cands: Vec<Candidate> = Vec::new();
+    let mut total_ms = 0u64;
+    for (pi, prompt) in prompts.iter().enumerate() {
+        ctx.check()?;
+        if pi > 0 && cands.iter().any(|c| share(c, w, h) >= WEAK_SHARE) {
+            break;
+        }
+        let mut attempt = pr.clone();
+        attempt.prompt = prompt.clone();
+        attempt.max_detections = Some(SUBJECT_CANDIDATES);
+        let (masks, ms, scores) = match detect_scored(backend, server, image.clone(), area, &attempt, ctx) {
+            Ok(found) => found,
+            Err(e) if found_nothing(&e.to_string()) => continue,
+            Err(e) => return Err(e),
+        };
+        total_ms += ms;
+        for (mi, m) in masks.iter().enumerate() {
+            let Some((cov, bounds, pixels)) = instances_of(std::slice::from_ref(m), area)?.pop() else { continue };
+            let catch_all = matches!(prompt.as_str(), "the foreground object" | "object");
+            cands.push(Candidate { prompt: pi, prompt_weight: subject_prompt_weight(prompt), catch_all, score: scores.get(mi).copied(), cov, bounds, pixels });
+        }
+    }
+    if cands.is_empty() {
+        return Err(EngineError::Other(format!("nothing matching \"{}\" was found", pr.prompt)));
+    }
+    Ok((cands, total_ms))
+}
+
+/// Select Subject's candidates for the result: what found each, the detector's score, its
+/// weight in the pick and whether it was chosen.
+fn candidates_json(cands: &[crate::select_subject_pick::Candidate], weights: &[f32], chosen: &[usize], prompts: &[String]) -> Vec<Value> {
+    cands
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            json!({
+                "index": i + 1,
+                "prompt": prompts.get(c.prompt).cloned().unwrap_or_default(),
+                "score": c.score,
+                "weight": weights.get(i).copied().unwrap_or(0.0),
+                "bounds": [c.bounds.x0, c.bounds.y0, c.bounds.width(), c.bounds.height()],
+                "pixels": c.pixels,
+                "chosen": chosen.contains(&i),
+            })
+        })
+        .collect()
 }
 
 fn run_by_text(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1077,7 +1209,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Select Subject (ML)",
             menu: &[],
             shortcut: None,
-            params: r#"{"what":"subject|person|face|hair|sky|animal|vehicle|text","mode":"replace|add|subtract|intersect","threshold":0..1=0.5,"sampleAllLayers":bool=true,"instance":{1..?=all},"refine":bool=false,"grow":-256..256=0,"fillHoles":bool=false,"soften":0..64=0} → {"selected","count","instances","ms"} (Select by Text with a fixed phrase, the same grow / fillHoles / soften mask stack; the classical select.subject stays available without a server)"#,
+            params: r#"{"what":"subject|person|face|hair|sky|animal|vehicle|text","mode":"replace|add|subtract|intersect","threshold":0..1=0.5,"sampleAllLayers":bool=true,"instance":{1..?=all},"refine":bool=false,"grow":-256..256=0,"fillHoles":bool=false,"soften":0..64=0,"pick":"smart|top"=smart} → {"selected","count","instances","ms","candidates"?:[{"index","prompt","score","weight","bounds","pixels","chosen"}]} (Select by Text with a fixed phrase, the same grow / fillHoles / soften mask stack; what subject weighs everything the detector found by its score, its share of the picture, how near the middle it is and whether it is the backdrop, and selects the best with the others of its kind and size (a group is one subject), listing them all as candidates; pick top takes the detector's first answer as it comes; the classical select.subject stays available without a server)"#,
             enabled,
             run: run_subject,
             journal: true,

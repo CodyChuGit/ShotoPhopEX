@@ -266,6 +266,36 @@ fn select_subject_ml_uses_a_fixed_phrase() {
 }
 
 #[test]
+fn select_subject_weighs_a_small_first_answer_against_the_other_kinds() {
+    // "the main subject" names a small thing in a corner (half a percent of the picture); "the
+    // foreground object" finds the large thing in the middle.
+    let options = || Options {
+        segments_for: vec![("the main subject".into(), vec![[0.9, 0.1, 0.95, 0.2]]), ("the foreground object".into(), vec![[0.2, 0.3, 0.8, 0.9]])],
+        ..Options::default()
+    };
+    let fake = FakeNative::start_with(options()).unwrap();
+    let mut s = session(&fake.url);
+    let r = s.execute(SUBJECT_ML, json!({})).unwrap();
+    let asked: Vec<String> = fake.state().runs.iter().map(|p| p.request["prompt"].as_str().unwrap_or_default().to_string()).collect();
+    assert_eq!(asked, ["the main subject", "the foreground object"], "a fair-sized find ends the asking");
+    assert_eq!(fake.state().runs[0].request["params"]["maxDetections"], 6);
+    let cands = r["candidates"].as_array().unwrap();
+    assert_eq!(cands.len(), 2, "{r}");
+    assert_eq!((cands[0]["chosen"].clone(), cands[1]["chosen"].clone()), (json!(false), json!(true)), "{r}");
+    assert_eq!(cands[1]["prompt"], "the foreground object");
+    assert_eq!(r["count"], 1);
+    assert_eq!(selection_bounds(&s), Some(Rect::new(13, 15, 52, 44)));
+    // `pick: "top"` is the detector's first answer as it comes.
+    let top = FakeNative::start_with(options()).unwrap();
+    let mut s2 = session(&top.url);
+    let r = s2.execute(SUBJECT_ML, json!({"pick": "top"})).unwrap();
+    assert_eq!(top.state().runs.len(), 1);
+    assert!(r.get("candidates").is_none(), "{r}");
+    assert_eq!(selection_bounds(&s2), Some(Rect::new(58, 5, 61, 10)));
+    assert!(matches!(s2.execute(SUBJECT_ML, json!({"pick": "best"})), Err(EngineError::BadParams { .. })));
+}
+
+#[test]
 fn select_subject_falls_back_through_the_kinds_of_thing_a_picture_is_of_and_drops_specks() {
     // "the main subject" and "the foreground object" find nothing; "person" finds a figure and
     // a speck beside it.
