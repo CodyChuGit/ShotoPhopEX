@@ -16,8 +16,8 @@
 //! | Linux `.deb` / `.rpm` | the system package manager, with the password prompt; then restart |
 //! | Linux Flatpak | reinstall the bundle on the same installation (per-user, or system-wide through `pkexec`); then restart |
 //!
-//! Anything else (FreeBSD, a development build, an unsigned Windows copy) gets the download link
-//! instead.
+//! Anything else (FreeBSD, a development build) gets the download link instead. (ShotoPhopEX:
+//! upstream also sends an unsigned Windows copy there; this copy updates it, see [`signed_like`].)
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -188,23 +188,14 @@ pub fn is_self_updating(app: &App) -> bool {
     std::env::current_exe().is_ok_and(|exe| can_self_update_at(app, &exe, std::env::var_os(DEV_VAR).is_some()))
 }
 
-/// [`is_self_updating`] for a known executable and opt-in setting. On Windows the update helper
-/// installs nothing for an unsigned copy, so only a signed one is offered the update; [`DEV_VAR`]
-/// still offers it, to try the self-update.
+/// [`is_self_updating`] for a known executable and opt-in setting.
+///
+/// ShotoPhopEX: its releases are never code-signed, so an unsigned copy is offered the update
+/// too (upstream offers it only to an Authenticode-signed copy). The download is still checked
+/// against the SHA-256 its GitHub release publishes, from the release's own download link
+/// ([`install::check_download_link`]); see [`signed_like`].
 fn can_self_update_at(app: &App, exe: &Path, opted_in: bool) -> bool {
-    current_at(app, exe, opted_in).is_some() && (opted_in || is_signed(exe))
-}
-
-/// Whether `exe` carries a valid Authenticode signature.
-#[cfg(windows)]
-fn is_signed(exe: &Path) -> bool {
-    verifysign::verify_file(exe).is_ok()
-}
-
-/// Only Windows refuses an unsigned copy's update.
-#[cfg(not(windows))]
-fn is_signed(_exe: &Path) -> bool {
-    true
+    current_at(app, exe, opted_in).is_some()
 }
 
 /// Whether `release` has a file the self-update can install this copy from. Only a standalone
@@ -1634,12 +1625,22 @@ fn same_cache_as_helper(app: &App, paths: &Paths, exe: &Path) -> Result<(), Stri
 }
 
 /// Accepts `file` when it carries a valid Authenticode signature from the same publisher as
-/// `reference`, this program. Refuses an unsigned file, another publisher's, and every file when
-/// `reference` itself isn't signed.
+/// `reference`, this program. Refuses an unsigned file and another publisher's.
+///
+/// ShotoPhopEX: when `reference` itself isn't signed (every ShotoPhopEX release: the project
+/// doesn't sign its builds), every file is accepted. Upstream refuses them all, which left an
+/// unsigned copy unable to install any update. What vouches for an unsigned update instead is
+/// the download check: the MSI or zip comes only from the exact GitHub download link of this
+/// app's release ([`install::check_download_link`]) and must match the SHA-256 the release
+/// publishes (GitHub's per-file digest or its `SHA256SUMS.txt`), or it isn't installed. A copy
+/// that is signed keeps upstream's rule, so it never takes an unsigned or foreign file.
 #[cfg(windows)]
 fn signed_like(app: &App, reference: &Path, file: &Path) -> Result<(), String> {
     let publisher = |path: &Path| verifysign::verify_file(path).map(|signature| signature.subject_name());
-    let ours = publisher(reference).map_err(|e| format!("this copy of {} isn't signed ({e}), so it doesn't install updates", app.name))?;
+    let Ok(ours) = publisher(reference) else {
+        log::info!("{} isn't code-signed: {} is trusted by its published SHA-256 alone", app.name, file.display());
+        return Ok(());
+    };
     let theirs = publisher(file).map_err(|e| format!("{} isn't signed ({e})", file.display()))?;
     if ours == theirs { Ok(()) } else { Err(format!("{} isn't signed by {}'s publisher", file.display(), app.name)) }
 }
@@ -3042,7 +3043,9 @@ mod tests {
         gone.id()
     }
 
-    /// A catalog-signed program matches itself; an unsigned one never does, on either side.
+    /// A catalog-signed program matches itself and refuses an unsigned file. ShotoPhopEX: an
+    /// unsigned copy (every ShotoPhopEX release) takes any file; its downloads are vouched for by
+    /// their published SHA-256 instead.
     #[cfg(windows)]
     #[test]
     fn a_file_must_be_signed_by_the_launchers_own_publisher() {
@@ -3051,32 +3054,33 @@ mod tests {
         let unsigned = std::env::current_exe().unwrap();
         assert_eq!(signed_like(&crate::suite::LAUNCHER, &cmd, &cmd), Ok(()));
         assert!(signed_like(&crate::suite::LAUNCHER, &cmd, &unsigned).is_err_and(|e| e.contains("isn't signed")));
-        assert!(signed_like(&crate::suite::LAUNCHER, &unsigned, &cmd).is_err_and(|e| e.contains("doesn't install updates")));
+        assert_eq!(signed_like(&crate::suite::LAUNCHER, &unsigned, &cmd), Ok(()));
+        assert_eq!(signed_like(&crate::suite::LAUNCHER, &unsigned, &unsigned), Ok(()));
     }
 
-    /// An unsigned copy gets the download link instead of an update it cannot install, unless
-    /// [`DEV_VAR`] asks to try the self-update.
+    /// ShotoPhopEX: an unsigned copy is offered the self-update like a signed one.
     #[cfg(windows)]
     #[test]
-    fn only_a_signed_copy_is_offered_the_self_update() {
+    fn an_unsigned_copy_is_offered_the_self_update() {
         let dir = tempfile::tempdir().unwrap();
         let unsigned = dir.path().join("artcraft-launcher.exe");
         std::fs::write(&unsigned, "MZ").unwrap();
         std::fs::write(dir.path().join("portable.txt"), "").unwrap();
-        assert!(!can_self_update_at(&crate::suite::LAUNCHER, &unsigned, false));
+        assert!(can_self_update_at(&crate::suite::LAUNCHER, &unsigned, false));
         assert!(can_self_update_at(&crate::suite::LAUNCHER, &unsigned, true));
         assert!(can_self_update_at(&crate::suite::LAUNCHER, &system_program("cmd.exe"), false));
     }
 
-    /// An unsigned launcher says so before it quits for an update. `cargo test` binaries are
-    /// unsigned, like a package built without the signing secrets.
+    /// ShotoPhopEX: an unsigned launcher is not refused for its missing signature. `cargo test`
+    /// binaries are unsigned, like every ShotoPhopEX release; msiexec isn't the launcher's own
+    /// executable, so the precheck still refuses it, for that reason.
     #[cfg(windows)]
     #[test]
-    fn an_unsigned_launcher_refuses_to_update_before_it_quits() {
+    fn an_unsigned_launcher_is_not_refused_for_its_signature() {
         let dir = tempfile::tempdir().unwrap();
         for install in [Install::Msi(system_program("msiexec.exe")), Install::Portable(system_program("msiexec.exe"))] {
             let error = windows_precheck(&crate::suite::LAUNCHER, &install, &Paths::under(dir.path())).unwrap_err();
-            assert!(error.contains("isn't signed"), "{error}");
+            assert!(!error.contains("isn't signed"), "{error}");
         }
     }
 
@@ -3103,7 +3107,7 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(error.contains("isn't signed"), "{error}");
+        assert!(error.contains("own update"), "{error}");
         assert_eq!(phases, 0, "no download phase was reported");
     }
 
