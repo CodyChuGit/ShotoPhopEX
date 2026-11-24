@@ -51,6 +51,7 @@ pub mod proof_sim;
 mod scratch;
 pub mod select_mask_edits;
 pub mod select_ml_cmds;
+mod select_subject_pick;
 pub mod shell_commands;
 pub mod shortcut_sets;
 pub mod snap;
