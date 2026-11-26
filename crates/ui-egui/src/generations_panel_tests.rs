@@ -4,7 +4,7 @@ use photocraft_genai::fake::FakeNative;
 use serde_json::json;
 
 use super::*;
-use crate::control::{ControlRequest, Outcome, handle};
+use crate::control::{ControlRequest, Reply, handle};
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("photocraft-generations-ui-{}-{name}", std::process::id()));
@@ -13,7 +13,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 }
 
 /// A 64×48 document with a layer and a selection, talking to `url`, its library in `dir`.
-fn app(url: &str, dir: &std::path::Path) -> PhotocraftApp {
+fn app(url: &str, dir: &std::path::Path) -> Box<PhotocraftApp> {
     let mut s = photocraft_engine::Session::new();
     s.set_generations_dir(dir.to_path_buf());
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
@@ -32,15 +32,15 @@ fn app(url: &str, dir: &std::path::Path) -> PhotocraftApp {
 fn control(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: Value) -> Value {
     let (req, _rx) = ControlRequest::new(method, params);
     match handle(app, ctx, &req) {
-        Outcome::Done(v) => v,
+        Reply::Done(v) => v,
         _ => panic!("{method}: the reply was deferred"),
     }
 }
 
 /// Draw the panel alone for a few frames.
-fn draw(app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
+fn draw(app: Box<PhotocraftApp>) -> Harness<'static, Box<PhotocraftApp>> {
     let mut h = Harness::builder().with_size(vec2(300.0, 420.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
             }
@@ -154,17 +154,20 @@ fn the_window_menu_toggles_the_panel_and_ui_set_switches_its_view() {
     let dir = temp_dir("menu");
     let mut app = app("http://127.0.0.1:9", &dir);
     let ctx = egui::Context::default();
-    assert!(app.ui.panels.generations, "on in Essentials");
-    assert!(crate::dock::Group::Generations.shown(&app.ui.panels));
+    assert!(crate::panel_docking::is_shown(&app, "generations"), "on in Essentials");
+    // A tab behind Generate in its group: the menu brings it to the front, then hides it.
+    if !crate::panel_docking::is_front(&app, "generations") {
+        crate::menus::invoke(&mut app, &ctx, "window.panel.generations", Value::Null).unwrap();
+        assert!(crate::panel_docking::is_front(&app, "generations"));
+    }
     crate::menus::invoke(&mut app, &ctx, "window.panel.generations", Value::Null).unwrap();
-    assert!(!app.ui.panels.generations);
+    assert!(!crate::panel_docking::is_front(&app, "generations"));
     crate::menus::invoke(&mut app, &ctx, "window.toggle.generations", Value::Null).unwrap();
-    assert!(app.ui.panels.generations);
+    assert!(crate::panel_docking::is_front(&app, "generations"));
     // A layout saved before the panel existed still shows it.
-    let mut saved = serde_json::to_value(&app.ui.panels).unwrap();
-    saved.as_object_mut().unwrap().remove("generations");
-    let back: crate::state::Panels = serde_json::from_value(saved).unwrap();
-    assert!(back.generations);
+    let mut old = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    crate::dock::apply(&mut old, &json!({"panels": {"layers": true, "history": true, "properties": true, "color": true}}));
+    assert!(crate::panel_docking::is_shown(&old, "generations") && crate::panel_docking::is_shown(&old, "generate"));
 
     assert_eq!(control(&mut app, &ctx, "ui.set", json!({"generationsView": "list"}))["ok"], true);
     assert_eq!(app.ui.generations.view, GenView::List);
@@ -241,7 +244,7 @@ fn a_short_group_shows_the_compact_strip_with_every_kind_of_row() {
     assert!(first.run("generate.fill", json!({"prompt": "a boat"})).is_err());
     // The group at its compact height: 80 pt minus the tab strip.
     let mut h = Harness::builder().with_size(vec2(300.0, 52.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 panel(app, ui);
             }
@@ -285,7 +288,7 @@ fn bench_generations_panel_with_200_rows() {
         static PANEL_MS: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
     }
     let mut h = Harness::builder().with_size(vec2(300.0, 700.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 let t = std::time::Instant::now();
                 panel(app, ui);
@@ -328,7 +331,7 @@ fn many_rows_draw_fast_and_only_a_few_thumbnails_decode_per_frame() {
         app.run("generate.fill", json!({"prompt": "a kite", "seed": seed})).unwrap();
     }
     let mut h = Harness::builder().with_size(vec2(300.0, 2000.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 panel(app, ui);
             }

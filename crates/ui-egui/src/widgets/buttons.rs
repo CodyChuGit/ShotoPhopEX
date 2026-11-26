@@ -1,34 +1,7 @@
-use super::panel::surface;
-use super::{Color32, Rect, Response, Sense, Stroke, StrokeKind, Tokens, Ui, Vec2, pos2, theme, vec2};
+//! Primary and secondary buttons, a dialog's button row and the checkbox.
 
-/// iOS-style toggle switch.
-pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
-    let t = Tokens::get(ui.ctx());
-    if t.pro {
-        return checkbox(ui, on, label);
-    }
-    let mut resp = ui
-        .horizontal(|ui| {
-            let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 17.0), Sense::click());
-            let how_on = ui.ctx().animate_bool(resp.id, *on);
-            let bg = if *on { t.accent } else { t.field_border };
-            if t.bevel {
-                surface(ui, rect, if *on { t.accent } else { t.field }, false);
-            } else {
-                ui.painter().rect_filled(rect, 8.5, bg);
-            }
-            let x = egui::lerp((rect.left() + 8.5)..=(rect.right() - 8.5), how_on);
-            ui.painter().circle_filled(pos2(x, rect.center().y), 6.5, Color32::WHITE);
-            ui.label(egui::RichText::new(tl!(label)).color(if *on { t.text } else { t.text_dim }));
-            resp
-        })
-        .inner;
-    if resp.clicked() {
-        *on = !*on;
-        resp.mark_changed();
-    }
-    resp
-}
+use super::panel::surface;
+use super::{Color32, Rect, Response, Sense, Stroke, StrokeKind, Tokens, Ui, Vec2, theme, vec2};
 
 /// Big white primary button.
 pub fn primary_button(ui: &mut Ui, label: &str, min_width: f32) -> Response {
@@ -36,21 +9,9 @@ pub fn primary_button(ui: &mut Ui, label: &str, min_width: f32) -> Response {
     button_impl(ui, label, min_width, t.primary_bg, t.primary_text, true)
 }
 
-/// The width of the widest of `labels` as a button, for a column of equal-width buttons.
-pub fn button_width(ui: &Ui, labels: &[&str]) -> f32 {
-    let fg = Tokens::get(ui.ctx()).text;
-    labels.iter().map(|l| button_layout(ui, l, 0.0, None, fg).1.x).fold(0.0, f32::max)
-}
-
 pub fn secondary_button(ui: &mut Ui, label: &str, min_width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     button_impl(ui, label, min_width, t.field, t.text, false)
-}
-
-/// A [`secondary_button`] `height` points tall, for slim bars such as the status bar (#2823).
-pub fn compact_button(ui: &mut Ui, label: &str, height: f32) -> Response {
-    let t = Tokens::get(ui.ctx());
-    button_impl_h(ui, label, 0.0, Some(height), t.field, t.text, false)
 }
 
 /// What a dialog button does, which decides where the platform's button order puts it.
@@ -158,11 +119,7 @@ fn button_layout(ui: &Ui, label: &str, min_width: f32, height: Option<f32>, fg: 
 }
 
 fn button_impl(ui: &mut Ui, label: &str, min_width: f32, bg: Color32, fg: Color32, primary: bool) -> Response {
-    button_impl_h(ui, label, min_width, None, bg, fg, primary)
-}
-
-/// [`button_impl`] with an explicit `height` (`None`: the theme's button height).
-fn button_impl_h(ui: &mut Ui, label: &str, min_width: f32, height: Option<f32>, bg: Color32, fg: Color32, primary: bool) -> Response {
+    let height = None;
     let t = Tokens::get(ui.ctx());
     let (galley, size) = button_layout(ui, label, min_width, height, fg);
     let h = size.y;

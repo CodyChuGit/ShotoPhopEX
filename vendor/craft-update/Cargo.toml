@@ -1,9 +1,9 @@
 # ShotoPhopEX: a copy of craft-update from storytold/craft-libs at rev
-# 6e03f65bf45181db77ba6229716e6624db9eb25b (crates/update), used through [patch] in the root
-# Cargo.toml. The only change: self_update::update picks the download by every stem the app
-# lists (App::stems), not just App::id, so ShotoPhopEX finds its shotophopex-<ver>-<os>-<arch>
-# release files. Bumping craft-libs' rev upstream does NOT update this copy: re-copy it and
-# re-apply the change (see README.md here).
+# a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4 (crates/update), used through [patch] in the root
+# Cargo.toml. Changes (search `ShotoPhopEX` in src/): self_update picks the download by every stem
+# the app lists (App::stems), not just App::id, so ShotoPhopEX finds its shotophopex-<ver>-<os>-<arch>
+# release files; the Windows Installer publisher is ShotoPhopEX. Bumping craft-libs' rev upstream
+# does NOT update this copy: re-copy it and re-apply the changes (see README.md here).
 [package]
 name = "craft-update"
 description = "Release checking, downloading, installing and self-updating for the Craft App Suite and ArtCraft Launcher"
@@ -12,23 +12,31 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 repository = "https://github.com/storytold/craft-libs"
+autotests = false
+
+[lib]
+harness = false
 
 [lints.rust]
 unsafe_code = "forbid"
 
 [features]
+oci_migration = []
 default = []
-egui = ["dep:egui", "dep:image"]
-local-mirror = []
+suite = ["screen-testing", "craft-ui/suite"]
+screen-testing = ["ui", "craft-ui/testing"]
+ui = ["dep:egui", "dep:image", "dep:craft-ui", "dep:craft-host", "dep:craft-theme"]
 
 [dependencies]
 egui = { version = "0.37", default-features = false, optional = true }
-# Decodes the app icon the startup prompt shows (`App::icon_png`); PNG only.
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4", optional = true }
+craft-theme = { git = "https://github.com/storytold/craft-libs", rev = "a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4", optional = true }
+craft-host = { git = "https://github.com/storytold/craft-libs", rev = "a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4", features = ["ui"], optional = true }
+# Decodes the app icon the update dialogs show (`Host::icon_png`); PNG only.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
-getrandom = "0.3"
 tempfile = "3"
 sha2 = "0.10"
 ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "_ring", "gzip", "platform-verifier"] }
@@ -36,10 +44,8 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 semver = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4", features = ["suite"] }
 flate2 = "1"
-egui_kittest = "0.37"
-# egui's own Hack and Ubuntu Light for the screenshots (egui is built without default fonts).
-epaint_default_fonts = "0.37"
 
 [target.'cfg(unix)'.dependencies]
 flate2 = "1"
@@ -47,6 +53,9 @@ tar = { version = "0.4", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1"
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55"
@@ -59,6 +68,3 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 flate2 = "1"
 winsafe = { version = "0.0.29", features = ["advapi", "kernel", "shell", "version"] }
 verifysign = "1"
-
-[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
-rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }

@@ -4,7 +4,7 @@ use serde_json::json;
 
 use super::*;
 
-fn app() -> PhotocraftApp {
+fn app() -> Box<PhotocraftApp> {
     PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default())
 }
 
@@ -19,8 +19,8 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-fn custom_texture(ctx: &egui::Context) -> Option<TextureHandle> {
-    ctx.data(|d| d.get_temp::<TextureHandle>(crate::brand::custom_id()))
+fn custom_texture(ctx: &egui::Context) -> Option<[usize; 2]> {
+    crate::panels::brand::custom_size(ctx)
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn a_downloaded_image_joins_the_gallery_and_one_click_switches_back() {
     a.services.download = Some(fake_download);
     a.ui.app_icon.open = true;
     let mut h = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(
-        |ui, a: &mut PhotocraftApp| {
+        |ui, a: &mut Box<PhotocraftApp>| {
             // The first frame runs before the app's fonts are installed.
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 window(a, &ui.ctx().clone());

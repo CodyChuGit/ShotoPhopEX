@@ -4,11 +4,11 @@ use photocraft_genai::fake::FakeNative;
 use serde_json::json;
 
 use super::*;
-use crate::control::{ControlRequest, Outcome, handle};
+use crate::control::{ControlRequest, Reply, handle};
 
 /// A 64×48 document with a textured layer and a small "Hat" layer, talking to `url`; no
 /// background jobs (inline runs).
-fn app(url: &str) -> (PhotocraftApp, u64, u64) {
+fn app(url: &str) -> (Box<PhotocraftApp>, u64, u64) {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
@@ -34,7 +34,7 @@ fn app(url: &str) -> (PhotocraftApp, u64, u64) {
 fn control(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: Value) -> Value {
     let (req, _rx) = ControlRequest::new(method, params);
     match handle(app, ctx, &req) {
-        Outcome::Done(v) => v,
+        Reply::Done(v) => v,
         _ => panic!("{method}: the reply was deferred"),
     }
 }
@@ -203,9 +203,9 @@ fn ui_set_and_inspect_drive_the_panel_and_share_the_prompt_with_the_bar() {
 }
 
 /// Draw the panel alone at `height`.
-fn harness(app: PhotocraftApp, height: f32) -> Harness<'static, PhotocraftApp> {
+fn harness(app: Box<PhotocraftApp>, height: f32) -> Harness<'static, Box<PhotocraftApp>> {
     let mut h = Harness::builder().with_size(vec2(320.0, height)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
+        |ui, app: &mut Box<PhotocraftApp>| {
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 panel(app, ui);
             }
@@ -304,8 +304,8 @@ fn a_short_group_shows_one_row_and_drops_land_in_the_deck() {
         assert!(shown[0]["id"] == "generate-panel" && shown[0]["rect"][2].as_f64().is_some_and(|w| w < 60.0), "{shown}");
     }
     let rect = h.state().ui.generate.drop_rect.expect("the panel's rect");
-    let target = h.state().drop_target(&egui::Context::default(), Some(rect.center()));
-    assert_eq!(target, crate::file_open::DropTarget::References);
+    let target = h.state().drop_to(&egui::Context::default(), Some(rect.center()));
+    assert_eq!(target, crate::file_open::DropTo::References);
     // The bar steps aside while the panel is on screen (auto), and shows when it is hidden.
     let app = h.state();
     assert!(visible(app));
@@ -385,7 +385,7 @@ fn capture_generate_panel_snapshots() {
     let _gpu = photocraft_testkit::gpu_lock();
     std::fs::create_dir_all(&directory).unwrap();
     let fake = FakeNative::start().unwrap();
-    for kind in crate::theme::ThemeKind::ALL {
+    for kind in crate::theme::AppTheme::all() {
         for mode in MODES {
             let (mut a, base, _) = app(&fake.url);
             a.ui.generate.mode = mode.into();
@@ -398,12 +398,13 @@ fn capture_generate_panel_snapshots() {
                 a.ui.generate.references.push(json!({"layer": base}));
             }
             let mut ready = false;
+            let theme = kind.clone();
             let mut h = Harness::builder().with_size(vec2(320.0, 760.0)).wgpu().build_ui_state(
-                move |ui, app: &mut PhotocraftApp| {
+                move |ui, app: &mut Box<PhotocraftApp>| {
                     if !ready {
                         egui_extras::install_image_loaders(ui.ctx());
                         crate::theme::install_fonts(ui.ctx());
-                        crate::theme::apply(ui.ctx(), kind);
+                        crate::theme::apply(ui.ctx(), &theme);
                         ready = true;
                         return;
                     }

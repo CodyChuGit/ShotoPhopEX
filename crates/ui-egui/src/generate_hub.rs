@@ -249,7 +249,7 @@ pub fn activate(app: &mut PhotocraftApp, ctx: &egui::Context, card: &Card) -> Re
     if !card.create && app.session.active().is_none() {
         // The dialog answers on a later frame (`file_dialog`): the card carries on in `tick`
         // once the picture is open. No file dialog here: nothing will open, so nothing waits.
-        if app.open_dialog_file().is_err() {
+        if app.services.files.is_none() || app.open_dialog_file().is_err() {
             app.ui.status = tl!("Open a picture first").to_string();
             app.ui.status_error = false;
             return Ok(json!({"waiting": false}));
@@ -263,10 +263,7 @@ pub fn activate(app: &mut PhotocraftApp, ctx: &egui::Context, card: &Card) -> Re
 fn run(app: &mut PhotocraftApp, ctx: &egui::Context, card: &Card) -> Result<Value, String> {
     match card.target {
         Target::Panel(mode) => {
-            app.ui.panels.generate = true;
-            if let Some(g) = crate::dock::Group::from_key("generate") {
-                crate::dock::reveal(app, g);
-            }
+            let _ = crate::panels::panel_docking::show_panel(app, "generate", Some(true));
             crate::generate_panel::focus_mode(app, mode);
             if mode == "fill" || mode == "edit" {
                 app.ui.generative_bar.mode = mode.to_string();

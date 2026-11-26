@@ -106,11 +106,14 @@ fn the_panel_lists_the_pages_templates_with_estimates_and_the_probe_marks_missin
     // A research licence is a badge, never a block, whatever the preference says.
     let research = items.iter().find(|i| i.id == "qwen-2.1/fill").unwrap();
     assert!(research.research && research.allowed);
-    // The generated dialog of Generate Image carries the rows and draws the pill.
-    let dialog = crate::filter_dialog::open(&mut app, "generate.image").unwrap();
-    let fields = app.ui.dialogs.iter().find(|d| d.id == dialog).unwrap().fields.clone();
-    let models = fields["__models"].as_array().unwrap();
-    assert!(models.iter().any(|m| m["id"] == "krea2-turbo/image") && models.iter().all(|m| m["id"] != "qwen-edit-2511/fill"));
+    // The generated dialog of Generate Image has a Model row with Auto and the Image page's templates only.
+    let spec = photocraft_engine::commands::find("generate.image").unwrap().params;
+    let rows = crate::filter_dialog::params(&mut app, "generate.image", spec);
+    let model = rows.iter().find(|p| p.key == "template").expect("a Model row");
+    let craft::ui::patterns::form_dialogs::ParamKind::Choice { options, .. } = &model.kind else { panic!("the Model row is a choice") };
+    let ids: Vec<&str> = options.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids.first(), Some(&""), "Auto first: {ids:?}");
+    assert!(ids.contains(&"krea2-turbo/image") && !ids.contains(&"qwen-edit-2511/fill"), "{ids:?}");
 }
 
 fn pill_items() -> Vec<Item> {

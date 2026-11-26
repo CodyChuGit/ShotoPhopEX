@@ -1,15 +1,18 @@
 //! The brand mark at the left of the title bar. This build paints the "Sp" tile
-//! (`assets/app-icon/sp/`, see its README) in place of the "Px" tile
-//! in `assets/app-icon/`. The PNG carries the icon's rounded corners; it is decoded once per
-//! context into a mipmapped texture, so it stays crisp at the title bar's size on any display scale.
-//! Fork: a custom icon chosen in Edit › Preferences › App Icon… (`app_icon_ui`) replaces it, and a
-//! click on the mark opens that window.
+//! (`assets/app-icon/sp/`, see its README) in place of the "Px" tile in `assets/app-icon/`. The PNG
+//! carries the icon's rounded corners; the framework `Picture` stores the decoded image once and
+//! draws it at the title bar's icon size. A custom icon chosen in Edit › Preferences › App Icon…
+//! (`app_icon_ui`) replaces it.
 
-use egui::{Color32, Context, Id, Rect, TextureHandle, TextureOptions, Ui, pos2};
+use craft::ui::display::Picture;
+use egui::Color32;
 use photocraft_codecs::{ChannelLayout, SampleType};
 
-/// 128 px: sharp at 20 pt on a 3× display, and the mipmaps keep it clean at 1×.
+/// 128 px: sharp at 20 pt on a 3× display.
 const ICON_PNG: &[u8] = include_bytes!("../../../../assets/app-icon/sp/sp-128.png");
+
+/// The key the picture store keeps the decoded icon under.
+const KEY: u64 = 0x7068_6f74_6f63_7266;
 
 /// The icon's pixels (one transparent pixel if it couldn't be decoded, which a test rules out).
 fn decode() -> egui::ColorImage {
@@ -22,42 +25,50 @@ fn decode() -> egui::ColorImage {
     }
 }
 
-/// Where the fork's custom app icon (`app_icon_ui`) keeps its texture while one is chosen.
-pub(crate) fn custom_id() -> Id {
-    Id::unique("photocraft-brand-mark-custom")
+/// The custom icon in use (`app_icon_ui`) and the picture-store key it is kept under, in the context's memory, so
+/// each window (and each test) has its own.
+type Custom = std::sync::Arc<(u64, egui::ColorImage)>;
+
+fn custom_id() -> egui::Id {
+    egui::Id::unique("shotophopex-custom-app-icon")
 }
 
-/// The icon texture, uploaded on first use and kept in the context (a custom icon wins).
-fn texture(ctx: &Context) -> TextureHandle {
-    if let Some(tex) = ctx.data(|d| d.get_temp::<TextureHandle>(custom_id())) {
-        return tex;
-    }
-    let id = Id::unique("photocraft-brand-mark");
-    if let Some(tex) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
-        return tex;
-    }
-    let options = TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
-    let tex = ctx.load_texture("photocraft-brand-mark", decode(), options);
-    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
-    tex
+/// Shows `image` as the mark in place of the built-in icon; `None` restores the built-in one.
+pub(crate) fn set_custom(ctx: &egui::Context, image: Option<egui::ColorImage>) {
+    let keyed = image.map(|img| {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        img.size.hash(&mut h);
+        img.as_raw().hash(&mut h);
+        Custom::new((h.finish() | 1, img))
+    });
+    ctx.data_mut(|d| match keyed {
+        Some(custom) => {
+            d.insert_temp(custom_id(), custom);
+        }
+        None => {
+            d.remove::<Custom>(custom_id());
+        }
+    });
 }
 
-/// Where the mark was painted this frame (tests and screenshots).
-fn rect_id() -> Id {
-    Id::unique("photocraft-brand-mark-rect")
-}
-
-/// Paint the mark into `r` (square).
-pub fn paint_mark(ui: &Ui, r: Rect) {
-    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-    ui.painter().image(texture(ui.ctx()).id(), r, uv, Color32::WHITE);
-    ui.ctx().data_mut(|d| d.insert_temp(rect_id(), r));
-}
-
-/// The rect the mark was last painted into.
+/// The size of the custom icon the mark shows, or `None` for the built-in one.
 #[cfg(test)]
-pub fn mark_rect(ctx: &Context) -> Option<Rect> {
-    ctx.data(|d| d.get_temp(rect_id()))
+pub(crate) fn custom_size(ctx: &egui::Context) -> Option<[usize; 2]> {
+    ctx.data(|d| d.get_temp::<Custom>(custom_id())).map(|c| c.1.size)
+}
+
+/// Shows the brand mark as a decorative picture: the empty label keeps a screen reader from announcing it.
+pub(crate) fn show_mark(ui: &mut egui::Ui) -> egui::Response {
+    use craft::ui::contract::Show as _;
+    match ui.ctx().data(|d| d.get_temp::<Custom>(custom_id())) {
+        Some(custom) => {
+            let key = custom.0;
+            let image = move || custom.1.clone();
+            Picture::new("", key, &image).show(ui)
+        }
+        None => Picture::new("", KEY, &decode).show(ui),
+    }
 }
 
 #[cfg(test)]
@@ -71,24 +82,5 @@ mod tests {
         // Rounded corners: the corner pixel is transparent, the centre opaque.
         assert_eq!(img.pixels[0].a(), 0);
         assert_eq!(img.pixels[64 * 128 + 64].a(), 255);
-    }
-
-    #[test]
-    fn the_title_bar_paints_the_icon_from_one_cached_texture() {
-        let ctx = Context::default();
-        crate::PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::ALL[0]);
-        let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        // The system title bar hides the in-app mark (the OS draws its own icon), so paint the
-        // app-drawn bar here.
-        app.custom_titlebar = true;
-        let mut frame = || {
-            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| crate::panels::title_bar(&mut app, ui));
-            let uploads = out.textures_delta.set.values().flat_map(|d| d.iter()).filter(|d| d.image.size() == [128, 128]).count();
-            out.textures_delta.clear();
-            uploads
-        };
-        assert_eq!(frame(), 1, "uploaded on first use");
-        assert_eq!(frame(), 0, "then reused");
-        assert!(mark_rect(&ctx).is_some());
     }
 }

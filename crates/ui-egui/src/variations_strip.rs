@@ -151,7 +151,10 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let side = place(app).to_string();
     let busy = app.ui.transform.is_some() || app.ui.text_edit.is_some();
     let list = if side == "off" || busy { Vec::new() } else { bundles(app) };
-    let canvas = crate::rulers::content_rect(app, app.last_canvas_rect);
+    let Some(canvas) = crate::canvas::document_display::active_view(app).map(|v| v.rect) else {
+        app.ui.variations.drawn.clear();
+        return;
+    };
     if list.is_empty() || canvas.width() < 240.0 || canvas.height() < 160.0 {
         app.ui.variations.drawn.clear();
         return;
@@ -399,7 +402,7 @@ fn tile_texture(app: &mut PhotocraftApp, ctx: &egui::Context, id: u64, area: Opt
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
-    let rev = crate::surface_fingerprint(surface) ^ ((x0 as u64) << 48) ^ ((y0 as u64) << 32) ^ ((x1 as u64) << 16) ^ (y1 as u64);
+    let rev = crate::gen_preview::surface_fingerprint(surface) ^ ((x0 as u64) << 48) ^ ((y0 as u64) << 32) ^ ((x1 as u64) << 16) ^ (y1 as u64);
     if let Some((r, tex)) = app.ui.variations.thumbs.0.get(&id)
         && *r == rev
     {

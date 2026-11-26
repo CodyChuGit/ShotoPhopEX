@@ -603,7 +603,7 @@ pub fn on_event(app: &mut PhotocraftApp, e: &JobEvent) {
 
 /// Is the panel on screen (shown and not collapsed)? The task bar steps aside then (`auto`).
 pub fn visible(app: &PhotocraftApp) -> bool {
-    app.ui.panels.generate && !app.ui.dock.is_collapsed(crate::dock::Group::Generate) && app.ui.generate.drawn_frame.is_some_and(|f| app.frame <= f + 2)
+    crate::panels::panel_docking::is_front(app, "generate") && app.ui.generate.drawn_frame.is_some_and(|f| app.frame <= f + 2)
 }
 
 /// Switch the panel to `mode` and put the keyboard in its prompt (Edit › Generative Fill… while
@@ -673,10 +673,9 @@ pub fn add_reference(app: &mut PhotocraftApp, spec: Value) {
 }
 
 /// Files dropped onto the panel: each one (with a path) becomes a reference.
-pub fn add_dropped(app: &mut PhotocraftApp, files: Vec<egui::DroppedFileHandle>) {
+pub fn add_dropped(app: &mut PhotocraftApp, files: Vec<craft::ui::runtime::drag::OsFile>) {
     for f in files {
-        let path = f.path();
-        if path.is_absolute() {
+        if let Some(path) = f.path.filter(|p| p.is_absolute()) {
             add_reference(app, json!({"path": path.to_string_lossy()}));
         } else {
             app.ui.status = tl!("Only files with a path can be references here").to_string();
