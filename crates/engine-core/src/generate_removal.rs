@@ -141,7 +141,7 @@ pub const DEFAULT_REMOVAL_VARIATIONS: u32 = 2;
 pub(super) const MAX_REMOVAL_VARIATIONS: u32 = 4;
 
 /// `variations` for a removal: [`DEFAULT_REMOVAL_VARIATIONS`] unless given, 1 to 4.
-pub(crate) fn removal_variations(p: &Value) -> u32 {
+pub fn removal_variations(p: &Value) -> u32 {
     p.get("variations")
         .and_then(Value::as_f64)
         .filter(|v| v.is_finite())
@@ -505,7 +505,7 @@ pub(super) fn background_job(s: &Session, label: &str, seed: Option<u64>, tuning
 /// generative and a backend is configured ([`generative_configured`]). With `within_selection`
 /// a selection limits the hole, as it limits a brush.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn generative_remove(
+pub fn generative_remove(
     s: &mut Session,
     label: &str,
     bounds: Rect,

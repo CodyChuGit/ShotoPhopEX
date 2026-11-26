@@ -1,7 +1,7 @@
 # craft-update (ShotoPhopEX copy)
 
 A copy of `crates/update` from [storytold/craft-libs](https://github.com/storytold/craft-libs) at
-rev `5c5e0d52c387c0a4ae2908a07e476d7584f60362`, used in place of the git dependency through
+rev `a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4`, used in place of the git dependency through
 `[patch."https://github.com/storytold/craft-libs"]` in the root `Cargo.toml`. MIT OR Apache-2.0,
 as upstream (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`).
 

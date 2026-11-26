@@ -1,5 +1,5 @@
 # ShotoPhopEX: a copy of craft-update from storytold/craft-libs at rev
-# 5c5e0d52c387c0a4ae2908a07e476d7584f60362 (crates/update), used through [patch] in the root
+# a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4 (crates/update), used through [patch] in the root
 # Cargo.toml. Changes (search `ShotoPhopEX` in src/): self_update picks the download by every stem
 # the app lists (App::stems), not just App::id, so ShotoPhopEX finds its shotophopex-<ver>-<os>-<arch>
 # release files; the Windows Installer publisher is ShotoPhopEX. Bumping craft-libs' rev upstream
@@ -29,10 +29,10 @@ ui = ["dep:egui", "dep:image", "dep:craft-ui", "dep:craft-host", "dep:craft-them
 
 [dependencies]
 egui = { version = "0.37", default-features = false, optional = true }
-craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "5c5e0d52c387c0a4ae2908a07e476d7584f60362", optional = true }
-craft-theme = { git = "https://github.com/storytold/craft-libs", rev = "5c5e0d52c387c0a4ae2908a07e476d7584f60362", optional = true }
-craft-host = { git = "https://github.com/storytold/craft-libs", rev = "5c5e0d52c387c0a4ae2908a07e476d7584f60362", features = ["ui"], optional = true }
-# Decodes the app icon the update dialogs show (`App::icon_png`); PNG only.
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4", optional = true }
+craft-theme = { git = "https://github.com/storytold/craft-libs", rev = "a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4", optional = true }
+craft-host = { git = "https://github.com/storytold/craft-libs", rev = "a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4", features = ["ui"], optional = true }
+# Decodes the app icon the update dialogs show (`Host::icon_png`); PNG only.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -44,7 +44,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 semver = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
-craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "5c5e0d52c387c0a4ae2908a07e476d7584f60362", features = ["suite"] }
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "a165ef3a2cbc1e88f1b945966b77dc75a1fdf8e4", features = ["suite"] }
 flate2 = "1"
 
 [target.'cfg(unix)'.dependencies]

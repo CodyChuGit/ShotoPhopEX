@@ -26,7 +26,7 @@ pub(super) const DEFAULT_SCHEDULER: &str = "simple";
 /// templates run, and the pixels a request is downscaled to ([`MAX_FILL_REQUEST_PIXELS`]
 /// unless given). For measuring what the server's own settings are worth.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Tuning {
+pub struct Tuning {
     pub sampler: Option<String>,
     pub scheduler: Option<String>,
     pub max_pixels: u64,
@@ -108,7 +108,7 @@ impl Tuning {
     /// digits, underscores), `maxPixels` 65 536 to 16 M, `loras` a list of
     /// `{"file": "name.safetensors", "strength": 1.0}` (a file name, no folders; strength
     /// -4 to 4, 1 unless given).
-    pub(crate) fn from_params(cmd: &str, p: &Value) -> Result<Tuning> {
+    pub fn from_params(cmd: &str, p: &Value) -> Result<Tuning> {
         let name = |key: &str| -> Result<Option<String>> {
             match opt_str(cmd, p, key, 40)?.map(str::trim).filter(|s| !s.is_empty()) {
                 None => Ok(None),

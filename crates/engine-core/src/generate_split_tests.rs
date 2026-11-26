@@ -54,7 +54,7 @@ fn split_by_subjects_cuts_each_instance_out_over_a_repainted_background() {
     })
     .unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let (before, steps) = {
         let d = s.active().unwrap();
         (d.doc.layers.len(), d.history.past_len())
@@ -120,11 +120,11 @@ fn split_completes_what_a_nearer_subject_hid() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     // A blue strip on the back one's visible part, inside the band the front one's removal
     // repaints (x 82..102): the back one's own pixels, which its layer must keep.
     s.execute("select.rect", json!({"x": 82, "y": 19, "width": 20, "height": 77})).unwrap();
-    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    crate::test_fill::fill(&mut s, "#2040c8");
     s.execute("select.deselect", json!({})).unwrap();
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
@@ -175,9 +175,9 @@ fn split_sweeps_nearest_first_and_finds_the_rest_again_after_each_removal() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     s.execute("select.rect", json!({"x": 82, "y": 19, "width": 20, "height": 77})).unwrap();
-    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    crate::test_fill::fill(&mut s, "#2040c8");
     s.execute("select.deselect", json!({})).unwrap();
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "sweep": true, "layers": 6})).unwrap();
     assert_eq!(r["count"], 3, "two people, then nobody: {r}");
@@ -214,7 +214,7 @@ fn split_without_complete_runs_one_fill_and_keeps_the_visible_parts() {
     })
     .unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "complete": false, "order": "size"})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
     assert_eq!(r["order"], "size", "{r}");
@@ -247,7 +247,7 @@ fn split_finds_the_things_the_vision_model_names_and_takes_a_list_of_terms() {
     })
     .unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "layers": 4, "seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "the person and the cup; no table was found: {r}");
     assert_eq!(r["foundBy"], "person, cup", "{r}");
@@ -281,7 +281,7 @@ fn split_validates_its_parameters_and_has_no_similar() {
     let mut s = session(&fake.url);
     // The picture in the fake's fill colour: a fill in another brightness over a white canvas
     // is rightly refused as a shape painted over the hole.
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     for p in [json!({"layers": 1}), json!({"layers": 21}), json!({"layers": 2.5}), json!({"seed": "x"}), json!({"order": "depth"}), json!({"group": "all"})] {
         assert!(matches!(s.execute(SPLIT, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
     }
@@ -321,7 +321,7 @@ fn split_takes_hair_from_the_matte_around_each_subject() {
     })
     .unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "layers": 2, "seed": 1, "edges": "matte"})).unwrap();
     assert_eq!(r["edges"], "matte", "{r}");
     let subject = LayerId(r["layers"][1].as_u64().unwrap());
@@ -357,7 +357,7 @@ fn split_fails_with_nothing_changed_when_every_fill_paints_the_subject_back() {
     // in the hole after each try.
     let fake = FakeNative::start_with(photocraft_genai::fake::Options { echo: true, occlusion: true, ..Default::default() }).unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#1e5aa0"})).unwrap();
+    crate::test_fill::fill(&mut s, "#1e5aa0");
     let (before, steps) = {
         let d = s.active().unwrap();
         (d.doc.layers.len(), d.history.past_len())
@@ -409,7 +409,7 @@ fn the_split_background_takes_the_plain_name_when_the_document_has_no_background
     let mut s = session(&fake.url);
     let base = s.active().unwrap().doc.layers.iter().find(|l| l.name == "Background").map(|l| l.id).expect("the document's own Background");
     s.execute("layer.renameLayer", json!({"layer": base.0, "name": "Photo"})).unwrap();
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "layers": 2, "seed": 1})).unwrap();
     assert_eq!(layer_name(&s, LayerId(r["layers"][0].as_u64().unwrap())), "Background");
 }
@@ -432,7 +432,7 @@ fn the_layer_budget_counts_the_subjects_kept_not_the_detections() {
     })
     .unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "layers": 3, "prompt": "person, man, cup", "seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "the person once, and the cup: {r}");
     assert_eq!(r["foundBy"], "person, cup", "{r}");
@@ -460,7 +460,7 @@ fn split_rejects_a_fill_that_paints_someone_new_into_the_hole() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
     assert_eq!(r["incomplete"], json!(["Person 2"]), "the right one could not be cleared: {r}");
@@ -507,7 +507,7 @@ fn split_refuses_a_fill_that_leaves_the_subject_in_place_though_the_detector_mis
     // request and hands that back, which is not the subject, so it passes.
     let fake = FakeNative::start_with(photocraft_genai::fake::Options { echo: true, occlusion: true, overlooked: true, ..Default::default() }).unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#1e5aa0"})).unwrap();
+    crate::test_fill::fill(&mut s, "#1e5aa0");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 3})).unwrap();
     let tries = r["tries"].as_array().unwrap();
     assert_eq!(tries.len(), 3, "{tries:?}");
@@ -564,7 +564,7 @@ fn one_of_each_listed_thing_comes_before_a_second_of_any() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 128, 96);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "layers": 4, "seed": 1})).unwrap();
     assert_eq!(r["count"], 4, "{r}");
     assert_eq!(r["foundBy"], "cup, wooden table", "{r}");
@@ -702,10 +702,10 @@ fn a_big_hole_gets_the_removal_then_strips_then_the_box_and_the_patch() {
     for row in 0..25u32 {
         let color = if row.is_multiple_of(2) { "#404040" } else { "#b4b4b4" };
         s.execute("select.rect", json!({"x": 0, "y": row * 24, "width": 900, "height": 24})).unwrap();
-        s.execute("edit.fill", json!({"contents": "color", "color": color})).unwrap();
+        crate::test_fill::fill(&mut s, color);
     }
     s.execute("select.rect", json!({"x": 270, "y": 24, "width": 360, "height": 552})).unwrap();
-    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    crate::test_fill::fill(&mut s, "#2040c8");
     s.execute("select.deselect", json!({})).unwrap();
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "layers": 2})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
@@ -740,7 +740,7 @@ fn a_small_person_a_fill_paints_in_is_refused_however_small() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!(r["incomplete"], json!(["Person 2"]), "the right one could not be cleared: {r}");
     let tries = r["tries"].as_array().unwrap();
@@ -770,11 +770,11 @@ fn the_classical_patch_fill_is_the_last_try_when_every_fill_leaves_the_hole_blan
     for row in 0..12u32 {
         let color = if row.is_multiple_of(2) { "#404040" } else { "#b4b4b4" };
         s.execute("select.rect", json!({"x": 0, "y": row * 4, "width": 64, "height": 4})).unwrap();
-        s.execute("edit.fill", json!({"contents": "color", "color": color})).unwrap();
+        crate::test_fill::fill(&mut s, color);
     }
     // The person: a blue block where the fake's detector finds them (16, 12)–(48, 36).
     s.execute("select.rect", json!({"x": 16, "y": 12, "width": 32, "height": 24})).unwrap();
-    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    crate::test_fill::fill(&mut s, "#2040c8");
     s.execute("select.deselect", json!({})).unwrap();
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 2, "layers": 2})).unwrap();
     assert_eq!(r["incomplete"], json!([]), "{r}");
@@ -807,10 +807,10 @@ fn a_sweep_cuts_everyone_the_first_pass_saw_even_when_the_detector_loses_them() 
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     // The thin one (x 154..168, y 58..153), blue: their own pixels.
     s.execute("select.rect", json!({"x": 154, "y": 58, "width": 15, "height": 96})).unwrap();
-    s.execute("edit.fill", json!({"contents": "color", "color": "#2040c8"})).unwrap();
+    crate::test_fill::fill(&mut s, "#2040c8");
     s.execute("select.deselect", json!({})).unwrap();
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "sweep": true, "layers": 6})).unwrap();
     assert_eq!(r["count"], 3, "both people: {r}");
@@ -932,7 +932,7 @@ fn a_mask_over_the_whole_tile_is_no_figure() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 900, 600);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "layers": 2})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
     assert!(r["tries"].as_array().unwrap().iter().all(|t| t["verdict"] == "accepted"), "{r}");
@@ -960,7 +960,7 @@ fn a_figure_the_detector_sees_only_in_a_tile_of_the_picture_refuses_the_fill() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 900, 600);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let err = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "layers": 2})).unwrap_err().to_string();
     assert!(err.contains("a person painted into the hole (32×42 px)") && err.contains("nothing was changed"), "{err}");
     // Every model fill; the classical patch copies the canvas around the hole, the colour the
@@ -991,7 +991,7 @@ fn someone_in_the_picture_before_the_fill_is_neither_the_fills_work_nor_left_beh
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
     assert_eq!(r["leftBehind"], json!([]), "{r}");
@@ -1017,7 +1017,7 @@ fn an_invented_thing_is_taken_as_the_last_resort_when_every_try_is_refused() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "prompt": "person, table"})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
     let tries = r["tries"].as_array().unwrap();
@@ -1078,7 +1078,7 @@ fn refused_fills_are_kept_as_hidden_layers_on_request() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "keepTries": true})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(1)), "{r}");
     let refused: Vec<LayerId> = r["refusedLayers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -1141,7 +1141,7 @@ fn someone_in_a_framed_picture_is_a_picture_of_a_person() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1})).unwrap();
     assert_eq!((r["count"].as_u64(), r["incomplete"].as_array().map(Vec::len)), (Some(3), Some(0)), "{r}");
     assert_eq!(r["leftBehind"], json!([]), "{r}");
@@ -1181,7 +1181,7 @@ fn a_sweep_takes_a_subjects_part_apart_from_their_mask_for_theirs() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "seed": 1, "sweep": true, "layers": 6})).unwrap();
     assert_eq!(r["count"], 3, "two people and the background, no layer for the part: {r}");
     assert_eq!(r["incomplete"], json!([]), "{r}");
@@ -1230,7 +1230,7 @@ fn simple_split_removes_the_nearest_until_the_detector_finds_nothing() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let steps = s.active().unwrap().history.past_len();
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
     assert_eq!(r["method"], "simple", "{r}");
@@ -1280,7 +1280,7 @@ fn simple_split_takes_its_subjects_from_the_original_photo_only() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
     assert_eq!(r["count"], 2, "the background and the one person of the original photo: {r}");
     assert_eq!(r["passes"], 1, "{r}");
@@ -1305,7 +1305,7 @@ fn simple_split_keeps_a_subject_a_nearer_removal_painted_over_on_its_own_layer()
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
     assert_eq!(r["count"], 3, "the background, the front one and the lost one: {r}");
     assert_eq!(r["lost"].as_array().map(Vec::len), Some(1), "{r}");
@@ -1332,7 +1332,7 @@ fn simple_split_never_runs_a_grey_box_or_strips_fill() {
         FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![[0.1, 0.1, 0.9, 0.95]], occlusion: true, echo: true, ..Default::default() })
             .unwrap();
     let mut s = session_of(&fake.url, 640, 520);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let e = s.execute(SPLIT, json!({"seed": 1, "layers": 4})).unwrap_err().to_string();
     assert!(e.contains("could not clear"), "{e}");
     assert!(!e.contains("strips") && !e.contains("fill "), "only removals: {e}");
@@ -1363,7 +1363,7 @@ fn simple_split_keeps_refused_removals_as_hidden_layers_on_request() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "keepTries": true})).unwrap();
     assert_eq!(r["incomplete"].as_array().map(Vec::len), Some(1), "{r}");
     let refused: Vec<LayerId> = r["refusedLayers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -1377,7 +1377,7 @@ fn simple_split_keeps_refused_removals_as_hidden_layers_on_request() {
     // Without `keepTries`, nothing is kept and the layers are the same.
     fake.restore_scene();
     let mut s2 = session_of(&fake.url, 256, 192);
-    s2.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s2, "#c82828");
     let r2 = s2.execute(SPLIT, json!({"seed": 1, "layers": 6})).unwrap();
     // (The fake's second scene can also hand back a sliver of the left one that a removal then
     // paints over: a lost subject with a layer of its own, not counted here.)
@@ -1397,7 +1397,7 @@ fn simple_split_first_pass_only_places_the_masks_and_fills_nothing() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "firstPassOnly": true})).unwrap();
     assert_eq!(r["count"], 3, "{r}");
     assert_eq!((r["fills"].clone(), r["incomplete"].clone()), (json!(0), json!([])), "{r}");
@@ -1421,7 +1421,7 @@ fn simple_split_fails_cleanly_when_no_removal_clears_anyone() {
     })
     .unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let (before, steps) = {
         let d = s.active().unwrap();
         (d.doc.layers.len(), d.history.past_len())
@@ -1442,7 +1442,7 @@ fn simple_split_cuts_a_part_onto_its_own_layer_with_its_whole_in_one_removal() {
     let fake =
         FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![face, person], color: [10, 200, 10, 255], ..Default::default() }).unwrap();
     let mut s = session_of(&fake.url, 256, 192);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"seed": 1, "layers": 6, "edges": "hard"})).unwrap();
     assert_eq!(r["count"], 3, "the background, the person, the face: {r}");
     assert_eq!(r["passes"], 1, "{r}");
@@ -1473,7 +1473,7 @@ fn simple_split_detail_rough_keeps_parts_in_their_whole_and_skips_small_subjects
             FakeNative::start_with(photocraft_genai::fake::Options { segments: vec![face, person, speck], color: [10, 200, 10, 255], ..Default::default() })
                 .unwrap();
         let mut s = session_of(&fake.url, 256, 192);
-        s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+        crate::test_fill::fill(&mut s, "#c82828");
         s.execute(SPLIT, json!({"seed": 1, "edges": "hard", "detail": detail})).unwrap()
     };
     let rough = run("rough");
@@ -1520,7 +1520,7 @@ fn a_thing_the_detector_takes_for_an_animal_is_named_by_what_it_is() {
     })
     .unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "layers": 3, "seed": 1})).unwrap();
     let ids: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
     let mut names: Vec<String> = ids.iter().map(|id| layer_name(&s, *id)).collect();
@@ -1550,7 +1550,7 @@ fn a_lookalike_the_vision_model_cannot_name_stays_in_the_background() {
     })
     .unwrap();
     let mut s = session(&fake.url);
-    s.execute("edit.fill", json!({"contents": "color", "color": "#c82828"})).unwrap();
+    crate::test_fill::fill(&mut s, "#c82828");
     let r = s.execute(SPLIT, json!({"method": "classic", "layers": 3, "seed": 1})).unwrap();
     let names: Vec<String> = r["subjects"].as_array().unwrap().iter().map(|v| v["name"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(names, ["Cup"], "{r}");

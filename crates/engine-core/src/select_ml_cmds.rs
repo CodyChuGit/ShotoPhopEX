@@ -789,7 +789,7 @@ fn run_probe(s: &mut Session, p: &Value) -> Result<Value> {
 /// The spots along a stroke (canvas pixels) the detector is asked about: at most
 /// [`STROKE_PROMPT_POINTS`], evenly spaced along the samples, whole pixels inside `canvas`, no
 /// repeats (the Quick Selection tool's rule: 1–4 spots give the whole object, 16 fragment it).
-pub(crate) fn stroke_prompt(points: &[[f64; 2]], canvas: Rect) -> Vec<[f64; 2]> {
+pub fn stroke_prompt(points: &[[f64; 2]], canvas: Rect) -> Vec<[f64; 2]> {
     let inside: Vec<[f64; 2]> = points
         .iter()
         .map(|p| [p[0].round(), p[1].round()])
@@ -810,13 +810,13 @@ pub(crate) fn stroke_prompt(points: &[[f64; 2]], canvas: Rect) -> Vec<[f64; 2]> 
 }
 
 /// Most spots of a stroke sent as one point prompt.
-pub(crate) const STROKE_PROMPT_POINTS: usize = 4;
+pub const STROKE_PROMPT_POINTS: usize = 4;
 
 /// What the generative Remove tool and Spot Healing ask the detector before they fill: the
 /// object under the stroke's spots, so a stroke across part of it removes it whole (the fill
 /// model redraws an object whose rest stays in view: measured on the lighthouse's boat,
 /// 2026-10-21). Built on the session (backend and prompts), run inside the fill's job.
-pub(crate) struct ObjectUnderStroke {
+pub struct ObjectUnderStroke {
     backend: Arc<dyn photocraft_genai::GenerativeBackend>,
     server: String,
     prompting: Prompting,
@@ -848,7 +848,7 @@ fn prompting_for(s: &Session, cmd: &str, template: &str, prompt: &str) -> Option
 
 /// A finder for the object under `points` (canvas pixels, see [`stroke_prompt`]), or `None`
 /// when no backend serves the point template (the removal goes on from the stroke alone).
-pub(crate) fn object_under_stroke(s: &Session, points: Vec<[f64; 2]>) -> Option<ObjectUnderStroke> {
+pub fn object_under_stroke(s: &Session, points: Vec<[f64; 2]>) -> Option<ObjectUnderStroke> {
     if points.is_empty() {
         return None;
     }

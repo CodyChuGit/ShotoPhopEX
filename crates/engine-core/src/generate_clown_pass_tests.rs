@@ -13,7 +13,7 @@ fn session(url: &str) -> Session {
     let mut s = crate::session();
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.execute("edit.fill", json!({"use": "color", "color": [200, 40, 40]})).ok();
+    crate::test_fill::fill(&mut s, "#c82828");
     s.edit_prefs(|p| {
         p.integrations.models_path = url.to_string();
         p.integrations.runtime_path = "fake".into();
